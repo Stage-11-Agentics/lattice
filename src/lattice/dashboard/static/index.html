@@ -45,7 +45,7 @@ a:hover{text-decoration:underline}
 
 /* Board view */
 .board{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px;align-items:start}
-.board-col{background:#fff;border:1px solid #dee2e6;border-radius:6px;min-height:120px;transition:box-shadow .2s,border-color .2s}
+.board-col{background:#fff;border:1px solid #dee2e6;border-radius:6px;min-height:auto;transition:box-shadow .2s,border-color .2s}
 .board-col-header{padding:8px 12px;font-weight:600;font-size:.875rem;border-bottom:1px solid #dee2e6;display:flex;justify-content:space-between;align-items:center;border-radius:6px 6px 0 0;position:relative}
 .board-col-header .count{font-weight:400;color:rgba(255,255,255,.8);font-size:.75rem}
 .board-col-header .lane-color-btn{position:absolute;right:4px;top:4px;width:20px;height:20px;border:2px solid rgba(255,255,255,.6);border-radius:50%;cursor:pointer;padding:0;background:transparent;opacity:0;transition:opacity .2s}
@@ -87,8 +87,7 @@ a:hover{text-decoration:underline}
 .filters input{min-width:200px}
 .filters label{font-size:.85rem;display:flex;align-items:center;gap:4px;cursor:pointer}
 table{width:100%;border-collapse:collapse;background:#fff;border:1px solid #dee2e6;border-radius:6px;overflow:hidden;font-size:.85rem}
-th{text-align:left;padding:8px 10px;background:#f8f9fa;border-bottom:2px solid #dee2e6;font-weight:600;cursor:pointer;user-select:none;white-space:nowrap}
-th:hover{background:#e9ecef}
+th{text-align:left;padding:8px 10px;background:#f8f9fa;border-bottom:2px solid #dee2e6;font-weight:600;white-space:nowrap}
 td{padding:6px 10px;border-bottom:1px solid #f0f0f0;vertical-align:top}
 tr:hover td{background:#f8f9fa}
 .id-cell{font-family:monospace;font-size:.8rem;color:#6c757d;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -100,7 +99,7 @@ tr:hover td{background:#f8f9fa}
 .detail-meta{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}
 .detail-field{margin-bottom:12px}
 .detail-field dt{font-weight:600;font-size:.85rem;color:#6c757d;margin-bottom:2px}
-.detail-field dd{font-size:.9rem}
+.detail-field dd{font-size:.9rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .detail-section{margin-top:20px;padding-top:16px;border-top:1px solid #dee2e6}
 .detail-section h3{font-size:.95rem;font-weight:600;margin-bottom:8px}
 .event-item{padding:6px 0;border-bottom:1px solid #f0f0f0;font-size:.85rem;display:flex;gap:8px;flex-wrap:wrap}
@@ -445,7 +444,7 @@ function renderBoard() {
 
   var statuses = config.workflow ? config.workflow.statuses : [];
   if (tasks.length === 0) {
-    app.innerHTML = '<div class="empty"><p>No tasks yet.</p><p>Create one with <code>lattice create</code></p></div>';
+    app.innerHTML = '<div class="empty"><p>No tasks yet.</p><p><button class="btn btn-primary" onclick="showCreateTaskModal()">+ Create your first task</button></p></div>';
     return;
   }
 
@@ -681,13 +680,16 @@ function applyListFilters() {
     html += "</tr>";
   });
   html += "</tbody></table>";
-  document.getElementById("list-table").innerHTML = html;
+  document.getElementById("list-table").innerHTML = '<div style="overflow-x:auto">' + html + '</div>';
 }
 
 // --- Detail View ---
+var _detailTaskId = null;
+
 async function renderDetail(taskId) {
   var app = document.getElementById("app");
   app.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+  _detailTaskId = taskId;
 
   try {
     var results = await Promise.all([
@@ -696,72 +698,133 @@ async function renderDetail(taskId) {
     ]);
     var task = results[0];
     var events = results[1];
+    var isArchived = !!task.archived;
+
     var html = '<a href="#/' + esc(currentView) + '" class="back-link">&larr; Back</a>';
     html += '<div class="detail">';
-    html += '<div class="detail-header">';
-    html += '<div class="detail-title">' + esc(task.title || "Untitled");
-    if (task.archived) html += ' <span class="archived-badge">ARCHIVED</span>';
-    html += "</div>";
-    html += '<div class="detail-meta">';
-    if (task.status) html += '<span class="badge badge-stat">' + esc(task.status) + "</span>";
-    if (task.priority) html += '<span class="badge pri-' + esc(task.priority) + '">' + esc(task.priority) + "</span>";
-    if (task.type) html += '<span class="badge type-badge">' + esc(task.type) + "</span>";
-    html += "</div></div>";
 
-    // Fields
-    var fields = [
-      ["ID", task.id], ["Assigned to", task.assigned_to || "unassigned"],
+    // --- Title (inline editable) ---
+    html += '<div class="detail-header">';
+    if (isArchived) {
+      html += '<div class="detail-title">' + esc(task.title || "Untitled") + ' <span class="archived-badge">ARCHIVED</span></div>';
+    } else {
+      html += '<div class="detail-title editable" id="detail-title" title="Click to edit">' + esc(task.title || "Untitled") + '</div>';
+    }
+
+    // --- Status + Action bar ---
+    if (!isArchived) {
+      html += '<div class="detail-actions">';
+      // Status dropdown
+      var transitions = (config && config.workflow && config.workflow.transitions) || {};
+      var allowed = transitions[task.status] || [];
+      html += '<select id="detail-status" title="Change status">';
+      html += '<option value="' + esc(task.status) + '" selected>' + esc(task.status) + '</option>';
+      allowed.forEach(function(s) {
+        html += '<option value="' + esc(s) + '">' + esc(s) + '</option>';
+      });
+      html += '</select>';
+
+      // Priority dropdown
+      html += '<select id="detail-priority" title="Change priority">';
+      ["critical","high","medium","low"].forEach(function(p) {
+        html += '<option value="' + esc(p) + '"' + (p === task.priority ? ' selected' : '') + '>' + esc(p) + '</option>';
+      });
+      html += '</select>';
+
+      // Type dropdown
+      var types = (config && config.task_types) || [];
+      html += '<select id="detail-type" title="Change type">';
+      types.forEach(function(t) {
+        html += '<option value="' + esc(t) + '"' + (t === task.type ? ' selected' : '') + '>' + esc(t) + '</option>';
+      });
+      html += '</select>';
+
+      // Archive button
+      html += '<button class="btn btn-danger btn-sm" id="detail-archive-btn">Archive</button>';
+      html += '</div>';
+    } else {
+      html += '<div class="detail-meta">';
+      if (task.status) html += '<span class="badge badge-stat">' + esc(task.status) + '</span>';
+      if (task.priority) html += '<span class="badge pri-' + esc(task.priority) + '">' + esc(task.priority) + '</span>';
+      if (task.type) html += '<span class="badge type-badge">' + esc(task.type) + '</span>';
+      html += '</div>';
+    }
+    html += '</div>';
+
+    // --- Info fields ---
+    html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px">';
+    html += '<div class="detail-field"><dt>ID</dt><dd style="font-family:monospace;font-size:.8rem">' + esc(task.id) + '</dd></div>';
+
+    // Assigned to (editable)
+    if (!isArchived) {
+      html += '<div class="detail-field"><dt>Assigned to</dt><dd>';
+      html += '<span class="editable" id="detail-assigned" title="Click to edit">' + esc(task.assigned_to || "unassigned") + '</span>';
+      html += '</dd></div>';
+    } else {
+      html += '<div class="detail-field"><dt>Assigned to</dt><dd>' + esc(task.assigned_to || "unassigned") + '</dd></div>';
+    }
+
+    var infoFields = [
       ["Created by", task.created_by], ["Created", task.created_at], ["Updated", task.updated_at],
       ["Urgency", task.urgency]
     ];
-    html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px">';
-    fields.forEach(function(pair) {
-      var label = pair[0], val = pair[1];
-      if (val) {
-        html += '<div class="detail-field"><dt>' + esc(label) + "</dt><dd>" + esc(String(val)) + "</dd></div>";
+    infoFields.forEach(function(pair) {
+      if (pair[1]) {
+        html += '<div class="detail-field"><dt>' + esc(pair[0]) + '</dt><dd>' + esc(String(pair[1])) + '</dd></div>';
       }
     });
-    html += "</div>";
+    html += '</div>';
 
-    if (task.description) {
-      html += '<div class="detail-section"><h3>Description</h3><pre style="white-space:pre-wrap;font-size:.9rem">' + esc(task.description) + "</pre></div>";
+    // --- Description (editable) ---
+    html += '<div class="detail-section"><h3>Description</h3>';
+    if (!isArchived) {
+      html += '<pre class="editable" id="detail-description" style="white-space:pre-wrap;font-size:.9rem;min-height:20px" title="Click to edit">' + esc(task.description || "(no description \u2014 click to add)") + '</pre>';
+    } else {
+      html += '<pre style="white-space:pre-wrap;font-size:.9rem">' + esc(task.description || "") + '</pre>';
     }
+    html += '</div>';
 
-    if (task.tags && task.tags.length) {
-      html += '<div class="detail-section"><h3>Tags</h3><div>';
-      task.tags.forEach(function(tag) { html += '<span class="badge badge-stat" style="margin-right:4px">' + esc(tag) + "</span>"; });
-      html += "</div></div>";
+    // --- Tags (editable) ---
+    html += '<div class="detail-section"><h3>Tags</h3>';
+    if (!isArchived) {
+      var tagStr = (task.tags && task.tags.length) ? task.tags.join(", ") : "";
+      html += '<span class="editable" id="detail-tags" title="Click to edit">' + esc(tagStr || "(no tags \u2014 click to add)") + '</span>';
+    } else if (task.tags && task.tags.length) {
+      html += '<div>';
+      task.tags.forEach(function(tag) { html += '<span class="badge badge-stat" style="margin-right:4px">' + esc(tag) + '</span>'; });
+      html += '</div>';
     }
+    html += '</div>';
 
     if (task.custom_fields && Object.keys(task.custom_fields).length) {
       html += '<div class="detail-section"><h3>Custom Fields</h3><dl>';
       Object.entries(task.custom_fields).forEach(function(pair) {
-        html += "<dt>" + esc(pair[0]) + "</dt><dd>" + esc(String(pair[1])) + "</dd>";
+        html += '<dt>' + esc(pair[0]) + '</dt><dd>' + esc(String(pair[1])) + '</dd>';
       });
-      html += "</dl></div>";
+      html += '</dl></div>';
     }
 
     // Relationships
     if (task.relationships_out && task.relationships_out.length) {
       html += '<div class="detail-section"><h3>Relationships</h3><ul class="rel-list">';
       task.relationships_out.forEach(function(r) {
-        html += "<li>" + esc(r.type) + ' &rarr; <a href="#/task/' + esc(r.target_task_id) + '">' + esc(r.target_task_id) + "</a>";
-        if (r.note) html += " (" + esc(r.note) + ")";
-        html += "</li>";
+        html += '<li>' + esc(r.type) + ' &rarr; <a href="#/task/' + esc(r.target_task_id) + '">' + esc(r.target_task_id) + '</a>';
+        if (r.note) html += ' (' + esc(r.note) + ')';
+        html += '</li>';
       });
-      html += "</ul></div>";
+      html += '</ul></div>';
     }
 
     // Artifacts
     if (task.artifacts && task.artifacts.length) {
       html += '<div class="detail-section"><h3>Artifacts</h3><ul class="art-list">';
       task.artifacts.forEach(function(a) {
-        html += "<li>" + esc(a.id);
+        html += '<li>' + esc(a.id);
         if (a.title) html += ' "' + esc(a.title) + '"';
-        if (a.type) html += " (" + esc(a.type) + ")";
-        html += "</li>";
+        if (a.type) html += ' (' + esc(a.type) + ')';
+        html += '</li>';
       });
-      html += "</ul></div>";
+      html += '</ul></div>';
     }
 
     // Notes
@@ -769,40 +832,319 @@ async function renderDetail(taskId) {
       html += '<div class="detail-section"><h3>Notes</h3><p style="font-size:.85rem;color:#6c757d">Notes file exists: <code>notes/' + esc(task.id) + '.md</code></p></div>';
     }
 
-    // Events
-    if (events && events.length) {
-      html += '<div class="detail-section"><h3>Events (' + events.length + ")</h3>";
-      events.forEach(function(ev) {
-        html += '<div class="event-item">';
-        html += '<span class="event-ts">' + esc(ev.ts || "") + "</span>";
-        html += '<span class="event-type badge badge-stat">' + esc(ev.type || "") + "</span>";
-        html += "<span>" + eventSummary(ev) + "</span>";
-        html += '<span class="event-actor">' + esc(ev.actor || "") + "</span>";
-        html += "</div>";
+    // --- Comments section ---
+    var comments = (events || []).filter(function(ev) { return ev.type === "comment_added"; });
+    html += '<div class="detail-section"><h3>Comments (' + comments.length + ')</h3>';
+    if (!isArchived) {
+      html += '<div class="comment-form">';
+      html += '<textarea class="form-control" id="detail-comment-text" placeholder="Add a comment..."></textarea>';
+      html += '<button class="btn btn-primary btn-sm" id="detail-comment-submit" style="align-self:flex-end">Post</button>';
+      html += '</div>';
+    }
+    if (comments.length) {
+      html += '<div style="margin-top:8px">';
+      comments.forEach(function(ev) {
+        html += '<div class="comment-item">';
+        html += '<div class="comment-meta">' + esc(ev.actor || "") + ' &middot; ' + esc(ev.ts || "") + '</div>';
+        html += '<div class="comment-body">' + esc((ev.data && ev.data.body) || "") + '</div>';
+        html += '</div>';
       });
-      html += "</div>";
+      html += '</div>';
+    }
+    html += '</div>';
+
+    // --- Events (non-comment) ---
+    var nonCommentEvents = (events || []).filter(function(ev) { return ev.type !== "comment_added"; });
+    if (nonCommentEvents.length) {
+      html += '<div class="detail-section"><h3>History (' + nonCommentEvents.length + ')</h3>';
+      nonCommentEvents.forEach(function(ev) {
+        html += '<div class="event-item">';
+        html += '<span class="event-ts">' + esc(ev.ts || "") + '</span>';
+        html += '<span class="event-type badge badge-stat">' + esc(ev.type || "") + '</span>';
+        html += '<span>' + eventSummary(ev) + '</span>';
+        html += '<span class="event-actor">' + esc(ev.actor || "") + '</span>';
+        html += '</div>';
+      });
+      html += '</div>';
     }
 
-    html += "</div>";
+    html += '</div>';
     app.innerHTML = html;
+
+    // Wire up interactive elements
+    if (!isArchived) {
+      _wireDetailActions(taskId, task);
+    }
+
   } catch(e) {
     app.innerHTML = '<a href="#/' + esc(currentView) + '" class="back-link">&larr; Back</a>' +
       '<div class="error-box"><p>' + esc(e.message) + '</p><button class="btn" onclick="location.reload()">Retry</button></div>';
   }
 }
 
+// Wire up detail view interactive controls
+function _wireDetailActions(taskId, task) {
+  // Status change
+  var statusSel = document.getElementById("detail-status");
+  if (statusSel) {
+    statusSel.addEventListener("change", async function() {
+      var newStatus = this.value;
+      if (newStatus === task.status) return;
+      try {
+        await apiPost("/api/tasks/" + taskId + "/status", { status: newStatus });
+        showToast("Status changed to " + newStatus, "success");
+        tasks = await api("/api/tasks");
+        updateStatsBadges();
+        renderDetail(taskId);
+      } catch(e) {
+        showToast(e.message, "error");
+        this.value = task.status;
+      }
+    });
+  }
+
+  // Priority change
+  var priSel = document.getElementById("detail-priority");
+  if (priSel) {
+    priSel.addEventListener("change", async function() {
+      var newPri = this.value;
+      if (newPri === task.priority) return;
+      try {
+        await apiPost("/api/tasks/" + taskId + "/update", { fields: { priority: newPri } });
+        showToast("Priority changed to " + newPri, "success");
+        tasks = await api("/api/tasks");
+        updateStatsBadges();
+        renderDetail(taskId);
+      } catch(e) {
+        showToast(e.message, "error");
+        this.value = task.priority;
+      }
+    });
+  }
+
+  // Type change
+  var typeSel = document.getElementById("detail-type");
+  if (typeSel) {
+    typeSel.addEventListener("change", async function() {
+      var newType = this.value;
+      if (newType === task.type) return;
+      try {
+        await apiPost("/api/tasks/" + taskId + "/update", { fields: { type: newType } });
+        showToast("Type changed to " + newType, "success");
+        tasks = await api("/api/tasks");
+        updateStatsBadges();
+        renderDetail(taskId);
+      } catch(e) {
+        showToast(e.message, "error");
+        this.value = task.type;
+      }
+    });
+  }
+
+  // Title inline edit
+  var titleEl = document.getElementById("detail-title");
+  if (titleEl) {
+    titleEl.addEventListener("click", function() {
+      _inlineEdit(titleEl, task.title || "", function(newVal) {
+        if (!newVal.trim()) { showToast("Title cannot be empty", "error"); return Promise.reject(); }
+        return apiPost("/api/tasks/" + taskId + "/update", { fields: { title: newVal.trim() } })
+          .then(function() {
+            showToast("Title updated", "success");
+            api("/api/tasks").then(function(t) { tasks = t; updateStatsBadges(); });
+            renderDetail(taskId);
+          });
+      });
+    });
+  }
+
+  // Description inline edit
+  var descEl = document.getElementById("detail-description");
+  if (descEl) {
+    descEl.addEventListener("click", function() {
+      var currentVal = task.description || "";
+      _inlineEditTextarea(descEl, currentVal, function(newVal) {
+        return apiPost("/api/tasks/" + taskId + "/update", { fields: { description: newVal } })
+          .then(function() {
+            showToast("Description updated", "success");
+            renderDetail(taskId);
+          });
+      });
+    });
+  }
+
+  // Assigned to inline edit
+  var assignEl = document.getElementById("detail-assigned");
+  if (assignEl) {
+    assignEl.addEventListener("click", function() {
+      _inlineEdit(assignEl, task.assigned_to || "", function(newVal) {
+        var assignedTo = newVal.trim() || null;
+        return apiPost("/api/tasks/" + taskId + "/assign", { assigned_to: assignedTo })
+          .then(function() {
+            showToast(assignedTo ? "Assigned to " + assignedTo : "Unassigned", "success");
+            api("/api/tasks").then(function(t) { tasks = t; updateStatsBadges(); });
+            renderDetail(taskId);
+          });
+      });
+    });
+  }
+
+  // Tags inline edit
+  var tagsEl = document.getElementById("detail-tags");
+  if (tagsEl) {
+    tagsEl.addEventListener("click", function() {
+      var tagStr = (task.tags && task.tags.length) ? task.tags.join(", ") : "";
+      _inlineEdit(tagsEl, tagStr, function(newVal) {
+        var newTags = newVal.split(",").map(function(t){ return t.trim(); }).filter(Boolean);
+        return apiPost("/api/tasks/" + taskId + "/update", { fields: { tags: newTags } })
+          .then(function() {
+            showToast("Tags updated", "success");
+            api("/api/tasks").then(function(t) { tasks = t; updateStatsBadges(); });
+            renderDetail(taskId);
+          });
+      });
+    });
+  }
+
+  // Comment submit
+  var commentBtn = document.getElementById("detail-comment-submit");
+  if (commentBtn) {
+    commentBtn.addEventListener("click", async function() {
+      var textarea = document.getElementById("detail-comment-text");
+      var text = textarea.value.trim();
+      if (!text) { showToast("Comment cannot be empty", "error"); return; }
+      try {
+        await apiPost("/api/tasks/" + taskId + "/comment", { body: text });
+        showToast("Comment added", "success");
+        renderDetail(taskId);
+      } catch(e) {
+        showToast(e.message, "error");
+      }
+    });
+
+    // Ctrl+Enter to submit
+    document.getElementById("detail-comment-text").addEventListener("keydown", function(e) {
+      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+        e.preventDefault();
+        commentBtn.click();
+      }
+    });
+  }
+
+  // Archive button
+  var archiveBtn = document.getElementById("detail-archive-btn");
+  if (archiveBtn) {
+    archiveBtn.addEventListener("click", async function() {
+      if (!confirm("Archive this task? It will be moved to the archive.")) return;
+      try {
+        await apiPost("/api/tasks/" + taskId + "/archive", {});
+        showToast("Task archived", "success");
+        tasks = await api("/api/tasks");
+        updateStatsBadges();
+        location.hash = "#/" + currentView;
+      } catch(e) {
+        showToast(e.message, "error");
+      }
+    });
+  }
+}
+
+// Inline edit: replaces element with input field
+function _inlineEdit(el, currentValue, onSave) {
+  if (el.dataset.editing === "true") return;
+  el.dataset.editing = "true";
+
+  var wrapper = document.createElement("div");
+  wrapper.className = "inline-edit";
+  var input = document.createElement("input");
+  input.type = "text";
+  input.className = "form-control";
+  input.value = currentValue;
+  var saveBtn = document.createElement("button");
+  saveBtn.className = "btn btn-primary btn-sm";
+  saveBtn.textContent = "Save";
+  var cancelBtn = document.createElement("button");
+  cancelBtn.className = "btn btn-sm";
+  cancelBtn.textContent = "Cancel";
+
+  wrapper.appendChild(input);
+  wrapper.appendChild(saveBtn);
+  wrapper.appendChild(cancelBtn);
+
+  var parent = el.parentNode;
+  parent.replaceChild(wrapper, el);
+  input.focus();
+  input.select();
+
+  function cancel() { parent.replaceChild(el, wrapper); el.dataset.editing = "false"; }
+
+  cancelBtn.addEventListener("click", cancel);
+  input.addEventListener("keydown", function(e) {
+    if (e.key === "Escape") cancel();
+    if (e.key === "Enter") saveBtn.click();
+  });
+  saveBtn.addEventListener("click", function() {
+    var result = onSave(input.value);
+    if (result && result.catch) {
+      result.catch(function() { cancel(); });
+    }
+  });
+}
+
+// Inline edit: textarea variant for multiline fields
+function _inlineEditTextarea(el, currentValue, onSave) {
+  if (el.dataset.editing === "true") return;
+  el.dataset.editing = "true";
+
+  var wrapper = document.createElement("div");
+  var textarea = document.createElement("textarea");
+  textarea.className = "form-control";
+  textarea.value = currentValue;
+  textarea.style.minHeight = "100px";
+  var btnRow = document.createElement("div");
+  btnRow.style.cssText = "display:flex;gap:6px;margin-top:6px;justify-content:flex-end";
+  var saveBtn = document.createElement("button");
+  saveBtn.className = "btn btn-primary btn-sm";
+  saveBtn.textContent = "Save";
+  var cancelBtn = document.createElement("button");
+  cancelBtn.className = "btn btn-sm";
+  cancelBtn.textContent = "Cancel";
+
+  btnRow.appendChild(cancelBtn);
+  btnRow.appendChild(saveBtn);
+  wrapper.appendChild(textarea);
+  wrapper.appendChild(btnRow);
+
+  var parent = el.parentNode;
+  parent.replaceChild(wrapper, el);
+  textarea.focus();
+
+  function cancel() { parent.replaceChild(el, wrapper); el.dataset.editing = "false"; }
+
+  cancelBtn.addEventListener("click", cancel);
+  textarea.addEventListener("keydown", function(e) {
+    if (e.key === "Escape") cancel();
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") saveBtn.click();
+  });
+  saveBtn.addEventListener("click", function() {
+    var result = onSave(textarea.value);
+    if (result && result.catch) {
+      result.catch(function() { cancel(); });
+    }
+  });
+}
+
 function eventSummary(ev) {
   var d = ev.data || {};
   switch(ev.type) {
-    case "status_changed": return esc((d.from||"?") + " &rarr; " + (d.to||"?"));
-    case "assignment_changed": return esc((d.from||"unassigned") + " &rarr; " + (d.to||"?"));
-    case "field_updated": return esc(d.field + ": " + (d.from||"?") + " &rarr; " + (d.to||"?"));
+    case "status_changed": return esc((d.from||"?") + " \u2192 " + (d.to||"?"));
+    case "assignment_changed": return esc((d.from||"unassigned") + " \u2192 " + (d.to||"?"));
+    case "field_updated": return esc(d.field + ": " + (d.from||"?") + " \u2192 " + (d.to||"?"));
     case "comment_added": {
       var body = d.body || "";
       if (body.length > 80) body = body.slice(0,77) + "...";
       return '"' + esc(body) + '"';
     }
-    case "relationship_added": return esc(d.type) + " &rarr; " + esc(d.target_task_id||"");
+    case "relationship_added": return esc(d.type) + " \u2192 " + esc(d.target_task_id||"");
     case "relationship_removed": return esc(d.type) + " -x- " + esc(d.target_task_id||"");
     case "artifact_attached": return "artifact " + esc(d.artifact_id||"");
     case "task_created": return "";

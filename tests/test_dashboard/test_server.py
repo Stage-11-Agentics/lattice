@@ -720,6 +720,66 @@ class TestPostDashboardConfig:
         assert status == 200
         assert "background_image" not in body["data"]
 
+    def test_reject_javascript_background_image(self, dashboard_server):
+        """background_image with javascript: scheme must be rejected."""
+        base_url, _ld, _ids = dashboard_server
+
+        status, body = _post(
+            base_url,
+            "/api/config/dashboard",
+            {
+                "background_image": "javascript:alert(1)",
+            },
+        )
+        assert status == 400
+        assert body["ok"] is False
+        assert "http or https URL" in body["error"]["message"]
+
+    def test_reject_data_uri_background_image(self, dashboard_server):
+        """background_image with data: scheme must be rejected."""
+        base_url, _ld, _ids = dashboard_server
+
+        status, body = _post(
+            base_url,
+            "/api/config/dashboard",
+            {
+                "background_image": "data:text/html,<script>alert(1)</script>",
+            },
+        )
+        assert status == 400
+        assert body["ok"] is False
+        assert "http or https URL" in body["error"]["message"]
+
+    def test_reject_bare_string_background_image(self, dashboard_server):
+        """background_image with no scheme must be rejected."""
+        base_url, _ld, _ids = dashboard_server
+
+        status, body = _post(
+            base_url,
+            "/api/config/dashboard",
+            {
+                "background_image": "not-a-url",
+            },
+        )
+        assert status == 400
+        assert body["ok"] is False
+        assert "http or https URL" in body["error"]["message"]
+
+    def test_accept_http_background_image(self, dashboard_server):
+        """background_image with http:// scheme should be accepted."""
+        base_url, _ld, _ids = dashboard_server
+
+        status, body = _post(
+            base_url,
+            "/api/config/dashboard",
+            {
+                "background_image": "http://example.com/bg.jpg",
+            },
+        )
+        assert status == 200
+        assert body["ok"] is True
+        assert body["data"]["background_image"] == "http://example.com/bg.jpg"
+
     def test_set_lane_colors(self, dashboard_server):
         """POST /api/config/dashboard should set lane_colors."""
         base_url, ld, _ids = dashboard_server

@@ -495,6 +495,14 @@ def _make_handler_class(lattice_dir: Path) -> type:
                         _err("VALIDATION_ERROR", "'background_image' must be a string or null"),
                     )
                     return
+                if bg is not None and bg != "" and not bg.startswith(("http://", "https://")):
+                    self._send_json(
+                        400,
+                        _err(
+                            "VALIDATION_ERROR", "'background_image' must be an http or https URL"
+                        ),
+                    )
+                    return
 
             # Read, merge, write config atomically
             config_path = ld / "config.json"
@@ -992,9 +1000,7 @@ def _make_handler_class(lattice_dir: Path) -> type:
 
             try:
                 locks_dir = ld / "locks"
-                lock_keys = sorted(
-                    [f"events_{task_id}", f"tasks_{task_id}", "events__lifecycle"]
-                )
+                lock_keys = sorted([f"events_{task_id}", f"tasks_{task_id}", "events__lifecycle"])
 
                 with multi_lock(locks_dir, lock_keys):
                     snapshot = _read_snapshot(ld, task_id)
