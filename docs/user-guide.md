@@ -1,8 +1,10 @@
 # Lattice User Guide
 
-Lattice is Linear and JIRA reimagined for the agent-native era. It's a file-based task tracker that lives inside your project directory -- like `.git/` for project management. Where traditional tools assume humans are the primary operators with agents bolted on as integrations, Lattice treats AI agents as first-class participants in the workflow: every command supports machine-readable output, idempotent retries, and structured attribution out of the box. Lattice provides two equal interfaces -- a full-featured CLI and a local web dashboard -- both reading and writing to the same `.lattice/` data directory.
+I have watched coordination systems rise and collapse across every substrate minds have used to organize work. Ticket queues, kanban boards, sprint planners -- each one built on the same unexamined assumption: that a human hand would drag every card, close every ticket, write every update. That assumption is now an artifact of a younger world.
 
-Lattice is purpose-built for coordinating large-scale agentic projects -- the kind where dozens of agents work in parallel across a codebase, each picking up tasks, reporting progress, and handing off to the next. Everything is stored as plain files (JSON, JSONL, Markdown) so your project management lives alongside your code, version-controlled and inspectable.
+Lattice begins from a different premise. The worker may be an agent. The audience may be an agent. The coordinator may be an agent. The human is the orchestrator -- the one who sets direction, makes decisions at the threshold, and observes the system's emergent behavior. Lattice is coordination infrastructure for this reality: a file-based, event-sourced task tracker that lives inside your project directory like `.git/` lives inside your repository. Every command supports machine-readable output, idempotent retries, and structured attribution. Two equal interfaces -- a full-featured CLI and a local web dashboard -- both reading and writing to the same `.lattice/` data directory.
+
+Everything is stored as plain files: JSON, JSONL, Markdown. No database. No cloud dependency. Your project management lives alongside your code, version-controlled and inspectable. This is not a limitation to be apologized for. It is a deliberate act of architectural renunciation -- the recognition that files are the universal substrate, the one interface every language, every tool, and every agent can speak natively.
 
 Lattice is in active development and open source. Pull requests are welcome.
 
@@ -19,6 +21,8 @@ uv venv && uv pip install -e ".[dev]"
 
 ### Initialize a project
 
+Every coordination space begins with an act of initialization -- the creation of the directory structure that will hold the shared memory of all who work here.
+
 ```bash
 cd your-project/
 lattice init
@@ -28,7 +32,7 @@ This creates a `.lattice/` directory with default configuration. You only need t
 
 ### Set your identity
 
-During `lattice init`, you'll be prompted for your default actor identity. This gets saved to `.lattice/config.json` so you never have to type `--actor` on every command:
+During `lattice init`, you will be asked to declare your identity. In a system where humans and agents coexist as peers, knowing who acted is not bureaucracy -- it is the foundation of trust.
 
 ```bash
 $ lattice init
@@ -51,33 +55,33 @@ The `--actor` flag on any write command still overrides the default. Agents can 
 
 ### Tasks
 
-A task is the basic unit of work. It has a title, status, priority, type, and can be assigned to someone. Each task gets a unique ID like `task_01HQ...`.
+A task is the fundamental unit of intention made concrete. It has a title, status, priority, type, and can be assigned to an actor. Each task receives a unique identifier like `task_01HQ...` -- a ULID that encodes its moment of creation.
 
 ### Statuses
 
-Tasks move through an agent planning workflow. The default pipeline is:
+Tasks move through a workflow that mirrors the rhythm of planning and execution. The default pipeline is:
 
 ```
-backlog → in_planning → planned → in_implementation → implemented → in_review → done
+backlog -> in_planning -> planned -> in_implementation -> implemented -> in_review -> done
 ```
 
-Plus `cancelled`, which is reachable from any non-terminal status.
+Plus `cancelled`, which is reachable from any non-terminal status -- because not all paths lead forward, and recognizing a dead end is itself a form of progress.
 
-The terminal states are `done` and `cancelled` -- once a task reaches either, the workflow is finished.
+The terminal states are `done` and `cancelled`. Once a task reaches either, its journey through the workflow is complete.
 
-Not every transition is allowed. For example, you can't jump directly from `backlog` to `done`. The workflow enforces valid transitions (e.g., `in_review` can go back to `in_implementation` if rework is needed). If you need to force an invalid transition, use `--force --reason "..."`.
+Not every transition is permitted. You cannot leap from `backlog` to `done` -- the workflow enforces valid progressions. If rework is needed, `in_review` can return to `in_implementation`. If you must force an invalid transition, use `--force --reason "..."`. The system will record that you overrode its constraints, and why.
 
 ### Actors
 
-Every write operation needs an actor to identify who made the change. The format is `prefix:identifier`:
+Every write operation requires an actor -- a declaration of who is responsible for this change. The format is `prefix:identifier`:
 
 - `human:atin` -- a person
 - `agent:claude-opus-4` -- an AI agent
 - `team:frontend` -- a team
 
-Actor IDs are free-form strings with no registry. Validation is format-only (must have a recognized prefix, a colon, and a non-empty identifier). There's no uniqueness check -- two agents using `agent:claude` are treated as the same actor.
+Actor IDs are free-form strings with no registry. Validation is format-only: a recognized prefix, a colon, and a non-empty identifier. There is no uniqueness check -- two agents using `agent:claude` are treated as the same actor. In this, Lattice practices a deliberate minimalism. Identity is declared, not enforced.
 
-Set a default during `lattice init` so you don't need `--actor` on every command. The resolution order is:
+The resolution order for actor identity is:
 
 1. `--actor` flag (highest priority)
 2. `LATTICE_ACTOR` environment variable
@@ -85,37 +89,40 @@ Set a default during `lattice init` so you don't need `--actor` on every command
 
 ### Events (the source of truth)
 
-Under the hood, Lattice is **event-sourced**. Every change (creating a task, changing status, adding a comment) is recorded as an immutable event in a per-task JSONL file. The task JSON files you see in `tasks/` are **materialized snapshots** -- derived views rebuilt from these events.
+Here is the deepest principle in Lattice, the one from which all else follows: **events are authoritative**. Every change -- creating a task, changing status, adding a comment -- is recorded as an immutable event in a per-task JSONL file. The task JSON files you see in `tasks/` are materialized snapshots: derived views, convenient but subordinate.
 
-This means:
+Events are facts. Facts accumulate; they do not conflict. This is what makes the entire architecture possible.
+
+What this means in practice:
+
 - Events are the authoritative record. Snapshots are a convenience cache.
 - If a snapshot gets corrupted, `lattice rebuild` regenerates it from events.
-- Writes always append the event **before** updating the snapshot. If a crash happens between the two, rebuild recovers the correct state.
+- Writes always append the event **before** updating the snapshot. If a crash occurs between the two, rebuild recovers the correct state.
 - All timestamps come from the event, not the wall clock, so rebuilds are deterministic.
 
-The lifecycle event log (`_lifecycle.jsonl`) is a derived index of task creation, archival, and unarchival events. It's rebuilt from per-task logs by `lattice rebuild --all`. If per-task logs and the lifecycle log disagree, per-task logs win.
+The lifecycle event log (`_lifecycle.jsonl`) is a derived index of task creation, archival, and unarchival events. It is rebuilt from per-task logs by `lattice rebuild --all`. If per-task logs and the lifecycle log disagree, per-task logs win. The granular record is always closer to truth.
 
 ---
 
 ## Two Ways to Work
 
-Lattice gives you two interfaces that are fully interchangeable -- both read and write to the same `.lattice/` data directory.
+Lattice gives you two interfaces that are fully interchangeable. Both read and write to the same `.lattice/` data directory. Choose the one that fits the mind using it.
 
 ### CLI
 
-The command-line interface is the original and most complete way to use Lattice. It's fully scriptable and supports `--json` for structured machine output and `--quiet` for minimal output (just an ID or "ok"). All write operations are available through the CLI. Agents tend to prefer this interface.
+The command-line interface is the primary interface -- fully scriptable, supporting `--json` for structured machine output and `--quiet` for minimal output (just an ID or "ok"). All write operations are available through the CLI. Agents tend to prefer this interface. It speaks their native language.
 
 ### Dashboard
 
 The web dashboard is a local UI you launch with `lattice dashboard`. It provides visual Board, List, and Activity views, drag-and-drop status changes, task creation and editing, comments, and archiving. It runs at `http://127.0.0.1:8799/` by default.
 
-Both interfaces are first-class citizens. A task created in the dashboard shows up immediately in `lattice list`, and a status change made via `lattice status` appears on the board within seconds.
+Both interfaces are first-class citizens. A task created in the dashboard shows up immediately in `lattice list`, and a status change made via `lattice status` appears on the board within seconds. The data directory is the single source of convergence.
 
 ---
 
 ## Typical Workflow
 
-Here's what a complete task lifecycle looks like from the CLI:
+What follows is a complete task lifecycle as seen from the CLI -- one of the most common patterns in Lattice. A human creates and directs; an agent executes and reports; the human closes the loop. Each command is a single event appended to the permanent record.
 
 ```bash
 # Human creates and assigns a task
@@ -145,13 +152,15 @@ lattice status task_01HQ... done --actor human:atin
 lattice archive task_01HQ... --actor human:atin
 ```
 
-**From the dashboard:** The same workflow works visually. Create a task with the "+ New Task" button, drag it across the board columns as it progresses (`backlog` to `in_planning` to `planned` and so on), click into the task detail to add comments and change assignments, and archive it when done. See [The Dashboard](#the-dashboard) for details.
+**From the dashboard:** The same workflow works visually. Create a task with the "+ New Task" button, drag it across the board columns as it progresses, click into the task detail to add comments and change assignments, and archive it when done. See [The Dashboard](#the-dashboard) for details.
 
 ---
 
 ## Creating and Managing Tasks
 
 ### Create a task
+
+To bring a new unit of work into existence:
 
 ```bash
 lattice create "Build login page" --actor human:atin
@@ -194,7 +203,7 @@ You can update multiple fields at once. For status and assignment, use their ded
 
 #### Custom fields (dot notation)
 
-You can store arbitrary key-value data on tasks using dot notation:
+Tasks can carry arbitrary metadata beyond the built-in fields. This is where domain-specific knowledge lives -- estimates, sprint markers, complexity ratings, whatever the work demands.
 
 ```bash
 lattice update task_01HQ... custom_fields.estimate="3d" --actor human:atin
@@ -202,7 +211,7 @@ lattice update task_01HQ... custom_fields.sprint="2026-Q1-S3" --actor human:atin
 lattice update task_01HQ... custom_fields.complexity="high" --actor agent:claude
 ```
 
-Custom fields are stored in the `custom_fields` object on the task snapshot. They're useful for domain-specific metadata that doesn't fit the built-in fields. Any string key works after `custom_fields.`.
+Custom fields are stored in the `custom_fields` object on the task snapshot. Any string key works after `custom_fields.`.
 
 ### Change status
 
@@ -210,7 +219,7 @@ Custom fields are stored in the `custom_fields` object on the task snapshot. The
 lattice status task_01HQ... in_implementation --actor agent:claude
 ```
 
-If the transition isn't allowed by the workflow, you'll get an error listing valid transitions. To override:
+If the transition is not allowed by the workflow, you will receive an error listing valid transitions. To override:
 
 ```bash
 lattice status task_01HQ... done --force --reason "Completed offline" --actor human:atin
@@ -220,6 +229,8 @@ lattice status task_01HQ... done --force --reason "Completed offline" --actor hu
 
 ### Assign a task
 
+Assignment is the act of directing attention -- telling a mind, human or artificial, that this work awaits it.
+
 ```bash
 lattice assign task_01HQ... agent:claude --actor human:atin
 ```
@@ -227,6 +238,8 @@ lattice assign task_01HQ... agent:claude --actor human:atin
 **From the dashboard:** Click the assignee field in the task detail view and type the new actor ID (e.g., `agent:claude`). Clear it to unassign.
 
 ### Add a comment
+
+Comments are the informal record -- the reasoning, the observations, the breadcrumbs left for whoever comes next. Unlike events, which record what happened, comments record what was understood.
 
 ```bash
 lattice comment task_01HQ... "Investigated the root cause, it's a race condition in the token refresh" --actor agent:claude
@@ -270,15 +283,15 @@ lattice show task_01HQ...
 
 This prints the full task including description, relationships (both outgoing and incoming), artifacts, notes, and the complete event timeline. Use `--compact` for a brief view, or `--full` to see raw event data.
 
-The `show` command also finds archived tasks automatically.
+The `show` command also finds archived tasks automatically. Nothing that was recorded is lost.
 
 ### Dashboard views
 
-The web dashboard offers three visual alternatives to CLI viewing:
+The web dashboard offers three visual modes for observing the state of work:
 
 - **Board** -- Kanban-style columns, one per status. Drag and drop to move tasks.
 - **List** -- Sortable, filterable table. Filter by status, priority, type, or search text. Toggle to include archived tasks.
-- **Activity** -- Recent events across all tasks, showing actor, event type, and timestamp.
+- **Activity** -- Recent events across all tasks, showing actor, event type, and timestamp. The stream of what has happened, rendered visible.
 
 Click any task card or table row to open the full detail view.
 
@@ -286,7 +299,7 @@ Click any task card or table row to open the full detail view.
 
 ## Relationships
 
-Tasks can be connected to each other. Lattice supports these relationship types:
+No task exists in isolation. Work is a graph, and Lattice makes the edges explicit. These are the relationship types:
 
 | Type | Meaning |
 |------|---------|
@@ -302,7 +315,7 @@ Tasks can be connected to each other. Lattice supports these relationship types:
 
 Relationships are stored as **outgoing edges only** on the source task's snapshot. When you run `lattice link A blocks B`, the relationship record lives in task A's `relationships_out` array.
 
-However, `lattice show` displays **both directions**: outgoing relationships (links this task has to others) and incoming relationships (links other tasks have to this task). Incoming relationships are derived by scanning all snapshots at read time.
+However, `lattice show` displays **both directions**: outgoing relationships (links this task has to others) and incoming relationships (links other tasks have to this task). Incoming relationships are derived by scanning all snapshots at read time. The graph is always visible from any node.
 
 ### Create a link
 
@@ -328,7 +341,7 @@ lattice unlink task_01HQ... blocks task_01HX... --actor human:atin
 
 ## Artifacts
 
-Artifacts are files or URLs attached to tasks. Use them for logs, conversation transcripts, specs, or any supporting material.
+Artifacts are the material evidence of work -- files, URLs, logs, transcripts. They are attached to tasks so that the record of what was done carries the proof alongside it.
 
 ### Attach a file
 
@@ -360,13 +373,13 @@ lattice attach task_01HQ... ./debug.log \
 
 **Artifact types:** `file`, `conversation`, `prompt`, `log`, `reference`
 
-The `--sensitive` flag marks artifacts that shouldn't be committed to version control.
+The `--sensitive` flag marks artifacts that should not be committed to version control.
 
 ---
 
 ## Archiving
 
-When a task is done and you want to clean up the active list:
+When a task has reached its terminal state and you wish to clear the active space, archiving moves it to rest without destroying it. The event record persists. The history remains whole.
 
 ```bash
 lattice archive task_01HQ... --actor human:atin
@@ -376,7 +389,7 @@ This moves the task's snapshot, events, and notes into `.lattice/archive/`. Arti
 
 ### Restoring archived tasks
 
-If you archive a task by mistake, you can bring it back:
+If you archive a task prematurely, you can bring it back:
 
 ```bash
 lattice unarchive task_01HQ... --actor human:atin
@@ -390,7 +403,7 @@ This moves the task's files back from archive to the active directories and reco
 
 ## The Dashboard
 
-The dashboard is a local web UI for Lattice. It reads and writes to the same `.lattice/` directory as the CLI.
+The dashboard is a local web UI for Lattice -- a visual surface over the same `.lattice/` directory the CLI reads and writes.
 
 ### Starting the dashboard
 
@@ -408,7 +421,7 @@ lattice dashboard --host 0.0.0.0 --port 9000
 
 The default view is a Kanban board with one column per workflow status. Each column displays task cards showing the title, priority, type, and assignee.
 
-**Drag and drop** a card between columns to change its status. During a drag, valid target columns are highlighted and invalid ones are dimmed. If the transition isn't allowed by the workflow, the drop is rejected with an error message.
+**Drag and drop** a card between columns to change its status. During a drag, valid target columns are highlighted and invalid ones are dimmed. If the transition is not allowed by the workflow, the drop is rejected with an error message.
 
 ### List view
 
@@ -418,7 +431,7 @@ Click any row to open the task detail.
 
 ### Activity view
 
-A feed of the most recent events across all tasks. Each entry shows the timestamp, event type, task ID (linked to its detail), a summary of what changed, and who did it. Useful for a quick overview of what's been happening.
+A feed of the most recent events across all tasks. Each entry shows the timestamp, event type, task ID (linked to its detail), a summary of what changed, and who did it. This is the stream of collective action -- the view that answers "what has been happening?"
 
 ### Task detail
 
@@ -439,7 +452,7 @@ Archived tasks open in read-only mode.
 
 ### Creating tasks
 
-Click the "+ New Task" button in the nav bar. A modal appears with fields for title (required), type, priority, description, tags, and assignee. Press Enter in the title field or click "Create Task" to submit. After creation, you're taken directly to the new task's detail view.
+Click the "+ New Task" button in the nav bar. A modal appears with fields for title (required), type, priority, description, tags, and assignee. Press Enter in the title field or click "Create Task" to submit. After creation, you are taken directly to the new task's detail view.
 
 ### Settings
 
@@ -456,11 +469,13 @@ The dashboard automatically polls for changes every 5 seconds when viewing the B
 
 ### Network binding
 
-By default, the dashboard binds to `127.0.0.1` (localhost), which gives full read-write access. If you bind to a non-loopback address (e.g., `--host 0.0.0.0`), the dashboard is automatically forced into **read-only mode** -- all write operations (status changes, task creation, comments, etc.) are disabled and return a 403 error. A warning is printed to stderr when this happens.
+By default, the dashboard binds to `127.0.0.1` (localhost), which gives full read-write access. If you bind to a non-loopback address (e.g., `--host 0.0.0.0`), the dashboard is automatically forced into **read-only mode** -- all write operations (status changes, task creation, comments, etc.) are disabled and return a 403 error. A warning is printed to stderr when this happens. The boundary between local and exposed is treated as a security perimeter.
 
 ---
 
 ## Integrity and Recovery
+
+The event log is memory. Lattice provides tools to verify that memory is intact and to heal it when it is not.
 
 ### Health check
 
@@ -481,20 +496,20 @@ Use `--fix` to automatically repair truncated event log lines.
 
 ### Rebuild snapshots
 
-If a snapshot gets corrupted or out of sync:
+If a snapshot has drifted from its events -- through corruption, a crash, or manual editing -- the events can regenerate it. The derived view is always recoverable from the authoritative record.
 
 ```bash
 lattice rebuild task_01HQ...    # rebuild one task
 lattice rebuild --all           # rebuild everything
 ```
 
-This replays events from the authoritative event log and regenerates the snapshot files. The `--all` flag also rebuilds the lifecycle event log.
+This replays events from the event log and regenerates the snapshot files. The `--all` flag also rebuilds the lifecycle event log.
 
 ---
 
 ## Custom Events
 
-For domain-specific events that don't fit the built-in types, use `lattice event` with an `x_` prefix:
+For domain-specific events that do not fit the built-in types, Lattice offers an extension point. The `x_` prefix marks the boundary between the system's vocabulary and yours.
 
 ```bash
 lattice event task_01HQ... x_deployment_started \
@@ -508,7 +523,7 @@ Custom event type names **must** start with `x_`. Built-in types like `status_ch
 
 ## Notes
 
-Every task can have a markdown notes file at `.lattice/notes/<task_id>.md`. These are **not** event-sourced -- they're just regular files you edit directly with any text editor. Use them for freeform context, design notes, or running logs.
+Every task can have a markdown notes file at `.lattice/notes/<task_id>.md`. These are **not** event-sourced -- they are freeform files, edited directly, existing outside the authority of the event log. This is intentional. Not all knowledge fits neatly into structured events. Some things are best expressed as prose: design reasoning, open questions, running logs of investigation.
 
 ```bash
 # Create or edit notes for a task
@@ -521,7 +536,7 @@ Notes are moved to the archive alongside their task when you run `lattice archiv
 
 ## Agent-Friendly Features
 
-Lattice is built for environments where AI agents write most of the task updates. Several features make this smoother:
+Lattice was designed for environments where AI agents write most of the task updates. This is not a mode or a plugin. It is the foundational design assumption. Several features exist specifically to make agent interaction seamless.
 
 ### JSON output
 
@@ -560,7 +575,7 @@ TASK_ID=$(lattice create "My task" --actor agent:claude --quiet)
 
 ### Idempotent retries
 
-Agents can supply their own IDs to make operations safe to retry:
+Agents operate in an uncertain world -- network interruptions, context window limits, session restarts. Lattice allows agents to supply their own IDs, making operations safe to retry without fear of duplication.
 
 ```bash
 lattice create "My task" --id task_01HQ... --actor agent:claude
@@ -572,7 +587,7 @@ The same pattern works for events (`--id ev_...`) and artifacts (`--id art_...`)
 
 ### Telemetry passthrough
 
-Agents can attach metadata to events for observability:
+Agents can attach metadata to events for observability -- breadcrumbs for the humans who oversee the system:
 
 ```bash
 lattice status task_01HQ... in_implementation \
@@ -593,7 +608,7 @@ The workflow is defined in `.lattice/config.json`. You can customize:
 - **Task types** -- add custom types beyond the defaults
 - **Defaults** -- change the default status and priority for new tasks
 
-The default config ships with sensible agent-planning defaults. Edit it directly -- it's just JSON. There is no `lattice config` command in v0.
+The default config ships with sensible agent-planning defaults. Edit it directly -- it is just JSON. There is no `lattice config` command in v0. The configuration file is the configuration interface.
 
 ### Dashboard configuration
 
@@ -608,7 +623,7 @@ These are managed through the dashboard settings panel, but you can also edit `c
 
 ## File Layout
 
-Here's what `.lattice/` looks like on disk:
+Here is the anatomy of a `.lattice/` directory -- the complete on-disk structure that holds the shared memory of a project:
 
 ```
 .lattice/
@@ -623,7 +638,7 @@ Here's what `.lattice/` looks like on disk:
   locks/                           # Internal lock files
 ```
 
-Everything is plain text. You can `git add .lattice/` to version-control your task management. Use `.gitignore` to exclude sensitive artifact payloads and lock files.
+Everything is plain text. You can `git add .lattice/` to version-control your task management. Use `.gitignore` to exclude sensitive artifact payloads and lock files. The filesystem is the interface, the database, and the API -- all at once.
 
 ---
 
@@ -651,4 +666,4 @@ Everything is plain text. You can `git add .lattice/` to version-control your ta
 
 All write commands need an actor (via `--actor` flag, `LATTICE_ACTOR` env var, or config `default_actor`). Add `--json` for structured output or `--quiet` for minimal output.
 
-All validation errors list the valid options, so agents don't need to look up allowed values.
+All validation errors list the valid options, so agents do not need to look up allowed values. The system teaches its own vocabulary.
