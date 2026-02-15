@@ -239,9 +239,9 @@ Update status at every transition. Do not batch updates or defer them to the end
 |---|---|
 | You start planning a task | `lattice status LAT-N in_planning --actor agent:<your-id>` |
 | Planning is complete, ready for implementation | `lattice status LAT-N planned --actor agent:<your-id>` |
-| You begin implementation | `lattice status LAT-N in_progress --actor agent:<your-id>` |
-| Work is blocked | `lattice status LAT-N blocked --actor agent:<your-id>` + comment explaining why |
-| Implementation is complete, ready for review | `lattice status LAT-N review --actor agent:<your-id>` |
+| You begin implementation | `lattice status LAT-N in_implementation --actor agent:<your-id>` |
+| Implementation complete | `lattice status LAT-N implemented --actor agent:<your-id>` |
+| Ready for review | `lattice status LAT-N in_review --actor agent:<your-id>` |
 | Task is verified done | `lattice status LAT-N done --actor agent:<your-id>` |
 
 ### Notes Files

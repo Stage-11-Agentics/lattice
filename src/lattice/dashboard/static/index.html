@@ -10,7 +10,7 @@
   --bg-base:#f8f9fa;--surface:#ffffff;--surface-hover:#e9ecef;--surface-raised:#e9ecef;--surface-card:#f8f9fa;
   --border:#dee2e6;--border-subtle:#e9ecef;--border-row:#f0f0f0;
   --text-primary:#212529;--text-secondary:#495057;--text-muted:#6c757d;--text-on-accent:#fff;
-  --accent-primary:#0d6efd;--accent-hover:#0b5ed7;--accent-glow:rgba(13,110,253,.15);
+  --accent-primary:#0d6efd;--accent-hover:#0b5ed7;--accent-glow:rgba(13,110,253,.15);--danger-glow:rgba(220,53,69,.25);
   --color-success:#198754;--color-danger:#dc3545;--color-danger-hover:#bb2d3b;
   --color-warning:#ffc107;--color-warning-bg:#fff3cd;
   --pri-critical-bg:#dc3545;--pri-high-bg:#fd7e14;--pri-medium-bg:#0d6efd;--pri-low-bg:#6c757d;
@@ -20,6 +20,11 @@
   --radius-sm:4px;--radius-md:6px;--radius-lg:8px;
   --font-body:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
   --font-mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+  --text-on-lane:#fff;--text-on-lane-muted:rgba(255,255,255,.8);--lane-btn-border:rgba(255,255,255,.6);
+  --text-on-warning:#212529;
+  --chip-human-bg:#e8f5e9;--chip-human-text:#2e7d32;--chip-human-border:#c8e6c9;--chip-human-hover:#c8e6c9;
+  --chip-agent-bg:#e3f2fd;--chip-agent-text:#1565c0;--chip-agent-border:#bbdefb;--chip-agent-hover:#bbdefb;
+  --chip-team-bg:#fff3e0;--chip-team-text:#e65100;--chip-team-border:#ffe0b2;--chip-team-hover:#ffe0b2;
   --glow-primary:transparent;--glow-primary-strong:transparent
 }
 [data-theme="station-console"]{
@@ -27,7 +32,7 @@
   --surface-raised:rgba(30,41,59,.6);--surface-card:rgba(15,23,42,.6);
   --border:rgba(0,212,255,.15);--border-subtle:rgba(0,212,255,.08);--border-row:rgba(0,212,255,.06);
   --text-primary:#e0f0ff;--text-secondary:rgba(224,240,255,.7);--text-muted:rgba(224,240,255,.4);--text-on-accent:#fff;
-  --accent-primary:#00d4ff;--accent-hover:#00b8e6;--accent-glow:rgba(0,212,255,.25);
+  --accent-primary:#00d4ff;--accent-hover:#00b8e6;--accent-glow:rgba(0,212,255,.25);--danger-glow:rgba(239,68,68,.25);
   --color-success:#22c55e;--color-danger:#ef4444;--color-danger-hover:#dc2626;
   --color-warning:#f59e0b;--color-warning-bg:rgba(245,158,11,.15);
   --pri-critical-bg:rgba(239,68,68,.7);--pri-high-bg:rgba(249,115,22,.6);
@@ -36,6 +41,11 @@
   --shadow-modal:0 0 40px rgba(0,212,255,.1),0 8px 32px rgba(0,0,0,.4);
   --shadow-settings:-2px 0 15px rgba(0,212,255,.08);
   --overlay-bg:rgba(0,0,0,.7);
+  --text-on-lane:#fff;--text-on-lane-muted:rgba(255,255,255,.8);--lane-btn-border:rgba(255,255,255,.6);
+  --text-on-warning:#e0f0ff;
+  --chip-human-bg:rgba(34,197,94,.15);--chip-human-text:#4ade80;--chip-human-border:rgba(34,197,94,.3);--chip-human-hover:rgba(34,197,94,.25);
+  --chip-agent-bg:rgba(0,212,255,.15);--chip-agent-text:#67e8f9;--chip-agent-border:rgba(0,212,255,.3);--chip-agent-hover:rgba(0,212,255,.25);
+  --chip-team-bg:rgba(249,115,22,.15);--chip-team-text:#fb923c;--chip-team-border:rgba(249,115,22,.3);--chip-team-hover:rgba(249,115,22,.25);
   --glow-primary:rgba(0,212,255,.08);--glow-primary-strong:rgba(0,212,255,.15)
 }
 
@@ -82,14 +92,14 @@ a:hover{text-decoration:underline}
 .board{display:grid;gap:12px;align-items:start}
 .board-col{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-md);min-height:auto;transition:box-shadow .2s,border-color .2s}
 .board-col-header{padding:8px 12px;font-weight:600;font-size:.875rem;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;border-radius:var(--radius-md) var(--radius-md) 0 0;position:relative}
-.board-col-header .count{font-weight:400;color:rgba(255,255,255,.8);font-size:.75rem}
-.board-col-header .lane-color-btn{position:absolute;right:4px;top:4px;width:20px;height:20px;border:2px solid rgba(255,255,255,.6);border-radius:50%;cursor:pointer;padding:0;background:transparent;opacity:0;transition:opacity .2s}
+.board-col-header .count{font-weight:400;color:var(--text-on-lane-muted);font-size:.75rem}
+.board-col-header .lane-color-btn{position:absolute;right:4px;top:4px;width:20px;height:20px;border:2px solid var(--lane-btn-border);border-radius:50%;cursor:pointer;padding:0;background:transparent;opacity:0;transition:opacity .2s}
 .board-col-header:hover .lane-color-btn{opacity:1}
 .board-col-body{padding:8px}
 
 /* Drag and drop states */
 .board-col.drag-over{border-color:var(--accent-primary);box-shadow:0 0 0 2px var(--accent-glow)}
-.board-col.drag-invalid{border-color:var(--color-danger);box-shadow:0 0 0 2px rgba(220,53,69,.25)}
+.board-col.drag-invalid{border-color:var(--color-danger);box-shadow:0 0 0 2px var(--danger-glow)}
 .card.dragging{opacity:.4;transform:scale(.95)}
 .card{background:var(--surface-card);border:1px solid var(--border-subtle);border-radius:var(--radius-sm);padding:8px 10px;margin-bottom:6px;cursor:grab;font-size:.85rem;transition:box-shadow .15s,opacity .15s,transform .15s}
 .card:hover{box-shadow:var(--shadow-card-hover)}
@@ -107,14 +117,14 @@ a:hover{text-decoration:underline}
 .type-badge{background:var(--surface-raised);color:var(--text-secondary)}
 
 /* Status colors for column headers (CSS fallback — JS inline styles override these) */
-.status-done .board-col-header{background:#198754;color:#fff}
-.status-cancelled .board-col-header{background:#6c757d;color:#fff}
-.status-in_planning .board-col-header{background:#17a2b8;color:#fff}
-.status-planned .board-col-header{background:#20c997;color:#fff}
-.status-in_implementation .board-col-header{background:#0d6efd;color:#fff}
-.status-implemented .board-col-header{background:#0dcaf0;color:#fff}
-.status-in_review .board-col-header{background:#6f42c1;color:#fff}
-.status-backlog .board-col-header{background:#adb5bd;color:#fff}
+.status-done .board-col-header{background:#198754;color:var(--text-on-lane)}
+.status-cancelled .board-col-header{background:#6c757d;color:var(--text-on-lane)}
+.status-in_planning .board-col-header{background:#17a2b8;color:var(--text-on-lane)}
+.status-planned .board-col-header{background:#20c997;color:var(--text-on-lane)}
+.status-in_implementation .board-col-header{background:#0d6efd;color:var(--text-on-lane)}
+.status-implemented .board-col-header{background:#0dcaf0;color:var(--text-on-lane)}
+.status-in_review .board-col-header{background:#6f42c1;color:var(--text-on-lane)}
+.status-backlog .board-col-header{background:#adb5bd;color:var(--text-on-lane)}
 [data-theme="station-console"] .status-done .board-col-header{background:#22c55e}
 [data-theme="station-console"] .status-cancelled .board-col-header{background:#475569}
 [data-theme="station-console"] .status-in_planning .board-col-header{background:#06b6d4}
@@ -151,7 +161,7 @@ tr:hover td{background:var(--surface-hover)}
 .event-type{font-weight:600}
 .event-actor{color:var(--text-muted)}
 .back-link{display:inline-block;margin-bottom:12px;font-size:.9rem}
-.archived-badge{background:var(--color-warning);color:#212529;padding:2px 8px;border-radius:var(--radius-sm);font-size:.8rem;font-weight:600}
+.archived-badge{background:var(--color-warning);color:var(--text-on-warning);padding:2px 8px;border-radius:var(--radius-sm);font-size:.8rem;font-weight:600}
 .rel-list,.art-list{list-style:none;padding:0}
 .rel-list li,.art-list li{padding:4px 0;font-size:.85rem}
 
@@ -263,18 +273,12 @@ select.form-control{cursor:pointer}
 .member-chips{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px}
 .member-chip{display:inline-flex;align-items:center;gap:3px;padding:3px 10px;border-radius:12px;font-size:.78rem;cursor:pointer;border:1px solid transparent;transition:background .15s,border-color .15s;font-weight:500;user-select:none}
 .member-chip:hover{filter:brightness(.9)}
-.member-chip-human{background:#e8f5e9;color:#2e7d32;border-color:#c8e6c9}
-.member-chip-human:hover{background:#c8e6c9}
-.member-chip-agent{background:#e3f2fd;color:#1565c0;border-color:#bbdefb}
-.member-chip-agent:hover{background:#bbdefb}
-.member-chip-team{background:#fff3e0;color:#e65100;border-color:#ffe0b2}
-.member-chip-team:hover{background:#ffe0b2}
-[data-theme="station-console"] .member-chip-human{background:rgba(34,197,94,.15);color:#4ade80;border-color:rgba(34,197,94,.3)}
-[data-theme="station-console"] .member-chip-human:hover{background:rgba(34,197,94,.25)}
-[data-theme="station-console"] .member-chip-agent{background:rgba(0,212,255,.15);color:#67e8f9;border-color:rgba(0,212,255,.3)}
-[data-theme="station-console"] .member-chip-agent:hover{background:rgba(0,212,255,.25)}
-[data-theme="station-console"] .member-chip-team{background:rgba(249,115,22,.15);color:#fb923c;border-color:rgba(249,115,22,.3)}
-[data-theme="station-console"] .member-chip-team:hover{background:rgba(249,115,22,.25)}
+.member-chip-human{background:var(--chip-human-bg);color:var(--chip-human-text);border-color:var(--chip-human-border)}
+.member-chip-human:hover{background:var(--chip-human-hover)}
+.member-chip-agent{background:var(--chip-agent-bg);color:var(--chip-agent-text);border-color:var(--chip-agent-border)}
+.member-chip-agent:hover{background:var(--chip-agent-hover)}
+.member-chip-team{background:var(--chip-team-bg);color:var(--chip-team-text);border-color:var(--chip-team-border)}
+.member-chip-team:hover{background:var(--chip-team-hover)}
 </style>
 </head>
 <body>
@@ -615,7 +619,7 @@ function renderBoard() {
     var laneColor = getLaneColor(status);
     html += '<div class="board-col ' + cls + '" data-status="' + esc(status) + '"';
     html += ' ondragover="window._boardDragOver(event)" ondragleave="window._boardDragLeave(event)" ondrop="window._boardDrop(event)">';
-    html += '<div class="board-col-header" style="background:' + esc(laneColor) + ';color:#fff">';
+    html += '<div class="board-col-header" style="background:' + esc(laneColor) + ';color:var(--text-on-lane)">';
     html += '<span>' + esc(status) + '</span>';
     html += '<span class="count">' + items.length + '</span>';
     html += '</div>';
