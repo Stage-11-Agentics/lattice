@@ -7,6 +7,7 @@ from pathlib import Path
 import click
 
 from lattice.core.config import default_config, serialize_config
+from lattice.core.ids import validate_actor
 from lattice.storage.fs import LATTICE_DIR, atomic_write, ensure_lattice_dirs
 
 
@@ -23,7 +24,12 @@ def cli() -> None:
     default=".",
     help="Directory to initialize Lattice in (defaults to current directory).",
 )
-def init(target_path: str) -> None:
+@click.option(
+    "--actor",
+    default=None,
+    help="Default actor identity (e.g., human:atin). Saved to config.",
+)
+def init(target_path: str, actor: str | None) -> None:
     """Initialize a new Lattice project."""
     root = Path(target_path)
     lattice_dir = root / LATTICE_DIR
@@ -40,23 +46,50 @@ def init(target_path: str) -> None:
             "Remove it and try again."
         )
 
+    # Prompt for default actor if not provided via flag
+    if actor is None:
+        actor = click.prompt(
+            "Default actor identity (e.g., human:atin)",
+            default="",
+            show_default=False,
+        ).strip()
+
+    # Validate actor format if one was provided
+    if actor and not validate_actor(actor):
+        raise click.ClickException(
+            f"Invalid actor format: '{actor}'. "
+            "Expected prefix:identifier (e.g., human:atin, agent:claude)."
+        )
+
     try:
         # Create directory structure
         ensure_lattice_dirs(root)
 
         # Write default config atomically
-        config = default_config()
+        config: dict = dict(default_config())
+        if actor:
+            config["default_actor"] = actor
         config_content = serialize_config(config)
         atomic_write(lattice_dir / "config.json", config_content)
     except PermissionError:
-        raise click.ClickException(
-            f"Permission denied: cannot create {LATTICE_DIR}/ in {root}"
-        )
+        raise click.ClickException(f"Permission denied: cannot create {LATTICE_DIR}/ in {root}")
     except OSError as e:
         raise click.ClickException(f"Failed to initialize Lattice: {e}")
 
     click.echo(f"Initialized empty Lattice in {LATTICE_DIR}/")
+    if actor:
+        click.echo(f"Default actor: {actor}")
 
+
+# ---------------------------------------------------------------------------
+# Register command modules (must be after cli group is defined)
+# ---------------------------------------------------------------------------
+from lattice.cli import task_cmds as _task_cmds  # noqa: E402, F401
+from lattice.cli import link_cmds as _link_cmds  # noqa: E402, F401
+from lattice.cli import artifact_cmds as _artifact_cmds  # noqa: E402, F401
+from lattice.cli import query_cmds as _query_cmds  # noqa: E402, F401
+from lattice.cli import integrity_cmds as _integrity_cmds  # noqa: E402, F401
+from lattice.cli import archive_cmds as _archive_cmds  # noqa: E402, F401
 
 if __name__ == "__main__":
     cli()

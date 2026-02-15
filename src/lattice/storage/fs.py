@@ -115,3 +115,23 @@ def find_root(start: Path | None = None) -> Path | None:
 
 class LatticeRootError(Exception):
     """Raised when LATTICE_ROOT env var is set but invalid."""
+
+
+def jsonl_append(path: Path, line: str) -> None:
+    """Append a single line to a JSONL file.
+
+    The caller must already hold the appropriate lock; this function does
+    no locking of its own.
+
+    The line **must** already end with ``\\n``.  The function opens the file
+    in append mode, writes the line, then flushes and fsyncs to ensure
+    durability.
+
+    Args:
+        path: Path to the JSONL file (created if it does not exist).
+        line: A single JSONL record ending with a newline character.
+    """
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(line)
+        fh.flush()
+        os.fsync(fh.fileno())

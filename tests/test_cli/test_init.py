@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from lattice.cli.main import cli
@@ -175,7 +176,9 @@ class TestInitErrorHandling:
         result = runner.invoke(cli, ["init", "--path", str(tmp_path)])
         assert "Traceback" not in result.output
 
-    def test_permission_error_shows_message(self, tmp_path: Path, monkeypatch: Path) -> None:
+    def test_permission_error_shows_message(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """PermissionError is caught and reported cleanly."""
         from lattice.cli import main as cli_module
 
@@ -190,7 +193,7 @@ class TestInitErrorHandling:
         assert "Permission denied" in result.output
         assert "Traceback" not in result.output
 
-    def test_oserror_shows_message(self, tmp_path: Path, monkeypatch: Path) -> None:
+    def test_oserror_shows_message(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Generic OSError is caught and reported cleanly."""
         from lattice.cli import main as cli_module
 

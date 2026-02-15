@@ -1,4 +1,4 @@
-"""Tests for atomic write operations."""
+"""Tests for atomic write operations and JSONL append."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from lattice.storage.fs import atomic_write
+from lattice.storage.fs import atomic_write, jsonl_append
 
 
 class TestAtomicWrite:
@@ -76,3 +76,51 @@ class TestAtomicWrite:
 
         # File should be readable
         assert os.access(target, os.R_OK)
+
+
+class TestJsonlAppend:
+    """jsonl_append() appends a single newline-terminated line to a JSONL file."""
+
+    def test_creates_file_if_not_exists(self, tmp_path: Path) -> None:
+        target = tmp_path / "events.jsonl"
+        assert not target.exists()
+
+        jsonl_append(target, '{"event":"created"}\n')
+
+        assert target.exists()
+        assert target.read_text() == '{"event":"created"}\n'
+
+    def test_appends_not_overwrites(self, tmp_path: Path) -> None:
+        target = tmp_path / "events.jsonl"
+        target.write_text('{"event":"first"}\n')
+
+        jsonl_append(target, '{"event":"second"}\n')
+
+        assert target.read_text() == '{"event":"first"}\n{"event":"second"}\n'
+
+    def test_multiple_appends_accumulate(self, tmp_path: Path) -> None:
+        target = tmp_path / "events.jsonl"
+        lines = [
+            '{"id":"ev_1","type":"task_created"}\n',
+            '{"id":"ev_2","type":"status_changed"}\n',
+            '{"id":"ev_3","type":"comment_added"}\n',
+        ]
+        for line in lines:
+            jsonl_append(target, line)
+
+        content = target.read_text()
+        assert content == "".join(lines)
+        # Each line should be independently parseable
+        import json
+
+        for raw in content.strip().split("\n"):
+            json.loads(raw)  # Should not raise
+
+    def test_line_ends_with_newline(self, tmp_path: Path) -> None:
+        target = tmp_path / "events.jsonl"
+        line = '{"ok":true}\n'
+        jsonl_append(target, line)
+
+        written = target.read_text()
+        assert written.endswith("\n")
+        assert written == line

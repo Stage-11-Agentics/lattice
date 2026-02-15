@@ -17,12 +17,13 @@ class Workflow(TypedDict):
     wip_limits: WipLimits
 
 
-class LatticeConfig(TypedDict):
+class LatticeConfig(TypedDict, total=False):
     schema_version: int
     default_status: str
     default_priority: str
     task_types: list[str]
     workflow: Workflow
+    default_actor: str
 
 
 def default_config() -> LatticeConfig:
@@ -70,6 +71,45 @@ def default_config() -> LatticeConfig:
     }
 
 
+VALID_PRIORITIES: tuple[str, ...] = ("critical", "high", "medium", "low")
+VALID_URGENCIES: tuple[str, ...] = ("immediate", "high", "normal", "low")
+
+
 def serialize_config(config: LatticeConfig | dict[str, object]) -> str:
     """Serialize a config dict to the canonical JSON format."""
     return json.dumps(config, sort_keys=True, indent=2) + "\n"
+
+
+def load_config(raw: str) -> dict:
+    """Parse a JSON config string and return the config dict.
+
+    This is a pure function (no I/O).  The CLI layer reads the file
+    and passes the raw string here.
+    """
+    return json.loads(raw)
+
+
+def validate_status(config: dict, status: str) -> bool:
+    """Return ``True`` if *status* is a defined status in the workflow."""
+    return status in config.get("workflow", {}).get("statuses", [])
+
+
+def validate_transition(
+    config: dict,
+    from_status: str,
+    to_status: str,
+) -> bool:
+    """Return ``True`` if the transition from *from_status* to *to_status* is allowed."""
+    transitions = config.get("workflow", {}).get("transitions", {})
+    allowed = transitions.get(from_status, [])
+    return to_status in allowed
+
+
+def validate_task_type(config: dict, task_type: str) -> bool:
+    """Return ``True`` if *task_type* is listed in the config's task_types."""
+    return task_type in config.get("task_types", [])
+
+
+def get_wip_limit(config: dict, status: str) -> int | None:
+    """Return the WIP limit for *status*, or ``None`` if not set."""
+    return config.get("workflow", {}).get("wip_limits", {}).get(status)
