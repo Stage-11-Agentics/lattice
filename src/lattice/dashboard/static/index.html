@@ -74,30 +74,6 @@
   --chip-agent-bg:#ede7f6;--chip-agent-text:#5e35b1;--chip-agent-border:#d1c4e9;--chip-agent-hover:#d1c4e9;
   --chip-team-bg:#fff3e0;--chip-team-text:#e65100;--chip-team-border:#ffe0b2;--chip-team-hover:#ffe0b2;
 }
-[data-theme="notion"]{
-  --bg-base:#FFFCF9;--surface:#FFFFFF;--surface-hover:rgba(55,53,47,.04);
-  --surface-raised:#F7F6F3;--surface-card:#FFFFFF;
-  --border:#E9E5DF;--border-subtle:#F1EEEA;--border-row:#F5F3F0;
-  --text-primary:#37352F;--text-secondary:#6B6B60;--text-muted:#9B9A97;--text-on-accent:#FFFFFF;
-  --accent-primary:#2383E2;--accent-hover:#1B6EC2;--accent-glow:rgba(35,131,226,.12);
-  --color-success:#0F7B6C;--color-danger:#E03E3E;--color-danger-hover:#C13030;
-  --color-warning:#D9730D;--color-warning-bg:rgba(217,115,13,.08);
-  --pri-critical-bg:#E03E3E;--pri-high-bg:#D9730D;--pri-medium-bg:#2383E2;--pri-low-bg:#9B9A97;
-  --shadow-card-hover:0 1px 2px rgba(55,53,47,.06);
-  --shadow-toast:0 4px 16px rgba(55,53,47,.12);
-  --shadow-modal:0 12px 40px rgba(55,53,47,.14),0 0 0 1px rgba(55,53,47,.04);
-  --shadow-settings:-1px 0 8px rgba(55,53,47,.05);
-  --overlay-bg:rgba(55,53,47,.35);
-  --radius-sm:3px;--radius-md:4px;--radius-lg:6px;
-  --font-body:"Charter","Georgia","Iowan Old Style","Palatino Linotype",Palatino,"Book Antiqua",serif;
-  --font-mono:"SFMono-Regular",Menlo,Consolas,"Liberation Mono",monospace;
-  --glow-primary:transparent;--glow-primary-strong:transparent;
-  --text-on-lane:#fff;--text-on-lane-muted:rgba(255,255,255,.8);--lane-btn-border:rgba(255,255,255,.6);
-  --text-on-warning:#37352F;
-  --chip-human-bg:#DBEDDB;--chip-human-text:#2B593F;--chip-human-border:#C3DFC3;--chip-human-hover:#C3DFC3;
-  --chip-agent-bg:#D3E5EF;--chip-agent-text:#24548D;--chip-agent-border:#B7D4E8;--chip-agent-hover:#B7D4E8;
-  --chip-team-bg:#FADEC9;--chip-team-text:#93400D;--chip-team-border:#F5CEB0;--chip-team-hover:#F5CEB0;
-}
 [data-theme="github"]{
   --bg-base:#f6f8fa;--surface:#ffffff;--surface-hover:#eaeef2;--surface-raised:#e8ecf0;--surface-card:#ffffff;
   --border:#d0d7de;--border-subtle:#d8dee4;--border-row:#d8dee4;
@@ -183,7 +159,7 @@
   --chip-team-bg:#f5efe4;--chip-team-text:#8c6c2f;--chip-team-border:#e5d9c3;--chip-team-hover:#e5d9c3;
 }
 [data-theme="porcelain"]{
-  --bg-base:#E0E5EC;--surface:#E0E5EC;--surface-hover:#d3d8e0;--surface-raised:#E0E5EC;--surface-card:#E0E5EC;
+  --bg-base:#E0E5EC;--surface:#E0E5EC;--surface-hover:#d3d8e0;--surface-raised:#E0E5EC;--surface-card:#f5f7fa;
   --border:transparent;--border-subtle:transparent;--border-row:rgba(163,177,198,.15);
   --text-primary:#2d3436;--text-secondary:#4a5568;--text-muted:#8395a7;--text-on-accent:#fff;
   --accent-primary:#6b8aab;--accent-hover:#5a7a9e;--accent-glow:rgba(107,138,171,.2);
@@ -824,262 +800,6 @@ select.form-control{cursor:pointer}
 [data-theme="linear"] ::-webkit-scrollbar-thumb{background:#D3D5E0;border-radius:3px}
 [data-theme="linear"] ::-webkit-scrollbar-thumb:hover{background:#B0B3C4}
 
-/* === Notion Theme Overrides === */
-/* Notion: warm, calm, document-editor feel */
-[data-theme="notion"] body{
-  background:#FFFCF9;
-  -webkit-font-smoothing:antialiased
-}
-[data-theme="notion"] .nav{
-  background:rgba(255,252,249,.92);
-  backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
-  border-bottom:1px solid #E9E5DF;
-  padding:8px 16px
-}
-[data-theme="notion"] .nav-brand{
-  font-weight:700;
-  font-size:1rem;
-  color:#37352F;
-  letter-spacing:-.01em;
-  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif
-}
-[data-theme="notion"] .nav-tab{
-  font-size:.875rem;
-  font-weight:500;
-  padding:4px 10px;
-  border-radius:3px;
-  color:#6B6B60;
-  transition:background .1s
-}
-[data-theme="notion"] .nav-tab:hover{
-  background:rgba(55,53,47,.06)
-}
-[data-theme="notion"] .nav-tab.active{
-  background:rgba(55,53,47,.08);
-  color:#37352F;
-  font-weight:600;
-  border-color:transparent
-}
-[data-theme="notion"] .board-col{
-  background:#FFFFFF;
-  border:none;
-  border-radius:4px;
-  box-shadow:none
-}
-[data-theme="notion"] .board-col:hover{
-  box-shadow:none
-}
-[data-theme="notion"] .board-col-header{
-  font-size:.8rem;
-  font-weight:600;
-  padding:6px 12px;
-  border-radius:4px 4px 0 0;
-  border-bottom:none;
-  text-transform:uppercase;
-  letter-spacing:.05em
-}
-[data-theme="notion"] .board-col-body{
-  padding:4px 6px
-}
-[data-theme="notion"] .card{
-  background:#FFFFFF;
-  border:none;
-  border-radius:3px;
-  padding:8px 10px;
-  margin-bottom:3px;
-  box-shadow:none;
-  transition:background .1s
-}
-[data-theme="notion"] .card:hover{
-  background:rgba(55,53,47,.04);
-  box-shadow:none
-}
-[data-theme="notion"] .card-title{
-  font-weight:500;
-  font-size:.875rem;
-  color:#37352F
-}
-[data-theme="notion"] .badge{
-  font-size:.7rem;
-  font-weight:600;
-  padding:2px 6px;
-  border-radius:3px
-}
-[data-theme="notion"] .badge-stat{
-  background:#F7F6F3;
-  color:#6B6B60;
-  border:none
-}
-[data-theme="notion"] .detail{
-  background:#FFFFFF;
-  border:none;
-  border-radius:4px;
-  box-shadow:none;
-  padding:24px 28px
-}
-[data-theme="notion"] .detail-title{
-  font-size:1.5rem;
-  font-weight:700;
-  letter-spacing:-.02em;
-  color:#37352F;
-  line-height:1.3
-}
-[data-theme="notion"] .detail-field dt{
-  font-size:.8rem;
-  font-weight:600;
-  color:#9B9A97;
-  text-transform:uppercase;
-  letter-spacing:.04em;
-  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif
-}
-[data-theme="notion"] .detail-section{
-  border-top:1px solid #F1EEEA
-}
-[data-theme="notion"] .detail-section h3{
-  font-size:.85rem;
-  font-weight:600;
-  color:#37352F;
-  text-transform:uppercase;
-  letter-spacing:.04em;
-  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif
-}
-[data-theme="notion"] .modal{
-  border-radius:4px;
-  border:none;
-  box-shadow:0 12px 40px rgba(55,53,47,.14),0 0 0 1px rgba(55,53,47,.06)
-}
-[data-theme="notion"] .modal-overlay{
-  backdrop-filter:blur(2px);-webkit-backdrop-filter:blur(2px)
-}
-[data-theme="notion"] .modal-header{
-  border-bottom:1px solid #F1EEEA
-}
-[data-theme="notion"] .modal-header h2{
-  font-size:1rem;
-  font-weight:600
-}
-[data-theme="notion"] .modal-footer{
-  border-top:1px solid #F1EEEA
-}
-[data-theme="notion"] .settings-panel{
-  background:rgba(255,252,249,.97);
-  backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
-  border-left:1px solid #E9E5DF
-}
-[data-theme="notion"] .form-control{
-  border:1px solid #E9E5DF;
-  border-radius:3px;
-  font-size:.875rem;
-  padding:6px 10px;
-  transition:border-color .1s,box-shadow .1s
-}
-[data-theme="notion"] .form-control:focus{
-  border-color:#2383E2;
-  box-shadow:0 0 0 2px rgba(35,131,226,.12)
-}
-[data-theme="notion"] .btn{
-  font-size:.8125rem;
-  font-weight:500;
-  border-radius:3px;
-  padding:4px 12px;
-  border:1px solid #E9E5DF;
-  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif
-}
-[data-theme="notion"] .btn-primary{
-  background:#2383E2;
-  border-color:#2383E2;
-  font-weight:600
-}
-[data-theme="notion"] .btn-primary:hover{
-  background:#1B6EC2;
-  border-color:#1B6EC2
-}
-[data-theme="notion"] .btn-new-task{
-  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif
-}
-[data-theme="notion"] table{
-  border:none;
-  border-radius:0;
-  box-shadow:none
-}
-[data-theme="notion"] th{
-  font-size:.75rem;
-  font-weight:600;
-  text-transform:uppercase;
-  letter-spacing:.04em;
-  color:#9B9A97;
-  background:#FFFCF9;
-  border-bottom:1px solid #E9E5DF;
-  padding:6px 10px;
-  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif
-}
-[data-theme="notion"] td{
-  font-size:.875rem;
-  border-bottom:1px solid #F5F3F0;
-  padding:6px 10px
-}
-[data-theme="notion"] tr:hover td{
-  background:rgba(55,53,47,.03)
-}
-[data-theme="notion"] .activity-list{
-  background:#FFFFFF;
-  border:none;
-  border-radius:4px
-}
-[data-theme="notion"] .activity-item{
-  border-bottom:1px solid #F5F3F0
-}
-[data-theme="notion"] .toast-success{
-  background:#0F7B6C;
-  border-radius:4px
-}
-[data-theme="notion"] .toast-error{
-  background:#E03E3E;
-  border-radius:4px
-}
-[data-theme="notion"] .comment-item{
-  background:#F7F6F3;
-  border:none;
-  border-radius:3px
-}
-[data-theme="notion"] .comment-item .comment-body{
-  font-size:.875rem;
-  line-height:1.6
-}
-[data-theme="notion"] .member-chip-human{background:#DBEDDB;color:#2B593F;border-color:#C3DFC3}
-[data-theme="notion"] .member-chip-human:hover{background:#C3DFC3}
-[data-theme="notion"] .member-chip-agent{background:#D3E5EF;color:#24548D;border-color:#B7D4E8}
-[data-theme="notion"] .member-chip-agent:hover{background:#B7D4E8}
-[data-theme="notion"] .member-chip-team{background:#FADEC9;color:#93400D;border-color:#F5CEB0}
-[data-theme="notion"] .member-chip-team:hover{background:#F5CEB0}
-[data-theme="notion"] .editable:hover{
-  border-bottom-color:#D3D1CB
-}
-[data-theme="notion"] .filters select,
-[data-theme="notion"] .filters input{
-  border:1px solid #E9E5DF;
-  border-radius:3px;
-  background:#FFFFFF;
-  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif
-}
-[data-theme="notion"] .board-col.drag-over{
-  background:rgba(35,131,226,.04);
-  border:2px dashed rgba(35,131,226,.3);
-  box-shadow:none
-}
-[data-theme="notion"] .board-col.drag-invalid{
-  border:2px dashed rgba(224,62,62,.3);
-  box-shadow:none
-}
-[data-theme="notion"] .spinner{
-  border-color:#E9E5DF;
-  border-top-color:#37352F
-}
-[data-theme="notion"] ::-webkit-scrollbar{width:6px;height:6px}
-[data-theme="notion"] ::-webkit-scrollbar-track{background:transparent}
-[data-theme="notion"] ::-webkit-scrollbar-thumb{background:#D3D1CB;border-radius:3px}
-[data-theme="notion"] ::-webkit-scrollbar-thumb:hover{background:#B0AEA6}
-
 /* === Github Theme Overrides === */
 [data-theme="github"] .nav{background:#ffffff;border-bottom:1px solid #d0d7de}
 [data-theme="github"] .nav-brand{font-weight:600;color:#1f2328}
@@ -1116,6 +836,13 @@ select.form-control{cursor:pointer}
 [data-theme="github"] tr:hover td{background:#f6f8fa}
 
 /* === Slate Theme Overrides === */
+[data-theme="slate"] body{
+  background-image:
+    linear-gradient(135deg,#0f172a 0%,#131c2e 25%,#0f172a 50%,#111a2d 75%,#0f172a 100%),
+    radial-gradient(ellipse at 20% 80%,rgba(96,165,250,.03) 0%,transparent 50%),
+    radial-gradient(ellipse at 80% 20%,rgba(96,165,250,.02) 0%,transparent 50%);
+  background-attachment:fixed
+}
 [data-theme="slate"] .nav{background:#1e293b;border-bottom:1px solid #334155}
 [data-theme="slate"] .nav-brand{color:#f1f5f9;font-weight:700}
 [data-theme="slate"] .nav-tab{color:#94a3b8}
@@ -1275,12 +1002,13 @@ select.form-control{cursor:pointer}
   box-shadow:inset 2px 2px 4px rgba(0,0,0,.08),inset -2px -2px 4px rgba(255,255,255,.25)
 }
 [data-theme="porcelain"] .card{
-  background:#E0E5EC;border:none;
-  box-shadow:4px 4px 8px #b8bec7,-4px -4px 8px #ffffff;
+  background:#f5f7fa;border:none;
+  box-shadow:4px 4px 10px #b8bec7,-4px -4px 10px #ffffff;
   border-radius:12px;transition:box-shadow .2s,transform .2s
 }
 [data-theme="porcelain"] .card:hover{
-  box-shadow:6px 6px 14px #b0b6bf,-6px -6px 14px #ffffff;transform:translateY(-2px)
+  background:#f8f9fc;
+  box-shadow:6px 6px 16px #b0b6bf,-6px -6px 16px #ffffff;transform:translateY(-2px)
 }
 [data-theme="porcelain"] .card.dragging{
   box-shadow:2px 2px 4px #b8bec7,-2px -2px 4px #ffffff;transform:scale(.97)
@@ -1413,9 +1141,14 @@ select.form-control{cursor:pointer}
 [data-theme="porcelain"] ::-webkit-scrollbar-thumb{background:#c8cdd5;border-radius:4px;box-shadow:inset 1px 1px 2px #b8bec7}
 [data-theme="porcelain"] ::-webkit-scrollbar-thumb:hover{background:#b0b6bf}
 
-/* === Frost Theme Overrides === */
+/* === Glassmorphic Theme Overrides === */
 [data-theme="frost"] body{
-  background:#F0F4F8
+  background:#F0F4F8;
+  background-image:
+    radial-gradient(ellipse at 20% 50%,rgba(74,144,217,.06) 0%,transparent 50%),
+    radial-gradient(ellipse at 80% 20%,rgba(100,150,200,.05) 0%,transparent 45%),
+    radial-gradient(ellipse at 50% 90%,rgba(74,144,217,.04) 0%,transparent 50%);
+  background-attachment:fixed
 }
 [data-theme="frost"] .nav{
   background:rgba(250,252,255,.85);
@@ -1586,7 +1319,19 @@ select.form-control{cursor:pointer}
 [data-theme="paper"] ::-webkit-scrollbar-thumb:hover{background:#999999}
 
 /* === Midnight Theme Overrides === */
-[data-theme="midnight"] body{background:#000000}
+[data-theme="midnight"] body{
+  background:#000000;
+  background-image:
+    radial-gradient(1px 1px at 10% 20%,rgba(226,232,240,.07) 50%,transparent 50%),
+    radial-gradient(1px 1px at 40% 65%,rgba(226,232,240,.05) 50%,transparent 50%),
+    radial-gradient(1px 1px at 70% 35%,rgba(226,232,240,.04) 50%,transparent 50%),
+    radial-gradient(1px 1px at 25% 80%,rgba(226,232,240,.06) 50%,transparent 50%),
+    radial-gradient(1px 1px at 85% 15%,rgba(226,232,240,.03) 50%,transparent 50%),
+    radial-gradient(1px 1px at 55% 90%,rgba(226,232,240,.05) 50%,transparent 50%),
+    radial-gradient(1px 1px at 90% 70%,rgba(226,232,240,.04) 50%,transparent 50%);
+  background-size:300px 300px,250px 250px,350px 350px,200px 200px,280px 280px,320px 320px,260px 260px;
+  background-attachment:fixed
+}
 [data-theme="midnight"] .nav{background:#0a0a0a;border-bottom:1px solid #222222}
 [data-theme="midnight"] .nav-brand{color:#E2E8F0;letter-spacing:.03em}
 [data-theme="midnight"] .nav-tab.active{background:#E2E8F0;color:#000000}
@@ -1637,7 +1382,11 @@ select.form-control{cursor:pointer}
 
 /* === Obsidian Theme Overrides === */
 [data-theme="obsidian"] body{
-  background-image:radial-gradient(ellipse at 50% 0%,rgba(226,179,64,.04) 0%,transparent 60%)
+  background-image:
+    radial-gradient(ellipse at 50% 0%,rgba(226,179,64,.05) 0%,transparent 55%),
+    radial-gradient(ellipse at 0% 100%,rgba(226,179,64,.025) 0%,transparent 40%),
+    radial-gradient(ellipse at 100% 80%,rgba(180,130,220,.02) 0%,transparent 40%);
+  background-attachment:fixed
 }
 [data-theme="obsidian"] .nav{background:rgba(26,26,46,.92);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border-bottom-color:#3A3A56}
 [data-theme="obsidian"] .nav-brand{color:#E2B340;letter-spacing:.04em;text-shadow:0 0 18px rgba(226,179,64,.25)}
@@ -1679,7 +1428,11 @@ select.form-control{cursor:pointer}
 
 /* === Carbon Theme Overrides === */
 [data-theme="carbon"] body{
-  background-image:repeating-linear-gradient(0deg,transparent,transparent 3px,rgba(255,255,255,.01) 3px,rgba(255,255,255,.01) 4px);
+  background-image:
+    repeating-linear-gradient(0deg,transparent,transparent 3px,rgba(255,255,255,.01) 3px,rgba(255,255,255,.01) 4px),
+    radial-gradient(ellipse at 50% 0%,rgba(234,88,12,.03) 0%,transparent 50%),
+    radial-gradient(ellipse at 0% 100%,rgba(234,88,12,.015) 0%,transparent 40%);
+  background-attachment:fixed;
   font-variant-numeric:tabular-nums;letter-spacing:.01em
 }
 [data-theme="carbon"] .nav{background:#1A1A1A;border-bottom:2px solid #EA580C;padding:6px 16px}
@@ -1879,7 +1632,15 @@ select.form-control{cursor:pointer}
 /* === Neon Noir Theme Overrides === */
 [data-theme="neon-noir"] body{
   background:#000;
-  background-image:none
+  background-image:
+    repeating-linear-gradient(0deg,transparent,transparent 3px,rgba(255,0,128,.008) 3px,rgba(255,0,128,.008) 4px),
+    radial-gradient(ellipse at 50% 100%,rgba(255,0,128,.04) 0%,transparent 60%),
+    radial-gradient(ellipse at 0% 50%,rgba(0,212,255,.02) 0%,transparent 40%)
+}
+[data-theme="neon-noir"] body::before{
+  content:"";position:fixed;top:0;left:0;right:0;bottom:0;
+  pointer-events:none;z-index:998;
+  background:repeating-linear-gradient(0deg,transparent,transparent 1px,rgba(0,0,0,.05) 1px,rgba(0,0,0,.05) 2px)
 }
 [data-theme="neon-noir"] .nav{
   background:rgba(0,0,0,.95);
@@ -2984,16 +2745,6 @@ var LANE_COLORS_BY_THEME = {
   done: "#3BA672",
   cancelled: "#8B8FA3"
 },
-  "notion": {
-  backlog: "#C4C4C0",
-  in_planning: "#529CCA",
-  planned: "#6C9B7D",
-  in_implementation: "#2383E2",
-  implemented: "#4DAACC",
-  in_review: "#9065B0",
-  done: "#0F7B6C",
-  cancelled: "#9B9A97"
-},
   "github": {
   backlog: "#8c959f",
   in_planning: "#0969da",
@@ -3114,13 +2865,12 @@ var THEMES = [
   {id: "classic", name: "Classic", desc: "Clean, light interface"},
   {id: "station-console", name: "Station Console", desc: "Dark sci-fi HUD"},
   {id: "linear", name: "Linear", desc: "Tight, modern product UI"},
-  {id: "notion", name: "Notion", desc: "Warm, calm document editor"},
   {id: "github", name: "GitHub", desc: "Clean developer-tool inspired light theme"},
   {id: "slate", name: "Slate", desc: "Professional dark blue-gray theme"},
   {id: "asana", name: "Asana", desc: "Warm coral accents, friendly rounded shapes"},
   {id: "basecamp", name: "Basecamp", desc: "Earthy tones, grounded and readable"},
   {id: "porcelain", name: "Porcelain", desc: "White-on-white neumorphic depth"},
-  {id: "frost", name: "Frost", desc: "Cool frosted glass with blue tint"},
+  {id: "frost", name: "Glassmorphic", desc: "Frosted glass panels with blue-tinted translucency"},
   {id: "paper", name: "Paper", desc: "Minimal ink-on-paper, typographic, zero decoration"},
   {id: "midnight", name: "Midnight", desc: "True black, monochrome, content-forward dark theme"},
   {id: "obsidian", name: "Obsidian", desc: "Polished dark stone with gold inlay"},

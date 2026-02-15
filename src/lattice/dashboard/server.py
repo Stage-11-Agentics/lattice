@@ -510,20 +510,10 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
             # Validate theme if present
             if "theme" in body:
                 theme = body["theme"]
-                valid_themes = {"classic", "station-console"}
                 if theme is not None and not isinstance(theme, str):
                     self._send_json(
                         400,
                         _err("VALIDATION_ERROR", "'theme' must be a string or null"),
-                    )
-                    return
-                if theme is not None and theme not in valid_themes:
-                    self._send_json(
-                        400,
-                        _err(
-                            "VALIDATION_ERROR",
-                            f"Invalid theme: '{theme}'. Valid: {', '.join(sorted(valid_themes))}",
-                        ),
                     )
                     return
 
