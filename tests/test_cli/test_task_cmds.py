@@ -477,7 +477,9 @@ class TestCrossCutting:
         created_events = [e for e in events if e["type"] == "task_created"]
         assert any(e["task_id"] == task_id for e in created_events)
 
-    def test_lifecycle_log_excludes_non_lifecycle_events(self, create_task, invoke, initialized_root):
+    def test_lifecycle_log_excludes_non_lifecycle_events(
+        self, create_task, invoke, initialized_root
+    ):
         """status_changed, field_updated, assignment_changed, comment_added
         should NOT appear in _lifecycle.jsonl."""
         task = create_task("Lifecycle exclusion")

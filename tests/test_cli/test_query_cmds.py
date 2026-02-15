@@ -393,6 +393,37 @@ class TestList:
         result = invoke("list")
         assert "unassigned" in result.output
 
+    def test_quiet_outputs_ids_only(self, invoke, create_task):
+        """--quiet prints one task ID per line."""
+        t1 = create_task("Task A")
+        t2 = create_task("Task B")
+
+        result = invoke("list", "--quiet")
+        assert result.exit_code == 0
+        lines = result.output.strip().splitlines()
+        assert len(lines) == 2
+        ids = {line.strip() for line in lines}
+        assert t1["id"] in ids
+        assert t2["id"] in ids
+
+    def test_quiet_with_filter(self, invoke, create_task):
+        """--quiet with --status filter outputs only matching IDs."""
+        create_task("Backlog task")
+        t2 = create_task("Ready task")
+        invoke("status", t2["id"], "ready", "--actor", "human:test")
+
+        result = invoke("list", "--quiet", "--status", "ready")
+        assert result.exit_code == 0
+        lines = result.output.strip().splitlines()
+        assert len(lines) == 1
+        assert lines[0].strip() == t2["id"]
+
+    def test_quiet_empty(self, invoke):
+        """--quiet with no tasks produces empty output."""
+        result = invoke("list", "--quiet")
+        assert result.exit_code == 0
+        assert result.output.strip() == ""
+
 
 # ---------------------------------------------------------------------------
 # TestShow

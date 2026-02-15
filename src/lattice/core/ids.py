@@ -9,7 +9,7 @@ from ulid import ULID
 # Crockford Base32 alphabet: 0-9 A-Z excluding I, L, O, U
 _CROCKFORD_B32_RE = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}$", re.IGNORECASE)
 
-_VALID_ACTOR_PREFIXES = frozenset({"agent", "human", "team"})
+_VALID_ACTOR_PREFIXES = frozenset({"agent", "human", "team", "dashboard"})
 
 
 def generate_task_id() -> str:

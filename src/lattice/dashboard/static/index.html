@@ -1,0 +1,847 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lattice Dashboard</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:#f8f9fa;color:#212529;line-height:1.5}
+a{color:#0d6efd;text-decoration:none}
+a:hover{text-decoration:underline}
+
+/* Nav */
+.nav{background:#fff;border-bottom:1px solid #dee2e6;padding:8px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;position:sticky;top:0;z-index:10}
+.nav-brand{font-weight:700;font-size:1.1rem;margin-right:8px;color:#212529}
+.nav-tab{padding:4px 12px;border-radius:4px;cursor:pointer;font-size:.875rem;color:#495057;border:1px solid transparent}
+.nav-tab:hover{background:#e9ecef}
+.nav-tab.active{background:#0d6efd;color:#fff;border-color:#0d6efd}
+.nav-right{margin-left:auto;display:flex;align-items:center;gap:8px}
+.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:.75rem;font-weight:600}
+.badge-stat{background:#e9ecef;color:#495057}
+.btn{padding:4px 12px;border:1px solid #dee2e6;border-radius:4px;background:#fff;cursor:pointer;font-size:.875rem}
+.btn:hover{background:#e9ecef}
+.btn-icon{padding:4px 8px;font-size:1rem;line-height:1;border:1px solid #dee2e6;border-radius:4px;background:#fff;cursor:pointer}
+.btn-icon:hover{background:#e9ecef}
+
+/* Content */
+.content{max-width:1400px;margin:0 auto;padding:16px}
+
+/* Loading & errors */
+.loading{text-align:center;padding:48px;color:#6c757d}
+.spinner{display:inline-block;width:24px;height:24px;border:3px solid #dee2e6;border-top-color:#0d6efd;border-radius:50%;animation:spin .6s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.error-box{background:#fff3cd;border:1px solid #ffc107;border-radius:6px;padding:16px;margin:16px 0;text-align:center}
+.error-box .btn{margin-top:8px}
+.empty{text-align:center;padding:48px;color:#6c757d}
+.empty code{background:#e9ecef;padding:2px 6px;border-radius:3px;font-size:.875rem}
+
+/* Toast notifications */
+.toast-container{position:fixed;top:60px;right:16px;z-index:100;display:flex;flex-direction:column;gap:8px}
+.toast{padding:10px 16px;border-radius:6px;font-size:.85rem;color:#fff;box-shadow:0 2px 8px rgba(0,0,0,.15);animation:toastIn .3s ease;max-width:360px;word-break:break-word}
+.toast-success{background:#198754}
+.toast-error{background:#dc3545}
+@keyframes toastIn{from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:translateX(0)}}
+
+/* Board view */
+.board{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px;align-items:start}
+.board-col{background:#fff;border:1px solid #dee2e6;border-radius:6px;min-height:120px;transition:box-shadow .2s,border-color .2s}
+.board-col-header{padding:8px 12px;font-weight:600;font-size:.875rem;border-bottom:1px solid #dee2e6;display:flex;justify-content:space-between;align-items:center;border-radius:6px 6px 0 0;position:relative}
+.board-col-header .count{font-weight:400;color:rgba(255,255,255,.8);font-size:.75rem}
+.board-col-header .lane-color-btn{position:absolute;right:4px;top:4px;width:20px;height:20px;border:2px solid rgba(255,255,255,.6);border-radius:50%;cursor:pointer;padding:0;background:transparent;opacity:0;transition:opacity .2s}
+.board-col-header:hover .lane-color-btn{opacity:1}
+.board-col-body{padding:8px;min-height:60px}
+
+/* Drag and drop states */
+.board-col.drag-over{border-color:#0d6efd;box-shadow:0 0 0 2px rgba(13,110,253,.25)}
+.board-col.drag-invalid{border-color:#dc3545;box-shadow:0 0 0 2px rgba(220,53,69,.25)}
+.card.dragging{opacity:.4;transform:scale(.95)}
+.card{background:#f8f9fa;border:1px solid #e9ecef;border-radius:4px;padding:8px 10px;margin-bottom:6px;cursor:grab;font-size:.85rem;transition:box-shadow .15s,opacity .15s,transform .15s}
+.card:hover{box-shadow:0 1px 4px rgba(0,0,0,.1)}
+.card:active{cursor:grabbing}
+.card-title{font-weight:600;margin-bottom:4px;word-break:break-word}
+.card-meta{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+
+/* Priority badges */
+.pri-critical{background:#dc3545;color:#fff}
+.pri-high{background:#fd7e14;color:#fff}
+.pri-medium{background:#0d6efd;color:#fff}
+.pri-low{background:#6c757d;color:#fff}
+
+/* Type badges */
+.type-badge{background:#e9ecef;color:#495057}
+
+/* Status colors for column headers (fallback) */
+.status-done .board-col-header{background:#198754;color:#fff}
+.status-blocked .board-col-header{background:#dc3545;color:#fff}
+.status-cancelled .board-col-header{background:#6c757d;color:#fff}
+.status-in_progress .board-col-header{background:#0d6efd;color:#fff}
+.status-review .board-col-header{background:#6f42c1;color:#fff}
+.status-ready .board-col-header{background:#20c997;color:#fff}
+.status-backlog .board-col-header{background:#adb5bd;color:#fff}
+
+/* List view */
+.filters{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center}
+.filters select,.filters input{padding:4px 8px;border:1px solid #dee2e6;border-radius:4px;font-size:.85rem}
+.filters input{min-width:200px}
+.filters label{font-size:.85rem;display:flex;align-items:center;gap:4px;cursor:pointer}
+table{width:100%;border-collapse:collapse;background:#fff;border:1px solid #dee2e6;border-radius:6px;overflow:hidden;font-size:.85rem}
+th{text-align:left;padding:8px 10px;background:#f8f9fa;border-bottom:2px solid #dee2e6;font-weight:600;cursor:pointer;user-select:none;white-space:nowrap}
+th:hover{background:#e9ecef}
+td{padding:6px 10px;border-bottom:1px solid #f0f0f0;vertical-align:top}
+tr:hover td{background:#f8f9fa}
+.id-cell{font-family:monospace;font-size:.8rem;color:#6c757d;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* Detail view */
+.detail{background:#fff;border:1px solid #dee2e6;border-radius:6px;padding:20px;max-width:900px}
+.detail-header{margin-bottom:16px}
+.detail-title{font-size:1.3rem;font-weight:700;margin-bottom:4px}
+.detail-meta{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+.detail-field{margin-bottom:12px}
+.detail-field dt{font-weight:600;font-size:.85rem;color:#6c757d;margin-bottom:2px}
+.detail-field dd{font-size:.9rem}
+.detail-section{margin-top:20px;padding-top:16px;border-top:1px solid #dee2e6}
+.detail-section h3{font-size:.95rem;font-weight:600;margin-bottom:8px}
+.event-item{padding:6px 0;border-bottom:1px solid #f0f0f0;font-size:.85rem;display:flex;gap:8px;flex-wrap:wrap}
+.event-item:last-child{border-bottom:none}
+.event-ts{color:#6c757d;font-family:monospace;font-size:.8rem;white-space:nowrap}
+.event-type{font-weight:600}
+.event-actor{color:#6c757d}
+.back-link{display:inline-block;margin-bottom:12px;font-size:.9rem}
+.archived-badge{background:#ffc107;color:#212529;padding:2px 8px;border-radius:4px;font-size:.8rem;font-weight:600}
+.rel-list,.art-list{list-style:none;padding:0}
+.rel-list li,.art-list li{padding:4px 0;font-size:.85rem}
+
+/* Activity view */
+.activity-item{display:flex;gap:10px;padding:8px 0;border-bottom:1px solid #f0f0f0;font-size:.85rem;align-items:flex-start}
+.activity-item:last-child{border-bottom:none}
+.activity-list{background:#fff;border:1px solid #dee2e6;border-radius:6px;padding:12px 16px}
+
+/* Settings panel */
+.settings-panel{position:fixed;top:0;right:0;width:320px;height:100%;background:#fff;border-left:1px solid #dee2e6;z-index:20;box-shadow:-2px 0 8px rgba(0,0,0,.1);display:flex;flex-direction:column;transform:translateX(100%);transition:transform .25s ease}
+.settings-panel.open{transform:translateX(0)}
+.settings-header{padding:12px 16px;border-bottom:1px solid #dee2e6;display:flex;justify-content:space-between;align-items:center;font-weight:600;font-size:.95rem}
+.settings-close{background:none;border:none;font-size:1.2rem;cursor:pointer;color:#6c757d;padding:4px}
+.settings-close:hover{color:#212529}
+.settings-body{padding:16px;overflow-y:auto;flex:1}
+.settings-group{margin-bottom:20px}
+.settings-group label{display:block;font-size:.85rem;font-weight:600;color:#495057;margin-bottom:4px}
+.settings-group input[type="text"],.settings-group input[type="url"]{width:100%;padding:6px 8px;border:1px solid #dee2e6;border-radius:4px;font-size:.85rem}
+.settings-group .hint{font-size:.75rem;color:#6c757d;margin-top:2px}
+.settings-group .btn{margin-top:6px}
+.lane-color-row{display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:.85rem}
+.lane-color-row .lane-name{min-width:90px}
+.lane-color-row input[type="color"]{width:32px;height:28px;border:1px solid #dee2e6;border-radius:4px;padding:1px;cursor:pointer}
+</style>
+</head>
+<body>
+
+<div class="nav">
+  <span class="nav-brand">Lattice</span>
+  <span class="nav-tab" data-view="board">Board</span>
+  <span class="nav-tab" data-view="list">List</span>
+  <span class="nav-tab" data-view="activity">Activity</span>
+  <div class="nav-right">
+    <span id="stats-badges"></span>
+    <button class="btn-icon" id="settings-btn" title="Dashboard Settings">&#9881;</button>
+    <button class="btn" id="refresh-btn" title="Refresh">Refresh</button>
+  </div>
+</div>
+
+<div class="content" id="app">
+  <div class="loading"><div class="spinner"></div><p>Loading...</p></div>
+</div>
+
+<div class="toast-container" id="toast-container"></div>
+
+<div class="settings-panel" id="settings-panel">
+  <div class="settings-header">
+    <span>Dashboard Settings</span>
+    <button class="settings-close" id="settings-close">&times;</button>
+  </div>
+  <div class="settings-body">
+    <div class="settings-group">
+      <label for="bg-image-input">Background Image URL</label>
+      <input type="url" id="bg-image-input" placeholder="https://example.com/bg.jpg">
+      <div class="hint">Set a background image for the board view. Leave empty to clear.</div>
+      <button class="btn" id="bg-image-save">Apply</button>
+      <button class="btn" id="bg-image-clear">Clear</button>
+    </div>
+    <div class="settings-group">
+      <label>Lane Colors</label>
+      <div class="hint" style="margin-bottom:8px">Click a color to customize each swim lane header.</div>
+      <div id="lane-colors-list"></div>
+      <button class="btn" id="lane-colors-save" style="margin-top:8px">Apply Lane Colors</button>
+      <button class="btn" id="lane-colors-reset" style="margin-top:4px">Reset to Defaults</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+"use strict";
+
+// --- Default lane colors (fallback) ---
+var DEFAULT_LANE_COLORS = {
+  backlog: "#adb5bd",
+  ready: "#20c997",
+  in_progress: "#0d6efd",
+  review: "#6f42c1",
+  done: "#198754",
+  blocked: "#dc3545",
+  cancelled: "#6c757d"
+};
+
+// --- State ---
+var config = null;
+var tasks = [];
+var archivedTasks = null;
+var currentView = "board";
+var draggedTaskId = null;
+var draggedFromStatus = null;
+
+// --- API ---
+async function api(path, opts) {
+  var r = await fetch(path, opts);
+  var body = await r.json();
+  if (!body.ok) throw new Error(body.error ? body.error.message : "API error");
+  return body.data;
+}
+
+async function apiPost(path, data) {
+  return api(path, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(data)
+  });
+}
+
+// --- Toast Notifications ---
+function showToast(message, type) {
+  var container = document.getElementById("toast-container");
+  var toast = document.createElement("div");
+  toast.className = "toast toast-" + (type || "success");
+  toast.textContent = message;
+  container.appendChild(toast);
+  setTimeout(function() {
+    toast.style.opacity = "0";
+    toast.style.transition = "opacity .3s";
+    setTimeout(function() { toast.remove(); }, 300);
+  }, 3000);
+}
+
+// --- Init ---
+async function init() {
+  var hash = location.hash.slice(1) || "/board";
+  var parts = hash.split("/").filter(Boolean);
+  currentView = parts[0] || "board";
+  updateTabs();
+
+  try {
+    var results = await Promise.all([api("/api/config"), api("/api/tasks")]);
+    config = results[0];
+    tasks = results[1];
+    updateStatsBadges();
+    populateLaneColorSettings();
+    loadBackgroundSetting();
+    await route(hash);
+  } catch(e) {
+    showError(e.message);
+  }
+}
+
+function updateTabs() {
+  document.querySelectorAll(".nav-tab").forEach(function(el) {
+    el.classList.toggle("active", el.dataset.view === currentView);
+  });
+}
+
+function updateStatsBadges() {
+  var el = document.getElementById("stats-badges");
+  var total = tasks.length;
+  var byStatus = {};
+  tasks.forEach(function(t) { byStatus[t.status] = (byStatus[t.status]||0)+1; });
+  var html = '<span class="badge badge-stat">' + total + " tasks</span>";
+  for (var s in byStatus) {
+    html += ' <span class="badge badge-stat">' + s + ": " + byStatus[s] + "</span>";
+  }
+  el.innerHTML = html;
+}
+
+// --- Routing ---
+async function route(hash) {
+  var h = (hash || "/board").replace(/^#?\/?/, "/");
+  var parts = h.split("/").filter(Boolean);
+  var view = parts[0] || "board";
+  currentView = view === "task" ? currentView : view;
+  updateTabs();
+
+  if (view === "board") renderBoard();
+  else if (view === "list") renderList();
+  else if (view === "activity") await renderActivity();
+  else if (view === "task" && parts[1]) await renderDetail(parts[1]);
+  else renderBoard();
+}
+
+window.addEventListener("hashchange", function() { route(location.hash.slice(1)); });
+
+// --- Dashboard config helpers ---
+function getDashboardConfig() {
+  return (config && config.dashboard) || {};
+}
+
+function getLaneColor(status) {
+  var dc = getDashboardConfig();
+  if (dc.lane_colors && dc.lane_colors[status]) return dc.lane_colors[status];
+  return DEFAULT_LANE_COLORS[status] || "#6c757d";
+}
+
+function getBackgroundImage() {
+  var dc = getDashboardConfig();
+  return dc.background_image || "";
+}
+
+// --- Background image ---
+function applyBackgroundImage() {
+  var app = document.getElementById("app");
+  var bg = getBackgroundImage();
+  if (bg) {
+    app.style.backgroundImage = "url(" + bg + ")";
+    app.style.backgroundSize = "cover";
+    app.style.backgroundPosition = "center";
+    app.style.backgroundRepeat = "no-repeat";
+    app.style.backgroundAttachment = "fixed";
+    app.style.minHeight = "calc(100vh - 50px)";
+  } else {
+    app.style.backgroundImage = "";
+    app.style.backgroundSize = "";
+    app.style.backgroundPosition = "";
+    app.style.backgroundRepeat = "";
+    app.style.backgroundAttachment = "";
+    app.style.minHeight = "";
+  }
+}
+
+function loadBackgroundSetting() {
+  var input = document.getElementById("bg-image-input");
+  input.value = getBackgroundImage();
+  applyBackgroundImage();
+}
+
+// --- Lane color settings ---
+function populateLaneColorSettings() {
+  var container = document.getElementById("lane-colors-list");
+  if (!config || !config.workflow) return;
+  var statuses = config.workflow.statuses || [];
+  var html = "";
+  statuses.forEach(function(s) {
+    var color = getLaneColor(s);
+    html += '<div class="lane-color-row">';
+    html += '<span class="lane-name">' + esc(s) + '</span>';
+    html += '<input type="color" data-status="' + esc(s) + '" value="' + esc(color) + '">';
+    html += '</div>';
+  });
+  container.innerHTML = html;
+}
+
+// --- Board View ---
+function renderBoard() {
+  var app = document.getElementById("app");
+  if (!config || !tasks) { app.innerHTML = '<div class="loading"><div class="spinner"></div></div>'; return; }
+
+  applyBackgroundImage();
+
+  var statuses = config.workflow ? config.workflow.statuses : [];
+  if (tasks.length === 0) {
+    app.innerHTML = '<div class="empty"><p>No tasks yet.</p><p>Create one with <code>lattice create</code></p></div>';
+    return;
+  }
+
+  var transitions = (config.workflow && config.workflow.transitions) || {};
+  var grouped = {};
+  statuses.forEach(function(s) { grouped[s] = []; });
+  tasks.forEach(function(t) {
+    var s = t.status || "unknown";
+    if (!grouped[s]) grouped[s] = [];
+    grouped[s].push(t);
+  });
+
+  var html = '<div class="board">';
+  var allStatuses = statuses.concat(Object.keys(grouped).filter(function(s) { return !statuses.includes(s); }));
+  allStatuses.forEach(function(status) {
+    var items = grouped[status] || [];
+    var cls = "status-" + status.replace(/\s+/g,"_");
+    var laneColor = getLaneColor(status);
+    html += '<div class="board-col ' + cls + '" data-status="' + esc(status) + '"';
+    html += ' ondragover="window._boardDragOver(event)" ondragleave="window._boardDragLeave(event)" ondrop="window._boardDrop(event)">';
+    html += '<div class="board-col-header" style="background:' + esc(laneColor) + ';color:#fff">';
+    html += '<span>' + esc(status) + '</span>';
+    html += '<span class="count">' + items.length + '</span>';
+    html += '</div>';
+    html += '<div class="board-col-body">';
+    items.forEach(function(t) {
+      html += '<div class="card" draggable="true" data-task-id="' + esc(t.id) + '" data-task-status="' + esc(t.status || "") + '"';
+      html += ' ondragstart="window._boardDragStart(event)" ondragend="window._boardDragEnd(event)">';
+      html += '<div class="card-title">' + esc(t.title || "Untitled") + "</div>";
+      html += '<div class="card-meta">';
+      if (t.priority) html += '<span class="badge pri-' + esc(t.priority) + '">' + esc(t.priority) + "</span>";
+      if (t.type) html += '<span class="badge type-badge">' + esc(t.type) + "</span>";
+      if (t.assigned_to) html += '<span style="color:#6c757d;font-size:.8rem">' + esc(t.assigned_to) + "</span>";
+      html += "</div></div>";
+    });
+    if (items.length === 0) html += '<div style="color:#adb5bd;font-size:.8rem;padding:8px;text-align:center">No tasks</div>';
+    html += "</div></div>";
+  });
+  html += "</div>";
+  app.innerHTML = html;
+
+  // Add click handlers for card navigation (separate from drag)
+  app.querySelectorAll(".card").forEach(function(card) {
+    card.addEventListener("click", function(e) {
+      // Only navigate if this was a real click, not end of drag
+      if (!card.classList.contains("was-dragged")) {
+        location.hash = "#/task/" + card.dataset.taskId;
+      }
+      card.classList.remove("was-dragged");
+    });
+  });
+}
+
+// --- Drag and Drop ---
+window._boardDragStart = function(e) {
+  var card = e.target.closest(".card");
+  if (!card) return;
+  draggedTaskId = card.dataset.taskId;
+  draggedFromStatus = card.dataset.taskStatus;
+  card.classList.add("dragging");
+  e.dataTransfer.effectAllowed = "move";
+  e.dataTransfer.setData("text/plain", draggedTaskId);
+
+  // Highlight valid drop targets
+  var transitions = (config.workflow && config.workflow.transitions) || {};
+  var allowedTargets = transitions[draggedFromStatus] || [];
+  setTimeout(function() {
+    document.querySelectorAll(".board-col").forEach(function(col) {
+      var colStatus = col.dataset.status;
+      if (colStatus === draggedFromStatus) return;
+      if (allowedTargets.includes(colStatus)) {
+        col.style.opacity = "1";
+      } else {
+        col.style.opacity = "0.5";
+      }
+    });
+  }, 0);
+};
+
+window._boardDragEnd = function(e) {
+  var card = e.target.closest(".card");
+  if (card) {
+    card.classList.remove("dragging");
+    card.classList.add("was-dragged");
+  }
+  draggedTaskId = null;
+  draggedFromStatus = null;
+  document.querySelectorAll(".board-col").forEach(function(col) {
+    col.classList.remove("drag-over", "drag-invalid");
+    col.style.opacity = "";
+  });
+};
+
+window._boardDragOver = function(e) {
+  e.preventDefault();
+  var col = e.target.closest(".board-col");
+  if (!col || !draggedFromStatus) return;
+  var targetStatus = col.dataset.status;
+  if (targetStatus === draggedFromStatus) return;
+
+  var transitions = (config.workflow && config.workflow.transitions) || {};
+  var allowed = transitions[draggedFromStatus] || [];
+  if (allowed.includes(targetStatus)) {
+    e.dataTransfer.dropEffect = "move";
+    col.classList.add("drag-over");
+    col.classList.remove("drag-invalid");
+  } else {
+    e.dataTransfer.dropEffect = "none";
+    col.classList.add("drag-invalid");
+    col.classList.remove("drag-over");
+  }
+};
+
+window._boardDragLeave = function(e) {
+  var col = e.target.closest(".board-col");
+  if (col) {
+    col.classList.remove("drag-over", "drag-invalid");
+  }
+};
+
+window._boardDrop = async function(e) {
+  e.preventDefault();
+  var col = e.target.closest(".board-col");
+  if (!col || !draggedTaskId || !draggedFromStatus) return;
+
+  var targetStatus = col.dataset.status;
+  col.classList.remove("drag-over", "drag-invalid");
+
+  if (targetStatus === draggedFromStatus) return;
+
+  var transitions = (config.workflow && config.workflow.transitions) || {};
+  var allowed = transitions[draggedFromStatus] || [];
+  if (!allowed.includes(targetStatus)) {
+    showToast("Invalid transition: " + draggedFromStatus + " to " + targetStatus, "error");
+    return;
+  }
+
+  try {
+    await apiPost("/api/tasks/" + draggedTaskId + "/status", {
+      status: targetStatus,
+      actor: "dashboard:web"
+    });
+    showToast("Moved to " + targetStatus, "success");
+    // Refresh tasks and re-render
+    tasks = await api("/api/tasks");
+    updateStatsBadges();
+    renderBoard();
+  } catch(err) {
+    showToast(err.message, "error");
+  }
+};
+
+// --- List View ---
+function renderList() {
+  var app = document.getElementById("app");
+  if (!config) return;
+
+  var statuses = config.workflow ? config.workflow.statuses : [];
+  var types = config.task_types || [];
+
+  var html = '<div class="filters">';
+  html += '<input type="text" id="f-search" placeholder="Search title...">';
+  html += '<select id="f-status"><option value="">All statuses</option>';
+  statuses.forEach(function(s) { html += '<option value="'+esc(s)+'">'+esc(s)+"</option>"; });
+  html += "</select>";
+  html += '<select id="f-type"><option value="">All types</option>';
+  types.forEach(function(t) { html += '<option value="'+esc(t)+'">'+esc(t)+"</option>"; });
+  html += "</select>";
+  html += '<select id="f-priority"><option value="">All priorities</option>';
+  ["critical","high","medium","low"].forEach(function(p) { html += '<option value="'+p+'">'+p+"</option>"; });
+  html += "</select>";
+  html += '<label><input type="checkbox" id="f-archived"> Show archived</label>';
+  html += "</div>";
+  html += '<div id="list-table"></div>';
+  app.innerHTML = html;
+
+  document.getElementById("f-search").addEventListener("input", applyListFilters);
+  document.getElementById("f-status").addEventListener("change", applyListFilters);
+  document.getElementById("f-type").addEventListener("change", applyListFilters);
+  document.getElementById("f-priority").addEventListener("change", applyListFilters);
+  document.getElementById("f-archived").addEventListener("change", async function() {
+    if (this.checked && archivedTasks === null) {
+      try { archivedTasks = await api("/api/archived"); } catch(e) { archivedTasks = []; }
+    }
+    applyListFilters();
+  });
+  applyListFilters();
+}
+
+function applyListFilters() {
+  var search = (document.getElementById("f-search").value || "").toLowerCase();
+  var status = document.getElementById("f-status").value;
+  var type = document.getElementById("f-type").value;
+  var priority = document.getElementById("f-priority").value;
+  var showArchived = document.getElementById("f-archived").checked;
+
+  var items = tasks.slice();
+  if (showArchived && archivedTasks) items = items.concat(archivedTasks);
+
+  items = items.filter(function(t) {
+    if (search && !(t.title||"").toLowerCase().includes(search)) return false;
+    if (status && t.status !== status) return false;
+    if (type && t.type !== type) return false;
+    if (priority && t.priority !== priority) return false;
+    return true;
+  });
+
+  if (items.length === 0 && tasks.length === 0) {
+    document.getElementById("list-table").innerHTML = '<div class="empty"><p>No tasks yet.</p></div>';
+    return;
+  }
+  if (items.length === 0) {
+    document.getElementById("list-table").innerHTML = '<div class="empty"><p>No tasks match your filters.</p></div>';
+    return;
+  }
+
+  var html = "<table><thead><tr>";
+  html += "<th>ID</th><th>Title</th><th>Status</th><th>Priority</th><th>Type</th><th>Assigned</th><th>Updated</th>";
+  html += "</tr></thead><tbody>";
+  items.forEach(function(t) {
+    var shortId = t.id ? t.id.slice(0,18) + "..." : "?";
+    var updated = t.updated_at ? t.updated_at.slice(0,16).replace("T"," ") : "";
+    html += '<tr style="cursor:pointer" onclick="location.hash=\'#/task/' + esc(t.id) + '\'">';
+    html += '<td class="id-cell" title="' + esc(t.id) + '">' + esc(shortId) + "</td>";
+    html += "<td>" + esc(t.title || "Untitled") + (t.archived ? ' <span class="archived-badge">archived</span>' : "") + "</td>";
+    html += "<td>" + esc(t.status || "") + "</td>";
+    html += "<td>";
+    if (t.priority) html += '<span class="badge pri-' + esc(t.priority) + '">' + esc(t.priority) + "</span>";
+    html += "</td>";
+    html += "<td>" + esc(t.type || "") + "</td>";
+    html += "<td>" + esc(t.assigned_to || "") + "</td>";
+    html += "<td>" + esc(updated) + "</td>";
+    html += "</tr>";
+  });
+  html += "</tbody></table>";
+  document.getElementById("list-table").innerHTML = html;
+}
+
+// --- Detail View ---
+async function renderDetail(taskId) {
+  var app = document.getElementById("app");
+  app.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+
+  try {
+    var results = await Promise.all([
+      api("/api/tasks/" + taskId),
+      api("/api/tasks/" + taskId + "/events")
+    ]);
+    var task = results[0];
+    var events = results[1];
+    var html = '<a href="#/' + esc(currentView) + '" class="back-link">&larr; Back</a>';
+    html += '<div class="detail">';
+    html += '<div class="detail-header">';
+    html += '<div class="detail-title">' + esc(task.title || "Untitled");
+    if (task.archived) html += ' <span class="archived-badge">ARCHIVED</span>';
+    html += "</div>";
+    html += '<div class="detail-meta">';
+    if (task.status) html += '<span class="badge badge-stat">' + esc(task.status) + "</span>";
+    if (task.priority) html += '<span class="badge pri-' + esc(task.priority) + '">' + esc(task.priority) + "</span>";
+    if (task.type) html += '<span class="badge type-badge">' + esc(task.type) + "</span>";
+    html += "</div></div>";
+
+    // Fields
+    var fields = [
+      ["ID", task.id], ["Assigned to", task.assigned_to || "unassigned"],
+      ["Created by", task.created_by], ["Created", task.created_at], ["Updated", task.updated_at],
+      ["Urgency", task.urgency]
+    ];
+    html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px">';
+    fields.forEach(function(pair) {
+      var label = pair[0], val = pair[1];
+      if (val) {
+        html += '<div class="detail-field"><dt>' + esc(label) + "</dt><dd>" + esc(String(val)) + "</dd></div>";
+      }
+    });
+    html += "</div>";
+
+    if (task.description) {
+      html += '<div class="detail-section"><h3>Description</h3><pre style="white-space:pre-wrap;font-size:.9rem">' + esc(task.description) + "</pre></div>";
+    }
+
+    if (task.tags && task.tags.length) {
+      html += '<div class="detail-section"><h3>Tags</h3><div>';
+      task.tags.forEach(function(tag) { html += '<span class="badge badge-stat" style="margin-right:4px">' + esc(tag) + "</span>"; });
+      html += "</div></div>";
+    }
+
+    if (task.custom_fields && Object.keys(task.custom_fields).length) {
+      html += '<div class="detail-section"><h3>Custom Fields</h3><dl>';
+      Object.entries(task.custom_fields).forEach(function(pair) {
+        html += "<dt>" + esc(pair[0]) + "</dt><dd>" + esc(String(pair[1])) + "</dd>";
+      });
+      html += "</dl></div>";
+    }
+
+    // Relationships
+    if (task.relationships_out && task.relationships_out.length) {
+      html += '<div class="detail-section"><h3>Relationships</h3><ul class="rel-list">';
+      task.relationships_out.forEach(function(r) {
+        html += "<li>" + esc(r.type) + ' &rarr; <a href="#/task/' + esc(r.target_task_id) + '">' + esc(r.target_task_id) + "</a>";
+        if (r.note) html += " (" + esc(r.note) + ")";
+        html += "</li>";
+      });
+      html += "</ul></div>";
+    }
+
+    // Artifacts
+    if (task.artifacts && task.artifacts.length) {
+      html += '<div class="detail-section"><h3>Artifacts</h3><ul class="art-list">';
+      task.artifacts.forEach(function(a) {
+        html += "<li>" + esc(a.id);
+        if (a.title) html += ' "' + esc(a.title) + '"';
+        if (a.type) html += " (" + esc(a.type) + ")";
+        html += "</li>";
+      });
+      html += "</ul></div>";
+    }
+
+    // Notes
+    if (task.notes_exists) {
+      html += '<div class="detail-section"><h3>Notes</h3><p style="font-size:.85rem;color:#6c757d">Notes file exists: <code>notes/' + esc(task.id) + '.md</code></p></div>';
+    }
+
+    // Events
+    if (events && events.length) {
+      html += '<div class="detail-section"><h3>Events (' + events.length + ")</h3>";
+      events.forEach(function(ev) {
+        html += '<div class="event-item">';
+        html += '<span class="event-ts">' + esc(ev.ts || "") + "</span>";
+        html += '<span class="event-type badge badge-stat">' + esc(ev.type || "") + "</span>";
+        html += "<span>" + eventSummary(ev) + "</span>";
+        html += '<span class="event-actor">' + esc(ev.actor || "") + "</span>";
+        html += "</div>";
+      });
+      html += "</div>";
+    }
+
+    html += "</div>";
+    app.innerHTML = html;
+  } catch(e) {
+    app.innerHTML = '<a href="#/' + esc(currentView) + '" class="back-link">&larr; Back</a>' +
+      '<div class="error-box"><p>' + esc(e.message) + '</p><button class="btn" onclick="location.reload()">Retry</button></div>';
+  }
+}
+
+function eventSummary(ev) {
+  var d = ev.data || {};
+  switch(ev.type) {
+    case "status_changed": return esc((d.from||"?") + " &rarr; " + (d.to||"?"));
+    case "assignment_changed": return esc((d.from||"unassigned") + " &rarr; " + (d.to||"?"));
+    case "field_updated": return esc(d.field + ": " + (d.from||"?") + " &rarr; " + (d.to||"?"));
+    case "comment_added": {
+      var body = d.body || "";
+      if (body.length > 80) body = body.slice(0,77) + "...";
+      return '"' + esc(body) + '"';
+    }
+    case "relationship_added": return esc(d.type) + " &rarr; " + esc(d.target_task_id||"");
+    case "relationship_removed": return esc(d.type) + " -x- " + esc(d.target_task_id||"");
+    case "artifact_attached": return "artifact " + esc(d.artifact_id||"");
+    case "task_created": return "";
+    default: return "";
+  }
+}
+
+// --- Activity View ---
+async function renderActivity() {
+  var app = document.getElementById("app");
+  app.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+  try {
+    var events = await api("/api/activity");
+    if (events.length === 0) {
+      app.innerHTML = '<div class="empty"><p>No recent activity.</p></div>';
+      return;
+    }
+    var html = '<div class="activity-list">';
+    events.forEach(function(ev) {
+      html += '<div class="activity-item">';
+      html += '<span class="event-ts">' + esc(ev.ts || "") + "</span>";
+      html += '<span class="badge badge-stat">' + esc(ev.type || "") + "</span>";
+      html += '<a href="#/task/' + esc(ev.task_id || "") + '">' + esc(ev.task_id ? ev.task_id.slice(0,18)+"..." : "") + "</a>";
+      html += "<span>" + eventSummary(ev) + "</span>";
+      html += '<span class="event-actor">' + esc(ev.actor || "") + "</span>";
+      html += "</div>";
+    });
+    html += "</div>";
+    app.innerHTML = html;
+  } catch(e) {
+    app.innerHTML = '<div class="error-box"><p>' + esc(e.message) + '</p><button class="btn" onclick="location.reload()">Retry</button></div>';
+  }
+}
+
+// --- Helpers ---
+function esc(s) {
+  if (s == null) return "";
+  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+
+function showError(msg) {
+  document.getElementById("app").innerHTML = '<div class="error-box"><p>' + esc(msg) + '</p><button class="btn" onclick="location.reload()">Retry</button></div>';
+}
+
+// --- Settings Panel ---
+document.getElementById("settings-btn").addEventListener("click", function() {
+  document.getElementById("settings-panel").classList.add("open");
+});
+
+document.getElementById("settings-close").addEventListener("click", function() {
+  document.getElementById("settings-panel").classList.remove("open");
+});
+
+// Background image: save
+document.getElementById("bg-image-save").addEventListener("click", async function() {
+  var url = document.getElementById("bg-image-input").value.trim();
+  try {
+    var result = await apiPost("/api/config/dashboard", {background_image: url || null});
+    if (config) config.dashboard = result;
+    applyBackgroundImage();
+    showToast("Background image updated", "success");
+  } catch(e) {
+    showToast(e.message, "error");
+  }
+});
+
+// Background image: clear
+document.getElementById("bg-image-clear").addEventListener("click", async function() {
+  document.getElementById("bg-image-input").value = "";
+  try {
+    var result = await apiPost("/api/config/dashboard", {background_image: null});
+    if (config) config.dashboard = result;
+    applyBackgroundImage();
+    showToast("Background image cleared", "success");
+  } catch(e) {
+    showToast(e.message, "error");
+  }
+});
+
+// Lane colors: save
+document.getElementById("lane-colors-save").addEventListener("click", async function() {
+  var inputs = document.querySelectorAll("#lane-colors-list input[type=color]");
+  var colors = {};
+  inputs.forEach(function(inp) {
+    colors[inp.dataset.status] = inp.value;
+  });
+  try {
+    var result = await apiPost("/api/config/dashboard", {lane_colors: colors});
+    if (config) config.dashboard = result;
+    showToast("Lane colors updated", "success");
+    if (currentView === "board") renderBoard();
+  } catch(e) {
+    showToast(e.message, "error");
+  }
+});
+
+// Lane colors: reset
+document.getElementById("lane-colors-reset").addEventListener("click", async function() {
+  try {
+    var result = await apiPost("/api/config/dashboard", {lane_colors: DEFAULT_LANE_COLORS});
+    if (config) config.dashboard = result;
+    populateLaneColorSettings();
+    showToast("Lane colors reset to defaults", "success");
+    if (currentView === "board") renderBoard();
+  } catch(e) {
+    showToast(e.message, "error");
+  }
+});
+
+// --- Nav Events ---
+document.querySelectorAll(".nav-tab").forEach(function(el) {
+  el.addEventListener("click", function() { location.hash = "#/" + el.dataset.view; });
+});
+
+document.getElementById("refresh-btn").addEventListener("click", async function() {
+  try {
+    var results = await Promise.all([api("/api/config"), api("/api/tasks")]);
+    config = results[0];
+    tasks = results[1];
+    archivedTasks = null;
+    updateStatsBadges();
+    populateLaneColorSettings();
+    loadBackgroundSetting();
+    await route(location.hash.slice(1));
+  } catch(e) { showError(e.message); }
+});
+
+// --- Boot ---
+init();
+
+})();
+</script>
+</body>
+</html>

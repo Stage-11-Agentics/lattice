@@ -90,6 +90,7 @@ from lattice.cli import artifact_cmds as _artifact_cmds  # noqa: E402, F401
 from lattice.cli import query_cmds as _query_cmds  # noqa: E402, F401
 from lattice.cli import integrity_cmds as _integrity_cmds  # noqa: E402, F401
 from lattice.cli import archive_cmds as _archive_cmds  # noqa: E402, F401
+from lattice.cli import dashboard_cmd as _dashboard_cmd  # noqa: E402, F401
 
 if __name__ == "__main__":
     cli()

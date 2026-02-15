@@ -156,6 +156,41 @@ class TestInitIdempotency:
         assert json.loads(task_file.read_text())["id"] == "task_fake"
 
 
+class TestInitActorConfig:
+    """lattice init --actor flag and interactive actor prompt."""
+
+    def test_init_with_actor_flag_sets_config_default(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        result = runner.invoke(cli, ["init", "--path", str(tmp_path), "--actor", "human:atin"])
+        assert result.exit_code == 0
+
+        config = json.loads((tmp_path / ".lattice" / "config.json").read_text())
+        assert config["default_actor"] == "human:atin"
+
+    def test_init_prompts_for_actor_when_flag_omitted(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        result = runner.invoke(cli, ["init", "--path", str(tmp_path)], input="human:atin\n")
+        assert result.exit_code == 0
+
+        config = json.loads((tmp_path / ".lattice" / "config.json").read_text())
+        assert config["default_actor"] == "human:atin"
+        assert "Default actor: human:atin" in result.output
+
+    def test_init_empty_actor_input_skips_default(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        result = runner.invoke(cli, ["init", "--path", str(tmp_path)], input="\n")
+        assert result.exit_code == 0
+
+        config = json.loads((tmp_path / ".lattice" / "config.json").read_text())
+        assert "default_actor" not in config
+
+    def test_init_invalid_actor_format_errors(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        result = runner.invoke(cli, ["init", "--path", str(tmp_path), "--actor", "badformat"])
+        assert result.exit_code != 0
+        assert "Invalid actor format" in result.output
+
+
 class TestInitErrorHandling:
     """lattice init handles filesystem errors gracefully."""
 

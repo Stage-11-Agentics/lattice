@@ -15,6 +15,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "hypothesis>=6.100",
     "mypy>=1.10",
     "pytest>=8.0",
     "ruff>=0.4",
@@ -28,6 +29,10 @@ packages = ["src/lattice"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "timeout: marks tests with a timeout",
+]
 
 [tool.mypy]
 python_version = "3.12"

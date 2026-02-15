@@ -2,6 +2,19 @@
 
 Fractal Agentics' file-based, agent-native task tracker with an event-sourced core.
 
+## Disambiguation: "Lattice" the Codebase vs. "Lattice" the Instance
+
+This project **dogfoods itself**. There are two distinct things called "Lattice" in this directory:
+
+1. **The Lattice source code** — the Python project under `src/lattice/` that you build, test, and modify. This is what `git` tracks.
+2. **The `.lattice/` data directory** — a live Lattice instance initialized in this repo for tracking development tasks. This is `.gitignore`d runtime state, not source code.
+
+When someone says "is Lattice set up?" they could mean either. Clarify which:
+- **"Is the dev environment set up?"** → Can you run `uv run lattice --help`? Are deps installed?
+- **"Is Lattice tracking tasks here?"** → Does `.lattice/` exist with a `config.json`? (Yes — it's initialized and ready for use.)
+
+**Rule:** Never confuse changes to `src/lattice/` (source code) with changes to `.lattice/` (instance data). They are independent. Editing source code does not affect the running instance until you reinstall (`uv pip install -e ".[dev]"`).
+
 ## Quick Reference
 
 | Item | Value |

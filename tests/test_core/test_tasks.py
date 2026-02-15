@@ -7,6 +7,7 @@ import json
 import pytest
 
 from lattice.core.tasks import (
+    PROTECTED_FIELDS,
     apply_event_to_snapshot,
     compact_snapshot,
     serialize_snapshot,
@@ -241,6 +242,22 @@ class TestFieldUpdated:
         }
         snap = apply_event_to_snapshot(snap, ev)
         assert snap["custom_fields"]["key"] == "val"
+
+    @pytest.mark.parametrize("field", sorted(PROTECTED_FIELDS))
+    def test_protected_field_rejected(self, field: str) -> None:
+        """Protected fields raise ValueError when targeted by field_updated."""
+        snap = _make_snapshot()
+        ev = {
+            "schema_version": 1,
+            "id": _EV_2,
+            "ts": _TS_2,
+            "type": "field_updated",
+            "task_id": _TASK_ID,
+            "actor": _ACTOR,
+            "data": {"field": field, "from": "old", "to": "new"},
+        }
+        with pytest.raises(ValueError, match="protected field"):
+            apply_event_to_snapshot(snap, ev)
 
 
 # ---------------------------------------------------------------------------
