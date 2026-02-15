@@ -46,7 +46,7 @@ a{color:var(--accent-primary);text-decoration:none}
 a:hover{text-decoration:underline}
 
 /* Nav */
-.nav{background:var(--surface);border-bottom:1px solid var(--border);padding:8px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;position:sticky;top:0;z-index:10;backdrop-filter:var(--glow-primary,none);-webkit-backdrop-filter:var(--glow-primary,none)}
+.nav{background:var(--surface);border-bottom:1px solid var(--border);padding:8px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;position:sticky;top:0;z-index:10}
 .nav-brand{font-weight:700;font-size:1.1rem;margin-right:8px;color:var(--text-primary)}
 .nav-tab{padding:4px 12px;border-radius:var(--radius-sm);cursor:pointer;font-size:.875rem;color:var(--text-secondary);border:1px solid transparent}
 .nav-tab:hover{background:var(--surface-hover)}
@@ -106,7 +106,7 @@ a:hover{text-decoration:underline}
 /* Type badges */
 .type-badge{background:var(--surface-raised);color:var(--text-secondary)}
 
-/* Status colors for column headers (fallback) */
+/* Status colors for column headers (CSS fallback — JS inline styles override these) */
 .status-done .board-col-header{background:#198754;color:#fff}
 .status-cancelled .board-col-header{background:#6c757d;color:#fff}
 .status-in_planning .board-col-header{background:#17a2b8;color:#fff}
@@ -115,6 +115,14 @@ a:hover{text-decoration:underline}
 .status-implemented .board-col-header{background:#0dcaf0;color:#fff}
 .status-in_review .board-col-header{background:#6f42c1;color:#fff}
 .status-backlog .board-col-header{background:#adb5bd;color:#fff}
+[data-theme="station-console"] .status-done .board-col-header{background:#22c55e}
+[data-theme="station-console"] .status-cancelled .board-col-header{background:#475569}
+[data-theme="station-console"] .status-in_planning .board-col-header{background:#06b6d4}
+[data-theme="station-console"] .status-planned .board-col-header{background:#14b8a6}
+[data-theme="station-console"] .status-in_implementation .board-col-header{background:#3b82f6}
+[data-theme="station-console"] .status-implemented .board-col-header{background:#38bdf8}
+[data-theme="station-console"] .status-in_review .board-col-header{background:#a78bfa}
+[data-theme="station-console"] .status-backlog .board-col-header{background:#334155}
 
 /* List view */
 .filters{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center}
@@ -261,6 +269,12 @@ select.form-control{cursor:pointer}
 .member-chip-agent:hover{background:#bbdefb}
 .member-chip-team{background:#fff3e0;color:#e65100;border-color:#ffe0b2}
 .member-chip-team:hover{background:#ffe0b2}
+[data-theme="station-console"] .member-chip-human{background:rgba(34,197,94,.15);color:#4ade80;border-color:rgba(34,197,94,.3)}
+[data-theme="station-console"] .member-chip-human:hover{background:rgba(34,197,94,.25)}
+[data-theme="station-console"] .member-chip-agent{background:rgba(0,212,255,.15);color:#67e8f9;border-color:rgba(0,212,255,.3)}
+[data-theme="station-console"] .member-chip-agent:hover{background:rgba(0,212,255,.25)}
+[data-theme="station-console"] .member-chip-team{background:rgba(249,115,22,.15);color:#fb923c;border-color:rgba(249,115,22,.3)}
+[data-theme="station-console"] .member-chip-team:hover{background:rgba(249,115,22,.25)}
 </style>
 </head>
 <body>
@@ -361,17 +375,30 @@ select.form-control{cursor:pointer}
 (function(){
 "use strict";
 
-// --- Default lane colors (fallback) ---
-var DEFAULT_LANE_COLORS = {
-  backlog: "#adb5bd",
-  in_planning: "#17a2b8",
-  planned: "#20c997",
-  in_implementation: "#0d6efd",
-  implemented: "#0dcaf0",
-  in_review: "#6f42c1",
-  done: "#198754",
-  cancelled: "#6c757d"
+// --- Default lane colors per theme ---
+var LANE_COLORS_BY_THEME = {
+  classic: {
+    backlog: "#adb5bd",
+    in_planning: "#17a2b8",
+    planned: "#20c997",
+    in_implementation: "#0d6efd",
+    implemented: "#0dcaf0",
+    in_review: "#6f42c1",
+    done: "#198754",
+    cancelled: "#6c757d"
+  },
+  "station-console": {
+    backlog: "#334155",
+    in_planning: "#06b6d4",
+    planned: "#14b8a6",
+    in_implementation: "#3b82f6",
+    implemented: "#38bdf8",
+    in_review: "#a78bfa",
+    done: "#22c55e",
+    cancelled: "#475569"
+  }
 };
+var DEFAULT_LANE_COLORS = LANE_COLORS_BY_THEME.classic;
 
 // --- Themes ---
 var THEMES = [
@@ -482,7 +509,8 @@ function getDashboardConfig() {
 function getLaneColor(status) {
   var dc = getDashboardConfig();
   if (dc.lane_colors && dc.lane_colors[status]) return dc.lane_colors[status];
-  return DEFAULT_LANE_COLORS[status] || "#6c757d";
+  var themeDefaults = LANE_COLORS_BY_THEME[getTheme()] || DEFAULT_LANE_COLORS;
+  return themeDefaults[status] || "#6c757d";
 }
 
 function getBackgroundImage() {
@@ -1510,7 +1538,9 @@ document.getElementById("theme-select").addEventListener("change", async functio
   try {
     var result = await apiPost("/api/config/dashboard", {theme: newTheme});
     if (config) config.dashboard = result;
+    populateLaneColorSettings();
     showToast("Theme updated", "success");
+    if (currentView === "board") renderBoard();
   } catch(e) {
     showToast(e.message, "error");
   }
@@ -1562,7 +1592,8 @@ document.getElementById("lane-colors-save").addEventListener("click", async func
 // Lane colors: reset
 document.getElementById("lane-colors-reset").addEventListener("click", async function() {
   try {
-    var result = await apiPost("/api/config/dashboard", {lane_colors: DEFAULT_LANE_COLORS});
+    var themeDefaults = LANE_COLORS_BY_THEME[getTheme()] || DEFAULT_LANE_COLORS;
+    var result = await apiPost("/api/config/dashboard", {lane_colors: themeDefaults});
     if (config) config.dashboard = result;
     populateLaneColorSettings();
     showToast("Lane colors reset to defaults", "success");
