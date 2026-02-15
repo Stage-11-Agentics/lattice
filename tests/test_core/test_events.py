@@ -26,6 +26,7 @@ class TestBuiltinEventTypes:
             "task_created",
             "task_archived",
             "task_unarchived",
+            "task_short_id_assigned",
             "status_changed",
             "assignment_changed",
             "field_updated",
@@ -44,7 +45,7 @@ class TestBuiltinEventTypes:
         assert isinstance(BUILTIN_EVENT_TYPES, frozenset)
 
     def test_count(self) -> None:
-        assert len(BUILTIN_EVENT_TYPES) == 11
+        assert len(BUILTIN_EVENT_TYPES) == 12
 
 
 # ---------------------------------------------------------------------------

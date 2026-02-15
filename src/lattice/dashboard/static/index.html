@@ -474,6 +474,7 @@ function renderBoard() {
     items.forEach(function(t) {
       html += '<div class="card" draggable="true" data-task-id="' + esc(t.id) + '" data-task-status="' + esc(t.status || "") + '"';
       html += ' ondragstart="window._boardDragStart(event)" ondragend="window._boardDragEnd(event)">';
+      if (t.short_id) html += '<div style="font-size:.7rem;font-weight:600;color:#0d6efd;margin-bottom:2px">' + esc(t.short_id) + '</div>';
       html += '<div class="card-title">' + esc(t.title || "Untitled") + "</div>";
       html += '<div class="card-meta">';
       if (t.priority) html += '<span class="badge pri-' + esc(t.priority) + '">' + esc(t.priority) + "</span>";
@@ -754,7 +755,9 @@ async function renderDetail(taskId) {
 
     // --- Info fields ---
     html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px">';
-    html += '<div class="detail-field"><dt>ID</dt><dd title="' + esc(task.id) + '" style="font-family:monospace;font-size:.8rem">' + esc(task.id) + '</dd></div>';
+    if (task.short_id) html += '<div class="detail-field"><dt>Short ID</dt><dd style="font-weight:600;color:#0d6efd">' + esc(task.short_id) + '</dd></div>';
+    var truncId = task.id && task.id.length > 12 ? task.id.slice(0, 12) + "\u2026" : (task.id || "");
+    html += '<div class="detail-field" id="tech-id-field"><dt>Technical ID</dt><dd id="tech-id-value" data-full="' + esc(task.id) + '" data-short="' + esc(truncId) + '" data-expanded="0" style="font-family:monospace;font-size:.8rem;cursor:pointer">' + esc(truncId) + '</dd></div>';
 
     // Assigned to (editable)
     if (!isArchived) {
@@ -1044,6 +1047,25 @@ function _wireDetailActions(taskId, task) {
         location.hash = "#/" + currentView;
       } catch(e) {
         showToast(e.message, "error");
+      }
+    });
+  }
+
+  var techIdVal = document.getElementById("tech-id-value");
+  if (techIdVal) {
+    techIdVal.addEventListener("click", function(e) {
+      e.stopPropagation();
+      var d = this, p = d.parentElement;
+      if (d.dataset.expanded === "0") {
+        d.textContent = d.dataset.full;
+        d.style.wordBreak = "break-all";
+        p.style.gridColumn = "1 / -1";
+        d.dataset.expanded = "1";
+      } else {
+        d.textContent = d.dataset.short;
+        d.style.wordBreak = "";
+        p.style.gridColumn = "";
+        d.dataset.expanded = "0";
       }
     });
   }

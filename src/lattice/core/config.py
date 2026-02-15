@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import TypedDict
 
 
@@ -17,6 +18,24 @@ class Workflow(TypedDict):
     wip_limits: WipLimits
 
 
+class HooksOnConfig(TypedDict, total=False):
+    status_changed: str
+    task_created: str
+    task_archived: str
+    task_unarchived: str
+    assignment_changed: str
+    field_updated: str
+    comment_added: str
+    relationship_added: str
+    relationship_removed: str
+    artifact_attached: str
+
+
+class HooksConfig(TypedDict, total=False):
+    post_event: str
+    on: HooksOnConfig
+
+
 class LatticeConfig(TypedDict, total=False):
     schema_version: int
     default_status: str
@@ -24,6 +43,8 @@ class LatticeConfig(TypedDict, total=False):
     task_types: list[str]
     workflow: Workflow
     default_actor: str
+    project_code: str
+    hooks: HooksConfig
 
 
 def default_config() -> LatticeConfig:
@@ -75,6 +96,13 @@ def default_config() -> LatticeConfig:
 
 VALID_PRIORITIES: tuple[str, ...] = ("critical", "high", "medium", "low")
 VALID_URGENCIES: tuple[str, ...] = ("immediate", "high", "normal", "low")
+
+_PROJECT_CODE_RE = re.compile(r"^[A-Z]{1,5}$")
+
+
+def validate_project_code(code: str) -> bool:
+    """Return ``True`` if *code* is a valid project code (1-5 uppercase ASCII letters)."""
+    return bool(_PROJECT_CODE_RE.match(code))
 
 
 def serialize_config(config: LatticeConfig | dict[str, object]) -> str:

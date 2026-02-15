@@ -9,15 +9,17 @@ import click
 
 from lattice.cli.helpers import (
     json_envelope,
+    load_project_config,
     output_error,
     require_root,
 )
 from lattice.cli.main import cli
 from lattice.core.events import LIFECYCLE_EVENT_TYPES, serialize_event
-from lattice.core.ids import validate_id
+from lattice.core.ids import validate_id, validate_short_id, parse_short_id
 from lattice.core.tasks import apply_event_to_snapshot, serialize_snapshot
 from lattice.storage.fs import atomic_write
 from lattice.storage.locks import multi_lock
+from lattice.storage.short_ids import load_id_index, save_id_index
 
 
 # ---------------------------------------------------------------------------
@@ -412,6 +414,121 @@ def doctor(fix: bool, output_json: bool) -> None:
             )
 
     # -----------------------------------------------------------------
+    # Check 10: Short ID / alias integrity
+    # -----------------------------------------------------------------
+    alias_ok = True
+    config = load_project_config(lattice_dir)
+    has_project_code = bool(config.get("project_code"))
+    ids_json_path = lattice_dir / "ids.json"
+
+    if has_project_code and not ids_json_path.exists():
+        alias_ok = False
+        findings.append(
+            {
+                "level": "warning",
+                "check": "alias_integrity",
+                "message": "project_code is configured but ids.json is missing",
+                "task_id": None,
+            }
+        )
+
+    if ids_json_path.exists():
+        id_index = load_id_index(lattice_dir)
+        id_map = id_index.get("map", {})
+        next_seq = id_index.get("next_seq", 1)
+
+        # Check: every entry in ids.json.map points to an existing snapshot
+        for short_id, target_ulid in id_map.items():
+            if target_ulid not in known_task_ids:
+                alias_ok = False
+                findings.append(
+                    {
+                        "level": "warning",
+                        "check": "alias_integrity",
+                        "message": f"ids.json maps {short_id} to non-existent task {target_ulid}",
+                        "task_id": target_ulid,
+                    }
+                )
+            if not validate_short_id(short_id):
+                alias_ok = False
+                findings.append(
+                    {
+                        "level": "warning",
+                        "check": "alias_integrity",
+                        "message": f"Invalid short ID format in ids.json: {short_id}",
+                        "task_id": None,
+                    }
+                )
+
+        # Check: every snapshot with short_id has matching entry in ids.json
+        for task_id_key, snap in snapshots.items():
+            snap_short_id = snap.get("short_id")
+            if snap_short_id:
+                if snap_short_id not in id_map:
+                    alias_ok = False
+                    findings.append(
+                        {
+                            "level": "warning",
+                            "check": "alias_integrity",
+                            "message": (
+                                f"Task {task_id_key} has short_id {snap_short_id} "
+                                "but it's missing from ids.json"
+                            ),
+                            "task_id": task_id_key,
+                        }
+                    )
+
+        # Check: no duplicate short IDs across snapshots
+        seen_short_ids: dict[str, str] = {}
+        for task_id_key, snap in snapshots.items():
+            snap_short_id = snap.get("short_id")
+            if snap_short_id:
+                if snap_short_id in seen_short_ids:
+                    alias_ok = False
+                    findings.append(
+                        {
+                            "level": "error",
+                            "check": "alias_integrity",
+                            "message": (
+                                f"Duplicate short ID {snap_short_id}: "
+                                f"{seen_short_ids[snap_short_id]} and {task_id_key}"
+                            ),
+                            "task_id": task_id_key,
+                        }
+                    )
+                seen_short_ids[snap_short_id] = task_id_key
+
+        # Check: next_seq > max assigned
+        max_assigned = 0
+        for short_id in id_map:
+            try:
+                _, num = parse_short_id(short_id)
+                if num > max_assigned:
+                    max_assigned = num
+            except ValueError:
+                pass
+        if max_assigned >= next_seq:
+            alias_ok = False
+            findings.append(
+                {
+                    "level": "warning",
+                    "check": "alias_integrity",
+                    "message": (
+                        f"next_seq ({next_seq}) is not greater than "
+                        f"max assigned seq ({max_assigned})"
+                    ),
+                    "task_id": None,
+                }
+            )
+
+    if fix and not alias_ok:
+        _rebuild_id_index(lattice_dir)
+        # Re-check after fix
+        for f in findings:
+            if f["check"] == "alias_integrity":
+                f["message"] += " (fixed by rebuilding ids.json)"
+
+    # -----------------------------------------------------------------
     # Output
     # -----------------------------------------------------------------
     warnings = sum(1 for f in findings if f["level"] == "warning")
@@ -513,6 +630,13 @@ def doctor(fix: bool, output_json: bool) -> None:
                 if f["check"] == "global_log_consistency":
                     click.echo(f"\u26a0 {f['message']}")
 
+        if alias_ok:
+            click.echo("\u2713 Short ID aliases consistent")
+        else:
+            for f in findings:
+                if f["check"] == "alias_integrity":
+                    click.echo(f"\u26a0 {f['message']}")
+
         total = warnings + errors
         if total == 0:
             click.echo("\nNo issues found.")
@@ -608,6 +732,38 @@ def _rebuild_lifecycle_log(lattice_dir: Path) -> list[str]:
     return [e.get("task_id", "") for e in all_lifecycle_events]
 
 
+def _rebuild_id_index(lattice_dir: Path) -> None:
+    """Rebuild ``ids.json`` from all task snapshots (active + archived)."""
+    id_map: dict[str, str] = {}
+    max_seq: dict[str, int] = {}  # per-prefix max seq
+
+    for directory in [lattice_dir / "tasks", lattice_dir / "archive" / "tasks"]:
+        if not directory.is_dir():
+            continue
+        for snap_file in sorted(directory.glob("*.json")):
+            try:
+                snap = json.loads(snap_file.read_text())
+            except (json.JSONDecodeError, OSError):
+                continue
+            short_id = snap.get("short_id")
+            if short_id and validate_short_id(short_id):
+                task_ulid = snap.get("id", snap_file.stem)
+                id_map[short_id] = task_ulid
+                prefix, num = parse_short_id(short_id)
+                if prefix not in max_seq or num > max_seq[prefix]:
+                    max_seq[prefix] = num
+
+    # Compute next_seq as max across all prefixes + 1
+    next_seq = max(max_seq.values()) + 1 if max_seq else 1
+
+    index = {
+        "schema_version": 1,
+        "next_seq": next_seq,
+        "map": id_map,
+    }
+    save_id_index(lattice_dir, index)
+
+
 @cli.command()
 @click.argument("task_id", required=False, default=None)
 @click.option("--all", "rebuild_all", is_flag=True, help="Rebuild all tasks.")
@@ -666,6 +822,9 @@ def rebuild(task_id: str | None, rebuild_all: bool, output_json: bool) -> None:
 
         # Rebuild lifecycle log
         _rebuild_lifecycle_log(lattice_dir)
+
+        # Rebuild ids.json from snapshots
+        _rebuild_id_index(lattice_dir)
 
         if is_json:
             click.echo(

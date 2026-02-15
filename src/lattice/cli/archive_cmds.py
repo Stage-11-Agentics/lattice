@@ -12,11 +12,11 @@ from lattice.cli.helpers import (
     output_result,
     read_snapshot,
     require_root,
+    resolve_task_id,
     validate_actor_or_exit,
 )
 from lattice.cli.main import cli
 from lattice.core.events import create_event, serialize_event
-from lattice.core.ids import validate_id
 from lattice.core.tasks import apply_event_to_snapshot, serialize_snapshot
 from lattice.storage.fs import atomic_write, jsonl_append
 from lattice.storage.locks import multi_lock
@@ -39,8 +39,7 @@ def archive(
     lattice_dir = require_root(is_json)
     validate_actor_or_exit(actor, is_json)
 
-    if not validate_id(task_id, "task"):
-        output_error(f"Invalid task ID format: '{task_id}'.", "INVALID_ID", is_json)
+    task_id = resolve_task_id(lattice_dir, task_id, is_json)
 
     # Check if task exists in active tasks
     snapshot = read_snapshot(lattice_dir, task_id)
@@ -133,8 +132,7 @@ def unarchive(
     lattice_dir = require_root(is_json)
     validate_actor_or_exit(actor, is_json)
 
-    if not validate_id(task_id, "task"):
-        output_error(f"Invalid task ID format: '{task_id}'.", "INVALID_ID", is_json)
+    task_id = resolve_task_id(lattice_dir, task_id, is_json, allow_archived=True)
 
     # Check if task exists in active tasks (already active = CONFLICT)
     active_path = lattice_dir / "tasks" / f"{task_id}.json"

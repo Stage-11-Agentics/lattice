@@ -16,6 +16,7 @@ BUILTIN_EVENT_TYPES: frozenset[str] = frozenset(
         "task_created",
         "task_archived",
         "task_unarchived",
+        "task_short_id_assigned",
         "status_changed",
         "assignment_changed",
         "field_updated",

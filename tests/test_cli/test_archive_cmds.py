@@ -81,8 +81,11 @@ class TestArchive:
         task_id = task["id"]
 
         lattice = initialized_root / ".lattice"
-        # Confirm no notes file exists
-        assert not (lattice / "notes" / f"{task_id}.md").exists()
+        # Remove the auto-scaffolded notes file to test the no-notes path
+        notes_path = lattice / "notes" / f"{task_id}.md"
+        if notes_path.exists():
+            notes_path.unlink()
+        assert not notes_path.exists()
 
         result = invoke("archive", task_id, "--actor", "human:test")
         assert result.exit_code == 0

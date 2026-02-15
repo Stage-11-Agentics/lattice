@@ -11,6 +11,27 @@ _CROCKFORD_B32_RE = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}$", re.IGNORECASE)
 
 _VALID_ACTOR_PREFIXES = frozenset({"agent", "human", "team", "dashboard"})
 
+SHORT_ID_RE = re.compile(r"^[A-Z]{1,5}-\d+$")
+
+
+def validate_short_id(s: str) -> bool:
+    """Return ``True`` if *s* matches the short ID pattern (e.g., ``LAT-42``)."""
+    return bool(SHORT_ID_RE.match(s))
+
+
+def parse_short_id(s: str) -> tuple[str, int]:
+    """Parse a short ID into (prefix, number). Raises ValueError if invalid."""
+    s = s.upper()
+    if not SHORT_ID_RE.match(s):
+        raise ValueError(f"Invalid short ID format: '{s}'")
+    prefix, num_str = s.rsplit("-", 1)
+    return prefix, int(num_str)
+
+
+def is_short_id(s: str) -> bool:
+    """Quick check: could *s* be a short ID? Case-insensitive."""
+    return bool(SHORT_ID_RE.match(s.upper()))
+
 
 def generate_task_id() -> str:
     """Generate a new task ID with the task_ prefix."""

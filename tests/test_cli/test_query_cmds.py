@@ -223,7 +223,7 @@ class TestEvent:
         """Logging to a non-existent task fails with NOT_FOUND."""
         result = invoke(
             "event",
-            "task_01ZZZZZZZZZZZZZZZZZZZZZZZ",
+            "task_01ZZZZZZZZZZZZZZZZZZZZZZZZ",
             "x_test",
             "--actor",
             "human:test",
@@ -469,13 +469,13 @@ class TestShow:
 
     def test_not_found_error(self, invoke):
         """Non-existent task shows NOT_FOUND error."""
-        result = invoke("show", "task_01ZZZZZZZZZZZZZZZZZZZZZZZ")
+        result = invoke("show", "task_01ZZZZZZZZZZZZZZZZZZZZZZZZ")
         assert result.exit_code != 0
         assert "not found" in result.stderr
 
     def test_not_found_json(self, invoke):
         """Non-existent task with --json shows structured error."""
-        result = invoke("show", "task_01ZZZZZZZZZZZZZZZZZZZZZZZ", "--json")
+        result = invoke("show", "task_01ZZZZZZZZZZZZZZZZZZZZZZZZ", "--json")
         assert result.exit_code != 0
         parsed = json.loads(result.output)
         assert parsed["ok"] is False
@@ -593,10 +593,16 @@ class TestShow:
         parsed = json.loads(result.output)
         assert parsed["data"]["notes_path"] == f"notes/{task_id}.md"
 
-    def test_no_notes_path_when_absent(self, invoke, create_task):
+    def test_no_notes_path_when_absent(self, invoke, create_task, cli_env):
         """Notes section is not shown when no notes file exists."""
         task = create_task("Task without notes")
         task_id = task["id"]
+
+        # Remove the auto-scaffolded notes file to test the no-notes path
+        root = Path(cli_env["LATTICE_ROOT"])
+        notes_path = root / ".lattice" / "notes" / f"{task_id}.md"
+        if notes_path.exists():
+            notes_path.unlink()
 
         result = invoke("show", task_id)
         assert result.exit_code == 0

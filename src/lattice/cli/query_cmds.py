@@ -15,6 +15,7 @@ from lattice.cli.helpers import (
     read_snapshot,
     read_snapshot_or_exit,
     require_root,
+    resolve_task_id,
     validate_actor_or_exit,
     write_task_event,
 )
@@ -59,6 +60,8 @@ def event_cmd(
 
     lattice_dir = require_root(is_json)
     validate_actor_or_exit(actor, is_json)
+
+    task_id = resolve_task_id(lattice_dir, task_id, is_json)
 
     # Validate event type is custom (x_ prefix)
     if event_type in BUILTIN_EVENT_TYPES:
@@ -223,17 +226,19 @@ def list_cmd(
         click.echo(json_envelope(True, data=data))
     elif quiet:
         for snap in filtered:
-            click.echo(snap.get("id", ""))
+            short_id = snap.get("short_id")
+            click.echo(short_id if short_id else snap.get("id", ""))
     else:
         # Human output: compact one-line-per-task table
         for snap in filtered:
-            task_id = snap.get("id", "?")
+            short_id = snap.get("short_id")
+            display_id = short_id if short_id else snap.get("id", "?")
             s = snap.get("status", "?")
             p = snap.get("priority", "?")
             t = snap.get("type", "?")
             title = snap.get("title", "?")
             assigned_to = snap.get("assigned_to") or "unassigned"
-            click.echo(f'{task_id}  {s}  {p}  {t}  "{title}"  {assigned_to}')
+            click.echo(f'{display_id}  {s}  {p}  {t}  "{title}"  {assigned_to}')
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +261,8 @@ def show_cmd(
     is_json = output_json
 
     lattice_dir = require_root(is_json)
+
+    task_id = resolve_task_id(lattice_dir, task_id, is_json, allow_archived=True)
 
     # Try to read task snapshot from tasks/
     snapshot = read_snapshot(lattice_dir, task_id)
@@ -429,6 +436,7 @@ def _read_artifact_info(lattice_dir: Path, snapshot: dict) -> list[dict]:
 def _print_compact_show(snapshot: dict, is_archived: bool) -> None:
     """Print compact human-readable show output."""
     task_id = snapshot.get("id", "?")
+    short_id = snapshot.get("short_id")
     title = snapshot.get("title", "?")
     status = snapshot.get("status", "?")
     priority = snapshot.get("priority", "?")
@@ -436,7 +444,8 @@ def _print_compact_show(snapshot: dict, is_archived: bool) -> None:
     assigned_to = snapshot.get("assigned_to") or "unassigned"
 
     archived_note = "  [ARCHIVED]" if is_archived else ""
-    click.echo(f'{task_id}  "{title}"{archived_note}')
+    header = f"{short_id} ({task_id})" if short_id else task_id
+    click.echo(f'{header}  "{title}"{archived_note}')
     click.echo(f"Status: {status}  Priority: {priority}  Type: {task_type}")
     click.echo(f"Assigned: {assigned_to}")
 
@@ -453,6 +462,7 @@ def _print_human_show(
     full: bool,
 ) -> None:
     """Print full human-readable show output."""
+    short_id = snapshot.get("short_id")
     title = snapshot.get("title", "?")
     status = snapshot.get("status", "?")
     priority = snapshot.get("priority", "?")
@@ -464,7 +474,8 @@ def _print_human_show(
     description = snapshot.get("description")
 
     archived_note = "  [ARCHIVED]" if is_archived else ""
-    click.echo(f'{task_id}  "{title}"{archived_note}')
+    header = f"{short_id} ({task_id})" if short_id else task_id
+    click.echo(f'{header}  "{title}"{archived_note}')
     click.echo(f"Status: {status}  Priority: {priority}  Type: {task_type}")
     click.echo(f"Assigned: {assigned_to}  Created by: {created_by}")
     click.echo(f"Created: {created_at}  Updated: {updated_at}")
@@ -551,6 +562,8 @@ def _event_summary(event: dict, full: bool) -> str:
         return f'"{body}"'
     elif etype == "task_created":
         return ""
+    elif etype == "task_short_id_assigned":
+        return f"assigned {data.get('short_id', '?')}"
     elif etype == "relationship_added":
         return f"{data.get('type', '?')} -> {data.get('target_task_id', '?')}"
     elif etype == "relationship_removed":

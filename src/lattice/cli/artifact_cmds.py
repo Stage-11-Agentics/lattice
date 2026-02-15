@@ -16,6 +16,7 @@ from lattice.cli.helpers import (
     output_result,
     read_snapshot_or_exit,
     require_root,
+    resolve_task_id,
     validate_actor_or_exit,
     write_task_event,
 )
@@ -68,6 +69,8 @@ def attach(
     load_project_config(lattice_dir)  # validate config exists
 
     validate_actor_or_exit(actor, is_json)
+
+    task_id = resolve_task_id(lattice_dir, task_id, is_json)
 
     # Validate task exists
     snapshot = read_snapshot_or_exit(lattice_dir, task_id, is_json)

@@ -398,7 +398,7 @@ class TestErrorCases:
 
         result = invoke(
             "attach",
-            "task_01NONEXISTENT000000000000",
+            "task_01ZZZZZZZZZZZZZZZZZZZZZZZZ",
             str(src_file),
             "--actor",
             _ACTOR,

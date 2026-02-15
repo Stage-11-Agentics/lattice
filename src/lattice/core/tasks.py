@@ -12,6 +12,7 @@ PROTECTED_FIELDS: frozenset[str] = frozenset(
     {
         "schema_version",
         "id",
+        "short_id",
         "created_at",
         "created_by",
         "updated_at",
@@ -76,7 +77,7 @@ def compact_snapshot(snapshot: dict) -> dict:
 
     Includes counts for relationships and artifacts instead of full arrays.
     """
-    return {
+    result = {
         "id": snapshot.get("id"),
         "title": snapshot.get("title"),
         "status": snapshot.get("status"),
@@ -88,6 +89,10 @@ def compact_snapshot(snapshot: dict) -> dict:
         "relationships_out_count": len(snapshot.get("relationships_out", [])),
         "artifact_ref_count": len(snapshot.get("artifact_refs", [])),
     }
+    short_id = snapshot.get("short_id")
+    if short_id is not None:
+        result["short_id"] = short_id
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +103,7 @@ def compact_snapshot(snapshot: dict) -> dict:
 def _init_snapshot(event: dict) -> dict:
     """Build a brand-new snapshot from a ``task_created`` event."""
     data = event["data"]
-    return {
+    snap: dict = {
         "schema_version": 1,
         "id": event["task_id"],
         "title": data.get("title"),
@@ -117,6 +122,10 @@ def _init_snapshot(event: dict) -> dict:
         "custom_fields": data.get("custom_fields") or {},
         "last_event_id": event["id"],
     }
+    short_id = data.get("short_id")
+    if short_id is not None:
+        snap["short_id"] = short_id
+    return snap
 
 
 # ---------------------------------------------------------------------------
@@ -208,6 +217,11 @@ def _mut_relationship_removed(snap: dict, event: dict) -> None:
 @_register_mutation("artifact_attached")
 def _mut_artifact_attached(snap: dict, event: dict) -> None:
     snap.setdefault("artifact_refs", []).append(event["data"]["artifact_id"])
+
+
+@_register_mutation("task_short_id_assigned")
+def _mut_task_short_id_assigned(snap: dict, event: dict) -> None:
+    snap["short_id"] = event["data"]["short_id"]
 
 
 def _apply_mutation(snap: dict, etype: str, event: dict) -> None:

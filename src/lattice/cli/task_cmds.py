@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import click
 
@@ -13,6 +14,7 @@ from lattice.cli.helpers import (
     output_result,
     read_snapshot_or_exit,
     require_root,
+    resolve_task_id,
     validate_actor_or_exit,
     write_task_event,
 )
@@ -27,6 +29,53 @@ from lattice.core.config import (
 from lattice.core.events import create_event, utc_now
 from lattice.core.ids import generate_task_id, validate_actor, validate_id
 from lattice.core.tasks import apply_event_to_snapshot
+from lattice.storage.short_ids import (
+    allocate_short_id,
+    load_id_index,
+    register_short_id,
+    save_id_index,
+)
+
+
+# ---------------------------------------------------------------------------
+# Notes scaffolding
+# ---------------------------------------------------------------------------
+
+
+def _scaffold_notes(
+    lattice_dir: Path,
+    task_id: str,
+    title: str,
+    short_id: str | None,
+    description: str | None,
+) -> None:
+    """Create the initial notes markdown file for a new task.
+
+    Non-authoritative — this is a convenience scaffold for humans and agents
+    to use as a working document. Skipped silently if the file already exists
+    (idempotent create).
+    """
+    notes_path = lattice_dir / "notes" / f"{task_id}.md"
+    if notes_path.exists():
+        return
+
+    heading = f"# {short_id}: {title}" if short_id else f"# {title}"
+    lines = [heading, ""]
+
+    lines.append("## Summary")
+    lines.append("")
+    if description:
+        lines.append(description)
+    else:
+        lines.append("<!-- Human-readable summary of what this task is and why it matters. -->")
+    lines.append("")
+
+    lines.append("## Technical Plan")
+    lines.append("")
+    lines.append("<!-- Implementation approach, design decisions, open questions. -->")
+    lines.append("")
+
+    notes_path.write_text("\n".join(lines), encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +211,13 @@ def create(
     else:
         task_id = generate_task_id()
 
+    # Allocate short ID if project code is configured
+    project_code = config.get("project_code")
+    short_id: str | None = None
+    if project_code:
+        short_id_str, _idx = allocate_short_id(lattice_dir, project_code)
+        short_id = short_id_str
+
     # Build event data
     event_data: dict = {
         "title": title,
@@ -177,6 +233,8 @@ def create(
         event_data["tags"] = tag_list
     if assigned_to is not None:
         event_data["assigned_to"] = assigned_to
+    if short_id is not None:
+        event_data["short_id"] = short_id
 
     # Build event and snapshot
     event = create_event(
@@ -192,14 +250,27 @@ def create(
     # Write (event-first, then snapshot, under lock)
     write_task_event(lattice_dir, task_id, [event], snapshot)
 
-    # Output
+    # Register short ID in index after successful write
+    if short_id is not None:
+        index = load_id_index(lattice_dir)
+        register_short_id(index, short_id, task_id)
+        save_id_index(lattice_dir, index)
+
+    # Scaffold notes file
+    _scaffold_notes(lattice_dir, task_id, title, short_id, description)
+
+    # Output: prefer short_id when available
+    display_id = short_id if short_id else task_id
     output_result(
         data=snapshot,
         human_message=(
-            f'Created task {task_id} "{title}"\n'
+            f'Created task {display_id} ({task_id}) "{title}"\n'
+            f"  status: {status}  priority: {priority}  type: {task_type}"
+            if short_id
+            else f'Created task {task_id} "{title}"\n'
             f"  status: {status}  priority: {priority}  type: {task_type}"
         ),
-        quiet_value=task_id,
+        quiet_value=display_id,
         is_json=is_json,
         is_quiet=quiet,
     )
@@ -242,8 +313,7 @@ def update(
     config = load_project_config(lattice_dir)
     validate_actor_or_exit(actor, is_json)
 
-    if not validate_id(task_id, "task"):
-        output_error(f"Invalid task ID format: '{task_id}'.", "INVALID_ID", is_json)
+    task_id = resolve_task_id(lattice_dir, task_id, is_json)
 
     snapshot = read_snapshot_or_exit(lattice_dir, task_id, is_json)
 
@@ -411,8 +481,7 @@ def status_cmd(
     config = load_project_config(lattice_dir)
     validate_actor_or_exit(actor, is_json)
 
-    if not validate_id(task_id, "task"):
-        output_error(f"Invalid task ID format: '{task_id}'.", "INVALID_ID", is_json)
+    task_id = resolve_task_id(lattice_dir, task_id, is_json)
 
     snapshot = read_snapshot_or_exit(lattice_dir, task_id, is_json)
     current_status = snapshot["status"]
@@ -512,8 +581,7 @@ def assign(
     load_project_config(lattice_dir)  # ensure valid project
     validate_actor_or_exit(actor, is_json)
 
-    if not validate_id(task_id, "task"):
-        output_error(f"Invalid task ID format: '{task_id}'.", "INVALID_ID", is_json)
+    task_id = resolve_task_id(lattice_dir, task_id, is_json)
 
     # Validate assignee actor format
     if not validate_actor(actor_id):
@@ -589,8 +657,7 @@ def comment(
     load_project_config(lattice_dir)  # ensure valid project
     validate_actor_or_exit(actor, is_json)
 
-    if not validate_id(task_id, "task"):
-        output_error(f"Invalid task ID format: '{task_id}'.", "INVALID_ID", is_json)
+    task_id = resolve_task_id(lattice_dir, task_id, is_json)
 
     snapshot = read_snapshot_or_exit(lattice_dir, task_id, is_json)
 

@@ -8,9 +8,10 @@ from typing import NoReturn
 
 import click
 
-from lattice.core.ids import validate_actor
+from lattice.core.ids import is_short_id, validate_actor, validate_id
 from lattice.storage.fs import LATTICE_DIR, LatticeRootError, find_root
 from lattice.storage.operations import write_task_event  # noqa: F401 — re-exported
+from lattice.storage.short_ids import resolve_short_id as _resolve_short
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +83,47 @@ def output_result(
         click.echo(quiet_value)
     else:
         click.echo(human_message)
+
+
+# ---------------------------------------------------------------------------
+# Task ID resolution (short ID -> ULID)
+# ---------------------------------------------------------------------------
+
+
+def resolve_task_id(
+    lattice_dir: Path,
+    raw_id: str,
+    is_json: bool,
+    *,
+    allow_archived: bool = False,
+) -> str:
+    """Resolve a raw task identifier to a canonical ULID.
+
+    Accepts both ULIDs (``task_01...``) and short IDs (``LAT-42``).
+    Exits with an error if the ID is unrecognized.
+    """
+    # Direct ULID
+    if validate_id(raw_id, "task"):
+        return raw_id
+
+    # Try short ID
+    if is_short_id(raw_id):
+        normalized = raw_id.upper()
+        ulid = _resolve_short(lattice_dir, normalized)
+        if ulid is not None:
+            return ulid
+        output_error(
+            f"Short ID '{normalized}' not found.",
+            "NOT_FOUND",
+            is_json,
+        )
+
+    # Not a valid format
+    output_error(
+        f"Invalid task ID format: '{raw_id}'.",
+        "INVALID_ID",
+        is_json,
+    )
 
 
 # ---------------------------------------------------------------------------

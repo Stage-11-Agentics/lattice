@@ -210,3 +210,51 @@
 - Decision: Implemented 9 fixes from a project-wide audit covering security (path-traversal validation, POST body size limit, readonly mode for non-loopback dashboard), durability (parent-directory fsync after atomic writes), architecture (unified write-path in `lattice.storage.operations`, mutation registry pattern in `tasks.py`), and docs (requirements drift fixes, `_global.jsonl` → `_lifecycle.jsonl` alignment).
 - Rationale: The audit identified gaps in input validation (path traversal via crafted task IDs), denial-of-service surface (unbounded POST bodies), data durability (missing dir fsync after rename), network safety (writes allowed on non-loopback interfaces), code duplication (CLI and dashboard had separate write paths), and documentation drift.
 - Consequence: CLI and dashboard share a single `write_task_event()` in `lattice.storage.operations`. Dashboard supports `--force` status transitions matching CLI behavior. Non-loopback dashboard binds are read-only by default. All task ID inputs are validated before filesystem operations.
+
+---
+
+## 2026-02-15: Human-friendly short IDs (ULIDs remain canonical)
+
+- Decision: ULIDs (`task_01...`) remain the internal primary key for filenames, events, locks, and relationships. Short IDs (`LAT-42`) are a human-facing alias layer resolved at the CLI boundary.
+- Rationale: Changing the canonical ID would require rewriting every event, snapshot, lock, and filename. The alias approach is additive and non-breaking.
+- Consequence: All CLI commands accept both ULID and short ID inputs. Short IDs are resolved to ULIDs before any operation.
+
+---
+
+## 2026-02-15: Short ID stored in snapshot and events; index file is derived
+
+- Decision: `short_id` is a first-class field on task snapshots. Included in `task_created` event data. A dedicated `task_short_id_assigned` event handles retroactive assignment. `.lattice/ids.json` is a derived index (rebuildable from events).
+- Rationale: Events are authoritative. The index is a read optimization, not a source of truth.
+- Consequence: `lattice rebuild --all` regenerates `ids.json`. `lattice doctor` checks alias integrity.
+
+---
+
+## 2026-02-15: Project code in config.json; counter in ids.json
+
+- Decision: `project_code` (1-5 uppercase ASCII letters) stored in `.lattice/config.json`. `next_seq` counter stored in `.lattice/ids.json` alongside the mapping.
+- Rationale: Config is the natural place for project-level settings. The counter lives with the mapping it governs.
+- Consequence: `lattice init --project-code`, `lattice set-project-code`, and `lattice backfill-ids` manage project code lifecycle.
+
+---
+
+## 2026-02-15: Existing short IDs are immutable
+
+- Decision: Once assigned, a task's short ID never changes — even if the project code is changed later.
+- Rationale: References to `LAT-7` in comments, docs, and conversations must remain stable forever.
+- Consequence: Changing project code only affects future task creation.
+
+---
+
+## 2026-02-15: Dedicated event type for retroactive short ID assignment
+
+- Decision: `task_short_id_assigned` (not `field_updated`) for migration of existing tasks.
+- Rationale: Using `field_updated` would conflict with `short_id` being a protected field. A dedicated event type makes replay semantics explicit.
+- Consequence: `short_id` is in PROTECTED_FIELDS and cannot be changed via `lattice update`.
+
+---
+
+## 2026-02-15: Open question — Is "task" the right primitive?
+
+- Status: **Open question**, not a decision. Noted for future exploration.
+- Observation: Tasks are the inherited metaphor from project management, but agents may coordinate more naturally around other primitives — goals, invariants, contracts, capabilities. For v0, a "task" can represent any of these. The abstraction may evolve in later versions.
+- Consequence: No action now. Revisit when real usage patterns emerge that strain the task metaphor.

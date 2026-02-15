@@ -10,12 +10,12 @@ from lattice.cli.helpers import (
     output_result,
     read_snapshot_or_exit,
     require_root,
+    resolve_task_id,
     validate_actor_or_exit,
     write_task_event,
 )
 from lattice.cli.main import cli
 from lattice.core.events import create_event
-from lattice.core.ids import validate_id
 from lattice.core.relationships import RELATIONSHIP_TYPES, validate_relationship_type
 from lattice.core.tasks import apply_event_to_snapshot
 
@@ -48,10 +48,8 @@ def link(
     lattice_dir = require_root(is_json)
     validate_actor_or_exit(actor, is_json)
 
-    if not validate_id(task_id, "task"):
-        output_error(f"Invalid task ID format: '{task_id}'.", "INVALID_ID", is_json)
-    if not validate_id(target_task_id, "task"):
-        output_error(f"Invalid task ID format: '{target_task_id}'.", "INVALID_ID", is_json)
+    task_id = resolve_task_id(lattice_dir, task_id, is_json)
+    target_task_id = resolve_task_id(lattice_dir, target_task_id, is_json)
 
     # Validate relationship type
     if not validate_relationship_type(rel_type):
@@ -147,10 +145,8 @@ def unlink(
     lattice_dir = require_root(is_json)
     validate_actor_or_exit(actor, is_json)
 
-    if not validate_id(task_id, "task"):
-        output_error(f"Invalid task ID format: '{task_id}'.", "INVALID_ID", is_json)
-    if not validate_id(target_task_id, "task"):
-        output_error(f"Invalid task ID format: '{target_task_id}'.", "INVALID_ID", is_json)
+    task_id = resolve_task_id(lattice_dir, task_id, is_json)
+    target_task_id = resolve_task_id(lattice_dir, target_task_id, is_json)
 
     # Validate relationship type
     if not validate_relationship_type(rel_type):

@@ -46,7 +46,8 @@ The event log (JSONL) is the source of truth. Task JSON files are materialized s
 
 ```
 .lattice/
-├── config.json                    # Workflow, statuses, transitions, WIP limits
+├── config.json                    # Workflow, statuses, transitions, WIP limits, project_code
+├── ids.json                       # Derived short ID index (short_id -> ULID mapping + next_seq)
 ├── tasks/<task_id>.json           # Materialized task snapshots
 ├── events/<task_id>.jsonl         # Per-task event logs (append-only)
 ├── events/_lifecycle.jsonl         # Lifecycle event log (derived, rebuildable from per-task logs)
@@ -59,6 +60,10 @@ The event log (JSONL) is the source of truth. Task JSON files are materialized s
 │   └── notes/
 └── locks/                         # Internal lock files for concurrency
 ```
+
+### Short IDs
+
+Tasks can have human-friendly short IDs (e.g., `LAT-42`) when a `project_code` is configured. Short IDs are aliases — all CLI commands accept both ULID (`task_01...`) and short ID inputs. Resolution happens at the CLI layer via `resolve_task_id()` in `cli/helpers.py`. The `ids.json` index maps short IDs to ULIDs and is derived (rebuildable via `lattice rebuild --all`).
 
 ### Write Path
 
