@@ -25,7 +25,7 @@ a:hover{text-decoration:underline}
 .btn-icon:hover{background:#e9ecef}
 
 /* Content */
-.content{max-width:1400px;margin:0 auto;padding:16px}
+.content{margin:0 auto;padding:16px}
 
 /* Loading & errors */
 .loading{text-align:center;padding:48px;color:#6c757d}
@@ -44,7 +44,7 @@ a:hover{text-decoration:underline}
 @keyframes toastIn{from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:translateX(0)}}
 
 /* Board view */
-.board{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px;align-items:start}
+.board{display:grid;gap:12px;align-items:start}
 .board-col{background:#fff;border:1px solid #dee2e6;border-radius:6px;min-height:auto;transition:box-shadow .2s,border-color .2s}
 .board-col-header{padding:8px 12px;font-weight:600;font-size:.875rem;border-bottom:1px solid #dee2e6;display:flex;justify-content:space-between;align-items:center;border-radius:6px 6px 0 0;position:relative}
 .board-col-header .count{font-weight:400;color:rgba(255,255,255,.8);font-size:.75rem}
@@ -457,8 +457,9 @@ function renderBoard() {
     grouped[s].push(t);
   });
 
-  var html = '<div class="board">';
   var allStatuses = statuses.concat(Object.keys(grouped).filter(function(s) { return !statuses.includes(s); }));
+  var colCount = allStatuses.length || 1;
+  var html = '<div class="board" style="grid-template-columns:repeat(' + colCount + ',1fr)">';
   allStatuses.forEach(function(status) {
     var items = grouped[status] || [];
     var cls = "status-" + status.replace(/\s+/g,"_");
