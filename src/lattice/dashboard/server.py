@@ -480,7 +480,7 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                 return  # error already sent
 
             # Validate body structure: only allow known keys
-            allowed_keys = {"background_image", "lane_colors", "theme"}
+            allowed_keys = {"background_image", "lane_colors", "theme", "voice"}
             unknown = set(body.keys()) - allowed_keys
             if unknown:
                 self._send_json(
@@ -535,6 +535,15 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                     )
                     return
 
+            # Validate voice if present
+            if "voice" in body:
+                v = body["voice"]
+                if not isinstance(v, str):
+                    self._send_json(
+                        400, _err("VALIDATION_ERROR", "'voice' must be a string")
+                    )
+                    return
+
             # Read, merge, write config atomically
             config_path = ld / "config.json"
             locks_dir = ld / "locks"
@@ -565,6 +574,13 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                             dashboard.pop("theme", None)
                         else:
                             dashboard["theme"] = theme
+
+                    if "voice" in body:
+                        voice = body["voice"]
+                        if voice is None:
+                            dashboard.pop("voice", None)
+                        else:
+                            dashboard["voice"] = voice
 
                     if dashboard:
                         config["dashboard"] = dashboard

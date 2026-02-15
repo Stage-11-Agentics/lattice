@@ -2685,6 +2685,11 @@ select.form-control{cursor:pointer}
       <div class="hint">Choose a visual theme for the dashboard.</div>
     </div>
     <div class="settings-group">
+      <label for="voice-select">Voice</label>
+      <select class="form-control" id="voice-select"></select>
+      <div class="hint">Choose how the dashboard speaks to you.</div>
+    </div>
+    <div class="settings-group">
       <label for="bg-image-input">Background Image URL</label>
       <input type="text" id="bg-image-input" placeholder="https://example.com/bg.jpg">
       <div class="hint">Set a background image for the board view. Leave empty to clear.</div>
@@ -2875,6 +2880,334 @@ var THEMES = [
   {id: "holographic", name: "Holographic", desc: "Iridescent rainbow-edge trading card aesthetic"}
 ];
 
+// --- Voice Packs (i18n) ---
+var VOICES = {
+  "en-oracle": {
+    _meta: { label: "Oracle (English)", lang: "en" },
+    "nav.brand": "Lattice",
+    "nav.board": "Board",
+    "nav.list": "List",
+    "nav.activity": "Activity",
+    "btn.new_task": "+ New Task",
+    "btn.refresh": "Refresh",
+    "btn.settings": "Dashboard Settings",
+    "btn.create_task": "Create Task",
+    "btn.cancel": "Cancel",
+    "btn.save": "Save",
+    "btn.apply": "Apply",
+    "btn.clear": "Clear",
+    "btn.apply_lane_colors": "Apply Lane Colors",
+    "btn.reset_defaults": "Reset to Defaults",
+    "btn.post": "Post",
+    "btn.archive": "Archive",
+    "btn.retry": "Retry",
+    "btn.back": "&larr; Back",
+    "loading": "Gathering state...",
+    "empty.board": "The board is clear \u2014 a workspace awaits its first intention.",
+    "empty.board.cta": "Begin",
+    "empty.list": "No tasks have been set into motion.",
+    "empty.list.filtered": "No tasks match the current lens.",
+    "empty.activity": "No echoes yet \u2014 all is still.",
+    "empty.lane": "Awaiting",
+    "toast.task_created": "Intention declared: {title}",
+    "toast.status_changed": "State shifted to {status}",
+    "toast.priority_changed": "Weight adjusted to {value}",
+    "toast.type_changed": "Form reshaped to {value}",
+    "toast.title_updated": "Name rewritten",
+    "toast.description_updated": "Details refined",
+    "toast.assigned": "Entrusted to {value}",
+    "toast.unassigned": "Released from assignment",
+    "toast.tags_updated": "Markers set",
+    "toast.comment_added": "Trace left",
+    "toast.task_archived": "Committed to the archive",
+    "toast.theme_updated": "Appearance shifted",
+    "toast.bg_updated": "Background altered",
+    "toast.bg_cleared": "Background released",
+    "toast.lane_colors_updated": "Lane palette applied",
+    "toast.lane_colors_reset": "Lane palette restored",
+    "toast.voice_updated": "Voice changed",
+    "toast.moved_to": "Transitioned to {status}",
+    "toast.invalid_transition": "That path is not permitted: {from} to {to}",
+    "error.title_required": "A task requires a name \u2014 even the smallest intention must be declared.",
+    "error.title_empty": "A name cannot be emptied \u2014 identity persists.",
+    "error.comment_empty": "An empty trace carries no meaning.",
+    "modal.create_title": "New Intention",
+    "label.title": "Title *",
+    "label.type": "Type",
+    "label.priority": "Priority",
+    "label.description": "Description",
+    "label.tags": "Tags",
+    "label.assigned_to": "Assigned To",
+    "placeholder.title": "Name this intention...",
+    "placeholder.description": "What shape does this take?...",
+    "placeholder.tags": "Comma-separated markers",
+    "placeholder.assigned": "e.g. human:atin, agent:claude",
+    "placeholder.comment": "Leave a trace for the next mind...",
+    "settings.title": "Dashboard Settings",
+    "settings.theme_label": "Theme",
+    "settings.theme_hint": "Choose a visual theme for the dashboard.",
+    "settings.voice_label": "Voice",
+    "settings.voice_hint": "Choose how the dashboard speaks to you.",
+    "settings.bg_label": "Background Image URL",
+    "settings.bg_hint": "Set a background image for the board view. Leave empty to clear.",
+    "settings.lane_label": "Lane Colors",
+    "settings.lane_hint": "Click a color to customize each swim lane header.",
+    "detail.short_id": "Short ID",
+    "detail.tech_id": "Technical ID",
+    "detail.assigned_to": "Assigned to",
+    "detail.created_by": "Created by",
+    "detail.created": "Created",
+    "detail.updated": "Updated",
+    "detail.urgency": "Urgency",
+    "detail.unassigned": "unassigned",
+    "detail.no_description": "(no description \u2014 click to add)",
+    "detail.no_tags": "(no tags \u2014 click to add)",
+    "detail.notes_exists": "Notes file exists: ",
+    "section.description": "Description",
+    "section.tags": "Tags",
+    "section.custom_fields": "Custom Fields",
+    "section.relationships": "Relationships",
+    "section.artifacts": "Artifacts",
+    "section.notes": "Notes",
+    "section.comments": "Comments",
+    "section.history": "History",
+    "filter.search": "Search title...",
+    "filter.all_statuses": "All statuses",
+    "filter.all_types": "All types",
+    "filter.all_priorities": "All priorities",
+    "filter.show_archived": "Show archived",
+    "table.id": "ID",
+    "table.title": "Title",
+    "table.status": "Status",
+    "table.priority": "Priority",
+    "table.type": "Type",
+    "table.assigned": "Assigned",
+    "table.updated": "Updated",
+    "stats.tasks": "tasks"
+  },
+  "en-clinical": {
+    _meta: { label: "Clinical (English)", lang: "en" },
+    "nav.brand": "Lattice",
+    "nav.board": "Board",
+    "nav.list": "List",
+    "nav.activity": "Activity",
+    "btn.new_task": "+ New Task",
+    "btn.refresh": "Refresh",
+    "btn.settings": "Dashboard Settings",
+    "btn.create_task": "Create Task",
+    "btn.cancel": "Cancel",
+    "btn.save": "Save",
+    "btn.apply": "Apply",
+    "btn.clear": "Clear",
+    "btn.apply_lane_colors": "Apply Lane Colors",
+    "btn.reset_defaults": "Reset to Defaults",
+    "btn.post": "Post",
+    "btn.archive": "Archive",
+    "btn.retry": "Retry",
+    "btn.back": "&larr; Back",
+    "loading": "Loading...",
+    "empty.board": "No tasks yet.",
+    "empty.board.cta": "+ Create your first task",
+    "empty.list": "No tasks yet.",
+    "empty.list.filtered": "No tasks match your filters.",
+    "empty.activity": "No recent activity.",
+    "empty.lane": "No tasks",
+    "toast.task_created": "Task created: {title}",
+    "toast.status_changed": "Status changed to {status}",
+    "toast.priority_changed": "Priority changed to {value}",
+    "toast.type_changed": "Type changed to {value}",
+    "toast.title_updated": "Title updated",
+    "toast.description_updated": "Description updated",
+    "toast.assigned": "Assigned to {value}",
+    "toast.unassigned": "Unassigned",
+    "toast.tags_updated": "Tags updated",
+    "toast.comment_added": "Comment added",
+    "toast.task_archived": "Task archived",
+    "toast.theme_updated": "Theme updated",
+    "toast.bg_updated": "Background image updated",
+    "toast.bg_cleared": "Background image cleared",
+    "toast.lane_colors_updated": "Lane colors updated",
+    "toast.lane_colors_reset": "Lane colors reset to defaults",
+    "toast.voice_updated": "Voice updated",
+    "toast.moved_to": "Moved to {status}",
+    "toast.invalid_transition": "Invalid transition: {from} to {to}",
+    "error.title_required": "Title is required",
+    "error.title_empty": "Title cannot be empty",
+    "error.comment_empty": "Comment cannot be empty",
+    "modal.create_title": "Create Task",
+    "label.title": "Title *",
+    "label.type": "Type",
+    "label.priority": "Priority",
+    "label.description": "Description",
+    "label.tags": "Tags",
+    "label.assigned_to": "Assigned To",
+    "placeholder.title": "Task title",
+    "placeholder.description": "Optional description",
+    "placeholder.tags": "Comma-separated tags",
+    "placeholder.assigned": "e.g. human:atin, agent:claude",
+    "placeholder.comment": "Add a comment...",
+    "settings.title": "Dashboard Settings",
+    "settings.theme_label": "Theme",
+    "settings.theme_hint": "Choose a visual theme for the dashboard.",
+    "settings.voice_label": "Voice",
+    "settings.voice_hint": "Choose how the dashboard speaks to you.",
+    "settings.bg_label": "Background Image URL",
+    "settings.bg_hint": "Set a background image for the board view. Leave empty to clear.",
+    "settings.lane_label": "Lane Colors",
+    "settings.lane_hint": "Click a color to customize each swim lane header.",
+    "detail.short_id": "Short ID",
+    "detail.tech_id": "Technical ID",
+    "detail.assigned_to": "Assigned to",
+    "detail.created_by": "Created by",
+    "detail.created": "Created",
+    "detail.updated": "Updated",
+    "detail.urgency": "Urgency",
+    "detail.unassigned": "unassigned",
+    "detail.no_description": "(no description \u2014 click to add)",
+    "detail.no_tags": "(no tags \u2014 click to add)",
+    "detail.notes_exists": "Notes file exists: ",
+    "section.description": "Description",
+    "section.tags": "Tags",
+    "section.custom_fields": "Custom Fields",
+    "section.relationships": "Relationships",
+    "section.artifacts": "Artifacts",
+    "section.notes": "Notes",
+    "section.comments": "Comments",
+    "section.history": "History",
+    "filter.search": "Search title...",
+    "filter.all_statuses": "All statuses",
+    "filter.all_types": "All types",
+    "filter.all_priorities": "All priorities",
+    "filter.show_archived": "Show archived",
+    "table.id": "ID",
+    "table.title": "Title",
+    "table.status": "Status",
+    "table.priority": "Priority",
+    "table.type": "Type",
+    "table.assigned": "Assigned",
+    "table.updated": "Updated",
+    "stats.tasks": "tasks"
+  },
+  "es-oracle": {
+    _meta: { label: "Or\u00e1culo (Espa\u00f1ol)", lang: "es" },
+    "nav.board": "Tablero",
+    "nav.list": "Lista",
+    "nav.activity": "Actividad",
+    "btn.new_task": "+ Nueva Tarea",
+    "btn.create_task": "Crear Tarea",
+    "btn.cancel": "Cancelar",
+    "btn.save": "Guardar",
+    "btn.apply": "Aplicar",
+    "btn.clear": "Limpiar",
+    "btn.apply_lane_colors": "Aplicar Colores",
+    "btn.reset_defaults": "Restablecer",
+    "btn.post": "Publicar",
+    "btn.archive": "Archivar",
+    "btn.retry": "Reintentar",
+    "btn.back": "&larr; Volver",
+    "btn.refresh": "Actualizar",
+    "loading": "Reuniendo estado...",
+    "empty.board": "El tablero est\u00e1 limpio \u2014 un espacio aguarda su primera intenci\u00f3n.",
+    "empty.board.cta": "Comenzar",
+    "empty.list": "Ninguna tarea ha sido puesta en movimiento.",
+    "empty.list.filtered": "Ninguna tarea coincide con el filtro actual.",
+    "empty.activity": "Sin ecos a\u00fan \u2014 todo est\u00e1 en calma.",
+    "empty.lane": "Esperando",
+    "toast.task_created": "Intenci\u00f3n declarada: {title}",
+    "toast.status_changed": "Estado cambiado a {status}",
+    "toast.priority_changed": "Prioridad ajustada a {value}",
+    "toast.type_changed": "Tipo cambiado a {value}",
+    "toast.title_updated": "Nombre actualizado",
+    "toast.description_updated": "Descripci\u00f3n actualizada",
+    "toast.assigned": "Asignado a {value}",
+    "toast.unassigned": "Sin asignar",
+    "toast.tags_updated": "Etiquetas actualizadas",
+    "toast.comment_added": "Rastro dejado",
+    "toast.task_archived": "Tarea archivada",
+    "toast.theme_updated": "Apariencia cambiada",
+    "toast.bg_updated": "Fondo actualizado",
+    "toast.bg_cleared": "Fondo liberado",
+    "toast.lane_colors_updated": "Colores de carril aplicados",
+    "toast.lane_colors_reset": "Colores de carril restablecidos",
+    "toast.voice_updated": "Voz cambiada",
+    "toast.moved_to": "Transici\u00f3n a {status}",
+    "toast.invalid_transition": "Esa transici\u00f3n no est\u00e1 permitida: {from} a {to}",
+    "error.title_required": "Una tarea requiere un nombre \u2014 toda intenci\u00f3n debe ser declarada.",
+    "error.title_empty": "El nombre no puede quedar vac\u00edo \u2014 la identidad persiste.",
+    "error.comment_empty": "Un rastro vac\u00edo no tiene significado.",
+    "modal.create_title": "Nueva Intenci\u00f3n",
+    "label.title": "T\u00edtulo *",
+    "label.type": "Tipo",
+    "label.priority": "Prioridad",
+    "label.description": "Descripci\u00f3n",
+    "label.tags": "Etiquetas",
+    "label.assigned_to": "Asignado a",
+    "placeholder.title": "Nombra esta intenci\u00f3n...",
+    "placeholder.description": "\u00bfQu\u00e9 forma toma esto?...",
+    "placeholder.tags": "Marcadores separados por coma",
+    "placeholder.comment": "Deja un rastro para la pr\u00f3xima mente...",
+    "settings.title": "Configuraci\u00f3n del Panel",
+    "settings.theme_label": "Tema",
+    "settings.theme_hint": "Elige un tema visual para el panel.",
+    "settings.voice_label": "Voz",
+    "settings.voice_hint": "Elige c\u00f3mo te habla el panel.",
+    "settings.bg_label": "URL de Imagen de Fondo",
+    "settings.bg_hint": "Establece una imagen de fondo. Deja vac\u00edo para limpiar.",
+    "settings.lane_label": "Colores de Carril",
+    "settings.lane_hint": "Haz clic en un color para personalizar cada carril.",
+    "detail.short_id": "ID Corto",
+    "detail.tech_id": "ID T\u00e9cnico",
+    "detail.assigned_to": "Asignado a",
+    "detail.created_by": "Creado por",
+    "detail.created": "Creado",
+    "detail.updated": "Actualizado",
+    "detail.urgency": "Urgencia",
+    "detail.unassigned": "sin asignar",
+    "detail.no_description": "(sin descripci\u00f3n \u2014 clic para a\u00f1adir)",
+    "detail.no_tags": "(sin etiquetas \u2014 clic para a\u00f1adir)",
+    "detail.notes_exists": "Archivo de notas: ",
+    "section.description": "Descripci\u00f3n",
+    "section.tags": "Etiquetas",
+    "section.custom_fields": "Campos Personalizados",
+    "section.relationships": "Relaciones",
+    "section.artifacts": "Artefactos",
+    "section.notes": "Notas",
+    "section.comments": "Comentarios",
+    "section.history": "Historial",
+    "filter.search": "Buscar t\u00edtulo...",
+    "filter.all_statuses": "Todos los estados",
+    "filter.all_types": "Todos los tipos",
+    "filter.all_priorities": "Todas las prioridades",
+    "filter.show_archived": "Mostrar archivados",
+    "table.id": "ID",
+    "table.title": "T\u00edtulo",
+    "table.status": "Estado",
+    "table.priority": "Prioridad",
+    "table.type": "Tipo",
+    "table.assigned": "Asignado",
+    "table.updated": "Actualizado",
+    "stats.tasks": "tareas"
+  }
+};
+
+var currentVoice = "en-oracle";
+
+function t(key) {
+  return (VOICES[currentVoice] && VOICES[currentVoice][key]) ||
+         (VOICES["en-oracle"] && VOICES["en-oracle"][key]) ||
+         key;
+}
+
+function tf(key, replacements) {
+  var str = t(key);
+  if (replacements) {
+    Object.keys(replacements).forEach(function(k) {
+      str = str.replace("{" + k + "}", replacements[k]);
+    });
+  }
+  return str;
+}
+
 // --- State ---
 var config = null;
 var tasks = [];
@@ -2924,9 +3257,16 @@ async function init() {
     var results = await Promise.all([api("/api/config"), api("/api/tasks")]);
     config = results[0];
     tasks = results[1];
+    // Load voice preference
+    var dc = (config && config.dashboard) || {};
+    if (dc.voice && VOICES[dc.voice]) {
+      currentVoice = dc.voice;
+    }
     updateStatsBadges();
     applyTheme(getTheme());
     populateThemeSelector();
+    populateVoiceSelector();
+    updateStaticVoiceStrings();
     populateLaneColorSettings();
     loadBackgroundSetting();
     await route(hash);
@@ -2946,7 +3286,7 @@ function updateStatsBadges() {
   var total = tasks.length;
   var byStatus = {};
   tasks.forEach(function(t) { byStatus[t.status] = (byStatus[t.status]||0)+1; });
-  var html = '<span class="badge badge-stat">' + total + " tasks</span>";
+  var html = '<span class="badge badge-stat">' + total + " " + t("stats.tasks") + "</span>";
   for (var s in byStatus) {
     html += ' <span class="badge badge-stat">' + s + ": " + byStatus[s] + "</span>";
   }
@@ -3010,6 +3350,118 @@ function populateThemeSelector() {
   });
 }
 
+function getVoice() {
+  var dc = getDashboardConfig();
+  return dc.voice || "en-oracle";
+}
+
+function populateVoiceSelector() {
+  var select = document.getElementById("voice-select");
+  if (!select) return;
+  var current = getVoice();
+  select.innerHTML = "";
+  Object.keys(VOICES).forEach(function(id) {
+    var meta = VOICES[id]._meta || {};
+    var opt = document.createElement("option");
+    opt.value = id;
+    opt.textContent = meta.label || id;
+    if (id === current) opt.selected = true;
+    select.appendChild(opt);
+  });
+}
+
+function updateStaticVoiceStrings() {
+  // Nav tabs
+  document.querySelectorAll(".nav-tab").forEach(function(el) {
+    var view = el.dataset.view;
+    if (view === "board") el.textContent = t("nav.board");
+    else if (view === "list") el.textContent = t("nav.list");
+    else if (view === "activity") el.textContent = t("nav.activity");
+  });
+  // New Task button
+  var newBtn = document.getElementById("new-task-btn");
+  if (newBtn) newBtn.textContent = t("btn.new_task");
+  // Refresh button
+  var refBtn = document.getElementById("refresh-btn");
+  if (refBtn) refBtn.textContent = t("btn.refresh");
+  // Settings header
+  var settingsHeader = document.querySelector(".settings-header span");
+  if (settingsHeader) settingsHeader.textContent = t("settings.title");
+  // Settings button title
+  var settingsBtn = document.getElementById("settings-btn");
+  if (settingsBtn) settingsBtn.title = t("btn.settings");
+  // Loading text
+  var loadingP = document.querySelector(".loading p");
+  if (loadingP) loadingP.textContent = t("loading");
+  // Settings labels and hints
+  var themeLabel = document.querySelector('label[for="theme-select"]');
+  if (themeLabel) themeLabel.textContent = t("settings.theme_label");
+  var themeHint = document.querySelector('#theme-select + .hint, label[for="theme-select"] ~ .hint');
+  if (!themeHint) {
+    var themeGroup = document.getElementById("theme-select");
+    if (themeGroup) themeHint = themeGroup.parentElement.querySelector(".hint");
+  }
+  if (themeHint) themeHint.textContent = t("settings.theme_hint");
+  var voiceLabel = document.querySelector('label[for="voice-select"]');
+  if (voiceLabel) voiceLabel.textContent = t("settings.voice_label");
+  var voiceHint = document.getElementById("voice-select");
+  if (voiceHint) {
+    var vh = voiceHint.parentElement.querySelector(".hint");
+    if (vh) vh.textContent = t("settings.voice_hint");
+  }
+  var bgLabel = document.querySelector('label[for="bg-image-input"]');
+  if (bgLabel) bgLabel.textContent = t("settings.bg_label");
+  var bgHint = document.getElementById("bg-image-input");
+  if (bgHint) {
+    var bh = bgHint.parentElement.querySelector(".hint");
+    if (bh) bh.textContent = t("settings.bg_hint");
+  }
+  var bgSaveBtn = document.getElementById("bg-image-save");
+  if (bgSaveBtn) bgSaveBtn.textContent = t("btn.apply");
+  var bgClearBtn = document.getElementById("bg-image-clear");
+  if (bgClearBtn) bgClearBtn.textContent = t("btn.clear");
+  var laneLabelEl = document.querySelector('#lane-colors-list');
+  if (laneLabelEl) {
+    var lg = laneLabelEl.parentElement;
+    var ll = lg.querySelector("label");
+    if (ll) ll.textContent = t("settings.lane_label");
+    var lh = lg.querySelector(".hint");
+    if (lh) lh.textContent = t("settings.lane_hint");
+  }
+  var lcSaveBtn = document.getElementById("lane-colors-save");
+  if (lcSaveBtn) lcSaveBtn.textContent = t("btn.apply_lane_colors");
+  var lcResetBtn = document.getElementById("lane-colors-reset");
+  if (lcResetBtn) lcResetBtn.textContent = t("btn.reset_defaults");
+  // Create task modal static elements
+  var modalHeader = document.querySelector("#create-task-modal .modal-header h2");
+  if (modalHeader) modalHeader.textContent = t("modal.create_title");
+  var ctCancelBtn = document.getElementById("create-task-cancel");
+  if (ctCancelBtn) ctCancelBtn.textContent = t("btn.cancel");
+  var ctSubmitBtn = document.getElementById("create-task-submit");
+  if (ctSubmitBtn) ctSubmitBtn.textContent = t("btn.create_task");
+  // Create task modal labels
+  var ctTitleLabel = document.querySelector('label[for="ct-title"]');
+  if (ctTitleLabel) ctTitleLabel.textContent = t("label.title");
+  var ctTitleInput = document.getElementById("ct-title");
+  if (ctTitleInput) ctTitleInput.placeholder = t("placeholder.title");
+  var ctTypeLabel = document.querySelector('label[for="ct-type"]');
+  if (ctTypeLabel) ctTypeLabel.textContent = t("label.type");
+  var ctPriLabel = document.querySelector('label[for="ct-priority"]');
+  if (ctPriLabel) ctPriLabel.textContent = t("label.priority");
+  var ctDescLabel = document.querySelector('label[for="ct-description"]');
+  if (ctDescLabel) ctDescLabel.textContent = t("label.description");
+  var ctDescInput = document.getElementById("ct-description");
+  if (ctDescInput) ctDescInput.placeholder = t("placeholder.description");
+  var ctTagsLabel = document.querySelector('label[for="ct-tags"]');
+  if (ctTagsLabel) ctTagsLabel.textContent = t("label.tags");
+  var ctTagsInput = document.getElementById("ct-tags");
+  if (ctTagsInput) ctTagsInput.placeholder = t("placeholder.tags");
+  var ctAssignedLabel = document.querySelector('label[for="ct-assigned"]');
+  if (ctAssignedLabel) ctAssignedLabel.textContent = t("label.assigned_to");
+  var ctAssignedInput = document.getElementById("ct-assigned");
+  if (ctAssignedInput) ctAssignedInput.placeholder = t("placeholder.assigned");
+}
+
 // --- Background image ---
 function applyBackgroundImage() {
   var app = document.getElementById("app");
@@ -3062,7 +3514,7 @@ function renderBoard() {
 
   var statuses = config.workflow ? config.workflow.statuses : [];
   if (tasks.length === 0) {
-    app.innerHTML = '<div class="empty"><p>No tasks yet.</p><p><button class="btn btn-primary" onclick="showCreateTaskModal()">+ Create your first task</button></p></div>';
+    app.innerHTML = '<div class="empty"><p>' + esc(t("empty.board")) + '</p><p><button class="btn btn-primary" onclick="showCreateTaskModal()">' + t("empty.board.cta") + '</button></p></div>';
     return;
   }
 
@@ -3100,7 +3552,7 @@ function renderBoard() {
       if (t.assigned_to) html += '<span style="color:var(--text-muted);font-size:.8rem">' + esc(t.assigned_to) + "</span>";
       html += "</div></div>";
     });
-    if (items.length === 0) html += '<div style="color:var(--text-muted);font-size:.8rem;padding:8px;text-align:center">No tasks</div>';
+    if (items.length === 0) html += '<div style="color:var(--text-muted);font-size:.8rem;padding:8px;text-align:center">' + esc(t("empty.lane")) + '</div>';
     html += "</div></div>";
   });
   html += "</div>";
@@ -3198,7 +3650,7 @@ window._boardDrop = async function(e) {
   var transitions = (config.workflow && config.workflow.transitions) || {};
   var allowed = transitions[draggedFromStatus] || [];
   if (!allowed.includes(targetStatus)) {
-    showToast("Invalid transition: " + draggedFromStatus + " to " + targetStatus, "error");
+    showToast(tf("toast.invalid_transition", {from: draggedFromStatus, to: targetStatus}), "error");
     return;
   }
 
@@ -3207,7 +3659,7 @@ window._boardDrop = async function(e) {
       status: targetStatus,
       actor: "dashboard:web"
     });
-    showToast("Moved to " + targetStatus, "success");
+    showToast(tf("toast.moved_to", {status: targetStatus}), "success");
     // Refresh tasks and re-render
     tasks = await api("/api/tasks");
     updateStatsBadges();
@@ -3226,17 +3678,17 @@ function renderList() {
   var types = config.task_types || [];
 
   var html = '<div class="filters">';
-  html += '<input type="text" id="f-search" placeholder="Search title...">';
-  html += '<select id="f-status"><option value="">All statuses</option>';
+  html += '<input type="text" id="f-search" placeholder="' + esc(t("filter.search")) + '">';
+  html += '<select id="f-status"><option value="">' + esc(t("filter.all_statuses")) + '</option>';
   statuses.forEach(function(s) { html += '<option value="'+esc(s)+'">'+esc(s)+"</option>"; });
   html += "</select>";
-  html += '<select id="f-type"><option value="">All types</option>';
-  types.forEach(function(t) { html += '<option value="'+esc(t)+'">'+esc(t)+"</option>"; });
+  html += '<select id="f-type"><option value="">' + esc(t("filter.all_types")) + '</option>';
+  types.forEach(function(ty) { html += '<option value="'+esc(ty)+'">'+esc(ty)+"</option>"; });
   html += "</select>";
-  html += '<select id="f-priority"><option value="">All priorities</option>';
+  html += '<select id="f-priority"><option value="">' + esc(t("filter.all_priorities")) + '</option>';
   ["critical","high","medium","low"].forEach(function(p) { html += '<option value="'+p+'">'+p+"</option>"; });
   html += "</select>";
-  html += '<label><input type="checkbox" id="f-archived"> Show archived</label>';
+  html += '<label><input type="checkbox" id="f-archived"> ' + esc(t("filter.show_archived")) + '</label>';
   html += "</div>";
   html += '<div id="list-table"></div>';
   app.innerHTML = html;
@@ -3273,16 +3725,16 @@ function applyListFilters() {
   });
 
   if (items.length === 0 && tasks.length === 0) {
-    document.getElementById("list-table").innerHTML = '<div class="empty"><p>No tasks yet.</p></div>';
+    document.getElementById("list-table").innerHTML = '<div class="empty"><p>' + esc(t("empty.list")) + '</p></div>';
     return;
   }
   if (items.length === 0) {
-    document.getElementById("list-table").innerHTML = '<div class="empty"><p>No tasks match your filters.</p></div>';
+    document.getElementById("list-table").innerHTML = '<div class="empty"><p>' + esc(t("empty.list.filtered")) + '</p></div>';
     return;
   }
 
   var html = "<table><thead><tr>";
-  html += "<th>ID</th><th>Title</th><th>Status</th><th>Priority</th><th>Type</th><th>Assigned</th><th>Updated</th>";
+  html += "<th>" + esc(t("table.id")) + "</th><th>" + esc(t("table.title")) + "</th><th>" + esc(t("table.status")) + "</th><th>" + esc(t("table.priority")) + "</th><th>" + esc(t("table.type")) + "</th><th>" + esc(t("table.assigned")) + "</th><th>" + esc(t("table.updated")) + "</th>";
   html += "</tr></thead><tbody>";
   items.forEach(function(t) {
     var displayId = t.short_id || (t.id ? t.id.slice(0,18) + "..." : "?");
@@ -3320,7 +3772,7 @@ async function renderDetail(taskId) {
     var events = results[1];
     var isArchived = !!task.archived;
 
-    var html = '<a href="#/' + esc(currentView) + '" class="back-link">&larr; Back</a>';
+    var html = '<a href="#/' + esc(currentView) + '" class="back-link">' + t("btn.back") + '</a>';
     html += '<div class="detail">';
 
     // --- Title (inline editable) ---
@@ -3354,13 +3806,13 @@ async function renderDetail(taskId) {
       // Type dropdown
       var types = (config && config.task_types) || [];
       html += '<select id="detail-type" title="Change type">';
-      types.forEach(function(t) {
-        html += '<option value="' + esc(t) + '"' + (t === task.type ? ' selected' : '') + '>' + esc(t) + '</option>';
+      types.forEach(function(ty) {
+        html += '<option value="' + esc(ty) + '"' + (ty === task.type ? ' selected' : '') + '>' + esc(ty) + '</option>';
       });
       html += '</select>';
 
       // Archive button
-      html += '<button class="btn btn-danger btn-sm" id="detail-archive-btn">Archive</button>';
+      html += '<button class="btn btn-danger btn-sm" id="detail-archive-btn">' + esc(t("btn.archive")) + '</button>';
       html += '</div>';
     } else {
       html += '<div class="detail-meta">';
@@ -3373,22 +3825,22 @@ async function renderDetail(taskId) {
 
     // --- Info fields ---
     html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px">';
-    if (task.short_id) html += '<div class="detail-field"><dt>Short ID</dt><dd style="font-weight:600;color:var(--accent-primary)">' + esc(task.short_id) + '</dd></div>';
+    if (task.short_id) html += '<div class="detail-field"><dt>' + esc(t("detail.short_id")) + '</dt><dd style="font-weight:600;color:var(--accent-primary)">' + esc(task.short_id) + '</dd></div>';
     var truncId = task.id && task.id.length > 12 ? task.id.slice(0, 12) + "\u2026" : (task.id || "");
-    html += '<div class="detail-field" id="tech-id-field"><dt>Technical ID</dt><dd id="tech-id-value" data-full="' + esc(task.id) + '" data-short="' + esc(truncId) + '" data-expanded="0" style="font-family:monospace;font-size:.8rem;cursor:pointer">' + esc(truncId) + '</dd></div>';
+    html += '<div class="detail-field" id="tech-id-field"><dt>' + esc(t("detail.tech_id")) + '</dt><dd id="tech-id-value" data-full="' + esc(task.id) + '" data-short="' + esc(truncId) + '" data-expanded="0" style="font-family:monospace;font-size:.8rem;cursor:pointer">' + esc(truncId) + '</dd></div>';
 
     // Assigned to (editable)
     if (!isArchived) {
-      html += '<div class="detail-field"><dt>Assigned to</dt><dd>';
-      html += '<span class="editable" id="detail-assigned" title="Click to edit">' + esc(task.assigned_to || "unassigned") + '</span>';
+      html += '<div class="detail-field"><dt>' + esc(t("detail.assigned_to")) + '</dt><dd>';
+      html += '<span class="editable" id="detail-assigned" title="Click to edit">' + esc(task.assigned_to || t("detail.unassigned")) + '</span>';
       html += '</dd></div>';
     } else {
-      html += '<div class="detail-field"><dt>Assigned to</dt><dd title="' + esc(task.assigned_to || "unassigned") + '">' + esc(task.assigned_to || "unassigned") + '</dd></div>';
+      html += '<div class="detail-field"><dt>' + esc(t("detail.assigned_to")) + '</dt><dd title="' + esc(task.assigned_to || t("detail.unassigned")) + '">' + esc(task.assigned_to || t("detail.unassigned")) + '</dd></div>';
     }
 
     var infoFields = [
-      ["Created by", task.created_by], ["Created", task.created_at], ["Updated", task.updated_at],
-      ["Urgency", task.urgency]
+      [t("detail.created_by"), task.created_by], [t("detail.created"), task.created_at], [t("detail.updated"), task.updated_at],
+      [t("detail.urgency"), task.urgency]
     ];
     infoFields.forEach(function(pair) {
       if (pair[1]) {
@@ -3398,19 +3850,19 @@ async function renderDetail(taskId) {
     html += '</div>';
 
     // --- Description (editable) ---
-    html += '<div class="detail-section"><h3>Description</h3>';
+    html += '<div class="detail-section"><h3>' + esc(t("section.description")) + '</h3>';
     if (!isArchived) {
-      html += '<pre class="editable" id="detail-description" style="white-space:pre-wrap;font-size:.9rem;min-height:20px" title="Click to edit">' + esc(task.description || "(no description \u2014 click to add)") + '</pre>';
+      html += '<pre class="editable" id="detail-description" style="white-space:pre-wrap;font-size:.9rem;min-height:20px" title="Click to edit">' + esc(task.description || t("detail.no_description")) + '</pre>';
     } else {
       html += '<pre style="white-space:pre-wrap;font-size:.9rem">' + esc(task.description || "") + '</pre>';
     }
     html += '</div>';
 
     // --- Tags (editable) ---
-    html += '<div class="detail-section"><h3>Tags</h3>';
+    html += '<div class="detail-section"><h3>' + esc(t("section.tags")) + '</h3>';
     if (!isArchived) {
       var tagStr = (task.tags && task.tags.length) ? task.tags.join(", ") : "";
-      html += '<span class="editable" id="detail-tags" title="Click to edit">' + esc(tagStr || "(no tags \u2014 click to add)") + '</span>';
+      html += '<span class="editable" id="detail-tags" title="Click to edit">' + esc(tagStr || t("detail.no_tags")) + '</span>';
     } else if (task.tags && task.tags.length) {
       html += '<div>';
       task.tags.forEach(function(tag) { html += '<span class="badge badge-stat" style="margin-right:4px">' + esc(tag) + '</span>'; });
@@ -3419,7 +3871,7 @@ async function renderDetail(taskId) {
     html += '</div>';
 
     if (task.custom_fields && Object.keys(task.custom_fields).length) {
-      html += '<div class="detail-section"><h3>Custom Fields</h3><dl>';
+      html += '<div class="detail-section"><h3>' + esc(t("section.custom_fields")) + '</h3><dl>';
       Object.entries(task.custom_fields).forEach(function(pair) {
         html += '<dt>' + esc(pair[0]) + '</dt><dd>' + esc(String(pair[1])) + '</dd>';
       });
@@ -3428,7 +3880,7 @@ async function renderDetail(taskId) {
 
     // Relationships
     if (task.relationships_out && task.relationships_out.length) {
-      html += '<div class="detail-section"><h3>Relationships</h3><ul class="rel-list">';
+      html += '<div class="detail-section"><h3>' + esc(t("section.relationships")) + '</h3><ul class="rel-list">';
       task.relationships_out.forEach(function(r) {
         html += '<li>' + esc(r.type) + ' &rarr; <a href="#/task/' + esc(r.target_task_id) + '">' + esc(r.target_task_id) + '</a>';
         if (r.note) html += ' (' + esc(r.note) + ')';
@@ -3439,7 +3891,7 @@ async function renderDetail(taskId) {
 
     // Artifacts
     if (task.artifacts && task.artifacts.length) {
-      html += '<div class="detail-section"><h3>Artifacts</h3><ul class="art-list">';
+      html += '<div class="detail-section"><h3>' + esc(t("section.artifacts")) + '</h3><ul class="art-list">';
       task.artifacts.forEach(function(a) {
         html += '<li>' + esc(a.id);
         if (a.title) html += ' "' + esc(a.title) + '"';
@@ -3451,16 +3903,16 @@ async function renderDetail(taskId) {
 
     // Notes
     if (task.notes_exists) {
-      html += '<div class="detail-section"><h3>Notes</h3><p style="font-size:.85rem;color:var(--text-muted)">Notes file exists: <code>notes/' + esc(task.id) + '.md</code></p></div>';
+      html += '<div class="detail-section"><h3>' + esc(t("section.notes")) + '</h3><p style="font-size:.85rem;color:var(--text-muted)">' + esc(t("detail.notes_exists")) + '<code>notes/' + esc(task.id) + '.md</code></p></div>';
     }
 
     // --- Comments section ---
     var comments = (events || []).filter(function(ev) { return ev.type === "comment_added"; });
-    html += '<div class="detail-section"><h3>Comments (' + comments.length + ')</h3>';
+    html += '<div class="detail-section"><h3>' + esc(t("section.comments")) + ' (' + comments.length + ')</h3>';
     if (!isArchived) {
       html += '<div class="comment-form">';
-      html += '<textarea class="form-control" id="detail-comment-text" placeholder="Add a comment..."></textarea>';
-      html += '<button class="btn btn-primary btn-sm" id="detail-comment-submit" style="align-self:flex-end">Post</button>';
+      html += '<textarea class="form-control" id="detail-comment-text" placeholder="' + esc(t("placeholder.comment")) + '"></textarea>';
+      html += '<button class="btn btn-primary btn-sm" id="detail-comment-submit" style="align-self:flex-end">' + esc(t("btn.post")) + '</button>';
       html += '</div>';
     }
     if (comments.length) {
@@ -3478,7 +3930,7 @@ async function renderDetail(taskId) {
     // --- Events (non-comment) ---
     var nonCommentEvents = (events || []).filter(function(ev) { return ev.type !== "comment_added"; });
     if (nonCommentEvents.length) {
-      html += '<div class="detail-section"><h3>History (' + nonCommentEvents.length + ')</h3>';
+      html += '<div class="detail-section"><h3>' + esc(t("section.history")) + ' (' + nonCommentEvents.length + ')</h3>';
       nonCommentEvents.forEach(function(ev) {
         html += '<div class="event-item">';
         html += '<span class="event-ts">' + esc(ev.ts || "") + '</span>';
@@ -3499,8 +3951,8 @@ async function renderDetail(taskId) {
     }
 
   } catch(e) {
-    app.innerHTML = '<a href="#/' + esc(currentView) + '" class="back-link">&larr; Back</a>' +
-      '<div class="error-box"><p>' + esc(e.message) + '</p><button class="btn" onclick="location.reload()">Retry</button></div>';
+    app.innerHTML = '<a href="#/' + esc(currentView) + '" class="back-link">' + t("btn.back") + '</a>' +
+      '<div class="error-box"><p>' + esc(e.message) + '</p><button class="btn" onclick="location.reload()">' + esc(t("btn.retry")) + '</button></div>';
   }
 }
 
@@ -3514,7 +3966,7 @@ function _wireDetailActions(taskId, task) {
       if (newStatus === task.status) return;
       try {
         await apiPost("/api/tasks/" + taskId + "/status", { status: newStatus });
-        showToast("Status changed to " + newStatus, "success");
+        showToast(tf("toast.status_changed", {status: newStatus}), "success");
         tasks = await api("/api/tasks");
         updateStatsBadges();
         renderDetail(taskId);
@@ -3533,7 +3985,7 @@ function _wireDetailActions(taskId, task) {
       if (newPri === task.priority) return;
       try {
         await apiPost("/api/tasks/" + taskId + "/update", { fields: { priority: newPri } });
-        showToast("Priority changed to " + newPri, "success");
+        showToast(tf("toast.priority_changed", {value: newPri}), "success");
         tasks = await api("/api/tasks");
         updateStatsBadges();
         renderDetail(taskId);
@@ -3552,7 +4004,7 @@ function _wireDetailActions(taskId, task) {
       if (newType === task.type) return;
       try {
         await apiPost("/api/tasks/" + taskId + "/update", { fields: { type: newType } });
-        showToast("Type changed to " + newType, "success");
+        showToast(tf("toast.type_changed", {value: newType}), "success");
         tasks = await api("/api/tasks");
         updateStatsBadges();
         renderDetail(taskId);
@@ -3568,10 +4020,10 @@ function _wireDetailActions(taskId, task) {
   if (titleEl) {
     titleEl.addEventListener("click", function() {
       _inlineEdit(titleEl, task.title || "", function(newVal) {
-        if (!newVal.trim()) { showToast("Title cannot be empty", "error"); return Promise.reject(); }
+        if (!newVal.trim()) { showToast(t("error.title_empty"), "error"); return Promise.reject(); }
         return apiPost("/api/tasks/" + taskId + "/update", { fields: { title: newVal.trim() } })
           .then(function() {
-            showToast("Title updated", "success");
+            showToast(t("toast.title_updated"), "success");
             api("/api/tasks").then(function(t) { tasks = t; updateStatsBadges(); });
             renderDetail(taskId);
           });
@@ -3587,7 +4039,7 @@ function _wireDetailActions(taskId, task) {
       _inlineEditTextarea(descEl, currentVal, function(newVal) {
         return apiPost("/api/tasks/" + taskId + "/update", { fields: { description: newVal } })
           .then(function() {
-            showToast("Description updated", "success");
+            showToast(t("toast.description_updated"), "success");
             renderDetail(taskId);
           });
       });
@@ -3610,10 +4062,10 @@ function _wireDetailActions(taskId, task) {
       input.value = task.assigned_to || "";
       var saveBtn = document.createElement("button");
       saveBtn.className = "btn btn-primary btn-sm";
-      saveBtn.textContent = "Save";
+      saveBtn.textContent = t("btn.save");
       var cancelBtn = document.createElement("button");
       cancelBtn.className = "btn btn-sm";
-      cancelBtn.textContent = "Cancel";
+      cancelBtn.textContent = t("btn.cancel");
 
       row.appendChild(input);
       row.appendChild(saveBtn);
@@ -3640,7 +4092,7 @@ function _wireDetailActions(taskId, task) {
         var assignedTo = input.value.trim() || null;
         apiPost("/api/tasks/" + taskId + "/assign", { assigned_to: assignedTo })
           .then(function() {
-            showToast(assignedTo ? "Assigned to " + assignedTo : "Unassigned", "success");
+            showToast(assignedTo ? tf("toast.assigned", {value: assignedTo}) : t("toast.unassigned"), "success");
             api("/api/tasks").then(function(t) { tasks = t; updateStatsBadges(); });
             renderDetail(taskId);
           })
@@ -3661,7 +4113,7 @@ function _wireDetailActions(taskId, task) {
         var newTags = newVal.split(",").map(function(t){ return t.trim(); }).filter(Boolean);
         return apiPost("/api/tasks/" + taskId + "/update", { fields: { tags: newTags } })
           .then(function() {
-            showToast("Tags updated", "success");
+            showToast(t("toast.tags_updated"), "success");
             api("/api/tasks").then(function(t) { tasks = t; updateStatsBadges(); });
             renderDetail(taskId);
           });
@@ -3675,10 +4127,10 @@ function _wireDetailActions(taskId, task) {
     commentBtn.addEventListener("click", async function() {
       var textarea = document.getElementById("detail-comment-text");
       var text = textarea.value.trim();
-      if (!text) { showToast("Comment cannot be empty", "error"); return; }
+      if (!text) { showToast(t("error.comment_empty"), "error"); return; }
       try {
         await apiPost("/api/tasks/" + taskId + "/comment", { body: text });
-        showToast("Comment added", "success");
+        showToast(t("toast.comment_added"), "success");
         renderDetail(taskId);
       } catch(e) {
         showToast(e.message, "error");
@@ -3701,7 +4153,7 @@ function _wireDetailActions(taskId, task) {
       if (!confirm("Archive this task? It will be moved to the archive.")) return;
       try {
         await apiPost("/api/tasks/" + taskId + "/archive", {});
-        showToast("Task archived", "success");
+        showToast(t("toast.task_archived"), "success");
         tasks = await api("/api/tasks");
         updateStatsBadges();
         location.hash = "#/" + currentView;
@@ -3744,10 +4196,10 @@ function _inlineEdit(el, currentValue, onSave) {
   input.value = currentValue;
   var saveBtn = document.createElement("button");
   saveBtn.className = "btn btn-primary btn-sm";
-  saveBtn.textContent = "Save";
+  saveBtn.textContent = t("btn.save");
   var cancelBtn = document.createElement("button");
   cancelBtn.className = "btn btn-sm";
-  cancelBtn.textContent = "Cancel";
+  cancelBtn.textContent = t("btn.cancel");
 
   wrapper.appendChild(input);
   wrapper.appendChild(saveBtn);
@@ -3787,10 +4239,10 @@ function _inlineEditTextarea(el, currentValue, onSave) {
   btnRow.style.cssText = "display:flex;gap:6px;margin-top:6px;justify-content:flex-end";
   var saveBtn = document.createElement("button");
   saveBtn.className = "btn btn-primary btn-sm";
-  saveBtn.textContent = "Save";
+  saveBtn.textContent = t("btn.save");
   var cancelBtn = document.createElement("button");
   cancelBtn.className = "btn btn-sm";
-  cancelBtn.textContent = "Cancel";
+  cancelBtn.textContent = t("btn.cancel");
 
   btnRow.appendChild(cancelBtn);
   btnRow.appendChild(saveBtn);
@@ -3842,7 +4294,7 @@ async function renderActivity() {
   try {
     var events = await api("/api/activity");
     if (events.length === 0) {
-      app.innerHTML = '<div class="empty"><p>No recent activity.</p></div>';
+      app.innerHTML = '<div class="empty"><p>' + esc(t("empty.activity")) + '</p></div>';
       return;
     }
     var html = '<div class="activity-list">';
@@ -3863,7 +4315,7 @@ async function renderActivity() {
     html += "</div>";
     app.innerHTML = html;
   } catch(e) {
-    app.innerHTML = '<div class="error-box"><p>' + esc(e.message) + '</p><button class="btn" onclick="location.reload()">Retry</button></div>';
+    app.innerHTML = '<div class="error-box"><p>' + esc(e.message) + '</p><button class="btn" onclick="location.reload()">' + esc(t("btn.retry")) + '</button></div>';
   }
 }
 
@@ -3874,7 +4326,7 @@ function esc(s) {
 }
 
 function showError(msg) {
-  document.getElementById("app").innerHTML = '<div class="error-box"><p>' + esc(msg) + '</p><button class="btn" onclick="location.reload()">Retry</button></div>';
+  document.getElementById("app").innerHTML = '<div class="error-box"><p>' + esc(msg) + '</p><button class="btn" onclick="location.reload()">' + esc(t("btn.retry")) + '</button></div>';
 }
 
 // --- Member Chips ---
@@ -3955,7 +4407,7 @@ document.getElementById("create-task-modal").addEventListener("click", function(
 document.getElementById("create-task-submit").addEventListener("click", async function() {
   var title = document.getElementById("ct-title").value.trim();
   if (!title) {
-    showToast("Title is required", "error");
+    showToast(t("error.title_required"), "error");
     return;
   }
   var payload = { title: title };
@@ -3973,7 +4425,7 @@ document.getElementById("create-task-submit").addEventListener("click", async fu
   try {
     var created = await apiPost("/api/tasks", payload);
     hideCreateTaskModal();
-    showToast("Task created: " + title, "success");
+    showToast(tf("toast.task_created", {title: title}), "success");
     tasks = await api("/api/tasks");
     updateStatsBadges();
     // Navigate to the new task's detail
@@ -4008,8 +4460,23 @@ document.getElementById("theme-select").addEventListener("change", async functio
     var result = await apiPost("/api/config/dashboard", {theme: newTheme});
     if (config) config.dashboard = result;
     populateLaneColorSettings();
-    showToast("Theme updated", "success");
+    showToast(t("toast.theme_updated"), "success");
     if (currentView === "board") renderBoard();
+  } catch(e) {
+    showToast(e.message, "error");
+  }
+});
+
+// Voice selector
+document.getElementById("voice-select").addEventListener("change", async function() {
+  var newVoice = this.value;
+  currentVoice = newVoice;
+  try {
+    var result = await apiPost("/api/config/dashboard", {voice: newVoice});
+    if (config) config.dashboard = result;
+    updateStaticVoiceStrings();
+    showToast(t("toast.voice_updated"), "success");
+    await route(location.hash.slice(1) || "/board");
   } catch(e) {
     showToast(e.message, "error");
   }
@@ -4022,7 +4489,7 @@ document.getElementById("bg-image-save").addEventListener("click", async functio
     var result = await apiPost("/api/config/dashboard", {background_image: url || null});
     if (config) config.dashboard = result;
     applyBackgroundImage();
-    showToast("Background image updated", "success");
+    showToast(t("toast.bg_updated"), "success");
   } catch(e) {
     showToast(e.message, "error");
   }
@@ -4035,7 +4502,7 @@ document.getElementById("bg-image-clear").addEventListener("click", async functi
     var result = await apiPost("/api/config/dashboard", {background_image: null});
     if (config) config.dashboard = result;
     applyBackgroundImage();
-    showToast("Background image cleared", "success");
+    showToast(t("toast.bg_cleared"), "success");
   } catch(e) {
     showToast(e.message, "error");
   }
@@ -4051,7 +4518,7 @@ document.getElementById("lane-colors-save").addEventListener("click", async func
   try {
     var result = await apiPost("/api/config/dashboard", {lane_colors: colors});
     if (config) config.dashboard = result;
-    showToast("Lane colors updated", "success");
+    showToast(t("toast.lane_colors_updated"), "success");
     if (currentView === "board") renderBoard();
   } catch(e) {
     showToast(e.message, "error");
@@ -4065,7 +4532,7 @@ document.getElementById("lane-colors-reset").addEventListener("click", async fun
     var result = await apiPost("/api/config/dashboard", {lane_colors: themeDefaults});
     if (config) config.dashboard = result;
     populateLaneColorSettings();
-    showToast("Lane colors reset to defaults", "success");
+    showToast(t("toast.lane_colors_reset"), "success");
     if (currentView === "board") renderBoard();
   } catch(e) {
     showToast(e.message, "error");
@@ -4083,9 +4550,13 @@ document.getElementById("refresh-btn").addEventListener("click", async function(
     config = results[0];
     tasks = results[1];
     archivedTasks = null;
+    var dc = (config && config.dashboard) || {};
+    if (dc.voice && VOICES[dc.voice]) currentVoice = dc.voice;
     updateStatsBadges();
     applyTheme(getTheme());
     populateThemeSelector();
+    populateVoiceSelector();
+    updateStaticVoiceStrings();
     populateLaneColorSettings();
     loadBackgroundSetting();
     await route(location.hash.slice(1));
@@ -4112,8 +4583,12 @@ function startAutoRefresh() {
         config = newConfig;
         updateStatsBadges();
         if (configChanged) {
+          var dca = (config && config.dashboard) || {};
+          if (dca.voice && VOICES[dca.voice]) currentVoice = dca.voice;
           applyTheme(getTheme());
           populateThemeSelector();
+          populateVoiceSelector();
+          updateStaticVoiceStrings();
           populateLaneColorSettings();
           loadBackgroundSetting();
         }
