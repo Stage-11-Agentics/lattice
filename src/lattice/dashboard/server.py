@@ -24,13 +24,8 @@ from lattice.core.tasks import apply_event_to_snapshot, compact_snapshot, serial
 from lattice.storage.fs import atomic_write, jsonl_append
 from lattice.storage.locks import multi_lock
 from lattice.storage.hooks import execute_hooks
-from lattice.storage.operations import write_task_event
-from lattice.storage.short_ids import (
-    allocate_short_id,
-    load_id_index,
-    register_short_id,
-    save_id_index,
-)
+from lattice.storage.operations import scaffold_notes, write_task_event
+from lattice.storage.short_ids import allocate_short_id
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -692,7 +687,7 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
             short_id: str | None = None
             if project_code:
                 prefix = f"{project_code}-{subproject_code}" if subproject_code else project_code
-                short_id, _ = allocate_short_id(ld, prefix)
+                short_id, _ = allocate_short_id(ld, prefix, task_ulid=task_id)
 
             # Build event data
             event_data: dict = {
@@ -726,11 +721,8 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                 self._send_json(500, _err("WRITE_ERROR", f"Failed to create task: {exc}"))
                 return
 
-            # Register short ID in index after successful write
-            if short_id is not None:
-                index = load_id_index(ld)
-                register_short_id(index, short_id, task_id)
-                save_id_index(ld, index)
+            # Scaffold notes file
+            scaffold_notes(ld, task_id, title, short_id, description)
 
             self._send_json(201, _ok(snapshot))
 

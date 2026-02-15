@@ -11,6 +11,42 @@ from lattice.storage.hooks import execute_hooks
 from lattice.storage.locks import multi_lock
 
 
+def scaffold_notes(
+    lattice_dir: Path,
+    task_id: str,
+    title: str,
+    short_id: str | None,
+    description: str | None,
+) -> None:
+    """Create the initial notes markdown file for a new task.
+
+    Non-authoritative — this is a convenience scaffold for humans and agents
+    to use as a working document. Skipped silently if the file already exists
+    (idempotent create).
+    """
+    notes_path = lattice_dir / "notes" / f"{task_id}.md"
+    if notes_path.exists():
+        return
+
+    heading = f"# {short_id}: {title}" if short_id else f"# {title}"
+    lines = [heading, ""]
+
+    lines.append("## Summary")
+    lines.append("")
+    if description:
+        lines.append(description)
+    else:
+        lines.append("<!-- Human-readable summary of what this task is and why it matters. -->")
+    lines.append("")
+
+    lines.append("## Technical Plan")
+    lines.append("")
+    lines.append("<!-- Implementation approach, design decisions, open questions. -->")
+    lines.append("")
+
+    notes_path.write_text("\n".join(lines), encoding="utf-8")
+
+
 def write_task_event(
     lattice_dir: Path,
     task_id: str,

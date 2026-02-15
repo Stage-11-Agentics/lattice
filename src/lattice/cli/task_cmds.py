@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import click
 
@@ -18,6 +17,7 @@ from lattice.cli.helpers import (
     validate_actor_or_exit,
     write_task_event,
 )
+from lattice.storage.operations import scaffold_notes
 from lattice.cli.main import cli
 from lattice.core.config import (
     VALID_PRIORITIES,
@@ -29,53 +29,7 @@ from lattice.core.config import (
 from lattice.core.events import create_event, utc_now
 from lattice.core.ids import generate_task_id, validate_actor, validate_id
 from lattice.core.tasks import apply_event_to_snapshot
-from lattice.storage.short_ids import (
-    allocate_short_id,
-    load_id_index,
-    register_short_id,
-    save_id_index,
-)
-
-
-# ---------------------------------------------------------------------------
-# Notes scaffolding
-# ---------------------------------------------------------------------------
-
-
-def _scaffold_notes(
-    lattice_dir: Path,
-    task_id: str,
-    title: str,
-    short_id: str | None,
-    description: str | None,
-) -> None:
-    """Create the initial notes markdown file for a new task.
-
-    Non-authoritative — this is a convenience scaffold for humans and agents
-    to use as a working document. Skipped silently if the file already exists
-    (idempotent create).
-    """
-    notes_path = lattice_dir / "notes" / f"{task_id}.md"
-    if notes_path.exists():
-        return
-
-    heading = f"# {short_id}: {title}" if short_id else f"# {title}"
-    lines = [heading, ""]
-
-    lines.append("## Summary")
-    lines.append("")
-    if description:
-        lines.append(description)
-    else:
-        lines.append("<!-- Human-readable summary of what this task is and why it matters. -->")
-    lines.append("")
-
-    lines.append("## Technical Plan")
-    lines.append("")
-    lines.append("<!-- Implementation approach, design decisions, open questions. -->")
-    lines.append("")
-
-    notes_path.write_text("\n".join(lines), encoding="utf-8")
+from lattice.storage.short_ids import allocate_short_id
 
 
 # ---------------------------------------------------------------------------
@@ -217,8 +171,7 @@ def create(
     short_id: str | None = None
     if project_code:
         prefix = f"{project_code}-{subproject_code}" if subproject_code else project_code
-        short_id_str, _idx = allocate_short_id(lattice_dir, prefix)
-        short_id = short_id_str
+        short_id, _idx = allocate_short_id(lattice_dir, prefix, task_ulid=task_id)
 
     # Build event data
     event_data: dict = {
@@ -252,14 +205,8 @@ def create(
     # Write (event-first, then snapshot, under lock)
     write_task_event(lattice_dir, task_id, [event], snapshot, config)
 
-    # Register short ID in index after successful write
-    if short_id is not None:
-        index = load_id_index(lattice_dir)
-        register_short_id(index, short_id, task_id)
-        save_id_index(lattice_dir, index)
-
     # Scaffold notes file
-    _scaffold_notes(lattice_dir, task_id, title, short_id, description)
+    scaffold_notes(lattice_dir, task_id, title, short_id, description)
 
     # Output: prefer short_id when available
     display_id = short_id if short_id else task_id

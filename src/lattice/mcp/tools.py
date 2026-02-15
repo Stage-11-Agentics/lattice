@@ -36,15 +36,10 @@ from lattice.core.relationships import RELATIONSHIP_TYPES, validate_relationship
 from lattice.core.tasks import apply_event_to_snapshot, serialize_snapshot
 from lattice.mcp.server import mcp
 from lattice.storage.fs import atomic_write, find_root, jsonl_append
+from lattice.storage.hooks import execute_hooks
 from lattice.storage.locks import multi_lock
-from lattice.storage.operations import write_task_event
-from lattice.storage.short_ids import (
-    allocate_short_id,
-    load_id_index,
-    register_short_id,
-    resolve_short_id,
-    save_id_index,
-)
+from lattice.storage.operations import scaffold_notes, write_task_event
+from lattice.storage.short_ids import allocate_short_id, resolve_short_id
 
 logger = logging.getLogger(__name__)
 
@@ -188,11 +183,34 @@ def lattice_create(
     if task_id is not None:
         if not validate_id(task_id, "task"):
             raise ValueError(f"Invalid task ID format: '{task_id}'.")
-        # Idempotency check
+        # Idempotency check with payload comparison (matches CLI behavior)
         existing_path = lattice_dir / "tasks" / f"{task_id}.json"
         if existing_path.exists():
             existing = json.loads(existing_path.read_text())
-            return existing
+            _compare_fields = (
+                "title",
+                "type",
+                "priority",
+                "status",
+                "description",
+                "tags",
+                "assigned_to",
+            )
+            new_data = {
+                "title": title,
+                "type": task_type,
+                "priority": priority,
+                "status": status,
+                "description": description,
+                "tags": tag_list,
+                "assigned_to": assigned_to,
+            }
+            existing_data = {f: existing.get(f) for f in _compare_fields}
+            if existing_data.get("tags") is None:
+                existing_data["tags"] = []
+            if new_data == existing_data:
+                return existing
+            raise ValueError(f"Conflict: task {task_id} exists with different data.")
     else:
         task_id = generate_task_id()
 
@@ -202,8 +220,7 @@ def lattice_create(
     short_id: str | None = None
     if project_code:
         prefix = f"{project_code}-{subproject_code}" if subproject_code else project_code
-        short_id_str, _idx = allocate_short_id(lattice_dir, prefix)
-        short_id = short_id_str
+        short_id, _idx = allocate_short_id(lattice_dir, prefix, task_ulid=task_id)
 
     # Build event data
     event_data: dict = {
@@ -228,33 +245,8 @@ def lattice_create(
     # Write (event-first, then snapshot, under lock)
     write_task_event(lattice_dir, task_id, [event], snapshot, config)
 
-    # Register short ID in index
-    if short_id is not None:
-        index = load_id_index(lattice_dir)
-        register_short_id(index, short_id, task_id)
-        save_id_index(lattice_dir, index)
-
     # Scaffold notes file
-    notes_path = lattice_dir / "notes" / f"{task_id}.md"
-    if not notes_path.exists():
-        heading = f"# {short_id}: {title}" if short_id else f"# {title}"
-        lines = [heading, "", "## Summary", ""]
-        if description:
-            lines.append(description)
-        else:
-            lines.append(
-                "<!-- Human-readable summary of what this task is and why it matters. -->"
-            )
-        lines.extend(
-            [
-                "",
-                "## Technical Plan",
-                "",
-                "<!-- Implementation approach, design decisions, open questions. -->",
-                "",
-            ]
-        )
-        notes_path.write_text("\n".join(lines), encoding="utf-8")
+    scaffold_notes(lattice_dir, task_id, title, short_id, description)
 
     return snapshot
 
@@ -657,6 +649,7 @@ def lattice_archive(
 ) -> dict:
     """Archive a task. Returns the archive event."""
     lattice_dir = _find_root(lattice_root)
+    config = _load_config(lattice_dir)
     _validate_actor(actor)
     task_id = _resolve_task_id(lattice_dir, task_id)
 
@@ -701,6 +694,9 @@ def lattice_archive(
                 str(lattice_dir / "archive" / "notes" / f"{task_id}.md"),
             )
 
+    # Fire hooks after locks released
+    execute_hooks(config, lattice_dir, task_id, event)
+
     return event
 
 
@@ -714,6 +710,7 @@ def lattice_unarchive(
 ) -> dict:
     """Restore an archived task to active status. Returns the unarchive event."""
     lattice_dir = _find_root(lattice_root)
+    config = _load_config(lattice_dir)
     _validate_actor(actor)
     task_id = _resolve_task_id(lattice_dir, task_id)
 
@@ -757,6 +754,9 @@ def lattice_unarchive(
                 str(archive_notes_path),
                 str(lattice_dir / "notes" / f"{task_id}.md"),
             )
+
+    # Fire hooks after locks released
+    execute_hooks(config, lattice_dir, task_id, event)
 
     return event
 

@@ -90,8 +90,14 @@ def register_short_id(index: dict, short_id: str, task_ulid: str) -> dict:
     return index
 
 
-def allocate_short_id(lattice_dir: Path, prefix: str) -> tuple[str, dict]:
+def allocate_short_id(
+    lattice_dir: Path, prefix: str, task_ulid: str | None = None
+) -> tuple[str, dict]:
     """Allocate the next short ID for *prefix* under lock.
+
+    If *task_ulid* is provided, the mapping from short_id → task_ulid is
+    registered atomically under the same lock, preventing race conditions
+    between allocation and registration.
 
     Returns (short_id, updated_index). The index is saved to disk
     and the lock is released before returning.
@@ -104,6 +110,8 @@ def allocate_short_id(lattice_dir: Path, prefix: str) -> tuple[str, dict]:
         short_id = f"{prefix}-{seq}"
         next_seqs[prefix] = seq + 1
         index["next_seqs"] = next_seqs
+        if task_ulid is not None:
+            index["map"][short_id] = task_ulid
         save_id_index(lattice_dir, index)
     return short_id, index
 
