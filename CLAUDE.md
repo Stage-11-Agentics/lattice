@@ -216,6 +216,12 @@ Critical test categories (add as features land):
 - **Rebuild determinism:** `rebuild` from events must produce byte-identical snapshots regardless of run order.
 - **Idempotency conflicts:** Same ID with different payload must error, not silently overwrite.
 
+## Where Things Live
+
+- **Task plans, research, working docs** → `.lattice/notes/<task_id>.md` — tied to the task, lives where Lattice expects it. This is the default home for any document associated with a specific task (implementation plans, spike findings, etc.).
+- **Repo-level `notes/`** — only for things NOT tied to a specific task (code reviews, general research, retrospectives).
+- **Don't duplicate** — a plan should live in one place, not both.
+
 ## Workflow Reminders
 
 - **Branch naming:** `feat/`, `fix/`, `refactor/`, `test/`, `chore/` prefixes
