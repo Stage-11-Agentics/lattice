@@ -50,7 +50,7 @@ a:hover{text-decoration:underline}
 .board-col-header .count{font-weight:400;color:rgba(255,255,255,.8);font-size:.75rem}
 .board-col-header .lane-color-btn{position:absolute;right:4px;top:4px;width:20px;height:20px;border:2px solid rgba(255,255,255,.6);border-radius:50%;cursor:pointer;padding:0;background:transparent;opacity:0;transition:opacity .2s}
 .board-col-header:hover .lane-color-btn{opacity:1}
-.board-col-body{padding:8px;min-height:60px}
+.board-col-body{padding:8px}
 
 /* Drag and drop states */
 .board-col.drag-over{border-color:#0d6efd;box-shadow:0 0 0 2px rgba(13,110,253,.25)}
@@ -754,7 +754,7 @@ async function renderDetail(taskId) {
 
     // --- Info fields ---
     html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px">';
-    html += '<div class="detail-field"><dt>ID</dt><dd style="font-family:monospace;font-size:.8rem">' + esc(task.id) + '</dd></div>';
+    html += '<div class="detail-field"><dt>ID</dt><dd title="' + esc(task.id) + '" style="font-family:monospace;font-size:.8rem">' + esc(task.id) + '</dd></div>';
 
     // Assigned to (editable)
     if (!isArchived) {
@@ -762,7 +762,7 @@ async function renderDetail(taskId) {
       html += '<span class="editable" id="detail-assigned" title="Click to edit">' + esc(task.assigned_to || "unassigned") + '</span>';
       html += '</dd></div>';
     } else {
-      html += '<div class="detail-field"><dt>Assigned to</dt><dd>' + esc(task.assigned_to || "unassigned") + '</dd></div>';
+      html += '<div class="detail-field"><dt>Assigned to</dt><dd title="' + esc(task.assigned_to || "unassigned") + '">' + esc(task.assigned_to || "unassigned") + '</dd></div>';
     }
 
     var infoFields = [
@@ -771,7 +771,7 @@ async function renderDetail(taskId) {
     ];
     infoFields.forEach(function(pair) {
       if (pair[1]) {
-        html += '<div class="detail-field"><dt>' + esc(pair[0]) + '</dt><dd>' + esc(String(pair[1])) + '</dd></div>';
+        html += '<div class="detail-field"><dt>' + esc(pair[0]) + '</dt><dd title="' + esc(String(pair[1])) + '">' + esc(String(pair[1])) + '</dd></div>';
       }
     });
     html += '</div>';

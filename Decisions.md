@@ -111,9 +111,9 @@
 
 ## 2026-02-15: Global event log is derived, not authoritative
 
-- Decision: `_global.jsonl` is a derived convenience index, rebuildable from per-task event logs. Per-task JSONL files are the sole authoritative record.
+- Decision: `_lifecycle.jsonl` is a derived convenience index, rebuildable from per-task event logs. Per-task JSONL files are the sole authoritative record.
 - Rationale: Two authoritative logs (per-task + global) creates the exact "which file do we believe?" ambiguity that event sourcing was designed to prevent.
-- Consequence: `lattice rebuild` regenerates `_global.jsonl`. If the global log and per-task logs disagree, per-task logs win.
+- Consequence: `lattice rebuild` regenerates `_lifecycle.jsonl`. If the lifecycle log and per-task logs disagree, per-task logs win.
 
 ---
 
@@ -202,3 +202,11 @@
 - Decision: `lattice show` displays both outgoing relationships (from the task's snapshot) and incoming relationships (derived by scanning all snapshots).
 - Rationale: The original simplification of outgoing-only display was flagged as an oversimplification during review. Users expect to see "task B is blocked by task A" when viewing task B.
 - Consequence: Canonical storage remains outgoing-only (no schema change). Incoming relationships are computed at read time by scanning `tasks/` and `archive/tasks/`. Performance is acceptable at v0 scale.
+
+---
+
+## 2026-02-15: Audit remediation — security, durability, and architecture
+
+- Decision: Implemented 9 fixes from a project-wide audit covering security (path-traversal validation, POST body size limit, readonly mode for non-loopback dashboard), durability (parent-directory fsync after atomic writes), architecture (unified write-path in `lattice.storage.operations`, mutation registry pattern in `tasks.py`), and docs (requirements drift fixes, `_global.jsonl` → `_lifecycle.jsonl` alignment).
+- Rationale: The audit identified gaps in input validation (path traversal via crafted task IDs), denial-of-service surface (unbounded POST bodies), data durability (missing dir fsync after rename), network safety (writes allowed on non-loopback interfaces), code duplication (CLI and dashboard had separate write paths), and documentation drift.
+- Consequence: CLI and dashboard share a single `write_task_event()` in `lattice.storage.operations`. Dashboard supports `--force` status transitions matching CLI behavior. Non-loopback dashboard binds are read-only by default. All task ID inputs are validated before filesystem operations.

@@ -87,6 +87,20 @@ class TestArchive:
         result = invoke("archive", task_id, "--actor", "human:test")
         assert result.exit_code == 0
 
+    def test_archive_rejects_invalid_task_id(self, invoke):
+        """Archiving with a malformed task_id should fail with INVALID_ID."""
+        result = invoke("archive", "../../etc/passwd", "--actor", "human:test")
+        assert result.exit_code == 1
+        assert "INVALID_ID" in result.stderr or "Invalid task ID" in result.stderr
+
+    def test_archive_rejects_invalid_task_id_json(self, invoke):
+        """Archive with --json should return INVALID_ID for malformed IDs."""
+        result = invoke("archive", "../../etc/passwd", "--actor", "human:test", "--json")
+        assert result.exit_code == 1
+        parsed = json.loads(result.output)
+        assert parsed["ok"] is False
+        assert parsed["error"]["code"] == "INVALID_ID"
+
     def test_archive_not_found(self, invoke):
         """Archiving a non-existent task should fail with NOT_FOUND."""
         fake_id = "task_00000000000000000000000099"
@@ -197,3 +211,156 @@ class TestArchive:
         assert (lattice / "artifacts" / "meta" / f"{art_id}.json").exists()
         payload_files_after = list((lattice / "artifacts" / "payload").glob(f"{art_id}.*"))
         assert len(payload_files_after) >= 1
+
+
+class TestUnarchive:
+    """Tests for `lattice unarchive`."""
+
+    def test_unarchive_basic(self, create_task, invoke, initialized_root):
+        """Unarchive moves snapshot and events from archive back to active dirs."""
+        task = create_task("Unarchive me")
+        task_id = task["id"]
+
+        invoke("archive", task_id, "--actor", "human:test")
+
+        result = invoke("unarchive", task_id, "--actor", "human:test")
+        assert result.exit_code == 0
+        assert "Unarchived" in result.output
+
+        lattice = initialized_root / ".lattice"
+
+        # Snapshot back in active
+        assert (lattice / "tasks" / f"{task_id}.json").exists()
+        assert not (lattice / "archive" / "tasks" / f"{task_id}.json").exists()
+
+        # Events back in active
+        assert (lattice / "events" / f"{task_id}.jsonl").exists()
+        assert not (lattice / "archive" / "events" / f"{task_id}.jsonl").exists()
+
+    def test_unarchive_event_in_log(self, create_task, invoke, initialized_root):
+        """The event log should contain a task_unarchived event as the last event."""
+        task = create_task("Event log check")
+        task_id = task["id"]
+
+        invoke("archive", task_id, "--actor", "human:test")
+        invoke("unarchive", task_id, "--actor", "human:test")
+
+        lattice = initialized_root / ".lattice"
+        event_path = lattice / "events" / f"{task_id}.jsonl"
+        lines = event_path.read_text().strip().split("\n")
+        last_event = json.loads(lines[-1])
+        assert last_event["type"] == "task_unarchived"
+        assert last_event["task_id"] == task_id
+        assert last_event["actor"] == "human:test"
+
+    def test_unarchive_in_lifecycle_log(self, create_task, invoke, initialized_root):
+        """task_unarchived should appear in _lifecycle.jsonl."""
+        task = create_task("Lifecycle log check")
+        task_id = task["id"]
+
+        invoke("archive", task_id, "--actor", "human:test")
+        invoke("unarchive", task_id, "--actor", "human:test")
+
+        lattice = initialized_root / ".lattice"
+        lifecycle_path = lattice / "events" / "_lifecycle.jsonl"
+        content = lifecycle_path.read_text().strip()
+        events = [json.loads(line) for line in content.split("\n")]
+        unarchived_events = [
+            e for e in events if e["type"] == "task_unarchived" and e["task_id"] == task_id
+        ]
+        assert len(unarchived_events) == 1
+
+    def test_unarchive_with_notes(self, create_task, invoke, initialized_root):
+        """Notes file should be moved back from archive/notes/ when present."""
+        task = create_task("Notes test")
+        task_id = task["id"]
+
+        lattice = initialized_root / ".lattice"
+        notes_path = lattice / "notes" / f"{task_id}.md"
+        notes_path.write_text("# Some notes\n\nThese are task notes.\n")
+
+        invoke("archive", task_id, "--actor", "human:test")
+
+        # Verify notes are in archive
+        assert not notes_path.exists()
+        assert (lattice / "archive" / "notes" / f"{task_id}.md").exists()
+
+        result = invoke("unarchive", task_id, "--actor", "human:test")
+        assert result.exit_code == 0
+
+        # Notes should be back in active
+        assert notes_path.exists()
+        assert "Some notes" in notes_path.read_text()
+        assert not (lattice / "archive" / "notes" / f"{task_id}.md").exists()
+
+    def test_unarchive_not_found(self, invoke):
+        """Unarchiving a non-existent task should fail with NOT_FOUND."""
+        fake_id = "task_00000000000000000000000099"
+        result = invoke("unarchive", fake_id, "--actor", "human:test", "--json")
+        assert result.exit_code != 0
+        parsed = json.loads(result.output)
+        assert parsed["ok"] is False
+        assert parsed["error"]["code"] == "NOT_FOUND"
+
+    def test_unarchive_already_active(self, create_task, invoke):
+        """Unarchiving an already-active task should fail with CONFLICT."""
+        task = create_task("Already active")
+        task_id = task["id"]
+
+        result = invoke("unarchive", task_id, "--actor", "human:test", "--json")
+        assert result.exit_code != 0
+        parsed = json.loads(result.output)
+        assert parsed["ok"] is False
+        assert parsed["error"]["code"] == "CONFLICT"
+        assert "already active" in parsed["error"]["message"]
+
+    def test_unarchive_in_list(self, create_task, invoke, invoke_json):
+        """Unarchived tasks should reappear in `lattice list`."""
+        task = create_task("List me again")
+        task_id = task["id"]
+
+        invoke("archive", task_id, "--actor", "human:test")
+
+        # Verify not in list
+        data, code = invoke_json("list")
+        assert code == 0
+        task_ids = [t["id"] for t in data["data"]]
+        assert task_id not in task_ids
+
+        invoke("unarchive", task_id, "--actor", "human:test")
+
+        # Verify back in list
+        data, code = invoke_json("list")
+        assert code == 0
+        task_ids = [t["id"] for t in data["data"]]
+        assert task_id in task_ids
+
+    def test_unarchive_json_output(self, create_task, invoke, invoke_json):
+        """Unarchive with --json should return ok:true envelope."""
+        task = create_task("JSON unarchive")
+        task_id = task["id"]
+
+        invoke("archive", task_id, "--actor", "human:test")
+
+        data, code = invoke_json("unarchive", task_id, "--actor", "human:test")
+        assert code == 0
+        assert data["ok"] is True
+        assert data["data"]["type"] == "task_unarchived"
+        assert data["data"]["task_id"] == task_id
+
+    def test_unarchive_quiet_output(self, create_task, invoke):
+        """Unarchive with --quiet should print only the task_id."""
+        task = create_task("Quiet unarchive")
+        task_id = task["id"]
+
+        invoke("archive", task_id, "--actor", "human:test")
+
+        result = invoke("unarchive", task_id, "--actor", "human:test", "--quiet")
+        assert result.exit_code == 0
+        assert result.output.strip() == task_id
+
+    def test_unarchive_rejects_invalid_task_id(self, invoke):
+        """Unarchiving with a malformed task_id should fail with INVALID_ID."""
+        result = invoke("unarchive", "../../etc/passwd", "--actor", "human:test")
+        assert result.exit_code == 1
+        assert "INVALID_ID" in result.stderr or "Invalid task ID" in result.stderr

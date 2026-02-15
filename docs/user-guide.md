@@ -1,6 +1,6 @@
 # Lattice User Guide
 
-Lattice is Linear and JIRA reimagined for the agent-native era. It's a file-based task tracker that lives inside your project directory -- like `.git/` for project management. Where traditional tools assume humans are the primary operators with agents bolted on as integrations, Lattice treats AI agents as first-class participants in the workflow: every command supports machine-readable output, idempotent retries, and structured attribution out of the box.
+Lattice is Linear and JIRA reimagined for the agent-native era. It's a file-based task tracker that lives inside your project directory -- like `.git/` for project management. Where traditional tools assume humans are the primary operators with agents bolted on as integrations, Lattice treats AI agents as first-class participants in the workflow: every command supports machine-readable output, idempotent retries, and structured attribution out of the box. Lattice provides two equal interfaces -- a full-featured CLI and a local web dashboard -- both reading and writing to the same `.lattice/` data directory.
 
 Lattice is purpose-built for coordinating large-scale agentic projects -- the kind where dozens of agents work in parallel across a codebase, each picking up tasks, reporting progress, and handing off to the next. Everything is stored as plain files (JSON, JSONL, Markdown) so your project management lives alongside your code, version-controlled and inspectable.
 
@@ -55,15 +55,17 @@ A task is the basic unit of work. It has a title, status, priority, type, and ca
 
 ### Statuses
 
-Tasks move through a workflow. The default pipeline is:
+Tasks move through an agent planning workflow. The default pipeline is:
 
 ```
-backlog -> ready -> in_progress -> review -> done
+backlog → in_planning → planned → in_implementation → implemented → in_review → done
 ```
 
-Plus two special statuses: `blocked` and `cancelled`.
+Plus `cancelled`, which is reachable from any non-terminal status.
 
-Not every transition is allowed. For example, you can't jump directly from `backlog` to `done`. If you need to, you can force it with `--force --reason "..."`.
+The terminal states are `done` and `cancelled` -- once a task reaches either, the workflow is finished.
+
+Not every transition is allowed. For example, you can't jump directly from `backlog` to `done`. The workflow enforces valid transitions (e.g., `in_review` can go back to `in_implementation` if rework is needed). If you need to force an invalid transition, use `--force --reason "..."`.
 
 ### Actors
 
@@ -95,17 +97,33 @@ The lifecycle event log (`_lifecycle.jsonl`) is a derived index of task creation
 
 ---
 
+## Two Ways to Work
+
+Lattice gives you two interfaces that are fully interchangeable -- both read and write to the same `.lattice/` data directory.
+
+### CLI
+
+The command-line interface is the original and most complete way to use Lattice. It's fully scriptable and supports `--json` for structured machine output and `--quiet` for minimal output (just an ID or "ok"). All write operations are available through the CLI. Agents tend to prefer this interface.
+
+### Dashboard
+
+The web dashboard is a local UI you launch with `lattice dashboard`. It provides visual Board, List, and Activity views, drag-and-drop status changes, task creation and editing, comments, and archiving. It runs at `http://127.0.0.1:8799/` by default.
+
+Both interfaces are first-class citizens. A task created in the dashboard shows up immediately in `lattice list`, and a status change made via `lattice status` appears on the board within seconds.
+
+---
+
 ## Typical Workflow
 
-Here's what a complete task lifecycle looks like:
+Here's what a complete task lifecycle looks like from the CLI:
 
 ```bash
 # Human creates and assigns a task
 lattice create "Fix auth redirect bug" --type bug --priority high --actor human:atin
 lattice assign task_01HQ... agent:claude --actor human:atin
 
-# Agent picks it up
-lattice status task_01HQ... in_progress --actor agent:claude
+# Agent picks it up and starts implementation
+lattice status task_01HQ... in_implementation --actor agent:claude
 
 # Agent adds context
 lattice comment task_01HQ... "Root cause: expired token refresh logic" --actor agent:claude
@@ -118,7 +136,7 @@ lattice attach task_01HQ... https://github.com/org/repo/pull/42 \
   --title "PR: Fix auth redirect" --actor agent:claude
 
 # Agent moves to review
-lattice status task_01HQ... review --actor agent:claude
+lattice status task_01HQ... in_review --actor agent:claude
 
 # Human approves and completes
 lattice status task_01HQ... done --actor human:atin
@@ -126,6 +144,8 @@ lattice status task_01HQ... done --actor human:atin
 # Clean up
 lattice archive task_01HQ... --actor human:atin
 ```
+
+**From the dashboard:** The same workflow works visually. Create a task with the "+ New Task" button, drag it across the board columns as it progresses (`backlog` to `in_planning` to `planned` and so on), click into the task detail to add comments and change assignments, and archive it when done. See [The Dashboard](#the-dashboard) for details.
 
 ---
 
@@ -150,6 +170,8 @@ lattice create "Fix auth redirect bug" \
   --actor human:atin
 ```
 
+**From the dashboard:** Click the "+ New Task" button in the nav bar. Fill in the title (required), type, priority, description, tags, and assignee, then click "Create Task".
+
 **Task types:** `task`, `epic`, `bug`, `spike`, `chore`
 
 **Priorities:** `critical`, `high`, `medium` (default), `low`
@@ -168,6 +190,8 @@ You can update multiple fields at once. For status and assignment, use their ded
 
 **Updatable fields:** `title`, `description`, `priority`, `urgency`, `type`, `tags`
 
+**From the dashboard:** Open a task's detail view by clicking it. Most fields are inline-editable -- click the title, description, or tags to edit them. Use the dropdowns to change priority and type.
+
 #### Custom fields (dot notation)
 
 You can store arbitrary key-value data on tasks using dot notation:
@@ -183,7 +207,7 @@ Custom fields are stored in the `custom_fields` object on the task snapshot. The
 ### Change status
 
 ```bash
-lattice status task_01HQ... in_progress --actor agent:claude
+lattice status task_01HQ... in_implementation --actor agent:claude
 ```
 
 If the transition isn't allowed by the workflow, you'll get an error listing valid transitions. To override:
@@ -192,17 +216,23 @@ If the transition isn't allowed by the workflow, you'll get an error listing val
 lattice status task_01HQ... done --force --reason "Completed offline" --actor human:atin
 ```
 
+**From the dashboard:** Drag a task card between columns on the Board view, or use the status dropdown in the task detail view. Invalid transitions are blocked -- columns dim to indicate which moves are allowed during a drag.
+
 ### Assign a task
 
 ```bash
 lattice assign task_01HQ... agent:claude --actor human:atin
 ```
 
+**From the dashboard:** Click the assignee field in the task detail view and type the new actor ID (e.g., `agent:claude`). Clear it to unassign.
+
 ### Add a comment
 
 ```bash
 lattice comment task_01HQ... "Investigated the root cause, it's a race condition in the token refresh" --actor agent:claude
 ```
+
+**From the dashboard:** Open the task detail view, type in the comment box at the bottom, and click "Post" (or press Ctrl+Enter / Cmd+Enter).
 
 ---
 
@@ -218,13 +248,13 @@ Output looks like:
 
 ```
 task_01HQ...  backlog  medium  task  "Build login page"  unassigned
-task_01HQ...  in_progress  high  bug  "Fix auth redirect"  agent:claude
+task_01HQ...  in_implementation  high  bug  "Fix auth redirect"  agent:claude
 ```
 
 ### Filter the list
 
 ```bash
-lattice list --status in_progress
+lattice list --status in_implementation
 lattice list --assigned agent:claude
 lattice list --tag security
 lattice list --type bug
@@ -241,6 +271,16 @@ lattice show task_01HQ...
 This prints the full task including description, relationships (both outgoing and incoming), artifacts, notes, and the complete event timeline. Use `--compact` for a brief view, or `--full` to see raw event data.
 
 The `show` command also finds archived tasks automatically.
+
+### Dashboard views
+
+The web dashboard offers three visual alternatives to CLI viewing:
+
+- **Board** -- Kanban-style columns, one per status. Drag and drop to move tasks.
+- **List** -- Sortable, filterable table. Filter by status, priority, type, or search text. Toggle to include archived tasks.
+- **Activity** -- Recent events across all tasks, showing actor, event type, and timestamp.
+
+Click any task card or table row to open the full detail view.
 
 ---
 
@@ -343,6 +383,80 @@ lattice unarchive task_01HQ... --actor human:atin
 ```
 
 This moves the task's files back from archive to the active directories and records a `task_unarchived` event.
+
+**From the dashboard:** You can archive a task from its detail view using the "Archive" button. To see archived tasks, switch to the List view and check "Show archived".
+
+---
+
+## The Dashboard
+
+The dashboard is a local web UI for Lattice. It reads and writes to the same `.lattice/` directory as the CLI.
+
+### Starting the dashboard
+
+```bash
+lattice dashboard
+```
+
+This launches the server at `http://127.0.0.1:8799/`. Options:
+
+```bash
+lattice dashboard --host 0.0.0.0 --port 9000
+```
+
+### Board view
+
+The default view is a Kanban board with one column per workflow status. Each column displays task cards showing the title, priority, type, and assignee.
+
+**Drag and drop** a card between columns to change its status. During a drag, valid target columns are highlighted and invalid ones are dimmed. If the transition isn't allowed by the workflow, the drop is rejected with an error message.
+
+### List view
+
+A filterable table of all tasks. Use the dropdowns and search box to filter by status, type, priority, or title text. Check "Show archived" to include archived tasks in the table.
+
+Click any row to open the task detail.
+
+### Activity view
+
+A feed of the most recent events across all tasks. Each entry shows the timestamp, event type, task ID (linked to its detail), a summary of what changed, and who did it. Useful for a quick overview of what's been happening.
+
+### Task detail
+
+Click any card on the board or row in the list to open the full task detail. From here you can:
+
+- **Edit the title** -- click it to inline-edit.
+- **Change status** -- use the status dropdown (shows only valid transitions).
+- **Change priority and type** -- use the respective dropdowns.
+- **Edit the description** -- click the description area to open a text editor.
+- **Edit tags** -- click the tags to edit them (comma-separated).
+- **Change assignment** -- click the assignee to edit it. Clear the field to unassign.
+- **Add comments** -- type in the comment box and press "Post" or Ctrl+Enter.
+- **View relationships, artifacts, and custom fields** -- displayed read-only.
+- **View the event history** -- the full timeline of changes, newest first.
+- **Archive the task** -- click the "Archive" button.
+
+Archived tasks open in read-only mode.
+
+### Creating tasks
+
+Click the "+ New Task" button in the nav bar. A modal appears with fields for title (required), type, priority, description, tags, and assignee. Press Enter in the title field or click "Create Task" to submit. After creation, you're taken directly to the new task's detail view.
+
+### Settings
+
+Click the gear icon in the nav bar to open the settings panel.
+
+- **Background image** -- Set a URL for a background image on the board view. Click "Apply" to save or "Clear" to remove it.
+- **Lane colors** -- Customize the header color of each board column. Pick colors with the color pickers and click "Apply Lane Colors". Use "Reset to Defaults" to restore the built-in palette. You can also click the color dot that appears when hovering over a column header in the board view.
+
+Settings are persisted to `.lattice/config.json` and survive server restarts.
+
+### Auto-refresh
+
+The dashboard automatically polls for changes every 5 seconds when viewing the Board, List, or Activity views. If data has changed (e.g., a CLI command updated a task), the view re-renders. Polling pauses when the browser tab is hidden to avoid unnecessary requests.
+
+### Network binding
+
+By default, the dashboard binds to `127.0.0.1` (localhost), which gives full read-write access. If you bind to a non-loopback address (e.g., `--host 0.0.0.0`), the dashboard is automatically forced into **read-only mode** -- all write operations (status changes, task creation, comments, etc.) are disabled and return a 403 error. A warning is printed to stderr when this happens.
 
 ---
 
@@ -461,7 +575,7 @@ The same pattern works for events (`--id ev_...`) and artifacts (`--id art_...`)
 Agents can attach metadata to events for observability:
 
 ```bash
-lattice status task_01HQ... in_progress \
+lattice status task_01HQ... in_implementation \
   --actor agent:claude \
   --model claude-opus-4 \
   --session session-abc123
@@ -479,7 +593,16 @@ The workflow is defined in `.lattice/config.json`. You can customize:
 - **Task types** -- add custom types beyond the defaults
 - **Defaults** -- change the default status and priority for new tasks
 
-The default config ships with sensible Kanban defaults. Edit it directly -- it's just JSON. There is no `lattice config` command in v0.
+The default config ships with sensible agent-planning defaults. Edit it directly -- it's just JSON. There is no `lattice config` command in v0.
+
+### Dashboard configuration
+
+The dashboard stores its settings in `config.json` under a `dashboard` key:
+
+- **`lane_colors`** -- an object mapping status names to hex color strings (e.g., `{"backlog": "#adb5bd", "done": "#198754"}`). Controls the board column header colors.
+- **`background_image`** -- a URL string for the board background image. Set to `null` or omit to clear.
+
+These are managed through the dashboard settings panel, but you can also edit `config.json` directly.
 
 ---
 
@@ -522,6 +645,7 @@ Everything is plain text. You can `git add .lattice/` to version-control your ta
 | `lattice event <id> <x_type>` | Record a custom event |
 | `lattice archive <id>` | Archive a task |
 | `lattice unarchive <id>` | Restore an archived task |
+| `lattice dashboard` | Launch the web dashboard |
 | `lattice doctor` | Check project integrity |
 | `lattice rebuild <id\|--all>` | Rebuild snapshots from events |
 

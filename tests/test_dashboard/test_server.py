@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from urllib.request import Request, urlopen
 
+import pytest
+
 from lattice.core.ids import generate_task_id
 
 
@@ -465,6 +467,50 @@ class TestPostTaskStatus:
         assert status == 400
         assert body["ok"] is False
         assert body["error"]["code"] == "INVALID_TRANSITION"
+
+    def test_force_transition_succeeds(self, dashboard_server):
+        """Force=true with reason should bypass invalid transition."""
+        base_url, ld, ids = dashboard_server
+        task_id = ids["backlog"]
+
+        status, body = _post(
+            base_url,
+            f"/api/tasks/{task_id}/status",
+            {
+                "status": "done",
+                "actor": "dashboard:web",
+                "force": True,
+                "reason": "Hotfix already deployed",
+            },
+        )
+        assert status == 200
+        assert body["ok"] is True
+        assert body["data"]["status"] == "done"
+
+        # Verify event includes force + reason
+        events_path = ld / "events" / f"{task_id}.jsonl"
+        lines = events_path.read_text().strip().split("\n")
+        last_event = json.loads(lines[-1])
+        assert last_event["data"]["force"] is True
+        assert last_event["data"]["reason"] == "Hotfix already deployed"
+
+    def test_force_without_reason_rejected(self, dashboard_server):
+        """Force=true without reason should be rejected."""
+        base_url, _ld, ids = dashboard_server
+        task_id = ids["backlog"]
+
+        status, body = _post(
+            base_url,
+            f"/api/tasks/{task_id}/status",
+            {
+                "status": "done",
+                "actor": "dashboard:web",
+                "force": True,
+            },
+        )
+        assert status == 400
+        assert body["error"]["code"] == "VALIDATION_ERROR"
+        assert "reason" in body["error"]["message"].lower()
 
     def test_same_status_noop(self, dashboard_server):
         """Transition to the same status should return 200 with a message."""
@@ -929,3 +975,123 @@ class TestPostRouting:
 
         status, body = _post(base_url, f"/api/tasks/{task_id}", {"status": "in_planning"})
         assert status == 404
+
+
+# ---------------------------------------------------------------------------
+# POST body size limit (DoS prevention)
+# ---------------------------------------------------------------------------
+
+
+class TestPayloadSizeLimit:
+    def test_oversized_content_length_rejected_with_413(self, dashboard_server):
+        """A Content-Length exceeding MAX_REQUEST_BODY_BYTES should return 413."""
+        import http.client
+
+        from lattice.dashboard.server import MAX_REQUEST_BODY_BYTES
+
+        base_url, _ld, ids = dashboard_server
+        task_id = ids["backlog"]
+
+        # Use http.client directly to send a request with a spoofed
+        # Content-Length that is too large, without actually sending that much
+        # data.  The server checks the header before reading.
+        url = f"/api/tasks/{task_id}/status"
+        host = base_url.replace("http://", "")
+        conn = http.client.HTTPConnection(host)
+        small_body = b'{"status":"in_planning"}'
+        conn.putrequest("POST", url)
+        conn.putheader("Content-Type", "application/json")
+        conn.putheader("Content-Length", str(MAX_REQUEST_BODY_BYTES + 1))
+        conn.endheaders(small_body)
+
+        resp = conn.getresponse()
+        assert resp.status == 413
+        body = json.loads(resp.read().decode("utf-8"))
+        assert body["ok"] is False
+        assert body["error"]["code"] == "PAYLOAD_TOO_LARGE"
+        conn.close()
+
+    def test_normal_body_accepted(self, dashboard_server):
+        """A normal-sized body should work fine."""
+        base_url, _ld, ids = dashboard_server
+        task_id = ids["backlog"]
+
+        status, body = _post(
+            base_url,
+            f"/api/tasks/{task_id}/status",
+            {"status": "in_planning", "actor": "dashboard:web"},
+        )
+        assert status == 200
+
+
+# ---------------------------------------------------------------------------
+# Read-only mode
+# ---------------------------------------------------------------------------
+
+
+class TestReadonlyMode:
+    @pytest.fixture()
+    def readonly_server(self, populated_lattice_dir):
+        """Start a dashboard server in readonly mode."""
+        import socket
+        import threading
+
+        from lattice.dashboard.server import create_server
+
+        ld, task_ids = populated_lattice_dir
+        # Find free port
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+
+        server = create_server(ld, "127.0.0.1", port, readonly=True)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+
+        base_url = f"http://127.0.0.1:{port}"
+        yield base_url, ld, task_ids
+
+        server.shutdown()
+        server.server_close()
+
+    def test_post_returns_403_in_readonly(self, readonly_server):
+        """All POST requests should return 403 FORBIDDEN in readonly mode."""
+        base_url, _ld, ids = readonly_server
+        task_id = ids["backlog"]
+
+        status, body = _post(
+            base_url,
+            f"/api/tasks/{task_id}/status",
+            {"status": "in_planning"},
+        )
+        assert status == 403
+        assert body["ok"] is False
+        assert body["error"]["code"] == "FORBIDDEN"
+
+    def test_post_create_returns_403_in_readonly(self, readonly_server):
+        """POST /api/tasks should also return 403 in readonly mode."""
+        base_url, _ld, _ids = readonly_server
+
+        status, body = _post(
+            base_url,
+            "/api/tasks",
+            {"title": "New task", "actor": "dashboard:web"},
+        )
+        assert status == 403
+        assert body["error"]["code"] == "FORBIDDEN"
+
+    def test_get_still_works_in_readonly(self, readonly_server):
+        """GET requests should still work in readonly mode."""
+        base_url, _ld, _ids = readonly_server
+
+        status, body = _get(base_url, "/api/tasks")
+        assert status == 200
+        assert body["ok"] is True
+
+    def test_get_config_still_works_in_readonly(self, readonly_server):
+        """GET /api/config should still work in readonly mode."""
+        base_url, _ld, _ids = readonly_server
+
+        status, body = _get(base_url, "/api/config")
+        assert status == 200
+        assert body["ok"] is True

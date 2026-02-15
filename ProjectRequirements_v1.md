@@ -121,7 +121,7 @@ These are non-negotiable constraints intended to prevent accidental complexity:
   - one JSON file per task snapshot: `tasks/<task_id>.json`
 - `events/`:
   - per-task JSONL log: `events/<task_id>.jsonl` — **authoritative** record for each task
-  - global JSONL log: `events/_global.jsonl` — **derived** convenience index, rebuildable from per-task logs (see section 9.1)
+  - global JSONL log: `events/_lifecycle.jsonl` — **derived** convenience index, rebuildable from per-task logs (see section 9.1)
 - `artifacts/`:
   - `artifacts/meta/<art_id>.json`
   - `artifacts/payload/<art_id>.<ext>` (or `<art_id>` if binary/unknown)
@@ -281,7 +281,7 @@ Each item in `relationships_out` contains:
 ### 9.1 Storage (v0)
 
 - **Per-task JSONL** (`events/<task_id>.jsonl`): one event per line, never rewritten. This is the **authoritative** record for each task.
-- **Global JSONL** (`events/_global.jsonl`): a **derived** convenience log that aggregates lifecycle events (task created, task archived) across all tasks. It is rebuildable from per-task event logs and is not a second source of truth. If the global log and per-task logs disagree, per-task logs win.
+- **Global JSONL** (`events/_lifecycle.jsonl`): a **derived** convenience log that aggregates lifecycle events (task created, task archived) across all tasks. It is rebuildable from per-task event logs and is not a second source of truth. If the global log and per-task logs disagree, per-task logs win.
 
 ### 9.2 Event schema (v0)
 
@@ -312,6 +312,7 @@ Task-scoped events (require `task_id`):
 
 - `task_created`
 - `task_archived`
+- `task_unarchived`
 - `status_changed`:
   - `from`, `to`, `force` (bool), `reason` (string|null)
 - `assignment_changed`:
@@ -420,7 +421,7 @@ Linkage between tasks and artifacts is recorded as events (`artifact_attached`) 
 - Lock granularity:
   - task snapshot file lock when rewriting `tasks/<id>.json`
   - event log lock when appending `events/<id>.jsonl`
-  - global event log lock when appending `events/_global.jsonl`
+  - global event log lock when appending `events/_lifecycle.jsonl`
 
 ### 12.2 Deterministic lock ordering (v0)
 

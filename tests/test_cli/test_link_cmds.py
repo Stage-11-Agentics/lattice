@@ -318,6 +318,78 @@ class TestUnlinkQuietOutput:
         assert result.output.strip() == id_a
 
 
+class TestLinkIdValidation:
+    """Path traversal prevention via task_id validation."""
+
+    def test_link_rejects_invalid_task_id(self, invoke) -> None:
+        """link should reject a malformed source task_id."""
+        _, id_b = _create_two_tasks(invoke)
+        result = invoke("link", "../../etc/passwd", "blocks", id_b, "--actor", "human:test")
+        assert result.exit_code == 1
+        assert "INVALID_ID" in result.stderr or "Invalid task ID" in result.stderr
+
+    def test_link_rejects_invalid_task_id_json(self, invoke) -> None:
+        _, id_b = _create_two_tasks(invoke)
+        result = invoke(
+            "link", "../../etc/passwd", "blocks", id_b, "--actor", "human:test", "--json"
+        )
+        assert result.exit_code == 1
+        parsed = json.loads(result.output)
+        assert parsed["ok"] is False
+        assert parsed["error"]["code"] == "INVALID_ID"
+
+    def test_link_rejects_invalid_target_id(self, invoke) -> None:
+        """link should reject a malformed target task_id."""
+        id_a, _ = _create_two_tasks(invoke)
+        result = invoke("link", id_a, "blocks", "../../etc/passwd", "--actor", "human:test")
+        assert result.exit_code == 1
+        assert "INVALID_ID" in result.stderr or "Invalid task ID" in result.stderr
+
+    def test_link_rejects_invalid_target_id_json(self, invoke) -> None:
+        id_a, _ = _create_two_tasks(invoke)
+        result = invoke(
+            "link", id_a, "blocks", "../../etc/passwd", "--actor", "human:test", "--json"
+        )
+        assert result.exit_code == 1
+        parsed = json.loads(result.output)
+        assert parsed["ok"] is False
+        assert parsed["error"]["code"] == "INVALID_ID"
+
+    def test_unlink_rejects_invalid_task_id(self, invoke) -> None:
+        """unlink should reject a malformed source task_id."""
+        _, id_b = _create_two_tasks(invoke)
+        result = invoke("unlink", "../../etc/passwd", "blocks", id_b, "--actor", "human:test")
+        assert result.exit_code == 1
+        assert "INVALID_ID" in result.stderr or "Invalid task ID" in result.stderr
+
+    def test_unlink_rejects_invalid_task_id_json(self, invoke) -> None:
+        _, id_b = _create_two_tasks(invoke)
+        result = invoke(
+            "unlink", "../../etc/passwd", "blocks", id_b, "--actor", "human:test", "--json"
+        )
+        assert result.exit_code == 1
+        parsed = json.loads(result.output)
+        assert parsed["ok"] is False
+        assert parsed["error"]["code"] == "INVALID_ID"
+
+    def test_unlink_rejects_invalid_target_id(self, invoke) -> None:
+        """unlink should reject a malformed target task_id."""
+        id_a, _ = _create_two_tasks(invoke)
+        result = invoke("unlink", id_a, "blocks", "../../etc/passwd", "--actor", "human:test")
+        assert result.exit_code == 1
+        assert "INVALID_ID" in result.stderr or "Invalid task ID" in result.stderr
+
+    def test_unlink_rejects_invalid_target_id_json(self, invoke) -> None:
+        id_a, _ = _create_two_tasks(invoke)
+        result = invoke(
+            "unlink", id_a, "blocks", "../../etc/passwd", "--actor", "human:test", "--json"
+        )
+        assert result.exit_code == 1
+        parsed = json.loads(result.output)
+        assert parsed["ok"] is False
+        assert parsed["error"]["code"] == "INVALID_ID"
+
+
 class TestUnlinkErrors:
     """Error cases for lattice unlink."""
 

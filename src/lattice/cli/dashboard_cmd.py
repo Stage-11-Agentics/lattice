@@ -20,18 +20,19 @@ def dashboard_cmd(host: str, port: int, output_json: bool) -> None:
     """Launch a read-only local web dashboard."""
     lattice_dir = require_root(output_json)
 
-    # Warn on non-loopback bind
-    if host not in _LOOPBACK_HOSTS:
+    # Non-loopback binds are forced into read-only mode
+    readonly = host not in _LOOPBACK_HOSTS
+    if readonly:
         click.echo(
-            "Warning: dashboard is exposed on the network. "
-            "Bind to 127.0.0.1 for local-only access.",
+            "Warning: dashboard is exposed on the network — writes are disabled. "
+            "Bind to 127.0.0.1 for local-only access with full write support.",
             err=True,
         )
 
     from lattice.dashboard.server import create_server
 
     try:
-        server = create_server(lattice_dir, host, port)
+        server = create_server(lattice_dir, host, port, readonly=readonly)
     except OSError as exc:
         if output_json:
             click.echo(json_envelope(False, error=json_error_obj("BIND_ERROR", str(exc))))

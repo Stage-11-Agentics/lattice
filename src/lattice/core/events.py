@@ -15,6 +15,7 @@ BUILTIN_EVENT_TYPES: frozenset[str] = frozenset(
     {
         "task_created",
         "task_archived",
+        "task_unarchived",
         "status_changed",
         "assignment_changed",
         "field_updated",
@@ -31,6 +32,7 @@ LIFECYCLE_EVENT_TYPES: frozenset[str] = frozenset(
     {
         "task_created",
         "task_archived",
+        "task_unarchived",
     }
 )
 

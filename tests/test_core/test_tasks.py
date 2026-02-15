@@ -6,8 +6,11 @@ import json
 
 import pytest
 
+from lattice.core.events import BUILTIN_EVENT_TYPES
 from lattice.core.tasks import (
     PROTECTED_FIELDS,
+    _MUTATION_HANDLERS,
+    _NOOP_EVENT_TYPES,
     apply_event_to_snapshot,
     compact_snapshot,
     serialize_snapshot,
@@ -647,3 +650,27 @@ class TestCompactSnapshot:
         assert "artifact_refs" not in compact
         assert "custom_fields" not in compact
         assert "last_event_id" not in compact
+
+
+# ---------------------------------------------------------------------------
+# Mutation registry completeness
+# ---------------------------------------------------------------------------
+
+
+class TestMutationRegistryCompleteness:
+    """Every BUILTIN_EVENT_TYPES entry is either in the handler registry,
+    the noop set, or is ``task_created`` (handled in the main switch)."""
+
+    def test_all_builtin_types_covered(self) -> None:
+        handled = set(_MUTATION_HANDLERS.keys())
+        noop = set(_NOOP_EVENT_TYPES)
+        init_type = {"task_created"}  # handled separately in apply_event_to_snapshot
+
+        covered = handled | noop | init_type
+        missing = BUILTIN_EVENT_TYPES - covered
+        assert not missing, f"Unhandled builtin event types: {missing}"
+
+    def test_no_handler_also_in_noop(self) -> None:
+        """A type should not be in both the handler registry and the noop set."""
+        overlap = set(_MUTATION_HANDLERS.keys()) & _NOOP_EVENT_TYPES
+        assert not overlap, f"Types in both handler and noop: {overlap}"

@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
-from lattice.storage.fs import atomic_write, jsonl_append
+from lattice.storage.fs import _fsync_directory, atomic_write, jsonl_append
 
 
 class TestAtomicWrite:
@@ -124,3 +125,26 @@ class TestJsonlAppend:
         written = target.read_text()
         assert written.endswith("\n")
         assert written == line
+
+
+class TestFsyncDirectory:
+    """_fsync_directory() syncs directory metadata for durability."""
+
+    def test_called_during_atomic_write(self, tmp_path: Path) -> None:
+        """atomic_write should call _fsync_directory on the parent dir."""
+        target = tmp_path / "output.json"
+        with patch("lattice.storage.fs._fsync_directory") as mock_fsync:
+            atomic_write(target, "content\n")
+        mock_fsync.assert_called_once_with(tmp_path)
+
+    def test_called_during_jsonl_append(self, tmp_path: Path) -> None:
+        """jsonl_append should call _fsync_directory on the parent dir."""
+        target = tmp_path / "events.jsonl"
+        with patch("lattice.storage.fs._fsync_directory") as mock_fsync:
+            jsonl_append(target, '{"ok":true}\n')
+        mock_fsync.assert_called_once_with(tmp_path)
+
+    def test_does_not_raise_on_oserror(self, tmp_path: Path) -> None:
+        """_fsync_directory should silently ignore OSError (e.g. macOS)."""
+        with patch("lattice.storage.fs.os.open", side_effect=OSError("not supported")):
+            _fsync_directory(tmp_path)  # Should not raise

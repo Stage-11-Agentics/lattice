@@ -10,6 +10,22 @@ LATTICE_DIR = ".lattice"
 LATTICE_ROOT_ENV = "LATTICE_ROOT"
 
 
+def _fsync_directory(path: Path) -> None:
+    """Fsync a directory to ensure metadata (e.g. renames) is durable.
+
+    Some platforms (notably macOS HFS+) may not support fsync on directory
+    file descriptors, so ``OSError`` is silently ignored.
+    """
+    try:
+        fd = os.open(str(path), os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except OSError:
+        pass
+
+
 def atomic_write(path: Path, content: str | bytes) -> None:
     """Write content to path atomically via temp file + fsync + rename.
 
@@ -37,6 +53,7 @@ def atomic_write(path: Path, content: str | bytes) -> None:
         os.close(fd)
         closed = True
         os.replace(tmp_path, path)
+        _fsync_directory(parent)
     except BaseException:
         if not closed:
             os.close(fd)
@@ -135,3 +152,4 @@ def jsonl_append(path: Path, line: str) -> None:
         fh.write(line)
         fh.flush()
         os.fsync(fh.fileno())
+    _fsync_directory(path.parent)

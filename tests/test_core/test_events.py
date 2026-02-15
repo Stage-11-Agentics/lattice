@@ -25,6 +25,7 @@ class TestBuiltinEventTypes:
         {
             "task_created",
             "task_archived",
+            "task_unarchived",
             "status_changed",
             "assignment_changed",
             "field_updated",
@@ -43,7 +44,7 @@ class TestBuiltinEventTypes:
         assert isinstance(BUILTIN_EVENT_TYPES, frozenset)
 
     def test_count(self) -> None:
-        assert len(BUILTIN_EVENT_TYPES) == 10
+        assert len(BUILTIN_EVENT_TYPES) == 11
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +56,9 @@ class TestLifecycleEventTypes:
     """Verify exactly task_created and task_archived go to _lifecycle.jsonl."""
 
     def test_contains_exactly_lifecycle_events(self) -> None:
-        assert LIFECYCLE_EVENT_TYPES == frozenset({"task_created", "task_archived"})
+        assert LIFECYCLE_EVENT_TYPES == frozenset(
+            {"task_created", "task_archived", "task_unarchived"}
+        )
 
     def test_is_frozenset(self) -> None:
         assert isinstance(LIFECYCLE_EVENT_TYPES, frozenset)

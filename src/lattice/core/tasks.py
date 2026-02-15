@@ -120,8 +120,94 @@ def _init_snapshot(event: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Internal: per-type mutation logic
+# Internal: mutation registry
 # ---------------------------------------------------------------------------
+
+# Handler registry: maps event type to a function(snap, event) that mutates
+# the snapshot in-place.  Handlers are registered via @_register_mutation.
+_MUTATION_HANDLERS: dict[str, callable] = {}
+
+
+def _register_mutation(etype: str):  # noqa: ANN202
+    """Decorator that registers a snapshot mutation handler for *etype*."""
+
+    def decorator(fn):  # noqa: ANN001, ANN202
+        _MUTATION_HANDLERS[etype] = fn
+        return fn
+
+    return decorator
+
+
+# Recognised event types that don't modify snapshot fields beyond the
+# bookkeeping (last_event_id, updated_at) handled by the caller.
+_NOOP_EVENT_TYPES: frozenset[str] = frozenset(
+    {
+        "comment_added",
+        "git_event",
+        "task_archived",
+        "task_unarchived",
+    }
+)
+
+
+@_register_mutation("status_changed")
+def _mut_status_changed(snap: dict, event: dict) -> None:
+    snap["status"] = event["data"]["to"]
+
+
+@_register_mutation("assignment_changed")
+def _mut_assignment_changed(snap: dict, event: dict) -> None:
+    snap["assigned_to"] = event["data"]["to"]
+
+
+@_register_mutation("field_updated")
+def _mut_field_updated(snap: dict, event: dict) -> None:
+    data = event["data"]
+    field = data["field"]
+    value = data["to"]
+    if field.startswith("custom_fields."):
+        key = field[len("custom_fields.") :]
+        if snap.get("custom_fields") is None:
+            snap["custom_fields"] = {}
+        snap["custom_fields"][key] = value
+    elif field in PROTECTED_FIELDS:
+        raise ValueError(
+            f"Cannot update protected field '{field}' via field_updated. "
+            "Use the dedicated command (e.g., status, assign) instead."
+        )
+    else:
+        snap[field] = value
+
+
+@_register_mutation("relationship_added")
+def _mut_relationship_added(snap: dict, event: dict) -> None:
+    data = event["data"]
+    record = {
+        "type": data["type"],
+        "target_task_id": data["target_task_id"],
+        "created_at": event["ts"],
+        "created_by": event["actor"],
+        "note": data.get("note"),
+    }
+    snap.setdefault("relationships_out", []).append(record)
+
+
+@_register_mutation("relationship_removed")
+def _mut_relationship_removed(snap: dict, event: dict) -> None:
+    data = event["data"]
+    rm_type = data["type"]
+    rm_target = data["target_task_id"]
+    rels = [
+        r
+        for r in snap.get("relationships_out", [])
+        if not (r["type"] == rm_type and r["target_task_id"] == rm_target)
+    ]
+    snap["relationships_out"] = rels
+
+
+@_register_mutation("artifact_attached")
+def _mut_artifact_attached(snap: dict, event: dict) -> None:
+    snap.setdefault("artifact_refs", []).append(event["data"]["artifact_id"])
 
 
 def _apply_mutation(snap: dict, etype: str, event: dict) -> None:
@@ -131,68 +217,14 @@ def _apply_mutation(snap: dict, etype: str, event: dict) -> None:
     they are applied uniformly for **all** event types, including no-op ones
     like ``comment_added``.
     """
-    data = event["data"]
-
-    if etype == "status_changed":
-        snap["status"] = data["to"]
-
-    elif etype == "assignment_changed":
-        snap["assigned_to"] = data["to"]
-
-    elif etype == "field_updated":
-        field = data["field"]
-        value = data["to"]
-        if field.startswith("custom_fields."):
-            # Dot-notation for nested custom fields.
-            key = field[len("custom_fields.") :]
-            if snap.get("custom_fields") is None:
-                snap["custom_fields"] = {}
-            snap["custom_fields"][key] = value
-        elif field in PROTECTED_FIELDS:
-            raise ValueError(
-                f"Cannot update protected field '{field}' via field_updated. "
-                "Use the dedicated command (e.g., status, assign) instead."
-            )
-        else:
-            snap[field] = value
-
-    elif etype == "relationship_added":
-        record = {
-            "type": data["type"],
-            "target_task_id": data["target_task_id"],
-            "created_at": event["ts"],
-            "created_by": event["actor"],
-            "note": data.get("note"),
-        }
-        snap.setdefault("relationships_out", []).append(record)
-
-    elif etype == "relationship_removed":
-        rm_type = data["type"]
-        rm_target = data["target_task_id"]
-        rels = [
-            r
-            for r in snap.get("relationships_out", [])
-            if not (r["type"] == rm_type and r["target_task_id"] == rm_target)
-        ]
-        snap["relationships_out"] = rels
-
-    elif etype == "artifact_attached":
-        snap.setdefault("artifact_refs", []).append(data["artifact_id"])
-
-    elif etype in {
-        "comment_added",
-        "git_event",
-        "task_archived",
-        "task_unarchived",
-    }:
-        # Recognised types that don't modify snapshot fields beyond the
-        # bookkeeping handled by the caller.
+    handler = _MUTATION_HANDLERS.get(etype)
+    if handler is not None:
+        handler(snap, event)
+    elif etype in _NOOP_EVENT_TYPES:
         pass
-
     elif etype.startswith("x_"):
         # Custom event type -- no snapshot field changes.
         pass
-
     else:
         # Unknown built-in types: warn for discoverability but don't fail,
         # to preserve forward compatibility (section 6).

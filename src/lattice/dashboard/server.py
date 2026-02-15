@@ -18,13 +18,17 @@ from lattice.core.config import (
     validate_task_type,
     validate_transition,
 )
-from lattice.core.events import LIFECYCLE_EVENT_TYPES, create_event, serialize_event, utc_now
+from lattice.core.events import create_event, serialize_event, utc_now
 from lattice.core.ids import generate_task_id, validate_actor, validate_id
 from lattice.core.tasks import apply_event_to_snapshot, compact_snapshot, serialize_snapshot
 from lattice.storage.fs import atomic_write, jsonl_append
 from lattice.storage.locks import multi_lock
+from lattice.storage.operations import write_task_event
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+# Maximum allowed request body size (1 MiB) to prevent DoS via oversized payloads.
+MAX_REQUEST_BODY_BYTES = 1_048_576
 
 # ---------------------------------------------------------------------------
 # JSON envelope helpers
@@ -51,11 +55,12 @@ def _err(code: str, message: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _make_handler_class(lattice_dir: Path) -> type:
+def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
     """Create a handler class bound to a specific .lattice/ directory."""
 
     class LatticeHandler(BaseHTTPRequestHandler):
         _lattice_dir: Path = lattice_dir
+        _readonly: bool = readonly
 
         # Suppress default access logging to stdout; send to stderr instead
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
@@ -73,6 +78,10 @@ def _make_handler_class(lattice_dir: Path) -> type:
                 self._send_json(404, _err("NOT_FOUND", f"Not found: {path}"))
 
         def do_POST(self) -> None:  # noqa: N802
+            if self._readonly:
+                self._send_json(403, _err("FORBIDDEN", "Dashboard is in read-only mode"))
+                return
+
             parsed = urlparse(self.path)
             path = parsed.path.rstrip("/") or "/"
 
@@ -347,6 +356,15 @@ def _make_handler_class(lattice_dir: Path) -> type:
                 self._send_json(400, _err("BAD_REQUEST", "Empty request body"))
                 return None
 
+            if content_length > MAX_REQUEST_BODY_BYTES:
+                self._send_json(
+                    413,
+                    _err(
+                        "PAYLOAD_TOO_LARGE", f"Request body exceeds {MAX_REQUEST_BODY_BYTES} bytes"
+                    ),
+                )
+                return None
+
             try:
                 raw = self.rfile.read(content_length)
                 return json.loads(raw)
@@ -366,6 +384,8 @@ def _make_handler_class(lattice_dir: Path) -> type:
 
             new_status = body.get("status")
             actor = body.get("actor", "dashboard:web")
+            force = body.get("force", False)
+            reason = body.get("reason")
 
             if not new_status:
                 self._send_json(400, _err("VALIDATION_ERROR", "Missing 'status' field"))
@@ -396,56 +416,55 @@ def _make_handler_class(lattice_dir: Path) -> type:
                 )
                 return
 
-            # Read current snapshot with lock
-            locks_dir = ld / "locks"
-            lock_keys = [f"events_{task_id}", f"tasks_{task_id}"]
-            lock_keys.sort()
+            # Read snapshot (outside lock — acceptable TOCTOU at v0 scale)
+            snapshot = _read_snapshot(ld, task_id)
+            if snapshot is None:
+                self._send_json(404, _err("NOT_FOUND", f"Task {task_id} not found"))
+                return
+
+            current_status = snapshot["status"]
+
+            if current_status == new_status:
+                self._send_json(
+                    200,
+                    _ok({"message": f"Already at status {new_status}"}),
+                )
+                return
+
+            if not validate_transition(config, current_status, new_status):
+                if not force:
+                    self._send_json(
+                        400,
+                        _err(
+                            "INVALID_TRANSITION",
+                            f"Invalid transition from {current_status} to {new_status}. "
+                            "Send force=true with a reason to override.",
+                        ),
+                    )
+                    return
+                if not reason or not isinstance(reason, str) or not reason.strip():
+                    self._send_json(
+                        400,
+                        _err("VALIDATION_ERROR", "'reason' is required with force=true"),
+                    )
+                    return
+
+            # Build event data
+            event_data: dict = {"from": current_status, "to": new_status}
+            if force:
+                event_data["force"] = True
+                event_data["reason"] = reason
+
+            event = create_event(
+                type="status_changed",
+                task_id=task_id,
+                actor=actor,
+                data=event_data,
+            )
+            updated_snapshot = apply_event_to_snapshot(snapshot, event)
 
             try:
-                with multi_lock(locks_dir, lock_keys):
-                    snapshot = _read_snapshot(ld, task_id)
-                    if snapshot is None:
-                        self._send_json(404, _err("NOT_FOUND", f"Task {task_id} not found"))
-                        return
-
-                    current_status = snapshot["status"]
-
-                    if current_status == new_status:
-                        self._send_json(
-                            200,
-                            _ok({"message": f"Already at status {new_status}"}),
-                        )
-                        return
-
-                    if not validate_transition(config, current_status, new_status):
-                        self._send_json(
-                            400,
-                            _err(
-                                "INVALID_TRANSITION",
-                                f"Invalid transition from {current_status} to {new_status}",
-                            ),
-                        )
-                        return
-
-                    # Create event
-                    event = create_event(
-                        type="status_changed",
-                        task_id=task_id,
-                        actor=actor,
-                        data={"from": current_status, "to": new_status},
-                    )
-
-                    # Apply to snapshot
-                    updated_snapshot = apply_event_to_snapshot(snapshot, event)
-
-                    # Write event to per-task log
-                    event_path = ld / "events" / f"{task_id}.jsonl"
-                    jsonl_append(event_path, serialize_event(event))
-
-                    # Materialize snapshot
-                    snapshot_path = ld / "tasks" / f"{task_id}.json"
-                    atomic_write(snapshot_path, serialize_snapshot(updated_snapshot))
-
+                write_task_event(ld, task_id, [event], updated_snapshot)
             except Exception as exc:
                 self._send_json(500, _err("WRITE_ERROR", f"Failed to update status: {exc}"))
                 return
@@ -542,39 +561,6 @@ def _make_handler_class(lattice_dir: Path) -> type:
                 return
 
             self._send_json(200, _ok(config.get("dashboard", {})))
-
-        # ---------------------------------------------------------------
-        # Write helpers (inline write_task_event pattern)
-        # ---------------------------------------------------------------
-
-        def _write_task_event(
-            self, ld: Path, task_id: str, events: list[dict], snapshot: dict
-        ) -> None:
-            """Write event(s) and snapshot atomically with proper locking.
-
-            Inlines the same logic as cli.helpers.write_task_event to avoid
-            a dashboard→cli dependency.
-            """
-            locks_dir = ld / "locks"
-            lifecycle_events = [e for e in events if e["type"] in LIFECYCLE_EVENT_TYPES]
-
-            lock_keys = [f"events_{task_id}", f"tasks_{task_id}"]
-            if lifecycle_events:
-                lock_keys.append("events__lifecycle")
-            lock_keys.sort()
-
-            with multi_lock(locks_dir, lock_keys):
-                event_path = ld / "events" / f"{task_id}.jsonl"
-                for event in events:
-                    jsonl_append(event_path, serialize_event(event))
-
-                if lifecycle_events:
-                    lifecycle_path = ld / "events" / "_lifecycle.jsonl"
-                    for event in lifecycle_events:
-                        jsonl_append(lifecycle_path, serialize_event(event))
-
-                snapshot_path = ld / "tasks" / f"{task_id}.json"
-                atomic_write(snapshot_path, serialize_snapshot(snapshot))
 
         # ---------------------------------------------------------------
         # POST /api/tasks — Create Task
@@ -691,7 +677,7 @@ def _make_handler_class(lattice_dir: Path) -> type:
             snapshot = apply_event_to_snapshot(None, event)
 
             try:
-                self._write_task_event(ld, task_id, [event], snapshot)
+                write_task_event(ld, task_id, [event], snapshot)
             except Exception as exc:
                 self._send_json(500, _err("WRITE_ERROR", f"Failed to create task: {exc}"))
                 return
@@ -727,36 +713,27 @@ def _make_handler_class(lattice_dir: Path) -> type:
                 )
                 return
 
+            snapshot = _read_snapshot(ld, task_id)
+            if snapshot is None:
+                self._send_json(404, _err("NOT_FOUND", f"Task {task_id} not found"))
+                return
+
+            current_assigned = snapshot.get("assigned_to")
+
+            if current_assigned == assigned_to:
+                self._send_json(200, _ok(snapshot))
+                return
+
+            event = create_event(
+                type="assignment_changed",
+                task_id=task_id,
+                actor=actor,
+                data={"from": current_assigned, "to": assigned_to},
+            )
+            updated_snapshot = apply_event_to_snapshot(snapshot, event)
+
             try:
-                locks_dir = ld / "locks"
-                lock_keys = sorted([f"events_{task_id}", f"tasks_{task_id}"])
-
-                with multi_lock(locks_dir, lock_keys):
-                    snapshot = _read_snapshot(ld, task_id)
-                    if snapshot is None:
-                        self._send_json(404, _err("NOT_FOUND", f"Task {task_id} not found"))
-                        return
-
-                    current_assigned = snapshot.get("assigned_to")
-
-                    if current_assigned == assigned_to:
-                        self._send_json(200, _ok(snapshot))
-                        return
-
-                    event = create_event(
-                        type="assignment_changed",
-                        task_id=task_id,
-                        actor=actor,
-                        data={"from": current_assigned, "to": assigned_to},
-                    )
-                    updated_snapshot = apply_event_to_snapshot(snapshot, event)
-
-                    event_path = ld / "events" / f"{task_id}.jsonl"
-                    jsonl_append(event_path, serialize_event(event))
-
-                    snapshot_path = ld / "tasks" / f"{task_id}.json"
-                    atomic_write(snapshot_path, serialize_snapshot(updated_snapshot))
-
+                write_task_event(ld, task_id, [event], updated_snapshot)
             except Exception as exc:
                 self._send_json(500, _err("WRITE_ERROR", f"Failed to assign task: {exc}"))
                 return
@@ -788,30 +765,21 @@ def _make_handler_class(lattice_dir: Path) -> type:
                 self._send_json(400, _err("VALIDATION_ERROR", f"Invalid actor format: '{actor}'"))
                 return
 
+            snapshot = _read_snapshot(ld, task_id)
+            if snapshot is None:
+                self._send_json(404, _err("NOT_FOUND", f"Task {task_id} not found"))
+                return
+
+            event = create_event(
+                type="comment_added",
+                task_id=task_id,
+                actor=actor,
+                data={"body": comment_body.strip()},
+            )
+            updated_snapshot = apply_event_to_snapshot(snapshot, event)
+
             try:
-                locks_dir = ld / "locks"
-                lock_keys = sorted([f"events_{task_id}", f"tasks_{task_id}"])
-
-                with multi_lock(locks_dir, lock_keys):
-                    snapshot = _read_snapshot(ld, task_id)
-                    if snapshot is None:
-                        self._send_json(404, _err("NOT_FOUND", f"Task {task_id} not found"))
-                        return
-
-                    event = create_event(
-                        type="comment_added",
-                        task_id=task_id,
-                        actor=actor,
-                        data={"body": comment_body.strip()},
-                    )
-                    updated_snapshot = apply_event_to_snapshot(snapshot, event)
-
-                    event_path = ld / "events" / f"{task_id}.jsonl"
-                    jsonl_append(event_path, serialize_event(event))
-
-                    snapshot_path = ld / "tasks" / f"{task_id}.json"
-                    atomic_write(snapshot_path, serialize_snapshot(updated_snapshot))
-
+                write_task_event(ld, task_id, [event], updated_snapshot)
             except Exception as exc:
                 self._send_json(500, _err("WRITE_ERROR", f"Failed to add comment: {exc}"))
                 return
@@ -916,56 +884,45 @@ def _make_handler_class(lattice_dir: Path) -> type:
                     self._send_json(400, _err("VALIDATION_ERROR", "'tags' must be an array"))
                     return
 
+            snapshot = _read_snapshot(ld, task_id)
+            if snapshot is None:
+                self._send_json(404, _err("NOT_FOUND", f"Task {task_id} not found"))
+                return
+
+            # Build events for changed fields
+            shared_ts = utc_now()
+            events: list[dict] = []
+
+            for field, new_value in fields.items():
+                if field == "tags":
+                    old_value = snapshot.get("tags") or []
+                else:
+                    old_value = snapshot.get(field)
+
+                if old_value == new_value:
+                    continue
+
+                events.append(
+                    create_event(
+                        type="field_updated",
+                        task_id=task_id,
+                        actor=actor,
+                        data={"field": field, "from": old_value, "to": new_value},
+                        ts=shared_ts,
+                    )
+                )
+
+            if not events:
+                self._send_json(200, _ok(snapshot))
+                return
+
+            # Apply events incrementally
+            updated_snapshot = snapshot
+            for event in events:
+                updated_snapshot = apply_event_to_snapshot(updated_snapshot, event)
+
             try:
-                locks_dir = ld / "locks"
-                lock_keys = sorted([f"events_{task_id}", f"tasks_{task_id}"])
-
-                with multi_lock(locks_dir, lock_keys):
-                    snapshot = _read_snapshot(ld, task_id)
-                    if snapshot is None:
-                        self._send_json(404, _err("NOT_FOUND", f"Task {task_id} not found"))
-                        return
-
-                    # Build events for changed fields
-                    shared_ts = utc_now()
-                    events: list[dict] = []
-
-                    for field, new_value in fields.items():
-                        if field == "tags":
-                            old_value = snapshot.get("tags") or []
-                        else:
-                            old_value = snapshot.get(field)
-
-                        if old_value == new_value:
-                            continue
-
-                        events.append(
-                            create_event(
-                                type="field_updated",
-                                task_id=task_id,
-                                actor=actor,
-                                data={"field": field, "from": old_value, "to": new_value},
-                                ts=shared_ts,
-                            )
-                        )
-
-                    if not events:
-                        self._send_json(200, _ok(snapshot))
-                        return
-
-                    # Apply events incrementally
-                    updated_snapshot = snapshot
-                    for event in events:
-                        updated_snapshot = apply_event_to_snapshot(updated_snapshot, event)
-
-                    # Write events + snapshot
-                    event_path = ld / "events" / f"{task_id}.jsonl"
-                    for event in events:
-                        jsonl_append(event_path, serialize_event(event))
-
-                    snapshot_path = ld / "tasks" / f"{task_id}.json"
-                    atomic_write(snapshot_path, serialize_snapshot(updated_snapshot))
-
+                write_task_event(ld, task_id, events, updated_snapshot)
             except Exception as exc:
                 self._send_json(500, _err("WRITE_ERROR", f"Failed to update task: {exc}"))
                 return
@@ -1141,7 +1098,9 @@ def _read_artifact_info(ld: Path, snapshot: dict) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-def create_server(lattice_dir: Path, host: str, port: int) -> HTTPServer:
+def create_server(
+    lattice_dir: Path, host: str, port: int, *, readonly: bool = False
+) -> HTTPServer:
     """Create an HTTP server bound to *host*:*port* serving the Lattice dashboard.
 
     Parameters
@@ -1152,7 +1111,9 @@ def create_server(lattice_dir: Path, host: str, port: int) -> HTTPServer:
         Bind address (e.g. ``"127.0.0.1"``).
     port:
         TCP port to listen on.
+    readonly:
+        If ``True``, all POST requests return 403 FORBIDDEN.
     """
-    handler_cls = _make_handler_class(lattice_dir)
+    handler_cls = _make_handler_class(lattice_dir, readonly=readonly)
     server = HTTPServer((host, port), handler_cls)
     return server
