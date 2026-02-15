@@ -227,6 +227,43 @@ Critical test categories (add as features land):
 - **Repo-level `notes/`** — only for things NOT tied to a specific task (code reviews, general research, retrospectives).
 - **Don't duplicate** — a plan should live in one place, not both.
 
+## Agent Task Discipline
+
+**This project dogfoods Lattice for its own task tracking.** If you are working on a Lattice task (LAT-*), you are expected to keep its status current. This is not optional bookkeeping — it is how the team (humans and agents) knows what's happening.
+
+### Status Lifecycle
+
+Update status at every transition. Do not batch updates or defer them to the end.
+
+| When this happens... | ...you must do this |
+|---|---|
+| You start planning a task | `lattice status LAT-N in_planning --actor agent:<your-id>` |
+| Planning is complete, ready for implementation | `lattice status LAT-N planned --actor agent:<your-id>` |
+| You begin implementation | `lattice status LAT-N in_progress --actor agent:<your-id>` |
+| Work is blocked | `lattice status LAT-N blocked --actor agent:<your-id>` + comment explaining why |
+| Implementation is complete, ready for review | `lattice status LAT-N review --actor agent:<your-id>` |
+| Task is verified done | `lattice status LAT-N done --actor agent:<your-id>` |
+
+### Notes Files
+
+Every task has a notes file at `.lattice/notes/<task_id>.md` (auto-created on `lattice create`). Use it as the working document — write plans, record decisions, document open questions. The notes file has two sections:
+
+- **Summary** — human-readable description of what and why
+- **Technical Plan** — implementation approach, design decisions, open questions
+
+Update the notes file as your understanding evolves. It is the canonical place for task-level context that outlives a single agent session.
+
+### Assignment
+
+If you are picking up a task, assign yourself: `lattice assign LAT-N agent:<your-id> --actor agent:<your-id>`
+
+### Comments for Context
+
+Use `lattice comment` to leave breadcrumbs that other agents or humans will need:
+- Why you chose an approach
+- What you tried that didn't work
+- What's left to do if you're handing off
+
 ## Workflow Reminders
 
 - **Branch naming:** `feat/`, `fix/`, `refactor/`, `test/`, `chore/` prefixes
