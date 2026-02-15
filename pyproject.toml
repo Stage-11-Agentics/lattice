@@ -14,8 +14,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+mcp = [
+    "mcp>=1.25,<2",
+]
 dev = [
     "hypothesis>=6.100",
+    "mcp>=1.25,<2",
     "mypy>=1.10",
     "pytest>=8.0",
     "ruff>=0.4",
@@ -23,6 +27,7 @@ dev = [
 
 [project.scripts]
 lattice = "lattice.cli.main:cli"
+lattice-mcp = "lattice.mcp.server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/lattice"]

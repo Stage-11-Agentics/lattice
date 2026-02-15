@@ -66,7 +66,7 @@ def attach(
     is_json = output_json
 
     lattice_dir = require_root(is_json)
-    load_project_config(lattice_dir)  # validate config exists
+    config = load_project_config(lattice_dir)
 
     validate_actor_or_exit(actor, is_json)
 
@@ -209,7 +209,7 @@ def attach(
     snapshot = apply_event_to_snapshot(snapshot, event)
 
     # Write event and snapshot
-    write_task_event(lattice_dir, task_id, [event], snapshot)
+    write_task_event(lattice_dir, task_id, [event], snapshot, config)
 
     # Output
     output_result(

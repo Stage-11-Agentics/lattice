@@ -20,7 +20,7 @@ def _init_with_project_code(root: Path, code: str = "LAT") -> Path:
     config = dict(default_config())
     config["project_code"] = code
     atomic_write(lattice_dir / "config.json", serialize_config(config))
-    save_id_index(lattice_dir, {"schema_version": 1, "next_seq": 1, "map": {}})
+    save_id_index(lattice_dir, {"schema_version": 2, "next_seqs": {}, "map": {}})
     (lattice_dir / "events" / "_lifecycle.jsonl").touch()
     return lattice_dir
 
@@ -43,12 +43,8 @@ class TestCreateWithShortId:
         runner = CliRunner()
         env = {"LATTICE_ROOT": str(tmp_path)}
 
-        r1 = runner.invoke(
-            cli, ["create", "Task 1", "--actor", "human:test", "--json"], env=env
-        )
-        r2 = runner.invoke(
-            cli, ["create", "Task 2", "--actor", "human:test", "--json"], env=env
-        )
+        r1 = runner.invoke(cli, ["create", "Task 1", "--actor", "human:test", "--json"], env=env)
+        r2 = runner.invoke(cli, ["create", "Task 2", "--actor", "human:test", "--json"], env=env)
         snap1 = json.loads(r1.output)["data"]
         snap2 = json.loads(r2.output)["data"]
         assert snap1["short_id"] == "LAT-1"
@@ -162,9 +158,7 @@ class TestListWithShortIds:
         _init_with_project_code(tmp_path)
         runner = CliRunner()
         env = {"LATTICE_ROOT": str(tmp_path)}
-        runner.invoke(
-            cli, ["create", "My task", "--actor", "human:test"], env=env
-        )
+        runner.invoke(cli, ["create", "My task", "--actor", "human:test"], env=env)
         result = runner.invoke(cli, ["list"], env=env)
         assert result.exit_code == 0
         assert "LAT-1" in result.output
@@ -173,9 +167,7 @@ class TestListWithShortIds:
         _init_with_project_code(tmp_path)
         runner = CliRunner()
         env = {"LATTICE_ROOT": str(tmp_path)}
-        runner.invoke(
-            cli, ["create", "My task", "--actor", "human:test"], env=env
-        )
+        runner.invoke(cli, ["create", "My task", "--actor", "human:test"], env=env)
         result = runner.invoke(cli, ["list", "--quiet"], env=env)
         assert result.exit_code == 0
         assert result.output.strip() == "LAT-1"
@@ -184,9 +176,7 @@ class TestListWithShortIds:
         _init_with_project_code(tmp_path)
         runner = CliRunner()
         env = {"LATTICE_ROOT": str(tmp_path)}
-        runner.invoke(
-            cli, ["create", "My task", "--actor", "human:test"], env=env
-        )
+        runner.invoke(cli, ["create", "My task", "--actor", "human:test"], env=env)
         result = runner.invoke(cli, ["list", "--json", "--compact"], env=env)
         parsed = json.loads(result.output)
         assert parsed["data"][0]["short_id"] == "LAT-1"
@@ -205,14 +195,10 @@ class TestBackfillIds:
 
         # Create 3 tasks without short IDs
         for i in range(3):
-            runner.invoke(
-                cli, ["create", f"Task {i}", "--actor", "human:test"], env=env
-            )
+            runner.invoke(cli, ["create", f"Task {i}", "--actor", "human:test"], env=env)
 
         # Backfill with project code
-        result = runner.invoke(
-            cli, ["backfill-ids", "--code", "TST", "--json"], env=env
-        )
+        result = runner.invoke(cli, ["backfill-ids", "--code", "TST", "--json"], env=env)
         assert result.exit_code == 0
         parsed = json.loads(result.output)
         assert parsed["ok"] is True
@@ -221,9 +207,7 @@ class TestBackfillIds:
         assert parsed["data"]["last"] == "TST-3"
 
         # Verify tasks now have short IDs
-        result = runner.invoke(
-            cli, ["list", "--json", "--compact"], env=env
-        )
+        result = runner.invoke(cli, ["list", "--json", "--compact"], env=env)
         parsed = json.loads(result.output)
         short_ids = sorted(t["short_id"] for t in parsed["data"])
         assert short_ids == ["TST-1", "TST-2", "TST-3"]
@@ -238,19 +222,13 @@ class TestBackfillIds:
         runner = CliRunner()
         env = {"LATTICE_ROOT": str(tmp_path)}
 
-        runner.invoke(
-            cli, ["create", "Task A", "--actor", "human:test"], env=env
-        )
+        runner.invoke(cli, ["create", "Task A", "--actor", "human:test"], env=env)
 
         # First backfill
-        runner.invoke(
-            cli, ["backfill-ids", "--code", "TST"], env=env
-        )
+        runner.invoke(cli, ["backfill-ids", "--code", "TST"], env=env)
 
         # Second backfill — should report 0 assigned
-        result = runner.invoke(
-            cli, ["backfill-ids", "--json"], env=env
-        )
+        result = runner.invoke(cli, ["backfill-ids", "--json"], env=env)
         assert result.exit_code == 0
         parsed = json.loads(result.output)
         assert parsed["data"]["assigned"] == 0
@@ -304,12 +282,8 @@ class TestRebuildRegeneratesIndex:
         env = {"LATTICE_ROOT": str(tmp_path)}
 
         # Create tasks with short IDs
-        runner.invoke(
-            cli, ["create", "Task 1", "--actor", "human:test"], env=env
-        )
-        runner.invoke(
-            cli, ["create", "Task 2", "--actor", "human:test"], env=env
-        )
+        runner.invoke(cli, ["create", "Task 1", "--actor", "human:test"], env=env)
+        runner.invoke(cli, ["create", "Task 2", "--actor", "human:test"], env=env)
 
         # Delete ids.json
         lattice_dir = tmp_path / LATTICE_DIR
@@ -319,12 +293,13 @@ class TestRebuildRegeneratesIndex:
         result = runner.invoke(cli, ["rebuild", "--all"], env=env)
         assert result.exit_code == 0
 
-        # ids.json should be regenerated
+        # ids.json should be regenerated (v2 schema)
         assert (lattice_dir / "ids.json").exists()
         index = json.loads((lattice_dir / "ids.json").read_text())
         assert "LAT-1" in index["map"]
         assert "LAT-2" in index["map"]
-        assert index["next_seq"] == 3
+        assert index["schema_version"] == 2
+        assert index["next_seqs"]["LAT"] == 3
 
 
 class TestDoctorChecksAliases:
@@ -332,9 +307,7 @@ class TestDoctorChecksAliases:
         _init_with_project_code(tmp_path)
         runner = CliRunner()
         env = {"LATTICE_ROOT": str(tmp_path)}
-        runner.invoke(
-            cli, ["create", "Task 1", "--actor", "human:test"], env=env
-        )
+        runner.invoke(cli, ["create", "Task 1", "--actor", "human:test"], env=env)
         result = runner.invoke(cli, ["doctor"], env=env)
         assert result.exit_code == 0
         assert "Short ID aliases consistent" in result.output
@@ -345,9 +318,7 @@ class TestProtectedShortIdField:
         _init_with_project_code(tmp_path)
         runner = CliRunner()
         env = {"LATTICE_ROOT": str(tmp_path)}
-        r = runner.invoke(
-            cli, ["create", "Task", "--actor", "human:test", "--json"], env=env
-        )
+        r = runner.invoke(cli, ["create", "Task", "--actor", "human:test", "--json"], env=env)
         short_id = json.loads(r.output)["data"]["short_id"]
         result = runner.invoke(
             cli,
@@ -381,3 +352,119 @@ class TestInitWithProjectCode:
         )
         assert result.exit_code != 0
         assert "Invalid project code" in result.output
+
+
+class TestSubprojectShortIds:
+    """End-to-end tests for hierarchical short IDs with subproject codes."""
+
+    def _init_with_subproject(self, root: Path, code: str = "AUT", subcode: str = "F") -> Path:
+        ensure_lattice_dirs(root)
+        lattice_dir = root / LATTICE_DIR
+        config = dict(default_config())
+        config["project_code"] = code
+        config["subproject_code"] = subcode
+        atomic_write(lattice_dir / "config.json", serialize_config(config))
+        save_id_index(lattice_dir, {"schema_version": 2, "next_seqs": {}, "map": {}})
+        (lattice_dir / "events" / "_lifecycle.jsonl").touch()
+        return lattice_dir
+
+    def test_create_assigns_hierarchical_short_id(self, tmp_path: Path) -> None:
+        self._init_with_subproject(tmp_path)
+        runner = CliRunner()
+        env = {"LATTICE_ROOT": str(tmp_path)}
+        result = runner.invoke(
+            cli, ["create", "Frontend task", "--actor", "human:test", "--json"], env=env
+        )
+        assert result.exit_code == 0
+        snap = json.loads(result.output)["data"]
+        assert snap["short_id"] == "AUT-F-1"
+
+    def test_sequential_hierarchical_ids(self, tmp_path: Path) -> None:
+        self._init_with_subproject(tmp_path)
+        runner = CliRunner()
+        env = {"LATTICE_ROOT": str(tmp_path)}
+
+        r1 = runner.invoke(cli, ["create", "Task 1", "--actor", "human:test", "--json"], env=env)
+        r2 = runner.invoke(cli, ["create", "Task 2", "--actor", "human:test", "--json"], env=env)
+        assert json.loads(r1.output)["data"]["short_id"] == "AUT-F-1"
+        assert json.loads(r2.output)["data"]["short_id"] == "AUT-F-2"
+
+    def test_show_with_hierarchical_short_id(self, tmp_path: Path) -> None:
+        self._init_with_subproject(tmp_path)
+        runner = CliRunner()
+        env = {"LATTICE_ROOT": str(tmp_path)}
+        r = runner.invoke(cli, ["create", "Test", "--actor", "human:test", "--json"], env=env)
+        snap = json.loads(r.output)["data"]
+        ulid = snap["id"]
+
+        result = runner.invoke(cli, ["show", "AUT-F-1", "--json"], env=env)
+        assert result.exit_code == 0
+        assert json.loads(result.output)["data"]["id"] == ulid
+
+    def test_rebuild_with_hierarchical_ids(self, tmp_path: Path) -> None:
+        lattice_dir = self._init_with_subproject(tmp_path)
+        runner = CliRunner()
+        env = {"LATTICE_ROOT": str(tmp_path)}
+
+        runner.invoke(cli, ["create", "Task 1", "--actor", "human:test"], env=env)
+        runner.invoke(cli, ["create", "Task 2", "--actor", "human:test"], env=env)
+
+        # Delete ids.json
+        (lattice_dir / "ids.json").unlink()
+
+        # Rebuild
+        result = runner.invoke(cli, ["rebuild", "--all"], env=env)
+        assert result.exit_code == 0
+
+        index = json.loads((lattice_dir / "ids.json").read_text())
+        assert index["schema_version"] == 2
+        assert "AUT-F-1" in index["map"]
+        assert "AUT-F-2" in index["map"]
+        assert index["next_seqs"]["AUT-F"] == 3
+
+    def test_doctor_passes_with_hierarchical_ids(self, tmp_path: Path) -> None:
+        self._init_with_subproject(tmp_path)
+        runner = CliRunner()
+        env = {"LATTICE_ROOT": str(tmp_path)}
+        runner.invoke(cli, ["create", "Task 1", "--actor", "human:test"], env=env)
+        result = runner.invoke(cli, ["doctor"], env=env)
+        assert result.exit_code == 0
+        assert "Short ID aliases consistent" in result.output
+
+    def test_set_subproject_code(self, tmp_path: Path) -> None:
+        _init_with_project_code(tmp_path, "AUT")
+        runner = CliRunner()
+        env = {"LATTICE_ROOT": str(tmp_path)}
+        result = runner.invoke(cli, ["set-subproject-code", "FE"], env=env)
+        assert result.exit_code == 0
+        assert "Subproject code set to FE" in result.output
+
+        config = json.loads((tmp_path / ".lattice" / "config.json").read_text())
+        assert config["subproject_code"] == "FE"
+
+    def test_set_subproject_code_without_project_code_errors(self, tmp_path: Path) -> None:
+        ensure_lattice_dirs(tmp_path)
+        lattice_dir = tmp_path / LATTICE_DIR
+        atomic_write(lattice_dir / "config.json", serialize_config(default_config()))
+        (lattice_dir / "events" / "_lifecycle.jsonl").touch()
+
+        runner = CliRunner()
+        env = {"LATTICE_ROOT": str(tmp_path)}
+        result = runner.invoke(cli, ["set-subproject-code", "FE"], env=env)
+        assert result.exit_code != 0
+
+    def test_backfill_with_subproject(self, tmp_path: Path) -> None:
+        """Tasks created without subproject, then backfilled after subproject is set."""
+        _init_with_project_code(tmp_path, "AUT")
+        runner = CliRunner()
+        env = {"LATTICE_ROOT": str(tmp_path)}
+
+        # Create tasks with AUT prefix
+        runner.invoke(cli, ["create", "Task 1", "--actor", "human:test"], env=env)
+        runner.invoke(cli, ["create", "Task 2", "--actor", "human:test"], env=env)
+
+        # Verify they got AUT-N IDs
+        result = runner.invoke(cli, ["list", "--json", "--compact"], env=env)
+        parsed = json.loads(result.output)
+        short_ids = sorted(t["short_id"] for t in parsed["data"])
+        assert short_ids == ["AUT-1", "AUT-2"]

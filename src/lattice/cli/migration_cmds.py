@@ -117,11 +117,17 @@ def backfill_ids(
     index = load_id_index(lattice_dir)
     assigned: list[str] = []
 
+    # Compute prefix from project code + optional subproject code
+    subproject_code = config.get("subproject_code")
+    prefix = f"{code}-{subproject_code}" if subproject_code else code
+
     for snap, is_archived in tasks:
         task_ulid = snap["id"]
-        seq = index.get("next_seq", 1)
-        short_id = f"{code}-{seq}"
-        index["next_seq"] = seq + 1
+        next_seqs = index.get("next_seqs", {})
+        seq = next_seqs.get(prefix, 1)
+        short_id = f"{prefix}-{seq}"
+        next_seqs[prefix] = seq + 1
+        index["next_seqs"] = next_seqs
 
         # Emit task_short_id_assigned event
         from lattice.core.events import serialize_event

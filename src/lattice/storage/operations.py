@@ -7,6 +7,7 @@ from pathlib import Path
 from lattice.core.events import LIFECYCLE_EVENT_TYPES, serialize_event
 from lattice.core.tasks import serialize_snapshot
 from lattice.storage.fs import atomic_write, jsonl_append
+from lattice.storage.hooks import execute_hooks
 from lattice.storage.locks import multi_lock
 
 
@@ -15,6 +16,7 @@ def write_task_event(
     task_id: str,
     events: list[dict],
     snapshot: dict,
+    config: dict | None = None,
 ) -> None:
     """Write event(s) and snapshot atomically with proper locking.
 
@@ -27,6 +29,7 @@ def write_task_event(
     3. Append lifecycle events to _lifecycle.jsonl
     4. Atomic-write snapshot
     5. Release locks
+    6. Fire hooks (after locks released, data is durable)
     """
     locks_dir = lattice_dir / "locks"
 
@@ -54,3 +57,8 @@ def write_task_event(
         # Then materialize snapshot
         snapshot_path = lattice_dir / "tasks" / f"{task_id}.json"
         atomic_write(snapshot_path, serialize_snapshot(snapshot))
+
+    # Fire hooks after locks are released (data is durable)
+    if config:
+        for event in events:
+            execute_hooks(config, lattice_dir, task_id, event)

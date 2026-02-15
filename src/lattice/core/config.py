@@ -44,7 +44,11 @@ class LatticeConfig(TypedDict, total=False):
     workflow: Workflow
     default_actor: str
     project_code: str
+    subproject_code: str
+    instance_id: str
+    instance_name: str
     hooks: HooksConfig
+    members: dict[str, list[str]]
 
 
 def default_config() -> LatticeConfig:
@@ -102,6 +106,11 @@ _PROJECT_CODE_RE = re.compile(r"^[A-Z]{1,5}$")
 
 def validate_project_code(code: str) -> bool:
     """Return ``True`` if *code* is a valid project code (1-5 uppercase ASCII letters)."""
+    return bool(_PROJECT_CODE_RE.match(code))
+
+
+def validate_subproject_code(code: str) -> bool:
+    """Return ``True`` if *code* is a valid subproject code (1-5 uppercase ASCII letters)."""
     return bool(_PROJECT_CODE_RE.match(code))
 
 

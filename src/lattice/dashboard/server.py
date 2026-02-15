@@ -23,7 +23,14 @@ from lattice.core.ids import generate_task_id, validate_actor, validate_id
 from lattice.core.tasks import apply_event_to_snapshot, compact_snapshot, serialize_snapshot
 from lattice.storage.fs import atomic_write, jsonl_append
 from lattice.storage.locks import multi_lock
+from lattice.storage.hooks import execute_hooks
 from lattice.storage.operations import write_task_event
+from lattice.storage.short_ids import (
+    allocate_short_id,
+    load_id_index,
+    register_short_id,
+    save_id_index,
+)
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -464,7 +471,7 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
             updated_snapshot = apply_event_to_snapshot(snapshot, event)
 
             try:
-                write_task_event(ld, task_id, [event], updated_snapshot)
+                write_task_event(ld, task_id, [event], updated_snapshot, config)
             except Exception as exc:
                 self._send_json(500, _err("WRITE_ERROR", f"Failed to update status: {exc}"))
                 return
@@ -478,7 +485,7 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                 return  # error already sent
 
             # Validate body structure: only allow known keys
-            allowed_keys = {"background_image", "lane_colors"}
+            allowed_keys = {"background_image", "lane_colors", "theme"}
             unknown = set(body.keys()) - allowed_keys
             if unknown:
                 self._send_json(
@@ -504,6 +511,26 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                             ),
                         )
                         return
+
+            # Validate theme if present
+            if "theme" in body:
+                theme = body["theme"]
+                valid_themes = {"classic", "station-console"}
+                if theme is not None and not isinstance(theme, str):
+                    self._send_json(
+                        400,
+                        _err("VALIDATION_ERROR", "'theme' must be a string or null"),
+                    )
+                    return
+                if theme is not None and theme not in valid_themes:
+                    self._send_json(
+                        400,
+                        _err(
+                            "VALIDATION_ERROR",
+                            f"Invalid theme: '{theme}'. Valid: {', '.join(sorted(valid_themes))}",
+                        ),
+                    )
+                    return
 
             # Validate background_image if present
             if "background_image" in body:
@@ -546,6 +573,13 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
 
                     if "lane_colors" in body:
                         dashboard["lane_colors"] = body["lane_colors"]
+
+                    if "theme" in body:
+                        theme = body["theme"]
+                        if theme is None:
+                            dashboard.pop("theme", None)
+                        else:
+                            dashboard["theme"] = theme
 
                     if dashboard:
                         config["dashboard"] = dashboard
@@ -652,6 +686,14 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
             # Generate ID
             task_id = generate_task_id()
 
+            # Allocate short ID if project code is configured
+            project_code = config.get("project_code")
+            subproject_code = config.get("subproject_code")
+            short_id: str | None = None
+            if project_code:
+                prefix = f"{project_code}-{subproject_code}" if subproject_code else project_code
+                short_id, _ = allocate_short_id(ld, prefix)
+
             # Build event data
             event_data: dict = {
                 "title": title,
@@ -667,6 +709,8 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                 event_data["tags"] = tags
             if assigned_to is not None:
                 event_data["assigned_to"] = assigned_to
+            if short_id is not None:
+                event_data["short_id"] = short_id
 
             event = create_event(
                 type="task_created",
@@ -677,10 +721,16 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
             snapshot = apply_event_to_snapshot(None, event)
 
             try:
-                write_task_event(ld, task_id, [event], snapshot)
+                write_task_event(ld, task_id, [event], snapshot, config)
             except Exception as exc:
                 self._send_json(500, _err("WRITE_ERROR", f"Failed to create task: {exc}"))
                 return
+
+            # Register short ID in index after successful write
+            if short_id is not None:
+                index = load_id_index(ld)
+                register_short_id(index, short_id, task_id)
+                save_id_index(ld, index)
 
             self._send_json(201, _ok(snapshot))
 
@@ -713,6 +763,14 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                 )
                 return
 
+            # Read config for hooks
+            config_path = ld / "config.json"
+            try:
+                config = json.loads(config_path.read_text())
+            except (json.JSONDecodeError, OSError) as exc:
+                self._send_json(500, _err("READ_ERROR", f"Failed to read config: {exc}"))
+                return
+
             snapshot = _read_snapshot(ld, task_id)
             if snapshot is None:
                 self._send_json(404, _err("NOT_FOUND", f"Task {task_id} not found"))
@@ -733,7 +791,7 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
             updated_snapshot = apply_event_to_snapshot(snapshot, event)
 
             try:
-                write_task_event(ld, task_id, [event], updated_snapshot)
+                write_task_event(ld, task_id, [event], updated_snapshot, config)
             except Exception as exc:
                 self._send_json(500, _err("WRITE_ERROR", f"Failed to assign task: {exc}"))
                 return
@@ -765,6 +823,14 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                 self._send_json(400, _err("VALIDATION_ERROR", f"Invalid actor format: '{actor}'"))
                 return
 
+            # Read config for hooks
+            config_path = ld / "config.json"
+            try:
+                config = json.loads(config_path.read_text())
+            except (json.JSONDecodeError, OSError) as exc:
+                self._send_json(500, _err("READ_ERROR", f"Failed to read config: {exc}"))
+                return
+
             snapshot = _read_snapshot(ld, task_id)
             if snapshot is None:
                 self._send_json(404, _err("NOT_FOUND", f"Task {task_id} not found"))
@@ -779,7 +845,7 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
             updated_snapshot = apply_event_to_snapshot(snapshot, event)
 
             try:
-                write_task_event(ld, task_id, [event], updated_snapshot)
+                write_task_event(ld, task_id, [event], updated_snapshot, config)
             except Exception as exc:
                 self._send_json(500, _err("WRITE_ERROR", f"Failed to add comment: {exc}"))
                 return
@@ -922,7 +988,7 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                 updated_snapshot = apply_event_to_snapshot(updated_snapshot, event)
 
             try:
-                write_task_event(ld, task_id, events, updated_snapshot)
+                write_task_event(ld, task_id, events, updated_snapshot, config)
             except Exception as exc:
                 self._send_json(500, _err("WRITE_ERROR", f"Failed to update task: {exc}"))
                 return
@@ -949,12 +1015,21 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                 self._send_json(400, _err("VALIDATION_ERROR", f"Invalid actor format: '{actor}'"))
                 return
 
+            # Read config for hooks
+            config_path = ld / "config.json"
+            try:
+                config = json.loads(config_path.read_text())
+            except (json.JSONDecodeError, OSError) as exc:
+                self._send_json(500, _err("READ_ERROR", f"Failed to read config: {exc}"))
+                return
+
             # Check if already archived
             archive_check = ld / "archive" / "tasks" / f"{task_id}.json"
             if archive_check.is_file():
                 self._send_json(400, _err("CONFLICT", f"Task {task_id} is already archived"))
                 return
 
+            event = None  # will be set inside the lock
             try:
                 locks_dir = ld / "locks"
                 lock_keys = sorted([f"events_{task_id}", f"tasks_{task_id}", "events__lifecycle"])
@@ -1010,6 +1085,10 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
             except Exception as exc:
                 self._send_json(500, _err("WRITE_ERROR", f"Failed to archive task: {exc}"))
                 return
+
+            # Fire hooks after locks released
+            if event is not None:
+                execute_hooks(config, ld, task_id, event)
 
             self._send_json(200, _ok({"message": f"Task {task_id} archived"}))
 

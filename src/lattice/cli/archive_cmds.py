@@ -8,6 +8,7 @@ import click
 
 from lattice.cli.helpers import (
     common_options,
+    load_project_config,
     output_error,
     output_result,
     read_snapshot,
@@ -19,6 +20,7 @@ from lattice.cli.main import cli
 from lattice.core.events import create_event, serialize_event
 from lattice.core.tasks import apply_event_to_snapshot, serialize_snapshot
 from lattice.storage.fs import atomic_write, jsonl_append
+from lattice.storage.hooks import execute_hooks
 from lattice.storage.locks import multi_lock
 
 
@@ -37,6 +39,7 @@ def archive(
     is_json = output_json
 
     lattice_dir = require_root(is_json)
+    config = load_project_config(lattice_dir)
     validate_actor_or_exit(actor, is_json)
 
     task_id = resolve_task_id(lattice_dir, task_id, is_json)
@@ -106,6 +109,9 @@ def archive(
                 str(lattice_dir / "archive" / "notes" / f"{task_id}.md"),
             )
 
+    # Fire hooks after locks released
+    execute_hooks(config, lattice_dir, task_id, event)
+
     output_result(
         data=event,
         human_message=f"Archived task {task_id}",
@@ -130,6 +136,7 @@ def unarchive(
     is_json = output_json
 
     lattice_dir = require_root(is_json)
+    config = load_project_config(lattice_dir)
     validate_actor_or_exit(actor, is_json)
 
     task_id = resolve_task_id(lattice_dir, task_id, is_json, allow_archived=True)
@@ -200,6 +207,9 @@ def unarchive(
                 str(archive_notes_path),
                 str(lattice_dir / "notes" / f"{task_id}.md"),
             )
+
+    # Fire hooks after locks released
+    execute_hooks(config, lattice_dir, task_id, event)
 
     output_result(
         data=event,

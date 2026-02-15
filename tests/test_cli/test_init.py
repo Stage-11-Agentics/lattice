@@ -9,7 +9,7 @@ import pytest
 from click.testing import CliRunner
 
 from lattice.cli.main import cli
-from lattice.core.config import default_config, serialize_config
+from lattice.core.config import default_config
 
 
 class TestInitDirectoryStructure:
@@ -77,14 +77,19 @@ class TestInitConfig:
         config = json.loads((tmp_path / ".lattice" / "config.json").read_text())
         assert config["schema_version"] == 1
 
-    def test_config_is_byte_identical_to_canonical(self, tmp_path: Path) -> None:
-        """Config on disk must be byte-identical to json.dumps(default_config(), sort_keys=True, indent=2) + '\\n'."""
+    def test_config_contains_default_fields(self, tmp_path: Path) -> None:
+        """Config on disk must contain all default config fields plus instance_id."""
         runner = CliRunner()
         runner.invoke(cli, ["init", "--path", str(tmp_path)], input="\n\n")
 
-        actual = (tmp_path / ".lattice" / "config.json").read_text()
-        expected = serialize_config(default_config())
-        assert actual == expected
+        config = json.loads((tmp_path / ".lattice" / "config.json").read_text())
+        expected = default_config()
+        for key in expected:
+            assert key in config, f"Missing default config key: {key}"
+            assert config[key] == expected[key]
+        # Init always generates an instance_id
+        assert "instance_id" in config
+        assert config["instance_id"].startswith("inst_")
 
     def test_config_has_trailing_newline(self, tmp_path: Path) -> None:
         runner = CliRunner()
@@ -244,3 +249,122 @@ class TestInitErrorHandling:
         assert result.exit_code != 0
         assert "Failed to initialize" in result.output
         assert "Traceback" not in result.output
+
+
+class TestInitInstanceIdentity:
+    """lattice init generates instance_id and supports --instance-name."""
+
+    def test_always_generates_instance_id(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        runner.invoke(cli, ["init", "--path", str(tmp_path)], input="\n\n")
+
+        config = json.loads((tmp_path / ".lattice" / "config.json").read_text())
+        assert "instance_id" in config
+        assert config["instance_id"].startswith("inst_")
+        assert len(config["instance_id"]) == 31  # "inst_" + 26 char ULID
+
+    def test_instance_name_flag(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            ["init", "--path", str(tmp_path), "--instance-name", "Frontend"],
+            input="\n\n",
+        )
+        assert result.exit_code == 0
+        assert "Instance name: Frontend" in result.output
+
+        config = json.loads((tmp_path / ".lattice" / "config.json").read_text())
+        assert config["instance_name"] == "Frontend"
+
+    def test_no_instance_name_by_default(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        runner.invoke(cli, ["init", "--path", str(tmp_path)], input="\n\n")
+
+        config = json.loads((tmp_path / ".lattice" / "config.json").read_text())
+        assert "instance_name" not in config
+
+
+class TestInitContextMd:
+    """lattice init creates .lattice/context.md template."""
+
+    def test_creates_context_md(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        runner.invoke(cli, ["init", "--path", str(tmp_path)], input="\n\n")
+
+        context_path = tmp_path / ".lattice" / "context.md"
+        assert context_path.is_file()
+
+    def test_context_md_has_expected_sections(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        runner.invoke(cli, ["init", "--path", str(tmp_path)], input="\n\n")
+
+        content = (tmp_path / ".lattice" / "context.md").read_text()
+        assert "# Instance Context" in content
+        assert "## Purpose" in content
+        assert "## Related Instances" in content
+        assert "## Conventions" in content
+
+
+class TestInitSubprojectCode:
+    """lattice init --subproject-code flag."""
+
+    def test_init_with_subproject_code(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "init",
+                "--path",
+                str(tmp_path),
+                "--actor",
+                "human:test",
+                "--project-code",
+                "AUT",
+                "--subproject-code",
+                "F",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "Project code: AUT" in result.output
+        assert "Subproject code: F" in result.output
+
+        config = json.loads((tmp_path / ".lattice" / "config.json").read_text())
+        assert config["project_code"] == "AUT"
+        assert config["subproject_code"] == "F"
+
+    def test_subproject_without_project_code_errors(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "init",
+                "--path",
+                str(tmp_path),
+                "--actor",
+                "human:test",
+                "--subproject-code",
+                "F",
+            ],
+            input="\n",
+        )
+        assert result.exit_code != 0
+        assert "Cannot set --subproject-code without --project-code" in result.output
+
+    def test_invalid_subproject_code_errors(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "init",
+                "--path",
+                str(tmp_path),
+                "--actor",
+                "human:test",
+                "--project-code",
+                "AUT",
+                "--subproject-code",
+                "123",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "Invalid subproject code" in result.output

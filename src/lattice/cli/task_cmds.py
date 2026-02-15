@@ -213,9 +213,11 @@ def create(
 
     # Allocate short ID if project code is configured
     project_code = config.get("project_code")
+    subproject_code = config.get("subproject_code")
     short_id: str | None = None
     if project_code:
-        short_id_str, _idx = allocate_short_id(lattice_dir, project_code)
+        prefix = f"{project_code}-{subproject_code}" if subproject_code else project_code
+        short_id_str, _idx = allocate_short_id(lattice_dir, prefix)
         short_id = short_id_str
 
     # Build event data
@@ -248,7 +250,7 @@ def create(
     snapshot = apply_event_to_snapshot(None, event)
 
     # Write (event-first, then snapshot, under lock)
-    write_task_event(lattice_dir, task_id, [event], snapshot)
+    write_task_event(lattice_dir, task_id, [event], snapshot, config)
 
     # Register short ID in index after successful write
     if short_id is not None:
@@ -440,7 +442,7 @@ def update(
         updated_snapshot = apply_event_to_snapshot(updated_snapshot, event)
 
     # Write all events + updated snapshot
-    write_task_event(lattice_dir, task_id, events, updated_snapshot)
+    write_task_event(lattice_dir, task_id, events, updated_snapshot, config)
 
     field_names = [e["data"]["field"] for e in events]
     output_result(
@@ -545,7 +547,7 @@ def status_cmd(
         session=session,
     )
     updated_snapshot = apply_event_to_snapshot(snapshot, event)
-    write_task_event(lattice_dir, task_id, [event], updated_snapshot)
+    write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
 
     output_result(
         data=updated_snapshot,
@@ -578,7 +580,7 @@ def assign(
     is_json = output_json
 
     lattice_dir = require_root(is_json)
-    load_project_config(lattice_dir)  # ensure valid project
+    config = load_project_config(lattice_dir)
     validate_actor_or_exit(actor, is_json)
 
     task_id = resolve_task_id(lattice_dir, task_id, is_json)
@@ -620,7 +622,7 @@ def assign(
         session=session,
     )
     updated_snapshot = apply_event_to_snapshot(snapshot, event)
-    write_task_event(lattice_dir, task_id, [event], updated_snapshot)
+    write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
 
     from_label = current_assigned or "unassigned"
     output_result(
@@ -654,7 +656,7 @@ def comment(
     is_json = output_json
 
     lattice_dir = require_root(is_json)
-    load_project_config(lattice_dir)  # ensure valid project
+    config = load_project_config(lattice_dir)
     validate_actor_or_exit(actor, is_json)
 
     task_id = resolve_task_id(lattice_dir, task_id, is_json)
@@ -670,7 +672,7 @@ def comment(
         session=session,
     )
     updated_snapshot = apply_event_to_snapshot(snapshot, event)
-    write_task_event(lattice_dir, task_id, [event], updated_snapshot)
+    write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
 
     output_result(
         data=updated_snapshot,

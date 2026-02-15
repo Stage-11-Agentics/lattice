@@ -258,3 +258,27 @@
 - Status: **Open question**, not a decision. Noted for future exploration.
 - Observation: Tasks are the inherited metaphor from project management, but agents may coordinate more naturally around other primitives — goals, invariants, contracts, capabilities. For v0, a "task" can represent any of these. The abstraction may evolve in later versions.
 - Consequence: No action now. Revisit when real usage patterns emerge that strain the task metaphor.
+
+---
+
+## 2026-02-15: Fractal instance hierarchy
+
+- Decision: Lattice supports multiple independent instances at different scopes (program → workspace → repo) that form a loose hierarchy. Each instance is self-contained with identical on-disk format and CLI. Coordination between levels is agent-mediated, not system-mediated.
+- Rationale: File-based is load-bearing — agents are excellent at filesystem interaction. Multi-machine, multi-project coordination works through git as the sync layer (event-sourced architecture makes merges tractable: events accumulate, snapshots are rebuilt). Keeping instances independent avoids distributed systems complexity; agents provide the intelligence to bridge levels.
+- Consequence: Each instance gets an `instance_id` (ULID) and `instance_name` in config. A `context.md` file inside `.lattice/` provides agent-readable context about the instance's role, relationships, and conventions. No automatic sync in v0 — agents read/write across instances manually.
+
+---
+
+## 2026-02-15: Hierarchical short IDs — project-subproject-seq
+
+- Decision: Short IDs support an optional `subproject_code` yielding the format `{project_code}-{subproject_code}-{seq}` (e.g., `AUT-F-7`). When no subproject is set, the existing `{project_code}-{seq}` format is preserved.
+- Rationale: The ID becomes a coordinate — project, subproject, task number — readable in conversation, commit messages, and cross-instance references without a lookup table. Matches real organizational structure (e.g., `AUT-F` for frontend, `AUT-B` for backend).
+- Consequence: `subproject_code` (1–5 uppercase ASCII, optional) added to config. Existing short IDs are unaffected (backward compatible). Subproject depth is limited to one level — deeper hierarchy uses separate instances, not longer IDs.
+
+---
+
+## 2026-02-15: Agent-readable context file (`.lattice/context.md`)
+
+- Decision: Each `.lattice/` directory may contain a `context.md` — a freeform markdown file describing the instance's purpose, related instances, conventions, and idiosyncrasies. Created by `lattice init` with a minimal template.
+- Rationale: Agents read natural language context exceptionally well. A rigid JSON schema for instance relationships would be premature and couldn't express soft knowledge ("infra tasks take 2-3x estimates"). `config.json` stays machine-parseable for the CLI; `context.md` is the agent-facing context layer.
+- Consequence: `context.md` is the CLAUDE.md of a Lattice instance. Agents should read it before working with an instance. It is non-authoritative (like notes) — informational, not enforced.

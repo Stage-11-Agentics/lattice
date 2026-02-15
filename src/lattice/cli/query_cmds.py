@@ -10,6 +10,7 @@ import click
 from lattice.cli.helpers import (
     common_options,
     json_envelope,
+    load_project_config,
     output_error,
     output_result,
     read_snapshot,
@@ -59,6 +60,7 @@ def event_cmd(
     is_json = output_json
 
     lattice_dir = require_root(is_json)
+    config = load_project_config(lattice_dir)
     validate_actor_or_exit(actor, is_json)
 
     task_id = resolve_task_id(lattice_dir, task_id, is_json)
@@ -151,7 +153,7 @@ def event_cmd(
     # Write (event-first, then snapshot, under lock)
     # Custom events do NOT go to _lifecycle.jsonl — write_task_event handles
     # this automatically since the type is x_* (not in LIFECYCLE_EVENT_TYPES).
-    write_task_event(lattice_dir, task_id, [event], updated_snapshot)
+    write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
 
     output_result(
         data=event,

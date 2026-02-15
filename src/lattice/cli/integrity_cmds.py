@@ -435,7 +435,7 @@ def doctor(fix: bool, output_json: bool) -> None:
     if ids_json_path.exists():
         id_index = load_id_index(lattice_dir)
         id_map = id_index.get("map", {})
-        next_seq = id_index.get("next_seq", 1)
+        next_seqs = id_index.get("next_seqs", {})
 
         # Check: every entry in ids.json.map points to an existing snapshot
         for short_id, target_ulid in id_map.items():
@@ -498,28 +498,30 @@ def doctor(fix: bool, output_json: bool) -> None:
                     )
                 seen_short_ids[snap_short_id] = task_id_key
 
-        # Check: next_seq > max assigned
-        max_assigned = 0
+        # Check: per-prefix next_seqs > max assigned per prefix
+        prefix_max: dict[str, int] = {}
         for short_id in id_map:
             try:
-                _, num = parse_short_id(short_id)
-                if num > max_assigned:
-                    max_assigned = num
+                prefix, num = parse_short_id(short_id)
+                if prefix not in prefix_max or num > prefix_max[prefix]:
+                    prefix_max[prefix] = num
             except ValueError:
                 pass
-        if max_assigned >= next_seq:
-            alias_ok = False
-            findings.append(
-                {
-                    "level": "warning",
-                    "check": "alias_integrity",
-                    "message": (
-                        f"next_seq ({next_seq}) is not greater than "
-                        f"max assigned seq ({max_assigned})"
-                    ),
-                    "task_id": None,
-                }
-            )
+        for prefix, max_num in prefix_max.items():
+            prefix_next = next_seqs.get(prefix, 1)
+            if max_num >= prefix_next:
+                alias_ok = False
+                findings.append(
+                    {
+                        "level": "warning",
+                        "check": "alias_integrity",
+                        "message": (
+                            f"next_seqs['{prefix}'] ({prefix_next}) is not greater than "
+                            f"max assigned seq ({max_num})"
+                        ),
+                        "task_id": None,
+                    }
+                )
 
     if fix and not alias_ok:
         _rebuild_id_index(lattice_dir)
@@ -753,12 +755,14 @@ def _rebuild_id_index(lattice_dir: Path) -> None:
                 if prefix not in max_seq or num > max_seq[prefix]:
                     max_seq[prefix] = num
 
-    # Compute next_seq as max across all prefixes + 1
-    next_seq = max(max_seq.values()) + 1 if max_seq else 1
+    # Compute per-prefix next_seqs (v2 schema)
+    next_seqs: dict[str, int] = {}
+    for prefix, max_num in max_seq.items():
+        next_seqs[prefix] = max_num + 1
 
     index = {
-        "schema_version": 1,
-        "next_seq": next_seq,
+        "schema_version": 2,
+        "next_seqs": next_seqs,
         "map": id_map,
     }
     save_id_index(lattice_dir, index)

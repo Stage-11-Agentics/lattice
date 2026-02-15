@@ -6,6 +6,7 @@ import click
 
 from lattice.cli.helpers import (
     common_options,
+    load_project_config,
     output_error,
     output_result,
     read_snapshot_or_exit,
@@ -46,6 +47,7 @@ def link(
     is_json = output_json
 
     lattice_dir = require_root(is_json)
+    config = load_project_config(lattice_dir)
     validate_actor_or_exit(actor, is_json)
 
     task_id = resolve_task_id(lattice_dir, task_id, is_json)
@@ -107,7 +109,7 @@ def link(
     updated_snapshot = apply_event_to_snapshot(snapshot, event)
 
     # Write (event-first, then snapshot, under lock)
-    write_task_event(lattice_dir, task_id, [event], updated_snapshot)
+    write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
 
     # Output
     output_result(
@@ -143,6 +145,7 @@ def unlink(
     is_json = output_json
 
     lattice_dir = require_root(is_json)
+    config = load_project_config(lattice_dir)
     validate_actor_or_exit(actor, is_json)
 
     task_id = resolve_task_id(lattice_dir, task_id, is_json)
@@ -191,7 +194,7 @@ def unlink(
     updated_snapshot = apply_event_to_snapshot(snapshot, event)
 
     # Write (event-first, then snapshot, under lock)
-    write_task_event(lattice_dir, task_id, [event], updated_snapshot)
+    write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
 
     # Output
     output_result(
