@@ -154,6 +154,13 @@ def common_options(f):  # noqa: ANN001, ANN201
     f = click.option("--session", default=None, help="Session identifier.")(f)
     f = click.option("--model", default=None, help="Model identifier.")(f)
     f = click.option("--actor", required=True, help="Actor (e.g., human:atin, agent:claude).")(f)
+    f = click.option("--reason", "provenance_reason", default=None, help="Reason (provenance).")(f)
+    f = click.option(
+        "--on-behalf-of", default=None, help="Actor on whose behalf this action is taken."
+    )(f)
+    f = click.option("--triggered-by", default=None, help="Event ID that triggered this action.")(
+        f
+    )
     return f
 
 

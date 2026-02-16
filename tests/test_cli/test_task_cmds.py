@@ -577,3 +577,155 @@ class TestCrossCutting:
             "assignment_changed",
             "comment_added",
         ]
+
+
+# ---------------------------------------------------------------------------
+# TestProvenance
+# ---------------------------------------------------------------------------
+
+
+class TestProvenance:
+    """Tests for deep attribution (provenance) flags on write commands."""
+
+    def test_create_with_provenance_flags(self, invoke_json, cli_env):
+        from pathlib import Path
+
+        data, code = invoke_json(
+            "create",
+            "Provenance test",
+            "--actor",
+            "human:test",
+            "--triggered-by",
+            "ev_EXAMPLE",
+            "--on-behalf-of",
+            "human:atin",
+            "--reason",
+            "Testing provenance",
+        )
+        assert code == 0
+        task_id = data["data"]["id"]
+
+        # Read event log
+        lattice_dir = Path(cli_env["LATTICE_ROOT"]) / ".lattice"
+        events_file = lattice_dir / "events" / f"{task_id}.jsonl"
+        events = [
+            json.loads(line) for line in events_file.read_text().splitlines() if line.strip()
+        ]
+        create_event = events[0]
+
+        assert "provenance" in create_event
+        assert create_event["provenance"]["triggered_by"] == "ev_EXAMPLE"
+        assert create_event["provenance"]["on_behalf_of"] == "human:atin"
+        assert create_event["provenance"]["reason"] == "Testing provenance"
+
+    def test_on_behalf_of_bad_format_errors(self, invoke):
+        result = invoke(
+            "create",
+            "Bad on-behalf-of",
+            "--actor",
+            "human:test",
+            "--on-behalf-of",
+            "not_valid_actor",
+        )
+        assert result.exit_code != 0
+        assert "Invalid actor" in result.output or "Invalid actor" in (result.stderr or "")
+
+    def test_status_force_reason_in_both(self, create_task, invoke, cli_env):
+        """--force --reason puts reason in data AND provenance."""
+        from pathlib import Path
+
+        task = create_task("Force reason test")
+        task_id = task["id"]
+        result = invoke(
+            "status",
+            task_id,
+            "done",
+            "--force",
+            "--reason",
+            "Skip for release",
+            "--actor",
+            "human:test",
+        )
+        assert result.exit_code == 0
+
+        lattice_dir = Path(cli_env["LATTICE_ROOT"]) / ".lattice"
+        events_file = lattice_dir / "events" / f"{task_id}.jsonl"
+        events = [
+            json.loads(line) for line in events_file.read_text().splitlines() if line.strip()
+        ]
+        status_event = events[-1]
+
+        assert status_event["type"] == "status_changed"
+        # Backward compat: reason in data
+        assert status_event["data"]["reason"] == "Skip for release"
+        assert status_event["data"]["force"] is True
+        # Also in provenance
+        assert "provenance" in status_event
+        assert status_event["provenance"]["reason"] == "Skip for release"
+
+    def test_status_reason_no_force(self, create_task, invoke, cli_env):
+        """--reason without --force puts reason only in provenance, not data."""
+        from pathlib import Path
+
+        task = create_task("Reason no force")
+        task_id = task["id"]
+        # backlog -> in_planning is a valid transition, no --force needed
+        result = invoke(
+            "status",
+            task_id,
+            "in_planning",
+            "--reason",
+            "Sprint planning",
+            "--actor",
+            "human:test",
+        )
+        assert result.exit_code == 0
+
+        lattice_dir = Path(cli_env["LATTICE_ROOT"]) / ".lattice"
+        events_file = lattice_dir / "events" / f"{task_id}.jsonl"
+        events = [
+            json.loads(line) for line in events_file.read_text().splitlines() if line.strip()
+        ]
+        status_event = events[-1]
+
+        assert status_event["type"] == "status_changed"
+        # No force => reason NOT in data
+        assert "reason" not in status_event["data"]
+        assert "force" not in status_event["data"]
+        # But IS in provenance
+        assert "provenance" in status_event
+        assert status_event["provenance"]["reason"] == "Sprint planning"
+
+    def test_all_three_flags_on_same_command(self, create_task, invoke, cli_env):
+        """Combined --triggered-by, --on-behalf-of, --reason on a single command."""
+        from pathlib import Path
+
+        task = create_task("All flags")
+        task_id = task["id"]
+        result = invoke(
+            "comment",
+            task_id,
+            "A comment",
+            "--actor",
+            "agent:claude",
+            "--triggered-by",
+            "ev_PARENT123",
+            "--on-behalf-of",
+            "human:atin",
+            "--reason",
+            "Delegated task",
+        )
+        assert result.exit_code == 0
+
+        lattice_dir = Path(cli_env["LATTICE_ROOT"]) / ".lattice"
+        events_file = lattice_dir / "events" / f"{task_id}.jsonl"
+        events = [
+            json.loads(line) for line in events_file.read_text().splitlines() if line.strip()
+        ]
+        comment_event = events[-1]
+
+        assert comment_event["type"] == "comment_added"
+        assert "provenance" in comment_event
+        assert comment_event["provenance"]["triggered_by"] == "ev_PARENT123"
+        assert comment_event["provenance"]["on_behalf_of"] == "human:atin"
+        assert comment_event["provenance"]["reason"] == "Delegated task"

@@ -53,11 +53,16 @@ def create_event(
     ts: str | None = None,
     model: str | None = None,
     session: str | None = None,
+    triggered_by: str | None = None,
+    on_behalf_of: str | None = None,
+    reason: str | None = None,
 ) -> dict:
     """Build a complete event dict.
 
     Auto-generates ``id`` and ``ts`` when not supplied.  The ``agent_meta``
     object is included **only** when *model* or *session* is provided.
+    The ``provenance`` object is included **only** when at least one of
+    *triggered_by*, *on_behalf_of*, or *reason* is provided (sparse dict).
     """
     event: dict = {
         "schema_version": 1,
@@ -71,6 +76,16 @@ def create_event(
 
     if model is not None or session is not None:
         event["agent_meta"] = {"model": model, "session": session}
+
+    if triggered_by is not None or on_behalf_of is not None or reason is not None:
+        prov: dict = {}
+        if triggered_by is not None:
+            prov["triggered_by"] = triggered_by
+        if on_behalf_of is not None:
+            prov["on_behalf_of"] = on_behalf_of
+        if reason is not None:
+            prov["reason"] = reason
+        event["provenance"] = prov
 
     return event
 

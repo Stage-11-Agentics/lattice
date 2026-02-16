@@ -34,6 +34,9 @@ def archive(
     session: str | None,
     output_json: bool,
     quiet: bool,
+    triggered_by: str | None,
+    on_behalf_of: str | None,
+    provenance_reason: str | None,
 ) -> None:
     """Archive a completed task."""
     is_json = output_json
@@ -41,6 +44,8 @@ def archive(
     lattice_dir = require_root(is_json)
     config = load_project_config(lattice_dir)
     validate_actor_or_exit(actor, is_json)
+    if on_behalf_of is not None:
+        validate_actor_or_exit(on_behalf_of, is_json)
 
     task_id = resolve_task_id(lattice_dir, task_id, is_json)
 
@@ -66,6 +71,9 @@ def archive(
         data={},
         model=model,
         session=session,
+        triggered_by=triggered_by,
+        on_behalf_of=on_behalf_of,
+        reason=provenance_reason,
     )
 
     # Apply event to snapshot
@@ -131,6 +139,9 @@ def unarchive(
     session: str | None,
     output_json: bool,
     quiet: bool,
+    triggered_by: str | None,
+    on_behalf_of: str | None,
+    provenance_reason: str | None,
 ) -> None:
     """Restore an archived task to active status."""
     is_json = output_json
@@ -138,6 +149,8 @@ def unarchive(
     lattice_dir = require_root(is_json)
     config = load_project_config(lattice_dir)
     validate_actor_or_exit(actor, is_json)
+    if on_behalf_of is not None:
+        validate_actor_or_exit(on_behalf_of, is_json)
 
     task_id = resolve_task_id(lattice_dir, task_id, is_json, allow_archived=True)
 
@@ -167,6 +180,9 @@ def unarchive(
         data={},
         model=model,
         session=session,
+        triggered_by=triggered_by,
+        on_behalf_of=on_behalf_of,
+        reason=provenance_reason,
     )
 
     # Apply event to snapshot (updates bookkeeping only)

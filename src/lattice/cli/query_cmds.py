@@ -51,6 +51,9 @@ def event_cmd(
     session: str | None,
     output_json: bool,
     quiet: bool,
+    triggered_by: str | None,
+    on_behalf_of: str | None,
+    provenance_reason: str | None,
 ) -> None:
     """Record a custom event on a task.
 
@@ -62,6 +65,8 @@ def event_cmd(
     lattice_dir = require_root(is_json)
     config = load_project_config(lattice_dir)
     validate_actor_or_exit(actor, is_json)
+    if on_behalf_of is not None:
+        validate_actor_or_exit(on_behalf_of, is_json)
 
     task_id = resolve_task_id(lattice_dir, task_id, is_json)
 
@@ -147,6 +152,9 @@ def event_cmd(
         event_id=ev_id,
         model=model,
         session=session,
+        triggered_by=triggered_by,
+        on_behalf_of=on_behalf_of,
+        reason=provenance_reason,
     )
     updated_snapshot = apply_event_to_snapshot(snapshot, event)
 
@@ -540,6 +548,18 @@ def _print_human_show(
             ev_actor = ev.get("actor", "?")
             summary = _event_summary(ev, full)
             click.echo(f"  {ts}  {etype}  {summary}  by {ev_actor}")
+            # Provenance line
+            prov = ev.get("provenance")
+            if prov:
+                parts = []
+                if "triggered_by" in prov:
+                    parts.append(f"triggered by: {prov['triggered_by']}")
+                if "on_behalf_of" in prov:
+                    parts.append(f"on behalf of: {prov['on_behalf_of']}")
+                if "reason" in prov:
+                    parts.append(f"reason: {prov['reason']}")
+                if parts:
+                    click.echo(f"    {' | '.join(parts)}")
 
 
 def _event_summary(event: dict, full: bool) -> str:

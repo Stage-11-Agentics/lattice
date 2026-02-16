@@ -231,3 +231,99 @@ class TestValidateCustomEventType:
 
     def test_non_string_rejected(self) -> None:
         assert validate_custom_event_type(42) is False  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# Provenance
+# ---------------------------------------------------------------------------
+
+
+class TestProvenance:
+    """Test provenance field in create_event."""
+
+    def test_provenance_included_when_triggered_by_provided(self) -> None:
+        ev = create_event("task_created", "task_X", "agent:a", {}, triggered_by="ev_TRIGGER123")
+        assert "provenance" in ev
+        assert ev["provenance"]["triggered_by"] == "ev_TRIGGER123"
+        assert "on_behalf_of" not in ev["provenance"]
+        assert "reason" not in ev["provenance"]
+
+    def test_provenance_included_when_on_behalf_of_provided(self) -> None:
+        ev = create_event("task_created", "task_X", "agent:a", {}, on_behalf_of="human:atin")
+        assert "provenance" in ev
+        assert ev["provenance"]["on_behalf_of"] == "human:atin"
+        assert "triggered_by" not in ev["provenance"]
+        assert "reason" not in ev["provenance"]
+
+    def test_provenance_included_when_reason_provided(self) -> None:
+        ev = create_event("task_created", "task_X", "agent:a", {}, reason="Sprint planning")
+        assert "provenance" in ev
+        assert ev["provenance"]["reason"] == "Sprint planning"
+        assert "triggered_by" not in ev["provenance"]
+        assert "on_behalf_of" not in ev["provenance"]
+
+    def test_provenance_all_fields(self) -> None:
+        ev = create_event(
+            "task_created",
+            "task_X",
+            "agent:a",
+            {},
+            triggered_by="ev_ABC",
+            on_behalf_of="human:atin",
+            reason="Automated sprint planning",
+        )
+        assert ev["provenance"] == {
+            "triggered_by": "ev_ABC",
+            "on_behalf_of": "human:atin",
+            "reason": "Automated sprint planning",
+        }
+
+    def test_provenance_excluded_when_nothing_provided(self) -> None:
+        ev = create_event("task_created", "task_X", "agent:a", {})
+        assert "provenance" not in ev
+
+    def test_provenance_sparse_only_provided_fields(self) -> None:
+        ev = create_event(
+            "task_created",
+            "task_X",
+            "agent:a",
+            {},
+            triggered_by="ev_ABC",
+            reason="Testing",
+        )
+        assert "provenance" in ev
+        assert ev["provenance"]["triggered_by"] == "ev_ABC"
+        assert ev["provenance"]["reason"] == "Testing"
+        assert "on_behalf_of" not in ev["provenance"]
+
+    def test_provenance_coexists_with_agent_meta(self) -> None:
+        ev = create_event(
+            "task_created",
+            "task_X",
+            "agent:a",
+            {},
+            model="claude-opus-4",
+            session="sess-1",
+            triggered_by="ev_ABC",
+            on_behalf_of="human:atin",
+        )
+        assert "agent_meta" in ev
+        assert ev["agent_meta"]["model"] == "claude-opus-4"
+        assert "provenance" in ev
+        assert ev["provenance"]["triggered_by"] == "ev_ABC"
+        assert ev["provenance"]["on_behalf_of"] == "human:atin"
+
+    def test_provenance_serializes_in_jsonl(self) -> None:
+        ev = create_event(
+            "task_created",
+            "task_X",
+            "agent:a",
+            {},
+            triggered_by="ev_TRIGGER",
+            reason="test serialization",
+        )
+        line = serialize_event(ev)
+        parsed = json.loads(line)
+        assert "provenance" in parsed
+        assert parsed["provenance"]["triggered_by"] == "ev_TRIGGER"
+        assert parsed["provenance"]["reason"] == "test serialization"

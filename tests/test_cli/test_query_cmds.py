@@ -729,3 +729,42 @@ class TestShow:
         assert len(rels) == 1
         assert rels[0]["target_task_id"] == task_b["id"]
         assert rels[0]["target_title"] == "Target"
+
+    def test_show_renders_provenance_line(self, invoke, create_task):
+        """Show output includes provenance line when event has provenance."""
+        task = create_task("Provenance show test")
+        task_id = task["id"]
+        invoke(
+            "comment",
+            task_id,
+            "Prov comment",
+            "--actor",
+            "agent:claude",
+            "--triggered-by",
+            "ev_TRIGGER123",
+            "--on-behalf-of",
+            "human:atin",
+            "--reason",
+            "Sprint planning",
+        )
+
+        result = invoke("show", task_id)
+        assert result.exit_code == 0
+        assert "triggered by: ev_TRIGGER123" in result.output
+        assert "on behalf of: human:atin" in result.output
+        assert "reason: Sprint planning" in result.output
+
+    def test_show_no_provenance_line_when_absent(self, invoke, create_task):
+        """Show output does NOT include provenance line when events lack provenance."""
+        task = create_task("No provenance show test")
+        task_id = task["id"]
+        invoke("comment", task_id, "Plain comment", "--actor", "human:test")
+
+        result = invoke("show", task_id)
+        assert result.exit_code == 0
+        assert "triggered by:" not in result.output
+        assert "on behalf of:" not in result.output
+        # The word "reason:" could match other things, so check the indent pattern
+        for line in result.output.splitlines():
+            if line.startswith("    ") and "reason:" in line:
+                raise AssertionError("Unexpected provenance line found")

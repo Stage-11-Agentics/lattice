@@ -42,6 +42,9 @@ def link(
     session: str | None,
     output_json: bool,
     quiet: bool,
+    triggered_by: str | None,
+    on_behalf_of: str | None,
+    provenance_reason: str | None,
 ) -> None:
     """Create a relationship between two tasks."""
     is_json = output_json
@@ -49,6 +52,8 @@ def link(
     lattice_dir = require_root(is_json)
     config = load_project_config(lattice_dir)
     validate_actor_or_exit(actor, is_json)
+    if on_behalf_of is not None:
+        validate_actor_or_exit(on_behalf_of, is_json)
 
     task_id = resolve_task_id(lattice_dir, task_id, is_json)
     target_task_id = resolve_task_id(lattice_dir, target_task_id, is_json)
@@ -105,6 +110,9 @@ def link(
         data=event_data,
         model=model,
         session=session,
+        triggered_by=triggered_by,
+        on_behalf_of=on_behalf_of,
+        reason=provenance_reason,
     )
     updated_snapshot = apply_event_to_snapshot(snapshot, event)
 
@@ -140,6 +148,9 @@ def unlink(
     session: str | None,
     output_json: bool,
     quiet: bool,
+    triggered_by: str | None,
+    on_behalf_of: str | None,
+    provenance_reason: str | None,
 ) -> None:
     """Remove a relationship between two tasks."""
     is_json = output_json
@@ -147,6 +158,8 @@ def unlink(
     lattice_dir = require_root(is_json)
     config = load_project_config(lattice_dir)
     validate_actor_or_exit(actor, is_json)
+    if on_behalf_of is not None:
+        validate_actor_or_exit(on_behalf_of, is_json)
 
     task_id = resolve_task_id(lattice_dir, task_id, is_json)
     target_task_id = resolve_task_id(lattice_dir, target_task_id, is_json)
@@ -190,6 +203,9 @@ def unlink(
         data=event_data,
         model=model,
         session=session,
+        triggered_by=triggered_by,
+        on_behalf_of=on_behalf_of,
+        reason=provenance_reason,
     )
     updated_snapshot = apply_event_to_snapshot(snapshot, event)
 

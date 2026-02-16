@@ -61,6 +61,9 @@ def attach(
     session: str | None,
     output_json: bool,
     quiet: bool,
+    triggered_by: str | None,
+    on_behalf_of: str | None,
+    provenance_reason: str | None,
 ) -> None:
     """Attach a file or URL to a task as an artifact."""
     is_json = output_json
@@ -69,6 +72,8 @@ def attach(
     config = load_project_config(lattice_dir)
 
     validate_actor_or_exit(actor, is_json)
+    if on_behalf_of is not None:
+        validate_actor_or_exit(on_behalf_of, is_json)
 
     task_id = resolve_task_id(lattice_dir, task_id, is_json)
 
@@ -183,6 +188,9 @@ def attach(
         data=event_data,
         model=model,
         session=session,
+        triggered_by=triggered_by,
+        on_behalf_of=on_behalf_of,
+        reason=provenance_reason,
     )
 
     # Build artifact metadata (use event ts for consistency)

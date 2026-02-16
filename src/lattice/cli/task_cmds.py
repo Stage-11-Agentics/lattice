@@ -79,6 +79,9 @@ def create(
     session: str | None,
     output_json: bool,
     quiet: bool,
+    triggered_by: str | None,
+    on_behalf_of: str | None,
+    provenance_reason: str | None,
 ) -> None:
     """Create a new task."""
     is_json = output_json
@@ -87,6 +90,8 @@ def create(
     config = load_project_config(lattice_dir)
 
     validate_actor_or_exit(actor, is_json)
+    if on_behalf_of is not None:
+        validate_actor_or_exit(on_behalf_of, is_json)
 
     # Apply defaults
     if status is None:
@@ -199,6 +204,9 @@ def create(
         data=event_data,
         model=model,
         session=session,
+        triggered_by=triggered_by,
+        on_behalf_of=on_behalf_of,
+        reason=provenance_reason,
     )
     snapshot = apply_event_to_snapshot(None, event)
 
@@ -254,6 +262,9 @@ def update(
     session: str | None,
     output_json: bool,
     quiet: bool,
+    triggered_by: str | None,
+    on_behalf_of: str | None,
+    provenance_reason: str | None,
 ) -> None:
     """Update task fields.  Pass field=value pairs."""
     is_json = output_json
@@ -261,6 +272,8 @@ def update(
     lattice_dir = require_root(is_json)
     config = load_project_config(lattice_dir)
     validate_actor_or_exit(actor, is_json)
+    if on_behalf_of is not None:
+        validate_actor_or_exit(on_behalf_of, is_json)
 
     task_id = resolve_task_id(lattice_dir, task_id, is_json)
 
@@ -312,6 +325,9 @@ def update(
                     ts=shared_ts,
                     model=model,
                     session=session,
+                    triggered_by=triggered_by,
+                    on_behalf_of=on_behalf_of,
+                    reason=provenance_reason,
                 )
             )
             continue
@@ -366,6 +382,9 @@ def update(
                 ts=shared_ts,
                 model=model,
                 session=session,
+                triggered_by=triggered_by,
+                on_behalf_of=on_behalf_of,
+                reason=provenance_reason,
             )
         )
 
@@ -410,18 +429,19 @@ def update(
 @click.argument("task_id")
 @click.argument("new_status")
 @click.option("--force", is_flag=True, help="Force an invalid transition.")
-@click.option("--reason", default=None, help="Reason for a forced transition.")
 @common_options
 def status_cmd(
     task_id: str,
     new_status: str,
     force: bool,
-    reason: str | None,
     actor: str,
     model: str | None,
     session: str | None,
     output_json: bool,
     quiet: bool,
+    triggered_by: str | None,
+    on_behalf_of: str | None,
+    provenance_reason: str | None,
 ) -> None:
     """Change a task's status."""
     is_json = output_json
@@ -429,6 +449,8 @@ def status_cmd(
     lattice_dir = require_root(is_json)
     config = load_project_config(lattice_dir)
     validate_actor_or_exit(actor, is_json)
+    if on_behalf_of is not None:
+        validate_actor_or_exit(on_behalf_of, is_json)
 
     task_id = resolve_task_id(lattice_dir, task_id, is_json)
 
@@ -470,7 +492,7 @@ def status_cmd(
                 "INVALID_TRANSITION",
                 is_json,
             )
-        if not reason:
+        if not provenance_reason:
             output_error(
                 "--reason is required with --force.",
                 "VALIDATION_ERROR",
@@ -483,7 +505,7 @@ def status_cmd(
     }
     if force:
         event_data["force"] = True
-        event_data["reason"] = reason
+        event_data["reason"] = provenance_reason
 
     event = create_event(
         type="status_changed",
@@ -492,6 +514,9 @@ def status_cmd(
         data=event_data,
         model=model,
         session=session,
+        triggered_by=triggered_by,
+        on_behalf_of=on_behalf_of,
+        reason=provenance_reason,
     )
     updated_snapshot = apply_event_to_snapshot(snapshot, event)
     write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
@@ -522,6 +547,9 @@ def assign(
     session: str | None,
     output_json: bool,
     quiet: bool,
+    triggered_by: str | None,
+    on_behalf_of: str | None,
+    provenance_reason: str | None,
 ) -> None:
     """Assign a task to an actor."""
     is_json = output_json
@@ -529,6 +557,8 @@ def assign(
     lattice_dir = require_root(is_json)
     config = load_project_config(lattice_dir)
     validate_actor_or_exit(actor, is_json)
+    if on_behalf_of is not None:
+        validate_actor_or_exit(on_behalf_of, is_json)
 
     task_id = resolve_task_id(lattice_dir, task_id, is_json)
 
@@ -567,6 +597,9 @@ def assign(
         data={"from": current_assigned, "to": actor_id},
         model=model,
         session=session,
+        triggered_by=triggered_by,
+        on_behalf_of=on_behalf_of,
+        reason=provenance_reason,
     )
     updated_snapshot = apply_event_to_snapshot(snapshot, event)
     write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
@@ -598,6 +631,9 @@ def comment(
     session: str | None,
     output_json: bool,
     quiet: bool,
+    triggered_by: str | None,
+    on_behalf_of: str | None,
+    provenance_reason: str | None,
 ) -> None:
     """Add a comment to a task."""
     is_json = output_json
@@ -605,6 +641,8 @@ def comment(
     lattice_dir = require_root(is_json)
     config = load_project_config(lattice_dir)
     validate_actor_or_exit(actor, is_json)
+    if on_behalf_of is not None:
+        validate_actor_or_exit(on_behalf_of, is_json)
 
     task_id = resolve_task_id(lattice_dir, task_id, is_json)
 
@@ -617,6 +655,9 @@ def comment(
         data={"body": text},
         model=model,
         session=session,
+        triggered_by=triggered_by,
+        on_behalf_of=on_behalf_of,
+        reason=provenance_reason,
     )
     updated_snapshot = apply_event_to_snapshot(snapshot, event)
     write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
