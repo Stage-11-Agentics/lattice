@@ -352,7 +352,7 @@
 ## 2026-02-16: Plugin system via `importlib.metadata` entry points
 
 - Decision: Lattice supports plugins via two `importlib.metadata` entry point groups: `lattice.cli_plugins` (register additional CLI commands) and `lattice.template_blocks` (provide additional CLAUDE.md template sections). Zero new dependencies.
-- Rationale: Enables private extensions (e.g., `lattice-fractal`) to layer on additional CLI commands and CLAUDE.md template blocks without forking the core. The public repo is fully useful on its own while Fractal Agentics maintains its opinionated workflow layer privately. `importlib.metadata` is stdlib, well-understood, and used by the wider Python packaging ecosystem (pytest, setuptools, etc.).
+- Rationale: Enables private extensions (e.g., `lattice-fractal`) to layer on additional CLI commands and CLAUDE.md template blocks without forking the core. The public repo is fully useful on its own while Stage 11 Agentics maintains its opinionated workflow layer privately. `importlib.metadata` is stdlib, well-understood, and used by the wider Python packaging ecosystem (pytest, setuptools, etc.).
 - Constraints: v0 rejects `position: "replace_base"` for template blocks — plugins can only append, not replace the base template. Plugin load failures are logged to stderr but never crash the host CLI (matching `storage/hooks.py` error-handling pattern). `LATTICE_DEBUG=1` enables full tracebacks.
 - Consequence: Consumer packages define entry points in their `pyproject.toml`. The first consumer is `lattice-fractal` (private package). Core codebase requires no changes to support new plugins — they are discovered automatically at runtime.
 
@@ -490,3 +490,26 @@ Additional review findings that shaped this decision:
 - Dashboard gains a fifth tab (Web) after Board, List, Activity, Cube.
 - Git integration in the dashboard (reading branch/commit data) is a prerequisite.
 - Full design captured in `FutureFeatures.md`.
+
+---
+
+## 2026-02-16: `needs_human` as first-class workflow status
+
+- Decision: Add `needs_human` as a distinct status, separate from `blocked`.
+- Rationale: Agents need a clear signal for "I'm stuck on *you*" vs. generic external dependencies. `blocked` is ambiguous — it could be a CI failure, a dependency release, or a human decision. `needs_human` creates an explicit queue of "things waiting on the human" that can be scanned and acted on immediately.
+- Transitions TO `needs_human`: from `in_planning`, `planned`, `in_progress`, `review` (any active state).
+- Transitions FROM `needs_human`: to `in_planning`, `planned`, `in_progress`, `review`, `cancelled`.
+- NOT reachable from `backlog` (work hasn't started) or `done`/`cancelled` (terminal).
+- Convention: a `lattice comment` explaining what's needed is mandatory when moving to `needs_human`.
+- Consequence: Weather reports show `[HUMAN]` attention items. Dashboard uses amber/orange for visual distinction from red `blocked`. The CLAUDE.md template includes a "When You're Stuck" section teaching agents when and how to signal.
+
+---
+
+## 2026-02-16: `lattice next` — pure selection for agent task picking
+
+- Decision: Add `lattice next` as a read-only query command (with optional `--claim` for atomic assignment).
+- Rationale: Agents need a deterministic, priority-aware way to pick the next task. Manual `lattice list | sort | filter` is error-prone and duplicated across every agent prompt. A single command with well-defined ordering prevents divergent task-picking logic.
+- Algorithm: (1) Resume-first — if `--actor` specified, return in_progress/in_planning tasks assigned to that actor. (2) Pick from ready pool — backlog/planned, unassigned or assigned to requesting actor. (3) Sort by priority → urgency → ULID (oldest first).
+- `--claim` atomically assigns the task to the actor and moves it to `in_progress` (two events under one lock). Requires `--actor`.
+- Pure logic lives in `core/next.py` (no I/O). CLI wiring in `cli/query_cmds.py`. Weather `_find_up_next` delegates to the same sort logic.
+- Consequence: Enables the sweep pattern — an autonomous loop that claims, works, transitions, and repeats. The `/lattice-sweep` skill builds on this primitive.
