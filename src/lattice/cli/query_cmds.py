@@ -1,4 +1,4 @@
-"""Query and display commands: event, list, show."""
+"""Query and display commands: event, list, next, show."""
 
 from __future__ import annotations
 
@@ -26,7 +26,9 @@ from lattice.core.events import (
     create_event,
     validate_custom_event_type,
 )
-from lattice.core.ids import validate_id
+from lattice.core.ids import validate_actor, validate_id
+from lattice.core.next import select_next
+from lattice.core.stats import load_all_snapshots
 from lattice.core.tasks import apply_event_to_snapshot, compact_snapshot
 
 
@@ -252,6 +254,127 @@ def list_cmd(
             click.echo(
                 f'{prefix}{display_id}  {s}  {p}  {t}  "{title}"  {assigned_to}'
             )
+
+
+# ---------------------------------------------------------------------------
+# lattice next
+# ---------------------------------------------------------------------------
+
+
+@cli.command("next")
+@click.option("--actor", default=None, help="Who is asking (filters by assignment, required for --claim).")
+@click.option(
+    "--status",
+    "status_csv",
+    default=None,
+    help="Comma-separated statuses to consider (default: backlog,planned).",
+)
+@click.option("--claim", is_flag=True, help="Atomically assign + move to in_progress.")
+@click.option("--json", "output_json", is_flag=True, help="Output structured JSON.")
+@click.option("--quiet", is_flag=True, help="Print only the task ID.")
+def next_cmd(
+    actor: str | None,
+    status_csv: str | None,
+    claim: bool,
+    output_json: bool,
+    quiet: bool,
+) -> None:
+    """Pick the highest-priority task to work on next.
+
+    Returns the top task from the ready pool (backlog/planned by default).
+    If --actor is specified, resumes in-progress work first.
+    Use --claim to atomically assign and start the task.
+    """
+    is_json = output_json
+
+    lattice_dir = require_root(is_json)
+    config = load_project_config(lattice_dir)
+
+    # Validate --claim requires --actor
+    if claim and not actor:
+        output_error(
+            "--claim requires --actor.",
+            "VALIDATION_ERROR",
+            is_json,
+        )
+
+    # Validate actor format if provided
+    if actor and not validate_actor(actor):
+        output_error(
+            f"Invalid actor format: '{actor}'. "
+            "Expected prefix:identifier (e.g., human:atin, agent:claude).",
+            "INVALID_ACTOR",
+            is_json,
+        )
+
+    # Parse --status override
+    ready_statuses: frozenset[str] | None = None
+    if status_csv is not None:
+        ready_statuses = frozenset(s.strip() for s in status_csv.split(",") if s.strip())
+
+    # Load all active snapshots
+    active, _archived = load_all_snapshots(lattice_dir)
+
+    # Select next task
+    selected = select_next(active, actor=actor, ready_statuses=ready_statuses)
+
+    if selected is None:
+        if is_json:
+            # json_envelope skips data=None, so build manually
+            click.echo(json.dumps({"ok": True, "data": None}, sort_keys=True, indent=2) + "\n")
+        elif quiet:
+            pass  # no output
+        else:
+            click.echo("No tasks available.")
+        return
+
+    task_id = selected["id"]
+
+    # --claim: atomically assign + move to in_progress
+    if claim:
+        events = []
+        snapshot = read_snapshot_or_exit(lattice_dir, task_id, is_json)
+
+        # Assignment event (if not already assigned to actor)
+        current_assigned = snapshot.get("assigned_to")
+        if current_assigned != actor:
+            assign_event = create_event(
+                type="assignment_changed",
+                task_id=task_id,
+                actor=actor,
+                data={"from": current_assigned, "to": actor},
+            )
+            events.append(assign_event)
+            snapshot = apply_event_to_snapshot(snapshot, assign_event)
+
+        # Status event (if not already in_progress)
+        current_status = snapshot.get("status")
+        if current_status != "in_progress":
+            status_event = create_event(
+                type="status_changed",
+                task_id=task_id,
+                actor=actor,
+                data={"from": current_status, "to": "in_progress"},
+            )
+            events.append(status_event)
+            snapshot = apply_event_to_snapshot(snapshot, status_event)
+
+        if events:
+            write_task_event(lattice_dir, task_id, events, snapshot, config)
+        # Re-read the snapshot to return the updated version
+        selected = snapshot
+
+    display_id = selected.get("short_id") or task_id
+    output_result(
+        data=selected,
+        human_message=(
+            f'{display_id}  {selected.get("status", "?")}  '
+            f'{selected.get("priority", "?")}  "{selected.get("title", "?")}"'
+        ),
+        quiet_value=display_id,
+        is_json=is_json,
+        is_quiet=quiet,
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -148,30 +148,41 @@ def _find_recently_completed(
 
 
 def _find_up_next(active: list[dict]) -> list[dict]:
-    """Find backlog/planned tasks ready to pick up, ordered by priority."""
-    priority_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "unset": 4}
-    ready_statuses = {"backlog", "planned"}
+    """Find backlog/planned tasks ready to pick up, ordered by priority.
+
+    Delegates to core.next.select_next for ordering, then formats output.
+    """
+    # Use select_next to get the ordered list — we want all candidates, not just top-1,
+    # so we filter + sort using the same logic the core uses.
+    ready_statuses = frozenset({"backlog", "planned"})
+
+    # Get all candidates using the same filtering logic as select_next
+    from lattice.core.next import _EXCLUDED_STATUSES, _sort_key
 
     candidates: list[dict] = []
     for snap in active:
-        if snap.get("status") in ready_statuses:
-            pri = snap.get("priority", "unset")
-            candidates.append(
-                {
-                    "id": snap.get("short_id") or snap.get("id", "?"),
-                    "title": snap.get("title", "?"),
-                    "status": snap.get("status", "?"),
-                    "priority": pri,
-                    "assigned_to": snap.get("assigned_to"),
-                    "_sort": priority_order.get(pri, 99),
-                }
-            )
+        status = snap.get("status", "")
+        if status not in ready_statuses:
+            continue
+        if status in _EXCLUDED_STATUSES:
+            continue
+        candidates.append(snap)
 
-    candidates.sort(key=lambda c: c["_sort"])
-    # Strip sort key from output
-    for c in candidates:
-        del c["_sort"]
-    return candidates[:10]  # Cap at 10
+    candidates.sort(key=_sort_key)
+
+    # Format for weather output (cap at 10)
+    result: list[dict] = []
+    for snap in candidates[:10]:
+        result.append(
+            {
+                "id": snap.get("short_id") or snap.get("id", "?"),
+                "title": snap.get("title", "?"),
+                "status": snap.get("status", "?"),
+                "priority": snap.get("priority", "medium"),
+                "assigned_to": snap.get("assigned_to"),
+            }
+        )
+    return result
 
 
 def _find_attention_needed(
