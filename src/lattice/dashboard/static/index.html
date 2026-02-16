@@ -2817,9 +2817,13 @@ var LANE_COLORS_BY_THEME = {
     backlog: "#adb5bd",
     in_planning: "#17a2b8",
     planned: "#20c997",
+    in_progress: "#0d6efd",
     in_implementation: "#0d6efd",
     implemented: "#0dcaf0",
+    review: "#6f42c1",
     in_review: "#6f42c1",
+    blocked: "#dc3545",
+    needs_human: "#f59e0b",
     done: "#198754",
     cancelled: "#6c757d"
   },
@@ -2827,9 +2831,13 @@ var LANE_COLORS_BY_THEME = {
     backlog: "#334155",
     in_planning: "#06b6d4",
     planned: "#14b8a6",
+    in_progress: "#3b82f6",
     in_implementation: "#3b82f6",
     implemented: "#38bdf8",
+    review: "#a78bfa",
     in_review: "#a78bfa",
+    blocked: "#ef4444",
+    needs_human: "#f59e0b",
     done: "#22c55e",
     cancelled: "#475569"
   },
@@ -2837,9 +2845,13 @@ var LANE_COLORS_BY_THEME = {
   backlog: "#B0B3C4",
   in_planning: "#59A2E0",
   planned: "#4CB782",
+  in_progress: "#5E6AD2",
   in_implementation: "#5E6AD2",
   implemented: "#37B5E6",
+  review: "#9B6DD7",
   in_review: "#9B6DD7",
+  blocked: "#EB5757",
+  needs_human: "#F2994A",
   done: "#3BA672",
   cancelled: "#8B8FA3"
 },
@@ -2847,9 +2859,13 @@ var LANE_COLORS_BY_THEME = {
   backlog: "#8c959f",
   in_planning: "#0969da",
   planned: "#1a7f37",
+  in_progress: "#8250df",
   in_implementation: "#8250df",
   implemented: "#0550ae",
+  review: "#bf8700",
   in_review: "#bf8700",
+  blocked: "#cf222e",
+  needs_human: "#bf8700",
   done: "#1a7f37",
   cancelled: "#656d76"
 },
@@ -2857,9 +2873,13 @@ var LANE_COLORS_BY_THEME = {
   backlog: "#475569",
   in_planning: "#38bdf8",
   planned: "#2dd4bf",
+  in_progress: "#60a5fa",
   in_implementation: "#60a5fa",
   implemented: "#818cf8",
+  review: "#c084fc",
   in_review: "#c084fc",
+  blocked: "#f87171",
+  needs_human: "#fbbf24",
   done: "#4ade80",
   cancelled: "#64748b"
 },
@@ -2867,9 +2887,13 @@ var LANE_COLORS_BY_THEME = {
   backlog: "#c1bdb9",
   in_planning: "#f1bd6c",
   planned: "#5da283",
+  in_progress: "#7c8af7",
   in_implementation: "#7c8af7",
   implemented: "#4ecbc4",
+  review: "#aa62e3",
   in_review: "#aa62e3",
+  blocked: "#e8384f",
+  needs_human: "#fd9a00",
   done: "#5da283",
   cancelled: "#b8b8b8"
 },
@@ -2877,9 +2901,13 @@ var LANE_COLORS_BY_THEME = {
   backlog: "#a09585",
   in_planning: "#c69026",
   planned: "#2e8b57",
+  in_progress: "#3d5a80",
   in_implementation: "#3d5a80",
   implemented: "#5b9ea6",
+  review: "#7b5ea7",
   in_review: "#7b5ea7",
+  blocked: "#c0392b",
+  needs_human: "#e67e22",
   done: "#1D6D37",
   cancelled: "#8c7f6d"
 },
@@ -2887,9 +2915,13 @@ var LANE_COLORS_BY_THEME = {
   backlog: "#99a8b8",
   in_planning: "#6ba4b8",
   planned: "#6bab8a",
+  in_progress: "#6b8aab",
   in_implementation: "#6b8aab",
   implemented: "#7baac4",
+  review: "#8a7bab",
   in_review: "#8a7bab",
+  blocked: "#c44b4b",
+  needs_human: "#d4a24b",
   done: "#5b9a6b",
   cancelled: "#8a919a"
 },
@@ -2897,51 +2929,67 @@ var LANE_COLORS_BY_THEME = {
   backlog: "#64748b",
   in_planning: "#38bdf8",
   planned: "#34d399",
+  in_progress: "#818cf8",
   in_implementation: "#818cf8",
   implemented: "#22d3ee",
+  review: "#a78bfa",
   in_review: "#a78bfa",
+  blocked: "#f87171",
+  needs_human: "#fbbf24",
   done: "#34d399",
   cancelled: "#475569"
 },
   "paper": {
-  backlog: "#999999", in_planning: "#777777", planned: "#555555", in_implementation: "#333333",
-  implemented: "#444444", in_review: "#666666", done: "#111111", cancelled: "#aaaaaa"
+  backlog: "#999999", in_planning: "#777777", planned: "#555555", in_progress: "#333333",
+  in_implementation: "#333333", implemented: "#444444", review: "#666666", in_review: "#666666",
+  blocked: "#cc3333", needs_human: "#cc8833", done: "#111111", cancelled: "#aaaaaa"
 },
   "midnight": {
-  backlog: "#334155", in_planning: "#475569", planned: "#64748B", in_implementation: "#94A3B8",
-  implemented: "#78716C", in_review: "#6B7280", done: "#22c55e", cancelled: "#1e293b"
+  backlog: "#334155", in_planning: "#475569", planned: "#64748B", in_progress: "#94A3B8",
+  in_implementation: "#94A3B8", implemented: "#78716C", review: "#6B7280", in_review: "#6B7280",
+  blocked: "#ef4444", needs_human: "#f59e0b", done: "#22c55e", cancelled: "#1e293b"
 },
   "obsidian": {
-  backlog: "#4A4A5E", in_planning: "#2A7A8A", planned: "#2A8A6A", in_implementation: "#4060C0",
-  implemented: "#3090B0", in_review: "#7A52B5", done: "#3A8A54", cancelled: "#505060"
+  backlog: "#4A4A5E", in_planning: "#2A7A8A", planned: "#2A8A6A", in_progress: "#4060C0",
+  in_implementation: "#4060C0", implemented: "#3090B0", review: "#7A52B5", in_review: "#7A52B5",
+  blocked: "#C04040", needs_human: "#C09040", done: "#3A8A54", cancelled: "#505060"
 },
   "carbon": {
-  backlog: "#404040", in_planning: "#0E7490", planned: "#0F766E", in_implementation: "#2563EB",
-  implemented: "#0284C7", in_review: "#7C3AED", done: "#16A34A", cancelled: "#525252"
+  backlog: "#404040", in_planning: "#0E7490", planned: "#0F766E", in_progress: "#2563EB",
+  in_implementation: "#2563EB", implemented: "#0284C7", review: "#7C3AED", in_review: "#7C3AED",
+  blocked: "#DC2626", needs_human: "#D97706", done: "#16A34A", cancelled: "#525252"
 },
   "vaporwave": {
-  backlog: "#4a2870", in_planning: "#B967FF", planned: "#01CDFE", in_implementation: "#FF71CE",
-  implemented: "#00FFD1", in_review: "#c471ed", done: "#05ffd2", cancelled: "#3d2060"
+  backlog: "#4a2870", in_planning: "#B967FF", planned: "#01CDFE", in_progress: "#FF71CE",
+  in_implementation: "#FF71CE", implemented: "#00FFD1", review: "#c471ed", in_review: "#c471ed",
+  blocked: "#FF4081", needs_human: "#FFD740", done: "#05ffd2", cancelled: "#3d2060"
 },
   "neon-noir": {
-  backlog: "#333333", in_planning: "#00D4FF", planned: "#00FFA3", in_implementation: "#FF0080",
-  implemented: "#00B4D8", in_review: "#BF00FF", done: "#00FF88", cancelled: "#1a1a1a"
+  backlog: "#333333", in_planning: "#00D4FF", planned: "#00FFA3", in_progress: "#FF0080",
+  in_implementation: "#FF0080", implemented: "#00B4D8", review: "#BF00FF", in_review: "#BF00FF",
+  blocked: "#FF1744", needs_human: "#FFAB00", done: "#00FF88", cancelled: "#1a1a1a"
 },
   "acid-rain": {
-  backlog: "#1a3a1a", in_planning: "#0f4f0f", planned: "#1a6b1a", in_implementation: "#228B22",
-  implemented: "#2eb82e", in_review: "#39FF14", done: "#00cc44", cancelled: "#333333"
+  backlog: "#1a3a1a", in_planning: "#0f4f0f", planned: "#1a6b1a", in_progress: "#228B22",
+  in_implementation: "#228B22", implemented: "#2eb82e", review: "#39FF14", in_review: "#39FF14",
+  blocked: "#FF3333", needs_human: "#CCCC00", done: "#00cc44", cancelled: "#333333"
 },
   "solar-flare": {
-  backlog: "#44403C", in_planning: "#78350F", planned: "#92400E", in_implementation: "#B45309",
-  implemented: "#EA580C", in_review: "#C2410C", done: "#65A30D", cancelled: "#292524"
+  backlog: "#44403C", in_planning: "#78350F", planned: "#92400E", in_progress: "#B45309",
+  in_implementation: "#B45309", implemented: "#EA580C", review: "#C2410C", in_review: "#C2410C",
+  blocked: "#DC2626", needs_human: "#F59E0B", done: "#65A30D", cancelled: "#292524"
 },
   "ultraviolet": {
   backlog: "#3b1a5e",
   in_planning: "#7c3aed",
   planned: "#a855f7",
+  in_progress: "#BF40FF",
   in_implementation: "#BF40FF",
   implemented: "#d946ef",
+  review: "#e879f9",
   in_review: "#e879f9",
+  blocked: "#f43f5e",
+  needs_human: "#f59e0b",
   done: "#c026d3",
   cancelled: "#2d1650"
 },
@@ -2949,9 +2997,13 @@ var LANE_COLORS_BY_THEME = {
   backlog: "#2a2a3a",
   in_planning: "#6b8bff",
   planned: "#6bccff",
+  in_progress: "#6bff6b",
   in_implementation: "#6bff6b",
   implemented: "#ffd93d",
+  review: "#cc6bff",
   in_review: "#cc6bff",
+  blocked: "#ff6b6b",
+  needs_human: "#ffb86b",
   done: "#50e890",
   cancelled: "#3a2a2a"
 }

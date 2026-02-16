@@ -27,9 +27,10 @@ from lattice.core.events import (
     validate_custom_event_type,
 )
 from lattice.core.ids import validate_actor, validate_id
-from lattice.core.next import select_next
+from lattice.core.next import compute_claim_transitions, select_next
 from lattice.core.stats import load_all_snapshots
 from lattice.core.tasks import apply_event_to_snapshot, compact_snapshot
+from lattice.storage.locks import multi_lock
 
 
 # ---------------------------------------------------------------------------
@@ -330,39 +331,84 @@ def next_cmd(
 
     task_id = selected["id"]
 
-    # --claim: atomically assign + move to in_progress
+    # --claim: atomically assign + move to in_progress with valid transitions
     if claim:
-        events = []
-        snapshot = read_snapshot_or_exit(lattice_dir, task_id, is_json)
+        locks_dir = lattice_dir / "locks"
+        lock_keys = sorted([f"events_{task_id}", f"tasks_{task_id}", "events__lifecycle"])
 
-        # Assignment event (if not already assigned to actor)
-        current_assigned = snapshot.get("assigned_to")
-        if current_assigned != actor:
-            assign_event = create_event(
-                type="assignment_changed",
-                task_id=task_id,
-                actor=actor,
-                data={"from": current_assigned, "to": actor},
-            )
-            events.append(assign_event)
-            snapshot = apply_event_to_snapshot(snapshot, assign_event)
+        with multi_lock(locks_dir, lock_keys):
+            # Re-read snapshot under lock to prevent TOCTOU race
+            snapshot = read_snapshot(lattice_dir, task_id)
+            if snapshot is None:
+                output_error(f"Task {task_id} not found.", "NOT_FOUND", is_json)
 
-        # Status event (if not already in_progress)
-        current_status = snapshot.get("status")
-        if current_status != "in_progress":
-            status_event = create_event(
-                type="status_changed",
-                task_id=task_id,
-                actor=actor,
-                data={"from": current_status, "to": "in_progress"},
-            )
-            events.append(status_event)
-            snapshot = apply_event_to_snapshot(snapshot, status_event)
+            events = []
 
-        if events:
-            write_task_event(lattice_dir, task_id, events, snapshot, config)
-        # Re-read the snapshot to return the updated version
-        selected = snapshot
+            # Assignment event (if not already assigned to actor)
+            current_assigned = snapshot.get("assigned_to")
+            if current_assigned != actor:
+                assign_event = create_event(
+                    type="assignment_changed",
+                    task_id=task_id,
+                    actor=actor,
+                    data={"from": current_assigned, "to": actor},
+                )
+                events.append(assign_event)
+                snapshot = apply_event_to_snapshot(snapshot, assign_event)
+
+            # Status transitions — compute valid path to in_progress
+            current_status = snapshot.get("status")
+            if current_status != "in_progress":
+                transitions = config.get("workflow", {}).get("transitions", {})
+                path = compute_claim_transitions(current_status, "in_progress", transitions)
+                if path is None:
+                    output_error(
+                        f"No valid transition path from {current_status} to in_progress.",
+                        "INVALID_TRANSITION",
+                        is_json,
+                    )
+                # Emit a status_changed event for each step in the path
+                prev_status = current_status
+                for next_status in path:
+                    status_event = create_event(
+                        type="status_changed",
+                        task_id=task_id,
+                        actor=actor,
+                        data={"from": prev_status, "to": next_status},
+                    )
+                    events.append(status_event)
+                    snapshot = apply_event_to_snapshot(snapshot, status_event)
+                    prev_status = next_status
+
+            if events:
+                # Write directly under the already-held lock (bypass write_task_event
+                # which would try to acquire its own locks)
+                from lattice.core.events import LIFECYCLE_EVENT_TYPES, serialize_event
+                from lattice.core.tasks import serialize_snapshot
+                from lattice.storage.fs import atomic_write, jsonl_append
+                from lattice.storage.hooks import execute_hooks
+
+                event_path = lattice_dir / "events" / f"{task_id}.jsonl"
+                for event in events:
+                    jsonl_append(event_path, serialize_event(event))
+
+                lifecycle_events = [e for e in events if e["type"] in LIFECYCLE_EVENT_TYPES]
+                if lifecycle_events:
+                    lifecycle_path = lattice_dir / "events" / "_lifecycle.jsonl"
+                    for event in lifecycle_events:
+                        jsonl_append(lifecycle_path, serialize_event(event))
+
+                snapshot_path = lattice_dir / "tasks" / f"{task_id}.json"
+                atomic_write(snapshot_path, serialize_snapshot(snapshot))
+
+            selected = snapshot
+
+        # Fire hooks after lock release
+        if events and config:
+            from lattice.storage.hooks import execute_hooks
+
+            for event in events:
+                execute_hooks(config, lattice_dir, task_id, event)
 
     display_id = selected.get("short_id") or task_id
     output_result(

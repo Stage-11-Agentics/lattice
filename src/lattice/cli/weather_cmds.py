@@ -150,25 +150,11 @@ def _find_recently_completed(
 def _find_up_next(active: list[dict]) -> list[dict]:
     """Find backlog/planned tasks ready to pick up, ordered by priority.
 
-    Delegates to core.next.select_next for ordering, then formats output.
+    Delegates to core.next.select_all_ready for filtering and sorting.
     """
-    # Use select_next to get the ordered list — we want all candidates, not just top-1,
-    # so we filter + sort using the same logic the core uses.
-    ready_statuses = frozenset({"backlog", "planned"})
+    from lattice.core.next import select_all_ready
 
-    # Get all candidates using the same filtering logic as select_next
-    from lattice.core.next import _EXCLUDED_STATUSES, _sort_key
-
-    candidates: list[dict] = []
-    for snap in active:
-        status = snap.get("status", "")
-        if status not in ready_statuses:
-            continue
-        if status in _EXCLUDED_STATUSES:
-            continue
-        candidates.append(snap)
-
-    candidates.sort(key=_sort_key)
+    candidates = select_all_ready(active)
 
     # Format for weather output (cap at 10)
     result: list[dict] = []

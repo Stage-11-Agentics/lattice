@@ -194,6 +194,68 @@ class TestNextClaim:
         assert result.exit_code != 0
 
 
+class TestNextClaimTransitions:
+    """--claim emits valid intermediate transitions."""
+
+    def test_claim_planned_task_direct(self, create_task, invoke) -> None:
+        """Claiming a planned task should transition planned -> in_progress (1 hop)."""
+        task = create_task("Planned task")
+        task_id = task["id"]
+        invoke("status", task_id, "in_planning", "--actor", "human:test")
+        invoke("status", task_id, "planned", "--actor", "human:test")
+
+        result = invoke(
+            "next", "--actor", "agent:claude", "--status", "planned", "--claim", "--json"
+        )
+        assert result.exit_code == 0
+        parsed = json.loads(result.output)
+        assert parsed["ok"] is True
+        assert parsed["data"]["status"] == "in_progress"
+        assert parsed["data"]["assigned_to"] == "agent:claude"
+
+    def test_claim_backlog_emits_intermediate_transitions(self, create_task, invoke) -> None:
+        """Claiming a backlog task should emit backlog -> planned -> in_progress."""
+        task = create_task("Backlog task")
+        task_id = task["id"]
+
+        result = invoke("next", "--actor", "agent:claude", "--claim", "--json")
+        assert result.exit_code == 0
+        parsed = json.loads(result.output)
+        assert parsed["data"]["status"] == "in_progress"
+
+        # Verify events show intermediate transitions
+        show_result = invoke("show", task_id, "--full", "--json")
+        show_parsed = json.loads(show_result.output)
+        events = show_parsed["data"].get("events", [])
+        status_events = [e for e in events if e["type"] == "status_changed"]
+        # Should have at least 2 status changes: backlog->planned, planned->in_progress
+        assert len(status_events) >= 2
+        assert status_events[-2]["data"]["from"] == "backlog"
+        assert status_events[-2]["data"]["to"] == "planned"
+        assert status_events[-1]["data"]["from"] == "planned"
+        assert status_events[-1]["data"]["to"] == "in_progress"
+
+    def test_claim_already_in_progress_is_noop(self, create_task, invoke) -> None:
+        """If resume-first returns an in_progress task, --claim should not error."""
+        task = create_task("Active task")
+        task_id = task["id"]
+        invoke("assign", task_id, "agent:claude", "--actor", "human:test")
+        invoke("status", task_id, "in_planning", "--actor", "human:test")
+        invoke("status", task_id, "planned", "--actor", "human:test")
+        invoke("status", task_id, "in_progress", "--actor", "human:test")
+
+        result = invoke("next", "--actor", "agent:claude", "--claim", "--json")
+        assert result.exit_code == 0
+        parsed = json.loads(result.output)
+        assert parsed["data"]["status"] == "in_progress"
+        assert parsed["data"]["assigned_to"] == "agent:claude"
+
+    def test_claim_requires_actor_json_mode(self, invoke) -> None:
+        """--claim without --actor should error even in JSON mode."""
+        result = invoke("next", "--claim", "--json")
+        assert result.exit_code != 0
+
+
 class TestNextActorValidation:
     """Actor format validation."""
 

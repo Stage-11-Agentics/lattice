@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from lattice.core.next import select_next
+from lattice.core.next import compute_claim_transitions, select_all_ready, select_next
 
 
 def _snap(
@@ -263,3 +263,142 @@ class TestSelectNextPlanned:
         result = select_next(snaps)
         assert result is not None
         assert result["id"] == "task_planned"
+
+
+class TestSelectAllReady:
+    """select_all_ready returns full sorted list for display."""
+
+    def test_returns_all_ready_sorted(self) -> None:
+        snaps = [
+            _snap("task_low", priority="low"),
+            _snap("task_crit", priority="critical"),
+            _snap("task_med", priority="medium"),
+        ]
+        result = select_all_ready(snaps)
+        assert len(result) == 3
+        assert result[0]["id"] == "task_crit"
+        assert result[1]["id"] == "task_med"
+        assert result[2]["id"] == "task_low"
+
+    def test_excludes_non_ready_statuses(self) -> None:
+        snaps = [
+            _snap("task_backlog", status="backlog"),
+            _snap("task_done", status="done"),
+            _snap("task_ip", status="in_progress"),
+        ]
+        result = select_all_ready(snaps)
+        assert len(result) == 1
+        assert result[0]["id"] == "task_backlog"
+
+    def test_includes_assigned_tasks(self) -> None:
+        """Unlike select_next, select_all_ready does not filter by assignment."""
+        snaps = [
+            _snap("task_assigned", assigned_to="agent:other"),
+            _snap("task_free"),
+        ]
+        result = select_all_ready(snaps)
+        assert len(result) == 2
+
+    def test_empty_returns_empty(self) -> None:
+        assert select_all_ready([]) == []
+
+    def test_needs_human_excluded(self) -> None:
+        snaps = [
+            _snap("task_nh", status="needs_human"),
+            _snap("task_bl", status="backlog"),
+        ]
+        result = select_all_ready(snaps)
+        assert len(result) == 1
+        assert result[0]["id"] == "task_bl"
+
+
+class TestComputeClaimTransitions:
+    """BFS transition path computation."""
+
+    def test_same_status_returns_empty(self) -> None:
+        transitions = {"in_progress": ["review"]}
+        assert compute_claim_transitions("in_progress", "in_progress", transitions) == []
+
+    def test_direct_transition(self) -> None:
+        transitions = {"planned": ["in_progress"]}
+        result = compute_claim_transitions("planned", "in_progress", transitions)
+        assert result == ["in_progress"]
+
+    def test_two_hop_transition(self) -> None:
+        """backlog -> planned -> in_progress requires 2 hops."""
+        transitions = {
+            "backlog": ["in_planning", "planned", "cancelled"],
+            "planned": ["in_progress", "review"],
+        }
+        result = compute_claim_transitions("backlog", "in_progress", transitions)
+        assert result == ["planned", "in_progress"]
+
+    def test_three_hop_transition(self) -> None:
+        """backlog -> in_planning -> planned -> in_progress requires 3 hops."""
+        transitions = {
+            "backlog": ["in_planning"],
+            "in_planning": ["planned"],
+            "planned": ["in_progress"],
+        }
+        result = compute_claim_transitions("backlog", "in_progress", transitions)
+        assert result == ["in_planning", "planned", "in_progress"]
+
+    def test_no_path_returns_none(self) -> None:
+        transitions = {
+            "done": [],
+            "cancelled": [],
+        }
+        assert compute_claim_transitions("done", "in_progress", transitions) is None
+
+    def test_exceeds_max_depth_returns_none(self) -> None:
+        """More than 3 hops is not allowed."""
+        transitions = {
+            "a": ["b"],
+            "b": ["c"],
+            "c": ["d"],
+            "d": ["target"],
+        }
+        assert compute_claim_transitions("a", "target", transitions) is None
+
+    def test_shortest_path_preferred(self) -> None:
+        """When multiple paths exist, BFS finds the shortest."""
+        transitions = {
+            "backlog": ["in_planning", "planned"],
+            "in_planning": ["planned"],
+            "planned": ["in_progress"],
+        }
+        # Direct: backlog -> planned -> in_progress (2 hops)
+        # Longer: backlog -> in_planning -> planned -> in_progress (3 hops)
+        result = compute_claim_transitions("backlog", "in_progress", transitions)
+        assert result == ["planned", "in_progress"]
+
+    def test_unknown_status_returns_none(self) -> None:
+        transitions = {"backlog": ["planned"]}
+        assert compute_claim_transitions("nonexistent", "in_progress", transitions) is None
+
+    def test_with_full_default_config(self) -> None:
+        """Verify against the actual default workflow transitions."""
+        transitions = {
+            "backlog": ["in_planning", "planned", "cancelled"],
+            "in_planning": ["planned", "needs_human", "cancelled"],
+            "planned": ["in_progress", "review", "blocked", "needs_human", "cancelled"],
+            "in_progress": ["review", "blocked", "needs_human", "cancelled"],
+            "review": ["done", "in_progress", "needs_human", "cancelled"],
+            "done": [],
+            "blocked": ["in_planning", "planned", "in_progress", "cancelled"],
+            "needs_human": ["in_planning", "planned", "in_progress", "review", "cancelled"],
+            "cancelled": [],
+        }
+        # backlog -> planned -> in_progress (2 hops)
+        result = compute_claim_transitions("backlog", "in_progress", transitions)
+        assert result == ["planned", "in_progress"]
+
+        # planned -> in_progress (1 hop)
+        result = compute_claim_transitions("planned", "in_progress", transitions)
+        assert result == ["in_progress"]
+
+        # done -> in_progress (no path)
+        assert compute_claim_transitions("done", "in_progress", transitions) is None
+
+        # cancelled -> in_progress (no path)
+        assert compute_claim_transitions("cancelled", "in_progress", transitions) is None
