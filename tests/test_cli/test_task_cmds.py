@@ -74,6 +74,19 @@ class TestCreate:
         assert result.exit_code != 0
         assert "Conflict" in result.output or "conflict" in result.output.lower()
 
+    def test_create_ticket_type(self, invoke_json):
+        data, code = invoke_json(
+            "create",
+            "Ticket task",
+            "--type",
+            "ticket",
+            "--actor",
+            "human:test",
+        )
+        assert code == 0
+        assert data["ok"] is True
+        assert data["data"]["type"] == "ticket"
+
     def test_invalid_type(self, invoke):
         result = invoke("create", "Bad", "--type", "nonexistent", "--actor", "human:test")
         assert result.exit_code != 0

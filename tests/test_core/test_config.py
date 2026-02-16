@@ -34,7 +34,7 @@ class TestDefaultConfig:
 
     def test_has_task_types(self) -> None:
         config = default_config()
-        assert config["task_types"] == ["task", "epic", "bug", "spike", "chore"]
+        assert config["task_types"] == ["task", "ticket", "epic", "bug", "spike", "chore"]
 
     def test_workflow_statuses(self) -> None:
         config = default_config()
@@ -241,6 +241,10 @@ class TestValidateTaskType:
         config = default_config()
         for tt in config["task_types"]:
             assert validate_task_type(config, tt) is True
+
+    def test_ticket_type_valid(self) -> None:
+        config = default_config()
+        assert validate_task_type(config, "ticket") is True
 
     def test_unknown_type(self) -> None:
         config = default_config()

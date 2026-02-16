@@ -200,6 +200,7 @@ Recommended (nullable/optional):
 ### 6.3 Task types (v0)
 
 - `task`: standard unit of work
+- `ticket`: a deliverable — assignable, branchable, reviewable
 - `epic`: a task that groups work via relationships (see `subtask_of`)
 - `bug`: defect fix
 - `spike`: research/investigation
