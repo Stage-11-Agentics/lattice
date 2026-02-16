@@ -304,3 +304,45 @@
 - The provenance field appears in the event log (JSONL) and is displayed by `lattice show`.
 - MCP tools are not yet updated (follow-up work).
 - The Philosophy.md section on attribution has been updated to reflect this capability.
+
+---
+
+## 2026-02-15: Two primitive pairs — Tickets/Tasks and Panels/Displays
+
+**Decision:** Lattice has two parallel compositional primitives:
+
+1. **Tickets contain Tasks** — the work decomposition primitive. Humans think in tickets (units of concern: "fix auth redirect"). Agents think in tasks (units of execution: "read config, check token, write fix"). This was established in Philosophy.md and is already implemented.
+
+2. **Panels contain Displays** — the information presentation primitive. A Panel is a configurable container that the human sees as a unit on the dashboard. A Display is a content element within a panel — a chart, a stat card, a table, an agent output, a timeline, anything that communicates state to the human. Panels are composable and user-configurable.
+
+**Context:** The dashboard stats page revealed that a fixed layout doesn't scale. Different projects need different views. More importantly, Lattice's role as a common language for human-agent coordination requires a shared visual vocabulary — agents need consistent expectations for how to present information to humans. If every tool invents its own display format, there's no shared norm. Panels and Displays give agents (and other tools building on Lattice) a known target: "build a Display, put it in a Panel, and the human will see it in the expected way."
+
+**Rationale:**
+- Mirrors the Tickets/Tasks pair: Panels are the human-altitude view (what do I see?), Displays are the agent-altitude view (what do I render?).
+- Open primitive: any agent, skill, or external tool can produce Displays that slot into Panels. This makes the dashboard a composable communication surface, not a hardcoded report.
+- Establishes a shared norm across the ecosystem — other tools (OpenClaw skills, MCP servers, etc.) can target the Panel/Display contract and know their output will render consistently.
+
+**Consequences:**
+- Dashboard becomes panel-based: users configure which panels appear and what displays they contain.
+- Display types are extensible — start with the proven ones (stat cards, charts, tables, timelines) and grow.
+- Panel configuration lives in `.lattice/config.json` or a dedicated dashboard config.
+- Not yet implemented. This decision captures the architectural direction.
+
+---
+
+## 2026-02-15: Task graph structure — the backlog is not a flat list
+
+**Decision:** Tasks in the backlog (and other statuses) form a rich directed graph through their blocking/dependency relationships. This graph structure is first-class, not incidental. The system should support both simple list views and richer graph visualizations of the same data simultaneously.
+
+**Context:** A backlog with 30 items may look flat, but many of those items have blocking relationships — task A blocks B, which blocks C and D, which both block E. This structure is critical information that a flat list hides. The relationships already exist in the event log (via `link` commands and `blocks`/`blocked_by` fields), but the dashboard and CLI present them as secondary metadata rather than as the primary structural reality.
+
+**Rationale:**
+- Tasks are zones in a graph, not items in a queue. Two tasks in "backlog" may have very different structural positions — one is a root blocker affecting five downstream items, another is a leaf with no dependencies. Treating them the same is information loss.
+- The data is already there. Lattice captures `blocks`, `blocked_by`, `related_to`, `subtask_of`, `parent_of` relationships. The decision is to elevate this from "metadata you can query" to "structure the UI makes visible."
+- Enables dependency chain risk analysis, bottleneck detection, and critical path visualization — several of the demo page improvements depend on this being treated as first-class.
+
+**Consequences:**
+- Dashboard should offer graph/network views alongside list views.
+- Stats computations can analyze graph properties: longest chain, most-blocking task, orphan clusters, critical path.
+- CLI commands like `lattice list` may gain topology-aware options (e.g., `--tree`, `--critical-path`).
+- Not yet implemented. This decision captures the architectural direction.
