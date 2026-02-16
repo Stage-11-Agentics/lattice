@@ -15,13 +15,15 @@ from lattice.cli.main import cli
 class TestPluginsCommand:
     """lattice plugins diagnostic command."""
 
-    def test_no_plugins_installed(self) -> None:
+    @patch("lattice.plugins.entry_points", return_value=[])
+    def test_no_plugins_installed(self, mock_ep: MagicMock) -> None:
         runner = CliRunner()
         result = runner.invoke(cli, ["plugins"])
         assert result.exit_code == 0
         assert "No plugins installed" in result.output
 
-    def test_no_plugins_json(self) -> None:
+    @patch("lattice.plugins.entry_points", return_value=[])
+    def test_no_plugins_json(self, mock_ep: MagicMock) -> None:
         runner = CliRunner()
         result = runner.invoke(cli, ["plugins", "--json"])
         assert result.exit_code == 0
@@ -179,14 +181,17 @@ class TestSetupClaudeWithPlugins:
         assert "The First Act" in content
         assert "Fractal-specific content" in content
 
-    def test_setup_claude_no_plugins_produces_base_only(self, tmp_path: Path) -> None:
+    @patch("lattice.plugins.discover_template_blocks", return_value=[])
+    def test_setup_claude_no_plugins_produces_base_only(
+        self, mock_discover: MagicMock, tmp_path: Path
+    ) -> None:
         """Without plugins, setup-claude produces the standard base template."""
         runner = CliRunner()
         result = runner.invoke(cli, ["setup-claude", "--path", str(tmp_path)])
         assert result.exit_code == 0
 
         content = (tmp_path / "CLAUDE.md").read_text()
-        assert "## Lattice" in content
+        assert "## Lattice\n" in content
         assert "The First Act" in content
-        # Count that only one H2 Lattice section exists
-        assert content.count("## Lattice") == 1
+        # Only one H2 Lattice section (base only)
+        assert content.count("## Lattice\n") == 1

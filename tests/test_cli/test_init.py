@@ -518,8 +518,8 @@ class TestSetupClaude:
         assert "# My Project" in content
         assert "Old content" not in content
         assert "The First Act" in content
-        # Should have exactly one Lattice block
-        assert content.count("## Lattice") == 1
+        # Should have exactly one base Lattice block (plugins may add their own)
+        assert content.count("## Lattice\n") == 1
 
     def test_setup_claude_force_preserves_other_sections(self, tmp_path: Path) -> None:
         """setup-claude --force preserves sections before and after the Lattice block."""
