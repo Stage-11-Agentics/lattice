@@ -56,7 +56,11 @@ the on-disk format is the stable contract. the CLI can be rewritten. the dashboa
 
 ## altitude
 
-humans think in tickets: "Add MIT LICENSE." "Build the skill system." — *what* and *why*. agents think in tasks: "Read the config. Check the key. Write the file." — *how*. different minds, different resolutions of attention.
+work has a natural grain. epics hold strategic intent — "Build the auth system." tickets hold deliverables — "Implement OAuth for the backend." tasks hold execution — "Write the token refresh handler." three tiers, each at a different resolution of attention.
+
+humans tend to think at the ticket level: *what* needs to ship and *why*. agents tend to think at the task level: *how* to make it happen. epics hold the arc that connects individual deliverables into something coherent. this is a current belief about the right granularity, intended to evolve as coordination matures.
+
+Lattice is agnostic about how you use these tiers. different teams, different agents, different schools of thought about how to break down work — all valid. the primitives are neutral. the hierarchy is available, not imposed. some will use all three tiers religiously. some will use flat tasks and nothing else. the system accommodates both because the event log records what happened regardless of how you choose to organize it.
 
 the event log doesn't care what things are called — categories are configuration, events are permanent. all structures shall change. the events that recorded them will not.
 
