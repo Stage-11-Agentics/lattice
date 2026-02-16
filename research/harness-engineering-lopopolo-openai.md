@@ -8,9 +8,20 @@
 
 ## Executive Summary
 
-OpenAI built and shipped an internal beta product with **zero manually-written code** over five months. Every line — application logic, tests, CI, docs, observability, internal tooling — was written by Codex agents. ~1 million lines of code, ~1,500 PRs, 3 engineers initially (3.5 PRs/engineer/day), throughput increasing as team grew to 7.
+OpenAI built and shipped an internal beta product with **zero manually-written code** over five months (late August 2025 — Feb 2026). Every line — application logic, tests, CI, docs, observability, internal tooling — was written by Codex agents. The first commit to an empty repo was agent-generated. Even the initial AGENTS.md was written by Codex.
+
+**By the numbers:**
+- ~1 million lines of code
+- ~1,500 pull requests opened and merged
+- 3 engineers initially → 7 at time of writing
+- 3.5 PRs per engineer per day (throughput *increased* as team grew)
+- Estimated 1/10th the time of hand-writing
+- Hundreds of internal users, including daily power users
+- Product has external alpha testers — it ships, deploys, breaks, and gets fixed
 
 The central thesis: when agents write all the code, the engineer's job shifts from *writing code* to **designing environments, specifying intent, and building feedback loops** that allow agents to do reliable work.
+
+Core philosophy: **"No manually-written code."** This was an intentional constraint to force the team to build what was necessary for orders-of-magnitude velocity gains.
 
 ---
 
@@ -20,9 +31,16 @@ The central thesis: when agents write all the code, the engineer's job shifts fr
 
 The bottleneck was never agent capability — it was that the environment was underspecified. The primary job became **enabling agents to do useful work**:
 
-- Break larger goals into smaller building blocks
-- When something fails, ask: "what capability is missing, and how do we make it both legible and enforceable for the agent?"
+- **Working depth-first:** Break larger goals into smaller building blocks, prompt the agent to construct each block, use those to unlock more complex tasks
+- When something fails, the fix is almost never "try harder" — instead ask: "what capability is missing, and how do we make it both legible and enforceable for the agent?"
 - Humans steer. Agents execute.
+
+**How humans interact with the system:**
+- Almost entirely through prompts — describe a task, run the agent, allow it to open a PR
+- To drive a PR to completion: instruct Codex to review its own changes locally, request additional agent reviews (local and cloud), respond to feedback, iterate in a loop until all reviewers are satisfied
+- They explicitly reference this as a **"Ralph Wiggum Loop"** — iterate until all agent reviewers are satisfied (*Note: this is the same term used in our own global CLAUDE.md for autonomous iteration loops*)
+- Codex uses standard dev tools directly: `gh`, local scripts, repository-embedded skills — no special interfaces
+- **Humans may review PRs but aren't required to.** Over time, nearly all review effort shifted to agent-to-agent
 
 ### 2. Repository Knowledge as System of Record
 
@@ -89,7 +107,8 @@ Key properties:
 Agents work best in environments with strict boundaries and predictable structure:
 
 - Rigid architectural model: each domain has fixed layers (Types -> Config -> Repo -> Service -> Runtime -> UI)
-- Dependency directions are strictly validated
+- Dependency directions are strictly validated — only "forward" through the layer stack
+- Cross-cutting concerns (auth, connectors, telemetry, feature flags) enter through a single explicit interface: **Providers**
 - Custom linters (written by Codex) enforce invariants
 - Linter error messages include **remediation instructions** injected into agent context
 - Enforce boundaries centrally, allow autonomy locally
@@ -101,6 +120,15 @@ Key invariants enforced:
 - Platform-specific reliability requirements
 - Parse data shapes at boundaries (not prescriptive on how — Codex chose Zod)
 
+**The taste-to-code feedback pipeline:**
+Human taste is fed back into the system continuously. The progression is:
+1. **Review comments** on PRs capture human judgment
+2. **Refactoring PRs** encode fixes to patterns
+3. **Documentation updates** codify the rule
+4. **When docs fall short, promote the rule into code** (lints, structural tests)
+
+This means human taste is captured once, then enforced continuously on every line of code. Rules that start as suggestions eventually become mechanical enforcement.
+
 ### 6. Agent Legibility as Primary Design Goal
 
 Code is optimized for **agent legibility first**, not human aesthetic preferences:
@@ -108,7 +136,9 @@ Code is optimized for **agent legibility first**, not human aesthetic preference
 - Favor dependencies that can be fully internalized and reasoned about in-repo
 - "Boring" technologies are better — composable, stable APIs, well-represented in training data
 - Sometimes cheaper to reimplement than work around opaque upstream behavior
-- Example: built own concurrency helper instead of using generic library, tightly integrated with their OpenTelemetry instrumentation
+- Example: built own concurrency helper instead of using generic library, tightly integrated with their OpenTelemetry instrumentation, 100% test coverage, behaves exactly as their runtime expects
+
+**The onboarding analogy:** Giving an agent context is like onboarding a new teammate — you'd share product principles, engineering norms, and team culture (emoji preferences included). The same information, when given to agents, leads to better-aligned output. The resulting code may not match human stylistic preferences, and that's OK — as long as it's correct, maintainable, and legible to future agent runs.
 
 ### 7. Making the Application Directly Inspectable
 
@@ -120,7 +150,22 @@ As throughput increased, bottleneck shifted to human QA. Solution: make the app 
 - Stacks tear down after task completion
 - Single Codex runs regularly work **6+ hours** on a single task (often while humans sleep)
 
-### 8. Full End-to-End Agent Autonomy
+### 8. What "Agent-Generated" Actually Means
+
+When they say zero human-written code, they mean *everything*:
+
+- Product code and tests
+- CI configuration and release tooling
+- Internal developer tools
+- Documentation and design history
+- Evaluation harnesses
+- Review comments and responses
+- Scripts that manage the repository itself
+- Production dashboard definition files
+
+Humans prioritize work, translate user feedback into acceptance criteria, and validate outcomes. When the agent struggles, they treat it as a signal — identify what's missing (tools, guardrails, docs), then have Codex write the fix. The human never writes the code, even for the tooling that helps the agent write better code.
+
+### 9. Full End-to-End Agent Autonomy (The Closed Loop)
 
 At maturity, given a single prompt, Codex can:
 
@@ -136,7 +181,7 @@ At maturity, given a single prompt, Codex can:
 10. Escalate to human only when judgment is required
 11. Merge the change
 
-### 9. Entropy Management ("Garbage Collection")
+### 10. Entropy Management ("Garbage Collection")
 
 Agents replicate patterns that exist — including suboptimal ones. This creates drift.
 
@@ -150,7 +195,7 @@ Agents replicate patterns that exist — including suboptimal ones. This creates
   2. No "YOLO-style" data probing — validate at boundaries or use typed SDKs
 - Technical debt treated like a high-interest loan — continuous small payments, never let it compound
 
-### 10. Doc-Gardening Agent
+### 11. Doc-Gardening Agent
 
 A recurring agent process that:
 - Scans for stale or obsolete documentation
@@ -158,7 +203,7 @@ A recurring agent process that:
 - Opens fix-up PRs automatically
 - Keeps the knowledge base fresh without human maintenance burden
 
-### 11. Merge Philosophy at Scale
+### 12. Merge Philosophy at Scale
 
 Conventional engineering norms became counterproductive at high throughput:
 
@@ -168,7 +213,7 @@ Conventional engineering norms became counterproductive at high throughput:
 - Corrections are cheap, waiting is expensive
 - Would be irresponsible in low-throughput; right tradeoff at agent scale
 
-### 12. Open Questions (Their Honest Unknowns)
+### 13. Open Questions (Their Honest Unknowns)
 
 - How does architectural coherence evolve over **years** in a fully agent-generated system?
 - Where does human judgment add the most leverage?
@@ -191,7 +236,7 @@ Conventional engineering norms became counterproductive at high throughput:
 
 ---
 
-## Quotable Insight
+## Key Insight
 
 The discipline shows up more in the scaffolding rather than the code.
 
