@@ -388,3 +388,46 @@ Additional review findings that shaped this decision:
 - New `/api/graph` endpoint reads full task snapshots; uses ETag for efficient polling
 - 3D visualization deferred to v1.5 as a progressive enhancement
 - Mobile gets a notice banner; accessibility relies on Board/List views as alternatives
+
+---
+
+## 2026-02-16: Field Guides and Runsheets — agent-facing operational primitives
+
+**Decision:** Introduce two new convention-based artifacts in `.lattice/`: **Field Guides** (`.lattice/field-guides/<surface>.md`) describe the anatomy of an interaction surface, and **Runsheets** (`.lattice/runsheets/<surface>.md`) describe critical flows through that surface. Both are scoped per non-CLI interaction surface (web UI, iOS app, Android app).
+
+**Context:** When a test agent, demo agent, or monitoring agent needs to operate a visual/interactive surface (browser, iOS simulator, Android emulator), it currently has to explore from scratch — burning tokens on discovery that a previous agent already completed. CLI surfaces don't have this problem (`--help` and CLAUDE.md cover them). The gap is visual surfaces mediated by MCP tools (Claude-in-Chrome, iOS Simulator MCP, Mobile MCP).
+
+**What each primitive is:**
+- **Field Guide** = the territory. Surface anatomy: how to connect (which MCP, what URL, launch sequence), what every view/screen contains, what controls exist, known bugs, interaction tips for agents. Relatively stable — changes when the UI changes.
+- **Runsheet** = the critical paths. Ordered sequences through the surface that matter, with context on *why* they matter, expected behavior, and what to watch for. Inspired by Maestro-style flow testing but in plain English — the agent *is* the test runner. More operationally volatile than the field guide.
+
+**Key properties:**
+- **Agent-generated, agent-consumed.** An agent explores the surface and writes the guide. Future agents read it to bootstrap. Humans can read them too, but they're optimized for agent consumption.
+- **Per interaction surface.** A project with a web dashboard and an iOS app gets `dashboard.md` and `ios-app.md` in each directory.
+- **Living documents.** Updated when the surface changes. Mutable, not append-only.
+- **Convention files, not schema-enforced.** Like `context.md` — no CLI commands, no JSON schema, no validation. Just a known directory and naming convention.
+- **Runsheet cross-references its field guide.** The runsheet opens with "Read the field guide first."
+
+**Naming rationale:** "Field Guide" — a reference you take into unfamiliar territory, written by someone who's already explored it. Naturally scoped ("the dashboard field guide"), plain English, not overloaded with existing tech meaning. "Runsheet" — production/broadcast term for ordered sequences of what happens and when, fitting for critical flow descriptions.
+
+**On-disk layout:**
+```
+.lattice/
+  field-guides/
+    dashboard.md
+    ios-app.md
+  runsheets/
+    dashboard.md
+    ios-app.md
+```
+
+**Rationale:**
+- Turns exploration tokens into a one-time authoring cost. A Sonnet-class model reading a field guide can do what an Opus model would need 10 minutes of exploration to figure out. That's the economic argument.
+- No new infrastructure needed. Uses existing Lattice conventions (markdown files in `.lattice/`, freeform, non-authoritative).
+- Separating anatomy (field guide) from flows (runsheet) mirrors the separation between understanding a system and operating it. Different update cadences, different consumers.
+
+**Consequences:**
+- `lattice init` should create these directories (future work).
+- Agents updating a surface should be prompted to update the field guide (convention, not enforced).
+- The first instances (dashboard field guide + runsheet) are written and serve as the template for future surfaces.
+- No CLI commands in v0. Field guides and runsheets are direct file edits, like notes.
