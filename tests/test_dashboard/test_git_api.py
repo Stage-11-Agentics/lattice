@@ -12,6 +12,7 @@ import os
 import socket
 import subprocess
 import threading
+import time
 from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import quote
@@ -21,6 +22,10 @@ import pytest
 
 from lattice.core.config import default_config, serialize_config
 from lattice.dashboard.git_reader import (
+    CACHE_TTL_SECONDS,
+    _prune_expired_cache,
+    _summary_cache,
+    _validate_branch_name,
     extract_task_refs,
     find_git_root,
     get_branches,
@@ -564,3 +569,133 @@ class TestGitApiRouting:
         finally:
             server.shutdown()
             server.server_close()
+
+
+# ---------------------------------------------------------------------------
+# Tests for code review fixes
+# ---------------------------------------------------------------------------
+
+
+class TestETagIncludesCurrentBranch:
+    """ETag must change when the checked-out branch changes, even if branch
+    tips stay the same."""
+
+    def test_etag_changes_on_branch_switch(self, lattice_in_git_repo: Path, git_repo: Path):
+        # Get ETag on main
+        summary1, etag1 = get_git_summary(lattice_in_git_repo)
+        assert summary1["current_branch"] == "main"
+        assert etag1 != ""
+
+        # Switch to feature branch (tips unchanged)
+        invalidate_cache()
+        subprocess.run(
+            ["git", "checkout", "feat/LAT-42-login"],
+            cwd=str(git_repo),
+            check=True,
+            capture_output=True,
+        )
+
+        summary2, etag2 = get_git_summary(lattice_in_git_repo)
+        assert summary2["current_branch"] == "feat/LAT-42-login"
+
+        # ETags MUST differ because current_branch changed
+        assert etag1 != etag2
+
+    def test_etag_changes_on_remote_url_change(self, lattice_in_git_repo: Path, git_repo: Path):
+        summary1, etag1 = get_git_summary(lattice_in_git_repo)
+        invalidate_cache()
+
+        # Add a remote
+        subprocess.run(
+            ["git", "remote", "add", "origin", "https://github.com/example/repo.git"],
+            cwd=str(git_repo),
+            check=True,
+            capture_output=True,
+        )
+
+        summary2, etag2 = get_git_summary(lattice_in_git_repo)
+        assert etag1 != etag2
+
+
+class TestBranchNameInjection:
+    """Branch names starting with '-' must be rejected to prevent git argument
+    injection."""
+
+    def test_validate_branch_name_normal(self):
+        assert _validate_branch_name("main") is True
+        assert _validate_branch_name("feat/foo") is True
+
+    def test_validate_branch_name_rejects_flags(self):
+        assert _validate_branch_name("--all") is False
+        assert _validate_branch_name("-v") is False
+        assert _validate_branch_name("--exec=whoami") is False
+
+    def test_validate_branch_name_rejects_empty(self):
+        assert _validate_branch_name("") is False
+
+    def test_get_recent_commits_rejects_flag(self, git_repo: Path):
+        """get_recent_commits returns [] for flag-like branch names."""
+        commits = get_recent_commits(git_repo, "--all")
+        assert commits == []
+
+    def test_server_rejects_flag_branch(self, lattice_in_git_repo: Path):
+        """The HTTP endpoint returns 400 for flag-like branch names."""
+        base_url, server = _start_server(lattice_in_git_repo)
+        try:
+            status, body, _hdrs = _get(base_url, "/api/git/branches/--all/commits")
+            assert status == 400
+            assert body["ok"] is False
+            assert "VALIDATION_ERROR" in body["error"]["code"]
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_server_rejects_dash_v_branch(self, lattice_in_git_repo: Path):
+        base_url, server = _start_server(lattice_in_git_repo)
+        try:
+            status, body, _hdrs = _get(base_url, "/api/git/branches/-v/commits")
+            assert status == 400
+            assert body["ok"] is False
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
+class TestCacheEviction:
+    """Expired entries must be pruned from the cache to prevent unbounded growth."""
+
+    def test_prune_removes_expired_entries(self):
+        """Manually insert an expired cache entry and verify it gets pruned."""
+        invalidate_cache()
+
+        # Insert a cache entry with a timestamp well in the past
+        old_time = time.monotonic() - CACHE_TTL_SECONDS - 100
+        _summary_cache["/fake/repo1"] = (old_time, "etag1", {"available": True})
+        _summary_cache["/fake/repo2"] = (old_time, "etag2", {"available": True})
+
+        # Insert a fresh entry
+        fresh_time = time.monotonic()
+        _summary_cache["/fake/repo3"] = (fresh_time, "etag3", {"available": True})
+
+        assert len(_summary_cache) == 3
+
+        _prune_expired_cache()
+
+        # Expired entries removed, fresh entry kept
+        assert "/fake/repo1" not in _summary_cache
+        assert "/fake/repo2" not in _summary_cache
+        assert "/fake/repo3" in _summary_cache
+        assert len(_summary_cache) == 1
+
+    def test_get_git_summary_prunes_on_access(self, lattice_in_git_repo: Path):
+        """get_git_summary should prune stale entries from other repos."""
+        invalidate_cache()
+
+        # Plant a stale entry for a different repo
+        old_time = time.monotonic() - CACHE_TTL_SECONDS - 100
+        _summary_cache["/stale/repo"] = (old_time, "old_etag", {"available": True})
+
+        # Call get_git_summary, which should prune the stale entry
+        get_git_summary(lattice_in_git_repo)
+
+        assert "/stale/repo" not in _summary_cache

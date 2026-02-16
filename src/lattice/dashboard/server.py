@@ -454,6 +454,7 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
             from urllib.parse import unquote
 
             from lattice.dashboard.git_reader import (
+                _validate_branch_name,
                 find_git_root,
                 get_recent_commits,
                 git_available,
@@ -465,6 +466,14 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
 
             # URL-decode the branch name (e.g., %2F -> /)
             branch_name = unquote(branch_name)
+
+            # Reject branch names that could be interpreted as git flags
+            if not _validate_branch_name(branch_name):
+                self._send_json(
+                    400,
+                    _err("VALIDATION_ERROR", "Invalid branch name"),
+                )
+                return
 
             if not git_available():
                 self._send_json(

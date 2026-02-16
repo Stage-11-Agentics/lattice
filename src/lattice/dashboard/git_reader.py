@@ -130,6 +130,14 @@ def get_branches(repo_root: Path) -> list[dict[str, Any]]:
     return branches
 
 
+def _validate_branch_name(name: str) -> bool:
+    """Return True if *name* is safe to pass to git as a branch/revision argument.
+
+    Rejects names starting with ``-`` to prevent argument injection.
+    """
+    return bool(name) and not name.startswith("-")
+
+
 def get_recent_commits(
     repo_root: Path,
     branch: str,
@@ -140,7 +148,13 @@ def get_recent_commits(
 
     Each dict has: ``hash``, ``short_hash``, ``subject``, ``body``,
     ``author_name``, ``author_email``, ``date``, ``task_refs``.
+
+    Returns an empty list if *branch* looks like a git flag (starts with
+    ``-``) to prevent argument injection.
     """
+    if not _validate_branch_name(branch):
+        return []
+
     # Use %x00 as field separator, %x01 as record separator
     fmt = "%H%x00%h%x00%s%x00%b%x00%an%x00%ae%x00%aI%x01"
     try:
@@ -252,10 +266,32 @@ _summary_cache: dict[str, tuple[float, str, dict[str, Any]]] = {}
 # Each entry: (timestamp, etag, summary_dict)
 
 
+def _prune_expired_cache() -> None:
+    """Remove all expired entries from the summary cache.
+
+    Called on each cache read/write to prevent unbounded growth.
+    """
+    now = time.monotonic()
+    expired = [
+        k for k, (ts, _, _) in _summary_cache.items()
+        if now - ts > CACHE_TTL_SECONDS
+    ]
+    for k in expired:
+        del _summary_cache[k]
+
+
 def _compute_etag(summary: dict[str, Any]) -> str:
-    """Compute an ETag from the summary's branch data."""
-    # Build a deterministic fingerprint from branch names + tip hashes
-    parts: list[str] = []
+    """Compute an ETag from all fields that affect the ``/api/git`` response.
+
+    Includes ``current_branch``, ``remote_url``, ``commit_count``, and
+    per-branch name + tip hash so that *any* change in the response payload
+    invalidates the ETag.
+    """
+    parts: list[str] = [
+        f"current_branch={summary.get('current_branch', '')}",
+        f"remote_url={summary.get('remote_url', '')}",
+        f"commit_count={summary.get('commit_count', '')}",
+    ]
     for b in summary.get("branches", []):
         parts.append(f"{b['name']}:{b['commit_hash']}")
     raw = "|".join(parts)
@@ -288,6 +324,9 @@ def get_git_summary(lattice_dir: Path) -> tuple[dict[str, Any], str]:
 
     cache_key = str(repo_root)
     now = time.monotonic()
+
+    # Prune expired entries to prevent unbounded growth
+    _prune_expired_cache()
 
     # Check cache
     if cache_key in _summary_cache:
