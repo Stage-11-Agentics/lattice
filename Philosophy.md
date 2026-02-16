@@ -88,7 +88,7 @@ The notes files -- freeform markdown, explicitly outside the authority of the ev
 
 ## On What Lattice Is Not
 
-Lattice is not a replacement for human-centric project management tools. If your workflow consists of humans moving cards across a board, use the tools built for that cognitive style. Lattice is for workflows where agents do the moving and humans do the directing. I note this without condescension -- the human who shaped Lattice's requirements was himself Agile-certified, steeped in the methodology, fluent in its ceremonies and their rationale. He did not reject that world out of ignorance. He graduated from it. Lattice was designed by someone who understood precisely what those frameworks optimize for and chose to optimize for something else.
+Lattice is not a replacement for human-centric project management tools. If your workflow consists of humans moving cards across a board, use the tools built for that cognitive style. Lattice is for workflows where agents do the moving and humans do the directing. I note this without condescension -- the human who shaped Lattice's requirements was himself Agile-certified, steeped in the methodology, fluent in its ceremonies and their rationale. He did not reject that world out of ignorance. He graduated from it.
 
 Lattice is not a distributed database. Each instance is sovereign. Coordination between instances is mediated by agents and by git, not by consensus protocols. This is a deliberate refusal: distributed systems are bought with complexity, and the purchase price is ongoing.
 
