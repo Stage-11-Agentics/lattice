@@ -1,0 +1,844 @@
+<!-- Section 3: Charts & Visualization (items 4, 5, 8, 16, 27) -->
+<style>
+  /* ── Section 3 Scoped Styles ── */
+  #group-3 .sparkline-card {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px 20px;
+    transition: background 0.2s;
+  }
+  #group-3 .sparkline-card:hover {
+    background: var(--bg-card-hover);
+  }
+  #group-3 .sparkline-label {
+    min-width: 140px;
+  }
+  #group-3 .sparkline-label .spark-title {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin-bottom: 4px;
+  }
+  #group-3 .sparkline-label .spark-value {
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--text-primary);
+  }
+  #group-3 .sparkline-label .spark-value .spark-unit {
+    font-size: 13px;
+    font-weight: 400;
+    color: var(--text-muted);
+    margin-left: 2px;
+  }
+  #group-3 .sparkline-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 8px;
+  }
+
+  /* Cumulative Flow */
+  #group-3 .cfd-container {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+  }
+  #group-3 .cfd-container svg {
+    width: 100%;
+    height: 250px;
+    display: block;
+  }
+  #group-3 .cfd-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+  }
+  #group-3 .cfd-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+  #group-3 .cfd-legend-item .cfd-swatch {
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+    flex-shrink: 0;
+  }
+
+  /* Donut Chart */
+  #group-3 .donut-layout {
+    display: flex;
+    align-items: center;
+    gap: 40px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 24px;
+  }
+  #group-3 .donut-svg-wrap {
+    flex-shrink: 0;
+    position: relative;
+  }
+  #group-3 .donut-svg-wrap svg {
+    display: block;
+  }
+  #group-3 .donut-legend {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  #group-3 .donut-legend-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+    color: var(--text-secondary);
+    padding: 4px 8px;
+    border-radius: 6px;
+    transition: background 0.15s;
+  }
+  #group-3 .donut-legend-row:hover {
+    background: var(--bg-card-hover);
+  }
+  #group-3 .donut-legend-row .dl-swatch {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  #group-3 .donut-legend-row .dl-name {
+    flex: 1;
+    color: var(--text-primary);
+    font-weight: 500;
+  }
+  #group-3 .donut-legend-row .dl-count {
+    font-variant-numeric: tabular-nums;
+    color: var(--text-primary);
+    font-weight: 600;
+    min-width: 20px;
+    text-align: right;
+  }
+  #group-3 .donut-legend-row .dl-pct {
+    font-variant-numeric: tabular-nums;
+    color: var(--text-muted);
+    min-width: 40px;
+    text-align: right;
+  }
+  #group-3 .donut-tooltip {
+    position: fixed;
+    pointer-events: none;
+    background: #0f1117ee;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 12px;
+    color: var(--text-primary);
+    z-index: 1000;
+    opacity: 0;
+    transition: opacity 0.15s;
+    white-space: nowrap;
+  }
+  #group-3 .donut-tooltip.visible {
+    opacity: 1;
+  }
+
+  /* Burndown / Completion Rate */
+  #group-3 .burndown-container {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+  }
+  #group-3 .burndown-container svg {
+    width: 100%;
+    height: 220px;
+    display: block;
+  }
+  #group-3 .burndown-legend {
+    display: flex;
+    gap: 20px;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+  #group-3 .burndown-legend span {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  #group-3 .burndown-legend .bl-line {
+    width: 20px;
+    height: 2px;
+    border-radius: 1px;
+  }
+
+  /* Baseline / Goal bars */
+  #group-3 .baseline-container {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+  }
+  #group-3 .baseline-container svg {
+    width: 100%;
+    height: 200px;
+    display: block;
+  }
+  #group-3 .baseline-legend {
+    display: flex;
+    gap: 20px;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+  #group-3 .baseline-legend span {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  /* Donut animation */
+  @keyframes donut-draw {
+    from { stroke-dashoffset: var(--circumference); }
+    to   { stroke-dashoffset: var(--final-offset); }
+  }
+</style>
+
+<div class="demo-group" id="group-3">
+  <h2 class="demo-group-title">Section 3 &mdash; Charts &amp; Visualization</h2>
+
+  <!-- ====== Item 4: Velocity Sparklines ====== -->
+  <div class="demo-item" id="item-4">
+    <div class="demo-item-header">
+      <span class="demo-item-number">&#9315;</span>
+      <h3>Velocity Sparklines</h3>
+      <span class="demo-item-tag">Charts</span>
+    </div>
+    <div class="demo-item-body">
+      <div class="sparkline-row">
+        <!-- Velocity Card -->
+        <div class="sparkline-card">
+          <div class="sparkline-label">
+            <div class="spark-title">Velocity</div>
+            <div class="spark-value">3<span class="spark-unit">/wk</span></div>
+          </div>
+          <svg id="spark-velocity" width="200" height="40" viewBox="0 0 200 40"></svg>
+        </div>
+        <!-- Throughput Card -->
+        <div class="sparkline-card">
+          <div class="sparkline-label">
+            <div class="spark-title">Throughput</div>
+            <div class="spark-value">26<span class="spark-unit"> created</span> / 23<span class="spark-unit"> done</span></div>
+          </div>
+          <svg id="spark-throughput" width="200" height="40" viewBox="0 0 200 40"></svg>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ====== Item 5: Cumulative Flow Diagram ====== -->
+  <div class="demo-item" id="item-5">
+    <div class="demo-item-header">
+      <span class="demo-item-number">&#9316;</span>
+      <h3>Cumulative Flow Diagram</h3>
+      <span class="demo-item-tag">Charts</span>
+    </div>
+    <div class="demo-item-body">
+      <div class="cfd-container">
+        <svg id="cfd-chart" viewBox="0 0 700 250" preserveAspectRatio="xMidYMid meet"></svg>
+        <div class="cfd-legend" id="cfd-legend"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ====== Item 8: Donut Chart ====== -->
+  <div class="demo-item" id="item-8">
+    <div class="demo-item-header">
+      <span class="demo-item-number">&#9319;</span>
+      <h3>Status Distribution Donut</h3>
+      <span class="demo-item-tag">Charts</span>
+    </div>
+    <div class="demo-item-body">
+      <div class="donut-layout">
+        <div class="donut-svg-wrap">
+          <svg id="donut-chart" width="200" height="200" viewBox="0 0 200 200"></svg>
+        </div>
+        <div class="donut-legend" id="donut-legend"></div>
+      </div>
+      <div class="donut-tooltip" id="donut-tooltip"></div>
+    </div>
+  </div>
+
+  <!-- ====== Item 16: Completion Rate / Burndown ====== -->
+  <div class="demo-item" id="item-16">
+    <div class="demo-item-header">
+      <span class="demo-item-number">&#9327;</span>
+      <h3>Completion Rate / Burndown</h3>
+      <span class="demo-item-tag">Charts</span>
+    </div>
+    <div class="demo-item-body">
+      <div class="burndown-container">
+        <svg id="burndown-chart" viewBox="0 0 600 220" preserveAspectRatio="xMidYMid meet"></svg>
+        <div class="burndown-legend">
+          <span><span class="bl-line" style="background:#3b82f6;border-top:2px dashed #3b82f6;height:0"></span> Created (cumulative)</span>
+          <span><span class="bl-line" style="background:#22c55e"></span> Completed (cumulative)</span>
+          <span><span class="bl-line" style="background:rgba(239,68,68,0.15);border:1px solid rgba(239,68,68,0.3);width:16px;height:10px;border-radius:2px"></span> Open backlog gap</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ====== Item 27: Baseline/Goal Lines ====== -->
+  <div class="demo-item" id="item-27">
+    <div class="demo-item-header">
+      <span class="demo-item-number">&#12887;</span>
+      <h3>Baseline / Goal Lines</h3>
+      <span class="demo-item-tag">Charts</span>
+    </div>
+    <div class="demo-item-body">
+      <div class="baseline-container">
+        <svg id="baseline-chart" viewBox="0 0 600 200" preserveAspectRatio="xMidYMid meet"></svg>
+        <div class="baseline-legend">
+          <span><span style="display:inline-block;width:16px;height:10px;border-radius:2px;background:#22c55e"></span> At or above target</span>
+          <span><span style="display:inline-block;width:16px;height:10px;border-radius:2px;background:#f59e0b"></span> Below target</span>
+          <span><span style="display:inline-block;width:20px;height:0;border-top:2px dashed rgba(255,255,255,0.5)"></span> Target velocity (4/wk)</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function() {
+  "use strict";
+
+  /* ─── Helpers ─── */
+  const SVG_NS = "http://www.w3.org/2000/svg";
+  function svgEl(tag, attrs, parent) {
+    const el = document.createElementNS(SVG_NS, tag);
+    for (const [k, v] of Object.entries(attrs || {})) el.setAttribute(k, v);
+    if (parent) parent.appendChild(el);
+    return el;
+  }
+
+  /* ================================================================
+     ④  Velocity Sparklines
+     ================================================================ */
+  function drawSparkline(svgId, datasets) {
+    const svg = document.getElementById(svgId);
+    if (!svg) return;
+    const W = 200, H = 40, padX = 4, padY = 4;
+
+    // subtle grid
+    for (let y = padY; y <= H - padY; y += (H - 2 * padY) / 4) {
+      svgEl("line", { x1: padX, y1: y, x2: W - padX, y2: y,
+        stroke: "rgba(255,255,255,0.04)", "stroke-width": 0.5 }, svg);
+    }
+
+    const allVals = datasets.flatMap(d => d.data);
+    const maxVal = Math.max(...allVals, 1);
+
+    datasets.forEach(function(ds) {
+      const pts = ds.data.map(function(v, i) {
+        const x = padX + (i / (ds.data.length - 1)) * (W - 2 * padX);
+        const y = H - padY - (v / maxVal) * (H - 2 * padY);
+        return [x, y];
+      });
+
+      // fill area
+      const areaPath = "M" + pts.map(p => p.join(",")).join("L") +
+        "L" + pts[pts.length - 1][0] + "," + (H - padY) +
+        "L" + pts[0][0] + "," + (H - padY) + "Z";
+      svgEl("path", { d: areaPath, fill: ds.color, opacity: "0.1" }, svg);
+
+      // line
+      svgEl("polyline", {
+        points: pts.map(p => p.join(",")).join(" "),
+        fill: "none", stroke: ds.color, "stroke-width": 1.5,
+        "stroke-linecap": "round", "stroke-linejoin": "round"
+      }, svg);
+
+      // end dot
+      const last = pts[pts.length - 1];
+      svgEl("circle", { cx: last[0], cy: last[1], r: 2.5, fill: ds.color }, svg);
+
+      // end label
+      svgEl("text", {
+        x: last[0] - 8, y: last[1] - 6,
+        fill: ds.color, "font-size": "9", "font-weight": "600",
+        "font-family": "Inter, system-ui, sans-serif"
+      }, svg).textContent = ds.data[ds.data.length - 1];
+    });
+  }
+
+  const completedPerWeek = [2, 3, 1, 4, 2, 5, 3, 3];
+  const createdPerWeek = [3, 2, 4, 3, 5, 2, 4, 3];
+
+  drawSparkline("spark-velocity", [
+    { data: completedPerWeek, color: "#22c55e" }
+  ]);
+  drawSparkline("spark-throughput", [
+    { data: createdPerWeek, color: "#3b82f6" },
+    { data: completedPerWeek, color: "#22c55e" }
+  ]);
+
+
+  /* ================================================================
+     ⑤  Cumulative Flow Diagram
+     ================================================================ */
+  (function drawCFD() {
+    const svg = document.getElementById("cfd-chart");
+    if (!svg) return;
+
+    const rawData = {
+      done:        [2,  4,  5,  7,  8, 10, 12, 14, 16, 18, 20, 23],
+      review:      [1,  2,  2,  1,  3,  2,  2,  3,  2,  3,  3,  3],
+      in_progress: [3,  3,  4,  4,  3,  4,  5,  4,  5,  5,  5,  5],
+      planned:     [4,  5,  5,  6,  7,  6,  5,  6,  7,  6,  6,  6],
+      in_planning: [2,  2,  3,  2,  2,  2,  1,  2,  2,  2,  2,  2],
+      backlog:     [5,  5,  4,  5,  5,  6,  5,  4,  4,  4,  4,  4]
+    };
+
+    const statusOrder = ["done", "review", "in_progress", "planned", "in_planning", "backlog"];
+    const statusColors = {
+      done: "#22c55e", review: "#f59e0b", in_progress: "#3b82f6",
+      planned: "#818cf8", in_planning: "#a78bfa", backlog: "#64748b"
+    };
+    const statusLabels = {
+      done: "Done", review: "Review", in_progress: "In Progress",
+      planned: "Planned", in_planning: "In Planning", backlog: "Backlog"
+    };
+
+    const weeks = 12;
+    const W = 700, H = 250;
+    const padL = 40, padR = 16, padT = 16, padB = 30;
+    const chartW = W - padL - padR;
+    const chartH = H - padT - padB;
+
+    // Compute cumulative stacks: each status stacks on top of the previous
+    const stacks = {};
+    let cumulative = new Array(weeks).fill(0);
+    statusOrder.forEach(function(s) {
+      const bottom = cumulative.slice();
+      const top = cumulative.map(function(c, i) { return c + rawData[s][i]; });
+      stacks[s] = { bottom: bottom, top: top };
+      cumulative = top;
+    });
+
+    const maxY = Math.max(...cumulative);
+
+    function xPos(i) { return padL + (i / (weeks - 1)) * chartW; }
+    function yPos(v) { return padT + chartH - (v / maxY) * chartH; }
+
+    // Grid lines
+    const gridSteps = 5;
+    for (let g = 0; g <= gridSteps; g++) {
+      const val = Math.round((maxY / gridSteps) * g);
+      const y = yPos(val);
+      svgEl("line", {
+        x1: padL, y1: y, x2: W - padR, y2: y,
+        stroke: "rgba(255,255,255,0.05)", "stroke-width": 0.5
+      }, svg);
+      svgEl("text", {
+        x: padL - 6, y: y + 3, fill: "#64748b",
+        "font-size": "10", "text-anchor": "end",
+        "font-family": "Inter, system-ui, sans-serif"
+      }, svg).textContent = val;
+    }
+
+    // X axis labels
+    for (let i = 0; i < weeks; i++) {
+      svgEl("text", {
+        x: xPos(i), y: H - 6, fill: "#64748b",
+        "font-size": "10", "text-anchor": "middle",
+        "font-family": "Inter, system-ui, sans-serif"
+      }, svg).textContent = "W" + (i + 1);
+    }
+
+    // Build smooth bezier paths for each stacked area
+    function bezierPoints(pts) {
+      if (pts.length < 2) return "";
+      let d = "M" + pts[0][0] + "," + pts[0][1];
+      for (let i = 0; i < pts.length - 1; i++) {
+        const cx = (pts[i][0] + pts[i + 1][0]) / 2;
+        d += "C" + cx + "," + pts[i][1] + " " + cx + "," + pts[i + 1][1] + " " + pts[i + 1][0] + "," + pts[i + 1][1];
+      }
+      return d;
+    }
+
+    // Draw from top to bottom so top layers draw over bottom
+    for (let si = statusOrder.length - 1; si >= 0; si--) {
+      const s = statusOrder[si];
+      const st = stacks[s];
+      const topPts = [];
+      const botPts = [];
+      for (let i = 0; i < weeks; i++) {
+        topPts.push([xPos(i), yPos(st.top[i])]);
+        botPts.push([xPos(i), yPos(st.bottom[i])]);
+      }
+
+      const topPath = bezierPoints(topPts);
+      const botReversed = botPts.slice().reverse();
+      const botPath = bezierPoints(botReversed).replace("M", "L");
+
+      svgEl("path", {
+        d: topPath + botPath + "Z",
+        fill: statusColors[s],
+        opacity: "0.7"
+      }, svg);
+
+      // Top border line
+      svgEl("path", {
+        d: topPath, fill: "none",
+        stroke: statusColors[s], "stroke-width": 1.5, opacity: "0.9"
+      }, svg);
+    }
+
+    // Legend
+    const legendEl = document.getElementById("cfd-legend");
+    statusOrder.slice().reverse().forEach(function(s) {
+      const item = document.createElement("div");
+      item.className = "cfd-legend-item";
+      item.innerHTML = '<span class="cfd-swatch" style="background:' + statusColors[s] + '"></span>' + statusLabels[s];
+      legendEl.appendChild(item);
+    });
+  })();
+
+
+  /* ================================================================
+     ⑧  Donut Chart
+     ================================================================ */
+  (function drawDonut() {
+    const svg = document.getElementById("donut-chart");
+    const legendEl = document.getElementById("donut-legend");
+    const tooltip = document.getElementById("donut-tooltip");
+    if (!svg) return;
+
+    const segments = [
+      { name: "backlog",     count: 4, color: "#64748b" },
+      { name: "in_planning", count: 2, color: "#a78bfa" },
+      { name: "planned",     count: 6, color: "#818cf8" },
+      { name: "in_progress", count: 5, color: "#3b82f6" },
+      { name: "review",      count: 3, color: "#f59e0b" },
+      { name: "done",        count: 8, color: "#22c55e" },
+      { name: "blocked",     count: 3, color: "#ef4444" },
+      { name: "cancelled",   count: 1, color: "#6b7280" }
+    ];
+
+    const total = segments.reduce(function(s, d) { return s + d.count; }, 0);
+    const cx = 100, cy = 100, outerR = 85, innerR = 55;
+    const circumference = 2 * Math.PI * ((outerR + innerR) / 2);
+    const gapAngle = 0.012; // small gap between segments in radians
+
+    // Center text
+    svgEl("text", {
+      x: cx, y: cy - 4, fill: "#e2e8f0",
+      "font-size": "28", "font-weight": "700", "text-anchor": "middle",
+      "font-family": "Inter, system-ui, sans-serif"
+    }, svg).textContent = total;
+    svgEl("text", {
+      x: cx, y: cy + 14, fill: "#64748b",
+      "font-size": "11", "text-anchor": "middle",
+      "font-family": "Inter, system-ui, sans-serif"
+    }, svg).textContent = "active";
+
+    let currentAngle = -Math.PI / 2;
+
+    segments.forEach(function(seg, idx) {
+      const segAngle = (seg.count / total) * 2 * Math.PI;
+      const startAngle = currentAngle + gapAngle / 2;
+      const endAngle = currentAngle + segAngle - gapAngle / 2;
+      currentAngle += segAngle;
+
+      function arcPoint(angle, r) {
+        return [cx + r * Math.cos(angle), cy + r * Math.sin(angle)];
+      }
+
+      const outerStart = arcPoint(startAngle, outerR);
+      const outerEnd = arcPoint(endAngle, outerR);
+      const innerStart = arcPoint(endAngle, innerR);
+      const innerEnd = arcPoint(startAngle, innerR);
+      const largeArc = segAngle - gapAngle > Math.PI ? 1 : 0;
+
+      const d = [
+        "M", outerStart[0], outerStart[1],
+        "A", outerR, outerR, 0, largeArc, 1, outerEnd[0], outerEnd[1],
+        "L", innerStart[0], innerStart[1],
+        "A", innerR, innerR, 0, largeArc, 0, innerEnd[0], innerEnd[1],
+        "Z"
+      ].join(" ");
+
+      const midAngle = startAngle + (endAngle - startAngle) / 2;
+      const path = svgEl("path", {
+        d: d,
+        fill: seg.color,
+        style: "cursor:pointer;transition:transform 0.15s ease;transform-origin:" + cx + "px " + cy + "px",
+        opacity: "0"
+      }, svg);
+
+      // Animate in
+      var delay = idx * 80;
+      setTimeout(function() {
+        path.style.transition = "opacity 0.4s ease, transform 0.15s ease";
+        path.setAttribute("opacity", "1");
+      }, delay);
+
+      // Hover expand
+      var expandX = Math.cos(midAngle) * 4;
+      var expandY = Math.sin(midAngle) * 4;
+      path.addEventListener("mouseenter", function(e) {
+        path.style.transform = "translate(" + expandX + "px," + expandY + "px)";
+        path.setAttribute("opacity", "0.9");
+        tooltip.className = "donut-tooltip visible";
+        var pct = ((seg.count / total) * 100).toFixed(1);
+        tooltip.innerHTML = '<strong style="color:' + seg.color + '">' + seg.name.replace("_", " ") + '</strong>: ' + seg.count + ' (' + pct + '%)';
+      });
+      path.addEventListener("mousemove", function(e) {
+        tooltip.style.left = (e.clientX + 12) + "px";
+        tooltip.style.top = (e.clientY - 10) + "px";
+      });
+      path.addEventListener("mouseleave", function() {
+        path.style.transform = "translate(0,0)";
+        path.setAttribute("opacity", "1");
+        tooltip.className = "donut-tooltip";
+      });
+    });
+
+    // Legend
+    segments.forEach(function(seg) {
+      var pct = ((seg.count / total) * 100).toFixed(1);
+      var row = document.createElement("div");
+      row.className = "donut-legend-row";
+      row.innerHTML =
+        '<span class="dl-swatch" style="background:' + seg.color + '"></span>' +
+        '<span class="dl-name">' + seg.name.replace("_", " ") + '</span>' +
+        '<span class="dl-count">' + seg.count + '</span>' +
+        '<span class="dl-pct">' + pct + '%</span>';
+      legendEl.appendChild(row);
+    });
+  })();
+
+
+  /* ================================================================
+     ⑯  Completion Rate / Burndown
+     ================================================================ */
+  (function drawBurndown() {
+    const svg = document.getElementById("burndown-chart");
+    if (!svg) return;
+
+    const created    = [3, 5, 9, 12, 17, 19, 23, 26];
+    const completed  = [2, 5, 6, 10, 12, 17, 20, 23];
+    const weeks = 8;
+    const W = 600, H = 220;
+    const padL = 40, padR = 60, padT = 16, padB = 28;
+    const chartW = W - padL - padR;
+    const chartH = H - padT - padB;
+    const maxY = 30;
+
+    function xPos(i) { return padL + (i / (weeks - 1)) * chartW; }
+    function yPos(v) { return padT + chartH - (v / maxY) * chartH; }
+
+    // Grid
+    for (let g = 0; g <= 6; g++) {
+      const val = g * 5;
+      const y = yPos(val);
+      svgEl("line", {
+        x1: padL, y1: y, x2: W - padR, y2: y,
+        stroke: "rgba(255,255,255,0.05)", "stroke-width": 0.5
+      }, svg);
+      svgEl("text", {
+        x: padL - 6, y: y + 3, fill: "#64748b",
+        "font-size": "10", "text-anchor": "end",
+        "font-family": "Inter, system-ui, sans-serif"
+      }, svg).textContent = val;
+    }
+
+    // X axis
+    for (let i = 0; i < weeks; i++) {
+      svgEl("text", {
+        x: xPos(i), y: H - 4, fill: "#64748b",
+        "font-size": "10", "text-anchor": "middle",
+        "font-family": "Inter, system-ui, sans-serif"
+      }, svg).textContent = "W" + (i + 1);
+    }
+
+    // Gap fill (area between created and completed)
+    var gapPath = "M" + xPos(0) + "," + yPos(created[0]);
+    for (var i = 1; i < weeks; i++) gapPath += "L" + xPos(i) + "," + yPos(created[i]);
+    for (var i = weeks - 1; i >= 0; i--) gapPath += "L" + xPos(i) + "," + yPos(completed[i]);
+    gapPath += "Z";
+    svgEl("path", {
+      d: gapPath,
+      fill: "rgba(239,68,68,0.08)",
+      stroke: "rgba(239,68,68,0.15)",
+      "stroke-width": 0.5
+    }, svg);
+
+    // Created line (dashed blue)
+    function makePath(data) {
+      return data.map(function(v, i) { return (i === 0 ? "M" : "L") + xPos(i) + "," + yPos(v); }).join("");
+    }
+
+    svgEl("path", {
+      d: makePath(created),
+      fill: "none", stroke: "#3b82f6", "stroke-width": 2,
+      "stroke-dasharray": "6,4",
+      "stroke-linecap": "round"
+    }, svg);
+
+    // Completed line (solid green)
+    svgEl("path", {
+      d: makePath(completed),
+      fill: "none", stroke: "#22c55e", "stroke-width": 2,
+      "stroke-linecap": "round", "stroke-linejoin": "round"
+    }, svg);
+
+    // Dots
+    created.forEach(function(v, i) {
+      svgEl("circle", { cx: xPos(i), cy: yPos(v), r: 3, fill: "#0f1117", stroke: "#3b82f6", "stroke-width": 1.5 }, svg);
+    });
+    completed.forEach(function(v, i) {
+      svgEl("circle", { cx: xPos(i), cy: yPos(v), r: 3, fill: "#0f1117", stroke: "#22c55e", "stroke-width": 1.5 }, svg);
+    });
+
+    // End labels
+    svgEl("text", {
+      x: xPos(7) + 8, y: yPos(26) + 4, fill: "#3b82f6",
+      "font-size": "11", "font-weight": "600",
+      "font-family": "Inter, system-ui, sans-serif"
+    }, svg).textContent = "26";
+    svgEl("text", {
+      x: xPos(7) + 8, y: yPos(23) + 4, fill: "#22c55e",
+      "font-size": "11", "font-weight": "600",
+      "font-family": "Inter, system-ui, sans-serif"
+    }, svg).textContent = "23";
+
+    // Net open label
+    var midY = (yPos(26) + yPos(23)) / 2;
+    svgEl("text", {
+      x: xPos(7) + 28, y: midY + 3, fill: "#ef4444",
+      "font-size": "10", "font-weight": "500",
+      "font-family": "Inter, system-ui, sans-serif"
+    }, svg).textContent = "3 net open";
+
+    // Bracket line for gap
+    var bracketX = xPos(7) + 24;
+    svgEl("line", {
+      x1: bracketX, y1: yPos(26), x2: bracketX, y2: yPos(23),
+      stroke: "rgba(239,68,68,0.5)", "stroke-width": 1
+    }, svg);
+    svgEl("line", {
+      x1: bracketX - 3, y1: yPos(26), x2: bracketX + 3, y2: yPos(26),
+      stroke: "rgba(239,68,68,0.5)", "stroke-width": 1
+    }, svg);
+    svgEl("line", {
+      x1: bracketX - 3, y1: yPos(23), x2: bracketX + 3, y2: yPos(23),
+      stroke: "rgba(239,68,68,0.5)", "stroke-width": 1
+    }, svg);
+  })();
+
+
+  /* ================================================================
+     ㉗  Baseline / Goal Lines (bar chart with target overlay)
+     ================================================================ */
+  (function drawBaseline() {
+    const svg = document.getElementById("baseline-chart");
+    if (!svg) return;
+
+    const velocity = [2, 3, 1, 4, 2, 5, 3, 3];
+    const target = 4;
+    const weeks = 8;
+    const W = 600, H = 200;
+    const padL = 40, padR = 20, padT = 20, padB = 28;
+    const chartW = W - padL - padR;
+    const chartH = H - padT - padB;
+    const maxY = 6;
+
+    function yPos(v) { return padT + chartH - (v / maxY) * chartH; }
+
+    // Grid
+    for (let g = 0; g <= maxY; g++) {
+      const y = yPos(g);
+      svgEl("line", {
+        x1: padL, y1: y, x2: W - padR, y2: y,
+        stroke: "rgba(255,255,255,0.04)", "stroke-width": 0.5
+      }, svg);
+      svgEl("text", {
+        x: padL - 6, y: y + 3, fill: "#64748b",
+        "font-size": "10", "text-anchor": "end",
+        "font-family": "Inter, system-ui, sans-serif"
+      }, svg).textContent = g;
+    }
+
+    // Bars
+    const barGap = 12;
+    const totalBarSpace = chartW / weeks;
+    const barW = totalBarSpace - barGap;
+
+    velocity.forEach(function(v, i) {
+      const x = padL + i * totalBarSpace + barGap / 2;
+      const barH = (v / maxY) * chartH;
+      const y = padT + chartH - barH;
+      const color = v >= target ? "#22c55e" : "#f59e0b";
+
+      // Bar
+      svgEl("rect", {
+        x: x, y: y, width: barW, height: barH, rx: 4, ry: 4,
+        fill: color, opacity: "0.8"
+      }, svg);
+
+      // Value on bar
+      svgEl("text", {
+        x: x + barW / 2, y: y - 6, fill: color,
+        "font-size": "11", "font-weight": "600", "text-anchor": "middle",
+        "font-family": "Inter, system-ui, sans-serif"
+      }, svg).textContent = v;
+
+      // Week label
+      svgEl("text", {
+        x: x + barW / 2, y: H - 6, fill: "#64748b",
+        "font-size": "10", "text-anchor": "middle",
+        "font-family": "Inter, system-ui, sans-serif"
+      }, svg).textContent = "W" + (i + 1);
+    });
+
+    // Target line (dashed)
+    const targetY = yPos(target);
+    svgEl("line", {
+      x1: padL, y1: targetY, x2: W - padR, y2: targetY,
+      stroke: "rgba(255,255,255,0.5)", "stroke-width": 1.5,
+      "stroke-dasharray": "8,4"
+    }, svg);
+
+    // Target label
+    svgEl("text", {
+      x: W - padR + 4, y: targetY + 3, fill: "rgba(255,255,255,0.5)",
+      "font-size": "10", "font-weight": "500",
+      "font-family": "Inter, system-ui, sans-serif"
+    }, svg).textContent = "target: 4/wk";
+
+    // Also show a second dashed line for target WIP = 4
+    // (subtle, at same level since target values match, add WIP label)
+    svgEl("text", {
+      x: padL + 2, y: targetY - 6, fill: "rgba(255,255,255,0.35)",
+      "font-size": "9",
+      "font-family": "Inter, system-ui, sans-serif"
+    }, svg).textContent = "target velocity: 4/wk";
+  })();
+
+})();
+</script>

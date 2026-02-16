@@ -1,0 +1,704 @@
+<!-- ============================================================
+     Section 1: Health Banner, Executive Summary, Card Hierarchy,
+                Animated Transitions, KPI Deltas
+     ============================================================ -->
+
+<style>
+/* ── Section 1 Scoped Styles ───────────────────────────────── */
+
+/* Health Banner ①  */
+.health-banner {
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(135deg, #131726 0%, #1a2340 40%, #1e2a4a 70%, #192038 100%);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 2.5rem 3rem;
+  display: flex;
+  align-items: center;
+  gap: 2.5rem;
+  font-family: var(--font);
+}
+
+.health-banner::before {
+  content: '';
+  position: absolute;
+  top: -60%;
+  right: -10%;
+  width: 420px;
+  height: 420px;
+  background: radial-gradient(circle, rgba(99, 102, 241, 0.08) 0%, transparent 70%);
+  pointer-events: none;
+}
+
+.health-banner::after {
+  content: '';
+  position: absolute;
+  bottom: -40%;
+  left: 20%;
+  width: 300px;
+  height: 300px;
+  background: radial-gradient(circle, rgba(56, 189, 248, 0.05) 0%, transparent 70%);
+  pointer-events: none;
+}
+
+.health-banner-weather {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 100px;
+}
+
+.health-banner-weather-icon {
+  font-size: 3rem;
+  line-height: 1;
+  filter: drop-shadow(0 2px 8px rgba(250, 204, 21, 0.25));
+}
+
+.health-banner-weather-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.health-ring-container {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.health-ring-svg {
+  width: 110px;
+  height: 110px;
+  transform: rotate(-90deg);
+}
+
+.health-ring-bg {
+  fill: none;
+  stroke: var(--border);
+  stroke-width: 7;
+}
+
+.health-ring-fg {
+  fill: none;
+  stroke: url(#healthGradient);
+  stroke-width: 7;
+  stroke-linecap: round;
+  stroke-dasharray: 283;
+  stroke-dashoffset: 283;
+  transition: stroke-dashoffset 0.1s ease;
+}
+
+.health-ring-fg.animated {
+  animation: ringFill 1.8s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@keyframes ringFill {
+  to { stroke-dashoffset: 79.24; }
+}
+
+.health-ring-label {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+}
+
+.health-ring-score {
+  font-size: 1.75rem;
+  font-weight: 800;
+  color: var(--text-primary);
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.health-ring-max {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.health-banner-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.health-banner-title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0 0 0.35rem 0;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.health-banner-title-badge {
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0.2em 0.65em;
+  border-radius: 6px;
+  background: rgba(99, 102, 241, 0.15);
+  color: var(--accent);
+  border: 1px solid rgba(99, 102, 241, 0.25);
+}
+
+.health-banner-summary {
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+  margin: 0;
+  line-height: 1.5;
+}
+
+.health-banner-summary .hl-warn {
+  color: var(--warning);
+  font-weight: 600;
+}
+
+.health-banner-summary .hl-danger {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.health-banner-summary .hl-success {
+  color: var(--success);
+  font-weight: 600;
+}
+
+.health-banner-summary .sep {
+  color: var(--text-muted);
+  margin: 0 0.15em;
+}
+
+/* Executive Summary ③  */
+.exec-summary {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--accent);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  padding: 1.5rem 2rem;
+  font-family: var(--font);
+  position: relative;
+  overflow: hidden;
+}
+
+.exec-summary::before {
+  content: '\201C';
+  position: absolute;
+  top: -0.15rem;
+  left: 1rem;
+  font-size: 4rem;
+  color: rgba(99, 102, 241, 0.12);
+  font-family: Georgia, serif;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.exec-summary p {
+  margin: 0;
+  font-size: 0.92rem;
+  line-height: 1.75;
+  color: var(--text-secondary);
+}
+
+.exec-summary .hl {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.exec-summary .hl-warn {
+  color: var(--warning);
+  font-weight: 600;
+}
+
+.exec-summary .hl-danger {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.exec-summary .hl-accent {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* Card Hierarchy ⑨ + KPI Deltas ㉑  */
+.card-hierarchy {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-rows: auto auto;
+  gap: 1rem;
+  font-family: var(--font);
+}
+
+.stat-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.5rem;
+  position: relative;
+  overflow: hidden;
+  transition: background 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
+}
+
+.stat-card:hover {
+  background: var(--bg-card-hover);
+  border-color: rgba(99, 102, 241, 0.3);
+  transform: translateY(-2px);
+}
+
+/* Hero card spans all 3 columns */
+.stat-card.hero {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 2rem;
+  padding: 2rem 2.5rem;
+  border-left: 4px solid var(--accent);
+  background: linear-gradient(135deg, var(--bg-card) 0%, rgba(99, 102, 241, 0.04) 100%);
+}
+
+.stat-card.hero .stat-card-number {
+  font-size: 4rem;
+  font-weight: 800;
+  color: var(--text-primary);
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  min-width: 100px;
+}
+
+.stat-card.hero .stat-card-meta {
+  flex: 1;
+}
+
+.stat-card.hero .stat-card-label {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0 0 0.25rem 0;
+}
+
+.stat-card.hero .stat-card-sublabel {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+.stat-card.hero .kpi-delta {
+  font-size: 0.85rem;
+}
+
+/* Secondary cards */
+.stat-card.secondary {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  border-left: 3px solid var(--border);
+  transition: border-color 0.2s ease, background 0.2s ease, transform 0.2s ease;
+}
+
+.stat-card.secondary:nth-child(2) { border-left-color: var(--text-muted); }
+.stat-card.secondary:nth-child(3) { border-left-color: var(--success); }
+.stat-card.secondary:nth-child(4) { border-left-color: var(--warning); }
+
+.stat-card.secondary .stat-card-number {
+  font-size: 2rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-card.secondary .stat-card-label {
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* KPI Deltas ㉑ */
+.kpi-delta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.2em 0.55em;
+  border-radius: 6px;
+  margin-top: 0.35rem;
+  width: fit-content;
+  font-variant-numeric: tabular-nums;
+}
+
+.kpi-delta.up {
+  color: var(--success);
+  background: rgba(34, 197, 94, 0.1);
+  border: 1px solid rgba(34, 197, 94, 0.2);
+}
+
+.kpi-delta.down {
+  color: var(--danger);
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+}
+
+.kpi-delta-arrow {
+  font-size: 0.85em;
+}
+
+.kpi-delta-prev {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  font-weight: 400;
+  margin-left: 0.2em;
+}
+
+/* Animated Transitions ⑱ */
+@keyframes fadeSlideUp {
+  from {
+    opacity: 0;
+    transform: translateY(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes cardEntrance {
+  from {
+    opacity: 0;
+    transform: translateY(16px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes borderGlow {
+  0%   { border-left-color: var(--accent); }
+  50%  { border-left-color: rgba(99, 102, 241, 0.6); }
+  100% { border-left-color: var(--accent); }
+}
+
+.animate-on-scroll {
+  opacity: 0;
+  transform: translateY(24px);
+}
+
+.animate-on-scroll.in-view {
+  animation: fadeSlideUp 0.7s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.stat-card.animate-on-scroll.in-view {
+  animation: cardEntrance 0.6s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.stat-card.hero.animate-on-scroll.in-view {
+  animation: cardEntrance 0.6s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.stat-card.secondary:nth-child(2).animate-on-scroll.in-view { animation-delay: 0.08s; }
+.stat-card.secondary:nth-child(3).animate-on-scroll.in-view { animation-delay: 0.16s; }
+.stat-card.secondary:nth-child(4).animate-on-scroll.in-view { animation-delay: 0.24s; }
+
+/* Demo item structure */
+#group-1 .demo-item {
+  margin-bottom: 2.5rem;
+}
+
+#group-1 .demo-item-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1.25rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+
+#group-1 .demo-item-number {
+  font-size: 1.1rem;
+  color: var(--accent);
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+#group-1 .demo-item-header h3 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-family: var(--font);
+  flex: 1;
+}
+
+#group-1 .demo-item-tag {
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0.2em 0.6em;
+  border-radius: 5px;
+  background: rgba(99, 102, 241, 0.1);
+  color: var(--accent);
+  border: 1px solid rgba(99, 102, 241, 0.2);
+  flex-shrink: 0;
+}
+
+#group-1 .demo-item-body {
+  /* wrapper for the actual UI mockup */
+}
+</style>
+
+<div class="demo-group" id="group-1">
+
+  <!-- ① Project Health Score + Weather Banner -->
+  <div class="demo-item" id="item-1">
+    <div class="demo-item-header">
+      <span class="demo-item-number">&#9312;</span>
+      <h3>Project Health Score + Weather Banner</h3>
+      <span class="demo-item-tag">Narrative</span>
+    </div>
+    <div class="demo-item-body">
+      <div class="health-banner animate-on-scroll">
+
+        <div class="health-banner-weather">
+          <span class="health-banner-weather-icon" aria-label="Partly Cloudy">&#9925;</span>
+          <span class="health-banner-weather-label">Partly Cloudy</span>
+        </div>
+
+        <div class="health-ring-container">
+          <svg class="health-ring-svg" viewBox="0 0 100 100" aria-label="Health score 72 out of 100">
+            <defs>
+              <linearGradient id="healthGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#6366f1" />
+                <stop offset="100%" stop-color="#22c55e" />
+              </linearGradient>
+            </defs>
+            <circle class="health-ring-bg" cx="50" cy="50" r="45" />
+            <circle class="health-ring-fg" cx="50" cy="50" r="45" />
+          </svg>
+          <div class="health-ring-label">
+            <div class="health-ring-score" data-countup="72">0</div>
+            <div class="health-ring-max">/ 100</div>
+          </div>
+        </div>
+
+        <div class="health-banner-info">
+          <h2 class="health-banner-title">
+            Project Health
+            <span class="health-banner-title-badge">Live</span>
+          </h2>
+          <p class="health-banner-summary">
+            <span class="hl-warn">3 tasks stale</span><span class="sep"> &middot; </span><span class="hl-danger">1 WIP breach</span><span class="sep"> &middot; </span><span class="hl-success">3 completed this week</span>
+          </p>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- ③ Executive Summary Sentence -->
+  <div class="demo-item" id="item-3">
+    <div class="demo-item-header">
+      <span class="demo-item-number">&#9314;</span>
+      <h3>Executive Summary Sentence</h3>
+      <span class="demo-item-tag">Narrative</span>
+    </div>
+    <div class="demo-item-body">
+      <div class="exec-summary animate-on-scroll">
+        <p>
+          <span class="hl">32 active tasks</span> across <span class="hl">6 statuses</span>.
+          <span class="hl">3 completed</span> this week, <span class="hl">8</span> this month.
+          <span class="hl-warn">2 tasks need attention</span>:
+          <span class="hl-danger">LAT-18</span> is stale and blocking 2 others.
+          <span class="hl-accent">In-progress WIP limit exceeded</span>
+          (<span class="hl-danger">5/4</span>) for 3 days.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ⑨ Card Hierarchy with Visual Weight + ㉑ KPI Deltas -->
+  <div class="demo-item" id="item-9">
+    <div class="demo-item-header">
+      <span class="demo-item-number">&#9320;</span>
+      <h3>Card Hierarchy with Visual Weight</h3>
+      <span class="demo-item-tag">Layout</span>
+    </div>
+    <div class="demo-item-body">
+      <div class="card-hierarchy">
+
+        <!-- Hero card -->
+        <div class="stat-card hero animate-on-scroll">
+          <div class="stat-card-number" data-countup="32">0</div>
+          <div class="stat-card-meta">
+            <div class="stat-card-label">Active Tasks</div>
+            <div class="stat-card-sublabel">Across backlog, in-progress, review, and blocked</div>
+            <div class="kpi-delta up">
+              <span class="kpi-delta-arrow">&uarr;</span>3
+              <span class="kpi-delta-prev">was 29</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Secondary cards -->
+        <div class="stat-card secondary animate-on-scroll">
+          <div class="stat-card-label">Archived</div>
+          <div class="stat-card-number" data-countup="15">0</div>
+          <div class="kpi-delta up">
+            <span class="kpi-delta-arrow">&uarr;</span>2
+            <span class="kpi-delta-prev">was 13</span>
+          </div>
+        </div>
+
+        <div class="stat-card secondary animate-on-scroll">
+          <div class="stat-card-label">Total Events</div>
+          <div class="stat-card-number" data-countup="135">0</div>
+          <div class="kpi-delta up">
+            <span class="kpi-delta-arrow">&uarr;</span>18
+            <span class="kpi-delta-prev">was 117</span>
+          </div>
+        </div>
+
+        <div class="stat-card secondary animate-on-scroll">
+          <div class="stat-card-label">Active Events</div>
+          <div class="stat-card-number" data-countup="90">0</div>
+          <div class="kpi-delta down">
+            <span class="kpi-delta-arrow">&darr;</span>5
+            <span class="kpi-delta-prev">was 95</span>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- ⑱ Animated Transitions (note: applied across all items above) -->
+  <div class="demo-item" id="item-18">
+    <div class="demo-item-header">
+      <span class="demo-item-number">&#12881;</span>
+      <h3>Animated Transitions</h3>
+      <span class="demo-item-tag">Interaction</span>
+    </div>
+    <div class="demo-item-body">
+      <div class="exec-summary animate-on-scroll" style="border-left-color: var(--text-muted);">
+        <p>
+          <span class="hl">All elements above use scroll-triggered animations.</span>
+          The health ring fills via <span class="hl-accent">SVG stroke-dashoffset</span>,
+          card numbers count up from zero with an <span class="hl-accent">easeOutExpo</span> curve,
+          and each card enters with a staggered <span class="hl-accent">fadeSlideUp</span> transition.
+          Animations fire once via <span class="hl">IntersectionObserver</span> when scrolled into view.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ㉑ KPI Deltas on Cards (note: integrated into item-9 cards) -->
+  <div class="demo-item" id="item-21">
+    <div class="demo-item-header">
+      <span class="demo-item-number">&#12882;</span>
+      <h3>KPI Deltas on Cards</h3>
+      <span class="demo-item-tag">Data</span>
+    </div>
+    <div class="demo-item-body">
+      <div class="exec-summary animate-on-scroll" style="border-left-color: var(--success);">
+        <p>
+          <span class="hl">Each summary card above displays a 7-day delta badge.</span>
+          <span class="hl-accent">Green &uarr;</span> indicates growth,
+          <span class="hl-danger">Red &darr;</span> indicates decline.
+          Badges show the change value and previous count for quick context.
+          Deltas are positioned below the main metric for clean visual hierarchy.
+        </p>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+(function() {
+  'use strict';
+
+  /* ── Counter Animation ──────────────────────────────────── */
+  function animateCountUp(el, target, duration) {
+    if (el.dataset.counted === 'true') return;
+    el.dataset.counted = 'true';
+    const start = performance.now();
+    const from = 0;
+
+    function easeOutExpo(t) {
+      return t === 1 ? 1 : 1 - Math.pow(2, -10 * t);
+    }
+
+    function tick(now) {
+      const elapsed = now - start;
+      const progress = Math.min(elapsed / duration, 1);
+      const value = Math.round(from + (target - from) * easeOutExpo(progress));
+      el.textContent = value;
+      if (progress < 1) {
+        requestAnimationFrame(tick);
+      } else {
+        el.textContent = target;
+      }
+    }
+    requestAnimationFrame(tick);
+  }
+
+  /* ── Ring Animation ─────────────────────────────────────── */
+  function animateRing(ring) {
+    if (ring.classList.contains('animated')) return;
+    ring.classList.add('animated');
+  }
+
+  /* ── IntersectionObserver for scroll-triggered animations ─ */
+  const observer = new IntersectionObserver(function(entries) {
+    entries.forEach(function(entry) {
+      if (!entry.isIntersecting) return;
+
+      const el = entry.target;
+
+      // Trigger CSS fade/slide animation
+      el.classList.add('in-view');
+
+      // Trigger countup for any data-countup elements within
+      const counters = el.querySelectorAll('[data-countup]');
+      counters.forEach(function(counter) {
+        const target = parseInt(counter.getAttribute('data-countup'), 10);
+        // Slight delay so the card entrance animation starts first
+        setTimeout(function() {
+          animateCountUp(counter, target, 1400);
+        }, 300);
+      });
+
+      // Trigger ring animation if present within this element
+      const ring = el.querySelector('.health-ring-fg');
+      if (ring) {
+        setTimeout(function() {
+          animateRing(ring);
+        }, 400);
+      }
+
+      // Unobserve after triggering (fire once)
+      observer.unobserve(el);
+    });
+  }, {
+    threshold: 0.15,
+    rootMargin: '0px 0px -40px 0px'
+  });
+
+  /* ── Observe all animate-on-scroll elements in this section ── */
+  var group = document.getElementById('group-1');
+  if (group) {
+    var targets = group.querySelectorAll('.animate-on-scroll');
+    targets.forEach(function(el) {
+      observer.observe(el);
+    });
+  }
+})();
+</script>

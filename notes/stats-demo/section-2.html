@@ -1,0 +1,961 @@
+<style>
+/* ============================================================
+   Section 2 Styles
+   ============================================================ */
+
+/* --- Item #2: Event Timeline --- */
+.event-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  position: relative;
+  padding-left: 32px;
+}
+
+.event-timeline::before {
+  content: '';
+  position: absolute;
+  left: 11px;
+  top: 8px;
+  bottom: 8px;
+  width: 2px;
+  background: var(--border);
+  border-radius: 1px;
+}
+
+.timeline-event {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 12px 0;
+  position: relative;
+  cursor: default;
+  border-radius: 8px;
+  transition: background 0.2s ease;
+}
+
+.timeline-event:hover {
+  background: var(--bg-card-hover);
+  margin-left: -8px;
+  padding-left: 8px;
+  margin-right: -8px;
+  padding-right: 8px;
+}
+
+.timeline-dot {
+  position: absolute;
+  left: -28px;
+  top: 16px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  z-index: 1;
+  box-shadow: 0 0 0 3px var(--bg-card);
+  flex-shrink: 0;
+}
+
+.timeline-dot.dot-done { background: var(--success); }
+.timeline-dot.dot-status { background: var(--accent); }
+.timeline-dot.dot-comment { background: #a855f7; }
+.timeline-dot.dot-create { background: var(--warning); }
+.timeline-dot.dot-assign { background: #38bdf8; }
+
+.timeline-time {
+  font-size: 12px;
+  color: var(--text-muted);
+  min-width: 52px;
+  flex-shrink: 0;
+  padding-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
+
+.timeline-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.timeline-action {
+  font-size: 14px;
+  color: var(--text-primary);
+  line-height: 1.4;
+}
+
+.timeline-action .task-ref {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.timeline-action .status-label {
+  font-weight: 500;
+}
+
+.timeline-action .comment-text {
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.actor-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 10px;
+  white-space: nowrap;
+}
+
+.actor-pill.actor-agent {
+  background: rgba(99, 102, 241, 0.15);
+  color: #818cf8;
+}
+
+.actor-pill.actor-human {
+  background: rgba(34, 197, 94, 0.15);
+  color: #4ade80;
+}
+
+/* --- Item #14: Assignee Workload Balance --- */
+.workload-balance {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.workload-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.workload-row.unassigned-row {
+  border: 1px dashed var(--warning);
+  border-radius: 8px;
+  padding: 12px;
+  background: rgba(245, 158, 11, 0.04);
+}
+
+.workload-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.workload-assignee {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+.workload-total {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.workload-bar-track {
+  height: 24px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 6px;
+  overflow: hidden;
+  display: flex;
+  position: relative;
+}
+
+.workload-segment {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.85);
+  transition: opacity 0.2s ease;
+  position: relative;
+  min-width: 2px;
+}
+
+.workload-segment:hover {
+  opacity: 0.85;
+}
+
+.workload-segment[data-status="backlog"] { background: #475569; }
+.workload-segment[data-status="in_planning"] { background: #7c3aed; }
+.workload-segment[data-status="planned"] { background: #6366f1; }
+.workload-segment[data-status="in_progress"] { background: #3b82f6; }
+.workload-segment[data-status="review"] { background: #f59e0b; }
+.workload-segment[data-status="done"] { background: #22c55e; }
+.workload-segment[data-status="blocked"] { background: #ef4444; }
+
+.workload-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.workload-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.workload-legend-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.workload-segment-tooltip {
+  display: none;
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: #1e2030;
+  color: var(--text-primary);
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 10;
+  border: 1px solid var(--border);
+}
+
+.workload-segment:hover .workload-segment-tooltip {
+  display: block;
+}
+
+/* --- Item #17: Activity Heatmap --- */
+.heatmap-container {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.heatmap-month-labels {
+  display: flex;
+  padding-left: 36px;
+  gap: 0;
+  margin-bottom: 2px;
+}
+
+.heatmap-month-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.heatmap-grid-wrapper {
+  display: flex;
+  gap: 6px;
+}
+
+.heatmap-day-labels {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding-top: 0;
+}
+
+.heatmap-day-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  height: 14px;
+  line-height: 14px;
+  margin-bottom: 3px;
+  text-align: right;
+  padding-right: 4px;
+  font-weight: 500;
+}
+
+.heatmap-day-label:last-child {
+  margin-bottom: 0;
+}
+
+.heatmap-grid {
+  display: flex;
+  gap: 3px;
+}
+
+.heatmap-column {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.heatmap-cell {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  cursor: default;
+  position: relative;
+  transition: outline 0.15s ease;
+}
+
+.heatmap-cell:hover {
+  outline: 2px solid var(--text-muted);
+  outline-offset: 1px;
+}
+
+.heatmap-cell.level-0 { background: #1e2030; }
+.heatmap-cell.level-1 { background: #312e81; }
+.heatmap-cell.level-2 { background: #4338ca; }
+.heatmap-cell.level-3 { background: #6366f1; }
+.heatmap-cell.level-4 { background: #818cf8; }
+
+.heatmap-tooltip {
+  display: none;
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: #1e2030;
+  color: var(--text-primary);
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 10;
+  border: 1px solid var(--border);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+}
+
+.heatmap-tooltip .tooltip-count {
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.heatmap-cell:hover .heatmap-tooltip {
+  display: block;
+}
+
+.heatmap-scale {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding-left: 36px;
+}
+
+.heatmap-scale-label {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.heatmap-scale-cell {
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+}
+
+/* --- Item #25: Human vs Agent Activity --- */
+.activity-comparison {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.activity-proportion-bar {
+  height: 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  display: flex;
+  background: rgba(255,255,255,0.03);
+}
+
+.proportion-human {
+  background: var(--success);
+  transition: width 1s ease;
+}
+
+.proportion-agent {
+  background: var(--accent);
+  transition: width 1s ease;
+}
+
+.activity-proportion-labels {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.proportion-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.proportion-label.human-label { color: var(--success); }
+.proportion-label.agent-label { color: var(--accent); }
+
+.activity-cards {
+  display: grid;
+  grid-template-columns: 1fr 1px 1fr;
+  gap: 0;
+}
+
+.activity-card {
+  padding: 20px;
+}
+
+.activity-divider {
+  background: var(--border);
+  width: 1px;
+}
+
+.activity-card-total {
+  font-size: 36px;
+  font-weight: 700;
+  line-height: 1;
+  margin-bottom: 2px;
+}
+
+.activity-card.human-card .activity-card-total { color: var(--success); }
+.activity-card.agent-card .activity-card-total { color: var(--accent); }
+
+.activity-card-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 16px;
+}
+
+.activity-breakdown {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.activity-breakdown-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.breakdown-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  min-width: 100px;
+  flex-shrink: 0;
+}
+
+.breakdown-bar-track {
+  flex: 1;
+  height: 6px;
+  background: rgba(255,255,255,0.05);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.breakdown-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.8s ease;
+}
+
+.human-card .breakdown-bar-fill { background: var(--success); }
+.agent-card .breakdown-bar-fill { background: var(--accent); }
+
+.breakdown-count {
+  font-size: 12px;
+  color: var(--text-muted);
+  min-width: 24px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.activity-subtitle {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-align: center;
+  margin-top: 4px;
+}
+
+/* --- Item #19: Empty States --- */
+.empty-states-showcase {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 24px;
+  border-radius: var(--radius);
+  text-align: center;
+  gap: 8px;
+}
+
+.empty-state.empty-positive {
+  background: rgba(34, 197, 94, 0.04);
+  border: 1px solid rgba(34, 197, 94, 0.15);
+}
+
+.empty-state.empty-neutral {
+  background: rgba(99, 102, 241, 0.04);
+  border: 1px solid rgba(99, 102, 241, 0.15);
+}
+
+.empty-state-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  margin-bottom: 4px;
+}
+
+.empty-positive .empty-state-icon {
+  background: rgba(34, 197, 94, 0.1);
+  color: var(--success);
+}
+
+.empty-neutral .empty-state-icon {
+  background: rgba(99, 102, 241, 0.1);
+  color: var(--accent);
+}
+
+.empty-state-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.empty-state-message {
+  font-size: 13px;
+  color: var(--text-secondary);
+  max-width: 320px;
+  line-height: 1.5;
+}
+</style>
+
+<div class="demo-group" id="group-2">
+
+  <!-- ============================================================
+       Item #2: Event Timeline
+       ============================================================ -->
+  <div class="demo-item" id="item-2">
+    <div class="demo-item-header">
+      <span class="demo-item-number">&#9313;</span>
+      <h3>Event Timeline</h3>
+      <span class="demo-item-tag">Activity</span>
+    </div>
+    <div class="demo-item-body">
+      <div class="event-timeline" id="event-timeline"></div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       Item #14: Assignee Workload Balance
+       ============================================================ -->
+  <div class="demo-item" id="item-14">
+    <div class="demo-item-header">
+      <span class="demo-item-number">&#9325;</span>
+      <h3>Assignee Workload Balance</h3>
+      <span class="demo-item-tag">Distribution</span>
+    </div>
+    <div class="demo-item-body">
+      <div class="workload-balance" id="workload-balance"></div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       Item #17: Activity Heatmap
+       ============================================================ -->
+  <div class="demo-item" id="item-17">
+    <div class="demo-item-header">
+      <span class="demo-item-number">&#9328;</span>
+      <h3>Activity Heatmap</h3>
+      <span class="demo-item-tag">Calendar</span>
+    </div>
+    <div class="demo-item-body">
+      <div class="heatmap-container" id="activity-heatmap"></div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       Item #25: Human vs Agent Activity
+       ============================================================ -->
+  <div class="demo-item" id="item-25">
+    <div class="demo-item-header">
+      <span class="demo-item-number">&#12888;</span>
+      <h3>Human vs Agent Activity</h3>
+      <span class="demo-item-tag">Comparison</span>
+    </div>
+    <div class="demo-item-body">
+      <div class="activity-comparison" id="activity-comparison"></div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       Item #19: Empty State Design
+       ============================================================ -->
+  <div class="demo-item" id="item-19">
+    <div class="demo-item-header">
+      <span class="demo-item-number">&#9330;</span>
+      <h3>Empty State Design</h3>
+      <span class="demo-item-tag">UX</span>
+    </div>
+    <div class="demo-item-body">
+      <div class="empty-states-showcase" id="empty-states"></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+/* ============================================================
+   Section 2 Scripts
+   ============================================================ */
+(function() {
+  'use strict';
+
+  /* ----------------------------------------------------------
+     #2 — Event Timeline
+     ---------------------------------------------------------- */
+  const timelineEvents = [
+    { ago: '3h ago',  type: 'status',  task: 'LAT-47', action: 'in_progress',                                      actor: 'agent:claude-opus-4' },
+    { ago: '5h ago',  type: 'status',  task: 'LAT-45', action: 'review',                                           actor: 'human:atin' },
+    { ago: '6h ago',  type: 'create',  task: 'LAT-46', action: 'created',                                          actor: 'human:atin' },
+    { ago: '8h ago',  type: 'comment', task: 'LAT-45', action: 'comment', comment: 'All tests passing, ready for review', actor: 'agent:claude-opus-4' },
+    { ago: '12h ago', type: 'done',    task: 'LAT-40', action: 'done',                                             actor: 'agent:codex' },
+    { ago: '18h ago', type: 'assign',  task: 'LAT-44', action: 'assigned to agent:claude-opus-4',                  actor: 'human:atin' },
+  ];
+
+  function dotClass(type) {
+    switch (type) {
+      case 'done':    return 'dot-done';
+      case 'status':  return 'dot-status';
+      case 'comment': return 'dot-comment';
+      case 'create':  return 'dot-create';
+      case 'assign':  return 'dot-status';
+      default:        return 'dot-status';
+    }
+  }
+
+  function actorPill(actor) {
+    const isAgent = actor.startsWith('agent:');
+    const cls = isAgent ? 'actor-agent' : 'actor-human';
+    return `<span class="actor-pill ${cls}">${actor}</span>`;
+  }
+
+  function renderAction(ev) {
+    const ref = `<span class="task-ref">${ev.task}</span>`;
+    switch (ev.type) {
+      case 'status':
+        return `${ref} <span class="status-label">\u2192 ${ev.action}</span>`;
+      case 'done':
+        return `${ref} <span class="status-label">\u2192 done</span>`;
+      case 'create':
+        return `${ref} created`;
+      case 'comment':
+        return `${ref} comment: <span class="comment-text">"${ev.comment}"</span>`;
+      case 'assign':
+        return `${ref} ${ev.action}`;
+      default:
+        return `${ref} ${ev.action}`;
+    }
+  }
+
+  const timelineEl = document.getElementById('event-timeline');
+  timelineEvents.forEach(ev => {
+    timelineEl.insertAdjacentHTML('beforeend', `
+      <div class="timeline-event">
+        <span class="timeline-dot ${dotClass(ev.type)}"></span>
+        <span class="timeline-time">${ev.ago}</span>
+        <div class="timeline-content">
+          <span class="timeline-action">${renderAction(ev)}</span>
+          ${actorPill(ev.actor)}
+        </div>
+      </div>
+    `);
+  });
+
+
+  /* ----------------------------------------------------------
+     #14 — Assignee Workload Balance
+     ---------------------------------------------------------- */
+  const workloadData = [
+    { assignee: 'human:atin',           total: 12, segments: { backlog: 2, planned: 3, in_progress: 3, review: 2, done: 2 } },
+    { assignee: 'agent:claude-opus-4',  total: 8,  segments: { in_progress: 2, review: 1, done: 4, blocked: 1 } },
+    { assignee: 'agent:codex',          total: 5,  segments: { planned: 2, in_progress: 1, done: 2 } },
+    { assignee: 'unassigned',           total: 7,  segments: { backlog: 2, planned: 1, in_progress: 1, blocked: 2, in_planning: 1 } },
+  ];
+
+  const statusColors = {
+    backlog: '#475569', in_planning: '#7c3aed', planned: '#6366f1',
+    in_progress: '#3b82f6', review: '#f59e0b', done: '#22c55e', blocked: '#ef4444',
+  };
+
+  const statusLabels = {
+    backlog: 'Backlog', in_planning: 'In Planning', planned: 'Planned',
+    in_progress: 'In Progress', review: 'Review', done: 'Done', blocked: 'Blocked',
+  };
+
+  const maxTotal = Math.max(...workloadData.map(d => d.total));
+  const workloadEl = document.getElementById('workload-balance');
+
+  workloadData.forEach(row => {
+    const isUnassigned = row.assignee === 'unassigned';
+    const barWidth = (row.total / maxTotal) * 100;
+    let segmentsHTML = '';
+
+    const orderedStatuses = ['backlog', 'in_planning', 'planned', 'in_progress', 'review', 'done', 'blocked'];
+    orderedStatuses.forEach(status => {
+      const count = row.segments[status];
+      if (!count) return;
+      const pct = (count / row.total) * 100;
+      segmentsHTML += `
+        <div class="workload-segment" data-status="${status}" style="width: ${pct}%;">
+          <span class="workload-segment-tooltip">${statusLabels[status]}: ${count}</span>
+          ${count >= 2 ? count : ''}
+        </div>`;
+    });
+
+    workloadEl.insertAdjacentHTML('beforeend', `
+      <div class="workload-row ${isUnassigned ? 'unassigned-row' : ''}">
+        <div class="workload-label-row">
+          <span class="workload-assignee">${row.assignee}</span>
+          <span class="workload-total">${row.total} tasks</span>
+        </div>
+        <div class="workload-bar-track" style="width: ${barWidth}%;">
+          ${segmentsHTML}
+        </div>
+      </div>
+    `);
+  });
+
+  // Legend
+  const legendItems = orderedStatusesForLegend();
+  function orderedStatusesForLegend() {
+    const all = new Set();
+    workloadData.forEach(r => Object.keys(r.segments).forEach(s => all.add(s)));
+    return ['backlog','in_planning','planned','in_progress','review','done','blocked'].filter(s => all.has(s));
+  }
+  let legendHTML = '<div class="workload-legend">';
+  legendItems.forEach(s => {
+    legendHTML += `<span class="workload-legend-item"><span class="workload-legend-swatch" style="background:${statusColors[s]}"></span>${statusLabels[s]}</span>`;
+  });
+  legendHTML += '</div>';
+  workloadEl.insertAdjacentHTML('beforeend', legendHTML);
+
+
+  /* ----------------------------------------------------------
+     #17 — Activity Heatmap (GitHub style)
+     ---------------------------------------------------------- */
+  function buildHeatmapData() {
+    const data = [];
+    const today = new Date();
+    // Go back ~91 days so we fill 13 complete weeks
+    const start = new Date(today);
+    start.setDate(start.getDate() - 90);
+    // Align start to the previous Sunday
+    start.setDate(start.getDate() - start.getDay());
+
+    const d = new Date(start);
+    while (d <= today) {
+      const dayOfWeek = d.getDay();
+      const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+      let count;
+      const rand = Math.random();
+      if (isWeekend) {
+        count = rand < 0.5 ? 0 : rand < 0.85 ? Math.floor(Math.random() * 2) + 1 : Math.floor(Math.random() * 3) + 1;
+      } else {
+        if (rand < 0.08) count = Math.floor(Math.random() * 5) + 8; // spike
+        else if (rand < 0.15) count = 0;
+        else count = Math.floor(Math.random() * 5) + 1;
+      }
+      data.push({ date: new Date(d), count });
+      d.setDate(d.getDate() + 1);
+    }
+    return data;
+  }
+
+  function heatLevel(count) {
+    if (count === 0) return 'level-0';
+    if (count <= 2) return 'level-1';
+    if (count <= 5) return 'level-2';
+    if (count <= 8) return 'level-3';
+    return 'level-4';
+  }
+
+  const heatData = buildHeatmapData();
+  const heatmapEl = document.getElementById('activity-heatmap');
+
+  // Organize into weeks (columns)
+  const weeks = [];
+  let currentWeek = [];
+  heatData.forEach((d, i) => {
+    currentWeek.push(d);
+    if (currentWeek.length === 7) {
+      weeks.push(currentWeek);
+      currentWeek = [];
+    }
+  });
+  if (currentWeek.length > 0) {
+    // Pad the last incomplete week
+    while (currentWeek.length < 7) currentWeek.push(null);
+    weeks.push(currentWeek);
+  }
+
+  // Month labels
+  const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  let monthLabelsHTML = '<div class="heatmap-month-labels">';
+  let lastMonth = -1;
+  weeks.forEach((week, wi) => {
+    const firstDay = week.find(d => d !== null);
+    if (firstDay) {
+      const m = firstDay.date.getMonth();
+      if (m !== lastMonth) {
+        monthLabelsHTML += `<span class="heatmap-month-label" style="width: ${17}px; flex-shrink: 0;">${monthNames[m]}</span>`;
+        lastMonth = m;
+      } else {
+        monthLabelsHTML += `<span style="width: 17px; flex-shrink: 0;"></span>`;
+      }
+    }
+  });
+  monthLabelsHTML += '</div>';
+
+  // Day labels (Mon, Wed, Fri)
+  const dayLabels = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  let dayLabelsHTML = '<div class="heatmap-day-labels">';
+  for (let i = 0; i < 7; i++) {
+    const show = (i === 1 || i === 3 || i === 5);
+    dayLabelsHTML += `<span class="heatmap-day-label">${show ? dayLabels[i] : ''}</span>`;
+  }
+  dayLabelsHTML += '</div>';
+
+  // Grid
+  let gridHTML = '<div class="heatmap-grid">';
+  weeks.forEach(week => {
+    gridHTML += '<div class="heatmap-column">';
+    week.forEach(day => {
+      if (!day) {
+        gridHTML += '<div class="heatmap-cell level-0"></div>';
+        return;
+      }
+      const dateStr = day.date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+      const evtWord = day.count === 1 ? 'event' : 'events';
+      gridHTML += `<div class="heatmap-cell ${heatLevel(day.count)}">
+        <span class="heatmap-tooltip"><span class="tooltip-count">${day.count}</span> ${evtWord} on ${dateStr}</span>
+      </div>`;
+    });
+    gridHTML += '</div>';
+  });
+  gridHTML += '</div>';
+
+  // Scale legend
+  let scaleHTML = '<div class="heatmap-scale">';
+  scaleHTML += '<span class="heatmap-scale-label">Less</span>';
+  ['level-0','level-1','level-2','level-3','level-4'].forEach(l => {
+    scaleHTML += `<span class="heatmap-scale-cell heatmap-cell ${l}"></span>`;
+  });
+  scaleHTML += '<span class="heatmap-scale-label">More</span>';
+  scaleHTML += '</div>';
+
+  heatmapEl.innerHTML = monthLabelsHTML +
+    '<div class="heatmap-grid-wrapper">' + dayLabelsHTML + gridHTML + '</div>' +
+    scaleHTML;
+
+
+  /* ----------------------------------------------------------
+     #25 — Human vs Agent Activity Metrics
+     ---------------------------------------------------------- */
+  const humanData = { total: 45, statusChanges: 28, comments: 12, creates: 5 };
+  const agentData = { total: 90, statusChanges: 46, comments: 27, creates: 17 };
+  const grandTotal = humanData.total + agentData.total;
+  const humanPct = Math.round((humanData.total / grandTotal) * 100);
+  const agentPct = 100 - humanPct;
+  const maxBreakdown = Math.max(humanData.statusChanges, agentData.statusChanges, humanData.comments, agentData.comments, humanData.creates, agentData.creates);
+
+  function breakdownRow(label, count, maxVal) {
+    const pct = (count / maxVal) * 100;
+    return `
+      <div class="activity-breakdown-row">
+        <span class="breakdown-label">${label}</span>
+        <div class="breakdown-bar-track">
+          <div class="breakdown-bar-fill" style="width: ${pct}%;"></div>
+        </div>
+        <span class="breakdown-count">${count}</span>
+      </div>`;
+  }
+
+  const compEl = document.getElementById('activity-comparison');
+  compEl.innerHTML = `
+    <div class="activity-proportion-labels">
+      <span class="proportion-label human-label">Human Activity (${humanPct}%)</span>
+      <span class="proportion-label agent-label">Agent Activity (${agentPct}%)</span>
+    </div>
+    <div class="activity-proportion-bar">
+      <div class="proportion-human" style="width: ${humanPct}%;"></div>
+      <div class="proportion-agent" style="width: ${agentPct}%;"></div>
+    </div>
+    <div class="activity-cards">
+      <div class="activity-card human-card">
+        <div class="activity-card-total">${humanData.total}</div>
+        <div class="activity-card-label">events</div>
+        <div class="activity-breakdown">
+          ${breakdownRow('Status changes', humanData.statusChanges, maxBreakdown)}
+          ${breakdownRow('Comments', humanData.comments, maxBreakdown)}
+          ${breakdownRow('Creates', humanData.creates, maxBreakdown)}
+        </div>
+      </div>
+      <div class="activity-divider"></div>
+      <div class="activity-card agent-card">
+        <div class="activity-card-total">${agentData.total}</div>
+        <div class="activity-card-label">events</div>
+        <div class="activity-breakdown">
+          ${breakdownRow('Status changes', agentData.statusChanges, maxBreakdown)}
+          ${breakdownRow('Comments', agentData.comments, maxBreakdown)}
+          ${breakdownRow('Creates', agentData.creates, maxBreakdown)}
+        </div>
+      </div>
+    </div>
+    <div class="activity-subtitle">Last 30 days</div>
+  `;
+
+
+  /* ----------------------------------------------------------
+     #19 — Empty State Design
+     ---------------------------------------------------------- */
+  const emptyStatesEl = document.getElementById('empty-states');
+  emptyStatesEl.innerHTML = `
+    <div class="empty-state empty-positive">
+      <div class="empty-state-icon">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="20 6 9 17 4 12"></polyline>
+        </svg>
+      </div>
+      <div class="empty-state-title">No Stale Tasks</div>
+      <div class="empty-state-message">Everything is moving \u2014 no tasks idle for 7+ days. Your team is keeping things fresh.</div>
+    </div>
+    <div class="empty-state empty-neutral">
+      <div class="empty-state-icon">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z"></path>
+          <path d="M9 12l2 2 4-4"></path>
+        </svg>
+      </div>
+      <div class="empty-state-title">No Blocked Tasks</div>
+      <div class="empty-state-message">All clear \u2014 nothing is waiting on dependencies or external input right now.</div>
+    </div>
+  `;
+
+})();
+</script>
