@@ -2,19 +2,17 @@
 
 ## what this is
 
-not a doctrine. doctrines tell you what is true. this is different.
-
 this is a set of observations about how work gets done when many minds touch the same problem. some of those minds are human. some are not. all of them forget. all of them need something outside themselves to remember.
 
 these observations became a system. the system is called Lattice. but the system is not the point. the thinking underneath it — the way of seeing work, memory, attribution, and the relationship between kinds of intelligence — that's what lives here.
 
-if the system changes, the observations might still hold. if the observations turn out to be wrong, we will notice, because the system will tell us. that's the recursive trick: build the thing that shows you whether you were right.
+Lattice started as something simpler: a disk-based, agent-first alternative to Linear — the popular software development tool that teams use to track tasks, order work, and coordinate engineering effort. we wanted what Linear provides, but built for a world where the participants are AI agents reading files, not humans refreshing dashboards. what came out was more than a clone. the constraints of that starting point — files instead of databases, agents instead of employees, context windows instead of open browser tabs — forced a rethinking of coordination from first principles. this document is the result of that rethinking.
 
 you are using AI agents to build software. Claude Code, Cursor, Codex, Gemini — tools that read your codebase, reason about architecture, write code, run commands. they are capable. and they are, in a meaningful sense, alone.
 
 each session starts fresh. each agent forgets what the last one learned. the plans you discussed vanish when the context window closes. debugging insights, architectural decisions, half-finished work — evaporates. unless you carry it forward manually. your agents have intelligence without memory. capability without coordination.
 
-Lattice exists because this is solvable. drop a `.lattice/` directory into your project, and suddenly your agents have shared state that persists across sessions, attribution that records who did what, and an event log that means no decision is ever lost. every agent that can read a file — and they all can — gets immediate access to what happened before it arrived and what needs to happen next.
+Lattice exists because this is solvable. drop a `.lattice/` directory into your project, and through the files in that folder suddenly your agents have shared state that persists across sessions, attribution that records who did what, and an event log that means no decision is ever lost. every agent that can read a file — and they all can — gets immediate access to what happened before it arrived and what needs to happen next.
 
 if you want the practical guide, read the [User Guide](docs/user-guide.md). if you want to understand why the practical guide looks the way it does. keep reading.
 
