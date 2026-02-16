@@ -146,8 +146,15 @@ class TestStatsCommand:
         assert code == 0
         data = parsed["data"]
         expected_keys = {
-            "summary", "by_status", "by_priority", "by_type",
-            "by_assignee", "by_tag", "wip", "recently_active",
-            "stale", "busiest",
+            "summary",
+            "by_status",
+            "by_priority",
+            "by_type",
+            "by_assignee",
+            "by_tag",
+            "wip",
+            "recently_active",
+            "stale",
+            "busiest",
         }
         assert expected_keys == set(data.keys())

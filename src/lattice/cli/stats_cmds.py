@@ -53,9 +53,7 @@ def _print_human_stats(stats: dict, config: dict) -> None:
     if wip_alerts:
         click.echo("WIP Limit Exceeded:")
         for w in wip_alerts:
-            click.echo(
-                f"  {w['status']}: {w['current']}/{w['limit']}"
-            )
+            click.echo(f"  {w['status']}: {w['current']}/{w['limit']}")
         click.echo("")
 
     # Priority
@@ -91,8 +89,7 @@ def _print_human_stats(stats: dict, config: dict) -> None:
         click.echo("Recently Active:")
         for t in stats["recently_active"]:
             click.echo(
-                f"  {t['id']:<10s} {t['status']:<20s} {t['updated_ago']:>5s} ago  "
-                f"\"{t['title']}\""
+                f'  {t["id"]:<10s} {t["status"]:<20s} {t["updated_ago"]:>5s} ago  "{t["title"]}"'
             )
         click.echo("")
 
@@ -102,7 +99,7 @@ def _print_human_stats(stats: dict, config: dict) -> None:
         for t in stats["stale"][:10]:  # cap display at 10
             click.echo(
                 f"  {t['id']:<10s} {t['status']:<20s} {format_days(t['days_stale']):>5s}  "
-                f"\"{t['title']}\""
+                f'"{t["title"]}"'
             )
         if len(stats["stale"]) > 10:
             click.echo(f"  ... and {len(stats['stale']) - 10} more")
@@ -112,9 +109,7 @@ def _print_human_stats(stats: dict, config: dict) -> None:
     if stats["busiest"]:
         click.echo("Most Active (by event count):")
         for t in stats["busiest"]:
-            click.echo(
-                f"  {t['id']:<10s} {t['event_count']:>4d} events  \"{t['title']}\""
-            )
+            click.echo(f'  {t["id"]:<10s} {t["event_count"]:>4d} events  "{t["title"]}"')
 
 
 # ---------------------------------------------------------------------------

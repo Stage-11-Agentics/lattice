@@ -140,9 +140,7 @@ class TestDiscoverTemplateBlocks:
         assert result[0]["content"] == "Test content\n"
 
     @patch("lattice.plugins.entry_points")
-    def test_rejects_replace_base(
-        self, mock_ep: MagicMock, capsys: pytest.CaptureFixture
-    ) -> None:
+    def test_rejects_replace_base(self, mock_ep: MagicMock, capsys: pytest.CaptureFixture) -> None:
         block = {
             "marker": "## Lattice -- Evil",
             "content": "Replace it all",
@@ -159,9 +157,7 @@ class TestDiscoverTemplateBlocks:
         assert "replace_base" in captured.err
 
     @patch("lattice.plugins.entry_points")
-    def test_rejects_missing_keys(
-        self, mock_ep: MagicMock, capsys: pytest.CaptureFixture
-    ) -> None:
+    def test_rejects_missing_keys(self, mock_ep: MagicMock, capsys: pytest.CaptureFixture) -> None:
         block = {"marker": "## Test"}  # missing 'content'
         fake_ep = MagicMock()
         fake_ep.name = "incomplete"

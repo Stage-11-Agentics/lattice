@@ -126,13 +126,15 @@ def build_stats(lattice_dir: Path, config: dict) -> dict:
         updated_at = snap.get("updated_at", "")
         d = days_ago(updated_at, now)
         if d is not None and d >= 7:
-            stale.append({
-                "id": snap.get("short_id") or snap.get("id", "?"),
-                "full_id": snap.get("id", ""),
-                "title": snap.get("title", "?"),
-                "status": snap.get("status", "?"),
-                "days_stale": round(d, 1),
-            })
+            stale.append(
+                {
+                    "id": snap.get("short_id") or snap.get("id", "?"),
+                    "full_id": snap.get("id", ""),
+                    "title": snap.get("title", "?"),
+                    "status": snap.get("status", "?"),
+                    "days_stale": round(d, 1),
+                }
+            )
 
     # Sort stale by stalest first
     stale.sort(key=lambda s: s["days_stale"], reverse=True)
@@ -145,13 +147,15 @@ def build_stats(lattice_dir: Path, config: dict) -> dict:
     )
     for snap in active_sorted[:5]:
         d = days_ago(snap.get("updated_at", ""), now)
-        recently_active.append({
-            "id": snap.get("short_id") or snap.get("id", "?"),
-            "full_id": snap.get("id", ""),
-            "title": snap.get("title", "?"),
-            "status": snap.get("status", "?"),
-            "updated_ago": format_days(d) if d is not None else "?",
-        })
+        recently_active.append(
+            {
+                "id": snap.get("short_id") or snap.get("id", "?"),
+                "full_id": snap.get("id", ""),
+                "title": snap.get("title", "?"),
+                "status": snap.get("status", "?"),
+                "updated_ago": format_days(d) if d is not None else "?",
+            }
+        )
 
     # --- Busiest tasks (by event count) ---
     busiest: list[dict] = []
@@ -166,12 +170,14 @@ def build_stats(lattice_dir: Path, config: dict) -> dict:
                 short_id = snap.get("short_id")
                 full_id = snap.get("id", task_id)
                 break
-        busiest.append({
-            "id": short_id or task_id,
-            "full_id": full_id,
-            "title": title,
-            "event_count": count,
-        })
+        busiest.append(
+            {
+                "id": short_id or task_id,
+                "full_id": full_id,
+                "title": title,
+                "event_count": count,
+            }
+        )
 
     # --- Workflow config info ---
     workflow = config.get("workflow", {})
@@ -179,12 +185,14 @@ def build_stats(lattice_dir: Path, config: dict) -> dict:
     wip_status: list[dict] = []
     for status_name, limit in wip_limits.items():
         current = status_counts.get(status_name, 0)
-        wip_status.append({
-            "status": status_name,
-            "current": current,
-            "limit": limit,
-            "over": current > limit,
-        })
+        wip_status.append(
+            {
+                "status": status_name,
+                "current": current,
+                "limit": limit,
+                "over": current > limit,
+            }
+        )
 
     # Order status counts by workflow order
     defined_statuses = workflow.get("statuses", [])

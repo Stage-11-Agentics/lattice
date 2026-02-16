@@ -251,7 +251,9 @@ def create(
 # Updatable field names for `lattice update`
 # ---------------------------------------------------------------------------
 
-_UPDATABLE_FIELDS = frozenset({"title", "description", "priority", "urgency", "complexity", "type", "tags"})
+_UPDATABLE_FIELDS = frozenset(
+    {"title", "description", "priority", "urgency", "complexity", "type", "tags"}
+)
 
 _REDIRECT_FIELDS = {
     "status": "Use 'lattice status' to change status.",

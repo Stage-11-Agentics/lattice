@@ -126,12 +126,14 @@ def _find_recently_completed(
         updated = snap.get("updated_at", "")
         days = days_ago(updated, now)
         if days is not None:
-            done_tasks.append({
-                "id": snap.get("short_id") or snap.get("id", "?"),
-                "title": snap.get("title", "?"),
-                "days_ago": days,
-                "completed_ago": format_days(days),
-            })
+            done_tasks.append(
+                {
+                    "id": snap.get("short_id") or snap.get("id", "?"),
+                    "title": snap.get("title", "?"),
+                    "days_ago": days,
+                    "completed_ago": format_days(days),
+                }
+            )
 
     # Sort by most recent first
     done_tasks.sort(key=lambda t: t["days_ago"])
@@ -154,14 +156,16 @@ def _find_up_next(active: list[dict]) -> list[dict]:
     for snap in active:
         if snap.get("status") in ready_statuses:
             pri = snap.get("priority", "unset")
-            candidates.append({
-                "id": snap.get("short_id") or snap.get("id", "?"),
-                "title": snap.get("title", "?"),
-                "status": snap.get("status", "?"),
-                "priority": pri,
-                "assigned_to": snap.get("assigned_to"),
-                "_sort": priority_order.get(pri, 99),
-            })
+            candidates.append(
+                {
+                    "id": snap.get("short_id") or snap.get("id", "?"),
+                    "title": snap.get("title", "?"),
+                    "status": snap.get("status", "?"),
+                    "priority": pri,
+                    "assigned_to": snap.get("assigned_to"),
+                    "_sort": priority_order.get(pri, 99),
+                }
+            )
 
     candidates.sort(key=lambda c: c["_sort"])
     # Strip sort key from output
@@ -183,33 +187,39 @@ def _find_attention_needed(
 
     # Stale tasks
     for t in stale:
-        items.append({
-            "type": "stale",
-            "id": t["id"],
-            "title": t["title"],
-            "detail": f"Idle for {format_days(t['days_stale'])}",
-        })
+        items.append(
+            {
+                "type": "stale",
+                "id": t["id"],
+                "title": t["title"],
+                "detail": f"Idle for {format_days(t['days_stale'])}",
+            }
+        )
 
     # WIP breaches
     for w in wip_status:
         if w["over"]:
-            items.append({
-                "type": "wip_breach",
-                "status": w["status"],
-                "detail": f"{w['current']}/{w['limit']} (over by {w['current'] - w['limit']})",
-            })
+            items.append(
+                {
+                    "type": "wip_breach",
+                    "status": w["status"],
+                    "detail": f"{w['current']}/{w['limit']} (over by {w['current'] - w['limit']})",
+                }
+            )
 
     # Unassigned in-progress tasks
     in_progress_statuses = {"in_planning", "in_implementation", "in_review"}
     for snap in active:
         if snap.get("status") in in_progress_statuses and not snap.get("assigned_to"):
-            items.append({
-                "type": "unassigned_active",
-                "id": snap.get("short_id") or snap.get("id", "?"),
-                "title": snap.get("title", "?"),
-                "status": snap.get("status", "?"),
-                "detail": "In progress but unassigned",
-            })
+            items.append(
+                {
+                    "type": "unassigned_active",
+                    "id": snap.get("short_id") or snap.get("id", "?"),
+                    "title": snap.get("title", "?"),
+                    "status": snap.get("status", "?"),
+                    "detail": "In progress but unassigned",
+                }
+            )
 
     return items
 
@@ -225,9 +235,7 @@ def _build_weather(lattice_dir: Path, config: dict) -> dict:
 
     # In-progress count
     in_progress_statuses = {"in_planning", "in_implementation", "in_review"}
-    in_progress_count = sum(
-        1 for snap in active if snap.get("status") in in_progress_statuses
-    )
+    in_progress_count = sum(1 for snap in active if snap.get("status") in in_progress_statuses)
 
     # Recently completed
     recently_completed = _find_recently_completed(lattice_dir, active, archived)
@@ -311,13 +319,11 @@ def _print_text_weather(data: dict) -> None:
         click.echo(f"Attention Needed ({len(data['attention'])} items):")
         for item in data["attention"]:
             if item["type"] == "stale":
-                click.echo(f"  [STALE] {item['id']} — {item['detail']} — \"{item['title']}\"")
+                click.echo(f'  [STALE] {item["id"]} — {item["detail"]} — "{item["title"]}"')
             elif item["type"] == "wip_breach":
                 click.echo(f"  [WIP]   {item['status']} — {item['detail']}")
             elif item["type"] == "unassigned_active":
-                click.echo(
-                    f"  [UNASGN] {item['id']} — {item['status']} — \"{item['title']}\""
-                )
+                click.echo(f'  [UNASGN] {item["id"]} — {item["status"]} — "{item["title"]}"')
         click.echo("")
     else:
         click.echo("Attention Needed: None")
@@ -327,7 +333,7 @@ def _print_text_weather(data: dict) -> None:
     if data["recently_completed"]:
         click.echo(f"Recently Completed ({len(data['recently_completed'])}):")
         for t in data["recently_completed"]:
-            click.echo(f"  {t['id']:<10s} {t['completed_ago']:>5s} ago  \"{t['title']}\"")
+            click.echo(f'  {t["id"]:<10s} {t["completed_ago"]:>5s} ago  "{t["title"]}"')
         click.echo("")
     else:
         click.echo("Recently Completed: None")
@@ -339,8 +345,7 @@ def _print_text_weather(data: dict) -> None:
         for t in data["up_next"]:
             assigned = f" ({t['assigned_to']})" if t.get("assigned_to") else ""
             click.echo(
-                f"  {t['id']:<10s} [{t['priority']}] {t['status']:<10s} "
-                f"\"{t['title']}\"{assigned}"
+                f'  {t["id"]:<10s} [{t["priority"]}] {t["status"]:<10s} "{t["title"]}"{assigned}'
             )
     else:
         click.echo("Up Next: Nothing in backlog/planned")
@@ -380,9 +385,7 @@ def _print_markdown_weather(data: dict) -> None:
             elif item["type"] == "wip_breach":
                 click.echo(f"- **WIP BREACH** `{item['status']}` — {item['detail']}")
             elif item["type"] == "unassigned_active":
-                click.echo(
-                    f"- **UNASSIGNED** `{item['id']}` — {item['status']} — {item['title']}"
-                )
+                click.echo(f"- **UNASSIGNED** `{item['id']}` — {item['status']} — {item['title']}")
     else:
         click.echo("Nothing needs attention.")
     click.echo("")

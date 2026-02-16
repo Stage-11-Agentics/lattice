@@ -387,8 +387,10 @@ def setup_claude(target_path: str, force: bool) -> None:
                     skip = True
                     continue
                 # Stop skipping at the next non-Lattice H2
-                if skip and line.startswith("## ") and not any(
-                    stripped.startswith(m) for m in all_markers
+                if (
+                    skip
+                    and line.startswith("## ")
+                    and not any(stripped.startswith(m) for m in all_markers)
                 ):
                     skip = False
                 if not skip:

@@ -310,6 +310,7 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                 self._send_json(500, _err("READ_ERROR", f"Failed to read config: {exc}"))
                 return
             from lattice.core.stats import build_stats
+
             stats = build_stats(ld, config)
             self._send_json(200, _ok(stats))
 
@@ -375,11 +376,13 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                     target_id = rel.get("target_task_id")
                     # Only emit link if target exists in the active task set
                     if target_id and target_id in active_ids:
-                        links.append({
-                            "source": task_id,
-                            "target": target_id,
-                            "type": rel.get("type"),
-                        })
+                        links.append(
+                            {
+                                "source": task_id,
+                                "target": target_id,
+                                "type": rel.get("type"),
+                            }
+                        )
 
             # Revision string for cheap change detection
             revision = f"{len(nodes)}:{max_updated_at}"
@@ -599,9 +602,7 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
             if "voice" in body:
                 v = body["voice"]
                 if not isinstance(v, str):
-                    self._send_json(
-                        400, _err("VALIDATION_ERROR", "'voice' must be a string")
-                    )
+                    self._send_json(400, _err("VALIDATION_ERROR", "'voice' must be a string"))
                     return
 
             # Read, merge, write config atomically

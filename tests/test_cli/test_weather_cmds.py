@@ -179,9 +179,7 @@ class TestWeatherEmptyProject:
     def test_empty_project_text(self, tmp_path: Path) -> None:
         _init_lattice(tmp_path)
         runner = CliRunner()
-        result = runner.invoke(
-            cli, ["weather"], env={"LATTICE_ROOT": str(tmp_path)}
-        )
+        result = runner.invoke(cli, ["weather"], env={"LATTICE_ROOT": str(tmp_path)})
         assert result.exit_code == 0
         assert "Weather Report" in result.output
         assert "Clear skies" in result.output
@@ -190,9 +188,7 @@ class TestWeatherEmptyProject:
     def test_empty_project_json(self, tmp_path: Path) -> None:
         _init_lattice(tmp_path)
         runner = CliRunner()
-        result = runner.invoke(
-            cli, ["weather", "--json"], env={"LATTICE_ROOT": str(tmp_path)}
-        )
+        result = runner.invoke(cli, ["weather", "--json"], env={"LATTICE_ROOT": str(tmp_path)})
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data["ok"] is True
@@ -202,9 +198,7 @@ class TestWeatherEmptyProject:
     def test_empty_project_markdown(self, tmp_path: Path) -> None:
         _init_lattice(tmp_path)
         runner = CliRunner()
-        result = runner.invoke(
-            cli, ["weather", "--markdown"], env={"LATTICE_ROOT": str(tmp_path)}
-        )
+        result = runner.invoke(cli, ["weather", "--markdown"], env={"LATTICE_ROOT": str(tmp_path)})
         assert result.exit_code == 0
         assert "# Test Project Weather Report" in result.output
         assert "**Forecast:** Clear skies" in result.output
@@ -224,16 +218,17 @@ class TestWeatherWithTasks:
         # Create tasks in various states
         _write_task_snapshot(lattice_dir, "task_001", title="Backlog task", status="backlog")
         _write_task_snapshot(
-            lattice_dir, "task_002", title="In progress", status="in_implementation",
+            lattice_dir,
+            "task_002",
+            title="In progress",
+            status="in_implementation",
             assigned_to="human:atin",
         )
         _write_task_snapshot(lattice_dir, "task_003", title="Done task", status="done")
         _write_task_snapshot(lattice_dir, "task_004", title="Planning", status="in_planning")
 
         runner = CliRunner()
-        result = runner.invoke(
-            cli, ["weather", "--json"], env={"LATTICE_ROOT": str(tmp_path)}
-        )
+        result = runner.invoke(cli, ["weather", "--json"], env={"LATTICE_ROOT": str(tmp_path)})
         assert result.exit_code == 0
         data = json.loads(result.output)["data"]
 
@@ -244,21 +239,30 @@ class TestWeatherWithTasks:
         lattice_dir = _init_lattice(tmp_path)
 
         _write_task_snapshot(
-            lattice_dir, "task_001", title="High pri", status="backlog",
-            priority="high", short_id="TST-1",
+            lattice_dir,
+            "task_001",
+            title="High pri",
+            status="backlog",
+            priority="high",
+            short_id="TST-1",
         )
         _write_task_snapshot(
-            lattice_dir, "task_002", title="Low pri", status="planned",
-            priority="low", short_id="TST-2",
+            lattice_dir,
+            "task_002",
+            title="Low pri",
+            status="planned",
+            priority="low",
+            short_id="TST-2",
         )
         _write_task_snapshot(
-            lattice_dir, "task_003", title="In progress", status="in_implementation",
+            lattice_dir,
+            "task_003",
+            title="In progress",
+            status="in_implementation",
         )
 
         runner = CliRunner()
-        result = runner.invoke(
-            cli, ["weather", "--json"], env={"LATTICE_ROOT": str(tmp_path)}
-        )
+        result = runner.invoke(cli, ["weather", "--json"], env={"LATTICE_ROOT": str(tmp_path)})
         data = json.loads(result.output)["data"]
 
         up_next_ids = [t["id"] for t in data["up_next"]]
@@ -271,22 +275,32 @@ class TestWeatherWithTasks:
         lattice_dir = _init_lattice(tmp_path)
 
         _write_task_snapshot(
-            lattice_dir, "task_001", title="Low", status="backlog",
-            priority="low", short_id="TST-1",
+            lattice_dir,
+            "task_001",
+            title="Low",
+            status="backlog",
+            priority="low",
+            short_id="TST-1",
         )
         _write_task_snapshot(
-            lattice_dir, "task_002", title="Critical", status="backlog",
-            priority="critical", short_id="TST-2",
+            lattice_dir,
+            "task_002",
+            title="Critical",
+            status="backlog",
+            priority="critical",
+            short_id="TST-2",
         )
         _write_task_snapshot(
-            lattice_dir, "task_003", title="High", status="backlog",
-            priority="high", short_id="TST-3",
+            lattice_dir,
+            "task_003",
+            title="High",
+            status="backlog",
+            priority="high",
+            short_id="TST-3",
         )
 
         runner = CliRunner()
-        result = runner.invoke(
-            cli, ["weather", "--json"], env={"LATTICE_ROOT": str(tmp_path)}
-        )
+        result = runner.invoke(cli, ["weather", "--json"], env={"LATTICE_ROOT": str(tmp_path)})
         data = json.loads(result.output)["data"]
 
         priorities = [t["priority"] for t in data["up_next"]]
@@ -305,14 +319,16 @@ class TestRecentlyCompleted:
         lattice_dir = _init_lattice(tmp_path)
 
         _write_task_snapshot(
-            lattice_dir, "task_001", title="Just done", status="done",
-            short_id="TST-1", updated_at=_ts_ago(hours=2),
+            lattice_dir,
+            "task_001",
+            title="Just done",
+            status="done",
+            short_id="TST-1",
+            updated_at=_ts_ago(hours=2),
         )
 
         runner = CliRunner()
-        result = runner.invoke(
-            cli, ["weather", "--json"], env={"LATTICE_ROOT": str(tmp_path)}
-        )
+        result = runner.invoke(cli, ["weather", "--json"], env={"LATTICE_ROOT": str(tmp_path)})
         data = json.loads(result.output)["data"]
 
         assert len(data["recently_completed"]) == 1
@@ -323,14 +339,16 @@ class TestRecentlyCompleted:
 
         # Done 2 days ago (outside 24h, inside 72h)
         _write_task_snapshot(
-            lattice_dir, "task_001", title="Done 2d ago", status="done",
-            short_id="TST-1", updated_at=_ts_ago(days=2),
+            lattice_dir,
+            "task_001",
+            title="Done 2d ago",
+            status="done",
+            short_id="TST-1",
+            updated_at=_ts_ago(days=2),
         )
 
         runner = CliRunner()
-        result = runner.invoke(
-            cli, ["weather", "--json"], env={"LATTICE_ROOT": str(tmp_path)}
-        )
+        result = runner.invoke(cli, ["weather", "--json"], env={"LATTICE_ROOT": str(tmp_path)})
         data = json.loads(result.output)["data"]
 
         assert len(data["recently_completed"]) == 1
@@ -341,14 +359,15 @@ class TestRecentlyCompleted:
 
         # Done 10 days ago (outside both windows)
         _write_task_snapshot(
-            lattice_dir, "task_001", title="Old done", status="done",
+            lattice_dir,
+            "task_001",
+            title="Old done",
+            status="done",
             updated_at=_ts_ago(days=10),
         )
 
         runner = CliRunner()
-        result = runner.invoke(
-            cli, ["weather", "--json"], env={"LATTICE_ROOT": str(tmp_path)}
-        )
+        result = runner.invoke(cli, ["weather", "--json"], env={"LATTICE_ROOT": str(tmp_path)})
         data = json.loads(result.output)["data"]
 
         assert len(data["recently_completed"]) == 0
@@ -366,18 +385,23 @@ class TestStaleDetection:
         lattice_dir = _init_lattice(tmp_path)
 
         _write_task_snapshot(
-            lattice_dir, "task_001", title="Stale task", status="in_implementation",
-            short_id="TST-1", updated_at=_ts_ago(days=10),
+            lattice_dir,
+            "task_001",
+            title="Stale task",
+            status="in_implementation",
+            short_id="TST-1",
+            updated_at=_ts_ago(days=10),
         )
         _write_task_snapshot(
-            lattice_dir, "task_002", title="Fresh task", status="in_implementation",
+            lattice_dir,
+            "task_002",
+            title="Fresh task",
+            status="in_implementation",
             updated_at=_ts_ago(hours=1),
         )
 
         runner = CliRunner()
-        result = runner.invoke(
-            cli, ["weather", "--json"], env={"LATTICE_ROOT": str(tmp_path)}
-        )
+        result = runner.invoke(cli, ["weather", "--json"], env={"LATTICE_ROOT": str(tmp_path)})
         data = json.loads(result.output)["data"]
 
         stale_items = [a for a in data["attention"] if a["type"] == "stale"]
@@ -388,14 +412,15 @@ class TestStaleDetection:
         lattice_dir = _init_lattice(tmp_path)
 
         _write_task_snapshot(
-            lattice_dir, "task_001", title="Fresh", status="backlog",
+            lattice_dir,
+            "task_001",
+            title="Fresh",
+            status="backlog",
             updated_at=_ts_ago(hours=1),
         )
 
         runner = CliRunner()
-        result = runner.invoke(
-            cli, ["weather", "--json"], env={"LATTICE_ROOT": str(tmp_path)}
-        )
+        result = runner.invoke(cli, ["weather", "--json"], env={"LATTICE_ROOT": str(tmp_path)})
         data = json.loads(result.output)["data"]
 
         stale_items = [a for a in data["attention"] if a["type"] == "stale"]
@@ -414,14 +439,15 @@ class TestUnassignedActive:
         lattice_dir = _init_lattice(tmp_path)
 
         _write_task_snapshot(
-            lattice_dir, "task_001", title="No owner", status="in_implementation",
+            lattice_dir,
+            "task_001",
+            title="No owner",
+            status="in_implementation",
             short_id="TST-1",
         )
 
         runner = CliRunner()
-        result = runner.invoke(
-            cli, ["weather", "--json"], env={"LATTICE_ROOT": str(tmp_path)}
-        )
+        result = runner.invoke(cli, ["weather", "--json"], env={"LATTICE_ROOT": str(tmp_path)})
         data = json.loads(result.output)["data"]
 
         unassigned = [a for a in data["attention"] if a["type"] == "unassigned_active"]
@@ -432,14 +458,15 @@ class TestUnassignedActive:
         lattice_dir = _init_lattice(tmp_path)
 
         _write_task_snapshot(
-            lattice_dir, "task_001", title="Has owner", status="in_implementation",
+            lattice_dir,
+            "task_001",
+            title="Has owner",
+            status="in_implementation",
             assigned_to="human:atin",
         )
 
         runner = CliRunner()
-        result = runner.invoke(
-            cli, ["weather", "--json"], env={"LATTICE_ROOT": str(tmp_path)}
-        )
+        result = runner.invoke(cli, ["weather", "--json"], env={"LATTICE_ROOT": str(tmp_path)})
         data = json.loads(result.output)["data"]
 
         unassigned = [a for a in data["attention"] if a["type"] == "unassigned_active"]
@@ -464,9 +491,7 @@ class TestEventCounting:
         _write_event(lattice_dir, "task_001", event_type="field_updated", ts=_ts_ago(days=5))
 
         runner = CliRunner()
-        result = runner.invoke(
-            cli, ["weather", "--json"], env={"LATTICE_ROOT": str(tmp_path)}
-        )
+        result = runner.invoke(cli, ["weather", "--json"], env={"LATTICE_ROOT": str(tmp_path)})
         data = json.loads(result.output)["data"]
 
         assert data["vital_signs"]["events_24h"] == 2
@@ -486,9 +511,7 @@ class TestMarkdownOutput:
         _write_task_snapshot(lattice_dir, "task_001", title="A task", status="backlog")
 
         runner = CliRunner()
-        result = runner.invoke(
-            cli, ["weather", "--markdown"], env={"LATTICE_ROOT": str(tmp_path)}
-        )
+        result = runner.invoke(cli, ["weather", "--markdown"], env={"LATTICE_ROOT": str(tmp_path)})
         assert result.exit_code == 0
         output = result.output
 
@@ -501,9 +524,7 @@ class TestMarkdownOutput:
     def test_markdown_table_format(self, tmp_path: Path) -> None:
         _init_lattice(tmp_path)
         runner = CliRunner()
-        result = runner.invoke(
-            cli, ["weather", "--markdown"], env={"LATTICE_ROOT": str(tmp_path)}
-        )
+        result = runner.invoke(cli, ["weather", "--markdown"], env={"LATTICE_ROOT": str(tmp_path)})
         assert result.exit_code == 0
         assert "| Metric | Value |" in result.output
         assert "|--------|-------|" in result.output
@@ -520,9 +541,7 @@ class TestJsonOutput:
     def test_json_envelope_structure(self, tmp_path: Path) -> None:
         _init_lattice(tmp_path)
         runner = CliRunner()
-        result = runner.invoke(
-            cli, ["weather", "--json"], env={"LATTICE_ROOT": str(tmp_path)}
-        )
+        result = runner.invoke(cli, ["weather", "--json"], env={"LATTICE_ROOT": str(tmp_path)})
         assert result.exit_code == 0
         parsed = json.loads(result.output)
 
@@ -539,9 +558,7 @@ class TestJsonOutput:
     def test_json_headline_fields(self, tmp_path: Path) -> None:
         _init_lattice(tmp_path)
         runner = CliRunner()
-        result = runner.invoke(
-            cli, ["weather", "--json"], env={"LATTICE_ROOT": str(tmp_path)}
-        )
+        result = runner.invoke(cli, ["weather", "--json"], env={"LATTICE_ROOT": str(tmp_path)})
         data = json.loads(result.output)["data"]
 
         headline = data["headline"]
@@ -553,9 +570,7 @@ class TestJsonOutput:
     def test_json_vital_signs_fields(self, tmp_path: Path) -> None:
         _init_lattice(tmp_path)
         runner = CliRunner()
-        result = runner.invoke(
-            cli, ["weather", "--json"], env={"LATTICE_ROOT": str(tmp_path)}
-        )
+        result = runner.invoke(cli, ["weather", "--json"], env={"LATTICE_ROOT": str(tmp_path)})
         data = json.loads(result.output)["data"]
 
         vs = data["vital_signs"]
@@ -576,9 +591,7 @@ class TestTextOutput:
     def test_text_has_weather_indicator(self, tmp_path: Path) -> None:
         _init_lattice(tmp_path)
         runner = CliRunner()
-        result = runner.invoke(
-            cli, ["weather"], env={"LATTICE_ROOT": str(tmp_path)}
-        )
+        result = runner.invoke(cli, ["weather"], env={"LATTICE_ROOT": str(tmp_path)})
         assert result.exit_code == 0
         assert "[OK]" in result.output  # Clear skies indicator
         assert "Clear skies" in result.output
@@ -587,14 +600,16 @@ class TestTextOutput:
         lattice_dir = _init_lattice(tmp_path)
 
         _write_task_snapshot(
-            lattice_dir, "task_001", title="Old task", status="in_implementation",
-            short_id="TST-1", updated_at=_ts_ago(days=10),
+            lattice_dir,
+            "task_001",
+            title="Old task",
+            status="in_implementation",
+            short_id="TST-1",
+            updated_at=_ts_ago(days=10),
         )
 
         runner = CliRunner()
-        result = runner.invoke(
-            cli, ["weather"], env={"LATTICE_ROOT": str(tmp_path)}
-        )
+        result = runner.invoke(cli, ["weather"], env={"LATTICE_ROOT": str(tmp_path)})
         assert result.exit_code == 0
         assert "[STALE]" in result.output
         assert "TST-1" in result.output
@@ -614,14 +629,15 @@ class TestWipBreaches:
         # Default WIP limit for in_review is 5 — create 6 tasks in review
         for i in range(6):
             _write_task_snapshot(
-                lattice_dir, f"task_{i:03d}", title=f"Review {i}",
-                status="in_review", assigned_to="human:atin",
+                lattice_dir,
+                f"task_{i:03d}",
+                title=f"Review {i}",
+                status="in_review",
+                assigned_to="human:atin",
             )
 
         runner = CliRunner()
-        result = runner.invoke(
-            cli, ["weather", "--json"], env={"LATTICE_ROOT": str(tmp_path)}
-        )
+        result = runner.invoke(cli, ["weather", "--json"], env={"LATTICE_ROOT": str(tmp_path)})
         data = json.loads(result.output)["data"]
 
         wip_items = [a for a in data["attention"] if a["type"] == "wip_breach"]
