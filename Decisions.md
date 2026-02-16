@@ -346,3 +346,45 @@
 - Stats computations can analyze graph properties: longest chain, most-blocking task, orphan clusters, critical path.
 - CLI commands like `lattice list` may gain topology-aware options (e.g., `--tree`, `--critical-path`).
 - Not yet implemented. This decision captures the architectural direction.
+
+---
+
+## 2026-02-16: Plugin system via `importlib.metadata` entry points
+
+- Decision: Lattice supports plugins via two `importlib.metadata` entry point groups: `lattice.cli_plugins` (register additional CLI commands) and `lattice.template_blocks` (provide additional CLAUDE.md template sections). Zero new dependencies.
+- Rationale: Enables private extensions (e.g., `lattice-fractal`) to layer on additional CLI commands and CLAUDE.md template blocks without forking the core. The public repo is fully useful on its own while Fractal Agentics maintains its opinionated workflow layer privately. `importlib.metadata` is stdlib, well-understood, and used by the wider Python packaging ecosystem (pytest, setuptools, etc.).
+- Constraints: v0 rejects `position: "replace_base"` for template blocks — plugins can only append, not replace the base template. Plugin load failures are logged to stderr but never crash the host CLI (matching `storage/hooks.py` error-handling pattern). `LATTICE_DEBUG=1` enables full tracebacks.
+- Consequence: Consumer packages define entry points in their `pyproject.toml`. The first consumer is `lattice-fractal` (private package). Core codebase requires no changes to support new plugins — they are discovered automatically at runtime.
+
+---
+
+## 2026-02-15: Cube view — 2D-first graph visualization with status-constrained layout
+
+**Decision:** The dashboard's spatial task visualization ("Cube" view) launches as a 2D force-directed graph using the `force-graph` library (~80KB), not the originally-proposed 3D `3d-force-graph` (~600KB). Layout uses explicit status-based X-axis positioning (d3.forceX pinned to workflow status index) with force-directed Y-axis separation, rather than `dagMode('lr')`.
+
+**Context:** Two independent expert reviews of the original 3D plan identified a fundamental flaw: `dagMode('lr')` arranges nodes by graph topology (parent→child edges), not by status. Tasks with no relationships have no DAG position and float freely; tasks in cycles silently fall back to force-directed layout without indication. The plan's mental model — "status as spatial position" — requires explicit coordinate assignment, which dagMode does not provide.
+
+Additional review findings that shaped this decision:
+- A ~600KB CDN dependency (the dashboard's first) is disproportionate for v1 and introduces offline/firewall failure modes
+- 3D orbit controls are poor on mobile and inaccessible to screen readers
+- Small task counts (3-5, Lattice's current sweet spot) look awkward in 3D space
+- The Panels/Displays primitive (decided same day) should be the long-term presentation architecture
+
+**Approach:**
+- v1: 2D force-graph with status-constrained X layout. Nodes colored by status (reusing `getLaneColor`), sized by priority. Directed edges colored by relationship type.
+- v1.5: Optional 3D toggle that lazy-loads 3d-force-graph only when activated
+- Long-term: Implement as a Display within the Panel system
+
+**Key design choices:**
+- Hover tooltips for quick inspection; single-click selects + shows side panel; double-click navigates to task detail. Users stay in the graph context.
+- CDN fallback: graceful degradation message when library fails to load
+- ETag-based revision on `/api/graph` for efficient auto-refresh (avoids JSON.stringify of full graph data every 5s)
+- Async render generation counter prevents stale renders on rapid navigation
+
+**Panel/Display compatibility:** The Cube is implemented as a standalone tab for now, but its rendering logic (initCubeGraph, updateCubeData, cleanupCube) is encapsulated as a module pattern compatible with future Display wrapping. When the Panel system is built, migrating Cube to a Display should require only wiring the entry/exit/update lifecycle hooks.
+
+**Consequences:**
+- Dashboard now has one external CDN dependency (force-graph, ~80KB with defer loading)
+- New `/api/graph` endpoint reads full task snapshots; uses ETag for efficient polling
+- 3D visualization deferred to v1.5 as a progressive enhancement
+- Mobile gets a notice banner; accessibility relies on Board/List views as alternatives

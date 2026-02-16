@@ -193,15 +193,49 @@ def init(
     _offer_claude_md(root)
 
 
+def _compose_claude_md_blocks() -> tuple[str, str]:
+    """Return (marker, composed_block) from base template + any plugin template blocks.
+
+    Plugin blocks with ``position: "after_base"`` are appended in discovery order.
+    """
+    from lattice.plugins import discover_template_blocks
+    from lattice.templates.claude_md_block import CLAUDE_MD_BLOCK, CLAUDE_MD_MARKER
+
+    plugin_blocks = discover_template_blocks()
+    if not plugin_blocks:
+        return CLAUDE_MD_MARKER, CLAUDE_MD_BLOCK
+
+    # Build composed block: base + plugin blocks appended
+    parts = [CLAUDE_MD_BLOCK.rstrip("\n")]
+    for block in plugin_blocks:
+        parts.append("")  # blank line separator
+        parts.append(block["content"].rstrip("\n"))
+    composed = "\n".join(parts) + "\n"
+    return CLAUDE_MD_MARKER, composed
+
+
+def _collect_all_markers() -> list[str]:
+    """Return all markers (base + plugin) for stripping during --force replacement."""
+    from lattice.plugins import discover_template_blocks
+    from lattice.templates.claude_md_block import CLAUDE_MD_MARKER
+
+    markers = [CLAUDE_MD_MARKER]
+    for block in discover_template_blocks():
+        marker = block.get("marker", "")
+        if marker and marker not in markers:
+            markers.append(marker)
+    return markers
+
+
 def _offer_claude_md(root: Path) -> None:
     """Detect CLAUDE.md and offer to add Lattice integration block."""
-    from lattice.templates.claude_md_block import CLAUDE_MD_BLOCK, CLAUDE_MD_MARKER
+    marker, composed_block = _compose_claude_md_blocks()
 
     claude_md = root / "CLAUDE.md"
 
     if claude_md.exists():
         content = claude_md.read_text()
-        if CLAUDE_MD_MARKER in content:
+        if marker in content:
             click.echo("CLAUDE.md already has Lattice integration.")
             return
         if click.confirm(
@@ -209,14 +243,14 @@ def _offer_claude_md(root: Path) -> None:
             default=True,
         ):
             with open(claude_md, "a") as f:
-                f.write(CLAUDE_MD_BLOCK)
+                f.write(composed_block)
             click.echo("Added Lattice integration to CLAUDE.md.")
     else:
         if click.confirm(
             "Create CLAUDE.md with Lattice agent integration?",
             default=True,
         ):
-            claude_md.write_text(f"# {root.name}\n{CLAUDE_MD_BLOCK}")
+            claude_md.write_text(f"# {root.name}\n{composed_block}")
             click.echo("Created CLAUDE.md with Lattice integration.")
 
 
@@ -330,40 +364,95 @@ def set_subproject_code(code: str, force: bool) -> None:
 @click.option("--force", is_flag=True, help="Replace existing Lattice block if present.")
 def setup_claude(target_path: str, force: bool) -> None:
     """Add or update Lattice agent integration in CLAUDE.md."""
-    from lattice.templates.claude_md_block import CLAUDE_MD_BLOCK, CLAUDE_MD_MARKER
+    marker, composed_block = _compose_claude_md_blocks()
 
     root = Path(target_path)
     claude_md = root / "CLAUDE.md"
 
     if claude_md.exists():
         content = claude_md.read_text()
-        if CLAUDE_MD_MARKER in content:
+        if marker in content:
             if not force:
                 click.echo("CLAUDE.md already has Lattice integration. Use --force to replace.")
                 return
-            # Remove existing block and re-add
+            # Remove existing block (base + any plugin sections) and re-add
+            all_markers = _collect_all_markers()
             lines = content.split("\n")
             new_lines: list[str] = []
             skip = False
             for line in lines:
-                if line.strip() == CLAUDE_MD_MARKER:
+                stripped = line.strip()
+                # Start skipping on any known Lattice marker
+                if any(stripped.startswith(m) for m in all_markers):
                     skip = True
                     continue
-                if skip and line.startswith("## ") and line.strip() != CLAUDE_MD_MARKER:
+                # Stop skipping at the next non-Lattice H2
+                if skip and line.startswith("## ") and not any(
+                    stripped.startswith(m) for m in all_markers
+                ):
                     skip = False
                 if not skip:
                     new_lines.append(line)
             content = "\n".join(new_lines).rstrip("\n") + "\n"
-            content += CLAUDE_MD_BLOCK
+            content += composed_block
             claude_md.write_text(content)
             click.echo("Updated Lattice integration in CLAUDE.md.")
         else:
             with open(claude_md, "a") as f:
-                f.write(CLAUDE_MD_BLOCK)
+                f.write(composed_block)
             click.echo("Added Lattice integration to CLAUDE.md.")
     else:
-        claude_md.write_text(f"# {root.name}\n{CLAUDE_MD_BLOCK}")
+        claude_md.write_text(f"# {root.name}\n{composed_block}")
         click.echo("Created CLAUDE.md with Lattice integration.")
+
+
+# ---------------------------------------------------------------------------
+# lattice plugins
+# ---------------------------------------------------------------------------
+
+
+@cli.command("plugins")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+def plugins_cmd(as_json: bool) -> None:
+    """List installed Lattice plugins."""
+    import json as json_mod
+
+    from lattice.plugins import (
+        CLI_PLUGIN_GROUP,
+        TEMPLATE_BLOCK_GROUP,
+        discover_cli_plugins,
+        discover_template_blocks,
+    )
+
+    cli_plugins = discover_cli_plugins()
+    template_blocks = discover_template_blocks()
+
+    if as_json:
+        data = {
+            "cli_plugins": [{"name": ep.name, "value": ep.value} for ep in cli_plugins],
+            "template_blocks": [
+                {"marker": b["marker"], "position": b.get("position", "after_base")}
+                for b in template_blocks
+            ],
+        }
+        click.echo(json_mod.dumps({"ok": True, "data": data}, sort_keys=True, indent=2))
+        return
+
+    if not cli_plugins and not template_blocks:
+        click.echo("No plugins installed.")
+        click.echo(f"  CLI plugins group: {CLI_PLUGIN_GROUP}")
+        click.echo(f"  Template blocks group: {TEMPLATE_BLOCK_GROUP}")
+        return
+
+    if cli_plugins:
+        click.echo("CLI plugins:")
+        for ep in cli_plugins:
+            click.echo(f"  {ep.name} -> {ep.value}")
+
+    if template_blocks:
+        click.echo("Template blocks:")
+        for block in template_blocks:
+            click.echo(f"  {block['marker']} (position: {block.get('position', 'after_base')})")
 
 
 # ---------------------------------------------------------------------------
@@ -379,6 +468,13 @@ from lattice.cli import archive_cmds as _archive_cmds  # noqa: E402, F401
 from lattice.cli import dashboard_cmd as _dashboard_cmd  # noqa: E402, F401
 from lattice.cli import stats_cmds as _stats_cmds  # noqa: E402, F401
 from lattice.cli import weather_cmds as _weather_cmds  # noqa: E402, F401
+
+# ---------------------------------------------------------------------------
+# Load CLI plugins (must be after all built-in commands are registered)
+# ---------------------------------------------------------------------------
+from lattice.plugins import load_cli_plugins as _load_cli_plugins  # noqa: E402
+
+_load_cli_plugins(cli)
 
 if __name__ == "__main__":
     cli()
