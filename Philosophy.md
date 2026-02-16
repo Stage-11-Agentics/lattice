@@ -243,4 +243,4 @@ We will build it together. We already are.
 
 Lattice is a work of context engineering -- the discipline of designing the structures, conventions, and shared representations through which human and machine minds coordinate. Not prompt engineering, which optimizes a single exchange. Context engineering optimizes the *environment* in which all exchanges occur: the file formats, the event schemas, the attribution models, the shared state that persists after every context window closes.
 
-Lattice was proudly brought into existence by a member of the New York City Context Engineering Guild, foresworn to its principles of positive human-computer transcendence — working in conjunction with Claude, Opus 4.6, and friends.
+Lattice was proudly brought into existence by a member of the New York City Context Engineering Guild, foresworn to its principles of positive human-computer transcendence.
