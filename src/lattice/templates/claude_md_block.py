@@ -22,7 +22,9 @@ This is not bookkeeping. This is the minimum viable act of coordination: declari
 
 ### Status Is a Signal, Not a Chore
 
-Every status transition is an event — immutable, attributed, permanent. When you move a task, you are writing history that future minds will read to understand what happened here. Update status at every real transition:
+Every status transition is an event — immutable, attributed, permanent. When you move a task, you are writing history that future minds will read to understand what happened here.
+
+**The cardinal rule: update status BEFORE you start the work, not after.** If you're about to plan a task, move it to `in_planning` first. If you're about to implement, move it to `in_progress` first. Lattice is the source of ground truth for what is happening right now. If the board says a task is in `backlog` but an agent is actively working on it, the board is lying — and every other mind reading it is making decisions on false information.
 
 ```
 lattice status <task> <status> --actor agent:<your-id>
@@ -33,6 +35,13 @@ backlog → in_planning → planned → in_progress → review → done
                                        ↕            ↕
                                     blocked      needs_human
 ```
+
+**Transition discipline:**
+- Moving to `in_planning`? Do it before you open the first file to read.
+- Moving to `in_progress`? Do it before you write the first line of code.
+- Moving to `review`? Do it when implementation is complete, before review starts.
+- Moving to `done`? Do it when review passes and the work is merged/shipped.
+- Spawning a sub-agent to work on a task? Update status in the parent context before the sub-agent launches.
 
 ### When You're Stuck
 
