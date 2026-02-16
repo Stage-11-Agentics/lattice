@@ -143,6 +143,16 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                 self._handle_archived(ld)
             elif path == "/api/graph":
                 self._handle_graph(ld)
+            elif path == "/api/git":
+                self._handle_git_summary(ld)
+            elif path.startswith("/api/git/branches/"):
+                # /api/git/branches/<name>/commits
+                remainder = path[len("/api/git/branches/"):]
+                if remainder.endswith("/commits"):
+                    branch_name = remainder[: -len("/commits")]
+                    self._handle_git_branch_commits(ld, branch_name)
+                else:
+                    self._send_json(404, _err("NOT_FOUND", f"Not found: {path}"))
             elif path.startswith("/api/tasks/"):
                 remainder = path[len("/api/tasks/") :]
                 if "/" in remainder:
@@ -404,6 +414,84 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
             self.send_header("ETag", etag)
             self.end_headers()
             self.wfile.write(data)
+
+        # ---------------------------------------------------------------
+        # Git API handlers
+        # ---------------------------------------------------------------
+
+        def _handle_git_summary(self, ld: Path) -> None:
+            """Handle GET /api/git — return full git summary with caching + ETag."""
+            from lattice.dashboard.git_reader import get_git_summary
+
+            summary, etag_value = get_git_summary(ld)
+
+            if not summary.get("available", False) or not etag_value:
+                # Not available or no etag — return without caching headers
+                self._send_json(200, _ok(summary))
+                return
+
+            # ETag / 304 support
+            etag = f'"{etag_value}"'
+            if_none_match = self.headers.get("If-None-Match")
+            if if_none_match and if_none_match == etag:
+                self.send_response(304)
+                self.send_header("ETag", etag)
+                self.end_headers()
+                return
+
+            body = _ok(summary)
+            data = body.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", "max-age=30")
+            self.end_headers()
+            self.wfile.write(data)
+
+        def _handle_git_branch_commits(self, ld: Path, branch_name: str) -> None:
+            """Handle GET /api/git/branches/<name>/commits — recent commits for a branch."""
+            from urllib.parse import unquote
+
+            from lattice.dashboard.git_reader import (
+                find_git_root,
+                get_recent_commits,
+                git_available,
+            )
+
+            if not branch_name:
+                self._send_json(400, _err("VALIDATION_ERROR", "Branch name is required"))
+                return
+
+            # URL-decode the branch name (e.g., %2F -> /)
+            branch_name = unquote(branch_name)
+
+            if not git_available():
+                self._send_json(
+                    200,
+                    _ok({"available": False, "reason": "git_not_installed"}),
+                )
+                return
+
+            repo_root = find_git_root(ld.parent)
+            if repo_root is None:
+                self._send_json(
+                    200,
+                    _ok({"available": False, "reason": "not_a_git_repo"}),
+                )
+                return
+
+            commits = get_recent_commits(repo_root, branch_name)
+            self._send_json(
+                200,
+                _ok(
+                    {
+                        "branch": branch_name,
+                        "commits": commits,
+                        "count": len(commits),
+                    }
+                ),
+            )
 
         # ---------------------------------------------------------------
         # POST endpoint handlers
