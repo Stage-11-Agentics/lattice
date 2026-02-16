@@ -282,3 +282,25 @@
 - Decision: Each `.lattice/` directory may contain a `context.md` — a freeform markdown file describing the instance's purpose, related instances, conventions, and idiosyncrasies. Created by `lattice init` with a minimal template.
 - Rationale: Agents read natural language context exceptionally well. A rigid JSON schema for instance relationships would be premature and couldn't express soft knowledge ("infra tasks take 2-3x estimates"). `config.json` stays machine-parseable for the CLI; `context.md` is the agent-facing context layer.
 - Consequence: `context.md` is the CLAUDE.md of a Lattice instance. Agents should read it before working with an instance. It is non-authoritative (like notes) — informational, not enforced.
+
+---
+
+## 2026-02-15: Deep Attribution (Provenance) on Events
+
+**Decision:** Add an optional `provenance` field to events as a sibling to the existing `agent_meta` field. Three sub-fields: `triggered_by` (event/task ID or free-form reference), `on_behalf_of` (actor format, validated), and `reason` (free-text). Included only when at least one sub-field is provided. No schema_version bump.
+
+**Context:** Lattice tracks *proximate* attribution (who performed an action) via the required `actor` field. But in agent-orchestrated workflows, the chain of causation matters: who delegated the work, what event triggered it, and why. Without deep attribution, the event log records *what happened* but not *why it happened* or *on whose authority*.
+
+**Rationale:**
+- Follows the established `agent_meta` pattern: optional, sparse, invisible when unused.
+- No breaking changes. Old events remain valid. Old code reading new events ignores `provenance` (unknown fields are tolerated per schema policy).
+- Three CLI flags (`--triggered-by`, `--on-behalf-of`, `--reason`) added to all write commands via `common_options`.
+- `on_behalf_of` is validated as actor format for consistency with the `actor` field.
+
+**`--reason` conflict resolution:** The `status` command previously had its own `--reason` flag for forced transitions. This was removed in favor of the `--reason` from `common_options` (param name: `provenance_reason`). When `--force` is used with `--reason`, the reason is written to both `data.reason` (backward compatibility) and `provenance.reason`. When `--reason` is used without `--force`, it goes only to `provenance.reason`. This unifies the reason mechanism across all commands.
+
+**Consequences:**
+- Every write command now accepts `--triggered-by`, `--on-behalf-of`, and `--reason`.
+- The provenance field appears in the event log (JSONL) and is displayed by `lattice show`.
+- MCP tools are not yet updated (follow-up work).
+- The Philosophy.md section on attribution has been updated to reflect this capability.

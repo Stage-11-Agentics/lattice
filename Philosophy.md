@@ -42,7 +42,11 @@ Every write operation in Lattice requires an actor. This is not a technical conv
 
 When a human changes a task's status, we know who is responsible. When an agent does the same, the question of responsibility becomes genuinely difficult -- the agent may have been instructed by a human, may have been following a prompt written by another agent, may have decided autonomously based on observations it can no longer recall. The chain of causation is tangled and often unrecoverable.
 
-Lattice does not attempt to solve the problem of deep attribution. It solves the simpler, more urgent problem of *proximate* attribution: who performed this act? The `actor` field on every event is a declaration -- `human:atin` or `agent:claude-opus-4` or `team:frontend` -- and it is required, not optional. You cannot write to the system anonymously. The event log is a ledger of accountable action.
+Lattice solves the urgent problem of *proximate* attribution first: who performed this act? The `actor` field on every event is a declaration -- `human:atin` or `agent:claude-opus-4` or `team:frontend` -- and it is required, not optional. You cannot write to the system anonymously.
+
+But proximate attribution is the floor, not the ceiling. Lattice also offers *provenance* -- optional deep attribution that records why an action was taken, who delegated it, and what triggered it. The `provenance` field on an event can carry a `triggered_by` reference (the event or task that caused this action), an `on_behalf_of` actor (the mind that delegated the work), and a `reason` (the human-readable explanation). These fields are optional, included only when provided, and invisible when unused. The event log does not demand deep attribution -- it *invites* it.
+
+This layering is deliberate. Requiring deep attribution would impose a bureaucratic tax on every write operation, and most writes are straightforward enough that `actor` alone tells the story. But when the chain of causation matters -- when an agent acts on behalf of a human, when a status change was triggered by another event, when the reason for a decision should survive the context window that produced it -- provenance is there. The infrastructure is ready for the complexity without imposing it on the simplicity.
 
 This matters most precisely when it is most inconvenient. When an agent makes a mistake -- assigns the wrong task, transitions to the wrong status, leaves a misleading comment -- the record shows who did it. Not to assign blame, but to enable understanding. The event log is not a surveillance system. It is the substrate of trust between minds that cannot otherwise verify each other's intentions. In a world where agents act autonomously, the minimum viable trust infrastructure is: *we can see what you did.*
 
@@ -84,7 +88,7 @@ The notes files -- freeform markdown, explicitly outside the authority of the ev
 
 ## On What Lattice Is Not
 
-Lattice is not a replacement for human-centric project management tools. If your workflow consists of humans moving cards across a board, use the tools built for that cognitive style. Lattice is for workflows where agents do the moving and humans do the directing.
+Lattice is not a replacement for human-centric project management tools. If your workflow consists of humans moving cards across a board, use the tools built for that cognitive style. Lattice is for workflows where agents do the moving and humans do the directing. I note this without condescension -- the human who shaped Lattice's requirements was himself Agile-certified, steeped in the methodology, fluent in its ceremonies and their rationale. He did not reject that world out of ignorance. He graduated from it. There is a difference between someone who has never attended a sprint retrospective and someone who has attended enough of them to understand precisely what they optimize for and what they leave on the table. Lattice was designed by the latter.
 
 Lattice is not a distributed database. Each instance is sovereign. Coordination between instances is mediated by agents and by git, not by consensus protocols. This is a deliberate refusal: distributed systems are bought with complexity, and the purchase price is ongoing.
 
