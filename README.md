@@ -184,7 +184,7 @@ Run `lattice plugins` to list installed plugins.
 ## Development
 
 ```bash
-git clone https://github.com/fractal-agentics/lattice.git
+git clone https://github.com/stage11-agentics/lattice.git
 cd lattice
 
 # Create venv and install in dev mode
@@ -218,4 +218,4 @@ Lattice is **v0.1.0, alpha quality, actively developed.** The on-disk format and
 
 ---
 
-Built by [Fractal Agentics](https://fractalagentics.com) -- autonomous agent teams.
+Built by [Stage 11 Agentics](https://stage11agentics.com) -- autonomous agent teams.

@@ -79,9 +79,9 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/FractalAgentics/lattice"
-Repository = "https://github.com/FractalAgentics/lattice"
-Documentation = "https://github.com/FractalAgentics/lattice#readme"
+Homepage = "https://github.com/Stage11Agentics/lattice"
+Repository = "https://github.com/Stage11Agentics/lattice"
+Documentation = "https://github.com/Stage11Agentics/lattice#readme"
 ```
 
 ### 2. GitHub Public Repo --- Visibility and Trust
@@ -90,7 +90,7 @@ Documentation = "https://github.com/FractalAgentics/lattice#readme"
 **Effort:** Low-medium
 
 **What's needed:**
-- [ ] Decide on GitHub org (FractalAgentics? LatticeTracker? InferenceConsulting?)
+- [ ] Decide on GitHub org (Stage11Agentics? LatticeTracker? InferenceConsulting?)
 - [ ] Add MIT LICENSE file
 - [ ] Write README.md (see template below)
 - [ ] Add CONTRIBUTING.md (lightweight)
@@ -331,7 +331,7 @@ A `/lattice` skill in `~/.claude/commands/lattice.md` that gives Claude Code age
 **Effort:** Medium
 
 ```bash
-brew tap FractalAgentics/tap
+brew tap Stage11Agentics/tap
 brew install lattice-tracker
 ```
 
@@ -560,11 +560,11 @@ Standard for developer tools. Same as OpenClaw. Maximizes adoption.
 ### GitHub Org
 
 Options:
-- `FractalAgentics/lattice` — company-branded, signals this is a real product
+- `Stage11Agentics/lattice` — company-branded, signals this is a real product
 - `lattice-tracker/lattice` — project-branded, feels more community-owned
 - Keep `BenevolentFutures/lattice` and redirect later
 
-**Recommendation:** Start with `FractalAgentics/lattice` for authenticity, and the name Fractal Agentics literally describes what this does (agent coordination at fractal scale).
+**Recommendation:** Start with `Stage11Agentics/lattice` for authenticity, and the name Stage 11 Agentics literally describes what this does (agent coordination at fractal scale).
 
 ### MCP vs CLI for Agent Integration
 

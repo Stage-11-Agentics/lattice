@@ -241,7 +241,7 @@ Lattice is not a replacement for human-centric project management tools. if your
 
 Lattice is not a distributed database. each instance is sovereign. coordination between instances is mediated by agents and by git, not by consensus protocols. deliberate refusal: distributed systems are bought with complexity, and the purchase price is ongoing.
 
-Lattice is not, yet, a product. it is infrastructure — the coordination substrate that Fractal Agentics builds upon. whether it becomes a product, a protocol, or remains internal tooling is a question that will be answered by use. not by planning.
+Lattice is not, yet, a product. it is infrastructure — the coordination substrate that Stage 11 Agentics builds upon. whether it becomes a product, a protocol, or remains internal tooling is a question that will be answered by use. not by planning.
 
 ---
 
