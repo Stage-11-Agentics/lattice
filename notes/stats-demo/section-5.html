@@ -1,0 +1,1500 @@
+<style>
+/* ============================================================
+   Section 5 — Polish & Action Items
+   Items: 10 (Dark Mode), 11 (Clickable Everything),
+          12 (Time Range), 13 (Collapsible), 20 (Export),
+          26 (Recommended Actions)
+   ============================================================ */
+
+/* --- Dark Mode / Theme Toggle (Item 10) --- */
+#item-10 .theme-demo-area {
+  position: relative;
+}
+
+#item-10 .theme-toggle-wrap {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 16px;
+}
+
+#item-10 .theme-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 24px;
+  padding: 6px 14px;
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.3s ease;
+}
+
+#item-10 .theme-toggle:hover {
+  border-color: var(--accent);
+  background: var(--bg-card-hover);
+}
+
+#item-10 .theme-toggle-track {
+  width: 44px;
+  height: 24px;
+  background: var(--border);
+  border-radius: 12px;
+  position: relative;
+  transition: background 0.3s ease;
+}
+
+#item-10 .theme-toggle-track.active {
+  background: var(--accent);
+}
+
+#item-10 .theme-toggle-thumb {
+  width: 18px;
+  height: 18px;
+  background: #fff;
+  border-radius: 50%;
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+}
+
+#item-10 .theme-toggle-track.active .theme-toggle-thumb {
+  transform: translateX(20px);
+}
+
+#item-10 .theme-toggle-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  transition: color 0.3s ease;
+}
+
+#item-10 .theme-preview-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+#item-10 .theme-preview-card {
+  border-radius: var(--radius);
+  padding: 20px;
+  border: 1px solid;
+  transition: all 0.3s ease;
+}
+
+#item-10 .theme-preview-card.dark-preview {
+  background: #0f1117;
+  border-color: #2d3348;
+}
+
+#item-10 .theme-preview-card.dark-preview .preview-label {
+  color: #94a3b8;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  margin-bottom: 10px;
+}
+
+#item-10 .theme-preview-card.dark-preview .preview-title {
+  color: #e2e8f0;
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+#item-10 .theme-preview-card.dark-preview .preview-bar-track {
+  background: #2d3348;
+  height: 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 6px;
+}
+
+#item-10 .theme-preview-card.dark-preview .preview-bar-fill {
+  background: #6366f1;
+  height: 100%;
+  border-radius: 4px;
+  width: 65%;
+}
+
+#item-10 .theme-preview-card.dark-preview .preview-stat {
+  color: #64748b;
+  font-size: 12px;
+}
+
+#item-10 .theme-preview-card.light-preview {
+  background: #f8fafc;
+  border-color: #e2e8f0;
+}
+
+#item-10 .theme-preview-card.light-preview .preview-label {
+  color: #64748b;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  margin-bottom: 10px;
+}
+
+#item-10 .theme-preview-card.light-preview .preview-title {
+  color: #1e293b;
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+#item-10 .theme-preview-card.light-preview .preview-bar-track {
+  background: #e2e8f0;
+  height: 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 6px;
+}
+
+#item-10 .theme-preview-card.light-preview .preview-bar-fill {
+  background: #6366f1;
+  height: 100%;
+  border-radius: 4px;
+  width: 65%;
+}
+
+#item-10 .theme-preview-card.light-preview .preview-stat {
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+/* Live demo area that actually toggles */
+#item-10 .live-theme-demo {
+  margin-top: 16px;
+  border-radius: var(--radius);
+  padding: 20px;
+  transition: all 0.4s ease;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+}
+
+#item-10 .live-theme-demo.light-mode {
+  background: #ffffff;
+  border-color: #e2e8f0;
+}
+
+#item-10 .live-theme-demo .live-demo-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  transition: color 0.4s ease;
+}
+
+#item-10 .live-theme-demo.light-mode .live-demo-label {
+  color: #64748b;
+}
+
+#item-10 .live-theme-demo .live-demo-content {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+
+#item-10 .live-demo-stat {
+  padding: 14px;
+  border-radius: 8px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  transition: all 0.4s ease;
+}
+
+#item-10 .live-theme-demo.light-mode .live-demo-stat {
+  background: #f8fafc;
+  border-color: #e2e8f0;
+}
+
+#item-10 .live-demo-stat .stat-value {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text-primary);
+  transition: color 0.4s ease;
+}
+
+#item-10 .live-theme-demo.light-mode .live-demo-stat .stat-value {
+  color: #1e293b;
+}
+
+#item-10 .live-demo-stat .stat-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+  transition: color 0.4s ease;
+}
+
+#item-10 .live-theme-demo.light-mode .live-demo-stat .stat-label {
+  color: #94a3b8;
+}
+
+/* --- Clickable Everything (Item 11) --- */
+#item-11 .interactive-table-wrap {
+  overflow-x: auto;
+}
+
+#item-11 .interactive-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13px;
+}
+
+#item-11 .interactive-table thead th {
+  text-align: left;
+  padding: 10px 16px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+}
+
+#item-11 .interactive-table tbody td {
+  padding: 12px 16px;
+  border-bottom: 1px solid rgba(45, 51, 72, 0.4);
+  vertical-align: middle;
+}
+
+#item-11 .interactive-table tbody tr {
+  transition: background 0.15s ease;
+}
+
+#item-11 .interactive-table tbody tr:hover {
+  background: var(--bg-card-hover);
+}
+
+#item-11 .interactive-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+#item-11 .clickable-link {
+  color: #818cf8;
+  cursor: pointer;
+  text-decoration: none;
+  font-weight: 500;
+  transition: all 0.15s ease;
+  position: relative;
+  border-bottom: 1px solid transparent;
+}
+
+#item-11 .clickable-link:hover {
+  color: #a5b4fc;
+  border-bottom-color: #a5b4fc;
+}
+
+#item-11 .clickable-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  padding: 3px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  transition: all 0.15s ease;
+  position: relative;
+}
+
+#item-11 .clickable-status:hover {
+  transform: translateY(-1px);
+}
+
+#item-11 .clickable-status.status-in_progress {
+  background: rgba(99, 102, 241, 0.15);
+  color: #a5b4fc;
+}
+
+#item-11 .clickable-status.status-in_progress:hover {
+  background: rgba(99, 102, 241, 0.25);
+}
+
+#item-11 .clickable-status.status-review {
+  background: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+}
+
+#item-11 .clickable-status.status-review:hover {
+  background: rgba(245, 158, 11, 0.25);
+}
+
+#item-11 .clickable-status .status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+#item-11 .status-in_progress .status-dot {
+  background: #818cf8;
+}
+
+#item-11 .status-review .status-dot {
+  background: #f59e0b;
+}
+
+#item-11 .clickable-assignee {
+  color: var(--text-primary);
+  cursor: pointer;
+  font-weight: 500;
+  font-size: 12px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  transition: all 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+#item-11 .clickable-assignee:hover {
+  background: rgba(99, 102, 241, 0.1);
+  color: #a5b4fc;
+}
+
+#item-11 .clickable-assignee .assignee-icon {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+#item-11 .assignee-icon.agent {
+  background: rgba(99, 102, 241, 0.2);
+  color: #818cf8;
+}
+
+#item-11 .assignee-icon.human {
+  background: rgba(34, 197, 94, 0.2);
+  color: #22c55e;
+}
+
+#item-11 .events-count {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+/* Tooltip for filter hint */
+#item-11 .filter-tooltip {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: #1e2235;
+  color: #e2e8f0;
+  padding: 5px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  z-index: 10;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+}
+
+#item-11 .filter-tooltip::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 5px solid transparent;
+  border-top-color: #1e2235;
+}
+
+#item-11 .clickable-status:hover .filter-tooltip {
+  opacity: 1;
+  transform: translateX(-50%) translateY(-2px);
+}
+
+/* Toast */
+.s5-toast {
+  position: fixed;
+  bottom: 30px;
+  right: 30px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  padding: 12px 20px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 500;
+  z-index: 9999;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  border: 1px solid var(--border);
+  transform: translateY(20px);
+  opacity: 0;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  font-family: var(--font);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 380px;
+}
+
+.s5-toast.visible {
+  transform: translateY(0);
+  opacity: 1;
+}
+
+.s5-toast .toast-icon {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+}
+
+.s5-toast .toast-icon.nav {
+  background: rgba(99, 102, 241, 0.2);
+  color: #818cf8;
+}
+
+.s5-toast .toast-icon.copy {
+  background: rgba(34, 197, 94, 0.2);
+  color: #22c55e;
+}
+
+/* --- Time Range Selector (Item 12) --- */
+#item-12 .time-range-container {
+  position: relative;
+}
+
+#item-12 .time-range-pills {
+  display: inline-flex;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 4px;
+  position: relative;
+  margin-bottom: 20px;
+}
+
+#item-12 .time-range-slider {
+  position: absolute;
+  top: 4px;
+  height: calc(100% - 8px);
+  background: var(--accent);
+  border-radius: 7px;
+  transition: left 0.35s cubic-bezier(0.4, 0, 0.2, 1), width 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+  z-index: 0;
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);
+}
+
+#item-12 .time-range-pill {
+  position: relative;
+  z-index: 1;
+  padding: 7px 20px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.25s ease;
+  border-radius: 7px;
+  white-space: nowrap;
+}
+
+#item-12 .time-range-pill.active {
+  color: #fff;
+}
+
+#item-12 .time-range-pill:hover:not(.active) {
+  color: var(--text-primary);
+}
+
+#item-12 .time-range-output {
+  background: var(--bg-card);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 24px;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 14px;
+  transition: all 0.3s ease;
+}
+
+#item-12 .time-range-output .range-icon {
+  font-size: 28px;
+  margin-bottom: 8px;
+  display: block;
+  opacity: 0.6;
+}
+
+#item-12 .time-range-output .range-label {
+  font-weight: 600;
+  color: var(--accent);
+}
+
+/* --- Collapsible Sections (Item 13) --- */
+#item-13 .collapsible-section {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 10px;
+  overflow: hidden;
+  transition: border-color 0.2s ease;
+}
+
+#item-13 .collapsible-section:hover {
+  border-color: rgba(99, 102, 241, 0.3);
+}
+
+#item-13 .collapsible-header {
+  display: flex;
+  align-items: center;
+  padding: 14px 18px;
+  cursor: pointer;
+  user-select: none;
+  gap: 10px;
+  transition: background 0.15s ease;
+}
+
+#item-13 .collapsible-header:hover {
+  background: var(--bg-card-hover);
+}
+
+#item-13 .collapsible-chevron {
+  font-size: 14px;
+  color: var(--text-muted);
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  flex-shrink: 0;
+  width: 18px;
+  text-align: center;
+}
+
+#item-13 .collapsible-section.expanded .collapsible-chevron {
+  transform: rotate(90deg);
+}
+
+#item-13 .collapsible-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  flex: 1;
+}
+
+#item-13 .collapsible-summary {
+  font-size: 11px;
+  color: var(--text-muted);
+  transition: opacity 0.25s ease;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 340px;
+}
+
+#item-13 .collapsible-section.expanded .collapsible-summary {
+  opacity: 0;
+  width: 0;
+  max-width: 0;
+  overflow: hidden;
+}
+
+#item-13 .collapsible-body {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.4s cubic-bezier(0.4, 0, 0.2, 1), padding 0.3s ease;
+  padding: 0 18px;
+}
+
+#item-13 .collapsible-section.expanded .collapsible-body {
+  max-height: 400px;
+  padding: 0 18px 18px;
+}
+
+#item-13 .collapsible-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+#item-13 .collapsible-bar-row:last-child {
+  margin-bottom: 0;
+}
+
+#item-13 .bar-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  min-width: 80px;
+  font-weight: 500;
+}
+
+#item-13 .bar-track {
+  flex: 1;
+  height: 8px;
+  background: var(--bg-primary);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+#item-13 .bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.5s ease;
+}
+
+#item-13 .bar-value {
+  font-size: 12px;
+  color: var(--text-muted);
+  min-width: 28px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- Export / Share (Item 20) --- */
+#item-20 .export-panel {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+#item-20 .export-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  user-select: none;
+}
+
+#item-20 .export-btn:hover {
+  border-color: var(--accent);
+  background: var(--bg-card-hover);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 16px rgba(99, 102, 241, 0.15);
+}
+
+#item-20 .export-btn:active {
+  transform: translateY(0);
+}
+
+#item-20 .export-btn .export-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+}
+
+#item-20 .export-btn .export-icon.md-icon {
+  background: rgba(99, 102, 241, 0.15);
+  color: #818cf8;
+}
+
+#item-20 .export-btn .export-icon.json-icon {
+  background: rgba(34, 197, 94, 0.15);
+  color: #22c55e;
+}
+
+#item-20 .export-btn .export-icon.report-icon {
+  background: rgba(245, 158, 11, 0.15);
+  color: #f59e0b;
+}
+
+#item-20 .export-btn .export-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+#item-20 .export-btn .export-sublabel {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+#item-20 .export-preview {
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  transition: all 0.3s ease;
+}
+
+#item-20 .export-preview-header {
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+}
+
+#item-20 .export-preview-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+#item-20 .export-preview-badge {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: 600;
+}
+
+#item-20 .export-preview-badge.md-badge {
+  background: rgba(99, 102, 241, 0.15);
+  color: #818cf8;
+}
+
+#item-20 .export-preview-badge.json-badge {
+  background: rgba(34, 197, 94, 0.15);
+  color: #22c55e;
+}
+
+#item-20 .export-preview-badge.report-badge {
+  background: rgba(245, 158, 11, 0.15);
+  color: #f59e0b;
+}
+
+#item-20 .export-preview-body {
+  padding: 14px 16px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+#item-20 .export-preview-body pre {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', monospace;
+}
+
+#item-20 .export-preview-body pre .hl-heading {
+  color: #818cf8;
+  font-weight: 700;
+}
+
+#item-20 .export-preview-body pre .hl-bold {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+#item-20 .export-preview-body pre .hl-key {
+  color: #818cf8;
+}
+
+#item-20 .export-preview-body pre .hl-string {
+  color: #22c55e;
+}
+
+#item-20 .export-preview-body pre .hl-number {
+  color: #f59e0b;
+}
+
+#item-20 .export-preview-body pre .hl-arrow {
+  color: var(--text-muted);
+}
+
+/* --- Recommended Actions (Item 26) --- */
+#item-26 .actions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+#item-26 .action-card {
+  display: flex;
+  gap: 14px;
+  padding: 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  transition: all 0.2s ease;
+  cursor: default;
+}
+
+#item-26 .action-card:hover {
+  border-color: rgba(99, 102, 241, 0.25);
+  background: var(--bg-card-hover);
+  transform: translateX(3px);
+}
+
+#item-26 .action-severity {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding-top: 2px;
+}
+
+#item-26 .severity-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+#item-26 .severity-dot.critical { background: #ef4444; box-shadow: 0 0 8px rgba(239, 68, 68, 0.4); }
+#item-26 .severity-dot.high     { background: #f97316; box-shadow: 0 0 8px rgba(249, 115, 22, 0.3); }
+#item-26 .severity-dot.medium   { background: #eab308; box-shadow: 0 0 8px rgba(234, 179, 8, 0.3); }
+#item-26 .severity-dot.low      { background: #3b82f6; box-shadow: 0 0 8px rgba(59, 130, 246, 0.3); }
+#item-26 .severity-dot.info     { background: #6b7280; }
+
+#item-26 .severity-line {
+  width: 2px;
+  flex: 1;
+  background: var(--border);
+  border-radius: 1px;
+  min-height: 20px;
+}
+
+#item-26 .action-content {
+  flex: 1;
+  min-width: 0;
+}
+
+#item-26 .action-headline {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+  line-height: 1.4;
+}
+
+#item-26 .action-headline .action-task-ref {
+  color: #818cf8;
+  cursor: pointer;
+  border-bottom: 1px solid transparent;
+  transition: all 0.15s ease;
+}
+
+#item-26 .action-headline .action-task-ref:hover {
+  color: #a5b4fc;
+  border-bottom-color: #a5b4fc;
+}
+
+#item-26 .action-context {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+  line-height: 1.5;
+}
+
+#item-26 .action-recommendation {
+  font-size: 12px;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#item-26 .action-recommendation .arrow {
+  color: var(--accent);
+  font-weight: 700;
+  font-size: 14px;
+}
+
+#item-26 .action-recommendation .rec-text {
+  font-weight: 500;
+}
+
+#item-26 .action-number {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+</style>
+
+<div class="demo-group" id="group-5">
+
+  <!-- ===== Item 10: Dark Mode / Theme-Aware ===== -->
+  <div class="demo-item" id="item-10">
+    <div class="demo-item-header">
+      <span class="demo-item-number">&#9321;</span>
+      <h3>Dark Mode / Theme-Aware</h3>
+      <span class="demo-item-tag">Polish</span>
+    </div>
+    <div class="demo-item-body">
+      <div class="theme-demo-area">
+        <div class="theme-toggle-wrap">
+          <div class="theme-toggle" id="s5-theme-toggle" onclick="s5ToggleTheme()">
+            <span class="theme-toggle-label" id="s5-theme-label">Dark</span>
+            <div class="theme-toggle-track" id="s5-theme-track">
+              <div class="theme-toggle-thumb"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Side-by-side preview cards -->
+        <div class="theme-preview-row">
+          <div class="theme-preview-card dark-preview">
+            <div class="preview-label">Dark Mode</div>
+            <div class="preview-title">Task Completion</div>
+            <div class="preview-bar-track"><div class="preview-bar-fill"></div></div>
+            <div class="preview-stat">65% of sprint complete</div>
+          </div>
+          <div class="theme-preview-card light-preview">
+            <div class="preview-label">Light Mode</div>
+            <div class="preview-title">Task Completion</div>
+            <div class="preview-bar-track"><div class="preview-bar-fill"></div></div>
+            <div class="preview-stat">65% of sprint complete</div>
+          </div>
+        </div>
+
+        <!-- Live toggling demo -->
+        <div class="live-theme-demo" id="s5-live-demo">
+          <div class="live-demo-label">Live Preview (toggle above)</div>
+          <div class="live-demo-content">
+            <div class="live-demo-stat">
+              <div class="stat-value">32</div>
+              <div class="stat-label">Active Tasks</div>
+            </div>
+            <div class="live-demo-stat">
+              <div class="stat-value">72</div>
+              <div class="stat-label">Health Score</div>
+            </div>
+            <div class="live-demo-stat">
+              <div class="stat-value">5.3d</div>
+              <div class="stat-label">Avg Cycle</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Item 11: Clickable Everything ===== -->
+  <div class="demo-item" id="item-11">
+    <div class="demo-item-header">
+      <span class="demo-item-number">&#9322;</span>
+      <h3>Clickable Everything</h3>
+      <span class="demo-item-tag">Polish</span>
+    </div>
+    <div class="demo-item-body">
+      <div class="interactive-table-wrap">
+        <table class="interactive-table">
+          <thead>
+            <tr>
+              <th>Task</th>
+              <th>Status</th>
+              <th>Assignee</th>
+              <th>Events</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+                <span class="clickable-link" onclick="s5ShowToast('nav', 'Would navigate to: LAT-47 detail view')">LAT-47</span>
+              </td>
+              <td>
+                <span class="clickable-status status-in_progress" onclick="s5ShowToast('nav', 'Would filter by: status = in_progress')">
+                  <span class="status-dot"></span>
+                  in_progress
+                  <span class="filter-tooltip">Click to filter by in_progress</span>
+                </span>
+              </td>
+              <td>
+                <span class="clickable-assignee" onclick="s5ShowToast('nav', 'Would navigate to: agent:claude-opus-4 profile')">
+                  <span class="assignee-icon agent">C</span>
+                  agent:claude-opus-4
+                </span>
+              </td>
+              <td><span class="events-count">12</span></td>
+            </tr>
+            <tr>
+              <td>
+                <span class="clickable-link" onclick="s5ShowToast('nav', 'Would navigate to: LAT-45 detail view')">LAT-45</span>
+              </td>
+              <td>
+                <span class="clickable-status status-review" onclick="s5ShowToast('nav', 'Would filter by: status = review')">
+                  <span class="status-dot"></span>
+                  review
+                  <span class="filter-tooltip">Click to filter by review</span>
+                </span>
+              </td>
+              <td>
+                <span class="clickable-assignee" onclick="s5ShowToast('nav', 'Would navigate to: human:atin profile')">
+                  <span class="assignee-icon human">A</span>
+                  human:atin
+                </span>
+              </td>
+              <td><span class="events-count">8</span></td>
+            </tr>
+            <tr>
+              <td>
+                <span class="clickable-link" onclick="s5ShowToast('nav', 'Would navigate to: LAT-42 detail view')">LAT-42</span>
+              </td>
+              <td>
+                <span class="clickable-status status-in_progress" onclick="s5ShowToast('nav', 'Would filter by: status = in_progress')">
+                  <span class="status-dot"></span>
+                  in_progress
+                  <span class="filter-tooltip">Click to filter by in_progress</span>
+                </span>
+              </td>
+              <td>
+                <span class="clickable-assignee" onclick="s5ShowToast('nav', 'Would navigate to: agent:codex profile')">
+                  <span class="assignee-icon agent">X</span>
+                  agent:codex
+                </span>
+              </td>
+              <td><span class="events-count">15</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Item 12: Time Range Selector ===== -->
+  <div class="demo-item" id="item-12">
+    <div class="demo-item-header">
+      <span class="demo-item-number">&#9323;</span>
+      <h3>Time Range Selector</h3>
+      <span class="demo-item-tag">Polish</span>
+    </div>
+    <div class="demo-item-body">
+      <div class="time-range-container">
+        <div class="time-range-pills" id="s5-time-pills">
+          <div class="time-range-slider" id="s5-time-slider"></div>
+          <div class="time-range-pill" data-range="7d" onclick="s5SelectRange(this)">7d</div>
+          <div class="time-range-pill active" data-range="30d" onclick="s5SelectRange(this)">30d</div>
+          <div class="time-range-pill" data-range="90d" onclick="s5SelectRange(this)">90d</div>
+          <div class="time-range-pill" data-range="All" onclick="s5SelectRange(this)">All</div>
+        </div>
+        <div class="time-range-output" id="s5-range-output">
+          <span class="range-icon">&#128200;</span>
+          Chart data would update to show: <span class="range-label">last 30 days</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Item 13: Collapsible Sections ===== -->
+  <div class="demo-item" id="item-13">
+    <div class="demo-item-header">
+      <span class="demo-item-number">&#9324;</span>
+      <h3>Collapsible Sections</h3>
+      <span class="demo-item-tag">Polish</span>
+    </div>
+    <div class="demo-item-body">
+      <!-- Section 1: Status Distribution (expanded) -->
+      <div class="collapsible-section expanded" id="s5-collapse-status">
+        <div class="collapsible-header" onclick="s5ToggleCollapse('s5-collapse-status')">
+          <span class="collapsible-chevron">&#9656;</span>
+          <span class="collapsible-title">Status Distribution</span>
+          <span class="collapsible-summary">5 in_progress, 3 review, 12 done...</span>
+        </div>
+        <div class="collapsible-body">
+          <div class="collapsible-bar-row">
+            <span class="bar-label">in_progress</span>
+            <div class="bar-track"><div class="bar-fill" style="width:42%; background: var(--accent);"></div></div>
+            <span class="bar-value">5</span>
+          </div>
+          <div class="collapsible-bar-row">
+            <span class="bar-label">review</span>
+            <div class="bar-track"><div class="bar-fill" style="width:25%; background: var(--warning);"></div></div>
+            <span class="bar-value">3</span>
+          </div>
+          <div class="collapsible-bar-row">
+            <span class="bar-label">planned</span>
+            <div class="bar-track"><div class="bar-fill" style="width:33%; background: #22d3ee;"></div></div>
+            <span class="bar-value">4</span>
+          </div>
+          <div class="collapsible-bar-row">
+            <span class="bar-label">done</span>
+            <div class="bar-track"><div class="bar-fill" style="width:100%; background: var(--success);"></div></div>
+            <span class="bar-value">12</span>
+          </div>
+          <div class="collapsible-bar-row">
+            <span class="bar-label">backlog</span>
+            <div class="bar-track"><div class="bar-fill" style="width:67%; background: var(--text-muted);"></div></div>
+            <span class="bar-value">8</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Section 2: Priority Breakdown (collapsed) -->
+      <div class="collapsible-section" id="s5-collapse-priority">
+        <div class="collapsible-header" onclick="s5ToggleCollapse('s5-collapse-priority')">
+          <span class="collapsible-chevron">&#9656;</span>
+          <span class="collapsible-title">Priority Breakdown</span>
+          <span class="collapsible-summary">2 urgent, 7 high, 15 normal, 8 low</span>
+        </div>
+        <div class="collapsible-body">
+          <div class="collapsible-bar-row">
+            <span class="bar-label">Urgent</span>
+            <div class="bar-track"><div class="bar-fill" style="width:13%; background: var(--danger);"></div></div>
+            <span class="bar-value">2</span>
+          </div>
+          <div class="collapsible-bar-row">
+            <span class="bar-label">High</span>
+            <div class="bar-track"><div class="bar-fill" style="width:47%; background: #f97316;"></div></div>
+            <span class="bar-value">7</span>
+          </div>
+          <div class="collapsible-bar-row">
+            <span class="bar-label">Normal</span>
+            <div class="bar-track"><div class="bar-fill" style="width:100%; background: var(--accent);"></div></div>
+            <span class="bar-value">15</span>
+          </div>
+          <div class="collapsible-bar-row">
+            <span class="bar-label">Low</span>
+            <div class="bar-track"><div class="bar-fill" style="width:53%; background: var(--text-muted);"></div></div>
+            <span class="bar-value">8</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Section 3: Tag Distribution (collapsed) -->
+      <div class="collapsible-section" id="s5-collapse-tags">
+        <div class="collapsible-header" onclick="s5ToggleCollapse('s5-collapse-tags')">
+          <span class="collapsible-chevron">&#9656;</span>
+          <span class="collapsible-title">Tag Distribution</span>
+          <span class="collapsible-summary">core: 11, cli: 8, dashboard: 5, storage: 4</span>
+        </div>
+        <div class="collapsible-body">
+          <div class="collapsible-bar-row">
+            <span class="bar-label">core</span>
+            <div class="bar-track"><div class="bar-fill" style="width:100%; background: var(--accent);"></div></div>
+            <span class="bar-value">11</span>
+          </div>
+          <div class="collapsible-bar-row">
+            <span class="bar-label">cli</span>
+            <div class="bar-track"><div class="bar-fill" style="width:73%; background: #22d3ee;"></div></div>
+            <span class="bar-value">8</span>
+          </div>
+          <div class="collapsible-bar-row">
+            <span class="bar-label">dashboard</span>
+            <div class="bar-track"><div class="bar-fill" style="width:45%; background: var(--warning);"></div></div>
+            <span class="bar-value">5</span>
+          </div>
+          <div class="collapsible-bar-row">
+            <span class="bar-label">storage</span>
+            <div class="bar-track"><div class="bar-fill" style="width:36%; background: var(--success);"></div></div>
+            <span class="bar-value">4</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Item 20: Export / Share ===== -->
+  <div class="demo-item" id="item-20">
+    <div class="demo-item-header">
+      <span class="demo-item-number">&#9331;</span>
+      <h3>Export / Share</h3>
+      <span class="demo-item-tag">Feature</span>
+    </div>
+    <div class="demo-item-body">
+      <div class="export-panel">
+        <div class="export-btn" onclick="s5ShowExportPreview('markdown')">
+          <div class="export-icon md-icon">&#9997;</div>
+          <div class="export-label">Copy as Markdown</div>
+          <div class="export-sublabel">Clipboard-ready</div>
+        </div>
+        <div class="export-btn" onclick="s5ShowExportPreview('json')">
+          <div class="export-icon json-icon">{}</div>
+          <div class="export-label">Export JSON</div>
+          <div class="export-sublabel">Machine-readable</div>
+        </div>
+        <div class="export-btn" onclick="s5ShowExportPreview('report')">
+          <div class="export-icon report-icon">&#128196;</div>
+          <div class="export-label">Generate Report</div>
+          <div class="export-sublabel">Formatted summary</div>
+        </div>
+      </div>
+
+      <div class="export-preview" id="s5-export-preview">
+        <div class="export-preview-header">
+          <span class="export-preview-title" id="s5-preview-title">Preview</span>
+          <span class="export-preview-badge md-badge" id="s5-preview-badge">Markdown</span>
+        </div>
+        <div class="export-preview-body">
+          <pre id="s5-preview-content"><span class="hl-heading">## Lattice Stats &mdash; Feb 15, 2026</span>
+- <span class="hl-bold">Active tasks:</span> 32 (&uarr;3 from last week)
+- <span class="hl-bold">Completed this week:</span> 3
+- <span class="hl-bold">Health:</span> Partly Cloudy (72/100)
+- <span class="hl-bold">Bottleneck:</span> review (avg 12.7d)
+- <span class="hl-bold">Attention:</span> LAT-18 stale 12d, blocking 2 tasks</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Item 26: Top 5 Recommended Actions ===== -->
+  <div class="demo-item" id="item-26">
+    <div class="demo-item-header">
+      <span class="demo-item-number">&#12886;</span>
+      <h3>Top 5 Recommended Actions</h3>
+      <span class="demo-item-tag">Feature</span>
+    </div>
+    <div class="demo-item-body">
+      <div class="actions-list">
+        <!-- Action 1 -->
+        <div class="action-card">
+          <div class="action-severity">
+            <div class="severity-dot critical"></div>
+            <div class="severity-line"></div>
+          </div>
+          <div class="action-content">
+            <div class="action-headline">
+              Unblock <span class="action-task-ref" onclick="s5ShowToast('nav', 'Would navigate to: LAT-18 detail view')">LAT-18</span> &mdash; "Add relationship validation"
+            </div>
+            <div class="action-context">Stale 12d in in_progress, blocking LAT-31 and LAT-33 (chain depth 2)</div>
+            <div class="action-recommendation">
+              <span class="arrow">&rarr;</span>
+              <span class="rec-text">Review and resolve or reassign</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Action 2 -->
+        <div class="action-card">
+          <div class="action-severity">
+            <div class="severity-dot high"></div>
+            <div class="severity-line"></div>
+          </div>
+          <div class="action-content">
+            <div class="action-headline">
+              Reduce WIP &mdash; in_progress at 5/4 limit
+            </div>
+            <div class="action-context">Consider moving <span class="action-task-ref" onclick="s5ShowToast('nav', 'Would navigate to: LAT-38 detail view')">LAT-38</span> "Add tag filtering" to review</div>
+            <div class="action-recommendation">
+              <span class="arrow">&rarr;</span>
+              <span class="rec-text">Move oldest in_progress task forward</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Action 3 -->
+        <div class="action-card">
+          <div class="action-severity">
+            <div class="severity-dot medium"></div>
+            <div class="severity-line"></div>
+          </div>
+          <div class="action-content">
+            <div class="action-headline">
+              Assign <span class="action-task-ref" onclick="s5ShowToast('nav', 'Would navigate to: LAT-22 detail view')">LAT-22</span> &mdash; "Design artifact linking UX"
+            </div>
+            <div class="action-context">Planned but unassigned for 14 days, stale</div>
+            <div class="action-recommendation">
+              <span class="arrow">&rarr;</span>
+              <span class="rec-text">Assign to available agent or deprioritize</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Action 4 -->
+        <div class="action-card">
+          <div class="action-severity">
+            <div class="severity-dot low"></div>
+            <div class="severity-line"></div>
+          </div>
+          <div class="action-content">
+            <div class="action-headline">
+              Review <span class="action-task-ref" onclick="s5ShowToast('nav', 'Would navigate to: LAT-45 detail view')">LAT-45</span> &mdash; "Fix event replay ordering"
+            </div>
+            <div class="action-context">In review for 5h, all tests passing</div>
+            <div class="action-recommendation">
+              <span class="arrow">&rarr;</span>
+              <span class="rec-text">Merge if approved</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Action 5 -->
+        <div class="action-card">
+          <div class="action-severity">
+            <div class="severity-dot info"></div>
+          </div>
+          <div class="action-content">
+            <div class="action-headline">
+              Plan next sprint &mdash; 4 tasks in backlog
+            </div>
+            <div class="action-context"><span class="action-task-ref" onclick="s5ShowToast('nav', 'Would navigate to: LAT-35 detail view')">LAT-35</span> (high priority) and <span class="action-task-ref" onclick="s5ShowToast('nav', 'Would navigate to: LAT-34 detail view')">LAT-34</span> ready for planning</div>
+            <div class="action-recommendation">
+              <span class="arrow">&rarr;</span>
+              <span class="rec-text">Move highest-priority backlog items to planned</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /group-5 -->
+
+<script>
+(function() {
+  'use strict';
+
+  // === Toast system ===
+  let s5ToastTimeout = null;
+  window.s5ShowToast = function(type, message) {
+    // Remove existing toast
+    const existing = document.querySelector('.s5-toast');
+    if (existing) existing.remove();
+    if (s5ToastTimeout) clearTimeout(s5ToastTimeout);
+
+    const toast = document.createElement('div');
+    toast.className = 's5-toast';
+    const iconClass = type === 'copy' ? 'copy' : 'nav';
+    const iconChar = type === 'copy' ? '\u2713' : '\u2192';
+    toast.innerHTML = '<div class="toast-icon ' + iconClass + '">' + iconChar + '</div><span>' + message + '</span>';
+    document.body.appendChild(toast);
+
+    // Trigger animation
+    requestAnimationFrame(function() {
+      requestAnimationFrame(function() {
+        toast.classList.add('visible');
+      });
+    });
+
+    s5ToastTimeout = setTimeout(function() {
+      toast.classList.remove('visible');
+      setTimeout(function() { toast.remove(); }, 300);
+    }, 2500);
+  };
+
+  // === Item 10: Theme toggle ===
+  let s5DarkMode = true;
+  window.s5ToggleTheme = function() {
+    s5DarkMode = !s5DarkMode;
+    const track = document.getElementById('s5-theme-track');
+    const label = document.getElementById('s5-theme-label');
+    const demo = document.getElementById('s5-live-demo');
+
+    if (s5DarkMode) {
+      track.classList.remove('active');
+      label.textContent = 'Dark';
+      demo.classList.remove('light-mode');
+    } else {
+      track.classList.add('active');
+      label.textContent = 'Light';
+      demo.classList.add('light-mode');
+    }
+  };
+
+  // === Item 12: Time Range Selector ===
+  const rangeLabels = {
+    '7d': 'last 7 days',
+    '30d': 'last 30 days',
+    '90d': 'last 90 days',
+    'All': 'all time'
+  };
+
+  function s5UpdateSlider() {
+    const pills = document.getElementById('s5-time-pills');
+    if (!pills) return;
+    const active = pills.querySelector('.time-range-pill.active');
+    const slider = document.getElementById('s5-time-slider');
+    if (!active || !slider) return;
+
+    const pillsRect = pills.getBoundingClientRect();
+    const activeRect = active.getBoundingClientRect();
+    slider.style.left = (activeRect.left - pillsRect.left) + 'px';
+    slider.style.width = activeRect.width + 'px';
+  }
+
+  window.s5SelectRange = function(el) {
+    const pills = document.querySelectorAll('#item-12 .time-range-pill');
+    pills.forEach(function(p) { p.classList.remove('active'); });
+    el.classList.add('active');
+
+    const range = el.getAttribute('data-range');
+    const output = document.getElementById('s5-range-output');
+    if (output) {
+      output.innerHTML = '<span class="range-icon">\uD83D\uDCC8</span>Chart data would update to show: <span class="range-label">' + rangeLabels[range] + '</span>';
+    }
+
+    s5UpdateSlider();
+  };
+
+  // Initialize slider position after DOM ready
+  requestAnimationFrame(function() {
+    setTimeout(s5UpdateSlider, 50);
+  });
+  window.addEventListener('resize', s5UpdateSlider);
+
+  // === Item 13: Collapsible sections ===
+  window.s5ToggleCollapse = function(id) {
+    var section = document.getElementById(id);
+    if (!section) return;
+    section.classList.toggle('expanded');
+  };
+
+  // === Item 20: Export preview ===
+  var exportData = {
+    markdown: {
+      title: 'Markdown Preview',
+      badge: 'Markdown',
+      badgeClass: 'md-badge',
+      content: '<span class="hl-heading">## Lattice Stats \u2014 Feb 15, 2026</span>\n- <span class="hl-bold">Active tasks:</span> 32 (\u2191 3 from last week)\n- <span class="hl-bold">Completed this week:</span> 3\n- <span class="hl-bold">Health:</span> Partly Cloudy (72/100)\n- <span class="hl-bold">Bottleneck:</span> review (avg 12.7d)\n- <span class="hl-bold">Attention:</span> LAT-18 stale 12d, blocking 2 tasks'
+    },
+    json: {
+      title: 'JSON Output',
+      badge: 'JSON',
+      badgeClass: 'json-badge',
+      content: '{\n  <span class="hl-key">"generated"</span>: <span class="hl-string">"2026-02-15T12:00:00Z"</span>,\n  <span class="hl-key">"active_tasks"</span>: <span class="hl-number">32</span>,\n  <span class="hl-key">"completed_this_week"</span>: <span class="hl-number">3</span>,\n  <span class="hl-key">"health"</span>: {\n    <span class="hl-key">"score"</span>: <span class="hl-number">72</span>,\n    <span class="hl-key">"label"</span>: <span class="hl-string">"Partly Cloudy"</span>\n  },\n  <span class="hl-key">"bottleneck"</span>: {\n    <span class="hl-key">"status"</span>: <span class="hl-string">"review"</span>,\n    <span class="hl-key">"avg_days"</span>: <span class="hl-number">12.7</span>\n  },\n  <span class="hl-key">"attention"</span>: [{\n    <span class="hl-key">"task"</span>: <span class="hl-string">"LAT-18"</span>,\n    <span class="hl-key">"stale_days"</span>: <span class="hl-number">12</span>,\n    <span class="hl-key">"blocking"</span>: <span class="hl-number">2</span>\n  }]\n}'
+    },
+    report: {
+      title: 'Report Preview',
+      badge: 'Report',
+      badgeClass: 'report-badge',
+      content: '<span class="hl-heading">LATTICE PROJECT REPORT</span>\n<span class="hl-heading">Generated: Feb 15, 2026</span>\n<span class="hl-bold">==================================</span>\n\n<span class="hl-bold">SUMMARY</span>\n  Active tasks:           32 (\u2191 3)\n  Completed this week:     3\n  Health score:           72 / 100\n  Overall status:         Partly Cloudy\n\n<span class="hl-bold">BOTTLENECK ANALYSIS</span>\n  Slowest stage: review (avg 12.7 days)\n  WIP violation: in_progress at 5/4\n\n<span class="hl-bold">ATTENTION REQUIRED</span>\n  <span class="hl-arrow">\u2192</span> LAT-18: stale 12d, blocking 2 tasks\n  <span class="hl-arrow">\u2192</span> LAT-22: unassigned 14d\n  <span class="hl-arrow">\u2192</span> LAT-38: candidate for review'
+    }
+  };
+
+  window.s5ShowExportPreview = function(type) {
+    var data = exportData[type];
+    if (!data) return;
+
+    var titleEl = document.getElementById('s5-preview-title');
+    var badgeEl = document.getElementById('s5-preview-badge');
+    var contentEl = document.getElementById('s5-preview-content');
+
+    if (titleEl) titleEl.textContent = data.title;
+    if (badgeEl) {
+      badgeEl.textContent = data.badge;
+      badgeEl.className = 'export-preview-badge ' + data.badgeClass;
+    }
+    if (contentEl) contentEl.innerHTML = data.content;
+
+    // Animate the preview container
+    var preview = document.getElementById('s5-export-preview');
+    if (preview) {
+      preview.style.transform = 'scale(0.98)';
+      preview.style.opacity = '0.7';
+      setTimeout(function() {
+        preview.style.transform = 'scale(1)';
+        preview.style.opacity = '1';
+      }, 150);
+    }
+
+    if (type === 'markdown') {
+      s5ShowToast('copy', 'Copied to clipboard!');
+    }
+  };
+
+})();
+</script>
