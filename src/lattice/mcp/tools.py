@@ -761,6 +761,20 @@ def lattice_unarchive(
     return event
 
 
+def _validate_branch_name(branch: str) -> None:
+    """Validate a branch name for safety.
+
+    Rejects empty/whitespace-only names, names starting with ``-``
+    (git flag injection), and names containing ASCII control characters.
+    """
+    if not branch or not branch.strip():
+        raise ValueError("Branch name must not be empty or whitespace-only.")
+    if branch.startswith("-"):
+        raise ValueError(f"Branch name must not start with '-': '{branch}'.")
+    if any(0 <= ord(c) <= 31 for c in branch):
+        raise ValueError(f"Branch name must not contain control characters: '{branch!r}'.")
+
+
 @mcp.tool()
 def lattice_branch_link(
     task_id: Annotated[str, Field(description="Task ID (ULID or short ID)")],
@@ -772,27 +786,51 @@ def lattice_branch_link(
     ] = None,
 ) -> dict:
     """Link a git branch to a task. Returns the updated snapshot."""
+    # Input validation
+    _validate_branch_name(branch)
+    # Normalize empty repo to None
+    if repo is not None and not repo.strip():
+        repo = None
+
     lattice_dir = _find_root(lattice_root)
     config = _load_config(lattice_dir)
     _validate_actor(actor)
     task_id = _resolve_task_id(lattice_dir, task_id)
-    snapshot = _read_snapshot_or_error(lattice_dir, task_id)
-
-    # Reject duplicates: same (branch, repo) pair
-    for bl in snapshot.get("branch_links", []):
-        if bl["branch"] == branch and bl.get("repo") == repo:
-            repo_display = f" (repo: {repo})" if repo else ""
-            raise ValueError(
-                f"Duplicate: branch '{branch}'{repo_display} already linked to {task_id}."
-            )
 
     event_data: dict = {"branch": branch}
     if repo is not None:
         event_data["repo"] = repo
 
     event = create_event(type="branch_linked", task_id=task_id, actor=actor, data=event_data)
-    updated_snapshot = apply_event_to_snapshot(snapshot, event)
-    write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
+
+    # Acquire lock, then read snapshot + check + write atomically
+    locks_dir = lattice_dir / "locks"
+    lock_keys = sorted([f"events_{task_id}", f"tasks_{task_id}"])
+
+    with multi_lock(locks_dir, lock_keys):
+        snapshot = _read_snapshot_or_error(lattice_dir, task_id)
+
+        # Reject duplicates: same (branch, repo) pair
+        for bl in snapshot.get("branch_links", []):
+            if bl["branch"] == branch and bl.get("repo") == repo:
+                repo_display = f" (repo: {repo})" if repo else ""
+                raise ValueError(
+                    f"Duplicate: branch '{branch}'{repo_display} already linked to {task_id}."
+                )
+
+        updated_snapshot = apply_event_to_snapshot(snapshot, event)
+
+        # Event-first write
+        event_path = lattice_dir / "events" / f"{task_id}.jsonl"
+        jsonl_append(event_path, serialize_event(event))
+
+        snapshot_path = lattice_dir / "tasks" / f"{task_id}.json"
+        atomic_write(snapshot_path, serialize_snapshot(updated_snapshot))
+
+    # Fire hooks after locks released
+    if config:
+        execute_hooks(config, lattice_dir, task_id, event)
+
     return updated_snapshot
 
 
@@ -807,30 +845,54 @@ def lattice_branch_unlink(
     ] = None,
 ) -> dict:
     """Unlink a git branch from a task. Returns the updated snapshot."""
+    # Input validation
+    _validate_branch_name(branch)
+    # Normalize empty repo to None
+    if repo is not None and not repo.strip():
+        repo = None
+
     lattice_dir = _find_root(lattice_root)
     config = _load_config(lattice_dir)
     _validate_actor(actor)
     task_id = _resolve_task_id(lattice_dir, task_id)
-    snapshot = _read_snapshot_or_error(lattice_dir, task_id)
-
-    # Check the branch link exists
-    found = False
-    for bl in snapshot.get("branch_links", []):
-        if bl["branch"] == branch and bl.get("repo") == repo:
-            found = True
-            break
-
-    if not found:
-        repo_display = f" (repo: {repo})" if repo else ""
-        raise ValueError(f"No branch link '{branch}'{repo_display} on {task_id}.")
 
     event_data: dict = {"branch": branch}
     if repo is not None:
         event_data["repo"] = repo
 
     event = create_event(type="branch_unlinked", task_id=task_id, actor=actor, data=event_data)
-    updated_snapshot = apply_event_to_snapshot(snapshot, event)
-    write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
+
+    # Acquire lock, then read snapshot + check + write atomically
+    locks_dir = lattice_dir / "locks"
+    lock_keys = sorted([f"events_{task_id}", f"tasks_{task_id}"])
+
+    with multi_lock(locks_dir, lock_keys):
+        snapshot = _read_snapshot_or_error(lattice_dir, task_id)
+
+        # Check the branch link exists
+        found = False
+        for bl in snapshot.get("branch_links", []):
+            if bl["branch"] == branch and bl.get("repo") == repo:
+                found = True
+                break
+
+        if not found:
+            repo_display = f" (repo: {repo})" if repo else ""
+            raise ValueError(f"No branch link '{branch}'{repo_display} on {task_id}.")
+
+        updated_snapshot = apply_event_to_snapshot(snapshot, event)
+
+        # Event-first write
+        event_path = lattice_dir / "events" / f"{task_id}.jsonl"
+        jsonl_append(event_path, serialize_event(event))
+
+        snapshot_path = lattice_dir / "tasks" / f"{task_id}.json"
+        atomic_write(snapshot_path, serialize_snapshot(updated_snapshot))
+
+    # Fire hooks after locks released
+    if config:
+        execute_hooks(config, lattice_dir, task_id, event)
+
     return updated_snapshot
 
 
