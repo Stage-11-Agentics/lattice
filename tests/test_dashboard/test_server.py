@@ -244,23 +244,25 @@ class TestStatsEndpoint:
         assert status == 200
         assert body["ok"] is True
         data = body["data"]
-        assert data["total_active"] == 3
-        assert data["total_archived"] == 1
-        assert isinstance(data["by_status"], dict)
-        assert isinstance(data["by_type"], dict)
-        assert isinstance(data["by_priority"], dict)
+        assert data["summary"]["active_tasks"] == 3
+        assert data["summary"]["archived_tasks"] == 1
+        assert isinstance(data["by_status"], list)
+        assert isinstance(data["by_type"], list)
+        assert isinstance(data["by_priority"], list)
 
     def test_stats_are_dynamic(self, dashboard_server):
         base_url, _ld, _ids = dashboard_server
         status, body = _get(base_url, "/api/stats")
         data = body["data"]
+        # by_status is a list of [status, count] pairs
+        status_dict = {s: c for s, c in data["by_status"]}
         # Counts should match actual task data
-        total_from_status = sum(data["by_status"].values())
-        assert total_from_status == data["total_active"]
+        total_from_status = sum(status_dict.values())
+        assert total_from_status == data["summary"]["active_tasks"]
         # Verify specific counts
-        assert data["by_status"].get("backlog") == 1
-        assert data["by_status"].get("in_implementation") == 1
-        assert data["by_status"].get("done") == 1
+        assert status_dict.get("backlog") == 1
+        assert status_dict.get("in_implementation") == 1
+        assert status_dict.get("done") == 1
 
 
 class TestArchivedEndpoint:

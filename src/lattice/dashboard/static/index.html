@@ -2659,6 +2659,29 @@ select.form-control{cursor:pointer}
 .member-chip-agent:hover{background:var(--chip-agent-hover)}
 .member-chip-team{background:var(--chip-team-bg);color:var(--chip-team-text);border-color:var(--chip-team-border)}
 .member-chip-team:hover{background:var(--chip-team-hover)}
+
+/* Stats view */
+.stats-view{max-width:1000px;padding:0 16px}
+.stats-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:20px}
+.stats-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-md,8px);padding:16px 20px;text-align:center}
+.stats-card-value{font-size:2rem;font-weight:700;color:var(--accent-primary);line-height:1.2}
+.stats-card-label{font-size:.8rem;color:var(--text-muted);margin-top:4px;text-transform:uppercase;letter-spacing:.04em}
+.stats-section{margin-bottom:20px}
+.stats-section h3{font-size:.95rem;font-weight:600;margin-bottom:8px;color:var(--text-primary)}
+.stats-bar-row{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+.stats-bar-label{width:140px;font-size:.8rem;color:var(--text-secondary);text-align:right;flex-shrink:0}
+.stats-bar-track{flex:1;height:18px;background:var(--surface-raised,var(--surface));border-radius:var(--radius-sm,4px);overflow:hidden}
+.stats-bar-fill{height:100%;border-radius:var(--radius-sm,4px);min-width:2px;transition:width .3s}
+.stats-bar-count{width:30px;font-size:.8rem;font-weight:600;color:var(--text-primary);text-align:right}
+.stats-distributions{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:20px}
+.stats-dist-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-md,8px);padding:12px}
+.stats-dist-card h4{font-size:.85rem;font-weight:600;margin-bottom:8px;color:var(--text-primary)}
+.stats-dist-table{width:100%;font-size:.8rem}
+.stats-dist-table td{padding:3px 6px;border-bottom:1px solid var(--border)}
+.stats-dist-count{text-align:right;font-weight:600;font-variant-numeric:tabular-nums}
+.stats-wip-alerts{margin-bottom:16px}
+.stats-wip-alert{background:rgba(255,180,0,0.1);border:1px solid rgba(255,180,0,0.4);border-radius:var(--radius-sm,4px);padding:8px 12px;margin-bottom:4px;font-size:.85rem;color:var(--text-primary)}
+.stats-stale{border-left:3px solid rgba(255,180,0,0.6);padding-left:12px}
 </style>
 </head>
 <body>
@@ -2668,6 +2691,7 @@ select.form-control{cursor:pointer}
   <span class="nav-tab" data-view="board">Board</span>
   <span class="nav-tab" data-view="list">List</span>
   <span class="nav-tab" data-view="activity">Activity</span>
+  <span class="nav-tab" data-view="stats">Stats</span>
   <div class="nav-right">
     <span id="stats-badges"></span>
     <button type="button" class="btn btn-new-task" id="new-task-btn" title="Create new task">+ New Task</button>
@@ -3037,7 +3061,22 @@ var VOICES = {
     "table.type": "Type",
     "table.assigned": "Assigned",
     "table.updated": "Updated",
-    "stats.tasks": "tasks"
+    "stats.tasks": "tasks",
+    "nav.stats": "Stats",
+    "stats.active_tasks": "Active Tasks",
+    "stats.archived_tasks": "Archived",
+    "stats.total_events": "Total Events",
+    "stats.active_events": "Active Events",
+    "stats.wip_exceeded": "WIP Limit Exceeded",
+    "stats.by_status": "Status Distribution",
+    "stats.by_priority": "By Priority",
+    "stats.by_type": "By Type",
+    "stats.by_assignee": "By Assignee",
+    "stats.by_tag": "By Tag",
+    "stats.recently_active": "Recently Active",
+    "stats.stale_tasks": "Stale Tasks",
+    "stats.busiest_tasks": "Most Active",
+    "empty.stats": "No statistics yet."
   },
   "en-clinical": {
     _meta: { label: "Clinical (English)", lang: "en" },
@@ -3140,7 +3179,22 @@ var VOICES = {
     "table.type": "Type",
     "table.assigned": "Assigned",
     "table.updated": "Updated",
-    "stats.tasks": "tasks"
+    "stats.tasks": "tasks",
+    "nav.stats": "Stats",
+    "stats.active_tasks": "Active",
+    "stats.archived_tasks": "Archived",
+    "stats.total_events": "Events",
+    "stats.active_events": "Active Events",
+    "stats.wip_exceeded": "WIP Exceeded",
+    "stats.by_status": "Status",
+    "stats.by_priority": "Priority",
+    "stats.by_type": "Type",
+    "stats.by_assignee": "Assignee",
+    "stats.by_tag": "Tags",
+    "stats.recently_active": "Recent",
+    "stats.stale_tasks": "Stale",
+    "stats.busiest_tasks": "Busiest",
+    "empty.stats": "No data."
   },
   "es-oracle": {
     _meta: { label: "Or\u00e1culo (Espa\u00f1ol)", lang: "es" },
@@ -3240,7 +3294,22 @@ var VOICES = {
     "table.type": "Tipo",
     "table.assigned": "Asignado",
     "table.updated": "Actualizado",
-    "stats.tasks": "tareas"
+    "stats.tasks": "tareas",
+    "nav.stats": "Estad\u00edsticas",
+    "stats.active_tasks": "Tareas Activas",
+    "stats.archived_tasks": "Archivadas",
+    "stats.total_events": "Eventos Totales",
+    "stats.active_events": "Eventos Activos",
+    "stats.wip_exceeded": "L\u00edmite WIP Excedido",
+    "stats.by_status": "Distribuci\u00f3n por Estado",
+    "stats.by_priority": "Por Prioridad",
+    "stats.by_type": "Por Tipo",
+    "stats.by_assignee": "Por Asignado",
+    "stats.by_tag": "Por Etiqueta",
+    "stats.recently_active": "Activos Recientemente",
+    "stats.stale_tasks": "Tareas Estancadas",
+    "stats.busiest_tasks": "M\u00e1s Activas",
+    "empty.stats": "Sin estad\u00edsticas a\u00fan."
   }
 };
 
@@ -3358,6 +3427,7 @@ async function route(hash) {
   if (view === "board") renderBoard();
   else if (view === "list") renderList();
   else if (view === "activity") await renderActivity();
+  else if (view === "stats") await renderStats();
   else if (view === "task" && parts[1]) await renderDetail(parts[1]);
   else renderBoard();
 }
@@ -3431,6 +3501,7 @@ function updateStaticVoiceStrings() {
     if (view === "board") el.textContent = t("nav.board");
     else if (view === "list") el.textContent = t("nav.list");
     else if (view === "activity") el.textContent = t("nav.activity");
+    else if (view === "stats") el.textContent = t("nav.stats");
   });
   // New Task button
   var newBtn = document.getElementById("new-task-btn");
@@ -4373,6 +4444,142 @@ async function renderActivity() {
   }
 }
 
+// --- Stats View ---
+async function renderStats() {
+  var app = document.getElementById("app");
+  app.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+  try {
+    var data = await api("/api/stats");
+    if (!data || !data.summary) {
+      app.innerHTML = '<div class="empty"><p>' + esc(t("empty.stats")) + '</p></div>';
+      return;
+    }
+    var html = '<div class="stats-view">';
+
+    // Summary cards
+    var sum = data.summary;
+    html += '<div class="stats-cards">';
+    html += '<div class="stats-card"><div class="stats-card-value">' + esc(sum.active_tasks) + '</div><div class="stats-card-label">' + esc(t("stats.active_tasks")) + '</div></div>';
+    html += '<div class="stats-card"><div class="stats-card-value">' + esc(sum.archived_tasks) + '</div><div class="stats-card-label">' + esc(t("stats.archived_tasks")) + '</div></div>';
+    html += '<div class="stats-card"><div class="stats-card-value">' + esc(sum.total_events) + '</div><div class="stats-card-label">' + esc(t("stats.total_events")) + '</div></div>';
+    html += '<div class="stats-card"><div class="stats-card-value">' + esc(sum.active_events) + '</div><div class="stats-card-label">' + esc(t("stats.active_events")) + '</div></div>';
+    html += '</div>';
+
+    // WIP alerts
+    if (data.wip && data.wip.length > 0) {
+      var hasOver = false;
+      data.wip.forEach(function(w) { if (w.over) hasOver = true; });
+      if (hasOver) {
+        html += '<div class="stats-wip-alerts">';
+        data.wip.forEach(function(w) {
+          if (w.over) {
+            html += '<div class="stats-wip-alert">' + esc(t("stats.wip_exceeded")) + ': <strong>' + esc(w.status) + '</strong> &mdash; ' + esc(w.current) + '/' + esc(w.limit) + '</div>';
+          }
+        });
+        html += '</div>';
+      }
+    }
+
+    // Status distribution (horizontal bars)
+    if (data.by_status && data.by_status.length > 0) {
+      var maxStatus = 0;
+      data.by_status.forEach(function(row) { if (row[1] > maxStatus) maxStatus = row[1]; });
+      html += '<div class="stats-section"><h3>' + esc(t("stats.by_status")) + '</h3>';
+      data.by_status.forEach(function(row) {
+        var pct = maxStatus > 0 ? Math.round((row[1] / maxStatus) * 100) : 0;
+        var color = getLaneColor(row[0]);
+        html += '<div class="stats-bar-row">';
+        html += '<span class="stats-bar-label">' + esc(row[0]) + '</span>';
+        html += '<div class="stats-bar-track"><div class="stats-bar-fill" style="width:' + pct + '%;background:' + esc(color) + '"></div></div>';
+        html += '<span class="stats-bar-count">' + esc(row[1]) + '</span>';
+        html += '</div>';
+      });
+      html += '</div>';
+    }
+
+    // Distribution tables (priority, type, assignee, tags)
+    var distPanels = [];
+    if (data.by_priority && data.by_priority.length > 0) {
+      distPanels.push({key: "stats.by_priority", rows: data.by_priority});
+    }
+    if (data.by_type && data.by_type.length > 0) {
+      distPanels.push({key: "stats.by_type", rows: data.by_type});
+    }
+    if (data.by_assignee && data.by_assignee.length > 0) {
+      distPanels.push({key: "stats.by_assignee", rows: data.by_assignee});
+    }
+    if (data.by_tag && data.by_tag.length > 0) {
+      distPanels.push({key: "stats.by_tag", rows: data.by_tag});
+    }
+    if (distPanels.length > 0) {
+      html += '<div class="stats-distributions">';
+      distPanels.forEach(function(panel) {
+        html += '<div class="stats-dist-card"><h4>' + esc(t(panel.key)) + '</h4>';
+        html += '<table class="stats-dist-table">';
+        panel.rows.forEach(function(row) {
+          html += '<tr><td>' + esc(row[0]) + '</td><td class="stats-dist-count">' + esc(row[1]) + '</td></tr>';
+        });
+        html += '</table></div>';
+      });
+      html += '</div>';
+    }
+
+    // Recently active tasks
+    if (data.recently_active && data.recently_active.length > 0) {
+      html += '<div class="stats-section"><h3>' + esc(t("stats.recently_active")) + '</h3>';
+      html += '<table><thead><tr><th>ID</th><th>' + esc(t("table.title")) + '</th><th>' + esc(t("table.status")) + '</th><th>' + esc(t("table.updated")) + '</th></tr></thead><tbody>';
+      data.recently_active.forEach(function(task) {
+        html += '<tr>';
+        html += '<td class="id-cell"><a href="#/task/' + esc(task.full_id) + '">' + esc(task.id) + '</a></td>';
+        html += '<td><a href="#/task/' + esc(task.full_id) + '">' + esc(task.title) + '</a></td>';
+        html += '<td><span class="badge badge-stat">' + esc(task.status) + '</span></td>';
+        html += '<td>' + esc(task.updated_ago) + '</td>';
+        html += '</tr>';
+      });
+      html += '</tbody></table></div>';
+    }
+
+    // Stale tasks
+    if (data.stale && data.stale.length > 0) {
+      html += '<div class="stats-section stats-stale"><h3>' + esc(t("stats.stale_tasks")) + '</h3>';
+      html += '<table><thead><tr><th>ID</th><th>' + esc(t("table.title")) + '</th><th>' + esc(t("table.status")) + '</th><th>Days Stale</th></tr></thead><tbody>';
+      var staleShown = data.stale.slice(0, 10);
+      staleShown.forEach(function(task) {
+        html += '<tr>';
+        html += '<td class="id-cell"><a href="#/task/' + esc(task.full_id) + '">' + esc(task.id) + '</a></td>';
+        html += '<td><a href="#/task/' + esc(task.full_id) + '">' + esc(task.title) + '</a></td>';
+        html += '<td><span class="badge badge-stat">' + esc(task.status) + '</span></td>';
+        html += '<td>' + esc(typeof task.days_stale === "number" ? task.days_stale.toFixed(1) : task.days_stale) + '</td>';
+        html += '</tr>';
+      });
+      html += '</tbody></table>';
+      if (data.stale.length > 10) {
+        html += '<p style="font-size:.8rem;color:var(--text-muted);margin-top:4px">...and ' + esc(data.stale.length - 10) + ' more</p>';
+      }
+      html += '</div>';
+    }
+
+    // Busiest tasks
+    if (data.busiest && data.busiest.length > 0) {
+      html += '<div class="stats-section"><h3>' + esc(t("stats.busiest_tasks")) + '</h3>';
+      html += '<table><thead><tr><th>ID</th><th>' + esc(t("table.title")) + '</th><th>Events</th></tr></thead><tbody>';
+      data.busiest.forEach(function(task) {
+        html += '<tr>';
+        html += '<td class="id-cell"><a href="#/task/' + esc(task.full_id) + '">' + esc(task.id) + '</a></td>';
+        html += '<td><a href="#/task/' + esc(task.full_id) + '">' + esc(task.title) + '</a></td>';
+        html += '<td style="font-weight:600">' + esc(task.event_count) + '</td>';
+        html += '</tr>';
+      });
+      html += '</tbody></table></div>';
+    }
+
+    html += '</div>';
+    app.innerHTML = html;
+  } catch(e) {
+    app.innerHTML = '<div class="error-box"><p>' + esc(e.message) + '</p><button class="btn" onclick="renderStats()">' + esc(t("btn.retry")) + '</button></div>';
+  }
+}
+
 // --- Helpers ---
 function esc(s) {
   if (s == null) return "";
@@ -4625,7 +4832,7 @@ function startAutoRefresh() {
   stopAutoRefresh();
   autoRefreshInterval = setInterval(async function() {
     // Only auto-refresh on board, list, and activity views
-    if (currentView !== "board" && currentView !== "list" && currentView !== "activity") return;
+    if (currentView !== "board" && currentView !== "list" && currentView !== "activity" && currentView !== "stats") return;
     try {
       var newTasks = await api("/api/tasks");
       var newConfig = await api("/api/config");

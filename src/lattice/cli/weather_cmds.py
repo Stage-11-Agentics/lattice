@@ -10,12 +10,12 @@ import click
 
 from lattice.cli.helpers import json_envelope, load_project_config, require_root
 from lattice.cli.main import cli
-from lattice.cli.stats_cmds import (
-    _build_stats,
-    _days_ago,
-    _format_days,
-    _load_all_snapshots,
-    _parse_ts,
+from lattice.core.stats import (
+    build_stats,
+    days_ago,
+    format_days,
+    load_all_snapshots,
+    parse_ts,
 )
 
 # Future config shape for scheduling:
@@ -95,7 +95,7 @@ def _load_recent_events(lattice_dir: Path, hours: float = 24.0) -> list[dict]:
                 ev = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            ts = _parse_ts(ev.get("ts", ""))
+            ts = parse_ts(ev.get("ts", ""))
             if ts is not None:
                 delta = (now - ts).total_seconds()
                 if delta <= cutoff_seconds:
@@ -124,13 +124,13 @@ def _find_recently_completed(
         if snap.get("status") != "done":
             continue
         updated = snap.get("updated_at", "")
-        days = _days_ago(updated, now)
+        days = days_ago(updated, now)
         if days is not None:
             done_tasks.append({
                 "id": snap.get("short_id") or snap.get("id", "?"),
                 "title": snap.get("title", "?"),
                 "days_ago": days,
-                "completed_ago": _format_days(days),
+                "completed_ago": format_days(days),
             })
 
     # Sort by most recent first
@@ -187,7 +187,7 @@ def _find_attention_needed(
             "type": "stale",
             "id": t["id"],
             "title": t["title"],
-            "detail": f"Idle for {_format_days(t['days_stale'])}",
+            "detail": f"Idle for {format_days(t['days_stale'])}",
         })
 
     # WIP breaches
@@ -217,8 +217,8 @@ def _find_attention_needed(
 def _build_weather(lattice_dir: Path, config: dict) -> dict:
     """Build the full weather report data structure."""
     now = datetime.now(timezone.utc)
-    stats = _build_stats(lattice_dir, config)
-    active, archived = _load_all_snapshots(lattice_dir)
+    stats = build_stats(lattice_dir, config)
+    active, archived = load_all_snapshots(lattice_dir)
 
     # Recent events
     recent_events = _load_recent_events(lattice_dir, hours=24.0)

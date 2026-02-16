@@ -285,45 +285,15 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
             self._send_json(200, _ok(all_events[:50]))
 
         def _handle_stats(self, ld: Path) -> None:
-            tasks_dir = ld / "tasks"
-            by_status: dict[str, int] = {}
-            by_type: dict[str, int] = {}
-            by_priority: dict[str, int] = {}
-            total_active = 0
-
-            if tasks_dir.is_dir():
-                for task_file in tasks_dir.glob("*.json"):
-                    try:
-                        snap = json.loads(task_file.read_text())
-                    except (json.JSONDecodeError, OSError):
-                        continue
-                    total_active += 1
-                    status = snap.get("status", "unknown")
-                    by_status[status] = by_status.get(status, 0) + 1
-                    task_type = snap.get("type", "unknown")
-                    by_type[task_type] = by_type.get(task_type, 0) + 1
-                    priority = snap.get("priority", "unknown")
-                    by_priority[priority] = by_priority.get(priority, 0) + 1
-
-            # Count archived
-            archive_dir = ld / "archive" / "tasks"
-            total_archived = 0
-            if archive_dir.is_dir():
-                for _ in archive_dir.glob("*.json"):
-                    total_archived += 1
-
-            self._send_json(
-                200,
-                _ok(
-                    {
-                        "total_active": total_active,
-                        "total_archived": total_archived,
-                        "by_status": by_status,
-                        "by_type": by_type,
-                        "by_priority": by_priority,
-                    }
-                ),
-            )
+            config_path = ld / "config.json"
+            try:
+                config = json.loads(config_path.read_text())
+            except (json.JSONDecodeError, OSError) as exc:
+                self._send_json(500, _err("READ_ERROR", f"Failed to read config: {exc}"))
+                return
+            from lattice.core.stats import build_stats
+            stats = build_stats(ld, config)
+            self._send_json(200, _ok(stats))
 
         def _handle_archived(self, ld: Path) -> None:
             archive_dir = ld / "archive" / "tasks"

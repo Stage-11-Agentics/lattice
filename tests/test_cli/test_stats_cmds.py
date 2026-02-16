@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-
 
 class TestStatsCommand:
     """Tests for the stats CLI command."""
