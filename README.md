@@ -35,7 +35,7 @@ you are the conductor. the orchestra plays.
 ## three minutes to working
 
 ```bash
-pip install lattice-tracker
+uv tool install lattice-tracker
 cd your-project/
 lattice init --project-code PROJ --actor human:yourname
 lattice setup-claude            # if using Claude Code

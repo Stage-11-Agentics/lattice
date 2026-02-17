@@ -6,11 +6,21 @@
 uv tool install lattice-tracker
 ```
 
-This installs the `lattice` CLI globally — available from any directory, any project. If you prefer pipx:
+This installs `lattice` as a global command — available from any directory, any project. No venv activation, no `uv run`. Just `lattice`.
+
+If you see a warning that `lattice` is not on your PATH, run `uv tool update-shell` and restart your terminal.
+
+If you prefer pipx: `pipx install lattice-tracker`.
+
+## Try the demo (optional)
+
+Before setting up your own project, you can explore a fully populated example:
 
 ```bash
-pipx install lattice-tracker
+lattice demo init
 ```
+
+This seeds 30 tasks across 4 epics and opens the dashboard in your browser. Press Ctrl+C when you're done looking.
 
 ## Initialize
 
