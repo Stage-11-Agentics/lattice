@@ -1161,7 +1161,7 @@ def _seed_demo(target_dir: Path, quiet: bool = False) -> None:
     ensure_lattice_dirs(target_dir)
 
     # 2. Write config
-    config: dict = dict(default_config())
+    config: dict = dict(default_config(preset="opinionated"))
     config["instance_id"] = generate_instance_id()
     config["project_code"] = "LGHT"
     config["instance_name"] = "The Lighthouse"

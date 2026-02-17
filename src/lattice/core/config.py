@@ -91,7 +91,7 @@ WORKFLOW_PRESETS: dict[str, dict[str, str]] = {
             "review": "check my work",
             "done": "shipped",
             "blocked": "stuck",
-            "needs_human": "need a human",
+            "needs_human": "ask flesh",
             "cancelled": "never mind",
         },
     },
