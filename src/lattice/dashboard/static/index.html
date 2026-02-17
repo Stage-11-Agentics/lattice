@@ -3952,6 +3952,13 @@ function closeTriggerModal() {
   _triggerModalStatus = null;
 }
 
+// Expose functions to global scope for inline onclick handlers (IIFE-scoped)
+window.openTriggerModal = openTriggerModal;
+window.closeTriggerModal = closeTriggerModal;
+window._addTrigger = _addTrigger;
+window._saveTriggerRaw = _saveTriggerRaw;
+window.toggleWorkersPanel = toggleWorkersPanel;
+
 // --- Cube (graph view) ---
 
 // Edge colors by relationship type
