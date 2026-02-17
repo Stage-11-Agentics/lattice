@@ -5582,6 +5582,77 @@ function renderBoardCard(t) {
   return html;
 }
 
+// --- Epic Card Helper ---
+function renderEpicCard(epic, childTasks) {
+  var done = 0, total = 0, cancelled = 0, blockedCount = 0, needsHumanCount = 0;
+  var activeStatuses = [];
+  childTasks.forEach(function(ct) {
+    var st = ct.status || "backlog";
+    if (st === "done") { done++; }
+    else if (st === "cancelled") { cancelled++; }
+    else {
+      activeStatuses.push(st);
+      if (st === "blocked") blockedCount++;
+      if (st === "needs_human") needsHumanCount++;
+    }
+  });
+  total = childTasks.length - cancelled;
+  var pct = total > 0 ? Math.round((done / total) * 100) : 0;
+  // Derive status by precedence
+  var precedence = ["needs_human","blocked","in_progress","review","planned","in_planning","backlog"];
+  var derivedStatus = null;
+  if (activeStatuses.length > 0) {
+    for (var i = 0; i < precedence.length; i++) {
+      if (activeStatuses.indexOf(precedence[i]) !== -1) { derivedStatus = precedence[i]; break; }
+    }
+  } else if (childTasks.length > 0) {
+    derivedStatus = "done";
+  }
+
+  var html = '<div class="epic-card" data-epic-id="' + esc(epic.id) + '">';
+  if (epic.short_id) html += '<div class="epic-short-id">' + esc(epic.short_id) + '</div>';
+  html += '<div class="epic-title">' + esc(epic.title || "Untitled") + '</div>';
+  html += '<div class="epic-progress-bar"><div class="epic-progress-fill" style="width:' + pct + '%"></div></div>';
+  html += '<div class="epic-meta">';
+  if (derivedStatus) {
+    var statusColor = getLaneColor(derivedStatus);
+    html += '<span class="epic-status-badge" style="background:' + esc(statusColor) + ';color:var(--text-on-lane)">' + esc(derivedStatus) + '</span>';
+  } else if (childTasks.length === 0) {
+    html += '<span class="epic-status-badge" style="background:var(--surface-raised);color:var(--text-muted)">unscoped</span>';
+  }
+  html += '<span>' + done + '/' + total + '</span>';
+  if (blockedCount > 0) html += '<span class="epic-health-indicator" title="' + blockedCount + ' blocked">\u26A0 ' + blockedCount + ' blocked</span>';
+  if (needsHumanCount > 0) html += '<span class="epic-health-indicator" title="' + needsHumanCount + ' needs human">\u270B ' + needsHumanCount + ' needs human</span>';
+  html += '</div></div>';
+  return html;
+}
+
+// --- Epic highlight logic ---
+function toggleEpicSelection(epicId, epicChildMap) {
+  // Clear previous highlights
+  document.querySelectorAll(".card.epic-highlight").forEach(function(el) { el.classList.remove("epic-highlight"); });
+  document.querySelectorAll(".epic-card.epic-selected").forEach(function(el) { el.classList.remove("epic-selected"); });
+
+  if (selectedEpicId === epicId) {
+    // Deselect
+    selectedEpicId = null;
+    return;
+  }
+
+  selectedEpicId = epicId;
+  var childIds = epicChildMap[epicId] || [];
+
+  // Highlight the epic card
+  var epicCard = document.querySelector('.epic-card[data-epic-id="' + epicId + '"]');
+  if (epicCard) epicCard.classList.add("epic-selected");
+
+  // Highlight child task cards in columns
+  childIds.forEach(function(cid) {
+    var card = document.querySelector('.card[data-task-id="' + cid + '"]');
+    if (card) card.classList.add("epic-highlight");
+  });
+}
+
 // --- Board View ---
 function renderBoard() {
   var app = document.getElementById("app");
@@ -5595,10 +5666,56 @@ function renderBoard() {
     return;
   }
 
+  // Separate epics from regular tasks
+  var epicTasks = [];
+  var regularTasks = [];
+  tasks.forEach(function(t) {
+    if (t.type === "epic") epicTasks.push(t);
+    else regularTasks.push(t);
+  });
+
+  // Build epicId → [childTaskIds] map from graph links
+  var epicChildMap = {};
+  if (epicTasks.length > 0 && boardGraphLinks.length > 0) {
+    var epicIds = {};
+    epicTasks.forEach(function(e) { epicIds[e.id] = true; });
+    // subtask_of: source=child, target=parent
+    // Build parent → children for recursive collection
+    var parentToChildren = {};
+    boardGraphLinks.forEach(function(link) {
+      if (link.type === "subtask_of") {
+        if (!parentToChildren[link.target]) parentToChildren[link.target] = [];
+        parentToChildren[link.target].push(link.source);
+      }
+    });
+    // Recursively collect all descendants for each epic
+    epicTasks.forEach(function(epic) {
+      var children = [];
+      var visited = {};
+      var stack = parentToChildren[epic.id] ? parentToChildren[epic.id].slice() : [];
+      while (stack.length > 0) {
+        var cid = stack.pop();
+        if (!visited[cid]) {
+          visited[cid] = true;
+          children.push(cid);
+          if (parentToChildren[cid]) {
+            parentToChildren[cid].forEach(function(gc) { stack.push(gc); });
+          }
+        }
+      }
+      epicChildMap[epic.id] = children;
+    });
+  }
+
+  // Build task lookup for epic card rendering
+  var taskById = {};
+  tasks.forEach(function(t) { taskById[t.id] = t; });
+
   var transitions = (config.workflow && config.workflow.transitions) || {};
   var grouped = {};
   statuses.forEach(function(s) { grouped[s] = []; });
-  tasks.forEach(function(t) {
+  // Only regular tasks go into status columns
+  regularTasks.forEach(function(t) {
     var s = t.status || "unknown";
     if (!grouped[s]) grouped[s] = [];
     grouped[s].push(t);
@@ -5656,6 +5773,20 @@ function renderBoard() {
     html += "</div></div>";
   });
   html += "</div>";
+
+  // Epic bottom lane (only if epics exist)
+  if (epicTasks.length > 0) {
+    html += '<div class="board-epic-lane">';
+    html += '<div class="board-epic-header">Epics</div>';
+    html += '<div class="board-epic-cards">';
+    epicTasks.forEach(function(epic) {
+      var childIds = epicChildMap[epic.id] || [];
+      var childSnaps = childIds.map(function(cid) { return taskById[cid]; }).filter(Boolean);
+      html += renderEpicCard(epic, childSnaps);
+    });
+    html += '</div></div>';
+  }
+
   app.innerHTML = html;
 
   // Add click handlers for card → floating detail panel (separate from drag)
@@ -5668,6 +5799,21 @@ function renderBoard() {
       card.classList.remove("was-dragged");
     });
   });
+
+  // Epic card click handlers for highlight
+  app.querySelectorAll(".epic-card").forEach(function(epicCard) {
+    epicCard.addEventListener("click", function(e) {
+      e.stopPropagation();
+      toggleEpicSelection(epicCard.dataset.epicId, epicChildMap);
+    });
+  });
+
+  // Restore epic selection if it was active before re-render
+  if (selectedEpicId && epicChildMap[selectedEpicId]) {
+    var restoreId = selectedEpicId;
+    selectedEpicId = null;  // Reset so toggleEpicSelection selects (not deselects)
+    toggleEpicSelection(restoreId, epicChildMap);
+  }
 
 }
 
