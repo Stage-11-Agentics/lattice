@@ -3647,7 +3647,16 @@ var WEB_TIER_RADIUS = { epic: 20, task: 6 };
 var WEB_ACTIVITY_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
 var WEB_ACTIVITY_COLORS = { git: "#ffc107", lattice: "#fd7e14", both: "#f0a500" };
 var WEB_SPOKE_COLOR = "rgba(100,130,180,0.35)";
-var WEB_LINK_DISTANCE = { "epic-task": 100, "task-task": 60 };
+var WEB_LINK_COLORS = {
+  subtask_of: "rgba(100,130,180,0.35)",
+  blocks: "rgba(220,60,60,0.7)",
+  depends_on: "rgba(60,140,220,0.7)",
+  related_to: "rgba(150,150,150,0.4)",
+  spawned_by: "rgba(80,180,100,0.6)",
+  duplicate_of: "rgba(180,120,60,0.5)",
+  supersedes: "rgba(160,80,180,0.6)"
+};
+var WEB_LINK_DISTANCE = { "epic-task": 100, "task-task": 60, "cross-cutting": 120 };
 var WEB_CHARGE = { epic: -400, task: -50 };
 var WEB_COLLISION_RADIUS = { epic: 30, task: 10 };
 
@@ -3909,13 +3918,16 @@ function buildWebHierarchy(graphData, gitData) {
     };
   });
 
-  // Build links (subtask_of only for hierarchy)
+  // Build links — include ALL relationship types for full graph connectivity
   var outLinks = [];
   links.forEach(function(link) {
-    if (link.type === "subtask_of") {
+    var sourceId = (typeof link.source === "object") ? link.source.id : link.source;
+    var targetId = (typeof link.target === "object") ? link.target.id : link.target;
+    // Only include links where both endpoints exist
+    if (nodeById[sourceId] && nodeById[targetId]) {
       outLinks.push({
-        source: (typeof link.source === "object") ? link.source.id : link.source,
-        target: (typeof link.target === "object") ? link.target.id : link.target,
+        source: sourceId,
+        target: targetId,
         type: link.type
       });
     }
@@ -4346,6 +4358,22 @@ function buildWebLegendHTML(hasOrphans) {
       + '<span>' + t.label + '</span></div>';
   });
   html += '<div style="border-top:1px solid var(--border-subtle);margin:8px 0"></div>';
+  html += '<div style="font-weight:600;margin-bottom:6px;color:var(--text-primary)">Relationships</div>';
+  var relTypes = [
+    { label: "Subtask of", color: WEB_LINK_COLORS.subtask_of, dash: false },
+    { label: "Blocks", color: WEB_LINK_COLORS.blocks, dash: false },
+    { label: "Depends on", color: WEB_LINK_COLORS.depends_on, dash: false },
+    { label: "Related to", color: WEB_LINK_COLORS.related_to, dash: true },
+    { label: "Spawned by", color: WEB_LINK_COLORS.spawned_by, dash: false }
+  ];
+  relTypes.forEach(function(r) {
+    var lineStyle = "display:inline-block;width:24px;height:2px;background:" + r.color + ";flex-shrink:0;";
+    if (r.dash) lineStyle += "background:repeating-linear-gradient(90deg," + r.color + " 0," + r.color + " 4px,transparent 4px,transparent 7px);";
+    html += '<div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">'
+      + '<span style="' + lineStyle + '"></span>'
+      + '<span>' + r.label + '</span></div>';
+  });
+  html += '<div style="border-top:1px solid var(--border-subtle);margin:8px 0"></div>';
   html += '<div style="font-weight:600;margin-bottom:6px;color:var(--text-primary)">Activity</div>';
   var activities = [
     { label: "Git active (<10m)", color: WEB_ACTIVITY_COLORS.git },
@@ -4463,16 +4491,30 @@ async function renderWeb() {
       .nodeId("id")
       .nodeLabel(function(node) { return buildWebTooltipHTML(node); })
       .linkSource("source").linkTarget("target")
-      .linkColor(function() { return WEB_SPOKE_COLOR; })
+      .linkColor(function(link) {
+        return WEB_LINK_COLORS[link.type] || WEB_SPOKE_COLOR;
+      })
       .linkWidth(function(link) {
-        var src = (typeof link.source === "object") ? link.source : null;
-        var tgt = (typeof link.target === "object") ? link.target : null;
-        if (src && tgt) {
-          if (src.tier === "epic" || tgt.tier === "epic") return 2;
+        if (link.type === "blocks") return 2.5;
+        if (link.type === "depends_on") return 2;
+        if (link.type === "subtask_of") {
+          var src = (typeof link.source === "object") ? link.source : null;
+          var tgt = (typeof link.target === "object") ? link.target : null;
+          if (src && tgt && (src.tier === "epic" || tgt.tier === "epic")) return 2;
         }
         return 1;
       })
-      .linkDirectionalArrowLength(0) // No arrows — hierarchy, not dependency
+      .linkLineDash(function(link) {
+        if (link.type === "related_to") return [4, 3];
+        if (link.type === "duplicate_of") return [2, 2];
+        return null;
+      })
+      .linkDirectionalArrowLength(function(link) {
+        // Arrows for directional relationship types
+        if (link.type === "blocks" || link.type === "depends_on" || link.type === "spawned_by" || link.type === "supersedes") return 6;
+        return 0;
+      })
+      .linkDirectionalArrowRelPos(1)
       .onNodeClick(function(node) {
         if (node && node.id) openWebDetailPane(node.id);
       })
@@ -4489,21 +4531,34 @@ async function renderWeb() {
     return;
   }
 
-  // Hierarchy-aware forces
-  webGraph
-    .d3Force("link", d3.forceLink(webLinks).id(function(d) { return d.id; })
+  // Hierarchy-aware forces — modify the existing link force in-place
+  // (replacing it with a new d3.forceLink causes "node not found" on direct navigation
+  // because the new force hasn't been initialized with the simulation's node set yet)
+  var existingLinkForce = webGraph.d3Force("link");
+  if (existingLinkForce) {
+    existingLinkForce
       .distance(function(link) {
+        // Cross-cutting links (blocks, depends_on, etc.) get longer distance
+        // so they create visible threads across the graph
+        if (link.type !== "subtask_of") return WEB_LINK_DISTANCE["cross-cutting"];
         var src = (typeof link.source === "object") ? link.source : null;
         var tgt = (typeof link.target === "object") ? link.target : null;
         if (src && (src.tier === "epic" || (tgt && tgt.tier === "epic"))) return WEB_LINK_DISTANCE["epic-task"];
         return WEB_LINK_DISTANCE["task-task"];
       })
       .strength(function(link) {
-        var src = (typeof link.source === "object") ? link.source : null;
-        if (src && src.tier === "epic") return 0.7;
-        return 0.5;
-      })
-    )
+        // Subtask_of links are strong (hold hierarchy together)
+        // Cross-cutting links are weaker (don't distort layout)
+        if (link.type === "subtask_of") {
+          var src = (typeof link.source === "object") ? link.source : null;
+          if (src && src.tier === "epic") return 0.7;
+          return 0.5;
+        }
+        if (link.type === "blocks" || link.type === "depends_on") return 0.3;
+        return 0.15;
+      });
+  }
+  webGraph
     .d3Force("charge", d3.forceManyBody().strength(function(d) {
       return WEB_CHARGE[d.tier] || -30;
     }))
@@ -7031,11 +7086,8 @@ document.querySelectorAll(".nav-tab").forEach(function(el) {
   el.addEventListener("click", function() { location.hash = "#/" + el.dataset.view; });
 });
 
-document.getElementById("help-btn").addEventListener("click", async function() {
-  try {
-    await apiPost("/api/open-guide", {});
-    showToast("Opening user guide...", "success");
-  } catch(e) { showToast("Could not open user guide: " + e.message, "error"); }
+document.getElementById("help-btn").addEventListener("click", function() {
+  window.open("https://thelattice.works/getting-started", "_blank");
 });
 
 document.getElementById("refresh-btn").addEventListener("click", async function() {
