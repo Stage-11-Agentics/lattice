@@ -31,7 +31,7 @@ from lattice.core.config import (
 )
 from lattice.core.events import create_event, serialize_event, utc_now
 from lattice.core.ids import generate_task_id, validate_actor, validate_id
-from lattice.core.tasks import apply_event_to_snapshot, compact_snapshot, serialize_snapshot
+from lattice.core.tasks import apply_event_to_snapshot, compact_snapshot, compute_epic_derived_status, serialize_snapshot
 from lattice.storage.fs import atomic_write, jsonl_append
 from lattice.storage.locks import multi_lock
 from lattice.storage.hooks import execute_hooks
@@ -173,6 +173,8 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                 self._handle_archived(ld)
             elif path == "/api/graph":
                 self._handle_graph(ld)
+            elif path == "/api/epics":
+                self._handle_epics(ld)
             elif path == "/api/git":
                 self._handle_git_summary(ld)
             elif path.startswith("/api/git/branches/"):
@@ -527,6 +529,108 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
             self.send_header("ETag", etag)
             self.end_headers()
             self.wfile.write(data)
+
+        # ---------------------------------------------------------------
+        # Epics API handler
+        # ---------------------------------------------------------------
+
+        def _handle_epics(self, ld: Path) -> None:
+            """Handle GET /api/epics — return epic tree hierarchy with derived status."""
+            tasks_dir = ld / "tasks"
+            snapshots: list[dict] = []
+            if tasks_dir.is_dir():
+                for task_file in sorted(tasks_dir.glob("*.json")):
+                    try:
+                        snap = json.loads(task_file.read_text())
+                    except (json.JSONDecodeError, OSError):
+                        continue
+                    snapshots.append(snap)
+
+            # Build graph links from relationships_out
+            active_ids: set[str] = {s["id"] for s in snapshots if "id" in s}
+            graph_links: list[dict] = []
+            for snap in snapshots:
+                for rel in snap.get("relationships_out", []):
+                    target_id = rel.get("target_task_id")
+                    if target_id and target_id in active_ids and rel.get("type") == "subtask_of":
+                        graph_links.append({
+                            "source": snap["id"],
+                            "target": target_id,
+                            "type": "subtask_of",
+                        })
+
+            # Find which tasks are children (have a subtask_of relationship)
+            child_ids: set[str] = {link["source"] for link in graph_links}
+            # Find which tasks are parents (are targets of subtask_of)
+            parent_ids: set[str] = {link["target"] for link in graph_links}
+
+            # Root epics: tasks that are parents but not children
+            root_ids = parent_ids - child_ids
+
+            # Build parent -> children map
+            parent_to_children: dict[str, list[str]] = {}
+            for link in graph_links:
+                parent_to_children.setdefault(link["target"], []).append(link["source"])
+
+            snap_by_id: dict[str, dict] = {s["id"]: s for s in snapshots if "id" in s}
+
+            def build_tree_node(task_id: str, depth: int = 0) -> dict | None:
+                snap = snap_by_id.get(task_id)
+                if snap is None:
+                    return None
+                children_ids = parent_to_children.get(task_id, [])
+                children = []
+                for cid in sorted(children_ids, key=lambda x: snap_by_id.get(x, {}).get("short_id", x)):
+                    child_node = build_tree_node(cid, depth + 1)
+                    if child_node:
+                        children.append(child_node)
+
+                node: dict[str, Any] = {
+                    "id": snap.get("id"),
+                    "short_id": snap.get("short_id"),
+                    "title": snap.get("title"),
+                    "status": snap.get("status"),
+                    "priority": snap.get("priority"),
+                    "type": snap.get("type"),
+                    "assigned_to": snap.get("assigned_to"),
+                    "depth": depth,
+                }
+                if children:
+                    node["children"] = children
+                    # Compute derived status for this parent
+                    derived = compute_epic_derived_status(task_id, snapshots, graph_links)
+                    node["derived"] = derived
+                return node
+
+            trees: list[dict] = []
+            for rid in sorted(root_ids, key=lambda x: snap_by_id.get(x, {}).get("short_id", x)):
+                tree = build_tree_node(rid)
+                if tree:
+                    trees.append(tree)
+
+            # Also include orphan tasks (not parent, not child) for completeness
+            orphan_ids = active_ids - parent_ids - child_ids
+            orphans: list[dict] = []
+            for oid in sorted(orphan_ids, key=lambda x: snap_by_id.get(x, {}).get("short_id", x)):
+                snap = snap_by_id.get(oid)
+                if snap:
+                    orphans.append({
+                        "id": snap.get("id"),
+                        "short_id": snap.get("short_id"),
+                        "title": snap.get("title"),
+                        "status": snap.get("status"),
+                        "priority": snap.get("priority"),
+                        "type": snap.get("type"),
+                        "assigned_to": snap.get("assigned_to"),
+                        "depth": 0,
+                    })
+
+            self._send_json(200, _ok({
+                "trees": trees,
+                "orphans": orphans,
+                "total_tasks": len(snapshots),
+                "total_epics": len(root_ids),
+            }))
 
         # ---------------------------------------------------------------
         # Git API handlers
