@@ -1657,9 +1657,15 @@ def _read_task_events_archive(ld: Path, task_id: str) -> list[dict] | None:
 
 def _read_artifact_info(ld: Path, snapshot: dict) -> list[dict]:
     artifacts: list[dict] = []
-    for art_id in snapshot.get("artifact_refs", []):
+    for ref in snapshot.get("artifact_refs", []):
+        if isinstance(ref, dict):
+            art_id = ref["id"]
+            role = ref.get("role")
+        else:
+            art_id = ref
+            role = None
         meta_path = ld / "artifacts" / "meta" / f"{art_id}.json"
-        info: dict = {"id": art_id}
+        info: dict = {"id": art_id, "role": role}
         if meta_path.is_file():
             try:
                 meta = json.loads(meta_path.read_text())

@@ -102,13 +102,42 @@ def _collect_task_files(lattice_dir: Path) -> list[Path]:
 
 
 def _collect_event_files(lattice_dir: Path) -> list[Path]:
-    """Collect all per-task event files from events/ and archive/events/."""
+    """Collect all per-task event files from events/ and archive/events/.
+
+    Excludes ``_lifecycle.jsonl`` and ``res_*`` resource event files.
+    """
     result = []
     for d in [lattice_dir / "events", lattice_dir / "archive" / "events"]:
         if d.is_dir():
             for f in sorted(d.glob("*.jsonl")):
-                if f.name != "_lifecycle.jsonl":
-                    result.append(f)
+                if f.name == "_lifecycle.jsonl":
+                    continue
+                if f.stem.startswith("res_"):
+                    continue
+                result.append(f)
+    return result
+
+
+def _collect_resource_event_files(lattice_dir: Path) -> list[Path]:
+    """Collect all per-resource event files (``res_*.jsonl``)."""
+    result = []
+    events_dir = lattice_dir / "events"
+    if events_dir.is_dir():
+        for f in sorted(events_dir.glob("res_*.jsonl")):
+            result.append(f)
+    return result
+
+
+def _collect_resource_snapshot_files(lattice_dir: Path) -> list[Path]:
+    """Collect all resource snapshot files from resources/*/resource.json."""
+    result = []
+    resources_dir = lattice_dir / "resources"
+    if resources_dir.is_dir():
+        for res_dir in sorted(resources_dir.iterdir()):
+            if res_dir.is_dir():
+                snap_path = res_dir / "resource.json"
+                if snap_path.exists():
+                    result.append(snap_path)
     return result
 
 
@@ -272,13 +301,15 @@ def doctor(fix: bool, output_json: bool) -> None:
     artifacts_ok = True
     for task_id, snap in snapshots.items():
         for art_ref in snap.get("artifact_refs", []):
-            if art_ref not in known_artifact_ids:
+            # Handle both old format (str) and new enriched format (dict)
+            art_id = art_ref["id"] if isinstance(art_ref, dict) else art_ref
+            if art_id not in known_artifact_ids:
                 artifacts_ok = False
                 findings.append(
                     {
                         "level": "warning",
                         "check": "missing_artifact",
-                        "message": (f"Task {task_id} references non-existent artifact {art_ref}"),
+                        "message": (f"Task {task_id} references non-existent artifact {art_id}"),
                         "task_id": task_id,
                     }
                 )

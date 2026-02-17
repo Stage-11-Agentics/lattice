@@ -6,13 +6,14 @@ import json
 
 import pytest
 
-from lattice.core.events import BUILTIN_EVENT_TYPES
+from lattice.core.events import BUILTIN_EVENT_TYPES, RESOURCE_EVENT_TYPES
 from lattice.core.tasks import (
     PROTECTED_FIELDS,
     _MUTATION_HANDLERS,
     _NOOP_EVENT_TYPES,
     apply_event_to_snapshot,
     compact_snapshot,
+    get_artifact_roles,
     serialize_snapshot,
 )
 
@@ -391,7 +392,39 @@ class TestArtifactAttached:
             "data": {"artifact_id": "art_01ARTIFACT00000000000000000"},
         }
         snap = apply_event_to_snapshot(snap, ev)
-        assert snap["artifact_refs"] == ["art_01ARTIFACT00000000000000000"]
+        assert snap["artifact_refs"] == [{"id": "art_01ARTIFACT00000000000000000", "role": None}]
+
+    def test_stores_role(self) -> None:
+        snap = _make_snapshot()
+        ev = {
+            "schema_version": 1,
+            "id": _EV_2,
+            "ts": _TS_2,
+            "type": "artifact_attached",
+            "task_id": _TASK_ID,
+            "actor": _ACTOR,
+            "data": {"artifact_id": "art_01ARTIFACT00000000000000000", "role": "review"},
+        }
+        snap = apply_event_to_snapshot(snap, ev)
+        assert snap["artifact_refs"] == [
+            {"id": "art_01ARTIFACT00000000000000000", "role": "review"}
+        ]
+
+    def test_deduplicates_by_artifact_id(self) -> None:
+        snap = _make_snapshot()
+        art_id = "art_01ARTIFACT00000000000000000"
+        for ev_id in [_EV_2, _EV_3]:
+            ev = {
+                "schema_version": 1,
+                "id": ev_id,
+                "ts": _TS_2,
+                "type": "artifact_attached",
+                "task_id": _TASK_ID,
+                "actor": _ACTOR,
+                "data": {"artifact_id": art_id},
+            }
+            snap = apply_event_to_snapshot(snap, ev)
+        assert len(snap["artifact_refs"]) == 1
 
     def test_multiple_artifacts(self) -> None:
         snap = _make_snapshot()
@@ -407,6 +440,41 @@ class TestArtifactAttached:
             }
             snap = apply_event_to_snapshot(snap, ev)
         assert len(snap["artifact_refs"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# get_artifact_roles helper
+# ---------------------------------------------------------------------------
+
+
+class TestGetArtifactRoles:
+    def test_empty_refs(self) -> None:
+        snap = _make_snapshot()
+        assert get_artifact_roles(snap) == {}
+
+    def test_new_format(self) -> None:
+        snap = _make_snapshot()
+        snap["artifact_refs"] = [
+            {"id": "art_A", "role": "review"},
+            {"id": "art_B", "role": None},
+        ]
+        assert get_artifact_roles(snap) == {"art_A": "review", "art_B": None}
+
+    def test_old_format(self) -> None:
+        """Backward compat: bare string IDs map to None role."""
+        snap = _make_snapshot()
+        snap["artifact_refs"] = ["art_A", "art_B"]
+        assert get_artifact_roles(snap) == {"art_A": None, "art_B": None}
+
+    def test_mixed_format(self) -> None:
+        """Handle a mix of old and new format refs."""
+        snap = _make_snapshot()
+        snap["artifact_refs"] = [
+            "art_A",
+            {"id": "art_B", "role": "review"},
+        ]
+        roles = get_artifact_roles(snap)
+        assert roles == {"art_A": None, "art_B": "review"}
 
 
 # ---------------------------------------------------------------------------
@@ -763,7 +831,10 @@ class TestCompactSnapshot:
                 "note": None,
             },
         ]
-        snap["artifact_refs"] = ["art_A", "art_B"]
+        snap["artifact_refs"] = [
+            {"id": "art_A", "role": None},
+            {"id": "art_B", "role": "review"},
+        ]
 
         compact = compact_snapshot(snap)
         assert compact["relationships_out_count"] == 1
@@ -805,7 +876,10 @@ class TestMutationRegistryCompleteness:
         init_type = {"task_created"}  # handled separately in apply_event_to_snapshot
 
         covered = handled | noop | init_type
-        missing = BUILTIN_EVENT_TYPES - covered
+        # Resource event types are handled by a separate materialization path
+        # (core/resources.py), not by the task snapshot materializer.
+        task_event_types = BUILTIN_EVENT_TYPES - RESOURCE_EVENT_TYPES
+        missing = task_event_types - covered
         assert not missing, f"Unhandled builtin event types: {missing}"
 
     def test_no_handler_also_in_noop(self) -> None:
