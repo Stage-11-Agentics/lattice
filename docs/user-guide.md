@@ -1,5 +1,7 @@
 # Lattice User Guide
 
+**Lattice is Linear, upgraded for the agent-native era.** Opinionated. Event-sourced. File-based. Built for a world where your teammates think in tokens and act in tool calls.
+
 ## Your agents are capable. And they are alone.
 
 Each session starts fresh. Each agent forgets what the last one learned. The plan you spent an hour refining, the debugging insight that took three sessions to reach, the architectural decision and its rationale -- gone when the context window closes. You end up re-explaining context, losing track of what agents did, and coordinating entirely in your head.
