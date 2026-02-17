@@ -37,7 +37,7 @@ These are non-negotiable constraints intended to prevent accidental complexity:
 
 - The CLI is the only supported write interface for authoritative state (events and snapshots).
 - Any UI/dashboard is read-only and never mutates the filesystem.
-- **Explicit exceptions:** Human-editable notes (`notes/<task_id>.md`) are non-authoritative supplementary files. They are not event-sourced and do not participate in rebuild. Direct file manipulation for manual recovery (e.g., moving archived files back) is similarly non-authoritative.
+- **Explicit exceptions:** Plans (`plans/<task_id>.md`) and notes (`notes/<task_id>.md`) are non-authoritative supplementary files. Plans are structured convergent documents scaffolded on task creation; notes are freeform scratchpads created on demand. Neither is event-sourced and neither participates in rebuild. Direct file manipulation for manual recovery (e.g., moving archived files back) is similarly non-authoritative.
 
 ### 2.3 Prefer single-file mutations (v0)
 
@@ -125,12 +125,15 @@ These are non-negotiable constraints intended to prevent accidental complexity:
 - `artifacts/`:
   - `artifacts/meta/<art_id>.json`
   - `artifacts/payload/<art_id>.<ext>` (or `<art_id>` if binary/unknown)
+- `plans/`:
+  - structured plan files per task: `plans/<task_id>.md` (scaffolded on create)
 - `notes/`:
-  - human Markdown notes per task: `notes/<task_id>.md`
+  - scratchpad notes per task: `notes/<task_id>.md` (created on demand)
 - `archive/`:
-  - mirrors task/events/notes structure:
+  - mirrors task/events/plans/notes structure:
     - `archive/tasks/`
     - `archive/events/`
+    - `archive/plans/`
     - `archive/notes/`
   - **Artifacts are not moved in v0** (see archival rules)
 - `locks/`:
@@ -139,7 +142,7 @@ These are non-negotiable constraints intended to prevent accidental complexity:
 
 ### 5.2 Format rules (v0)
 
-- JSON for snapshots and metadata, JSONL for event streams, Markdown for notes
+- JSON for snapshots and metadata, JSONL for event streams, Markdown for plans and notes
 - JSON formatting:
   - sorted keys
   - 2-space indentation
@@ -480,7 +483,7 @@ Linkage between tasks and artifacts is recorded as events (`artifact_attached`) 
 - `lattice unlink <task_id> <type> <target_task_id>`
 - `lattice archive <task_id>`:
   - append `task_archived` event to the task's event log
-  - move task snapshot, events, notes into `archive/`
+  - move task snapshot, events, plan, notes into `archive/`
   - update `_global.jsonl` (derived convenience log)
 - `lattice doctor`
 - `lattice rebuild <task_id|all>`
@@ -569,6 +572,7 @@ Constraints:
 - archiving moves:
   - task snapshot
   - task event log
+  - task plan
   - task notes
 - artifacts are **not moved** in v0
   - avoids many-to-many relocation problems

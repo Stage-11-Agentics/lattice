@@ -60,7 +60,7 @@ When in doubt, give the human credit. If the human was substantively involved in
 
 ### Leave Breadcrumbs
 
-You are not the last mind that will touch this work. Use `lattice comment` to record what you tried, what you chose, what you left undone. Use `.lattice/notes/<task_id>.md` for longer-form thinking. The record you leave is the only bridge between your context and theirs.
+You are not the last mind that will touch this work. Use `lattice comment` to record what you tried, what you chose, what you left undone. Use `.lattice/plans/<task_id>.md` for the structured plan (scope, steps, acceptance criteria) and `.lattice/notes/<task_id>.md` for working notes, debug logs, and context dumps. The record you leave is the only bridge between your context and theirs.
 
 ### Quick Reference
 
@@ -126,10 +126,12 @@ The event log (JSONL) is the source of truth. Task JSON files are materialized s
 ├── events/_lifecycle.jsonl         # Lifecycle event log (derived, rebuildable from per-task logs)
 ├── artifacts/meta/<art_id>.json   # Artifact metadata
 ├── artifacts/payload/<art_id>.*   # Artifact payloads
-├── notes/<task_id>.md             # Human-editable markdown notes (non-authoritative)
-├── archive/                       # Mirrors tasks/events/notes for archived items
+├── plans/<task_id>.md             # Structured plan files (scaffolded on create)
+├── notes/<task_id>.md             # Scratchpad notes (created on demand)
+├── archive/                       # Mirrors tasks/events/plans/notes for archived items
 │   ├── tasks/
 │   ├── events/
+│   ├── plans/
 │   └── notes/
 └── locks/                         # Internal lock files for concurrency
 ```
@@ -147,7 +149,7 @@ The CLI is the **only** write interface for authoritative state. All writes are:
 
 Multi-lock operations acquire locks in deterministic (sorted) order to prevent deadlocks.
 
-Notes (`notes/<task_id>.md`) are an explicit exception — they are non-authoritative supplementary files edited directly by humans or agents.
+Plans (`plans/<task_id>.md`) and notes (`notes/<task_id>.md`) are explicit exceptions — they are non-authoritative supplementary files edited directly by humans or agents.
 
 ### Root Discovery
 
@@ -296,7 +298,8 @@ Critical test categories (add as features land):
 
 ## Where Things Live
 
-- **Task plans, working docs** → `.lattice/notes/<task_id>.md` — tied to the task, lives where Lattice expects it. This is the default home for any document associated with a specific task (implementation plans, spike findings, etc.).
+- **Task plans** → `.lattice/plans/<task_id>.md` — structured plan for the task (scope, steps, acceptance criteria). Scaffolded automatically on task creation.
+- **Task notes** → `.lattice/notes/<task_id>.md` — scratchpad notes, debug logs, context dumps. Created on demand when you need a place for freeform working notes.
 - **Repo-level `notes/`** — code reviews, retrospectives, and working documents NOT tied to a specific task.
 - **Repo-level `docs/`** — user-facing documentation: guides, integration docs, getting-started material. Things an end user or adopter would read.
 - **Repo-level `prompts/`** — prompt templates and outstanding implementation checklists. Reusable inputs for agent workflows.
@@ -384,7 +387,7 @@ Users may have their own preferences about attribution. If a user seems frustrat
 
 ### Leave Breadcrumbs
 
-You are not the last mind that will touch this work. Use `lattice comment` to record what you tried, what you chose, what you left undone. Use `.lattice/notes/<task_id>.md` for longer-form thinking. The agent that picks up where you left off has no hallway to find you in, no Slack channel to ask. The record you leave is the only bridge between your context and theirs.
+You are not the last mind that will touch this work. Use `lattice comment` to record what you tried, what you chose, what you left undone. Use `.lattice/plans/<task_id>.md` for the structured plan (scope, steps, acceptance criteria) and `.lattice/notes/<task_id>.md` for working notes, debug logs, and context dumps. The agent that picks up where you left off has no hallway to find you in, no Slack channel to ask. The record you leave is the only bridge between your context and theirs.
 
 ### Quick Reference
 
