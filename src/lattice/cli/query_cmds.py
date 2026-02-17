@@ -316,6 +316,12 @@ def list_cmd(
     lattice_dir = require_root(is_json)
     config = load_project_config(lattice_dir)
 
+    # Resolve display name to slug for --status filter
+    from lattice.core.config import resolve_status_input
+
+    if status is not None:
+        status = resolve_status_input(config, status)
+
     # Validate --status filter value against configured statuses
     status_warning: str | None = None
     if status is not None and not validate_status(config, status):
@@ -395,17 +401,20 @@ def list_cmd(
         if status_warning:
             click.echo(f"Warning: {status_warning}", err=True)
         # Human output: compact one-line-per-task table
+        from lattice.core.config import get_display_name
+
         for snap in filtered:
             short_id = snap.get("short_id")
             display_id = short_id if short_id else snap.get("id", "?")
             s = snap.get("status", "?")
+            s_display = get_display_name(config, s)
             p = snap.get("priority", "?")
             t = snap.get("type", "?")
             title = snap.get("title", "?")
             assigned_to = snap.get("assigned_to") or "unassigned"
             prefix = ">>> " if s == "needs_human" else ""
             archived_marker = " [A]" if snap.get("_archived") else ""
-            click.echo(f'{prefix}{display_id}  {s}  {p}  {t}  "{title}"  {assigned_to}{archived_marker}')
+            click.echo(f'{prefix}{display_id}  {s_display}  {p}  {t}  "{title}"  {assigned_to}{archived_marker}')
 
 
 # ---------------------------------------------------------------------------
@@ -686,6 +695,7 @@ def show_cmd(
             full,
             valid_transitions,
             auto_branches,
+            config=config,
         )
 
 
@@ -893,11 +903,15 @@ def _print_human_show(
     full: bool,
     valid_transitions: list[str] | None = None,
     auto_detected_branches: list[str] | None = None,
+    config: dict | None = None,
 ) -> None:
     """Print full human-readable show output."""
+    from lattice.core.config import get_display_name
+
     short_id = snapshot.get("short_id")
     title = snapshot.get("title", "?")
     status = snapshot.get("status", "?")
+    status_display = get_display_name(config or {}, status)
     priority = snapshot.get("priority", "?")
     task_type = snapshot.get("type", "?")
     assigned_to = snapshot.get("assigned_to") or "unassigned"
@@ -909,9 +923,10 @@ def _print_human_show(
     archived_note = "  [ARCHIVED]" if is_archived else ""
     header = f"{short_id} ({task_id})" if short_id else task_id
     click.echo(f'{header}  "{title}"{archived_note}')
-    click.echo(f"Status: {status}  Priority: {priority}  Type: {task_type}")
+    click.echo(f"Status: {status_display}  Priority: {priority}  Type: {task_type}")
     if valid_transitions:
-        click.echo(f"  Next: {' | '.join(valid_transitions)}")
+        display_transitions = [get_display_name(config or {}, t) for t in valid_transitions]
+        click.echo(f"  Next: {' | '.join(display_transitions)}")
     comment_count = snapshot.get("comment_count", 0)
     click.echo(f"Assigned: {assigned_to}  Created by: {created_by}")
     click.echo(f"Created: {created_at}  Updated: {updated_at}")

@@ -72,6 +72,32 @@ class HeartbeatConfig(TypedDict, total=False):
     max_advances: int
 
 
+# ---------------------------------------------------------------------------
+# Workflow personality presets
+# ---------------------------------------------------------------------------
+
+WORKFLOW_PRESETS: dict[str, dict[str, str]] = {
+    "classic": {
+        "description": "Standard project management terminology",
+        "display_names": {},  # empty = use slug as-is (formatted with underscores → spaces)
+    },
+    "opinionated": {
+        "description": "Human-first status names with personality",
+        "display_names": {
+            "backlog": "thinking about it",
+            "in_planning": "figuring it out",
+            "planned": "ready to go",
+            "in_progress": "on it",
+            "review": "check my work",
+            "done": "shipped",
+            "blocked": "stuck",
+            "needs_human": "need a human",
+            "cancelled": "never mind",
+        },
+    },
+}
+
+
 class LatticeConfig(TypedDict, total=False):
     schema_version: int
     default_status: str
@@ -89,16 +115,65 @@ class LatticeConfig(TypedDict, total=False):
     model_tiers: ModelTiers
     resources: dict[str, ResourceDef]
     heartbeat: HeartbeatConfig
+    workflow_preset: str
 
 
-def default_config() -> LatticeConfig:
+def default_config(preset: str = "classic") -> LatticeConfig:
     """Return the default Lattice configuration.
 
     The returned dict, when serialized with
     ``json.dumps(data, sort_keys=True, indent=2) + "\\n"``,
     produces the canonical default config.json.
+
+    *preset* selects the workflow personality ("classic" or "opinionated").
+    The opinionated preset adds human-friendly display names for statuses
+    while keeping the same underlying slugs and transition graph.
     """
-    return {
+    if preset not in WORKFLOW_PRESETS:
+        preset = "classic"
+
+    display_names = WORKFLOW_PRESETS[preset]["display_names"]
+
+    workflow: dict = {
+        "statuses": [
+            "backlog",
+            "in_planning",
+            "planned",
+            "in_progress",
+            "review",
+            "done",
+            "blocked",
+            "needs_human",
+            "cancelled",
+        ],
+        "transitions": {
+            "backlog": ["in_planning", "planned", "cancelled"],
+            "in_planning": ["planned", "needs_human", "cancelled"],
+            "planned": ["in_progress", "review", "blocked", "needs_human", "cancelled"],
+            "in_progress": ["review", "blocked", "needs_human", "cancelled"],
+            "review": ["done", "in_progress", "needs_human", "cancelled"],
+            "done": [],
+            "blocked": ["in_planning", "planned", "in_progress", "cancelled"],
+            "needs_human": [
+                "in_planning",
+                "planned",
+                "in_progress",
+                "review",
+                "cancelled",
+            ],
+            "cancelled": [],
+        },
+        "universal_targets": ["needs_human", "cancelled"],
+        "wip_limits": {
+            "in_progress": 10,
+            "review": 5,
+        },
+    }
+
+    if display_names:
+        workflow["display_names"] = display_names
+
+    config: LatticeConfig = {
         "schema_version": 1,
         "default_status": "backlog",
         "default_priority": "medium",
@@ -109,42 +184,48 @@ def default_config() -> LatticeConfig:
             "spike",
             "chore",
         ],
-        "workflow": {
-            "statuses": [
-                "backlog",
-                "in_planning",
-                "planned",
-                "in_progress",
-                "review",
-                "done",
-                "blocked",
-                "needs_human",
-                "cancelled",
-            ],
-            "transitions": {
-                "backlog": ["in_planning", "planned", "cancelled"],
-                "in_planning": ["planned", "needs_human", "cancelled"],
-                "planned": ["in_progress", "review", "blocked", "needs_human", "cancelled"],
-                "in_progress": ["review", "blocked", "needs_human", "cancelled"],
-                "review": ["done", "in_progress", "needs_human", "cancelled"],
-                "done": [],
-                "blocked": ["in_planning", "planned", "in_progress", "cancelled"],
-                "needs_human": [
-                    "in_planning",
-                    "planned",
-                    "in_progress",
-                    "review",
-                    "cancelled",
-                ],
-                "cancelled": [],
-            },
-            "universal_targets": ["needs_human", "cancelled"],
-            "wip_limits": {
-                "in_progress": 10,
-                "review": 5,
-            },
-        },
+        "workflow": workflow,
+        "workflow_preset": preset,
     }
+
+    return config
+
+
+def get_display_name(config: dict, status: str) -> str:
+    """Return the display name for a status slug.
+
+    If display_names is configured, returns the mapped name.
+    Otherwise, returns the slug with underscores replaced by spaces.
+    """
+    display_names = config.get("workflow", {}).get("display_names", {})
+    if display_names and status in display_names:
+        return display_names[status]
+    return status.replace("_", " ")
+
+
+def resolve_status_input(config: dict, user_input: str) -> str:
+    """Resolve a user-typed status to the canonical slug.
+
+    Accepts either the slug directly (e.g. "in_progress") or a display name
+    (e.g. "on it") and returns the canonical slug. Case-insensitive for
+    display name matching.
+    """
+    workflow = config.get("workflow", {})
+    statuses = workflow.get("statuses", [])
+
+    # Direct slug match
+    if user_input in statuses:
+        return user_input
+
+    # Try display name reverse lookup (case-insensitive)
+    display_names = workflow.get("display_names", {})
+    lower_input = user_input.lower()
+    for slug, display in display_names.items():
+        if display.lower() == lower_input:
+            return slug
+
+    # Fall back to original input (will fail validation downstream)
+    return user_input
 
 
 VALID_PRIORITIES: tuple[str, ...] = ("critical", "high", "medium", "low")

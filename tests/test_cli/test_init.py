@@ -384,7 +384,7 @@ class TestInitClaudeMd:
         runner = CliRunner()
         result = runner.invoke(
             cli,
-            ["init", "--path", str(tmp_path), "--actor", "human:test", "--project-code", "TST", "--no-heartbeat"],
+            ["init", "--path", str(tmp_path), "--actor", "human:test", "--project-code", "TST", "--no-heartbeat", "--workflow", "classic"],
             input="y\n",  # yes to CLAUDE.md integration
         )
         assert result.exit_code == 0
@@ -400,7 +400,7 @@ class TestInitClaudeMd:
         runner = CliRunner()
         result = runner.invoke(
             cli,
-            ["init", "--path", str(tmp_path), "--actor", "human:test", "--project-code", "TST", "--no-heartbeat"],
+            ["init", "--path", str(tmp_path), "--actor", "human:test", "--project-code", "TST", "--no-heartbeat", "--workflow", "classic"],
             input="y\n",  # yes to create CLAUDE.md
         )
         assert result.exit_code == 0
@@ -418,7 +418,7 @@ class TestInitClaudeMd:
         runner = CliRunner()
         result = runner.invoke(
             cli,
-            ["init", "--path", str(tmp_path), "--actor", "human:test", "--project-code", "TST", "--no-heartbeat"],
+            ["init", "--path", str(tmp_path), "--actor", "human:test", "--project-code", "TST", "--no-heartbeat", "--workflow", "classic"],
             input="n\n",  # no to CLAUDE.md
         )
         assert result.exit_code == 0
@@ -435,7 +435,7 @@ class TestInitClaudeMd:
         runner = CliRunner()
         result = runner.invoke(
             cli,
-            ["init", "--path", str(tmp_path), "--actor", "human:test", "--project-code", "TST", "--no-heartbeat"],
+            ["init", "--path", str(tmp_path), "--actor", "human:test", "--project-code", "TST", "--no-heartbeat", "--workflow", "classic"],
             input="n\n",  # no to CLAUDE.md
         )
         assert result.exit_code == 0
@@ -450,7 +450,7 @@ class TestInitClaudeMd:
         # No input needed for CLAUDE.md — should detect existing block and skip prompt
         result = runner.invoke(
             cli,
-            ["init", "--path", str(tmp_path), "--actor", "human:test", "--project-code", "TST", "--no-heartbeat"],
+            ["init", "--path", str(tmp_path), "--actor", "human:test", "--project-code", "TST", "--no-heartbeat", "--workflow", "classic"],
         )
         assert result.exit_code == 0
         assert "already has Lattice integration" in result.output
@@ -466,7 +466,7 @@ class TestInitClaudeMd:
         runner = CliRunner()
         result = runner.invoke(
             cli,
-            ["init", "--path", str(tmp_path), "--actor", "human:test", "--project-code", "TST", "--heartbeat"],
+            ["init", "--path", str(tmp_path), "--actor", "human:test", "--project-code", "TST", "--heartbeat", "--workflow", "classic"],
             input="n\n",  # no to CLAUDE.md
         )
         assert result.exit_code == 0
@@ -483,7 +483,7 @@ class TestInitClaudeMd:
         runner = CliRunner()
         result = runner.invoke(
             cli,
-            ["init", "--path", str(tmp_path), "--actor", "human:test", "--project-code", "TST", "--no-heartbeat"],
+            ["init", "--path", str(tmp_path), "--actor", "human:test", "--project-code", "TST", "--no-heartbeat", "--workflow", "classic"],
             input="n\n",  # no to CLAUDE.md
         )
         assert result.exit_code == 0

@@ -3750,6 +3750,14 @@ var selectedEpicId = null;
 var cubeRenderGeneration = 0;  // kept for auto-refresh compatibility
 var cubeCurrentRevision = null;
 
+// --- Status display names ---
+function getStatusDisplayName(slug) {
+  if (!slug) return "";
+  var dn = config && config.workflow && config.workflow.display_names;
+  if (dn && dn[slug]) return dn[slug];
+  return slug.replace(/_/g, " ");
+}
+
 // --- Web (Indra's Web view) state ---
 var webGraph = null;
 var webResizeHandler = null;
@@ -4317,7 +4325,7 @@ function drawWebNode(node, ctx, globalScale) {
   var cardFade = showSmall ? Math.min(1, (globalScale - activeThresh) / WEB_DETAIL_FADE_RANGE) : 0;
 
   var sid = node.short_id || node.id.substring(0, 10);
-  var statusLabel = (node.status || "").replace(/_/g, " ");
+  var statusLabel = getStatusDisplayName(node.status || "");
   var actColor = null;
   if (act) {
     if (act.git && act.lattice) actColor = WEB_ACTIVITY_COLORS.both;
@@ -4783,7 +4791,7 @@ function openWebDetailPane(taskId) {
 
     // Status bar
     html += '<div class="pane-status-bar">';
-    if (task.status) html += '<span class="badge" style="background:' + esc(getLaneColor(task.status)) + ';color:#fff;padding:2px 8px;border-radius:4px;font-size:.8rem">' + esc(task.status.replace(/_/g, " ")) + '</span>';
+    if (task.status) html += '<span class="badge" style="background:' + esc(getLaneColor(task.status)) + ';color:#fff;padding:2px 8px;border-radius:4px;font-size:.8rem">' + esc(getStatusDisplayName(task.status)) + '</span>';
     if (task.priority) html += '<span class="badge pri-' + esc(task.priority) + '" style="padding:2px 8px;border-radius:4px;font-size:.8rem">' + esc(task.priority) + '</span>';
     if (task.type) html += '<span class="badge type-badge" style="padding:2px 8px;border-radius:4px;font-size:.8rem">' + esc(task.type) + '</span>';
     html += '</div>';
@@ -4943,9 +4951,9 @@ function _renderPanelContent(taskId, task, events) {
     var transitions = (config && config.workflow && config.workflow.transitions) || {};
     var allowed = transitions[task.status] || [];
     html += '<select id="dp-status" title="Change status">';
-    html += '<option value="' + esc(task.status) + '" selected>' + esc(task.status) + '</option>';
+    html += '<option value="' + esc(task.status) + '" selected>' + esc(getStatusDisplayName(task.status)) + '</option>';
     allowed.forEach(function(s) {
-      html += '<option value="' + esc(s) + '">' + esc(s) + '</option>';
+      html += '<option value="' + esc(s) + '">' + esc(getStatusDisplayName(s)) + '</option>';
     });
     html += '</select>';
 
@@ -4964,7 +4972,7 @@ function _renderPanelContent(taskId, task, events) {
     html += '</div>';
   } else {
     html += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">';
-    if (task.status) html += '<span class="badge" style="background:' + esc(getLaneColor(task.status)) + ';color:#fff;padding:2px 8px;border-radius:4px;font-size:.8rem">' + esc(task.status.replace(/_/g, " ")) + '</span>';
+    if (task.status) html += '<span class="badge" style="background:' + esc(getLaneColor(task.status)) + ';color:#fff;padding:2px 8px;border-radius:4px;font-size:.8rem">' + esc(getStatusDisplayName(task.status)) + '</span>';
     if (task.priority) html += '<span class="badge pri-' + esc(task.priority) + '" style="padding:2px 8px;border-radius:4px;font-size:.8rem">' + esc(task.priority) + '</span>';
     if (task.type) html += '<span class="badge type-badge" style="padding:2px 8px;border-radius:4px;font-size:.8rem">' + esc(task.type) + '</span>';
     html += ' <span class="archived-badge">ARCHIVED</span></div>';
@@ -5777,7 +5785,7 @@ function renderBoard() {
     html += '<div class="board-col ' + cls + '" data-status="' + esc(status) + '"';
     html += ' ondragover="window._boardDragOver(event)" ondragleave="window._boardDragLeave(event)" ondrop="window._boardDrop(event)">';
     html += '<div class="board-col-header" style="background:' + esc(laneColor) + ';color:var(--text-on-lane)">';
-    html += '<span>' + esc(status) + '</span>';
+    html += '<span>' + esc(getStatusDisplayName(status)) + '</span>';
     html += '<span class="count">' + items.length + '</span>';
     html += '</div>';
     html += '<div class="board-col-body">';
@@ -6091,9 +6099,9 @@ async function renderDetail(taskId) {
       var transitions = (config && config.workflow && config.workflow.transitions) || {};
       var allowed = transitions[task.status] || [];
       html += '<select id="detail-status" title="Change status">';
-      html += '<option value="' + esc(task.status) + '" selected>' + esc(task.status) + '</option>';
+      html += '<option value="' + esc(task.status) + '" selected>' + esc(getStatusDisplayName(task.status)) + '</option>';
       allowed.forEach(function(s) {
-        html += '<option value="' + esc(s) + '">' + esc(s) + '</option>';
+        html += '<option value="' + esc(s) + '">' + esc(getStatusDisplayName(s)) + '</option>';
       });
       html += '</select>';
 
@@ -6117,7 +6125,7 @@ async function renderDetail(taskId) {
       html += '</div>';
     } else {
       html += '<div class="detail-meta">';
-      if (task.status) html += '<span class="badge badge-stat">' + esc(task.status) + '</span>';
+      if (task.status) html += '<span class="badge badge-stat">' + esc(getStatusDisplayName(task.status)) + '</span>';
       if (task.priority) html += '<span class="badge pri-' + esc(task.priority) + '">' + esc(task.priority) + '</span>';
       if (task.type) html += '<span class="badge type-badge">' + esc(task.type) + '</span>';
       html += '</div>';
@@ -6278,7 +6286,7 @@ function _wireDetailActions(taskId, task) {
       if (newStatus === task.status) return;
       try {
         await apiPost("/api/tasks/" + taskId + "/status", { status: newStatus });
-        showToast(tf("toast.status_changed", {status: newStatus}), "success");
+        showToast(tf("toast.status_changed", {status: getStatusDisplayName(newStatus)}), "success");
         tasks = await api("/api/tasks");
         updateAllBadges();
         renderDetail(taskId);
@@ -6588,7 +6596,7 @@ function eventSummary(ev) {
   var d = ev.data || {};
   switch(ev.type) {
     case "task_created": return esc(d.title || "");
-    case "status_changed": return esc((d.from||"?") + " \u2192 " + (d.to||"?"));
+    case "status_changed": return esc(getStatusDisplayName(d.from||"?") + " \u2192 " + getStatusDisplayName(d.to||"?"));
     case "assignment_changed": return esc((d.from||"unassigned") + " \u2192 " + (d.to||"unassigned"));
     case "field_updated": return esc(d.field + ": " + (d.from||"\u2013") + " \u2192 " + (d.to||"\u2013"));
     case "comment_added": {
@@ -6697,7 +6705,7 @@ function _epicsRenderNode(node) {
   }
 
   html += '<span class="epic-id">' + esc(node.short_id || node.id.slice(0, 12)) + '</span>';
-  html += '<span class="epic-status" style="background:' + esc(getLaneColor(node.status)) + '">' + esc((node.status || "").replace(/_/g, " ")) + '</span>';
+  html += '<span class="epic-status" style="background:' + esc(getLaneColor(node.status)) + '">' + esc(getStatusDisplayName(node.status || "")) + '</span>';
   html += '<span class="epic-title">' + esc(node.title || "") + '</span>';
 
   if (node.priority && node.priority !== "none") {
@@ -6921,7 +6929,7 @@ function _openTaskPicker() {
       }
       item.innerHTML = '<span class="tpi-id">' + esc(idLabel) + '</span>'
         + '<span class="tpi-title">' + esc(ti.title || "") + '</span>'
-        + (status ? '<span class="tpi-status">' + esc(status) + '</span>' : '');
+        + (status ? '<span class="tpi-status">' + esc(getStatusDisplayName(status)) + '</span>' : '');
       item.addEventListener("click", function() {
         _applyActivityFilter("task", ti.short_id || ti.id);
         overlay.remove();
@@ -7519,7 +7527,7 @@ async function renderStats() {
         html += '<tr>';
         html += '<td class="id-cell"><a href="#/task/' + esc(task.full_id) + '">' + esc(task.id) + '</a></td>';
         html += '<td><a href="#/task/' + esc(task.full_id) + '">' + esc(task.title) + '</a></td>';
-        html += '<td><span class="badge badge-stat">' + esc(task.status) + '</span></td>';
+        html += '<td><span class="badge badge-stat">' + esc(getStatusDisplayName(task.status)) + '</span></td>';
         html += '<td>' + esc(task.updated_ago) + '</td>';
         html += '</tr>';
       });
@@ -7535,7 +7543,7 @@ async function renderStats() {
         html += '<tr>';
         html += '<td class="id-cell"><a href="#/task/' + esc(task.full_id) + '">' + esc(task.id) + '</a></td>';
         html += '<td><a href="#/task/' + esc(task.full_id) + '">' + esc(task.title) + '</a></td>';
-        html += '<td><span class="badge badge-stat">' + esc(task.status) + '</span></td>';
+        html += '<td><span class="badge badge-stat">' + esc(getStatusDisplayName(task.status)) + '</span></td>';
         html += '<td>' + esc(typeof task.days_stale === "number" ? task.days_stale.toFixed(1) : task.days_stale) + '</td>';
         html += '</tr>';
       });
@@ -8061,6 +8069,7 @@ window._lattice = {
   esc: esc,
   showToast: showToast,
   getLaneColor: getLaneColor,
+  getStatusDisplayName: getStatusDisplayName,
   getConfig: function() { return config; },
   getCurrentView: function() { return currentView; }
 };

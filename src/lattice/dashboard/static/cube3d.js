@@ -28,6 +28,7 @@ var apiPost = _L.apiPost || function() { return Promise.reject(new Error('apiPos
 var esc = _L.esc || function(s) { return String(s); };
 var showToast = _L.showToast || function() {};
 var getLaneColor = _L.getLaneColor || function() { return '#6b7280'; };
+var getStatusDisplayName = _L.getStatusDisplayName || function(s) { return (s || '').replace(/_/g, ' '); };
 
 /* config and currentView are live references — read via getter each time */
 function _cube3dConfig() { return (_L.getConfig ? _L.getConfig() : null); }
@@ -868,7 +869,7 @@ function _cube3dShowCard(node) {
   el.innerHTML = '<div class="cube3d-card-header">'
     + '<span class="cube3d-card-id">' + (node.short_id || node.id.substring(0, 8)) + '</span>'
     + '<span class="cube3d-card-status" style="background:' + statusColor + '">'
-    + (node.status || '').replace(/_/g, ' ') + '</span>'
+    + getStatusDisplayName(node.status || '') + '</span>'
     + '</div>'
     + '<div class="cube3d-card-title">' + (node.title || 'Untitled') + '</div>'
     + '<div class="cube3d-card-meta">'
@@ -930,7 +931,7 @@ function _cube3dRenderWorkspacePanel(node, fullData) {
     + '<span class="cube3d-workspace-id">'
     + (node.short_id || node.id.substring(0, 12)) + '</span>'
     + '<span class="cube3d-workspace-status" style="background:' + statusColor + '">'
-    + (node.status || '').replace(/_/g, ' ') + '</span>'
+    + getStatusDisplayName(node.status || '') + '</span>'
     + '</div>'
     + '<div class="cube3d-workspace-title">'
     + (fullData.title || node.title || 'Untitled') + '</div>';

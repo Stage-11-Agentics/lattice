@@ -501,6 +501,11 @@ def status_cmd(
 
     current_status = snapshot["status"]
 
+    # Resolve display name to slug (e.g. "on it" → "in_progress")
+    from lattice.core.config import resolve_status_input
+
+    new_status = resolve_status_input(config, new_status)
+
     # Validate new_status is a known status
     if not validate_status(config, new_status):
         valid = ", ".join(config.get("workflow", {}).get("statuses", []))

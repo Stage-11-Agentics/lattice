@@ -277,6 +277,13 @@ def cli() -> None:
     default=None,
     help="Enable heartbeat mode (agents auto-advance through the backlog).",
 )
+@click.option(
+    "--workflow",
+    "workflow_preset",
+    type=click.Choice(["classic", "opinionated"], case_sensitive=False),
+    default=None,
+    help="Workflow personality preset for status names.",
+)
 def init(
     target_path: str,
     actor: str | None,
@@ -284,6 +291,7 @@ def init(
     subproject_code: str | None,
     instance_name: str | None,
     heartbeat: bool | None,
+    workflow_preset: str | None,
 ) -> None:
     """Initialize a new Lattice project."""
     root = Path(target_path)
@@ -353,12 +361,41 @@ def init(
         except (click.Abort, EOFError):
             heartbeat = False
 
+    # Prompt for workflow preset if not provided via flag
+    if workflow_preset is None:
+        from lattice.core.config import WORKFLOW_PRESETS
+
+        click.echo("")
+        click.echo("Workflow personality — how should your board talk?")
+        click.echo("")
+        for i, (key, preset) in enumerate(WORKFLOW_PRESETS.items(), 1):
+            display_names = preset["display_names"]
+            if display_names:
+                sample = " → ".join(
+                    display_names.get(s, s)
+                    for s in ["backlog", "in_progress", "done"]
+                )
+            else:
+                sample = "backlog → in_progress → done"
+            click.echo(f"  [{i}] {key}: {preset['description']}")
+            click.echo(f"      {sample}")
+        click.echo("")
+        try:
+            choice = click.prompt(
+                "Choose a preset",
+                type=click.IntRange(1, len(WORKFLOW_PRESETS)),
+                default=1,
+            )
+            workflow_preset = list(WORKFLOW_PRESETS.keys())[choice - 1]
+        except (click.Abort, EOFError):
+            workflow_preset = "classic"
+
     try:
         # Create directory structure
         ensure_lattice_dirs(root)
 
         # Write default config atomically
-        config: dict = dict(default_config())
+        config: dict = dict(default_config(preset=workflow_preset))
         # Always generate instance_id
         config["instance_id"] = generate_instance_id()
         if actor:
@@ -404,6 +441,8 @@ def init(
         click.echo(f"Instance name: {instance_name}")
     if heartbeat:
         click.echo("Heartbeat: enabled (agents auto-advance, max 10 per session)")
+    if workflow_preset and workflow_preset != "classic":
+        click.echo(f"Workflow: {workflow_preset}")
 
     # CLAUDE.md integration
     _offer_claude_md(root)
