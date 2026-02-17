@@ -825,6 +825,7 @@ class TestBookkeepingAlwaysUpdated:
         ("assignment_changed", {"from": "agent:claude", "to": "agent:codex"}),
         ("field_updated", {"field": "title", "from": "old", "to": "new"}),
         ("comment_added", {"body": "test"}),
+        ("comment_deleted", {"comment_id": "ev_01AAAAAAAAAAAAAAAAAAAAAAAAAA"}),
         (
             "relationship_added",
             {"type": "blocks", "target_task_id": "task_01TARGET000000000000000000"},

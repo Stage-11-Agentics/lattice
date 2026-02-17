@@ -5233,9 +5233,11 @@ function _wirePanelActions(taskId, task) {
   var commentBtn = document.getElementById("dp-comment-submit");
   if (commentBtn) {
     commentBtn.addEventListener("click", async function() {
+      if (commentBtn.disabled) return;
       var textarea = document.getElementById("dp-comment-text");
       var text = textarea.value.trim();
       if (!text) { showToast(t("error.comment_empty"), "error"); return; }
+      commentBtn.disabled = true;
       try {
         await apiPost("/api/tasks/" + taskId + "/comment", { body: text });
         showToast(t("toast.comment_added"), "success");
@@ -5244,6 +5246,8 @@ function _wirePanelActions(taskId, task) {
         await _refreshAfterPanelEdit(taskId);
       } catch(e) {
         showToast(e.message, "error");
+      } finally {
+        commentBtn.disabled = false;
       }
     });
 
@@ -6240,15 +6244,19 @@ function _wireDetailActions(taskId, task) {
   var commentBtn = document.getElementById("detail-comment-submit");
   if (commentBtn) {
     commentBtn.addEventListener("click", async function() {
+      if (commentBtn.disabled) return;
       var textarea = document.getElementById("detail-comment-text");
       var text = textarea.value.trim();
       if (!text) { showToast(t("error.comment_empty"), "error"); return; }
+      commentBtn.disabled = true;
       try {
         await apiPost("/api/tasks/" + taskId + "/comment", { body: text });
         showToast(t("toast.comment_added"), "success");
         renderDetail(taskId);
       } catch(e) {
         showToast(e.message, "error");
+      } finally {
+        commentBtn.disabled = false;
       }
     });
 

@@ -23,6 +23,7 @@ PROTECTED_FIELDS: frozenset[str] = frozenset(
         "relationships_out",
         "artifact_refs",
         "branch_links",
+        "comment_count",
         "custom_fields",
     }
 )
