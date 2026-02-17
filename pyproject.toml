@@ -39,6 +39,7 @@ dev = [
     "mcp>=1.25,<2",
     "mypy>=1.10",
     "pytest>=8.0",
+    "pytest-timeout>=2.3",
     "ruff>=0.4",
 ]
 
@@ -56,6 +57,7 @@ packages = ["src/lattice"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+timeout = 15
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "timeout: marks tests with a timeout",

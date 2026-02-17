@@ -67,11 +67,17 @@ class TestDefaultConfig:
         }
         assert set(transitions.keys()) == expected_keys
 
-    def test_terminal_statuses_have_no_transitions(self) -> None:
+    def test_terminal_statuses_have_no_explicit_transitions(self) -> None:
         config = default_config()
         transitions = config["workflow"]["transitions"]
         assert transitions["done"] == []
         assert transitions["cancelled"] == []
+
+    def test_has_universal_targets(self) -> None:
+        config = default_config()
+        assert "universal_targets" in config["workflow"]
+        assert "needs_human" in config["workflow"]["universal_targets"]
+        assert "cancelled" in config["workflow"]["universal_targets"]
 
     def test_wip_limits(self) -> None:
         config = default_config()
@@ -200,8 +206,10 @@ class TestValidateTransition:
         config = default_config()
         assert validate_transition(config, "backlog", "done") is False
 
-    def test_terminal_status_has_no_transitions(self) -> None:
+    def test_terminal_status_has_no_explicit_transitions(self) -> None:
         config = default_config()
+        # done/cancelled have no explicit transitions, but universal targets
+        # (needs_human, cancelled) are still reachable
         assert validate_transition(config, "done", "backlog") is False
         assert validate_transition(config, "cancelled", "backlog") is False
 
@@ -223,6 +231,37 @@ class TestValidateTransition:
         for from_s, to_list in transitions.items():
             for to_s in to_list:
                 assert validate_transition(config, from_s, to_s) is True
+
+    def test_universal_target_reachable_from_any_status(self) -> None:
+        config = default_config()
+        all_statuses = config["workflow"]["statuses"]
+        universal = config["workflow"]["universal_targets"]
+        for target in universal:
+            for from_s in all_statuses:
+                assert validate_transition(config, from_s, target) is True, (
+                    f"Universal target {target!r} should be reachable from {from_s!r}"
+                )
+
+    def test_universal_target_backlog_to_needs_human(self) -> None:
+        config = default_config()
+        assert validate_transition(config, "backlog", "needs_human") is True
+
+    def test_universal_target_done_to_needs_human(self) -> None:
+        config = default_config()
+        assert validate_transition(config, "done", "needs_human") is True
+
+    def test_universal_target_done_to_cancelled(self) -> None:
+        config = default_config()
+        assert validate_transition(config, "done", "cancelled") is True
+
+    def test_no_universal_targets_falls_back_to_explicit(self) -> None:
+        config: dict = {
+            "workflow": {
+                "transitions": {"backlog": ["in_planning"]},
+            },
+        }
+        assert validate_transition(config, "backlog", "in_planning") is True
+        assert validate_transition(config, "backlog", "needs_human") is False
 
 
 # ---------------------------------------------------------------------------

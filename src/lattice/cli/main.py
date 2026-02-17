@@ -233,25 +233,30 @@ def _offer_claude_md(root: Path) -> None:
 
     claude_md = root / "CLAUDE.md"
 
-    if claude_md.exists():
-        content = claude_md.read_text()
-        if marker in content:
-            click.echo("CLAUDE.md already has Lattice integration.")
-            return
-        if click.confirm(
-            "Found CLAUDE.md — add Lattice agent integration?",
-            default=True,
-        ):
-            with open(claude_md, "a") as f:
-                f.write(composed_block)
-            click.echo("Added Lattice integration to CLAUDE.md.")
-    else:
-        if click.confirm(
-            "Create CLAUDE.md with Lattice agent integration?",
-            default=True,
-        ):
-            claude_md.write_text(f"# {root.name}\n{composed_block}")
-            click.echo("Created CLAUDE.md with Lattice integration.")
+    try:
+        if claude_md.exists():
+            content = claude_md.read_text()
+            if marker in content:
+                click.echo("CLAUDE.md already has Lattice integration.")
+                return
+            if click.confirm(
+                "Found CLAUDE.md — add Lattice agent integration?",
+                default=True,
+            ):
+                with open(claude_md, "a") as f:
+                    f.write(composed_block)
+                click.echo("Added Lattice integration to CLAUDE.md.")
+        else:
+            if click.confirm(
+                "Create CLAUDE.md with Lattice agent integration?",
+                default=True,
+            ):
+                claude_md.write_text(f"# {root.name}\n{composed_block}")
+                click.echo("Created CLAUDE.md with Lattice integration.")
+    except (click.Abort, EOFError):
+        # Non-interactive mode — skip CLAUDE.md prompt silently.
+        # The core init already succeeded; this is optional.
+        pass
 
 
 # ---------------------------------------------------------------------------
