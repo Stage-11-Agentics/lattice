@@ -48,8 +48,15 @@ var CUBE3D_EDGE_COLORS = {
   related_to: '#6b7280', spawned_by: '#8b5cf6'
 };
 
-var CUBE3D_PRIORITY_Y = { critical: 200, high: 100, medium: 0, low: -100 };
+var CUBE3D_PRIORITY_Y = { critical: 120, high: 50, medium: 0, low: -60 };
 var CUBE3D_PRIORITY_SCALE = { critical: 2.0, high: 1.5, medium: 1.0, low: 0.7 };
+
+/* Spacing between status lanes on X axis */
+var CUBE3D_LANE_SPACING = 80;
+/* Zone box dimensions (width along X, height along Y, depth along Z) */
+var CUBE3D_ZONE_WIDTH = 70;
+var CUBE3D_ZONE_HEIGHT = 400;
+var CUBE3D_ZONE_DEPTH = 350;
 
 /* --------------------------------------------------------------------------
  * 2. Module State
@@ -362,10 +369,12 @@ function cube3dEaseInOutCubic(t) {
 }
 
 function cube3dRecencyZ(updatedAt, now, maxAge) {
-  if (!updatedAt) return -400;
+  if (!updatedAt) return -250;
   var age = now - new Date(updatedAt).getTime();
   var t = Math.min(age / maxAge, 1);
-  return -t * 500;
+  // Range: 0 (just updated) → -300 (oldest). sqrt curve makes
+  // recent items cluster near front, old items spread toward back.
+  return -Math.sqrt(t) * 300;
 }
 
 /* --------------------------------------------------------------------------
@@ -387,11 +396,11 @@ function _cube3dInitScene() {
   // Scene
   var scene = new THREE.Scene();
   scene.background = bgColor;
-  scene.fog = new THREE.Fog(bgColor, 800, 2000);
+  scene.fog = new THREE.Fog(bgColor, 600, 1600);
 
   // Camera
   var camera = new THREE.PerspectiveCamera(60, w / h, 1, 5000);
-  camera.position.set(400, 200, 600);
+  camera.position.set(250, 120, 400);
 
   // WebGL Renderer
   var webglRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
@@ -435,7 +444,7 @@ function _cube3dInitSimulation(nodes, links) {
   var _cfg = _cube3dConfig();
   var statuses = (_cfg && _cfg.workflow && _cfg.workflow.statuses) || [];
   var statusX = {};
-  statuses.forEach(function(s, i) { statusX[s] = i * 150; });
+  statuses.forEach(function(s, i) { statusX[s] = i * CUBE3D_LANE_SPACING; });
 
   var now = Date.now();
   var maxAge = 30 * 24 * 60 * 60 * 1000; // 30 days
@@ -444,9 +453,9 @@ function _cube3dInitSimulation(nodes, links) {
     .numDimensions(3)
     .force('x', d3.forceX(function(d) { return statusX[d.status] || 0; }).strength(0.8))
     .force('y', d3.forceY(function(d) { return CUBE3D_PRIORITY_Y[d.priority] || 0; }).strength(0.3))
-    .force('z', d3.forceZ(function(d) { return cube3dRecencyZ(d.updated_at, now, maxAge); }).strength(0.2))
-    .force('charge', d3.forceManyBody().strength(-100))
-    .force('link', d3.forceLink(links).id(function(d) { return d.id; }).distance(80).strength(0.3))
+    .force('z', d3.forceZ(function(d) { return cube3dRecencyZ(d.updated_at, now, maxAge); }).strength(0.35))
+    .force('charge', d3.forceManyBody().strength(-60))
+    .force('link', d3.forceLink(links).id(function(d) { return d.id; }).distance(50).strength(0.3))
     .alphaDecay(0.02)
     .velocityDecay(0.3);
 
@@ -554,32 +563,58 @@ function _cube3dCreateEdges(links, nodes) {
 }
 
 /* --------------------------------------------------------------------------
- * 10. Status Zone Fog Planes
+ * 10. Status Zone Volumes
  * ----------------------------------------------------------------------- */
 
 function _cube3dCreateFogPlanes() {
   var _cfg = _cube3dConfig();
   var statuses = (_cfg && _cfg.workflow && _cfg.workflow.statuses) || [];
   statuses.forEach(function(status, i) {
-    var x = i * 150;
+    var x = i * CUBE3D_LANE_SPACING;
     var color = new THREE.Color(cube3dStatusColor(status));
 
-    // Translucent fog plane
-    var planeGeo = new THREE.PlaneGeometry(80, 800);
-    var planeMat = new THREE.MeshBasicMaterial({
+    // 3D box volume — translucent zone that nodes sit inside
+    var boxGeo = new THREE.BoxGeometry(CUBE3D_ZONE_WIDTH, CUBE3D_ZONE_HEIGHT, CUBE3D_ZONE_DEPTH);
+    var boxMat = new THREE.MeshBasicMaterial({
       color: color,
       transparent: true,
-      opacity: 0.04,
+      opacity: 0.035,
+      side: THREE.BackSide,
+      depthWrite: false
+    });
+    var box = new THREE.Mesh(boxGeo, boxMat);
+    box.position.set(x, 0, -CUBE3D_ZONE_DEPTH / 2);
+    _cube3d.scene.add(box);
+    _cube3d.fogPlanes.push(box);
+
+    // Thin wireframe outline for spatial definition
+    var edgesGeo = new THREE.EdgesGeometry(boxGeo);
+    var edgesMat = new THREE.LineBasicMaterial({
+      color: color,
+      transparent: true,
+      opacity: 0.12
+    });
+    var edges = new THREE.LineSegments(edgesGeo, edgesMat);
+    edges.position.copy(box.position);
+    _cube3d.scene.add(edges);
+    _cube3d.fogPlanes.push(edges);
+
+    // Floor tint — subtle colored ground plane at bottom of zone
+    var floorGeo = new THREE.PlaneGeometry(CUBE3D_ZONE_WIDTH, CUBE3D_ZONE_DEPTH);
+    var floorMat = new THREE.MeshBasicMaterial({
+      color: color,
+      transparent: true,
+      opacity: 0.06,
       side: THREE.DoubleSide,
       depthWrite: false
     });
-    var plane = new THREE.Mesh(planeGeo, planeMat);
-    plane.position.set(x, 0, -200);
-    plane.rotation.y = Math.PI / 2;
-    _cube3d.scene.add(plane);
-    _cube3d.fogPlanes.push(plane);
+    var floor = new THREE.Mesh(floorGeo, floorMat);
+    floor.rotation.x = -Math.PI / 2;
+    floor.position.set(x, -CUBE3D_ZONE_HEIGHT / 2, -CUBE3D_ZONE_DEPTH / 2);
+    _cube3d.scene.add(floor);
+    _cube3d.fogPlanes.push(floor);
 
-    // Text sprite label
+    // Text sprite label — above the zone box
     var canvas = document.createElement('canvas');
     var ctx = canvas.getContext('2d');
     canvas.width = 256;
@@ -587,18 +622,18 @@ function _cube3dCreateFogPlanes() {
     ctx.fillStyle = 'rgba(0,0,0,0)';
     ctx.fillRect(0, 0, 256, 64);
     ctx.fillStyle = '#' + color.getHexString();
-    ctx.font = '24px sans-serif';
+    ctx.font = 'bold 24px sans-serif';
     ctx.textAlign = 'center';
     ctx.fillText(status.replace(/_/g, ' '), 128, 40);
     var texture = new THREE.CanvasTexture(canvas);
     var spriteMat = new THREE.SpriteMaterial({
       map: texture,
       transparent: true,
-      opacity: 0.6
+      opacity: 0.7
     });
     var sprite = new THREE.Sprite(spriteMat);
-    sprite.position.set(x, 350, -200);
-    sprite.scale.set(100, 25, 1);
+    sprite.position.set(x, CUBE3D_ZONE_HEIGHT / 2 + 20, -CUBE3D_ZONE_DEPTH / 2);
+    sprite.scale.set(80, 20, 1);
     _cube3d.scene.add(sprite);
     _cube3d.fogLabels.push(sprite);
   });
@@ -1376,7 +1411,7 @@ async function renderCube3D() {
       cy /= nodes.length;
       cz /= nodes.length;
       _cube3d.controls.target.set(cx, cy, cz);
-      _cube3d.camera.position.set(cx + 400, cy + 200, cz + 600);
+      _cube3d.camera.position.set(cx + 250, cy + 120, cz + 400);
       _cube3d.controls.update();
     }
   }, 2000);
