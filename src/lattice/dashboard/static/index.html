@@ -3603,23 +3603,24 @@ async function apiPost(path, data) {
 }
 
 // --- Open Notes / Plans in System Editor ---
-async function openNotes(taskId) {
+// Exposed on window because inline onclick handlers can't reach IIFE scope
+window.openNotes = async function(taskId) {
   try {
     await apiPost("/api/tasks/" + taskId + "/open-notes", {});
     showToast(t("toast.notes_opened"));
   } catch (e) {
     showToast(e.message, "error");
   }
-}
+};
 
-async function openPlans(taskId) {
+window.openPlans = async function(taskId) {
   try {
     await apiPost("/api/tasks/" + taskId + "/open-plans", {});
     showToast(t("toast.plans_opened"));
   } catch (e) {
     showToast(e.message, "error");
   }
-}
+};
 
 // --- Toast Notifications ---
 function showToast(message, type) {
@@ -5238,6 +5239,8 @@ function _wirePanelActions(taskId, task) {
       try {
         await apiPost("/api/tasks/" + taskId + "/comment", { body: text });
         showToast(t("toast.comment_added"), "success");
+        textarea.blur();
+        textarea.value = "";
         await _refreshAfterPanelEdit(taskId);
       } catch(e) {
         showToast(e.message, "error");
@@ -5558,6 +5561,7 @@ function renderBoardCard(t) {
   if (t.priority) html += '<span class="badge pri-' + esc(t.priority) + '">' + esc(t.priority) + "</span>";
   if (t.type) html += '<span class="badge type-badge">' + esc(t.type) + "</span>";
   if (t.assigned_to) html += '<span style="color:var(--text-muted);font-size:.8rem">' + esc(t.assigned_to) + "</span>";
+  if (t.comment_count) html += '<span style="color:var(--text-muted);font-size:.75rem;margin-left:auto" title="' + t.comment_count + ' comment' + (t.comment_count === 1 ? '' : 's') + '">\uD83D\uDCAC ' + t.comment_count + "</span>";
   html += "</div></div>";
   return html;
 }
@@ -5839,7 +5843,7 @@ function applyListFilters() {
     var updated = t.updated_at ? t.updated_at.slice(0,16).replace("T"," ") : "";
     html += '<tr style="cursor:pointer" onclick="openDetailPanel(\'' + esc(t.id) + '\')">';
     html += '<td class="id-cell" title="' + esc(t.id) + '">' + (t.short_id ? '<span style="font-weight:600;color:var(--accent-primary)">' + esc(t.short_id) + '</span>' : esc(displayId)) + "</td>";
-    html += "<td>" + esc(t.title || "Untitled") + (t.archived ? ' <span class="archived-badge">archived</span>' : "") + "</td>";
+    html += "<td>" + esc(t.title || "Untitled") + (t.archived ? ' <span class="archived-badge">archived</span>' : "") + (t.comment_count ? ' <span style="color:var(--text-muted);font-size:.75rem" title="' + t.comment_count + ' comment' + (t.comment_count === 1 ? '' : 's') + '">\uD83D\uDCAC ' + t.comment_count + '</span>' : '') + "</td>";
     html += "<td>" + esc(t.status || "") + "</td>";
     html += "<td>";
     if (t.priority) html += '<span class="badge pri-' + esc(t.priority) + '">' + esc(t.priority) + "</span>";
