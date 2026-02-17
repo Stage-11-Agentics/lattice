@@ -8,7 +8,7 @@
 
 Lattice is task tracking upgraded for the agent-native era.
 
-"Linear but e/acc" 
+"Linear for e/acc"
 
 Lattice is opinionated. event-sourced. file-based. built for a world where your teammates think in tokens and act in tool calls.
 
