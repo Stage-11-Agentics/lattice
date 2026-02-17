@@ -306,11 +306,21 @@ Critical test categories (add as features land):
 - **Repo-level `research/`** — external research, competitive analysis, pattern studies, and reference material gathered from outside the project. Things we've learned from others that inform our design.
 - **Don't duplicate** — a document should live in one place, not across multiple folders.
 
+## Branching Model
+
+**Override: This project uses a two-branch model, not the parent CLAUDE.md default.**
+
+- **`main`** — development branch. All feature branches merge here. Not guaranteed deployable.
+- **`prod`** — stable release branch. Reflects the latest production-quality state. Merges from `main` when a release is ready.
+- Feature work happens on short-lived branches off `main` (`feat/`, `fix/`, etc.).
+- PRs target `main`. Promotion to `prod` is a deliberate merge when stability is confirmed.
+
 ## Workflow Reminders
 
 - **Branch naming:** `feat/`, `fix/`, `refactor/`, `test/`, `chore/` prefixes
 - **Commits:** Conventional commit messages (`feat:`, `fix:`, etc.)
-- **Before merging:** All tests pass, ruff clean, no regressions
+- **Before merging to `main`:** All tests pass, ruff clean, no regressions
+- **Before merging to `prod`:** Same gates + manual confirmation that the release is intentional
 - **New decisions:** Append to `Decisions.md` with date, decision, rationale, consequence
 - **Schema changes:** Bump `schema_version`, maintain forward compatibility (unknown fields tolerated)
 
