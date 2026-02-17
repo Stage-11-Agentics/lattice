@@ -578,6 +578,82 @@
 }
 
 /* ---------------------------------------------------------------------------
+   Welcome Dialog (first visit only)
+   --------------------------------------------------------------------------- */
+
+.cube3d-welcome-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+  pointer-events: auto;
+  animation: cube3d-fade-in 0.3s ease-out;
+}
+
+@keyframes cube3d-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.cube3d-welcome {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 28px 32px;
+  max-width: 420px;
+  text-align: center;
+  font-family: var(--font-body);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+  animation: cube3d-welcome-pop 0.3s ease-out;
+}
+
+@keyframes cube3d-welcome-pop {
+  from { transform: scale(0.92); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+.cube3d-welcome-icon {
+  font-size: 36px;
+  margin-bottom: 12px;
+}
+
+.cube3d-welcome-title {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 10px;
+}
+
+.cube3d-welcome-body {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  margin-bottom: 20px;
+}
+
+.cube3d-welcome-dismiss {
+  padding: 8px 28px;
+  background: var(--accent-primary);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  transition: background 0.15s;
+}
+
+.cube3d-welcome-dismiss:hover {
+  background: var(--accent-hover);
+}
+
+/* ---------------------------------------------------------------------------
    Loading spinner (reuses existing dashboard animation)
    --------------------------------------------------------------------------- */
 

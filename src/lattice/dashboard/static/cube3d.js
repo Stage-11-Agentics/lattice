@@ -1377,6 +1377,39 @@ async function renderCube3D() {
     + '<div class="cube3d-mobile-only-msg">The 3D workspace requires a desktop browser with mouse controls.</div>'
     + '</div>';
 
+  // First-visit welcome dialog
+  var CUBE3D_WELCOME_KEY = 'lattice_cube3d_welcomed';
+  try {
+    if (!localStorage.getItem(CUBE3D_WELCOME_KEY)) {
+      var container = document.getElementById('cube3d-container');
+      if (container) {
+        var overlay = document.createElement('div');
+        overlay.className = 'cube3d-welcome-overlay';
+        overlay.innerHTML = '<div class="cube3d-welcome">'
+          + '<div class="cube3d-welcome-icon">\u2728</div>'
+          + '<div class="cube3d-welcome-title">Welcome to the Cube</div>'
+          + '<div class="cube3d-welcome-body">'
+          + 'This 3D workspace is an early preview. In the future it will be a fully '
+          + 'interactive spatial environment for navigating your task graph \u2014 but right now '
+          + 'it\u2019s more of a proof of concept than a polished tool. It\u2019s here to '
+          + 'give you a glimpse of where we\u2019re headed.'
+          + '</div>'
+          + '<button class="cube3d-welcome-dismiss">Got it</button>'
+          + '</div>';
+        container.appendChild(overlay);
+        overlay.querySelector('.cube3d-welcome-dismiss').addEventListener('click', function() {
+          overlay.style.opacity = '0';
+          overlay.style.transition = 'opacity 0.2s';
+          setTimeout(function() { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }, 200);
+          try { localStorage.setItem(CUBE3D_WELCOME_KEY, '1'); } catch (_e) {}
+        });
+        overlay.addEventListener('click', function(e) {
+          if (e.target === overlay) overlay.querySelector('.cube3d-welcome-dismiss').click();
+        });
+      }
+    }
+  } catch (_e) { /* localStorage unavailable — skip */ }
+
   // Fetch graph data
   try {
     var data = await api('/api/graph');
