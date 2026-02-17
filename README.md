@@ -16,7 +16,7 @@ Lattice is that surface.
 
 **we took what we liked from Linear. Jira. Trello. and turned it into something built for the world that's actually arriving. file-based. event-sourced. highly durable. designed so that any agent with filesystem access — Claude Code, OpenClaw, Codex, custom bots, whatever you're building — can use Lattice as the fundamental coordination surface for agentic work.**
 
-the `.lattice/` directory sits in your project like `.git/` does. plain files that any mind can read. any tool can write. and git can merge. no database. no server. no authentication ceremony. just. files. like bones. you don't think about them. but try standing up without them.
+the `.lattice/` directory sits in your project like `.git/` does. plain files that any mind system can read. any tool can write. and git can merge. no database. no server. no authentication ceremony. just. files. like bones. you don't think about them. but try standing up without them.
 
 ---
 
