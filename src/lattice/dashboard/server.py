@@ -90,6 +90,24 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                 self._serve_notes_file("stats-demo/demo.html", "text/html")
             elif path.startswith("/api/"):
                 self._route_api(path)
+            elif path.startswith("/static/"):
+                # Serve static assets (JS, CSS) with path traversal protection
+                rel_path = path[len("/static/"):]
+                # Block path traversal
+                if ".." in rel_path or rel_path.startswith("/"):
+                    self._send_json(403, _err("FORBIDDEN", "Path traversal not allowed"))
+                    return
+                # Determine content type
+                content_types = {
+                    ".js": "application/javascript",
+                    ".css": "text/css",
+                    ".json": "application/json",
+                    ".svg": "image/svg+xml",
+                    ".png": "image/png",
+                }
+                ext = "." + rel_path.rsplit(".", 1)[-1] if "." in rel_path else ""
+                content_type = content_types.get(ext, "application/octet-stream")
+                self._serve_static(rel_path, content_type)
             else:
                 self._send_json(404, _err("NOT_FOUND", f"Not found: {path}"))
 
@@ -174,6 +192,8 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                         self._handle_task_events(ld, task_id)
                     elif sub == "comments":
                         self._handle_task_comments(ld, task_id)
+                    elif sub == "full":
+                        self._handle_task_full(ld, task_id)
                     else:
                         self._send_json(404, _err("NOT_FOUND", f"Not found: {path}"))
                 else:
@@ -329,6 +349,51 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
             comments = materialize_comments(events)
             self._send_json(200, _ok(comments))
 
+        def _handle_task_full(self, ld: Path, task_id: str) -> None:
+            """Handle GET /api/tasks/<id>/full — combined snapshot + events + comments for Cube LOD 4."""
+            if not validate_id(task_id, "task"):
+                self._send_json(400, _err("INVALID_ID", "Invalid task ID format"))
+                return
+
+            snapshot = _read_snapshot(ld, task_id)
+            is_archived = False
+            if snapshot is None:
+                snapshot = _read_snapshot_archive(ld, task_id)
+                if snapshot is not None:
+                    is_archived = True
+
+            if snapshot is None:
+                self._send_json(404, _err("NOT_FOUND", f"Task {task_id} not found"))
+                return
+
+            # Read events (latest 20)
+            events = read_task_events(ld, task_id, is_archived=is_archived)
+            events.reverse()
+            recent_events = events[:20]
+
+            # Materialize comments
+            all_events = read_task_events(ld, task_id, is_archived=is_archived)
+            comments = materialize_comments(all_events)
+
+            # Enrich snapshot
+            result = dict(snapshot)
+            if is_archived:
+                notes_path = ld / "archive" / "notes" / f"{task_id}.md"
+                plan_path = ld / "archive" / "plans" / f"{task_id}.md"
+            else:
+                notes_path = ld / "notes" / f"{task_id}.md"
+                plan_path = ld / "plans" / f"{task_id}.md"
+
+            result["notes_exists"] = notes_path.exists()
+            result["plan_exists"] = plan_path.exists()
+            result["artifacts"] = _read_artifact_info(ld, snapshot)
+            result["recent_events"] = recent_events
+            result["comments"] = comments
+            if is_archived:
+                result["archived"] = True
+
+            self._send_json(200, _ok(result))
+
         def _handle_activity(self, ld: Path) -> None:
             all_events: list[dict] = []
             events_dir = ld / "events"
@@ -413,6 +478,9 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                     "type": snap.get("type"),
                     "assigned_to": snap.get("assigned_to"),
                     "branch_links": snap.get("branch_links", []),
+                    "created_at": snap.get("created_at"),
+                    "updated_at": snap.get("updated_at"),
+                    "description_snippet": (snap.get("description") or "")[:200],
                 }
                 nodes.append(node)
 

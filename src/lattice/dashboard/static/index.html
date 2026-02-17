@@ -2955,6 +2955,9 @@ select.form-control{cursor:pointer}
 <script src="https://unpkg.com/d3-octree@1"></script>
 <script src="https://unpkg.com/d3-force-3d@3"></script>
 <script src="https://unpkg.com/force-graph@1/dist/force-graph.min.js"></script>
+<script src="https://unpkg.com/three@0.170.0/build/three.min.js"></script>
+<link rel="stylesheet" href="/static/cube3d.css">
+<script src="/static/cube3d.js" defer></script>
 <script>
 (function(){
 "use strict";
@@ -3589,11 +3592,11 @@ var draggedFromStatus = null;
 var boardGraphLinks = [];
 var selectedEpicId = null;
 
-// --- Cube (graph view) state ---
-var cubeGraph = null;
-var cubeResizeHandler = null;
-var cubeData = null;
-var cubeRenderGeneration = 0;
+// --- Cube (3D view) state ---
+// Cube 3D state is managed internally by cube3d.js
+// These thin wrappers delegate to the external module's globals:
+// renderCube3D(), updateCube3DData(), cleanupCube3D()
+var cubeRenderGeneration = 0;  // kept for auto-refresh compatibility
 var cubeCurrentRevision = null;
 
 // --- Web (Indra's Web view) state ---
@@ -3708,263 +3711,36 @@ function updateAllBadges() {
   updateStatsBadges();
 }
 
-// --- Cube (graph view) ---
-
-// Edge colors by relationship type
-var CUBE_EDGE_COLORS = {
-  blocks: "#dc3545", depends_on: "#fd7e14", subtask_of: "#0d6efd",
-  related_to: "#6c757d", spawned_by: "#6f42c1", duplicate_of: "#adb5bd", supersedes: "#adb5bd"
-};
-var CUBE_EDGE_COLOR_DEFAULT = "#adb5bd";
-var CUBE_EDGE_LABELS = {
-  blocks: "Blocks", depends_on: "Depends on", subtask_of: "Subtask of",
-  related_to: "Related to", spawned_by: "Spawned by"
-};
-var CUBE_PRIORITY_SIZE = { critical: 12, high: 8, medium: 5, low: 3 };
-var CUBE_PRIORITY_SIZE_DEFAULT = 5;
+// --- Cube (3D graph view) ---
+// Delegates to cube3d.js external module
 
 async function renderCube() {
-  var app = document.getElementById("app");
-  app.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
-  cleanupCube();
-
-  cubeRenderGeneration++;
-  var myGeneration = cubeRenderGeneration;
-
-  // CDN fallback checks
-  if (typeof ForceGraph === "undefined") {
-    app.innerHTML = '<div class="cube-empty">'
-      + '<div class="cube-fallback-icon">\u26a0</div>'
-      + '<div class="cube-fallback-title">Graph library unavailable</div>'
-      + '<div class="cube-fallback-msg">The Cube view requires the force-graph library. Check your network connection.</div>'
-      + '<button class="cube-fallback-retry" onclick="location.reload()">Retry</button>'
-      + '</div>';
-    return;
+  if (typeof renderCube3D === 'function') {
+    await renderCube3D();
+  } else {
+    var app = document.getElementById('app');
+    app.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:calc(100vh - 60px);color:var(--text-muted);text-align:center;padding:40px;">'
+      + '<div><div style="font-size:48px;margin-bottom:16px;opacity:0.6">\u26a0</div>'
+      + '<div style="font-size:18px;font-weight:600;color:var(--text-primary);margin-bottom:8px">3D library unavailable</div>'
+      + '<div style="max-width:400px;line-height:1.5">The Cube 3D view requires Three.js. Check your network connection.</div>'
+      + '<button onclick="location.reload()" style="margin-top:16px;padding:8px 24px;background:var(--accent-primary);color:#fff;border:none;border-radius:var(--radius-md);cursor:pointer">Retry</button>'
+      + '</div></div>';
   }
-  if (typeof d3 === "undefined" || typeof d3.forceX !== "function") {
-    app.innerHTML = '<div class="cube-empty">'
-      + '<div class="cube-fallback-icon">\u26a0</div>'
-      + '<div class="cube-fallback-title">Layout library unavailable</div>'
-      + '<div class="cube-fallback-msg">The Cube view requires d3-force-3d. Check your network connection.</div>'
-      + '<button class="cube-fallback-retry" onclick="location.reload()">Retry</button>'
-      + '</div>';
-    return;
-  }
-
-  // Fetch graph data
-  try {
-    var data = await api("/api/graph");
-  } catch (e) {
-    if (myGeneration !== cubeRenderGeneration) return;
-    app.innerHTML = '<div class="cube-empty"><p>Failed to load graph data: ' + esc(e.message) + '</p></div>';
-    return;
-  }
-  if (myGeneration !== cubeRenderGeneration) return;
-
-  cubeData = data;
-  cubeCurrentRevision = (data && data.revision) || null;
-  var nodes = (data && data.nodes) || [];
-  var links = (data && data.links) || [];
-
-  // Empty state
-  if (nodes.length < 3) {
-    app.innerHTML = '<div class="cube-empty">'
-      + '<p>Not enough tasks to visualize.</p>'
-      + '<p style="color:var(--text-muted);font-size:.875rem;">The graph view becomes useful with 3+ tasks.</p>'
-      + '</div>';
-    return;
-  }
-
-  // Build container
-  app.innerHTML = '<div id="cube-container" style="'
-    + 'position:relative;width:100%;height:calc(100vh - 60px);overflow:hidden;'
-    + 'background:var(--bg-base);">'
-    + '<span class="sr-only">' + esc(nodes.length + ' tasks with ' + links.length + ' relationships in graph view. Use Board or List for full accessibility.') + '</span>'
-    + '</div>';
-  var container = document.getElementById("cube-container");
-  container.setAttribute("role", "img");
-  container.setAttribute("aria-label", "Task relationship graph");
-
-  // Mobile notice
-  if (window.innerWidth < 768) {
-    container.insertAdjacentHTML("afterbegin",
-      '<div class="cube-mobile-notice">'
-      + '<span>Graph works best on larger screens. Pinch to zoom, drag to pan.</span>'
-      + '<button onclick="this.parentNode.remove()" style="background:none;border:none;cursor:pointer;color:inherit;font-size:16px">\u2715</button>'
-      + '</div>');
-  }
-
-  // Legend
-  container.insertAdjacentHTML("beforeend", buildCubeLegendHTML());
-
-  // Layout parameters (tighter for small graphs)
-  var statuses = (config && config.workflow && config.workflow.statuses) || [];
-  var isSmallGraph = nodes.length < 10;
-  var statusSpacing = isSmallGraph ? 140 : 200;
-  var chargeStrength = isSmallGraph ? -80 : -150;
-  var xStrength = isSmallGraph ? 0.9 : 0.8;
-  var yStrength = isSmallGraph ? 0.15 : 0.1;
-
-  var statusX = {};
-  statuses.forEach(function(s, i) { statusX[s] = i * statusSpacing; });
-
-  // Compute text color once (CSS vars don't work in canvas)
-  var textColor = getComputedStyle(document.documentElement)
-    .getPropertyValue("--text-primary").trim() || "#212529";
-
-  var w = container.offsetWidth;
-  var h = container.offsetHeight;
-
-  try {
-    cubeGraph = ForceGraph()(container)
-      .graphData({ nodes: nodes, links: links })
-      .width(w).height(h)
-      .nodeId("id")
-      .nodeLabel(function(node) {
-        var html = '<div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:12px;max-width:280px;box-shadow:0 4px 12px rgba(0,0,0,0.15);color:var(--text-primary);line-height:1.4">';
-        html += '<div style="font-weight:700;font-family:var(--font-mono)">' + esc(node.short_id || node.id.substring(0, 12)) + '</div>';
-        html += '<div style="font-weight:500;margin-bottom:6px">' + esc(node.title || '') + '</div>';
-        if (node.status) html += '<div style="display:flex;gap:6px;align-items:center;margin-bottom:2px"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + esc(getLaneColor(node.status)) + '"></span><span style="color:var(--text-muted);font-size:11px;min-width:50px">Status</span><span>' + esc(node.status) + '</span></div>';
-        if (node.priority) html += '<div style="display:flex;gap:6px;margin-bottom:2px"><span style="color:var(--text-muted);font-size:11px;min-width:50px">Priority</span><span>' + esc(node.priority) + '</span></div>';
-        if (node.assigned_to) html += '<div style="display:flex;gap:6px;margin-bottom:2px"><span style="color:var(--text-muted);font-size:11px;min-width:50px">Assignee</span><span>' + esc(node.assigned_to) + '</span></div>';
-        html += '<div style="color:var(--text-muted);font-size:10px;margin-top:6px;border-top:1px solid var(--border);padding-top:4px">Click to open task</div>';
-        html += '</div>';
-        return html;
-      })
-      .nodeColor(function(node) { return getLaneColor(node.status); })
-      .nodeVal(function(node) { return CUBE_PRIORITY_SIZE[node.priority] || CUBE_PRIORITY_SIZE_DEFAULT; })
-      .linkSource("source").linkTarget("target")
-      .linkColor(function(link) { return CUBE_EDGE_COLORS[link.type] || CUBE_EDGE_COLOR_DEFAULT; })
-      .linkWidth(function(link) { return link.type === "blocks" ? 2 : 1; })
-      .linkDirectionalArrowLength(6)
-      .linkDirectionalArrowRelPos(1)
-      .linkDirectionalArrowColor(function(link) { return CUBE_EDGE_COLORS[link.type] || CUBE_EDGE_COLOR_DEFAULT; })
-      .linkCurvature(0.15)
-      .linkLabel(function(link) {
-        var s = (typeof link.source === "object") ? (link.source.short_id || link.source.id) : link.source;
-        var t = (typeof link.target === "object") ? (link.target.short_id || link.target.id) : link.target;
-        return esc(s) + " " + esc(link.type || "related") + " " + esc(t);
-      })
-      .onNodeClick(function(node) {
-        if (node && node.id) location.hash = "#/task/" + node.id;
-      })
-      .nodeCanvasObjectMode(function() { return "replace"; })
-      .nodeCanvasObject(function(node, ctx, globalScale) {
-        var size = CUBE_PRIORITY_SIZE[node.priority] || CUBE_PRIORITY_SIZE_DEFAULT;
-        var radius = Math.sqrt(size) * 2.5;
-        var color = getLaneColor(node.status);
-        ctx.beginPath();
-        ctx.arc(node.x, node.y, radius, 0, 2 * Math.PI, false);
-        ctx.fillStyle = color;
-        ctx.fill();
-        ctx.strokeStyle = "rgba(0,0,0,0.15)";
-        ctx.lineWidth = 0.5;
-        ctx.stroke();
-        var fontSize = 10 / globalScale;
-        if (fontSize < 2) return;
-        if (fontSize > 10) fontSize = 10;
-        var label = node.short_id || node.id.substring(0, 8);
-        ctx.font = fontSize + "px sans-serif";
-        ctx.textAlign = "center";
-        ctx.textBaseline = "top";
-        ctx.fillStyle = textColor;
-        ctx.fillText(label, node.x, node.y + radius + 2);
-      });
-  } catch (err) {
-    app.innerHTML = '<div class="cube-empty">'
-      + '<div class="cube-fallback-icon">\u26a0</div>'
-      + '<div class="cube-fallback-title">Graph rendering failed</div>'
-      + '<div class="cube-fallback-msg">' + esc(err.message) + '</div>'
-      + '<button class="cube-fallback-retry" onclick="location.hash=\'#/cube\'">Retry</button>'
-      + '</div>';
-    return;
-  }
-
-  // Status-constrained forces (the key layout strategy — NOT dagMode)
-  cubeGraph
-    .d3Force("x", d3.forceX(function(d) { return statusX[d.status] || 0; }).strength(xStrength))
-    .d3Force("y", d3.forceY(0).strength(yStrength))
-    .d3Force("charge", d3.forceManyBody().strength(chargeStrength))
-    .d3Force("center", null);
-
-  // Resize handler
-  cubeResizeHandler = function() {
-    if (!cubeGraph) return;
-    var c = document.getElementById("cube-container");
-    if (!c) return;
-    cubeGraph.width(c.offsetWidth).height(c.offsetHeight);
-  };
-  window.addEventListener("resize", cubeResizeHandler);
-
-  // Zoom to fit after simulation stabilizes
-  cubeGraph.d3ReheatSimulation();
-  setTimeout(function() {
-    if (cubeGraph) cubeGraph.zoomToFit(400, 40);
-  }, 2000);
 }
 
 function updateCubeData(data) {
-  if (!cubeGraph) return;
-  if (!data) return;
-  var nodes = (data.nodes) || [];
-  if (cubeData && data.revision && cubeData.revision === data.revision) return;
-  cubeCurrentRevision = (data.revision) || null;
-  // Only re-render empty state if cube container is actually visible
-  // (prevents clobbering task detail view when currentView is "cube" but detail is showing)
-  if (nodes.length < 3) {
-    cubeData = data;
-    var container = document.getElementById("cube-container");
-    if (container) renderCube();
-    return;
+  if (typeof updateCube3DData === 'function') {
+    cubeCurrentRevision = (data && data.revision) || null;
+    updateCube3DData(data);
   }
-  cubeData = data;
-  cubeGraph.graphData({ nodes: nodes, links: (data.links) || [] });
 }
 
 function cleanupCube() {
-  if (cubeResizeHandler) {
-    window.removeEventListener("resize", cubeResizeHandler);
-    cubeResizeHandler = null;
+  if (typeof cleanupCube3D === 'function') {
+    cleanupCube3D();
   }
-  if (cubeGraph) {
-    cubeGraph.pauseAnimation();
-    var container = document.getElementById("cube-container");
-    if (container) container.innerHTML = "";
-    cubeGraph = null;
-  }
-  cubeData = null;
   cubeCurrentRevision = null;
   cubeRenderGeneration++;
-}
-
-function buildCubeLegendHTML() {
-  var statuses = (config && config.workflow && config.workflow.statuses) || [];
-  var html = '<div style="'
-    + 'position:absolute;bottom:16px;left:16px;z-index:10;'
-    + 'background:var(--surface);border:1px solid var(--border);'
-    + 'border-radius:var(--radius-md);padding:10px 14px;'
-    + 'font-size:.75rem;color:var(--text-secondary);'
-    + 'max-width:220px;box-shadow:var(--shadow-card-hover);opacity:0.92;'
-    + '">';
-  html += '<div style="font-weight:600;margin-bottom:6px;color:var(--text-primary)">Statuses</div>';
-  statuses.forEach(function(s) {
-    var color = getLaneColor(s);
-    html += '<div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">'
-      + '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' + esc(color) + ';flex-shrink:0"></span>'
-      + '<span>' + esc(s.replace(/_/g, " ")) + '</span></div>';
-  });
-  html += '<div style="border-top:1px solid var(--border-subtle);margin:8px 0"></div>';
-  html += '<div style="font-weight:600;margin-bottom:6px;color:var(--text-primary)">Relationships</div>';
-  var edgeType;
-  for (edgeType in CUBE_EDGE_LABELS) {
-    if (CUBE_EDGE_LABELS.hasOwnProperty(edgeType)) {
-      html += '<div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">'
-        + '<span style="display:inline-block;width:14px;height:2px;background:' + esc(CUBE_EDGE_COLORS[edgeType] || CUBE_EDGE_COLOR_DEFAULT) + ';flex-shrink:0"></span>'
-        + '<span>' + esc(CUBE_EDGE_LABELS[edgeType]) + '</span></div>';
-    }
-  }
-  html += '</div>';
-  return html;
 }
 
 // --- Web (Indra's Web view) ---
