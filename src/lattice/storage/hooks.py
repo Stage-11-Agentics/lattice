@@ -50,7 +50,7 @@ def execute_hooks(
 
     # 3. transitions (status_changed only)
     transitions = hooks.get("transitions")
-    if transitions and event["type"] == "status_changed":
+    if transitions and isinstance(transitions, dict) and event["type"] == "status_changed":
         data = event.get("data", {})
         from_status = data.get("from", "")
         to_status = data.get("to", "")
@@ -72,10 +72,16 @@ def _match_transitions(
 ) -> list[str]:
     """Return commands matching the given transition, in priority order.
 
-    Match order: exact (``"from -> to"``), wildcard source (``"* -> to"``),
-    wildcard target (``"from -> *"``).
+    Match order:
+    1. Exact (``"from -> to"``)
+    2. Wildcard source (``"* -> to"``)
+    3. Wildcard target (``"from -> *"``)
+    4. Double wildcard (``"* -> *"``)
     """
-    matched: list[str] = []
+    exact: list[str] = []
+    wild_src: list[str] = []
+    wild_tgt: list[str] = []
+    wild_both: list[str] = []
 
     for pattern, cmd in transitions.items():
         parsed = _parse_transition_key(pattern)
@@ -83,15 +89,22 @@ def _match_transitions(
             continue
 
         pat_from, pat_to = parsed
+        from_matches = pat_from == "*" or pat_from == from_status
+        to_matches = pat_to == "*" or pat_to == to_status
 
-        if pat_from == from_status and pat_to == to_status:
-            matched.insert(0, cmd)  # exact match first
-        elif pat_from == "*" and pat_to == to_status:
-            matched.append(cmd)
-        elif pat_from == from_status and pat_to == "*":
-            matched.append(cmd)
+        if not from_matches or not to_matches:
+            continue
 
-    return matched
+        if pat_from != "*" and pat_to != "*":
+            exact.append(cmd)
+        elif pat_from == "*" and pat_to != "*":
+            wild_src.append(cmd)
+        elif pat_from != "*" and pat_to == "*":
+            wild_tgt.append(cmd)
+        else:
+            wild_both.append(cmd)
+
+    return exact + wild_src + wild_tgt + wild_both
 
 
 def _parse_transition_key(key: str) -> tuple[str, str] | None:

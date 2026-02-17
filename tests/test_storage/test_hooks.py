@@ -484,6 +484,36 @@ class TestMatchTransitions:
         result = _match_transitions(transitions, "in_progress", "review")
         assert result == ["good.sh"]
 
+    def test_double_wildcard_matches(self) -> None:
+        transitions = {"* -> *": "all.sh"}
+        result = _match_transitions(transitions, "in_progress", "review")
+        assert result == ["all.sh"]
+
+    def test_double_wildcard_matches_any_transition(self) -> None:
+        transitions = {"* -> *": "all.sh"}
+        result = _match_transitions(transitions, "backlog", "cancelled")
+        assert result == ["all.sh"]
+
+    def test_deterministic_wildcard_order(self) -> None:
+        """Wildcard source runs before wildcard target regardless of config key order."""
+        transitions = {
+            "in_progress -> *": "target.sh",
+            "* -> review": "source.sh",
+        }
+        result = _match_transitions(transitions, "in_progress", "review")
+        assert result == ["source.sh", "target.sh"]
+
+    def test_full_priority_order(self) -> None:
+        """exact -> wild_src -> wild_tgt -> wild_both."""
+        transitions = {
+            "* -> *": "both.sh",
+            "in_progress -> *": "tgt.sh",
+            "* -> review": "src.sh",
+            "in_progress -> review": "exact.sh",
+        }
+        result = _match_transitions(transitions, "in_progress", "review")
+        assert result == ["exact.sh", "src.sh", "tgt.sh", "both.sh"]
+
     def test_empty_transitions(self) -> None:
         assert _match_transitions({}, "in_progress", "review") == []
 
@@ -792,3 +822,38 @@ echo "should-not-fire" > "{output_file}"
     assert result.exit_code == 0
 
     assert not output_file.exists(), "Transition hook fired for non-matching transition"
+
+
+# ---------------------------------------------------------------------------
+# 13. Robustness: malformed transitions config
+# ---------------------------------------------------------------------------
+
+
+def test_malformed_transitions_string_does_not_raise(
+    lattice_dir: Path, sample_event: dict
+) -> None:
+    """Malformed transitions config (string instead of dict) does not crash."""
+    config = {"hooks": {"transitions": "not-a-dict"}}
+    # Should not raise
+    execute_hooks(config, lattice_dir, sample_event["task_id"], sample_event)
+
+
+def test_malformed_transitions_list_does_not_raise(
+    lattice_dir: Path, sample_event: dict
+) -> None:
+    """Malformed transitions config (list instead of dict) does not crash."""
+    config = {"hooks": {"transitions": ["bad", "config"]}}
+    execute_hooks(config, lattice_dir, sample_event["task_id"], sample_event)
+
+
+def test_transition_with_missing_event_data(lattice_dir: Path) -> None:
+    """Transition hooks handle events with empty data gracefully."""
+    event = create_event(
+        type="status_changed",
+        task_id="task_01AAAAAAAAAAAAAAAAAAAAAAAAAA",
+        actor="human:test",
+        data={},
+    )
+    config = {"hooks": {"transitions": {"* -> *": "echo noop"}}}
+    # from_status and to_status will be empty strings, guard should skip
+    execute_hooks(config, lattice_dir, event["task_id"], event)
