@@ -90,6 +90,23 @@ class TestArchive:
         result = invoke("archive", task_id, "--actor", "human:test")
         assert result.exit_code == 0
 
+    def test_archive_with_plan(self, create_task, invoke, initialized_root):
+        """Plan file should be moved to archive/plans/ when present."""
+        task = create_task("Plan test")
+        task_id = task["id"]
+
+        lattice = initialized_root / ".lattice"
+        plan_path = lattice / "plans" / f"{task_id}.md"
+        assert plan_path.exists(), "Plan should be scaffolded on create"
+
+        result = invoke("archive", task_id, "--actor", "human:test")
+        assert result.exit_code == 0
+
+        assert not plan_path.exists()
+        archived_plan = lattice / "archive" / "plans" / f"{task_id}.md"
+        assert archived_plan.exists()
+        assert "## Summary" in archived_plan.read_text()
+
     def test_archive_rejects_invalid_task_id(self, invoke):
         """Archiving with a malformed task_id should fail with INVALID_ID."""
         result = invoke("archive", "../../etc/passwd", "--actor", "human:test")
@@ -295,6 +312,29 @@ class TestUnarchive:
         assert notes_path.exists()
         assert "Some notes" in notes_path.read_text()
         assert not (lattice / "archive" / "notes" / f"{task_id}.md").exists()
+
+    def test_unarchive_with_plan(self, create_task, invoke, initialized_root):
+        """Plan file should be moved back from archive/plans/ when present."""
+        task = create_task("Plan unarchive test")
+        task_id = task["id"]
+
+        lattice = initialized_root / ".lattice"
+        plan_path = lattice / "plans" / f"{task_id}.md"
+        assert plan_path.exists()
+
+        invoke("archive", task_id, "--actor", "human:test")
+
+        # Verify plan is in archive
+        assert not plan_path.exists()
+        assert (lattice / "archive" / "plans" / f"{task_id}.md").exists()
+
+        result = invoke("unarchive", task_id, "--actor", "human:test")
+        assert result.exit_code == 0
+
+        # Plan should be back in active
+        assert plan_path.exists()
+        assert "## Summary" in plan_path.read_text()
+        assert not (lattice / "archive" / "plans" / f"{task_id}.md").exists()
 
     def test_unarchive_not_found(self, invoke):
         """Unarchiving a non-existent task should fail with NOT_FOUND."""

@@ -27,9 +27,11 @@ class TestInitDirectoryStructure:
             "artifacts/meta",
             "artifacts/payload",
             "notes",
+            "plans",
             "archive/tasks",
             "archive/events",
             "archive/notes",
+            "archive/plans",
             "locks",
         ]
         for d in expected_dirs:

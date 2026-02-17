@@ -13,6 +13,47 @@ from lattice.storage.hooks import execute_hooks
 from lattice.storage.locks import lattice_lock, multi_lock
 
 
+def scaffold_plan(
+    lattice_dir: Path,
+    task_id: str,
+    title: str,
+    short_id: str | None,
+    description: str | None,
+) -> None:
+    """Create the initial plan markdown file for a new task.
+
+    Non-authoritative — this is a convenience scaffold for humans and agents
+    to use as a structured planning document. Skipped silently if the file
+    already exists (idempotent create).
+    """
+    plan_path = lattice_dir / "plans" / f"{task_id}.md"
+    if plan_path.exists():
+        return
+
+    heading = f"# {short_id}: {title}" if short_id else f"# {title}"
+    lines = [heading, ""]
+
+    lines.append("## Summary")
+    lines.append("")
+    if description:
+        lines.append(description)
+    else:
+        lines.append("<!-- What this task is and why it matters. -->")
+    lines.append("")
+
+    lines.append("## Technical Plan")
+    lines.append("")
+    lines.append("<!-- Implementation approach, design decisions, open questions. -->")
+    lines.append("")
+
+    lines.append("## Acceptance Criteria")
+    lines.append("")
+    lines.append("<!-- What must be true for this task to be done? -->")
+    lines.append("")
+
+    plan_path.write_text("\n".join(lines), encoding="utf-8")
+
+
 def scaffold_notes(
     lattice_dir: Path,
     task_id: str,
@@ -25,6 +66,10 @@ def scaffold_notes(
     Non-authoritative — this is a convenience scaffold for humans and agents
     to use as a working document. Skipped silently if the file already exists
     (idempotent create).
+
+    Notes are NOT scaffolded on task creation (plans are). This function
+    exists for explicit on-demand creation via ``lattice note`` or direct
+    file writes.
     """
     notes_path = lattice_dir / "notes" / f"{task_id}.md"
     if notes_path.exists():
@@ -33,17 +78,7 @@ def scaffold_notes(
     heading = f"# {short_id}: {title}" if short_id else f"# {title}"
     lines = [heading, ""]
 
-    lines.append("## Summary")
-    lines.append("")
-    if description:
-        lines.append(description)
-    else:
-        lines.append("<!-- Human-readable summary of what this task is and why it matters. -->")
-    lines.append("")
-
-    lines.append("## Technical Plan")
-    lines.append("")
-    lines.append("<!-- Implementation approach, design decisions, open questions. -->")
+    lines.append("<!-- Scratchpad — working notes, debug logs, context dumps, open questions. -->")
     lines.append("")
 
     notes_path.write_text("\n".join(lines), encoding="utf-8")

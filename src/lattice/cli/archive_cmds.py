@@ -105,6 +105,15 @@ def _archive_one(
                 str(lattice_dir / "archive" / "notes" / f"{task_id}.md"),
             )
 
+        plans_path = lattice_dir / "plans" / f"{task_id}.md"
+        if plans_path.exists():
+            archive_plans_dir = lattice_dir / "archive" / "plans"
+            archive_plans_dir.mkdir(parents=True, exist_ok=True)
+            shutil.move(
+                str(plans_path),
+                str(archive_plans_dir / f"{task_id}.md"),
+            )
+
     execute_hooks(config, lattice_dir, task_id, event)
     return event
 
@@ -428,6 +437,13 @@ def _unarchive_one(
             shutil.move(
                 str(archive_notes_path),
                 str(lattice_dir / "notes" / f"{task_id}.md"),
+            )
+
+        archive_plans_path = lattice_dir / "archive" / "plans" / f"{task_id}.md"
+        if archive_plans_path.exists():
+            shutil.move(
+                str(archive_plans_path),
+                str(lattice_dir / "plans" / f"{task_id}.md"),
             )
 
     execute_hooks(config, lattice_dir, task_id, event)

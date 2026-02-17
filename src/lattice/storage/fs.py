@@ -76,10 +76,12 @@ def ensure_lattice_dirs(root: Path) -> None:
         "artifacts/meta",
         "artifacts/payload",
         "notes",
+        "plans",
         "resources",
         "archive/tasks",
         "archive/events",
         "archive/notes",
+        "archive/plans",
         "locks",
     ]
     for subdir in subdirs:

@@ -704,9 +704,11 @@ def lattice_archive(
 
         plan_path = lattice_dir / "plans" / f"{task_id}.md"
         if plan_path.exists():
+            archive_plans_dir = lattice_dir / "archive" / "plans"
+            archive_plans_dir.mkdir(parents=True, exist_ok=True)
             shutil.move(
                 str(plan_path),
-                str(lattice_dir / "archive" / "plans" / f"{task_id}.md"),
+                str(archive_plans_dir / f"{task_id}.md"),
             )
 
     # Fire hooks after locks released

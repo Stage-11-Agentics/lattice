@@ -17,7 +17,7 @@ from lattice.cli.helpers import (
     validate_actor_or_exit,
     write_task_event,
 )
-from lattice.storage.operations import scaffold_notes
+from lattice.storage.operations import scaffold_plan
 from lattice.cli.main import cli
 from lattice.core.comments import (
     materialize_comments,
@@ -239,8 +239,8 @@ def create(
     # Write (event-first, then snapshot, under lock)
     write_task_event(lattice_dir, task_id, [event], snapshot, config)
 
-    # Scaffold notes file
-    scaffold_notes(lattice_dir, task_id, title, short_id, description)
+    # Scaffold plan file (notes are created lazily, not on task creation)
+    scaffold_plan(lattice_dir, task_id, title, short_id, description)
 
     # Output: prefer short_id when available
     display_id = short_id if short_id else task_id

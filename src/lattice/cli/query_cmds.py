@@ -629,12 +629,15 @@ def show_cmd(
     # Read event log
     events = _read_events(lattice_dir, task_id, is_archived)
 
-    # Check for notes file
+    # Check for notes and plan files
     if is_archived:
         notes_path = lattice_dir / "archive" / "notes" / f"{task_id}.md"
+        plan_path = lattice_dir / "archive" / "plans" / f"{task_id}.md"
     else:
         notes_path = lattice_dir / "notes" / f"{task_id}.md"
+        plan_path = lattice_dir / "plans" / f"{task_id}.md"
     has_notes = notes_path.exists()
+    has_plan = plan_path.exists()
 
     # Read outgoing relationship target titles (best effort)
     relationships_out = _enrich_relationships(lattice_dir, snapshot)
@@ -651,6 +654,8 @@ def show_cmd(
         data["valid_transitions"] = valid_transitions
         if is_archived:
             data["archived"] = True
+        if has_plan:
+            data["plan_path"] = f"plans/{task_id}.md"
         if has_notes:
             data["notes_path"] = f"notes/{task_id}.md"
         data["relationships_enriched"] = relationships_out
@@ -666,6 +671,7 @@ def show_cmd(
             relationships_out,
             relationships_in,
             artifact_info,
+            has_plan,
             has_notes,
             task_id,
             is_archived,
@@ -793,6 +799,7 @@ def _print_human_show(
     relationships: list[dict],
     relationships_in: list[dict],
     artifact_info: list[dict],
+    has_plan: bool,
     has_notes: bool,
     task_id: str,
     is_archived: bool,
@@ -882,8 +889,11 @@ def _print_human_show(
             else:
                 click.echo(f"  {branch_name} by {linked_by}")
 
-    if has_notes:
+    if has_plan:
         click.echo("")
+        click.echo(f"Plan: plans/{task_id}.md")
+
+    if has_notes:
         click.echo(f"Notes: notes/{task_id}.md")
 
     if events:
@@ -964,3 +974,46 @@ def _event_summary(event: dict, full: bool) -> str:
         return ""
     else:
         return ""
+
+
+# ---------------------------------------------------------------------------
+# lattice plan
+# ---------------------------------------------------------------------------
+
+
+@cli.command()
+@click.argument("task_id")
+@click.option("--json", "output_json", is_flag=True, help="Output as JSON.")
+def plan(task_id: str, output_json: bool) -> None:
+    """Show or open the plan file for a task.
+
+    Prints the plan file path. If the plan file doesn't exist, reports that.
+    """
+    is_json = output_json
+    lattice_dir = require_root(is_json)
+    task_id = resolve_task_id(lattice_dir, task_id, is_json)
+
+    # Check active then archive
+    plan_path = lattice_dir / "plans" / f"{task_id}.md"
+    is_archived = False
+    if not plan_path.is_file():
+        plan_path = lattice_dir / "archive" / "plans" / f"{task_id}.md"
+        is_archived = True
+    if not plan_path.is_file():
+        if is_json:
+            click.echo(json_envelope(False, error_code="NOT_FOUND", error_msg=f"No plan file for task {task_id}"))
+        else:
+            click.echo(f"No plan file found for task {task_id}.")
+        raise SystemExit(1)
+
+    if is_json:
+        data = {
+            "task_id": task_id,
+            "plan_path": str(plan_path),
+            "archived": is_archived,
+            "content": plan_path.read_text(encoding="utf-8"),
+        }
+        click.echo(json_envelope(True, data=data))
+    else:
+        # Print content to stdout
+        click.echo(plan_path.read_text(encoding="utf-8"))

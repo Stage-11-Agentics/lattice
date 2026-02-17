@@ -664,6 +664,79 @@ class TestShow:
         assert result.exit_code == 0
         assert "Notes:" not in result.output
 
+    def test_plan_scaffolded_on_create(self, invoke, create_task, cli_env):
+        """Plan file is scaffolded on create, notes file is NOT."""
+        task = create_task("Plan scaffold test")
+        task_id = task["id"]
+
+        root = Path(cli_env["LATTICE_ROOT"])
+        plan_path = root / ".lattice" / "plans" / f"{task_id}.md"
+        notes_path = root / ".lattice" / "notes" / f"{task_id}.md"
+
+        assert plan_path.exists(), "Plan file should be scaffolded on create"
+        assert not notes_path.exists(), "Notes file should NOT be scaffolded on create"
+
+        content = plan_path.read_text()
+        assert "## Summary" in content
+        assert "## Technical Plan" in content
+        assert "## Acceptance Criteria" in content
+
+    def test_plan_path_shown_when_exists(self, invoke, create_task, cli_env):
+        """Plan path is displayed when the plan file exists."""
+        task = create_task("Task with plan")
+        task_id = task["id"]
+
+        result = invoke("show", task_id)
+        assert result.exit_code == 0
+        assert f"Plan: plans/{task_id}.md" in result.output
+
+    def test_plan_path_in_json(self, invoke, create_task, cli_env):
+        """Plan path appears in JSON output when plan file exists."""
+        task = create_task("Task with plan")
+        task_id = task["id"]
+
+        result = invoke("show", task_id, "--json")
+        assert result.exit_code == 0
+        parsed = json.loads(result.output)
+        assert parsed["data"]["plan_path"] == f"plans/{task_id}.md"
+
+    def test_plan_command_shows_content(self, invoke, create_task, cli_env):
+        """lattice plan <task> shows plan file content."""
+        task = create_task("Task for plan cmd")
+        task_id = task["id"]
+
+        result = invoke("plan", task_id)
+        assert result.exit_code == 0
+        assert "## Summary" in result.output
+        assert "## Technical Plan" in result.output
+
+    def test_plan_command_json(self, invoke, create_task, cli_env):
+        """lattice plan <task> --json returns plan content."""
+        task = create_task("Task for plan json")
+        task_id = task["id"]
+
+        result = invoke("plan", task_id, "--json")
+        assert result.exit_code == 0
+        parsed = json.loads(result.output)
+        assert parsed["ok"] is True
+        assert "content" in parsed["data"]
+        assert "## Summary" in parsed["data"]["content"]
+
+    def test_plan_command_not_found(self, invoke, create_task, cli_env):
+        """lattice plan for task with no plan file reports not found."""
+        task = create_task("Task no plan")
+        task_id = task["id"]
+
+        # Remove the auto-scaffolded plan file
+        root = Path(cli_env["LATTICE_ROOT"])
+        plan_path = root / ".lattice" / "plans" / f"{task_id}.md"
+        if plan_path.exists():
+            plan_path.unlink()
+
+        result = invoke("plan", task_id)
+        assert result.exit_code != 0
+        assert "No plan file" in result.output
+
     def test_relationships_displayed(self, invoke, create_task):
         """Outgoing relationships are shown with target title."""
         task_a = create_task("Blocker task")
