@@ -4036,6 +4036,48 @@ function webTruncText(ctx, text, maxW) {
   return t + "\u2026";
 }
 
+// Word-wrap text into up to maxLines lines that fit within maxW.
+// Returns an array of strings. Last line truncated with ellipsis if needed.
+function webWrapText(ctx, text, maxW, maxLines) {
+  if (!text) return [""];
+  if (maxLines < 1) maxLines = 1;
+  var words = text.split(/\s+/);
+  var lines = [];
+  var cur = "";
+  for (var i = 0; i < words.length; i++) {
+    var test = cur ? (cur + " " + words[i]) : words[i];
+    if (ctx.measureText(test).width <= maxW) {
+      cur = test;
+    } else {
+      if (cur) {
+        lines.push(cur);
+        if (lines.length >= maxLines) { break; }
+        cur = words[i];
+      } else {
+        // Single word wider than maxW — truncate it
+        cur = words[i];
+      }
+    }
+  }
+  if (cur && lines.length < maxLines) lines.push(cur);
+  if (lines.length === 0) lines.push(text);
+  // If we ran out of lines but have remaining text, truncate last line
+  if (lines.length >= maxLines) {
+    // Rebuild remaining text from where we stopped
+    var lastLine = lines[maxLines - 1];
+    var remaining = words.slice(i).join(" ");
+    if (remaining) {
+      // There's overflow — truncate the last line with ellipsis
+      lastLine = webTruncText(ctx, lastLine + " " + remaining, maxW);
+    } else if (ctx.measureText(lastLine).width > maxW) {
+      lastLine = webTruncText(ctx, lastLine, maxW);
+    }
+    lines[maxLines - 1] = lastLine;
+    lines.length = maxLines;
+  }
+  return lines;
+}
+
 // Helper: draw a rounded rect on canvas
 function webRoundRect(ctx, x, y, w, h, r) {
   ctx.beginPath();
@@ -4067,7 +4109,9 @@ function webCardDir(node) {
 }
 
 // Draw a detail card on canvas next to (or centered on) a node.
-// opts: { lines, statusColor, actColor, fadeAlpha, centered }
+// opts: { lines, statusColor, actColor, fadeAlpha, centered, large }
+// Each line: { text, bold, color, maxLines? }
+// If maxLines > 1, text is word-wrapped into multiple rendered lines.
 function webDrawCard(ctx, node, radius, globalScale, opts) {
   var lines = opts.lines;
   var statusColor = opts.statusColor;
@@ -4087,8 +4131,24 @@ function webDrawCard(ctx, node, radius, globalScale, opts) {
   var lineH = fs * (large ? 1.45 : 1.35);
   var pad = basePad / globalScale;
   var cardW = baseW / globalScale;
-  var cardH = pad * 2 + lines.length * lineH;
   var cornerR = baseCorner / globalScale;
+  var textMaxW = cardW - pad * 2 - 8 / globalScale;
+
+  // Expand lines: word-wrap any line with maxLines > 1
+  var rendered = [];
+  lines.forEach(function(line) {
+    ctx.font = (line.bold ? "bold " : "") + fs + "px sans-serif";
+    if (line.maxLines && line.maxLines > 1) {
+      var wrapped = webWrapText(ctx, line.text, textMaxW, line.maxLines);
+      wrapped.forEach(function(wt) {
+        rendered.push({ text: wt, bold: line.bold, color: line.color });
+      });
+    } else {
+      rendered.push(line);
+    }
+  });
+
+  var cardH = pad * 2 + rendered.length * lineH;
 
   var cardX, cardY;
   if (centered) {
@@ -4144,10 +4204,9 @@ function webDrawCard(ctx, node, radius, globalScale, opts) {
     ctx.fill();
   }
 
-  // Text lines
+  // Render expanded text lines
   var textY = cardY + pad + fs * 0.85;
-  var textMaxW = cardW - pad * 2 - (actColor ? 8 / globalScale : 0);
-  lines.forEach(function(line) {
+  rendered.forEach(function(line) {
     ctx.font = (line.bold ? "bold " : "") + fs + "px sans-serif";
     ctx.fillStyle = line.color || "rgba(255,255,255,0.9)";
     ctx.textAlign = "left";
@@ -4235,10 +4294,10 @@ function drawWebNode(node, ctx, globalScale) {
     var isLargeCard = false;
 
     if (showLarge) {
-      // Large card: full detail, physically bigger
+      // Large card: full detail, physically bigger — title wraps up to 4 lines
       isLargeCard = true;
       lines.push({ text: sid, bold: true, color: "rgba(255,255,255,1)" });
-      if (node.title) lines.push({ text: node.title, bold: false, color: "rgba(255,255,255,0.85)" });
+      if (node.title) lines.push({ text: node.title, bold: false, color: "rgba(255,255,255,0.85)", maxLines: 4 });
       lines.push({ text: statusLabel, bold: false, color: color });
       if (node.assigned_to) lines.push({ text: "\ud83d\udc64 " + node.assigned_to, bold: false, color: "rgba(200,200,255,0.7)" });
       if (tier === "epic" && node.type) lines.push({ text: "\ud83c\udfaf " + node.type, bold: false, color: "rgba(255,255,255,0.5)" });
@@ -4247,9 +4306,9 @@ function drawWebNode(node, ctx, globalScale) {
       }
       if (node.priority) lines.push({ text: "\u26a1 " + node.priority, bold: false, color: "rgba(255,220,150,0.7)" });
     } else {
-      // Small card: compact — ID + title + status
+      // Small card: compact — ID + title (2 lines) + status
       lines.push({ text: sid, bold: true, color: "rgba(255,255,255,1)" });
-      if (node.title) lines.push({ text: node.title, bold: false, color: "rgba(255,255,255,0.8)" });
+      if (node.title) lines.push({ text: node.title, bold: false, color: "rgba(255,255,255,0.8)", maxLines: 2 });
       lines.push({ text: statusLabel, bold: false, color: color });
     }
 
