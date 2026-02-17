@@ -123,11 +123,59 @@ def _parse_transition_key(key: str) -> tuple[str, str] | None:
     return (left, right)
 
 
+def execute_resource_hooks(
+    config: dict,
+    lattice_dir: Path,
+    resource_id: str,
+    resource_name: str,
+    event: dict,
+) -> None:
+    """Fire configured hooks for a single resource event.
+
+    Hooks are fire-and-forget: failures are logged to stderr but never
+    raise exceptions or fail the calling CLI command.
+    """
+    hooks = config.get("hooks")
+    if not hooks:
+        return
+
+    env = _build_resource_env(lattice_dir, resource_id, resource_name, event)
+    stdin_data = json.dumps(event, sort_keys=True, separators=(",", ":"))
+
+    # post_event (catch-all)
+    post_event_cmd = hooks.get("post_event")
+    if post_event_cmd:
+        _run_hook(post_event_cmd, env, stdin_data)
+
+    # on.<event_type>
+    on_hooks = hooks.get("on") or {}
+    type_cmd = on_hooks.get(event["type"])
+    if type_cmd:
+        _run_hook(type_cmd, env, stdin_data)
+
+
 def _build_env(lattice_dir: Path, task_id: str, event: dict) -> dict[str, str]:
     """Build the environment dict for hook subprocesses."""
     env = os.environ.copy()
     env["LATTICE_ROOT"] = str(lattice_dir)
     env["LATTICE_TASK_ID"] = task_id
+    env["LATTICE_EVENT_TYPE"] = event["type"]
+    env["LATTICE_EVENT_ID"] = event["id"]
+    env["LATTICE_ACTOR"] = event["actor"]
+    return env
+
+
+def _build_resource_env(
+    lattice_dir: Path,
+    resource_id: str,
+    resource_name: str,
+    event: dict,
+) -> dict[str, str]:
+    """Build the environment dict for resource hook subprocesses."""
+    env = os.environ.copy()
+    env["LATTICE_ROOT"] = str(lattice_dir)
+    env["LATTICE_RESOURCE_ID"] = resource_id
+    env["LATTICE_RESOURCE_NAME"] = resource_name
     env["LATTICE_EVENT_TYPE"] = event["type"]
     env["LATTICE_EVENT_ID"] = event["id"]
     env["LATTICE_ACTOR"] = event["actor"]

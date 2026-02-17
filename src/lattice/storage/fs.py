@@ -76,6 +76,7 @@ def ensure_lattice_dirs(root: Path) -> None:
         "artifacts/meta",
         "artifacts/payload",
         "notes",
+        "resources",
         "archive/tasks",
         "archive/events",
         "archive/notes",

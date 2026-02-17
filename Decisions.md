@@ -513,3 +513,17 @@ Additional review findings that shaped this decision:
 - `--claim` atomically assigns the task to the actor and moves it to `in_progress` (two events under one lock). Requires `--actor`.
 - Pure logic lives in `core/next.py` (no I/O). CLI wiring in `cli/query_cmds.py`. Weather `_find_up_next` delegates to the same sort logic.
 - Consequence: Enables the sweep pattern — an autonomous loop that claims, works, transitions, and repeats. The `/lattice-sweep` skill builds on this primitive.
+
+---
+
+## 2026-02-16: Resources — First-class coordination primitive
+
+- Decision: Add a `resource` entity type to Lattice for coordinating exclusive access to shared capabilities (browsers, simulators, MCP tools).
+- Rationale: Parallel agents need exclusive access to singleton resources. Without coordination, agents step on each other. Meanwhile, field-guides and runsheets existed as disconnected conventions. Resources unify three concerns: **knowledge** (field-guide.md), **operations** (runsheet.md), and **coordination** (lock state via resource.json) under a single `.lattice/resources/<name>/` directory.
+- Event types: 6 new resource event types (`resource_created`, `resource_acquired`, `resource_released`, `resource_heartbeat`, `resource_expired`, `resource_updated`). These use `resource_id` (prefix `res_`) instead of `task_id`.
+- TTL mechanism: Evaluated at read time (no daemon). Every resource operation checks if `holder.expires_at < now`. Stale holders are evicted with `resource_expired` events before the requested operation proceeds. Heartbeat extends TTL.
+- Auto-create from config: Resources declared in `config.json` under `resources` key are auto-created on first `acquire` — zero ceremony for well-known resources.
+- Migration: `.lattice/field-guides/` and `.lattice/runsheets/` directories move into `.lattice/resources/<name>/` as `field-guide.md` and `runsheet.md` respectively.
+- CLI: `lattice resource {create|acquire|release|heartbeat|status|list}`. Acquire supports `--wait` (polling with backoff), `--force` (evict current holder), `--task` (link to LAT-*).
+- Rebuild/doctor: `lattice rebuild --all` replays `events/res_*.jsonl` to regenerate resource snapshots. `lattice doctor` checks resource snapshot drift and reports stale holders.
+- Consequence: Agents can now safely coordinate access to shared resources. The semantic separation of `field-guide.md` (what is it), `runsheet.md` (how to use it), and `resource.json` (who holds it) gives each resource a complete knowledge + coordination package.

@@ -53,6 +53,11 @@ def generate_artifact_id() -> str:
     return f"art_{ULID()}"
 
 
+def generate_resource_id() -> str:
+    """Generate a new resource ID with the res_ prefix."""
+    return f"res_{ULID()}"
+
+
 def validate_id(id_str: str, expected_prefix: str) -> bool:
     """Validate a ``<prefix>_<ulid>`` identifier.
 

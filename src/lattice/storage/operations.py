@@ -98,3 +98,53 @@ def write_task_event(
     if config:
         for event in events:
             execute_hooks(config, lattice_dir, task_id, event)
+
+
+def write_resource_event(
+    lattice_dir: Path,
+    resource_id: str,
+    resource_name: str,
+    events: list[dict],
+    snapshot: dict,
+    config: dict | None = None,
+) -> None:
+    """Write resource event(s) and snapshot atomically with proper locking.
+
+    This is the canonical write path for all resource mutations.
+
+    Steps:
+    1. Ensure resource directory exists
+    2. Acquire locks in sorted order
+    3. Append events to per-resource JSONL (in events/ dir, keyed by resource_id)
+    4. Atomic-write resource snapshot
+    5. Release locks
+    6. Fire hooks (after locks released, data is durable)
+    """
+    from lattice.core.resources import serialize_resource_snapshot
+
+    locks_dir = lattice_dir / "locks"
+
+    # Ensure resource directory exists
+    resource_dir = lattice_dir / "resources" / resource_name
+    resource_dir.mkdir(parents=True, exist_ok=True)
+
+    # Build lock keys
+    lock_keys = [f"events_{resource_id}", f"resources_{resource_name}"]
+    lock_keys.sort()
+
+    with multi_lock(locks_dir, lock_keys):
+        # Event-first: append to per-resource event log
+        event_path = lattice_dir / "events" / f"{resource_id}.jsonl"
+        for event in events:
+            jsonl_append(event_path, serialize_event(event))
+
+        # Then materialize snapshot
+        snapshot_path = resource_dir / "resource.json"
+        atomic_write(snapshot_path, serialize_resource_snapshot(snapshot))
+
+    # Fire hooks after locks are released (data is durable)
+    if config:
+        from lattice.storage.hooks import execute_resource_hooks
+
+        for event in events:
+            execute_resource_hooks(config, lattice_dir, resource_id, resource_name, event)

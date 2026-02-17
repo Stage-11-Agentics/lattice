@@ -31,12 +31,22 @@ class TestBuiltinEventTypes:
             "assignment_changed",
             "field_updated",
             "comment_added",
+            "comment_edited",
+            "comment_deleted",
+            "reaction_added",
+            "reaction_removed",
             "relationship_added",
             "relationship_removed",
             "artifact_attached",
             "git_event",
             "branch_linked",
             "branch_unlinked",
+            "resource_created",
+            "resource_acquired",
+            "resource_released",
+            "resource_heartbeat",
+            "resource_expired",
+            "resource_updated",
         }
     )
 
@@ -47,7 +57,7 @@ class TestBuiltinEventTypes:
         assert isinstance(BUILTIN_EVENT_TYPES, frozenset)
 
     def test_count(self) -> None:
-        assert len(BUILTIN_EVENT_TYPES) == 14
+        assert len(BUILTIN_EVENT_TYPES) == 24
 
 
 # ---------------------------------------------------------------------------

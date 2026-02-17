@@ -562,6 +562,83 @@ def doctor(fix: bool, output_json: bool) -> None:
                 f["message"] += " (fixed by rebuilding ids.json)"
 
     # -----------------------------------------------------------------
+    # Check 11: Resource snapshot drift & stale holders
+    # -----------------------------------------------------------------
+    resource_ok = True
+    resource_snap_files = _collect_resource_snapshot_files(lattice_dir)
+    resource_event_files = _collect_resource_event_files(lattice_dir)
+    resource_count = len(resource_snap_files)
+
+    # Parse resource snapshots
+    resource_snapshots: dict[str, dict] = {}
+    for rsf in resource_snap_files:
+        try:
+            rsnap = json.loads(rsf.read_text())
+            res_id = rsnap.get("id", "")
+            resource_snapshots[res_id] = rsnap
+        except json.JSONDecodeError:
+            resource_ok = False
+            findings.append(
+                {
+                    "level": "error",
+                    "check": "resource_integrity",
+                    "message": f"Invalid JSON in resource snapshot {rsf.name}",
+                    "task_id": None,
+                }
+            )
+
+    # Parse resource event files and check drift
+    per_resource_events: dict[str, list[dict]] = {}
+    for ref in resource_event_files:
+        res_id = ref.stem
+        r_events, r_findings = _parse_jsonl_file(ref)
+        if r_findings:
+            resource_ok = False
+            findings.extend(r_findings)
+        per_resource_events[res_id] = r_events
+
+    # Check snapshot drift for resources
+    for res_id, rsnap in resource_snapshots.items():
+        last_event_id = rsnap.get("last_event_id")
+        r_events = per_resource_events.get(res_id, [])
+        if r_events:
+            actual_last_id = r_events[-1].get("id")
+            if last_event_id != actual_last_id:
+                resource_ok = False
+                findings.append(
+                    {
+                        "level": "warning",
+                        "check": "resource_integrity",
+                        "message": (
+                            f"Resource snapshot drift: {rsnap.get('name', res_id)} "
+                            f"(snapshot last_event_id={last_event_id}, "
+                            f"actual last event={actual_last_id})"
+                        ),
+                        "task_id": None,
+                    }
+                )
+
+    # Report stale holders
+    from lattice.core.events import utc_now
+
+    now = utc_now()
+    for res_id, rsnap in resource_snapshots.items():
+        for holder in rsnap.get("holders", []):
+            expires_at = holder.get("expires_at")
+            if expires_at and expires_at < now:
+                findings.append(
+                    {
+                        "level": "warning",
+                        "check": "resource_integrity",
+                        "message": (
+                            f"Stale holder on {rsnap.get('name', res_id)}: "
+                            f"{holder.get('actor')} expired at {expires_at}"
+                        ),
+                        "task_id": None,
+                    }
+                )
+
+    # -----------------------------------------------------------------
     # Output
     # -----------------------------------------------------------------
     warnings = sum(1 for f in findings if f["level"] == "warning")
@@ -588,6 +665,7 @@ def doctor(fix: bool, output_json: bool) -> None:
                         "tasks": task_count,
                         "events": event_count,
                         "artifacts": artifact_count,
+                        "resources": resource_count,
                         "warnings": warnings,
                         "errors": errors,
                     },
@@ -669,6 +747,14 @@ def doctor(fix: bool, output_json: bool) -> None:
             for f in findings:
                 if f["check"] == "alias_integrity":
                     click.echo(f"\u26a0 {f['message']}")
+
+        if resource_count > 0:
+            if resource_ok:
+                click.echo(f"\u2713 All {resource_count} resource(s) consistent")
+            else:
+                for f in findings:
+                    if f["check"] == "resource_integrity":
+                        click.echo(f"\u26a0 {f['message']}")
 
         total = warnings + errors
         if total == 0:
@@ -799,6 +885,35 @@ def _rebuild_id_index(lattice_dir: Path) -> None:
     save_id_index(lattice_dir, index)
 
 
+def _rebuild_resource(lattice_dir: Path, resource_id: str) -> dict:
+    """Rebuild a single resource snapshot from its event log.
+
+    Returns the rebuilt snapshot dict.
+    Raises FileNotFoundError if the event log does not exist.
+    """
+    from lattice.core.resources import apply_resource_event_to_snapshot
+
+    event_path = lattice_dir / "events" / f"{resource_id}.jsonl"
+    if not event_path.exists():
+        raise FileNotFoundError(f"No event log found for resource {resource_id}")
+
+    events: list[dict] = []
+    for line in event_path.read_text().splitlines():
+        stripped = line.strip()
+        if stripped:
+            events.append(json.loads(stripped))
+
+    if not events:
+        raise ValueError(f"Event log for resource {resource_id} is empty")
+
+    snapshot: dict | None = None
+    for event in events:
+        snapshot = apply_resource_event_to_snapshot(snapshot, event)
+
+    assert snapshot is not None
+    return snapshot
+
+
 @cli.command()
 @click.argument("task_id", required=False, default=None)
 @click.option("--all", "rebuild_all", is_flag=True, help="Rebuild all tasks.")
@@ -838,6 +953,9 @@ def rebuild(task_id: str | None, rebuild_all: bool, output_json: bool) -> None:
             for jsonl_file in sorted(event_dir.glob("*.jsonl")):
                 if jsonl_file.name == "_lifecycle.jsonl":
                     continue
+                # Skip resource event files (handled separately)
+                if jsonl_file.stem.startswith("res_"):
+                    continue
                 tid = jsonl_file.stem
                 try:
                     snapshot = _rebuild_task(lattice_dir, tid)
@@ -861,21 +979,46 @@ def rebuild(task_id: str | None, rebuild_all: bool, output_json: bool) -> None:
         # Rebuild ids.json from snapshots
         _rebuild_id_index(lattice_dir)
 
+        # Rebuild resource snapshots
+        rebuilt_resources: list[str] = []
+        resource_event_files = _collect_resource_event_files(lattice_dir)
+        for ref in resource_event_files:
+            res_id = ref.stem
+            try:
+                from lattice.core.resources import serialize_resource_snapshot
+
+                res_snapshot = _rebuild_resource(lattice_dir, res_id)
+                res_name = res_snapshot.get("name", res_id)
+                resource_dir = lattice_dir / "resources" / res_name
+                resource_dir.mkdir(parents=True, exist_ok=True)
+                snapshot_path = resource_dir / "resource.json"
+                locks_dir = lattice_dir / "locks"
+                with multi_lock(locks_dir, [f"resources_{res_name}"]):
+                    atomic_write(snapshot_path, serialize_resource_snapshot(res_snapshot))
+                rebuilt_resources.append(res_name)
+            except (FileNotFoundError, ValueError, json.JSONDecodeError) as e:
+                if is_json:
+                    output_error(str(e), "REBUILD_ERROR", is_json)
+                else:
+                    click.echo(f"Error rebuilding resource {res_id}: {e}", err=True)
+
         if is_json:
             click.echo(
                 json_envelope(
                     True,
                     data={
                         "rebuilt_tasks": rebuilt_ids,
+                        "rebuilt_resources": rebuilt_resources,
                         "global_log_rebuilt": True,
                     },
                 )
             )
         else:
-            click.echo(
-                f"Rebuilt {len(rebuilt_ids)} task{'s' if len(rebuilt_ids) != 1 else ''}, "
-                f"regenerated lifecycle log"
-            )
+            parts = [f"Rebuilt {len(rebuilt_ids)} task{'s' if len(rebuilt_ids) != 1 else ''}"]
+            if rebuilt_resources:
+                parts.append(f"{len(rebuilt_resources)} resource{'s' if len(rebuilt_resources) != 1 else ''}")
+            parts.append("regenerated lifecycle log")
+            click.echo(", ".join(parts))
     else:
         # Single task rebuild
         assert task_id is not None

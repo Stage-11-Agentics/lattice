@@ -183,3 +183,94 @@ def read_snapshot_or_exit(lattice_dir: Path, task_id: str, is_json: bool) -> dic
     if snapshot is None:
         output_error(f"Task {task_id} not found.", "NOT_FOUND", is_json)
     return snapshot
+
+
+# ---------------------------------------------------------------------------
+# Resource helpers
+# ---------------------------------------------------------------------------
+
+
+def resolve_resource(
+    lattice_dir: Path,
+    name_or_id: str,
+    is_json: bool,
+) -> tuple[str, str, dict | None]:
+    """Resolve a resource name or ID to (resource_id, name, snapshot_or_None).
+
+    Resolution order:
+    1. Check ``res_`` ULID format -> direct lookup in events/
+    2. Scan ``.lattice/resources/*/resource.json`` for matching ``name``
+    3. Check ``config.resources`` for matching key -> return (None, name, None) for auto-create
+    4. Error out
+    """
+    # 1. Direct ULID
+    if validate_id(name_or_id, "res"):
+        # Find by scanning resource dirs for matching id
+        resources_dir = lattice_dir / "resources"
+        if resources_dir.is_dir():
+            for res_dir in resources_dir.iterdir():
+                if not res_dir.is_dir():
+                    continue
+                snap_path = res_dir / "resource.json"
+                if snap_path.exists():
+                    snap = json.loads(snap_path.read_text())
+                    if snap.get("id") == name_or_id:
+                        return name_or_id, snap["name"], snap
+        output_error(f"Resource with ID '{name_or_id}' not found.", "NOT_FOUND", is_json)
+
+    # 2. Scan by name
+    resources_dir = lattice_dir / "resources"
+    if resources_dir.is_dir():
+        for res_dir in resources_dir.iterdir():
+            if not res_dir.is_dir():
+                continue
+            snap_path = res_dir / "resource.json"
+            if snap_path.exists():
+                snap = json.loads(snap_path.read_text())
+                if snap.get("name") == name_or_id:
+                    return snap["id"], name_or_id, snap
+
+    # 3. Check config for auto-create
+    config = load_project_config(lattice_dir)
+    config_resources = config.get("resources", {})
+    if name_or_id in config_resources:
+        return "", name_or_id, None  # empty id signals auto-create needed
+
+    output_error(
+        f"Resource '{name_or_id}' not found. Create it with 'lattice resource create {name_or_id}'.",
+        "NOT_FOUND",
+        is_json,
+    )
+
+
+def read_resource_snapshot(lattice_dir: Path, resource_name: str) -> dict | None:
+    """Read a resource snapshot by name, returning None if not found."""
+    snap_path = lattice_dir / "resources" / resource_name / "resource.json"
+    if not snap_path.exists():
+        return None
+    return json.loads(snap_path.read_text())
+
+
+def read_resource_snapshot_or_exit(
+    lattice_dir: Path, resource_name: str, is_json: bool
+) -> dict:
+    """Read a resource snapshot or exit with NOT_FOUND error."""
+    snapshot = read_resource_snapshot(lattice_dir, resource_name)
+    if snapshot is None:
+        output_error(f"Resource '{resource_name}' not found.", "NOT_FOUND", is_json)
+    return snapshot
+
+
+def list_all_resources(lattice_dir: Path) -> list[dict]:
+    """Return a list of all resource snapshots."""
+    resources_dir = lattice_dir / "resources"
+    results = []
+    if not resources_dir.is_dir():
+        return results
+    for res_dir in sorted(resources_dir.iterdir()):
+        if not res_dir.is_dir():
+            continue
+        snap_path = res_dir / "resource.json"
+        if snap_path.exists():
+            results.append(json.loads(snap_path.read_text()))
+    return results
