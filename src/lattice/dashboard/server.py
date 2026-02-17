@@ -35,7 +35,7 @@ from lattice.core.tasks import apply_event_to_snapshot, compact_snapshot, serial
 from lattice.storage.fs import atomic_write, jsonl_append
 from lattice.storage.locks import multi_lock
 from lattice.storage.hooks import execute_hooks
-from lattice.storage.operations import scaffold_notes, write_task_event
+from lattice.storage.operations import scaffold_plan, write_task_event
 from lattice.storage.readers import read_task_events
 from lattice.storage.short_ids import allocate_short_id
 
@@ -212,6 +212,8 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                         self._handle_post_task_unreact(ld, task_id)
                     elif sub == "open-notes":
                         self._handle_post_open_notes(ld, task_id)
+                    elif sub == "open-plans":
+                        self._handle_post_open_plans(ld, task_id)
                     else:
                         self._send_json(404, _err("NOT_FOUND", f"Not found: {path}"))
                 else:
@@ -280,14 +282,17 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                 self._send_json(404, _err("NOT_FOUND", f"Task {task_id} not found"))
                 return
 
-            # Enrich with notes_exists and artifacts
+            # Enrich with notes_exists, plan_exists, and artifacts
             if is_archived:
                 notes_path = ld / "archive" / "notes" / f"{task_id}.md"
+                plan_path = ld / "archive" / "plans" / f"{task_id}.md"
             else:
                 notes_path = ld / "notes" / f"{task_id}.md"
+                plan_path = ld / "plans" / f"{task_id}.md"
 
             result = dict(snapshot)
             result["notes_exists"] = notes_path.exists()
+            result["plan_exists"] = plan_path.exists()
             result["artifacts"] = _read_artifact_info(ld, snapshot)
             if is_archived:
                 result["archived"] = True
@@ -923,8 +928,8 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                 self._send_json(500, _err("WRITE_ERROR", f"Failed to create task: {exc}"))
                 return
 
-            # Scaffold notes file
-            scaffold_notes(ld, task_id, title, short_id, description)
+            # Scaffold plan file (plans are scaffolded on create; notes are lazy)
+            scaffold_plan(ld, task_id, title, short_id, description)
 
             self._send_json(201, _ok(snapshot))
 
@@ -1292,6 +1297,15 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                             str(ld / "archive" / "notes" / f"{task_id}.md"),
                         )
 
+                    # 7. Move plans if they exist
+                    plans_path = ld / "plans" / f"{task_id}.md"
+                    if plans_path.exists():
+                        (ld / "archive" / "plans").mkdir(parents=True, exist_ok=True)
+                        shutil.move(
+                            str(plans_path),
+                            str(ld / "archive" / "plans" / f"{task_id}.md"),
+                        )
+
             except Exception as exc:
                 self._send_json(500, _err("WRITE_ERROR", f"Failed to archive task: {exc}"))
                 return
@@ -1655,6 +1669,57 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
 
             # Security: ensure resolved path is within .lattice/
             resolved = notes_path.resolve()
+            lattice_resolved = ld.resolve()
+            if not str(resolved).startswith(str(lattice_resolved)):
+                self._send_json(403, _err("FORBIDDEN", "Path traversal not allowed"))
+                return
+
+            # Open in system default editor
+            system = platform.system()
+            try:
+                if system == "Darwin":
+                    subprocess.Popen(["open", str(resolved)])
+                elif system == "Linux":
+                    subprocess.Popen(["xdg-open", str(resolved)])
+                elif system == "Windows":
+                    subprocess.Popen(["start", "", str(resolved)], shell=True)
+                else:
+                    self._send_json(500, _err("UNSUPPORTED", f"Unsupported platform: {system}"))
+                    return
+            except OSError as exc:
+                self._send_json(500, _err("OPEN_ERROR", f"Failed to open file: {exc}"))
+                return
+
+            self._send_json(200, _ok({"opened": str(resolved)}))
+
+        # ---------------------------------------------------------------
+        # POST /api/tasks/<id>/open-plans — Open plan file in editor
+        # ---------------------------------------------------------------
+
+        def _handle_post_open_plans(self, ld: Path, task_id: str) -> None:
+            """Handle POST /api/tasks/<id>/open-plans — open the plan file in the system default editor."""
+            if not validate_id(task_id, "task"):
+                self._send_json(400, _err("INVALID_ID", "Invalid task ID format"))
+                return
+
+            # Resolve plan path (check active, then archive, then scaffold)
+            plan_path = ld / "plans" / f"{task_id}.md"
+            if not plan_path.is_file():
+                plan_path = ld / "archive" / "plans" / f"{task_id}.md"
+            if not plan_path.is_file():
+                # Scaffold a fresh plan file so the user lands in a useful template
+                plan_path = ld / "plans" / f"{task_id}.md"
+                snapshot = _read_snapshot(ld, task_id)
+                if snapshot is None:
+                    self._send_json(404, _err("NOT_FOUND", f"Task {task_id} not found"))
+                    return
+                title = snapshot.get("title", "Untitled")
+                short_id = snapshot.get("short_id")
+                description = snapshot.get("description")
+                scaffold_plan(ld, task_id, title, short_id, description)
+
+            # Security: ensure resolved path is within .lattice/
+            resolved = plan_path.resolve()
             lattice_resolved = ld.resolve()
             if not str(resolved).startswith(str(lattice_resolved)):
                 self._send_json(403, _err("FORBIDDEN", "Path traversal not allowed"))

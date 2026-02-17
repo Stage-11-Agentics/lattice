@@ -3207,7 +3207,8 @@ var VOICES = {
     "toast.bg_updated": "Background altered",
     "toast.bg_cleared": "Background released",
     "toast.lane_colors_updated": "Lane palette applied",
-    "toast.notes_opened": "Plan unveiled",
+    "toast.notes_opened": "Notes unveiled",
+    "toast.plans_opened": "Plan unveiled",
     "toast.lane_colors_reset": "Lane palette restored",
     "toast.voice_updated": "Voice changed",
     "toast.moved_to": "Transitioned to {status}",
@@ -3246,14 +3247,17 @@ var VOICES = {
     "detail.unassigned": "unassigned",
     "detail.no_description": "(no description \u2014 click to add)",
     "detail.no_tags": "(no tags \u2014 click to add)",
-    "detail.notes_exists": "Plan file: ",
+    "detail.notes_exists": "Notes file: ",
+    "detail.plans_exists": "Plan file: ",
     "btn.show_plan": "Show Plan",
+    "btn.show_notes": "Show Notes",
     "section.description": "Description",
     "section.tags": "Tags",
     "section.custom_fields": "Custom Fields",
     "section.relationships": "Relationships",
     "section.artifacts": "Artifacts",
-    "section.notes": "Plan",
+    "section.plans": "Plan",
+    "section.notes": "Notes",
     "section.comments": "Comments",
     "section.history": "History",
     "filter.search": "Search title...",
@@ -3327,7 +3331,8 @@ var VOICES = {
     "toast.bg_updated": "Background image updated",
     "toast.bg_cleared": "Background image cleared",
     "toast.lane_colors_updated": "Lane colors updated",
-    "toast.notes_opened": "Plan opened",
+    "toast.notes_opened": "Notes opened",
+    "toast.plans_opened": "Plan opened",
     "toast.lane_colors_reset": "Lane colors reset to defaults",
     "toast.voice_updated": "Voice updated",
     "toast.moved_to": "Moved to {status}",
@@ -3366,14 +3371,17 @@ var VOICES = {
     "detail.unassigned": "unassigned",
     "detail.no_description": "(no description \u2014 click to add)",
     "detail.no_tags": "(no tags \u2014 click to add)",
-    "detail.notes_exists": "Plan file: ",
+    "detail.notes_exists": "Notes file: ",
+    "detail.plans_exists": "Plan file: ",
     "btn.show_plan": "Show Plan",
+    "btn.show_notes": "Show Notes",
     "section.description": "Description",
     "section.tags": "Tags",
     "section.custom_fields": "Custom Fields",
     "section.relationships": "Relationships",
     "section.artifacts": "Artifacts",
-    "section.notes": "Plan",
+    "section.plans": "Plan",
+    "section.notes": "Notes",
     "section.comments": "Comments",
     "section.history": "History",
     "filter.search": "Search title...",
@@ -3445,7 +3453,8 @@ var VOICES = {
     "toast.bg_updated": "Fondo actualizado",
     "toast.bg_cleared": "Fondo liberado",
     "toast.lane_colors_updated": "Colores de carril aplicados",
-    "toast.notes_opened": "Plan abierto",
+    "toast.notes_opened": "Notas abiertas",
+    "toast.plans_opened": "Plan abierto",
     "toast.lane_colors_reset": "Colores de carril restablecidos",
     "toast.voice_updated": "Voz cambiada",
     "toast.moved_to": "Transici\u00f3n a {status}",
@@ -3483,14 +3492,17 @@ var VOICES = {
     "detail.unassigned": "sin asignar",
     "detail.no_description": "(sin descripci\u00f3n \u2014 clic para a\u00f1adir)",
     "detail.no_tags": "(sin etiquetas \u2014 clic para a\u00f1adir)",
-    "detail.notes_exists": "Archivo del plan: ",
+    "detail.notes_exists": "Archivo de notas: ",
+    "detail.plans_exists": "Archivo del plan: ",
     "btn.show_plan": "Ver Plan",
+    "btn.show_notes": "Ver Notas",
     "section.description": "Descripci\u00f3n",
     "section.tags": "Etiquetas",
     "section.custom_fields": "Campos Personalizados",
     "section.relationships": "Relaciones",
     "section.artifacts": "Artefactos",
-    "section.notes": "Plan",
+    "section.plans": "Plan",
+    "section.notes": "Notas",
     "section.comments": "Comentarios",
     "section.history": "Historial",
     "filter.search": "Buscar t\u00edtulo...",
@@ -3590,11 +3602,20 @@ async function apiPost(path, data) {
   });
 }
 
-// --- Open Notes (Plan) in System Editor ---
+// --- Open Notes / Plans in System Editor ---
 async function openNotes(taskId) {
   try {
     await apiPost("/api/tasks/" + taskId + "/open-notes", {});
     showToast(t("toast.notes_opened"));
+  } catch (e) {
+    showToast(e.message, "error");
+  }
+}
+
+async function openPlans(taskId) {
+  try {
+    await apiPost("/api/tasks/" + taskId + "/open-plans", {});
+    showToast(t("toast.plans_opened"));
   } catch (e) {
     showToast(e.message, "error");
   }
@@ -4997,6 +5018,11 @@ function _renderPanelContent(taskId, task, events) {
   }
   html += '</div>';
 
+  // Plan — always show button, server scaffolds if file doesn't exist yet
+  html += '<div class="dp-section"><h3>' + esc(t("section.notes")) + '</h3>';
+  html += '<button class="btn btn-primary btn-sm" onclick="openPlans(\'' + esc(task.id) + '\')">' + esc(t("btn.show_plan")) + '</button>';
+  html += '</div>';
+
   // Comments
   var comments = (events || []).filter(function(ev) { return ev.type === "comment_added"; });
   html += '<div class="dp-section"><h3>Comments (' + comments.length + ')</h3>';
@@ -5971,10 +5997,18 @@ async function renderDetail(taskId) {
       html += '</ul></div>';
     }
 
-    // Plan
+    // Plan — always visible, server scaffolds if file doesn't exist yet
+    html += '<div class="detail-section"><h3>' + esc(t("section.plans")) + '</h3>';
+    html += '<button class="btn btn-primary btn-sm" onclick="openPlans(\'' + esc(task.id) + '\')" style="margin-top:4px">' + esc(t("btn.show_plan")) + '</button>';
+    if (task.plan_exists) {
+      html += '<p style="font-size:.75rem;color:var(--text-muted);margin-top:6px"><code>plans/' + esc(task.id) + '.md</code></p>';
+    }
+    html += '</div>';
+
+    // Notes
     if (task.notes_exists) {
       html += '<div class="detail-section"><h3>' + esc(t("section.notes")) + '</h3>';
-      html += '<button class="btn btn-primary btn-sm" onclick="openNotes(\'' + esc(task.id) + '\')" style="margin-top:4px">' + esc(t("btn.show_plan")) + '</button>';
+      html += '<button class="btn btn-primary btn-sm" onclick="openNotes(\'' + esc(task.id) + '\')" style="margin-top:4px">' + esc(t("btn.show_notes")) + '</button>';
       html += '<p style="font-size:.75rem;color:var(--text-muted);margin-top:6px"><code>notes/' + esc(task.id) + '.md</code></p>';
       html += '</div>';
     }
