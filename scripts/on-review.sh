@@ -18,7 +18,7 @@ LOG_DIR="$ROOT/logs"
 # Ensure log directory exists
 mkdir -p "$LOG_DIR"
 
-nohup claude -p "Read $PROJECT_DIR/prompts/review-hook-prompt.md and follow the instructions. LATTICE_TASK_ID=$TASK_ID LATTICE_ROOT=$ROOT" \
+nohup env -u CLAUDECODE claude -p "Read $PROJECT_DIR/prompts/review-hook-prompt.md and follow the instructions. LATTICE_TASK_ID=$TASK_ID LATTICE_ROOT=$ROOT" \
   --dangerously-skip-permissions \
   > "$LOG_DIR/review-$TASK_ID.log" 2>&1 &
 
