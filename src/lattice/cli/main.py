@@ -437,11 +437,14 @@ def setup_openclaw(target_path: str, install_global: bool, force: bool) -> None:
     """Install the Lattice skill for OpenClaw."""
     import shutil
 
+    # --global and --path are mutually exclusive
+    if install_global and target_path != str(Path(".").resolve()):
+        raise click.ClickException("Cannot use --global and --path together.")
+
     # Locate bundled skill files
     skill_src = Path(__file__).resolve().parent.parent / "skills" / "lattice"
     if not skill_src.exists() or not (skill_src / "SKILL.md").exists():
-        click.echo("Error: Bundled OpenClaw skill files not found.", err=True)
-        raise SystemExit(1)
+        raise click.ClickException("Bundled OpenClaw skill files not found.")
 
     # Determine destination
     if install_global:
@@ -455,14 +458,20 @@ def setup_openclaw(target_path: str, install_global: bool, force: bool) -> None:
                 f"Lattice skill already exists at {dest}. Use --force to overwrite."
             )
             return
-        shutil.rmtree(dest)
+        try:
+            shutil.rmtree(dest)
+        except OSError as exc:
+            raise click.ClickException(f"Failed to remove existing skill: {exc}") from exc
 
     # Copy the skill directory tree (exclude Python packaging artifacts)
-    shutil.copytree(
-        skill_src,
-        dest,
-        ignore=shutil.ignore_patterns("__init__.py", "__pycache__"),
-    )
+    try:
+        shutil.copytree(
+            skill_src,
+            dest,
+            ignore=shutil.ignore_patterns("__init__.py", "__pycache__"),
+        )
+    except OSError as exc:
+        raise click.ClickException(f"Failed to install skill: {exc}") from exc
 
     # Make the check script executable
     check_script = dest / "scripts" / "lattice-check.sh"

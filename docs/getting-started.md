@@ -337,10 +337,12 @@ lattice unarchive MYP-1 --actor human:alice
 | Rebuild | `lattice rebuild --all` |
 | Dashboard | `lattice dashboard` |
 | CLAUDE.md setup | `lattice setup-claude [--force]` |
+| OpenClaw setup | `lattice setup-openclaw [--global] [--force]` |
 
 ## Next steps
 
 - Read [integration-claude-code.md](integration-claude-code.md) for Claude Code integration details
+- Read [integration-openclaw.md](integration-openclaw.md) for OpenClaw skill and MCP configuration
 - Read [integration-mcp.md](integration-mcp.md) for MCP server configuration and tool reference
 - Read [integration-codex.md](integration-codex.md) for Codex CLI workflows
 - Read [integration-ci.md](integration-ci.md) for CI/CD pipeline integration patterns
