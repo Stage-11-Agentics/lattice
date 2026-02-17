@@ -626,6 +626,7 @@ select.form-control{cursor:pointer}
 [data-theme="station-console"] .detail-title{letter-spacing:.02em;text-shadow:0 0 20px rgba(0,212,255,.15)}
 [data-theme="station-console"] .form-control:focus{box-shadow:0 0 0 2px rgba(0,212,255,.25),0 0 15px var(--glow-primary)}
 [data-theme="station-console"] .settings-panel{backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px)}
+[data-theme="station-console"] .detail-panel{backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px)}
 [data-theme="station-console"] .modal{backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:1px solid rgba(0,212,255,.2)}
 [data-theme="station-console"] .modal-overlay{backdrop-filter:blur(4px)}
 [data-theme="station-console"] .activity-list{backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}
@@ -1043,6 +1044,10 @@ select.form-control{cursor:pointer}
   background:#E0E5EC;border-left:none;
   box-shadow:-8px 0 20px #b8bec7,8px 0 20px #ffffff
 }
+[data-theme="porcelain"] .detail-panel{
+  background:#E0E5EC;border-left:none;
+  box-shadow:-8px 0 20px #b8bec7,8px 0 20px #ffffff
+}
 [data-theme="porcelain"] .form-control{
   background:#E0E5EC;border:none;
   box-shadow:inset 3px 3px 6px #b8bec7,inset -3px -3px 6px #ffffff;
@@ -1271,6 +1276,12 @@ select.form-control{cursor:pointer}
   border-left:1px solid rgba(255,255,255,.1);
   box-shadow:-4px 0 20px rgba(0,0,0,.2)
 }
+[data-theme="frost"] .detail-panel{
+  background:rgba(255,255,255,.06);
+  backdrop-filter:blur(20px) saturate(1.4);-webkit-backdrop-filter:blur(20px) saturate(1.4);
+  border-left:1px solid rgba(255,255,255,.1);
+  box-shadow:-4px 0 20px rgba(0,0,0,.2)
+}
 [data-theme="frost"] .form-control{
   background:rgba(255,255,255,.06);
   border:1px solid rgba(255,255,255,.12);
@@ -1465,6 +1476,7 @@ select.form-control{cursor:pointer}
 [data-theme="obsidian"] .detail-title{text-shadow:0 0 12px rgba(226,179,64,.1)}
 [data-theme="obsidian"] .form-control:focus{box-shadow:0 0 0 2px rgba(226,179,64,.25),0 0 10px rgba(226,179,64,.08)}
 [data-theme="obsidian"] .settings-panel{background:rgba(26,26,46,.95);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px)}
+[data-theme="obsidian"] .detail-panel{background:rgba(26,26,46,.95);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px)}
 [data-theme="obsidian"] .modal{background:rgba(35,35,61,.96);border:1px solid rgba(226,179,64,.15);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px)}
 [data-theme="obsidian"] .modal-overlay{backdrop-filter:blur(3px)}
 [data-theme="obsidian"] .toast-success{box-shadow:0 2px 12px rgba(76,175,106,.25)}
@@ -2730,6 +2742,30 @@ select.form-control{cursor:pointer}
 .web-detail-pane .pane-open-full:hover{background:var(--accent-hover)}
 .web-detail-overlay{position:fixed;top:var(--nav-h,52px);left:0;right:0;bottom:0;z-index:99;display:none}
 .web-detail-overlay.open{display:block}
+/* Floating detail panel — slides in from right on Board/List card click */
+.detail-panel{position:fixed;top:var(--nav-h,52px);right:0;width:480px;max-width:92vw;height:calc(100vh - var(--nav-h,52px));background:var(--surface);border-left:1px solid var(--border);box-shadow:-4px 0 24px rgba(0,0,0,0.18);z-index:100;transform:translateX(100%);transition:transform .25s ease;overflow-y:auto;padding:0}
+.detail-panel.open{transform:translateX(0)}
+.detail-panel-overlay{position:fixed;top:var(--nav-h,52px);left:0;right:0;bottom:0;z-index:99;display:none}
+.detail-panel-overlay.open{display:block}
+.dp-header{display:flex;align-items:center;justify-content:space-between;padding:14px 20px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface);z-index:1}
+.dp-header h2{font-size:1rem;font-weight:700;margin:0;display:flex;align-items:center;gap:8px;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.dp-header-actions{display:flex;gap:4px;flex-shrink:0}
+.dp-close,.dp-full-link{background:none;border:none;font-size:18px;cursor:pointer;color:var(--text-secondary);padding:4px 8px;border-radius:var(--radius-sm)}
+.dp-close:hover,.dp-full-link:hover{color:var(--text-primary);background:var(--surface-hover)}
+.dp-body{padding:16px 20px}
+.dp-body .dp-actions{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}
+.dp-body .dp-actions select{font-size:.8rem;padding:3px 6px}
+.dp-body .dp-field{margin-bottom:8px}
+.dp-body .dp-field dt{font-weight:600;font-size:.78rem;color:var(--text-muted);margin-bottom:1px}
+.dp-body .dp-field dd{font-size:.85rem;color:var(--text-primary)}
+.dp-body .editable{cursor:pointer;border-bottom:1px dashed transparent;transition:border-color .15s}
+.dp-body .editable:hover{border-bottom-color:var(--accent-primary)}
+.dp-section{margin-top:14px;padding-top:10px;border-top:1px solid var(--border)}
+.dp-section h3{font-size:.85rem;font-weight:600;margin-bottom:6px}
+.dp-comment{background:var(--surface-raised,var(--surface));border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 10px;margin-bottom:6px;font-size:.85rem}
+.dp-comment-meta{font-size:.75rem;color:var(--text-muted);margin-bottom:4px}
+.dp-event{font-size:.8rem;padding:3px 0;display:flex;gap:6px;color:var(--text-secondary)}
+.dp-event .ev-type{font-weight:600;color:var(--text-primary)}
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 </style>
 </head>
@@ -2765,6 +2801,21 @@ select.form-control{cursor:pointer}
     <button class="pane-close" id="web-pane-close">&times;</button>
   </div>
   <div class="pane-body" id="web-pane-body">
+    <div class="loading"><div class="spinner"></div></div>
+  </div>
+</div>
+
+<!-- Floating detail panel (slides from right, overlays Board/List) -->
+<div class="detail-panel-overlay" id="detail-panel-overlay"></div>
+<div class="detail-panel" id="detail-panel" role="dialog" aria-modal="true" aria-label="Task detail">
+  <div class="dp-header">
+    <h2 id="dp-title">Task</h2>
+    <div class="dp-header-actions">
+      <button class="dp-full-link" id="dp-open-full" title="Open full detail view">&#x2197;</button>
+      <button class="dp-close" id="dp-close">&times;</button>
+    </div>
+  </div>
+  <div class="dp-body" id="dp-body">
     <div class="loading"><div class="spinner"></div></div>
   </div>
 </div>
@@ -4034,9 +4085,9 @@ function webDrawCard(ctx, node, radius, globalScale, opts) {
 
   var cardX, cardY;
   if (centered) {
-    // Center card directly below the node circle
+    // Center card directly over the node circle (hub overlay)
     cardX = node.x - cardW / 2;
-    cardY = node.y + radius + 4;
+    cardY = node.y - cardH / 2;
   } else {
     // Fan outward from graph center
     var dir = webCardDir(node);
@@ -4685,11 +4736,445 @@ document.addEventListener("DOMContentLoaded", function() {
   if (overlay) overlay.addEventListener("click", closeWebDetailPane);
 });
 
+// --- Floating Detail Panel (Board / List) ---
+
+function openDetailPanel(taskId) {
+  var pane = document.getElementById("detail-panel");
+  var overlay = document.getElementById("detail-panel-overlay");
+  var body = document.getElementById("dp-body");
+  var title = document.getElementById("dp-title");
+
+  // Measure nav height so pane starts below it
+  var nav = document.querySelector(".nav");
+  if (nav) document.documentElement.style.setProperty("--nav-h", nav.offsetHeight + "px");
+
+  // Remember which element triggered the panel for focus restoration
+  _detailPanelTrigger = document.activeElement;
+  _detailPanelTaskId = taskId;
+
+  body.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+  title.textContent = "Loading\u2026";
+  pane.classList.add("open");
+  overlay.classList.add("open");
+
+  var openGeneration = taskId; // stale-callback guard
+
+  Promise.all([
+    api("/api/tasks/" + taskId),
+    api("/api/tasks/" + taskId + "/events")
+  ]).then(function(results) {
+    if (_detailPanelTaskId !== openGeneration) return; // user clicked a different card
+    _renderPanelContent(taskId, results[0], results[1]);
+  }).catch(function(e) {
+    if (_detailPanelTaskId !== openGeneration) return;
+    body.innerHTML = '<div style="color:var(--color-danger);padding:20px">' + esc(e.message) + '</div>';
+  });
+
+  // Wire "open full" button
+  var fullBtn = document.getElementById("dp-open-full");
+  fullBtn.onclick = function() {
+    closeDetailPanel();
+    location.hash = "#/task/" + taskId;
+  };
+}
+
+function closeDetailPanel() {
+  var pane = document.getElementById("detail-panel");
+  var overlay = document.getElementById("detail-panel-overlay");
+  if (pane) pane.classList.remove("open");
+  if (overlay) overlay.classList.remove("open");
+
+  // Restore focus
+  if (_detailPanelTrigger && _detailPanelTrigger.focus) {
+    try { _detailPanelTrigger.focus(); } catch(e) {}
+  }
+  _detailPanelTaskId = null;
+  _detailPanelTrigger = null;
+}
+
+function _renderPanelContent(taskId, task, events) {
+  var body = document.getElementById("dp-body");
+  var title = document.getElementById("dp-title");
+  var isArchived = !!task.archived;
+
+  // Header
+  var sid = task.short_id || task.id.substring(0, 12);
+  title.innerHTML = '<span style="color:var(--accent-primary);font-family:var(--font-mono)">' + esc(sid) + '</span> ' + esc(task.title || "Untitled");
+
+  var html = '';
+
+  // Status / priority / type dropdowns (or read-only badges)
+  if (!isArchived) {
+    html += '<div class="dp-actions">';
+    var transitions = (config && config.workflow && config.workflow.transitions) || {};
+    var allowed = transitions[task.status] || [];
+    html += '<select id="dp-status" title="Change status">';
+    html += '<option value="' + esc(task.status) + '" selected>' + esc(task.status) + '</option>';
+    allowed.forEach(function(s) {
+      html += '<option value="' + esc(s) + '">' + esc(s) + '</option>';
+    });
+    html += '</select>';
+
+    html += '<select id="dp-priority" title="Change priority">';
+    ["critical","high","medium","low"].forEach(function(p) {
+      html += '<option value="' + esc(p) + '"' + (p === task.priority ? ' selected' : '') + '>' + esc(p) + '</option>';
+    });
+    html += '</select>';
+
+    var types = (config && config.task_types) || [];
+    html += '<select id="dp-type" title="Change type">';
+    types.forEach(function(ty) {
+      html += '<option value="' + esc(ty) + '"' + (ty === task.type ? ' selected' : '') + '>' + esc(ty) + '</option>';
+    });
+    html += '</select>';
+    html += '</div>';
+  } else {
+    html += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">';
+    if (task.status) html += '<span class="badge" style="background:' + esc(getLaneColor(task.status)) + ';color:#fff;padding:2px 8px;border-radius:4px;font-size:.8rem">' + esc(task.status.replace(/_/g, " ")) + '</span>';
+    if (task.priority) html += '<span class="badge pri-' + esc(task.priority) + '" style="padding:2px 8px;border-radius:4px;font-size:.8rem">' + esc(task.priority) + '</span>';
+    if (task.type) html += '<span class="badge type-badge" style="padding:2px 8px;border-radius:4px;font-size:.8rem">' + esc(task.type) + '</span>';
+    html += ' <span class="archived-badge">ARCHIVED</span></div>';
+  }
+
+  // Title (editable)
+  if (!isArchived) {
+    html += '<div class="dp-field"><dt>Title</dt><dd><span class="editable" id="dp-title-edit" title="Click to edit">' + esc(task.title || "Untitled") + '</span></dd></div>';
+  }
+
+  // Info fields
+  html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">';
+  if (task.short_id) html += '<div class="dp-field"><dt>Short ID</dt><dd style="font-weight:600;color:var(--accent-primary)">' + esc(task.short_id) + '</dd></div>';
+
+  if (!isArchived) {
+    html += '<div class="dp-field"><dt>Assigned to</dt><dd><span class="editable" id="dp-assigned" title="Click to edit">' + esc(task.assigned_to || "Unassigned") + '</span></dd></div>';
+  } else {
+    html += '<div class="dp-field"><dt>Assigned to</dt><dd>' + esc(task.assigned_to || "Unassigned") + '</dd></div>';
+  }
+
+  if (task.created_by) html += '<div class="dp-field"><dt>Created by</dt><dd>' + esc(task.created_by) + '</dd></div>';
+  if (task.created_at) html += '<div class="dp-field"><dt>Created</dt><dd>' + esc(task.created_at) + '</dd></div>';
+  if (task.updated_at) html += '<div class="dp-field"><dt>Updated</dt><dd>' + esc(task.updated_at) + '</dd></div>';
+  html += '</div>';
+
+  // Description (editable)
+  html += '<div class="dp-section"><h3>Description</h3>';
+  if (!isArchived) {
+    html += '<pre class="editable" id="dp-description" style="white-space:pre-wrap;font-size:.85rem;min-height:16px;margin:0;color:var(--text-primary)" title="Click to edit">' + esc(task.description || "No description") + '</pre>';
+  } else {
+    html += '<pre style="white-space:pre-wrap;font-size:.85rem;margin:0;color:var(--text-primary)">' + esc(task.description || "") + '</pre>';
+  }
+  html += '</div>';
+
+  // Tags (editable)
+  html += '<div class="dp-section"><h3>Tags</h3>';
+  if (!isArchived) {
+    var tagStr = (task.tags && task.tags.length) ? task.tags.join(", ") : "";
+    html += '<span class="editable" id="dp-tags" title="Click to edit">' + esc(tagStr || "No tags") + '</span>';
+  } else if (task.tags && task.tags.length) {
+    task.tags.forEach(function(tag) { html += '<span class="badge badge-stat" style="margin-right:4px">' + esc(tag) + '</span>'; });
+  }
+  html += '</div>';
+
+  // Comments
+  var comments = (events || []).filter(function(ev) { return ev.type === "comment_added"; });
+  html += '<div class="dp-section"><h3>Comments (' + comments.length + ')</h3>';
+  if (!isArchived) {
+    html += '<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px">';
+    html += '<textarea class="form-control" id="dp-comment-text" placeholder="Add a comment\u2026" style="min-height:50px;font-size:.85rem"></textarea>';
+    html += '<button class="btn btn-primary btn-sm" id="dp-comment-submit" style="align-self:flex-end">Post</button>';
+    html += '</div>';
+  }
+  if (comments.length) {
+    comments.forEach(function(ev) {
+      html += '<div class="dp-comment">';
+      html += '<div class="dp-comment-meta">' + esc(ev.actor || "") + ' \u00b7 ' + esc(ev.ts || "") + '</div>';
+      html += '<div>' + esc((ev.data && ev.data.body) || "") + '</div>';
+      html += '</div>';
+    });
+  }
+  html += '</div>';
+
+  // History (last 10 non-comment events)
+  var nonComments = (events || []).filter(function(ev) { return ev.type !== "comment_added"; }).slice(0, 10);
+  if (nonComments.length) {
+    html += '<div class="dp-section"><h3>History</h3>';
+    nonComments.forEach(function(ev) {
+      html += '<div class="dp-event">';
+      html += '<span style="color:var(--text-muted);font-size:.75rem;min-width:55px">' + esc((ev.ts || "").substring(11, 19)) + '</span>';
+      html += '<span class="ev-type">' + esc(ev.type || "") + '</span>';
+      html += '<span>' + esc(ev.actor || "") + '</span>';
+      html += '</div>';
+    });
+    html += '</div>';
+  }
+
+  // Archive button
+  if (!isArchived) {
+    html += '<div class="dp-section" style="border-top:none;margin-top:8px">';
+    html += '<button class="btn btn-danger btn-sm" id="dp-archive-btn">Archive</button>';
+    html += '</div>';
+  }
+
+  body.innerHTML = html;
+
+  // Wire interactive elements
+  if (!isArchived) {
+    _wirePanelActions(taskId, task);
+  }
+}
+
+function _wirePanelActions(taskId, task) {
+  // Status change
+  var statusSel = document.getElementById("dp-status");
+  if (statusSel) {
+    statusSel.addEventListener("change", async function() {
+      var newStatus = this.value;
+      if (newStatus === task.status) return;
+      try {
+        await apiPost("/api/tasks/" + taskId + "/status", { status: newStatus });
+        showToast(tf("toast.moved_to", {status: newStatus}), "success");
+        await _refreshAfterPanelEdit(taskId);
+      } catch(e) {
+        showToast(e.message, "error");
+        this.value = task.status;
+      }
+    });
+  }
+
+  // Priority change
+  var priSel = document.getElementById("dp-priority");
+  if (priSel) {
+    priSel.addEventListener("change", async function() {
+      var newPri = this.value;
+      if (newPri === task.priority) return;
+      try {
+        await apiPost("/api/tasks/" + taskId + "/update", { fields: { priority: newPri } });
+        showToast(tf("toast.priority_changed", {value: newPri}), "success");
+        await _refreshAfterPanelEdit(taskId);
+      } catch(e) {
+        showToast(e.message, "error");
+        this.value = task.priority;
+      }
+    });
+  }
+
+  // Type change
+  var typeSel = document.getElementById("dp-type");
+  if (typeSel) {
+    typeSel.addEventListener("change", async function() {
+      var newType = this.value;
+      if (newType === task.type) return;
+      try {
+        await apiPost("/api/tasks/" + taskId + "/update", { fields: { type: newType } });
+        showToast(tf("toast.type_changed", {value: newType}), "success");
+        await _refreshAfterPanelEdit(taskId);
+      } catch(e) {
+        showToast(e.message, "error");
+        this.value = task.type;
+      }
+    });
+  }
+
+  // Title inline edit
+  var titleEl = document.getElementById("dp-title-edit");
+  if (titleEl) {
+    titleEl.addEventListener("click", function() {
+      _inlineEdit(titleEl, task.title || "", function(newVal) {
+        if (!newVal.trim()) { showToast(t("error.title_empty"), "error"); return Promise.reject(); }
+        return apiPost("/api/tasks/" + taskId + "/update", { fields: { title: newVal.trim() } })
+          .then(function() {
+            showToast(t("toast.title_updated"), "success");
+            _refreshAfterPanelEdit(taskId);
+          });
+      });
+    });
+  }
+
+  // Description inline edit
+  var descEl = document.getElementById("dp-description");
+  if (descEl) {
+    descEl.addEventListener("click", function() {
+      _inlineEditTextarea(descEl, task.description || "", function(newVal) {
+        return apiPost("/api/tasks/" + taskId + "/update", { fields: { description: newVal } })
+          .then(function() {
+            showToast(t("toast.description_updated"), "success");
+            _refreshAfterPanelEdit(taskId);
+          });
+      });
+    });
+  }
+
+  // Assigned to inline edit (with member chips)
+  var assignEl = document.getElementById("dp-assigned");
+  if (assignEl) {
+    assignEl.addEventListener("click", function() {
+      if (assignEl.dataset.editing === "true") return;
+      assignEl.dataset.editing = "true";
+
+      var wrapper = document.createElement("div");
+      var row = document.createElement("div");
+      row.className = "inline-edit";
+      var input = document.createElement("input");
+      input.type = "text";
+      input.className = "form-control";
+      input.value = task.assigned_to || "";
+      var saveBtn = document.createElement("button");
+      saveBtn.className = "btn btn-primary btn-sm";
+      saveBtn.textContent = t("btn.save");
+      var cancelBtn = document.createElement("button");
+      cancelBtn.className = "btn btn-sm";
+      cancelBtn.textContent = t("btn.cancel");
+
+      row.appendChild(input);
+      row.appendChild(saveBtn);
+      row.appendChild(cancelBtn);
+      wrapper.appendChild(row);
+
+      var chips = buildMemberChips(input);
+      wrapper.appendChild(chips);
+
+      var parent = assignEl.parentNode;
+      parent.replaceChild(wrapper, assignEl);
+      input.focus();
+      input.select();
+
+      function cancel() { parent.replaceChild(assignEl, wrapper); assignEl.dataset.editing = "false"; }
+
+      cancelBtn.addEventListener("click", cancel);
+      input.addEventListener("keydown", function(e) {
+        if (e.key === "Escape") cancel();
+        if (e.key === "Enter") saveBtn.click();
+      });
+      saveBtn.addEventListener("click", function() {
+        var assignedTo = input.value.trim() || null;
+        apiPost("/api/tasks/" + taskId + "/assign", { assigned_to: assignedTo })
+          .then(function() {
+            showToast(assignedTo ? tf("toast.assigned", {value: assignedTo}) : t("toast.unassigned"), "success");
+            _refreshAfterPanelEdit(taskId);
+          })
+          .catch(function(e) {
+            showToast(e.message, "error");
+            cancel();
+          });
+      });
+    });
+  }
+
+  // Tags inline edit
+  var tagsEl = document.getElementById("dp-tags");
+  if (tagsEl) {
+    tagsEl.addEventListener("click", function() {
+      var tagStr = (task.tags && task.tags.length) ? task.tags.join(", ") : "";
+      _inlineEdit(tagsEl, tagStr, function(newVal) {
+        var newTags = newVal.split(",").map(function(t){ return t.trim(); }).filter(Boolean);
+        return apiPost("/api/tasks/" + taskId + "/update", { fields: { tags: newTags } })
+          .then(function() {
+            showToast(t("toast.tags_updated"), "success");
+            _refreshAfterPanelEdit(taskId);
+          });
+      });
+    });
+  }
+
+  // Comment submit
+  var commentBtn = document.getElementById("dp-comment-submit");
+  if (commentBtn) {
+    commentBtn.addEventListener("click", async function() {
+      var textarea = document.getElementById("dp-comment-text");
+      var text = textarea.value.trim();
+      if (!text) { showToast(t("error.comment_empty"), "error"); return; }
+      try {
+        await apiPost("/api/tasks/" + taskId + "/comment", { body: text });
+        showToast(t("toast.comment_added"), "success");
+        await _refreshAfterPanelEdit(taskId);
+      } catch(e) {
+        showToast(e.message, "error");
+      }
+    });
+
+    var commentTextarea = document.getElementById("dp-comment-text");
+    if (commentTextarea) {
+      commentTextarea.addEventListener("keydown", function(e) {
+        if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+          e.preventDefault();
+          commentBtn.click();
+        }
+      });
+    }
+  }
+
+  // Archive button
+  var archiveBtn = document.getElementById("dp-archive-btn");
+  if (archiveBtn) {
+    archiveBtn.addEventListener("click", async function() {
+      if (!confirm("Archive this task? It will be moved to the archive.")) return;
+      try {
+        await apiPost("/api/tasks/" + taskId + "/archive", {});
+        showToast(t("toast.task_archived"), "success");
+        closeDetailPanel();
+        tasks = await api("/api/tasks");
+        updateStatsBadges();
+        if (currentView === "board") renderBoard();
+        else if (currentView === "list") { renderList(); }
+      } catch(e) {
+        showToast(e.message, "error");
+      }
+    });
+  }
+}
+
+async function _refreshAfterPanelEdit(taskId) {
+  // Re-fetch tasks to update board/list behind the panel
+  tasks = await api("/api/tasks");
+  updateStatsBadges();
+
+  // Re-render the underlying view
+  if (currentView === "board") renderBoard();
+  else if (currentView === "list") renderList();
+
+  // Re-render panel content if still open and no active edit
+  if (_detailPanelTaskId === taskId) {
+    var body = document.getElementById("dp-body");
+    // Skip if user is mid-edit (has an active input/textarea)
+    if (body && !body.querySelector("input:focus, textarea:focus")) {
+      var results = await Promise.all([
+        api("/api/tasks/" + taskId),
+        api("/api/tasks/" + taskId + "/events")
+      ]);
+      if (_detailPanelTaskId === taskId) {
+        _renderPanelContent(taskId, results[0], results[1]);
+      }
+    }
+  }
+}
+
+// Wire panel close handlers (once, at boot)
+document.addEventListener("DOMContentLoaded", function() {
+  var closeBtn = document.getElementById("dp-close");
+  if (closeBtn) closeBtn.addEventListener("click", closeDetailPanel);
+  var overlay = document.getElementById("detail-panel-overlay");
+  if (overlay) overlay.addEventListener("click", closeDetailPanel);
+
+  // Escape key closes panel (unless user is in an active inline edit)
+  document.addEventListener("keydown", function(e) {
+    if (e.key === "Escape" && _detailPanelTaskId) {
+      var active = document.activeElement;
+      var inPanel = document.getElementById("detail-panel");
+      // Don't close if user is typing in an input/textarea inside the panel
+      if (active && inPanel && inPanel.contains(active) && (active.tagName === "INPUT" || active.tagName === "TEXTAREA")) return;
+      closeDetailPanel();
+    }
+  });
+});
+
 // --- Routing ---
 async function route(hash) {
   var h = (hash || "/board").replace(/^#?\/?/, "/");
   var parts = h.split("/").filter(Boolean);
   var view = parts[0] || "board";
+
+  // Close floating detail panel on any hash navigation
+  if (_detailPanelTaskId) closeDetailPanel();
 
   // Clean up cube when navigating to a different main view
   if (currentView === "cube" && view !== "cube" && view !== "task") {
@@ -4964,12 +5449,12 @@ function renderBoard() {
   html += "</div>";
   app.innerHTML = html;
 
-  // Add click handlers for card navigation (separate from drag)
+  // Add click handlers for card → floating detail panel (separate from drag)
   app.querySelectorAll(".card").forEach(function(card) {
     card.addEventListener("click", function(e) {
-      // Only navigate if this was a real click, not end of drag
+      // Only open panel if this was a real click, not end of drag
       if (!card.classList.contains("was-dragged")) {
-        location.hash = "#/task/" + card.dataset.taskId;
+        openDetailPanel(card.dataset.taskId);
       }
       card.classList.remove("was-dragged");
     });
@@ -4980,6 +5465,8 @@ function renderBoard() {
 window._boardDragStart = function(e) {
   var card = e.target.closest(".card");
   if (!card) return;
+  // Close detail panel when user starts dragging
+  if (_detailPanelTaskId) closeDetailPanel();
   draggedTaskId = card.dataset.taskId;
   draggedFromStatus = card.dataset.taskStatus;
   card.classList.add("dragging");
@@ -5145,7 +5632,7 @@ function applyListFilters() {
   items.forEach(function(t) {
     var displayId = t.short_id || (t.id ? t.id.slice(0,18) + "..." : "?");
     var updated = t.updated_at ? t.updated_at.slice(0,16).replace("T"," ") : "";
-    html += '<tr style="cursor:pointer" onclick="location.hash=\'#/task/' + esc(t.id) + '\'">';
+    html += '<tr style="cursor:pointer" onclick="openDetailPanel(\'' + esc(t.id) + '\')">';
     html += '<td class="id-cell" title="' + esc(t.id) + '">' + (t.short_id ? '<span style="font-weight:600;color:var(--accent-primary)">' + esc(t.short_id) + '</span>' : esc(displayId)) + "</td>";
     html += "<td>" + esc(t.title || "Untitled") + (t.archived ? ' <span class="archived-badge">archived</span>' : "") + "</td>";
     html += "<td>" + esc(t.status || "") + "</td>";
@@ -5163,6 +5650,8 @@ function applyListFilters() {
 
 // --- Detail View ---
 var _detailTaskId = null;
+var _detailPanelTaskId = null;
+var _detailPanelTrigger = null;
 
 async function renderDetail(taskId) {
   var app = document.getElementById("app");
@@ -5915,6 +6404,8 @@ function populateMemberChips(containerId, inputId) {
 
 // --- Create Task Modal ---
 function showCreateTaskModal() {
+  // Close floating detail panel if open
+  if (_detailPanelTaskId) closeDetailPanel();
   var modal = document.getElementById("create-task-modal");
   // Populate type dropdown from config
   var typeSelect = document.getElementById("ct-type");
