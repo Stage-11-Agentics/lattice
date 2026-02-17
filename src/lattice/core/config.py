@@ -12,11 +12,17 @@ class WipLimits(TypedDict, total=False):
     review: int
 
 
+class CompletionPolicy(TypedDict, total=False):
+    require_roles: list[str]
+    require_assigned: bool
+
+
 class Workflow(TypedDict, total=False):
     statuses: list[str]
     transitions: dict[str, list[str]]
     universal_targets: list[str]
     wip_limits: WipLimits
+    completion_policies: dict[str, CompletionPolicy]
 
 
 class HooksOnConfig(TypedDict, total=False):
@@ -201,3 +207,48 @@ def validate_task_type(config: dict, task_type: str) -> bool:
 def get_wip_limit(config: dict, status: str) -> int | None:
     """Return the WIP limit for *status*, or ``None`` if not set."""
     return config.get("workflow", {}).get("wip_limits", {}).get(status)
+
+
+def validate_completion_policy(
+    config: dict,
+    snapshot: dict,
+    to_status: str,
+) -> tuple[bool, list[str]]:
+    """Check whether a transition into *to_status* satisfies completion policies.
+
+    Returns ``(True, [])`` if no policy exists or all requirements are met.
+    Returns ``(False, [reason, ...])`` if one or more requirements are not met.
+
+    Universal targets (``needs_human``, ``cancelled``) bypass all policies —
+    they are escape hatches.
+    """
+    from lattice.core.tasks import get_artifact_roles
+
+    workflow = config.get("workflow", {})
+
+    # Universal targets bypass policies
+    universal = workflow.get("universal_targets", [])
+    if to_status in universal:
+        return (True, [])
+
+    policies = workflow.get("completion_policies", {})
+    policy = policies.get(to_status)
+    if not policy:
+        return (True, [])
+
+    failures: list[str] = []
+
+    # Check require_roles
+    require_roles = policy.get("require_roles", [])
+    if require_roles:
+        roles = get_artifact_roles(snapshot)
+        present_roles = {r for r in roles.values() if r is not None}
+        for required in require_roles:
+            if required not in present_roles:
+                failures.append(f"Missing artifact with role: {required}")
+
+    # Check require_assigned
+    if policy.get("require_assigned") and not snapshot.get("assigned_to"):
+        failures.append("Task must be assigned")
+
+    return (len(failures) == 0, failures)

@@ -11,6 +11,7 @@ from lattice.core.config import (
     get_wip_limit,
     load_config,
     serialize_config,
+    validate_completion_policy,
     validate_status,
     validate_task_type,
     validate_transition,
@@ -360,3 +361,127 @@ class TestValidUrgencies:
 
     def test_length(self) -> None:
         assert len(VALID_URGENCIES) == 4
+
+
+# ---------------------------------------------------------------------------
+# validate_completion_policy
+# ---------------------------------------------------------------------------
+
+
+def _snap_with_artifacts(artifact_refs: list, assigned_to: str | None = None) -> dict:
+    """Build a minimal snapshot dict for policy testing."""
+    return {
+        "id": "task_01EXAMPLE0000000000000000",
+        "artifact_refs": artifact_refs,
+        "assigned_to": assigned_to,
+    }
+
+
+class TestValidateCompletionPolicy:
+    """validate_completion_policy() checks evidence gating rules."""
+
+    def test_no_policy_always_passes(self) -> None:
+        config = default_config()
+        snap = _snap_with_artifacts([])
+        ok, failures = validate_completion_policy(config, snap, "done")
+        assert ok is True
+        assert failures == []
+
+    def test_missing_required_role_blocked(self) -> None:
+        config = default_config()
+        config["workflow"]["completion_policies"] = {
+            "done": {"require_roles": ["review"]},
+        }
+        snap = _snap_with_artifacts([])
+        ok, failures = validate_completion_policy(config, snap, "done")
+        assert ok is False
+        assert any("review" in f for f in failures)
+
+    def test_has_required_role_passes(self) -> None:
+        config = default_config()
+        config["workflow"]["completion_policies"] = {
+            "done": {"require_roles": ["review"]},
+        }
+        snap = _snap_with_artifacts([{"id": "art_A", "role": "review"}])
+        ok, failures = validate_completion_policy(config, snap, "done")
+        assert ok is True
+        assert failures == []
+
+    def test_multiple_required_roles_partial_blocked(self) -> None:
+        config = default_config()
+        config["workflow"]["completion_policies"] = {
+            "done": {"require_roles": ["review", "security"]},
+        }
+        snap = _snap_with_artifacts([{"id": "art_A", "role": "review"}])
+        ok, failures = validate_completion_policy(config, snap, "done")
+        assert ok is False
+        assert any("security" in f for f in failures)
+        assert not any("review" in f for f in failures)
+
+    def test_multiple_required_roles_all_present_passes(self) -> None:
+        config = default_config()
+        config["workflow"]["completion_policies"] = {
+            "done": {"require_roles": ["review", "security"]},
+        }
+        snap = _snap_with_artifacts([
+            {"id": "art_A", "role": "review"},
+            {"id": "art_B", "role": "security"},
+        ])
+        ok, failures = validate_completion_policy(config, snap, "done")
+        assert ok is True
+
+    def test_require_assigned_blocked_when_unassigned(self) -> None:
+        config = default_config()
+        config["workflow"]["completion_policies"] = {
+            "done": {"require_assigned": True},
+        }
+        snap = _snap_with_artifacts([], assigned_to=None)
+        ok, failures = validate_completion_policy(config, snap, "done")
+        assert ok is False
+        assert any("assigned" in f.lower() for f in failures)
+
+    def test_require_assigned_passes_when_assigned(self) -> None:
+        config = default_config()
+        config["workflow"]["completion_policies"] = {
+            "done": {"require_assigned": True},
+        }
+        snap = _snap_with_artifacts([], assigned_to="agent:claude")
+        ok, failures = validate_completion_policy(config, snap, "done")
+        assert ok is True
+
+    def test_universal_target_bypasses_policy(self) -> None:
+        config = default_config()
+        config["workflow"]["completion_policies"] = {
+            "needs_human": {"require_roles": ["review"]},
+        }
+        snap = _snap_with_artifacts([])
+        ok, failures = validate_completion_policy(config, snap, "needs_human")
+        assert ok is True
+
+    def test_cancelled_bypasses_policy(self) -> None:
+        config = default_config()
+        config["workflow"]["completion_policies"] = {
+            "cancelled": {"require_roles": ["review"]},
+        }
+        snap = _snap_with_artifacts([])
+        ok, failures = validate_completion_policy(config, snap, "cancelled")
+        assert ok is True
+
+    def test_policy_for_different_status_not_applied(self) -> None:
+        config = default_config()
+        config["workflow"]["completion_policies"] = {
+            "done": {"require_roles": ["review"]},
+        }
+        snap = _snap_with_artifacts([])
+        ok, failures = validate_completion_policy(config, snap, "review")
+        assert ok is True
+
+    def test_old_format_artifact_refs(self) -> None:
+        """Bare string artifact_refs (old format) have no role — should fail."""
+        config = default_config()
+        config["workflow"]["completion_policies"] = {
+            "done": {"require_roles": ["review"]},
+        }
+        snap = _snap_with_artifacts(["art_A"])
+        ok, failures = validate_completion_policy(config, snap, "done")
+        assert ok is False

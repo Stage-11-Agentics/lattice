@@ -31,6 +31,7 @@ from lattice.core.config import (
     VALID_COMPLEXITIES,
     VALID_PRIORITIES,
     VALID_URGENCIES,
+    validate_completion_policy,
     validate_status,
     validate_task_type,
     validate_transition,
@@ -522,6 +523,24 @@ def status_cmd(
                 f"Invalid transition from {current_status} to {new_status}. "
                 "Use --force --reason to override.",
                 "INVALID_TRANSITION",
+                is_json,
+            )
+        if not provenance_reason:
+            output_error(
+                "--reason is required with --force.",
+                "VALIDATION_ERROR",
+                is_json,
+            )
+
+    # Check completion policies (evidence gating)
+    policy_ok, policy_failures = validate_completion_policy(config, snapshot, new_status)
+    if not policy_ok:
+        if not force:
+            failure_msg = "; ".join(policy_failures)
+            output_error(
+                f"Completion policy not satisfied: {failure_msg}. "
+                "Use --force --reason to override.",
+                "COMPLETION_BLOCKED",
                 is_json,
             )
         if not provenance_reason:
