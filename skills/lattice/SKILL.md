@@ -1,35 +1,8 @@
 ---
 name: lattice
-description: >-
-  Event-sourced task tracking for agents and humans. Use when managing tasks,
-  tracking work status, coordinating multi-agent workflows, or maintaining
-  an audit trail of who did what and when.
-license: MIT
-compatibility: Requires Python 3.12+
-metadata:
-  author: stage11-agentics
-  version: "0.1.0"
-  homepage: https://github.com/stage11-agentics/lattice
-  openclaw:
-    emoji: "clipboard"
-    requires:
-      bins: ["lattice"]
-    install:
-      - id: pip
-        kind: command
-        command: "pip install lattice-tracker"
-        bins: ["lattice"]
-        label: "Install Lattice (pip)"
-      - id: pipx
-        kind: command
-        command: "pipx install lattice-tracker"
-        bins: ["lattice"]
-        label: "Install Lattice (pipx)"
-      - id: uv
-        kind: command
-        command: "uv tool install lattice-tracker"
-        bins: ["lattice"]
-        label: "Install Lattice (uv)"
+description: Event-sourced task tracking for agents and humans. Use when managing tasks, tracking work status, coordinating multi-agent workflows, or maintaining an audit trail of who did what and when.
+homepage: https://github.com/stage11-agentics/lattice
+metadata: {"openclaw":{"emoji":"clipboard","requires":{"bins":["lattice"]},"install":[{"id":"pip","kind":"command","command":"pip install lattice-tracker","bins":["lattice"],"label":"Install Lattice (pip)"},{"id":"pipx","kind":"command","command":"pipx install lattice-tracker","bins":["lattice"],"label":"Install Lattice (pipx)"},{"id":"uv","kind":"command","command":"uv tool install lattice-tracker","bins":["lattice"],"label":"Install Lattice (uv)"}]}}
 ---
 
 # Lattice — Agent-Native Task Tracker
@@ -48,13 +21,13 @@ Use Lattice when the user or the conversation involves:
 
 ## Setup
 
-Check if Lattice is initialized in the current project:
+Check if Lattice is available and initialized:
 
 ```bash
-scripts/lattice-check.sh
+bash {baseDir}/scripts/lattice-check.sh
 ```
 
-If not initialized, set it up:
+Or simply run `lattice list`. If `lattice` is not found, it needs to be installed (see the install methods in the frontmatter above). If `.lattice/` is not found, initialize it:
 
 ```bash
 lattice init --project-code PROJ
@@ -205,6 +178,8 @@ Lattice handles concurrent writes safely with file locks. Multiple agents can wo
 3. Workers update status and add comments as they progress
 4. Lock-based concurrency prevents file corruption
 5. Event log provides full audit trail of who did what
+
+For detailed multi-agent patterns, read `{baseDir}/references/multi-agent-guide.md`.
 
 ## Tips
 
