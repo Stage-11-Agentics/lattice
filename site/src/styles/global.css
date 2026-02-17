@@ -270,19 +270,42 @@ td {
 
 .hero .tagline {
   font-family: var(--font-mono);
-  font-size: 0.85rem;
+  font-size: 1.8rem;
   color: var(--accent);
-  margin-top: 0.8rem;
-  margin-bottom: 0.3rem;
-  letter-spacing: 0.03em;
+  margin-top: 1rem;
+  margin-bottom: 0;
+  letter-spacing: 0.02em;
+  font-weight: 400;
 }
 
 .hero .description {
   color: var(--text-dim);
   font-size: 1.15rem;
   line-height: 1.8;
-  margin-top: 1.5rem;
+  margin-top: 2rem;
+  margin-bottom: 3rem;
   max-width: 580px;
+}
+
+.hero .guide-cta {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color: var(--bg);
+  background: var(--accent);
+  padding: 0.6rem 1.6rem;
+  border-radius: 6px;
+  text-decoration: none;
+  border-bottom: none;
+  letter-spacing: 0.04em;
+  transition: background 0.2s, transform 0.15s;
+  margin-top: 0.5rem;
+}
+
+.hero .guide-cta:hover {
+  background: var(--text-bright);
+  transform: translateY(-1px);
+  border-bottom: none;
 }
 
 /* --- install block --- */
@@ -383,6 +406,7 @@ footer a:hover {
   html { font-size: 16px; }
   .page { padding: 3.5rem 1.2rem 4rem; }
   .hero h1 { font-size: 2.2rem; }
+  .hero .tagline { font-size: 1.3rem; }
   .nav-cards { grid-template-columns: 1fr; }
   nav .links { gap: 1rem; }
   nav .links a { font-size: 0.68rem; }
