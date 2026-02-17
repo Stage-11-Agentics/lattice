@@ -59,7 +59,7 @@ You don't need to use the CLI after setup. The dashboard handles creating tasks,
 
 ## Fill the backlog
 
-Before your agent can advance, it needs tasks to work on. You can create them directly in the dashboard, or just tell your agent what you want built — "break down the auth system into tasks" or "create tasks for the MVP features we discussed." The agent will populate the backlog with structured tasks, priorities, and descriptions. You review and adjust from the dashboard.
+Your backlog already has a couple of example tasks to help you get the feel. You can create more directly in the dashboard, or just tell your agent what you want built — "break down the auth system into tasks" or "create tasks for the MVP features we discussed." The agent will populate the backlog with structured tasks, priorities, and descriptions. You review and adjust from the dashboard.
 
 Once there's work in the backlog, tell your agent to advance — it claims the top task, does the work, and reports back. You come back to a sorted inbox: work in review, decisions waiting, blockers identified.
 
