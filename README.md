@@ -96,7 +96,8 @@ from this point forward, when you open Claude Code (or Codex, or OpenClaw) in th
 # create a task (from CLI or dashboard)
 lattice create "Implement user authentication" --actor human:yourname
 
-# update status
+# plan it, then start working
+lattice status PROJ-1 planned --actor human:yourname
 lattice status PROJ-1 in_progress --actor human:yourname
 
 # add a comment
@@ -329,9 +330,8 @@ exposes Lattice operations as MCP tools — direct tool-call integration for any
 if your agent can run shell commands and read files, it can use Lattice. no special integration required. the CLI is the universal interface.
 
 ```bash
-lattice list                    # see what's available
-lattice next --claim --actor agent:my-bot   # claim the top task
-lattice status PROJ-1 in_progress --actor agent:my-bot
+lattice list                                # see what's available
+lattice next --claim --actor agent:my-bot   # claim + start the top task
 # ... do the work ...
 lattice comment PROJ-1 "Implemented the feature" --actor agent:my-bot
 lattice status PROJ-1 review --actor agent:my-bot
@@ -408,7 +408,7 @@ all write commands support:
 ## development
 
 ```bash
-git clone https://github.com/stage11-agentics/lattice.git
+git clone https://github.com/Stage-11-Agentics/lattice.git
 cd lattice
 uv venv && uv pip install -e ".[dev]"
 uv run pytest
@@ -441,4 +441,4 @@ the cost of building too early is refinement. the cost of building too late is i
 
 *this is not metaphor. this is. architecture.*
 
-*built by [Stage 11 Agentics](https://stage11agentics.com).*
+*built by [Stage 11 Agentics](https://stage11agentic.com).*

@@ -243,6 +243,7 @@ def _seed_example_tasks(lattice_dir: Path, config: dict) -> None:
 
 
 @click.group(invoke_without_command=True)
+@click.version_option(package_name="lattice-tracker")
 @click.pass_context
 def cli(ctx: click.Context) -> None:
     """Lattice: file-based, agent-native task tracker."""
@@ -317,6 +318,12 @@ def cli(ctx: click.Context) -> None:
     default=None,
     help="Workflow personality preset for status names.",
 )
+@click.option(
+    "--setup-claude/--no-setup-claude",
+    "setup_claude",
+    default=None,
+    help="Create or update CLAUDE.md with Lattice agent integration.",
+)
 def init(
     target_path: str,
     actor: str | None,
@@ -325,6 +332,7 @@ def init(
     instance_name: str | None,
     heartbeat: bool | None,
     workflow_preset: str | None,
+    setup_claude: bool | None,
 ) -> None:
     """Initialize a new Lattice project."""
     root = Path(target_path)
@@ -384,43 +392,54 @@ def init(
                 "Must be 1-5 uppercase ASCII letters."
             )
 
+    # Non-interactive mode: when actor and project-code are both provided via
+    # flags, default remaining options instead of prompting. This lets the
+    # README's one-liner work without interactive prompts.
+    non_interactive = actor is not None and project_code is not None
+
     # Prompt for heartbeat if not provided via flag
     if heartbeat is None:
-        try:
-            heartbeat = click.confirm(
-                "Enable heartbeat? (agents auto-advance through backlog after each task)",
-                default=True,
-            )
-        except (click.Abort, EOFError):
+        if non_interactive:
             heartbeat = False
+        else:
+            try:
+                heartbeat = click.confirm(
+                    "Enable heartbeat? (agents auto-advance through backlog after each task)",
+                    default=True,
+                )
+            except (click.Abort, EOFError):
+                heartbeat = False
 
     # Prompt for workflow preset if not provided via flag
     if workflow_preset is None:
-        from lattice.core.config import WORKFLOW_PRESETS
-
-        click.echo("")
-        click.echo("Workflow personality — how should your board talk?")
-        click.echo("")
-        for i, (key, preset) in enumerate(WORKFLOW_PRESETS.items(), 1):
-            display_names = preset["display_names"]
-            if display_names:
-                sample = " → ".join(
-                    display_names.get(s, s) for s in ["backlog", "in_progress", "done"]
-                )
-            else:
-                sample = "backlog → in_progress → done"
-            click.echo(f"  [{i}] {key}: {preset['description']}")
-            click.echo(f"      {sample}")
-        click.echo("")
-        try:
-            choice = click.prompt(
-                "Choose a preset",
-                type=click.IntRange(1, len(WORKFLOW_PRESETS)),
-                default=1,
-            )
-            workflow_preset = list(WORKFLOW_PRESETS.keys())[choice - 1]
-        except (click.Abort, EOFError):
+        if non_interactive:
             workflow_preset = "classic"
+        else:
+            from lattice.core.config import WORKFLOW_PRESETS
+
+            click.echo("")
+            click.echo("Workflow personality — how should your board talk?")
+            click.echo("")
+            for i, (key, preset) in enumerate(WORKFLOW_PRESETS.items(), 1):
+                display_names = preset["display_names"]
+                if display_names:
+                    sample = " → ".join(
+                        display_names.get(s, s) for s in ["backlog", "in_progress", "done"]
+                    )
+                else:
+                    sample = "backlog → in_progress → done"
+                click.echo(f"  [{i}] {key}: {preset['description']}")
+                click.echo(f"      {sample}")
+            click.echo("")
+            try:
+                choice = click.prompt(
+                    "Choose a preset",
+                    type=click.IntRange(1, len(WORKFLOW_PRESETS)),
+                    default=1,
+                )
+                workflow_preset = list(WORKFLOW_PRESETS.keys())[choice - 1]
+            except (click.Abort, EOFError):
+                workflow_preset = "classic"
 
     try:
         # Create directory structure
@@ -477,7 +496,11 @@ def init(
         click.echo(f"Workflow: {workflow_preset}")
 
     # CLAUDE.md integration
-    _offer_claude_md(root)
+    if setup_claude is None:
+        _offer_claude_md(root, auto_accept=non_interactive)
+    elif setup_claude:
+        _offer_claude_md(root, auto_accept=True)
+    # else: --no-setup-claude, skip entirely
 
 
 def _compose_claude_md_blocks() -> tuple[str, str]:
@@ -514,8 +537,12 @@ def _collect_all_markers() -> list[str]:
     return markers
 
 
-def _offer_claude_md(root: Path) -> None:
-    """Detect CLAUDE.md and offer to add Lattice integration block."""
+def _offer_claude_md(root: Path, *, auto_accept: bool = False) -> None:
+    """Detect CLAUDE.md and offer to add Lattice integration block.
+
+    When *auto_accept* is True (non-interactive init), automatically create or
+    update CLAUDE.md without prompting.
+    """
     marker, composed_block = _compose_claude_md_blocks()
 
     claude_md = root / "CLAUDE.md"
@@ -526,7 +553,7 @@ def _offer_claude_md(root: Path) -> None:
             if marker in content:
                 click.echo("CLAUDE.md already has Lattice integration.")
                 return
-            if click.confirm(
+            if auto_accept or click.confirm(
                 "Found CLAUDE.md — add Lattice agent integration?",
                 default=True,
             ):
@@ -534,7 +561,7 @@ def _offer_claude_md(root: Path) -> None:
                     f.write(composed_block)
                 click.echo("Added Lattice integration to CLAUDE.md.")
         else:
-            if click.confirm(
+            if auto_accept or click.confirm(
                 "Create CLAUDE.md with Lattice agent integration?",
                 default=True,
             ):

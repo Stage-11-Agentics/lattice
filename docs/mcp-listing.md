@@ -168,7 +168,7 @@ Any MCP client that supports stdio transport can connect:
 ```
 **Lattice** -- File-based, agent-native task tracker with event-sourced core
 
-https://github.com/stage11-agentics/lattice
+https://github.com/Stage-11-Agentics/lattice
 
 Gives AI agents persistent shared state for coordinating work across sessions. 15 MCP tools for full task lifecycle management (create, update, assign, comment, link, attach, archive). 6 resource URIs for reading task state. Event-sourced with immutable audit trail and actor attribution. Zero infrastructure -- no database, no server, just files.
 
@@ -186,10 +186,10 @@ Categories: Project Management, Developer Tools, AI Agent Coordination
 
 | Field | Value |
 |-------|-------|
-| Name | `@stage11-agentics/lattice` |
+| Name | `@Stage-11-Agentics/lattice` |
 | Display name | Lattice |
 | Description | File-based, agent-native task tracker with event-sourced core. 15 MCP tools for task lifecycle management, relationships, artifacts, and workflow automation. Zero infrastructure -- just files. |
-| Repository | https://github.com/stage11-agentics/lattice |
+| Repository | https://github.com/Stage-11-Agentics/lattice |
 | Transport | stdio |
 | Install command | `pip install lattice-tracker[mcp]` |
 | Run command | `lattice-mcp` |
@@ -203,7 +203,7 @@ Categories: Project Management, Developer Tools, AI Agent Coordination
 | Field | Value |
 |-------|-------|
 | Name | Lattice |
-| Repository | https://github.com/stage11-agentics/lattice |
+| Repository | https://github.com/Stage-11-Agentics/lattice |
 | Description | Agent-native task tracker with event-sourced core. Exposes 15 MCP tools and 6 resources for full task lifecycle management -- create, update, assign, comment, link, attach, archive. File-based with zero infrastructure. |
 | Category | Project Management / Developer Tools |
 | Language | Python |
@@ -219,7 +219,7 @@ Categories: Project Management, Developer Tools, AI Agent Coordination
 | Field | Value |
 |-------|-------|
 | Name | Lattice |
-| Repository | https://github.com/stage11-agentics/lattice |
+| Repository | https://github.com/Stage-11-Agentics/lattice |
 | Description | File-based, agent-native task tracker. 15 MCP tools for creating, updating, assigning, commenting, linking, and archiving tasks. Event-sourced with immutable audit trail and actor attribution. No database or server required. |
 | Category | Project Management |
 
@@ -230,7 +230,7 @@ Categories: Project Management, Developer Tools, AI Agent Coordination
 **Draft entry (for the "Project Management" or "Developer Tools" category):**
 
 ```markdown
-- [Lattice](https://github.com/stage11-agentics/lattice) 🐍 🏠 🍎 🪟 🐧 - File-based, agent-native task tracker with event-sourced core. 15 tools for full task lifecycle management with actor attribution, relationship graphs, and configurable workflows.
+- [Lattice](https://github.com/Stage-11-Agentics/lattice) 🐍 🏠 🍎 🪟 🐧 - File-based, agent-native task tracker with event-sourced core. 15 tools for full task lifecycle management with actor attribution, relationship graphs, and configurable workflows.
 ```
 
 Legend: 🐍 = Python, 🏠 = Local, 🍎 = macOS, 🪟 = Windows, 🐧 = Linux
@@ -247,8 +247,8 @@ Legend: 🐍 = Python, 🏠 = Local, 🍎 = macOS, 🪟 = Windows, 🐧 = Linux
 
 | Resource | URL |
 |----------|-----|
-| Repository | https://github.com/stage11-agentics/lattice |
+| Repository | https://github.com/Stage-11-Agentics/lattice |
 | PyPI | https://pypi.org/project/lattice-tracker/ |
-| Issues | https://github.com/stage11-agentics/lattice/issues |
-| Author | [Stage 11 Agentics](https://stage11agentics.com) |
+| Issues | https://github.com/Stage-11-Agentics/lattice/issues |
+| Author | [Stage 11 Agentics](https://stage11agentic.com) |
 | License | MIT |

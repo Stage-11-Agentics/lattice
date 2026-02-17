@@ -414,12 +414,11 @@ class TestInitClaudeMd:
         assert "The First Act" in content
 
     def test_init_claude_md_decline(self, tmp_path: Path) -> None:
-        """Decline CLAUDE.md prompt -> file not created."""
+        """Decline CLAUDE.md via --no-setup-claude -> file not created."""
         runner = CliRunner()
         result = runner.invoke(
             cli,
-            ["init", "--path", str(tmp_path), "--actor", "human:test", "--project-code", "TST", "--no-heartbeat", "--workflow", "classic"],
-            input="n\n",  # no to CLAUDE.md
+            ["init", "--path", str(tmp_path), "--actor", "human:test", "--project-code", "TST", "--no-heartbeat", "--workflow", "classic", "--no-setup-claude"],
         )
         assert result.exit_code == 0
 
@@ -427,7 +426,7 @@ class TestInitClaudeMd:
         assert not claude_md.exists()
 
     def test_init_claude_md_decline_preserves_existing(self, tmp_path: Path) -> None:
-        """Decline CLAUDE.md prompt with existing file -> file not modified."""
+        """Decline CLAUDE.md via --no-setup-claude with existing file -> file not modified."""
         claude_md = tmp_path / "CLAUDE.md"
         original_content = "# My Project\n\nExisting content.\n"
         claude_md.write_text(original_content)
@@ -435,8 +434,7 @@ class TestInitClaudeMd:
         runner = CliRunner()
         result = runner.invoke(
             cli,
-            ["init", "--path", str(tmp_path), "--actor", "human:test", "--project-code", "TST", "--no-heartbeat", "--workflow", "classic"],
-            input="n\n",  # no to CLAUDE.md
+            ["init", "--path", str(tmp_path), "--actor", "human:test", "--project-code", "TST", "--no-heartbeat", "--workflow", "classic", "--no-setup-claude"],
         )
         assert result.exit_code == 0
         assert claude_md.read_text() == original_content

@@ -1,7 +1,7 @@
 ---
 name: lattice
 description: Event-sourced task tracking for agents and humans. Use when managing tasks, tracking work status, coordinating multi-agent workflows, or maintaining an audit trail of who did what and when.
-homepage: https://github.com/stage11-agentics/lattice
+homepage: https://github.com/Stage-11-Agentics/lattice
 metadata: {"openclaw":{"emoji":"clipboard","requires":{"bins":["lattice"]},"install":[{"id":"pip","kind":"command","command":"pip install lattice-tracker","bins":["lattice"],"label":"Install Lattice (pip)"},{"id":"pipx","kind":"command","command":"pipx install lattice-tracker","bins":["lattice"],"label":"Install Lattice (pipx)"},{"id":"uv","kind":"command","command":"uv tool install lattice-tracker","bins":["lattice"],"label":"Install Lattice (uv)"}]}}
 ---
 

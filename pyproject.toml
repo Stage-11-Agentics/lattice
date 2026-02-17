@@ -10,7 +10,7 @@ requires-python = ">=3.12"
 license = "MIT"
 readme = "README.md"
 authors = [
-    { name = "Stage 11 Agentics", email = "hello@stage11agentics.com" },
+    { name = "Stage 11 Agentics", email = "hello@stage11agentic.com" },
 ]
 keywords = ["task-tracker", "agent", "ai", "event-sourcing", "cli", "mcp"]
 classifiers = [
@@ -48,9 +48,9 @@ lattice = "lattice.cli.main:cli"
 lattice-mcp = "lattice.mcp.server:main"
 
 [project.urls]
-Homepage = "https://github.com/stage11-agentics/lattice"
-Repository = "https://github.com/stage11-agentics/lattice"
-Issues = "https://github.com/stage11-agentics/lattice/issues"
+Homepage = "https://github.com/Stage-11-Agentics/lattice"
+Repository = "https://github.com/Stage-11-Agentics/lattice"
+Issues = "https://github.com/Stage-11-Agentics/lattice/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/lattice"]
