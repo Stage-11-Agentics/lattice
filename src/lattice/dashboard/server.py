@@ -582,15 +582,116 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
             self._send_json(200, _ok(workers))
 
         def _handle_post_hooks_transitions(self, ld: Path) -> None:
-            """Handle POST /api/config/hooks/transitions — set transition triggers."""
+            """Handle POST /api/config/hooks/transitions — set transition triggers.
+
+            Two modes:
+            - **Single**: ``{"pattern": "* -> review", "commands": ["cmd"]}``
+              Sets/removes one transition pattern.
+            - **Bulk**: ``{"* -> review": "cmd", "in_progress -> blocked": [...]}``
+              Replaces the entire transitions dict (used by raw editor).
+            """
             body = self._read_request_body()
             if body is None:
                 return
 
             pattern = body.get("pattern")
+
+            # ---- Bulk mode: body IS the transitions dict ----
+            if pattern is None:
+                # Validate every key looks like a transition pattern
+                for key, val in body.items():
+                    parts = key.split("->")
+                    if len(parts) != 2:
+                        self._send_json(
+                            400,
+                            _err(
+                                "VALIDATION_ERROR",
+                                f"Invalid pattern key '{key}': must be 'from -> to' format",
+                            ),
+                        )
+                        return
+                    left = parts[0].strip()
+                    right = parts[1].strip()
+                    if not left or not right:
+                        self._send_json(
+                            400,
+                            _err(
+                                "VALIDATION_ERROR",
+                                f"Pattern '{key}' must have non-empty from and to",
+                            ),
+                        )
+                        return
+                    # Validate values: string or list of strings
+                    if isinstance(val, str):
+                        if not val.strip():
+                            self._send_json(
+                                400,
+                                _err(
+                                    "VALIDATION_ERROR",
+                                    f"Command for '{key}' must be non-empty",
+                                ),
+                            )
+                            return
+                    elif isinstance(val, list):
+                        for cmd in val:
+                            if not isinstance(cmd, str) or not cmd.strip():
+                                self._send_json(
+                                    400,
+                                    _err(
+                                        "VALIDATION_ERROR",
+                                        f"Each command for '{key}' must be a non-empty string",
+                                    ),
+                                )
+                                return
+                    else:
+                        self._send_json(
+                            400,
+                            _err(
+                                "VALIDATION_ERROR",
+                                f"Value for '{key}' must be a string or array of strings",
+                            ),
+                        )
+                        return
+
+                config_path = ld / "config.json"
+                locks_dir = ld / "locks"
+                try:
+                    with multi_lock(locks_dir, ["config"]):
+                        try:
+                            config = json.loads(config_path.read_text())
+                        except (json.JSONDecodeError, OSError) as exc:
+                            self._send_json(
+                                500,
+                                _err("READ_ERROR", f"Failed to read config: {exc}"),
+                            )
+                            return
+
+                        hooks = config.setdefault("hooks", {})
+                        if body:
+                            hooks["transitions"] = body
+                        else:
+                            hooks.pop("transitions", None)
+
+                        if not hooks:
+                            config.pop("hooks", None)
+
+                        atomic_write(config_path, serialize_config(config))
+                except Exception as exc:
+                    self._send_json(
+                        500,
+                        _err("WRITE_ERROR", f"Failed to save hooks config: {exc}"),
+                    )
+                    return
+
+                self._send_json(
+                    200, _ok(config.get("hooks", {}).get("transitions", {}))
+                )
+                return
+
+            # ---- Single-pattern mode ----
             commands = body.get("commands")
 
-            if not pattern or not isinstance(pattern, str):
+            if not isinstance(pattern, str) or not pattern.strip():
                 self._send_json(
                     400, _err("VALIDATION_ERROR", "Missing or invalid 'pattern' field")
                 )
