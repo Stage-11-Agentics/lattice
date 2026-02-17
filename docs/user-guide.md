@@ -1,4 +1,4 @@
-# Lattice. a guide. by GregorOvich.
+# Lattice. a guide.
 
 *for the human who wants to stop managing and start. conducting.*
 
