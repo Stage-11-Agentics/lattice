@@ -897,6 +897,8 @@ def _print_human_show(
         click.echo(f"Plan: plans/{task_id}.md")
 
     if has_notes:
+        if not has_plan:
+            click.echo("")
         click.echo(f"Notes: notes/{task_id}.md")
 
     if events:
@@ -1003,11 +1005,7 @@ def plan(task_id: str, output_json: bool) -> None:
         plan_path = lattice_dir / "archive" / "plans" / f"{task_id}.md"
         is_archived = True
     if not plan_path.is_file():
-        if is_json:
-            click.echo(json_envelope(False, error_code="NOT_FOUND", error_msg=f"No plan file for task {task_id}"))
-        else:
-            click.echo(f"No plan file found for task {task_id}.")
-        raise SystemExit(1)
+        output_error(f"No plan file found for task {task_id}.", "NOT_FOUND", is_json)
 
     if is_json:
         data = {

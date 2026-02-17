@@ -441,9 +441,11 @@ def _unarchive_one(
 
         archive_plans_path = lattice_dir / "archive" / "plans" / f"{task_id}.md"
         if archive_plans_path.exists():
+            plans_dir = lattice_dir / "plans"
+            plans_dir.mkdir(parents=True, exist_ok=True)
             shutil.move(
                 str(archive_plans_path),
-                str(lattice_dir / "plans" / f"{task_id}.md"),
+                str(plans_dir / f"{task_id}.md"),
             )
 
     execute_hooks(config, lattice_dir, task_id, event)

@@ -70,8 +70,8 @@ def scaffold_notes(
     (idempotent create).
 
     Notes are NOT scaffolded on task creation (plans are). This function
-    exists for explicit on-demand creation via ``lattice note`` or direct
-    file writes.
+    exists for explicit on-demand creation (e.g., dashboard "open notes")
+    or direct file writes.
     """
     notes_path = lattice_dir / "notes" / f"{task_id}.md"
     if notes_path.exists():
