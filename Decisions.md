@@ -544,9 +544,12 @@ Additional review findings that shaped this decision:
 **Context:** LAT-26 (Open Source Launch epic) exposed the mismatch: manually setting an epic to `in_progress` doesn't mean the same thing as a leaf task in `in_progress`. Epics are grouping containers whose "status" is really a progress ratio. Forcing them through the same workflow transitions as leaf tasks (including needing `--force` to skip steps) is friction without value.
 
 **Design:**
-- Epics display as a bottom lane on the board view, not in Kanban columns
-- Epic status is computed from subtask completion (e.g., 6/9 done)
-- Rich information across all surfaces: dashboard board (progress bars, health), CLI output (progress ratio, subtask breakdown, assignees), dashboard detail views (timeline, bottleneck visibility)
-- Epics reflect — they don't move. The board above answers "what do I do next"; the bottom lane answers "how are my initiatives going"
+- Epics display as a persistent bottom lane on the Board view, not in Kanban status columns
+- Epic status is computed from subtask completion (e.g., 6/9 done) — no manual status transitions
+- Rich information across three key dashboard surfaces:
+  - **Board** — bottom lane with progress bars, health indicators, subtask counts
+  - **Cube** — epic nodes rendered distinctly in the 3D relationship graph, with subtask clustering visible
+  - **Web** — epic detail with full timeline, subtask breakdown, bottleneck visibility
+- Epics reflect — they don't move. The Board columns above answer "what do I do next"; the bottom lane answers "how are my initiatives going"
 
-**Consequence:** Requires dashboard changes (bottom lane rendering), CLI changes (`lattice show` for epics renders differently), and possibly core changes (derived status computation). Tracked as LAT-103.
+**Consequence:** Requires dashboard changes (Board bottom lane rendering, Cube epic node styling, Web epic detail), CLI changes (`lattice show` for epics renders differently), and core changes (derived status computation). Tracked as LAT-103.
