@@ -27,6 +27,7 @@ dependencies = [
     "click>=8.1",
     "python-ulid>=2.0",
     "filelock>=3.13",
+    "typing_extensions>=4.0; python_version<'3.14'",
 ]
 
 [project.optional-dependencies]
