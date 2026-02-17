@@ -1,0 +1,12 @@
+---
+import Base from '../layouts/Base.astro';
+import { renderMarkdown } from '../lib/markdown';
+
+const html = renderMarkdown('docs/integration-claude-code.md');
+---
+
+<Base title="Lattice + Claude Code" description="Three minutes from install to your first advance. Task tracking that makes your Claude Code agent persistent, coordinated, and accountable." active="start">
+  <div style="padding-top: 3rem;">
+    <div class="content" set:html={html} />
+  </div>
+</Base>

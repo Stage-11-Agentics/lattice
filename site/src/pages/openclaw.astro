@@ -1,0 +1,12 @@
+---
+import Base from '../layouts/Base.astro';
+import { renderMarkdown } from '../lib/markdown';
+
+const html = renderMarkdown('docs/integration-openclaw.md');
+---
+
+<Base title="Lattice + OpenClaw" description="Give your OpenClaw agent persistent memory, a sorted inbox, and multi-agent coordination. Three minutes to set up." active="start">
+  <div style="padding-top: 3rem;">
+    <div class="content" set:html={html} />
+  </div>
+</Base>

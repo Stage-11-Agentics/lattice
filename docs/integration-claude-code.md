@@ -1,131 +1,235 @@
-# Using Lattice with Claude Code
+# Lattice + Claude Code
 
-Lattice integrates with Claude Code through a block injected into your project's `CLAUDE.md` file. This block is what makes agents treat task tracking as a first-class obligation rather than an afterthought. Without it, agents can use Lattice if prompted; with it, they create tasks and update statuses as their default behavior.
+You're about to change how you use Claude Code. Right now, your sessions are one-shot: you describe what you want, the agent builds it, you review. There's no memory between sessions. No record of what was tried. No way to say "keep going where you left off."
 
-## How the integration works
+Lattice gives you that. After setup, your Claude Code agent will:
 
-Claude Code loads `CLAUDE.md` at the start of every session. The Lattice integration block teaches agents four things:
+- **Track its own work** — every feature, bug fix, and refactor gets a task before the agent touches a file
+- **Pick up where the last session left off** — tasks persist across sessions with full context
+- **Tell you when it's stuck** — instead of guessing, the agent flags decisions that need you
+- **Leave notes for the next session** — what was tried, what was chosen, what's left
 
-1. **Work intake** -- create a task before doing any work. Before planning, before implementing, before touching a file.
-2. **Status tracking** -- update status at every real transition. Statuses are events, not labels.
-3. **Actor attribution** -- every operation requires an `--actor` identifying who made the decision.
-4. **Breadcrumbs** -- use `lattice comment` and `.lattice/notes/<task_id>.md` to leave context for the next agent.
+The setup takes about three minutes. The payoff is immediate.
 
-## Adding the integration block
+---
 
-### For new projects
-
-`lattice init` creates the `.lattice/` directory and offers to add the integration block to `CLAUDE.md` automatically:
+## Install Lattice
 
 ```bash
-lattice init --path /your/project --actor human:yourname
+pip install lattice-tracker
 ```
 
-If you skipped the CLAUDE.md step during init, run `setup-claude` afterward.
-
-### For existing projects
+Or with modern Python tooling:
 
 ```bash
-lattice setup-claude --path /your/project
+pipx install lattice-tracker    # isolated install
+uv tool install lattice-tracker # if you use uv
 ```
 
-This appends the Lattice block to the end of your existing `CLAUDE.md`. If the file does not exist, it creates one.
-
-### Updating an existing block
-
-When the template is updated (new instructions, better wording, additional guidance), refresh your project's block:
+Verify it works:
 
 ```bash
-lattice setup-claude --path /your/project --force
+lattice --help
 ```
 
-The `--force` flag removes the existing Lattice block and replaces it with the latest version from the template. Without `--force`, the command exits if it detects an existing block.
+---
 
-## What the block teaches agents
+## Initialize your first project
 
-The integration block (sourced from `src/lattice/templates/claude_md_block.py`) includes these sections:
-
-### The First Act
-
-Instructs agents to create a Lattice task as their first action when any work arrives -- a feature request, a bug, a pivot in conversation. The task must exist before work begins.
-
-```
-lattice create "<title>" --actor agent:<your-id>
-```
-
-### Status Is a Signal
-
-Teaches agents the workflow: `backlog -> in_planning -> planned -> in_progress -> review -> done`. Every transition is an immutable, attributed event. Agents learn to update status at every real transition point.
-
-```
-lattice status <task> <status> --actor agent:<your-id>
-```
-
-### Actor Attribution
-
-Explains the attribution model. The actor is the mind that made the decision, not the tool that executed it:
-
-| Situation | Actor |
-|-----------|-------|
-| Agent decides autonomously | `agent:<id>` |
-| Human types the command | `human:<id>` |
-| Human shaped the decision, agent executed | `human:<id>` |
-
-### Leave Breadcrumbs
-
-Agents are instructed to leave records for future agents via comments and notes files:
-
-```
-lattice comment <task> "<text>" --actor agent:<id>
-```
-
-## Best practices
-
-### Keep the Lattice block near the top of CLAUDE.md
-
-Instruction position affects agent compliance. The Lattice block should appear early in the file -- ideally as the first or second major section. Instructions at the bottom of long files lose influence as conversational momentum takes over.
-
-### Do not hand-write the block
-
-The canonical template lives in `src/lattice/templates/claude_md_block.py`. This is the single source of truth. Do not copy-paste from another project's CLAUDE.md or write your own version. Use `lattice setup-claude` to keep all projects on the same template.
-
-### Verify after setup
-
-After running `setup-claude`, confirm the block exists:
+Navigate to your project and run:
 
 ```bash
-grep "## Lattice" CLAUDE.md
+cd /path/to/your/project
+lattice init
 ```
 
-If you see `## Lattice` in the output, the integration is in place.
+You'll be asked two things:
 
-### Combine with the `/lattice` skill
+1. **Your identity** — something like `human:alice` or `human:atin`. This is how Lattice knows who made each decision.
+2. **A project code** — a short prefix like `APP` or `API`. This gives your tasks readable IDs: `APP-1`, `APP-2`, `APP-3`.
 
-The CLAUDE.md block teaches agents the core workflow. For deeper CLI knowledge (all commands, flags, error codes, advanced workflows), agents can load the `/lattice` skill, which provides the full command reference. The two are complementary:
+Or skip the prompts:
 
-- **CLAUDE.md block** -- always loaded, covers the essentials (create, status, attribution)
-- **`/lattice` skill** -- loaded on demand, covers every command and flag in detail
+```bash
+lattice init --actor human:alice --project-code APP
+```
+
+This creates a `.lattice/` directory in your project — think of it like `.git/` but for task tracking. It holds your tasks, event logs, plans, and notes as plain files. **Commit it to your repo.** It's lightweight, git-friendly, and it's how context survives between sessions.
+
+---
+
+## Connect Claude Code
+
+This is the step that makes it click:
+
+```bash
+lattice setup-claude
+```
+
+This adds a block to your project's `CLAUDE.md` that teaches every Claude Code session how to use Lattice. Without this block, the agent *can* use Lattice if you ask. With it, the agent uses Lattice *by default* — creating tasks before coding, updating status at transitions, leaving breadcrumbs for the next session.
+
+That's the setup. Three commands: `install`, `init`, `setup-claude`.
+
+---
+
+## Your first advance
+
+Now for the part that makes the lightbulb turn on.
+
+### Step 1: Create some tasks
+
+Open the dashboard so you can see what's happening:
+
+```bash
+lattice dashboard
+# Open http://127.0.0.1:8799 in your browser
+```
+
+Create a few tasks — either from the dashboard UI or the terminal:
+
+```bash
+lattice create "Add user authentication" --actor human:alice --priority high --type epic
+lattice create "Set up OAuth provider config" --actor human:alice --priority high
+lattice create "Build login page" --actor human:alice --priority medium
+lattice create "Add session middleware" --actor human:alice --priority medium
+```
+
+Your dashboard now shows four tasks in the Backlog column. You've defined *what* needs to happen and *in what order* (via priority). That's your job — deciding what matters.
+
+### Step 2: Tell your agent to advance
+
+Open Claude Code in your project and type:
+
+```
+/lattice-advance
+```
+
+That's it. One command. Here's what happens behind the scenes:
+
+1. The agent runs `lattice next --claim` — this finds the highest-priority ready task and atomically assigns it
+2. The agent reads the task details, any plans or notes from previous sessions
+3. The agent does the work — writes code, runs tests, iterates
+4. The agent commits the changes
+5. The agent leaves a comment explaining what it did and why
+6. The agent moves the task to `review` (or `needs_human` if it hit a decision point)
+7. The agent reports back to you with a summary
+
+### Step 3: Come back to a sorted inbox
+
+Refresh your dashboard. The board tells the story:
+
+- **Review column** — work the agent completed, ready for your eyes
+- **Needs Human column** — decisions only you can make, each with a comment explaining what the agent needs ("Need: REST vs GraphQL for the public API")
+- **In Progress column** — work currently underway
+- **Backlog column** — what's still waiting
+
+You review the completed work. You make the decisions the agent couldn't. You drag `needs_human` tasks back to In Progress after leaving your answer as a comment. Then you advance again.
+
+```
+/lattice-advance
+```
+
+The agent picks up the next task. Or resumes the one you just unblocked. The cycle continues.
+
+**This is the loop.** You produce judgment — priorities, decisions, taste. The agent produces throughput — code, tests, commits. Both are necessary. Neither works without the other.
+
+---
+
+## What makes this different from just... asking Claude to code?
+
+Three things:
+
+**Persistence.** Without Lattice, every Claude Code session starts blank. The agent doesn't know what happened yesterday. With Lattice, the task graph, event log, and notes survive across sessions. The agent reads the history and picks up where the last session stopped.
+
+**Coordination.** When the agent hits something above its pay grade — a design decision, missing credentials, ambiguous requirements — it moves the task to `needs_human` and explains what it needs. You see it in your dashboard queue. No Slack. No standup. The decision is in the event log, attributed and permanent.
+
+**Accountability.** Every change is an immutable event. `agent:claude-cli` fixed the auth bug at 2:47pm. `human:alice` approved the schema change at 3:15pm. The record is permanent. When something breaks, you know exactly what happened, who decided it, and why.
+
+---
+
+## The daily rhythm
+
+**Morning.** Open the dashboard. Scan the board. Handle the `needs_human` queue first — those are agents waiting on you. Make the decisions. Drag tasks back to active.
+
+**Working.** Run `/lattice-advance` when you want the agent to make progress. One advance = one task. Want more? "Do 3 advances" or "keep advancing until blocked." Control the pace.
+
+**Review.** Check the Review column. Read agent comments. Approve, reject, or redirect. Create new tasks from what you learned. Priorities shift — let them.
+
+**End of day.** Final scan. Anything you can close? Any patterns worth noting? Update priorities for tomorrow's advances.
+
+---
+
+## Advanced: multiple advances
+
+You don't have to advance one at a time:
+
+```
+# In Claude Code:
+"Advance the project 3 times"
+"Keep advancing until you're blocked"
+"Advance all high-priority tasks"
+```
+
+The agent works through the backlog in priority order, transitioning each task before moving to the next.
+
+## Advanced: the `/lattice` skill
+
+The CLAUDE.md block covers the essentials — creating tasks, updating status, attribution. For the full CLI reference (every command, every flag), agents can load the `/lattice` skill on demand:
+
+```
+/lattice
+```
+
+The two are complementary:
+- **CLAUDE.md block** — always loaded, teaches the workflow
+- **`/lattice` skill** — loaded on demand, full command reference
+
+---
+
+## Keeping the integration current
+
+The CLAUDE.md block comes from a template that improves over time. Update your project's block to the latest version:
+
+```bash
+lattice setup-claude --force
+```
+
+The `--force` flag replaces the existing block with the latest template. Without it, the command exits if it detects an existing block (to avoid accidental overwrites).
+
+---
 
 ## Troubleshooting
 
-### Agent ignores Lattice and starts coding immediately
+**Agent ignores Lattice and starts coding immediately.**
+The CLAUDE.md block is missing or positioned too low in the file. Run `lattice setup-claude --force`, then move the `## Lattice` section higher in CLAUDE.md. Instruction position affects compliance — put it in the first or second section.
 
-The CLAUDE.md block is missing or positioned too far down the file. Run:
+**Agent uses wrong status names** (like `in_implementation` or `in_review`).
+These are from old documentation. The real statuses are: `backlog`, `in_planning`, `planned`, `in_progress`, `review`, `done`, `blocked`, `needs_human`, `cancelled`. Update the block with `lattice setup-claude --force`.
 
-```bash
-lattice setup-claude --path . --force
-```
+**`lattice next` returns nothing but there are tasks in the backlog.**
+The tasks may be assigned to a different actor, or all remaining tasks are in terminal/waiting states. Run `lattice list` to see the full picture.
 
-Then move the `## Lattice` section higher in CLAUDE.md if other sections precede it.
+---
 
-### "Already has Lattice integration" but the block is outdated
+## Quick reference
 
-The command detects the block by looking for the `## Lattice` marker. Use `--force` to replace it:
+| Action | Command |
+|--------|---------|
+| Install | `pip install lattice-tracker` |
+| Initialize | `lattice init --actor human:you --project-code APP` |
+| Connect Claude Code | `lattice setup-claude` |
+| Update integration | `lattice setup-claude --force` |
+| Open dashboard | `lattice dashboard` |
+| Create task | `lattice create "Title" --actor human:you` |
+| Advance (in Claude Code) | `/lattice-advance` |
+| Check inbox | `lattice list --status review` / `lattice list --status needs_human` |
+| Daily digest | `lattice weather` |
 
-```bash
-lattice setup-claude --path . --force
-```
+---
 
-### Agent uses wrong status names
+## Next steps
 
-Historical documentation used statuses like `in_implementation` and `in_review`. The real statuses are: `backlog`, `in_planning`, `planned`, `in_progress`, `review`, `done`, `blocked`, `cancelled`. If an agent uses wrong names, update the CLAUDE.md block with `--force` to get the latest template.
+- [User Guide](user-guide.md) — the full picture: dashboard, daily rhythm, philosophy
+- [OpenClaw Integration](integration-openclaw.md) — using Lattice with OpenClaw agents
+- [MCP Server](integration-mcp.md) — structured tool calls for any MCP-compatible client
+- [needs_human and advance guide](needs-human-and-next-guide.md) — deep dive on coordination primitives

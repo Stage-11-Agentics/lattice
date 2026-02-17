@@ -1,62 +1,96 @@
-# Lattice + OpenClaw Integration Guide
+# Lattice + OpenClaw
 
-Two ways to use Lattice with OpenClaw: the **Agent Skill** (CLI-based) and the **MCP server** (structured tool calls). Both paths give your OpenClaw agent full task tracking capabilities.
+Your OpenClaw agent is powerful. It can write code, run commands, search the web, coordinate with other agents. But ask it tomorrow what it did today and it won't remember. Ask it what's left to do on your project and it'll guess. Ask three agents to work on the same codebase and they'll step on each other.
 
-## Option 1: OpenClaw Skill (Recommended)
+Lattice fixes this. It gives your OpenClaw agent a shared memory — a task graph that persists across sessions, tracks who did what, and lets agents coordinate without colliding. After setup:
 
-The Lattice skill teaches your OpenClaw agent to use the `lattice` CLI directly. This is the most natural integration — OpenClaw's skill system was designed for exactly this pattern.
+- **Your agent tracks its own work** — creates tasks before coding, updates status at transitions, leaves notes for the next session
+- **You see a sorted inbox** — a local dashboard showing work in review, decisions waiting on you, and blockers identified
+- **Agents pick up where the last one left off** — task context, plans, and notes survive across sessions
+- **Multiple agents coordinate safely** — file-level locking prevents corruption; event logs prevent confusion
 
-### Install with the CLI
+The setup takes three minutes. The payoff starts on your first advance.
+
+---
+
+## Install Lattice
 
 ```bash
-# Project-level (this project only)
+pip install lattice-tracker
+```
+
+Or with modern Python tooling:
+
+```bash
+pipx install lattice-tracker    # isolated install
+uv tool install lattice-tracker # if you use uv
+```
+
+Verify it works:
+
+```bash
+lattice --help
+```
+
+---
+
+## Initialize your first project
+
+Navigate to your project and run:
+
+```bash
+cd /path/to/your/project
+lattice init
+```
+
+You'll be asked two things:
+
+1. **Your identity** — something like `human:alice` or `human:atin`. This is how Lattice knows who made each decision.
+2. **A project code** — a short prefix like `APP` or `API`. This gives your tasks readable IDs: `APP-1`, `APP-2`, `APP-3`.
+
+Or skip the prompts:
+
+```bash
+lattice init --actor human:alice --project-code APP
+```
+
+This creates a `.lattice/` directory in your project — think of it like `.git/` but for task tracking. Plain JSON and JSONL files. No database, no server, no account. **Commit it to your repo.** It's how context survives between sessions.
+
+---
+
+## Connect OpenClaw
+
+You have two options. Pick the one that fits your setup.
+
+### Option A: Install the Lattice skill (recommended)
+
+```bash
 lattice setup-openclaw
-
-# User-level (all projects)
-lattice setup-openclaw --global
-
-# Update an existing install
-lattice setup-openclaw --force
 ```
 
-This copies the skill files (SKILL.md, references, scripts) into the right location.
+This copies the Lattice skill into your project's `skills/` directory. When your OpenClaw agent encounters task-related work, the skill injects Lattice CLI knowledge into the agent's context. The agent then uses `lattice` commands naturally, like any other tool.
 
-### Prerequisites
-
-The skill requires the `lattice` CLI binary. Install it:
+For a global install (available to all your projects):
 
 ```bash
-pip install lattice-tracker    # or
-pipx install lattice-tracker   # isolated install, or
-uv tool install lattice-tracker  # modern Python tooling
+lattice setup-openclaw --global
 ```
 
-### What happens
+### Option B: Use the MCP server
 
-When your OpenClaw agent encounters task-related conversations (tracking work, managing tasks, coordinating agents), the skill injects Lattice CLI instructions into the agent's context. The agent then uses `lattice` commands like any other CLI tool.
-
-## Option 2: MCP Server
-
-Lattice includes a built-in MCP server that exposes all operations as structured tools. This gives agents typed inputs/outputs instead of parsing CLI text.
-
-### Configure MCP
-
-Add to your OpenClaw MCP configuration:
+If you prefer structured tool calls over CLI, add Lattice as an MCP server in your OpenClaw config:
 
 ```json
 {
   "servers": {
     "lattice": {
-      "command": "lattice-mcp",
-      "args": []
+      "command": "lattice-mcp"
     }
   }
 }
 ```
 
-### Zero-install MCP (via uvx)
-
-If you don't want to install Lattice globally, use `uvx` to run it on demand:
+Or zero-install via `uvx` (no `pip install` needed — just `uv`):
 
 ```json
 {
@@ -69,83 +103,175 @@ If you don't want to install Lattice globally, use `uvx` to run it on demand:
 }
 ```
 
-This downloads and runs Lattice in a temporary environment. No `pip install` needed — just `uv`.
+The MCP server exposes all Lattice operations as typed tools: `lattice_create`, `lattice_status`, `lattice_list`, `lattice_next`, and more. Your agent gets structured JSON inputs and outputs instead of parsing CLI text.
 
-### Available MCP Tools
+**Use the skill** if you want the most natural OpenClaw experience. **Use MCP** if you use multiple AI tools and want one config for all of them. **Use both** — they don't conflict.
 
-The MCP server exposes these tools:
+---
 
-| Tool | Description |
-|------|-------------|
-| `lattice_create` | Create a new task |
-| `lattice_update` | Update task fields (title, description, priority, type) |
-| `lattice_status` | Change task status |
-| `lattice_assign` | Assign a task to an actor |
-| `lattice_comment` | Add a comment to a task |
-| `lattice_link` | Create a relationship between tasks |
-| `lattice_unlink` | Remove a relationship |
-| `lattice_attach` | Attach a file or URL to a task |
-| `lattice_archive` | Archive a completed task |
-| `lattice_unarchive` | Restore an archived task |
-| `lattice_event` | Record a custom event |
-| `lattice_list` | List tasks with filters |
-| `lattice_show` | Show detailed task information |
-| `lattice_config` | Read project configuration |
-| `lattice_doctor` | Check project data integrity |
+## Your first advance
 
-All tools accept an optional `lattice_root` parameter to specify the project directory. If omitted, Lattice finds `.lattice/` by walking up from the current directory.
+This is where the lightbulb turns on.
 
-## Which to Choose?
+### Step 1: Create some tasks
 
-| Consideration | Skill | MCP |
-|---------------|-------|-----|
-| Setup complexity | Lower (copy directory) | Lower (paste JSON config) |
-| Output format | Text (parsed by agent) | Structured JSON (native) |
-| Works offline | Yes | Yes |
-| Multi-client | OpenClaw only | Any MCP client |
-| Dependency | `lattice` binary | `lattice-mcp` binary (or `uvx`) |
-
-**Use the skill** if you primarily use OpenClaw and want the most natural integration.
-**Use MCP** if you use multiple AI tools (Claude Code, Cursor, etc.) and want one config for all of them.
-**Use both** for maximum flexibility — they don't conflict.
-
-## Quick Start
-
-After installing via either method:
+Open the dashboard to watch what's happening:
 
 ```bash
-# Initialize Lattice in your project
-lattice init --project-code MYAPP
-
-# Your OpenClaw agent can now:
-# - Create tasks: "Create a task to fix the auth bug"
-# - Track status: "What tasks are in progress?"
-# - Update work: "Mark MYAPP-3 as done"
-# - Coordinate: "What should I work on next?"
+lattice dashboard
+# Open http://127.0.0.1:8799 in your browser
 ```
 
-## Actor ID Convention
+Create a few tasks — from the dashboard UI or the terminal:
 
-Configure your OpenClaw agent to use `agent:openclaw` as its actor ID:
+```bash
+lattice create "Add user authentication" --actor human:alice --priority high --type epic
+lattice create "Set up OAuth provider config" --actor human:alice --priority high
+lattice create "Build login page" --actor human:alice --priority medium
+lattice create "Add session middleware" --actor human:alice --priority medium
+```
+
+Your dashboard now shows four tasks in the Backlog column. You've defined *what* needs to happen and *in what order*. That's your job — deciding what matters.
+
+### Step 2: Tell your agent to advance
+
+In your OpenClaw conversation:
+
+> "Advance the project. Claim the next highest-priority task, do the work, and report back."
+
+Or more concisely: "Use `lattice next --actor agent:openclaw --claim` to pick a task, then work it."
+
+Here's what happens:
+
+1. The agent runs `lattice next --actor agent:openclaw --claim` — finds the highest-priority ready task and assigns it
+2. The agent reads the task details and any notes from previous sessions
+3. The agent does the work — writes code, runs tests, iterates
+4. The agent leaves a comment: `lattice comment APP-2 "Set up OAuth with Google provider. Config in .env.example." --actor agent:openclaw`
+5. The agent moves the task: `lattice status APP-2 review --actor agent:openclaw`
+6. The agent reports what it did
+
+### Step 3: Come back to a sorted inbox
+
+Refresh your dashboard. The board tells the story:
+
+- **Review column** — work the agent completed, ready for your eyes
+- **Needs Human column** — decisions only you can make, each with a comment ("Need: which OAuth providers to support?")
+- **In Progress column** — work currently underway
+- **Backlog column** — what's still waiting
+
+You review. You decide. You drag `needs_human` tasks back to In Progress after commenting with your answer. Then you advance again.
+
+**This is the loop.** You produce judgment — priorities, decisions, direction. The agent produces throughput — code, tests, commits. Both are necessary. Neither works alone.
+
+---
+
+## What makes this different from just... using OpenClaw?
+
+Three things:
+
+**Persistence.** Without Lattice, every OpenClaw session starts from scratch. The agent doesn't know what happened in the last conversation. With Lattice, the task graph, event log, and notes survive across sessions. The agent reads `.lattice/` and knows exactly where things stand.
+
+**Coordination.** When the agent hits something it can't decide — a design choice, missing credentials, ambiguous requirements — it moves the task to `needs_human` and says what it needs. You see it in your dashboard. No back-and-forth. The decision lands in the event log, attributed and permanent.
+
+**Multi-agent safety.** Run two OpenClaw agents on the same project? Without Lattice, they'll edit the same files and create chaos. With Lattice, each agent claims tasks atomically, works independently, and the file-level locks prevent corruption. The event log shows exactly who did what.
+
+---
+
+## The daily rhythm
+
+**Morning.** Open the dashboard. Handle the `needs_human` queue — those are agents waiting on you. Make the decisions. Move tasks back to active.
+
+**Working.** Tell your OpenClaw agent to advance when you want progress. One advance = one task. Want more? "Advance 3 tasks" or "keep going until blocked."
+
+**Review.** Check the Review column. Read agent comments. Approve, reject, or redirect. Create new tasks from what you learned.
+
+**End of day.** Final scan. Close what you can. Update priorities for tomorrow.
+
+---
+
+## Actor IDs
+
+Your OpenClaw agent should use `agent:openclaw` as its actor ID:
 
 ```bash
 lattice create "My task" --actor agent:openclaw
+lattice status APP-1 in_progress --actor agent:openclaw
 ```
 
-For multi-agent setups, use unique IDs per agent instance:
+For multi-agent setups, give each agent a unique ID:
 
 ```bash
-# Main agent
---actor agent:openclaw
-
-# Sub-agents
+--actor agent:openclaw-planner
 --actor agent:openclaw-worker-1
 --actor agent:openclaw-worker-2
 ```
 
-## Further Reading
+---
 
-- [Getting Started Guide](getting-started.md) — Full Lattice setup walkthrough
-- [User Guide](user-guide.md) — Complete command reference
-- [MCP Integration](integration-mcp.md) — Detailed MCP configuration for all clients
-- [Multi-Agent Guide](../skills/lattice/references/multi-agent-guide.md) — Coordinating multiple agents
+## The advance pattern for OpenClaw
+
+Since OpenClaw doesn't have a built-in `/lattice-advance` command like Claude Code, here's the pattern your agent follows:
+
+```bash
+# 1. Claim the next task
+lattice next --actor agent:openclaw --claim --json
+
+# 2. Read the task
+lattice show APP-3
+
+# 3. Check for context from previous sessions
+cat .lattice/plans/<task_id>.md
+cat .lattice/notes/<task_id>.md
+
+# 4. Do the work...
+
+# 5. Leave breadcrumbs
+lattice comment APP-3 "What I did. What I decided. What's left." --actor agent:openclaw
+
+# 6. Transition
+lattice status APP-3 review --actor agent:openclaw
+```
+
+The Lattice skill teaches your agent this protocol. You don't need to spell it out every time — just say "advance the project" and the skill handles the rest.
+
+---
+
+## Troubleshooting
+
+**Agent doesn't know about Lattice.**
+The skill isn't loaded. Run `lattice setup-openclaw` (or `--global` for all projects). Verify the skill exists: `ls skills/lattice/SKILL.md` or `ls ~/.openclaw/skills/lattice/SKILL.md`.
+
+**`lattice` command not found.**
+The CLI isn't installed or isn't on PATH. Run `pip install lattice-tracker` and verify with `lattice --help`. If using `pipx` or `uv tool`, ensure the tool bin directory is on your PATH.
+
+**Agent creates tasks but doesn't update status.**
+The skill teaches status updates, but agent compliance varies. Reinforce with an explicit instruction: "Always update Lattice status before starting work and after completing it."
+
+**`lattice next` returns nothing but there are tasks in the backlog.**
+Tasks may be assigned to a different actor, or all remaining tasks are in terminal/waiting states. Run `lattice list` to see the full picture.
+
+---
+
+## Quick reference
+
+| Action | Command |
+|--------|---------|
+| Install | `pip install lattice-tracker` |
+| Initialize | `lattice init --actor human:you --project-code APP` |
+| Install OpenClaw skill | `lattice setup-openclaw` |
+| Update skill | `lattice setup-openclaw --force` |
+| Open dashboard | `lattice dashboard` |
+| Create task | `lattice create "Title" --actor human:you` |
+| Agent claims next task | `lattice next --actor agent:openclaw --claim` |
+| Check inbox | `lattice list --status review` / `lattice list --status needs_human` |
+| Daily digest | `lattice weather` |
+
+---
+
+## Next steps
+
+- [User Guide](user-guide.md) — the full picture: dashboard, daily rhythm, philosophy
+- [Claude Code Integration](integration-claude-code.md) — using Lattice with Claude Code
+- [MCP Server](integration-mcp.md) — detailed MCP configuration for all clients
+- [needs_human and advance guide](needs-human-and-next-guide.md) — deep dive on coordination primitives
+- [Multi-Agent Guide](../src/lattice/skills/lattice/references/multi-agent-guide.md) — coordinating multiple OpenClaw agents
