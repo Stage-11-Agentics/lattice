@@ -545,6 +545,7 @@ from lattice.cli import dashboard_cmd as _dashboard_cmd  # noqa: E402, F401
 from lattice.cli import stats_cmds as _stats_cmds  # noqa: E402, F401
 from lattice.cli import weather_cmds as _weather_cmds  # noqa: E402, F401
 from lattice.cli import resource_cmds as _resource_cmds  # noqa: E402, F401
+from lattice.cli import demo_cmd as _demo_cmd  # noqa: E402, F401
 
 # ---------------------------------------------------------------------------
 # Load CLI plugins (must be after all built-in commands are registered)
