@@ -287,10 +287,21 @@ td {
   max-width: 580px;
 }
 
-.hero .guide-cta {
+.hero .hero-ctas {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.8rem;
+  margin-top: 0.5rem;
+}
+
+.hero .hero-btn .btn-icon {
+  margin-right: 0.3em;
+}
+
+.hero .hero-btn {
   display: inline-block;
   font-family: var(--font-mono);
-  font-size: 0.85rem;
+  font-size: 0.82rem;
   color: var(--bg);
   background: var(--accent);
   padding: 0.6rem 1.6rem;
@@ -299,10 +310,9 @@ td {
   border-bottom: none;
   letter-spacing: 0.04em;
   transition: background 0.2s, transform 0.15s;
-  margin-top: 0.5rem;
 }
 
-.hero .guide-cta:hover {
+.hero .hero-btn:hover {
   background: var(--text-bright);
   transform: translateY(-1px);
   border-bottom: none;
