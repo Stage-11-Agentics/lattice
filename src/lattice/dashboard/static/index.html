@@ -5841,11 +5841,11 @@ function renderBoard() {
     });
   });
 
-  // Epic card click handlers for highlight
+  // Epic card click handlers — open detail panel
   app.querySelectorAll(".epic-card").forEach(function(epicCard) {
     epicCard.addEventListener("click", function(e) {
       e.stopPropagation();
-      toggleEpicSelection(epicCard.dataset.epicId, epicChildMap);
+      openDetailPanel(epicCard.dataset.epicId);
     });
   });
 
