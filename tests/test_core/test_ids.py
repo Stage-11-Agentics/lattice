@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from lattice.core.ids import (
+    extract_short_ids,
     generate_artifact_id,
     generate_event_id,
     generate_task_id,
@@ -186,3 +187,72 @@ class TestValidateActorBadFormat:
 
     def test_none_input(self) -> None:
         assert validate_actor(None) is False  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# extract_short_ids
+# ---------------------------------------------------------------------------
+
+
+class TestExtractShortIdsFromBranches:
+    """extract_short_ids() finds task short codes in branch names."""
+
+    def test_standard_feat_branch(self) -> None:
+        assert extract_short_ids("feat/LAT-42-login-page") == ["LAT-42"]
+
+    def test_fix_branch(self) -> None:
+        assert extract_short_ids("fix/LAT-7-auth-redirect") == ["LAT-7"]
+
+    def test_feature_branch(self) -> None:
+        assert extract_short_ids("feature/LAT-106-fizzbuzz") == ["LAT-106"]
+
+    def test_bare_short_id(self) -> None:
+        assert extract_short_ids("LAT-42") == ["LAT-42"]
+
+    def test_short_id_with_slashes(self) -> None:
+        assert extract_short_ids("fix/PROJ-7/hotfix") == ["PROJ-7"]
+
+    def test_case_insensitive(self) -> None:
+        assert extract_short_ids("feat/lat-42-stuff") == ["LAT-42"]
+
+    def test_no_match(self) -> None:
+        assert extract_short_ids("main") == []
+        assert extract_short_ids("develop") == []
+        assert extract_short_ids("feat/login-page") == []
+
+    def test_multiple_short_ids(self) -> None:
+        result = extract_short_ids("feat/LAT-42/LAT-43")
+        assert result == ["LAT-42", "LAT-43"]
+
+    def test_multiple_short_ids_underscore_sep(self) -> None:
+        result = extract_short_ids("merge_LAT-42_LAT-43")
+        assert result == ["LAT-42", "LAT-43"]
+
+    def test_deduplication(self) -> None:
+        result = extract_short_ids("LAT-42/merge/LAT-42")
+        assert result == ["LAT-42"]
+
+    def test_no_false_positive_on_substring(self) -> None:
+        """LAT-4 should NOT match inside LAT-42."""
+        ids = extract_short_ids("feat/LAT-42-login")
+        assert "LAT-4" not in ids
+        assert ids == ["LAT-42"]
+
+    def test_multi_segment_project_code(self) -> None:
+        """Two-part project codes like MY-APP-42."""
+        assert extract_short_ids("feat/MY-APP-42-stuff") == ["MY-APP-42"]
+
+    def test_empty_string(self) -> None:
+        assert extract_short_ids("") == []
+
+    def test_adjacent_to_slash(self) -> None:
+        """Short ID preceded by slash is still detected."""
+        assert extract_short_ids("refs/heads/LAT-42") == ["LAT-42"]
+
+    def test_adjacent_to_hyphen(self) -> None:
+        """Short ID followed by hyphen-text is still detected."""
+        assert extract_short_ids("LAT-42-description") == ["LAT-42"]
+
+    def test_no_match_embedded_in_word(self) -> None:
+        """Should not match when surrounded by alpha characters."""
+        assert extract_short_ids("prefixLAT-42suffix") == []

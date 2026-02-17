@@ -590,3 +590,19 @@ Additional review findings that shaped this decision:
 **What was kept:** `storage/hooks.py` (general-purpose hook execution), `hooks.transitions` config structure, all other event types.
 
 **Consequence:** No `lattice worker` command. No process events. No trigger UI. Hooks are the only built-in automation primitive. All higher-level automation lives in external agents.
+
+---
+
+## 2026-02-17: Branch auto-detection by short code (LAT-115)
+
+**Decision:** Implement auto-detection of branch-task links when a git branch name contains a task's short code (e.g., `feat/LAT-42-login` auto-links to LAT-42). Display these as `(auto-detected)` in `lattice show` alongside explicit branch links.
+
+**Context:** The `branch-link`/`branch-unlink` commands existed but no agents used them because the CLAUDE.md workflow instructions didn't mention them. Two gaps: (A) no guidance telling agents to run `lattice branch-link` when creating feature branches, and (B) no automatic detection for the common convention of embedding short codes in branch names.
+
+**Matching rules:** Short code extraction uses regex with non-alpha boundaries (`(?<![A-Za-z])LAT-42(?![A-Za-z])`) to prevent `LAT-4` from matching inside `LAT-42`. Case-insensitive. Strips common prefixes like `feat/`, `fix/` by nature of the boundary matching. Implemented in `core/ids.extract_short_ids()` (shared by CLI and dashboard JS).
+
+**Display:** Auto-detected branches appear in `lattice show` with `(auto-detected)` suffix. Once a branch is explicitly linked via `branch-link`, it no longer appears as auto-detected (deduplication). JSON output includes an `auto_detected_branches` array.
+
+**Scope:** Auto-detection scans all local git branches on `lattice show` only (not `list`, which would be too expensive). The dashboard already had its own JS-side auto-detection which was updated to use consistent boundary matching.
+
+**Consequence:** CLAUDE.md template and project CLAUDE.md updated with "Branch Linking" section. Agents now have explicit guidance to run `branch-link` when creating feature branches.

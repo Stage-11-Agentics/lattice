@@ -28,7 +28,7 @@ from lattice.core.events import (
     create_event,
     validate_custom_event_type,
 )
-from lattice.core.ids import validate_actor, validate_id
+from lattice.core.ids import extract_short_ids, validate_actor, validate_id
 from lattice.core.next import compute_claim_transitions, select_next
 from lattice.core.stats import load_all_snapshots
 from lattice.core.tasks import apply_event_to_snapshot, compact_snapshot
@@ -648,6 +648,12 @@ def show_cmd(
     # Read artifact metadata (best effort)
     artifact_info = _read_artifact_info(lattice_dir, snapshot)
 
+    # Auto-detect branch links from git branches matching the task's short code
+    short_id = snapshot.get("short_id")
+    explicit_branches = [bl["branch"] for bl in snapshot.get("branch_links", [])]
+    all_branches = _get_all_git_branches(lattice_dir)
+    auto_branches = _auto_detect_branch_links(short_id, explicit_branches, all_branches)
+
     if is_json:
         data: dict = dict(snapshot)
         data["events"] = events
@@ -661,6 +667,8 @@ def show_cmd(
         data["relationships_enriched"] = relationships_out
         data["relationships_in"] = relationships_in
         data["artifact_info"] = artifact_info
+        if auto_branches:
+            data["auto_detected_branches"] = auto_branches
         if full:
             data["_full"] = True
         click.echo(json_envelope(True, data=data))
@@ -677,12 +685,91 @@ def show_cmd(
             is_archived,
             full,
             valid_transitions,
+            auto_branches,
         )
 
 
 # ---------------------------------------------------------------------------
 # Show helpers
 # ---------------------------------------------------------------------------
+
+
+def _get_current_git_branch(lattice_dir: Path) -> str | None:
+    """Return the current git branch name, or None if unavailable.
+
+    Uses ``git rev-parse --abbrev-ref HEAD`` from the repo root
+    (parent of ``.lattice/``).  Silently returns None on any error.
+    """
+    import shutil
+    import subprocess
+
+    if not shutil.which("git"):
+        return None
+    repo_root = lattice_dir.parent
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            name = result.stdout.strip()
+            if name and name != "HEAD":
+                return name
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+    return None
+
+
+def _get_all_git_branches(lattice_dir: Path) -> list[str]:
+    """Return all local git branch names, or empty list if unavailable."""
+    import shutil
+    import subprocess
+
+    if not shutil.which("git"):
+        return []
+    repo_root = lattice_dir.parent
+    try:
+        result = subprocess.run(
+            ["git", "for-each-ref", "--format=%(refname:short)", "refs/heads/"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return [b.strip() for b in result.stdout.strip().splitlines() if b.strip()]
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+    return []
+
+
+def _auto_detect_branch_links(
+    short_id: str | None,
+    explicit_branches: list[str],
+    git_branches: list[str],
+) -> list[str]:
+    """Find git branches that contain the task's short code but aren't explicitly linked.
+
+    Matching is case-insensitive.  Returns branch names that auto-match.
+    """
+    if not short_id or not git_branches:
+        return []
+
+    explicit_set = {b.lower() for b in explicit_branches}
+    matches: list[str] = []
+    upper_short = short_id.upper()
+
+    for branch in git_branches:
+        if branch.lower() in explicit_set:
+            continue
+        found_ids = extract_short_ids(branch)
+        if upper_short in found_ids:
+            matches.append(branch)
+
+    return matches
 
 
 def _read_events(lattice_dir: Path, task_id: str, is_archived: bool) -> list[dict]:
@@ -805,6 +892,7 @@ def _print_human_show(
     is_archived: bool,
     full: bool,
     valid_transitions: list[str] | None = None,
+    auto_detected_branches: list[str] | None = None,
 ) -> None:
     """Print full human-readable show output."""
     short_id = snapshot.get("short_id")
@@ -880,7 +968,8 @@ def _print_human_show(
                 click.echo(f"  {art_id}{suffix}")
 
     branch_links = snapshot.get("branch_links", [])
-    if branch_links:
+    has_branch_section = branch_links or auto_detected_branches
+    if has_branch_section:
         click.echo("")
         click.echo("Branch links:")
         for bl in branch_links:
@@ -891,6 +980,9 @@ def _print_human_show(
                 click.echo(f"  {branch_name} (repo: {repo_name}) by {linked_by}")
             else:
                 click.echo(f"  {branch_name} by {linked_by}")
+        if auto_detected_branches:
+            for branch in auto_detected_branches:
+                click.echo(f"  {branch} (auto-detected)")
 
     if has_plan:
         click.echo("")

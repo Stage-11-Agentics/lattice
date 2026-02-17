@@ -13,6 +13,13 @@ _VALID_ACTOR_PREFIXES = frozenset({"agent", "human", "team", "dashboard"})
 
 SHORT_ID_RE = re.compile(r"^[A-Z]{1,5}(?:-[A-Z]{1,5})?-\d+$")
 
+# Pattern for extracting short IDs embedded in arbitrary strings (e.g., branch names).
+# Uses word boundaries to avoid partial matches.  Case-insensitive.
+_EMBEDDED_SHORT_ID_RE = re.compile(
+    r"(?<![A-Za-z])([A-Z]{1,5}(?:-[A-Z]{1,5})?-\d+)(?![A-Za-z])",
+    re.IGNORECASE,
+)
+
 
 def validate_short_id(s: str) -> bool:
     """Return ``True`` if *s* matches the short ID pattern (e.g., ``LAT-42``)."""
@@ -31,6 +38,30 @@ def parse_short_id(s: str) -> tuple[str, int]:
 def is_short_id(s: str) -> bool:
     """Quick check: could *s* be a short ID? Case-insensitive."""
     return bool(SHORT_ID_RE.match(s.upper()))
+
+
+def extract_short_ids(text: str) -> list[str]:
+    """Extract all short IDs embedded in *text* (e.g., a branch name).
+
+    Returns uppercased short IDs in the order they appear, deduplicated.
+
+    Examples::
+
+        >>> extract_short_ids("feat/LAT-42-login-page")
+        ['LAT-42']
+        >>> extract_short_ids("fix/PROJ-7/hotfix")
+        ['PROJ-7']
+        >>> extract_short_ids("main")
+        []
+    """
+    seen: set[str] = set()
+    result: list[str] = []
+    for match in _EMBEDDED_SHORT_ID_RE.finditer(text):
+        sid = match.group(1).upper()
+        if sid not in seen:
+            seen.add(sid)
+            result.append(sid)
+    return result
 
 
 def generate_instance_id() -> str:

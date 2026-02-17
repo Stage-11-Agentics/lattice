@@ -75,6 +75,18 @@ When in doubt, give the human credit. If the human was substantively involved in
 
 Users may have their own preferences about attribution. If a user seems frustrated or particular about actor assignments, ask them directly: "How do you want attribution to work? Should I default to crediting you, myself, or ask each time?" Respect whatever norm they set.
 
+### Branch Linking
+
+When you create a feature branch for a task, link it in Lattice so the association is tracked:
+
+```
+lattice branch-link <task> <branch-name> --actor agent:<your-id>
+```
+
+This creates an immutable event tying the branch to the task. `lattice show` will display it, and any mind reading the task knows which branch carries the work.
+
+If the branch name contains the task's short code (e.g., `feat/LAT-42-login`), Lattice auto-detects the link — but explicit linking is always authoritative and preferred for cross-repo or non-standard branch names.
+
 ### Leave Breadcrumbs
 
 You are not the last mind that will touch this work. Use `lattice comment` to record what you tried, what you chose, what you left undone. Use `.lattice/plans/<task_id>.md` for the structured plan (scope, steps, acceptance criteria) and `.lattice/notes/<task_id>.md` for working notes, debug logs, and context dumps. The agent that picks up where you left off has no hallway to find you in, no Slack channel to ask. The record you leave is the only bridge between your context and theirs.
@@ -86,6 +98,7 @@ lattice create "<title>" --actor agent:<id>
 lattice status <task> <status> --actor agent:<id>
 lattice assign <task> <actor> --actor agent:<id>
 lattice comment <task> "<text>" --actor agent:<id>
+lattice branch-link <task> <branch> --actor agent:<id>
 lattice next [--actor agent:<id>] [--claim]
 lattice show <task>
 lattice list
