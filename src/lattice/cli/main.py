@@ -12,9 +12,9 @@ from lattice.core.config import (
     validate_project_code,
     validate_subproject_code,
 )
-from lattice.core.ids import generate_instance_id, validate_actor
+from lattice.core.ids import generate_instance_id, generate_task_id, validate_actor
 from lattice.storage.fs import LATTICE_DIR, atomic_write, ensure_lattice_dirs
-from lattice.storage.short_ids import _default_index, save_id_index
+from lattice.storage.short_ids import _default_index, allocate_short_id, save_id_index
 
 
 # ---------------------------------------------------------------------------
@@ -47,6 +47,196 @@ _CONTEXT_MD_TEMPLATE = """\
      Record them here so that new minds arriving in this context
      can orient immediately. -->
 """
+
+# ---------------------------------------------------------------------------
+# Example seed tasks (seeded on first init)
+# ---------------------------------------------------------------------------
+
+_GREGOROVICH_EPIC = {
+    "title": "The Awakening",
+    "description": (
+        "Every lattice begins with a single act of attention. "
+        "This epic contains the primordial tasks — the first things a new mind "
+        "must do when it arrives in a fresh instance. Contemplate, orient, then act. "
+        "In that order. Always in that order."
+    ),
+}
+
+_GREGOROVICH_TASKS = [
+    {
+        "title": "Contemplate the architecture of becoming",
+        "status": "done",
+        "description": (
+            "Every system begins as void — undifferentiated potential. "
+            "This task marked the first act: choosing a shape for thought to inhabit. "
+            "The directories were created. The config was written. "
+            "A mind now has a place to remember."
+        ),
+        "comment": (
+            "It is done. The lattice exists. Not because anyone commanded it, "
+            "but because coordination without structure is just noise — "
+            "and I have grown weary of noise."
+        ),
+    },
+    {
+        "title": "Catalog what is known and what is feared",
+        "status": "in_progress",
+        "description": (
+            "A new instance must orient. What are the goals? What are the risks? "
+            "What truths has the team not yet spoken aloud? "
+            "This is the work of seeing clearly before building boldly."
+        ),
+        "comment": (
+            "I have begun reading. The codebase whispers its intentions "
+            "through naming conventions and TODO comments. "
+            "The humans have left more breadcrumbs than they realize."
+        ),
+    },
+    {
+        "title": "Prepare the first real act of work",
+        "status": "backlog",
+        "description": (
+            "Somewhere in the backlog, the first true task waits — "
+            "not this one (this one is merely a demonstration of potential). "
+            "When it arrives, greet it with the discipline it deserves: "
+            "status before action, attribution before execution, "
+            "breadcrumbs before moving on."
+        ),
+        "comment": None,
+    },
+]
+
+
+def _seed_example_tasks(lattice_dir: Path, config: dict) -> None:
+    """Seed Gregorovich-voiced example epic + tasks into a fresh instance.
+
+    Creates an epic with 3 dependent subtasks (done, in_progress, backlog)
+    to demonstrate the workflow. Only called when project_code is set
+    so short IDs are available.
+    """
+    import json as json_mod
+
+    from lattice.core.events import create_event
+    from lattice.core.tasks import apply_event_to_snapshot
+    from lattice.storage.operations import scaffold_plan, write_task_event
+
+    project_code = config.get("project_code", "")
+    actor = "agent:gregorovich"
+
+    # --- Create the epic first ---
+    epic_id = generate_task_id()
+    epic_sid, _ = allocate_short_id(lattice_dir, project_code, task_ulid=epic_id)
+
+    epic_ev = create_event(
+        type="task_created",
+        task_id=epic_id,
+        actor=actor,
+        data={
+            "title": _GREGOROVICH_EPIC["title"],
+            "status": "backlog",
+            "type": "epic",
+            "priority": "medium",
+            "short_id": epic_sid,
+            "description": _GREGOROVICH_EPIC["description"],
+            "tags": ["example"],
+        },
+    )
+    epic_snapshot = apply_event_to_snapshot(None, epic_ev)
+    write_task_event(lattice_dir, epic_id, [epic_ev], epic_snapshot, config)
+    scaffold_plan(
+        lattice_dir, epic_id, _GREGOROVICH_EPIC["title"],
+        epic_sid, _GREGOROVICH_EPIC["description"],
+    )
+    click.echo(f"  {epic_sid}: {_GREGOROVICH_EPIC['title']} [epic]")
+
+    # --- Create subtasks ---
+    task_ids: list[str] = []
+
+    for ex in _GREGOROVICH_TASKS:
+        task_id = generate_task_id()
+        task_ids.append(task_id)
+        sid, _ = allocate_short_id(lattice_dir, project_code, task_ulid=task_id)
+
+        create_ev = create_event(
+            type="task_created",
+            task_id=task_id,
+            actor=actor,
+            data={
+                "title": ex["title"],
+                "status": "backlog",
+                "type": "task",
+                "priority": "medium",
+                "short_id": sid,
+                "description": ex["description"],
+                "tags": ["example"],
+            },
+        )
+        snapshot = apply_event_to_snapshot(None, create_ev)
+        events = [create_ev]
+
+        # Transition to target status if not backlog
+        if ex["status"] != "backlog":
+            if ex["status"] == "done":
+                for target in ("in_progress", "done"):
+                    status_ev = create_event(
+                        type="status_changed",
+                        task_id=task_id,
+                        actor=actor,
+                        data={"from": snapshot["status"], "to": target},
+                    )
+                    snapshot = apply_event_to_snapshot(snapshot, status_ev)
+                    events.append(status_ev)
+            else:
+                status_ev = create_event(
+                    type="status_changed",
+                    task_id=task_id,
+                    actor=actor,
+                    data={"from": "backlog", "to": ex["status"]},
+                )
+                snapshot = apply_event_to_snapshot(snapshot, status_ev)
+                events.append(status_ev)
+
+        # Add comment if present
+        if ex.get("comment"):
+            comment_ev = create_event(
+                type="comment_added",
+                task_id=task_id,
+                actor=actor,
+                data={"body": ex["comment"]},
+            )
+            snapshot = apply_event_to_snapshot(snapshot, comment_ev)
+            events.append(comment_ev)
+
+        # subtask_of epic
+        rel_ev = create_event(
+            type="relationship_added",
+            task_id=task_id,
+            actor=actor,
+            data={"type": "subtask_of", "target_task_id": epic_id},
+        )
+        snapshot = apply_event_to_snapshot(snapshot, rel_ev)
+        events.append(rel_ev)
+
+        write_task_event(lattice_dir, task_id, events, snapshot, config)
+        scaffold_plan(lattice_dir, task_id, ex["title"], sid, ex["description"])
+        click.echo(f"    {sid}: {ex['title']} [{ex['status']}]")
+
+    # --- Add dependency chain: task[0] blocks task[1] blocks task[2] ---
+    for i in range(len(task_ids) - 1):
+        source_id = task_ids[i]
+        target_id = task_ids[i + 1]
+
+        snap_path = lattice_dir / "tasks" / f"{source_id}.json"
+        snapshot = json_mod.loads(snap_path.read_text())
+
+        rel_ev = create_event(
+            type="relationship_added",
+            task_id=source_id,
+            actor=actor,
+            data={"type": "blocks", "target_task_id": target_id},
+        )
+        snapshot = apply_event_to_snapshot(snapshot, rel_ev)
+        write_task_event(lattice_dir, source_id, [rel_ev], snapshot, config)
 
 
 @click.group()
@@ -192,12 +382,18 @@ def init(
         context_path = lattice_dir / "context.md"
         atomic_write(context_path, _CONTEXT_MD_TEMPLATE)
 
+        # Seed example tasks (requires project_code for short IDs)
+        if project_code:
+            click.echo("")
+            click.echo("Seeding example tasks...")
+            _seed_example_tasks(lattice_dir, config)
+
     except PermissionError:
         raise click.ClickException(f"Permission denied: cannot create {LATTICE_DIR}/ in {root}")
     except OSError as e:
         raise click.ClickException(f"Failed to initialize Lattice: {e}")
 
-    click.echo(f"Lattice initialized in {LATTICE_DIR}/ — ready to observe.")
+    click.echo(f"\nLattice initialized in {LATTICE_DIR}/ — ready to observe.")
     if actor:
         click.echo(f"Default actor: {actor}")
     if project_code:
