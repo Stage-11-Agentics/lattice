@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import sys
 
 import click
@@ -34,10 +35,20 @@ def dashboard_cmd(host: str, port: int, output_json: bool) -> None:
     try:
         server = create_server(lattice_dir, host, port, readonly=readonly)
     except OSError as exc:
-        if output_json:
-            click.echo(json_envelope(False, error=json_error_obj("BIND_ERROR", str(exc))))
+        if exc.errno == errno.EADDRINUSE:
+            msg = (
+                f"Port {port} is already in use — is another dashboard running?\n"
+                f"Stop the other process or choose a different port with: "
+                f"lattice dashboard --port <PORT>"
+            )
+            code = "PORT_IN_USE"
         else:
-            click.echo(f"Error: {exc}", err=True)
+            msg = str(exc)
+            code = "BIND_ERROR"
+        if output_json:
+            click.echo(json_envelope(False, error=json_error_obj(code, msg)))
+        else:
+            click.echo(f"Error: {msg}", err=True)
         raise SystemExit(1)
 
     url = f"http://{host}:{port}/"
