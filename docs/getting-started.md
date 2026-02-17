@@ -3,7 +3,13 @@
 ## Install
 
 ```bash
-pip install lattice-tracker
+uv tool install lattice-tracker
+```
+
+This installs the `lattice` CLI globally — available from any directory, any project. If you prefer pipx:
+
+```bash
+pipx install lattice-tracker
 ```
 
 ## Initialize

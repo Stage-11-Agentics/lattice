@@ -11,9 +11,9 @@ Drop a `.lattice/` directory into any project and every agent that can read a fi
 ## Quick start
 
 ```bash
-pip install lattice-tracker
+uv tool install lattice-tracker
 # or
-uv pip install lattice-tracker
+pipx install lattice-tracker
 ```
 
 ```bash
@@ -164,7 +164,7 @@ lattice setup-claude --force   # Replace existing block with latest template
 Lattice ships an MCP (Model Context Protocol) server for direct tool-call integration with AI agents:
 
 ```bash
-pip install lattice-tracker[mcp]
+uv tool install lattice-tracker[mcp]
 
 # Run the MCP server (stdio transport)
 lattice-mcp
