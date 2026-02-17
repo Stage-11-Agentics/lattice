@@ -30,6 +30,8 @@ def scaffold_plan(
     if plan_path.exists():
         return
 
+    plan_path.parent.mkdir(parents=True, exist_ok=True)
+
     heading = f"# {short_id}: {title}" if short_id else f"# {title}"
     lines = [heading, ""]
 

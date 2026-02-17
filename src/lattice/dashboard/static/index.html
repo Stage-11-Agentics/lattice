@@ -5018,10 +5018,14 @@ function _renderPanelContent(taskId, task, events) {
   }
   html += '</div>';
 
-  // Plan — always show button, server scaffolds if file doesn't exist yet
-  html += '<div class="dp-section"><h3>' + esc(t("section.notes")) + '</h3>';
+  // Plan & Notes — always show Plan, show Notes only if file exists
+  html += '<div class="dp-section"><h3>' + esc(t("section.plans")) + ' & ' + esc(t("section.notes")) + '</h3>';
+  html += '<div style="display:flex;gap:8px;flex-wrap:wrap">';
   html += '<button class="btn btn-primary btn-sm" onclick="openPlans(\'' + esc(task.id) + '\')">' + esc(t("btn.show_plan")) + '</button>';
-  html += '</div>';
+  if (task.notes_exists) {
+    html += '<button class="btn btn-sm" onclick="openNotes(\'' + esc(task.id) + '\')" style="border:1px solid var(--border);background:var(--surface)">' + esc(t("btn.show_notes")) + '</button>';
+  }
+  html += '</div></div>';
 
   // Comments
   var comments = (events || []).filter(function(ev) { return ev.type === "comment_added"; });
