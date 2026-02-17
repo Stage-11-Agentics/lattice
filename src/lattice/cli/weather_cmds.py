@@ -214,7 +214,7 @@ def _find_attention_needed(
                     "id": snap.get("short_id") or snap.get("id", "?"),
                     "title": snap.get("title", "?"),
                     "status": snap.get("status", "?"),
-                    "detail": "In progress but unassigned",
+                    "detail": f"Active ({snap.get('status', '?')}) but unassigned",
                 }
             )
 

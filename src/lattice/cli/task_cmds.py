@@ -32,6 +32,7 @@ from lattice.core.config import (
     VALID_COMPLEXITIES,
     VALID_PRIORITIES,
     VALID_URGENCIES,
+    get_valid_transitions,
     validate_completion_policy,
     validate_status,
     validate_task_type,
@@ -68,11 +69,11 @@ _CREATE_COMPARE_FIELDS = (
 
 @cli.command()
 @click.argument("title")
-@click.option("--type", "task_type", default=None, help="Task type.")
-@click.option("--priority", default=None, help="Priority level.")
-@click.option("--urgency", default=None, help="Urgency level.")
+@click.option("--type", "task_type", default=None, help="Task type (task, ticket, epic, bug, spike, chore).")
+@click.option("--priority", default=None, help="Priority (critical, high, medium, low).")
+@click.option("--urgency", default=None, help="Urgency (immediate, high, normal, low).")
 @click.option("--complexity", default=None, help="Agentic complexity (low, medium, high).")
-@click.option("--status", default=None, help="Initial status.")
+@click.option("--status", default=None, help="Initial status (default: backlog).")
 @click.option("--description", default=None, help="Task description.")
 @click.option("--tags", default=None, help="Comma-separated tags.")
 @click.option("--assigned-to", default=None, help="Assignee (actor format).")
@@ -520,12 +521,25 @@ def status_cmd(
     # Check transition validity
     if not validate_transition(config, current_status, new_status):
         if not force:
-            output_error(
+            valid_targets = get_valid_transitions(config, current_status)
+            valid_list = ", ".join(valid_targets) if valid_targets else "(none)"
+            msg = (
                 f"Invalid transition from {current_status} to {new_status}. "
-                "Use --force --reason to override.",
-                "INVALID_TRANSITION",
-                is_json,
+                f"Valid transitions from {current_status}: {valid_list}. "
+                "Use --force --reason to override."
             )
+            if is_json:
+                from lattice.cli.helpers import json_envelope, json_error_obj
+
+                error_obj = json_error_obj("INVALID_TRANSITION", msg)
+                error_obj["current_status"] = current_status
+                error_obj["requested_status"] = new_status
+                error_obj["valid_transitions"] = valid_targets
+                click.echo(json_envelope(False, error=error_obj))
+                raise SystemExit(1)
+            else:
+                click.echo(f"Error: {msg}", err=True)
+                raise SystemExit(1)
         if not provenance_reason:
             output_error(
                 "--reason is required with --force.",
@@ -573,9 +587,10 @@ def status_cmd(
     updated_snapshot = apply_event_to_snapshot(snapshot, event)
     write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
 
+    display_id = updated_snapshot.get("short_id") or task_id
     output_result(
         data=updated_snapshot,
-        human_message=f"Status: {current_status} -> {new_status}",
+        human_message=f"Status: {current_status} -> {new_status} ({display_id})",
         quiet_value="ok",
         is_json=is_json,
         is_quiet=quiet,
@@ -585,6 +600,9 @@ def status_cmd(
 # ---------------------------------------------------------------------------
 # lattice assign
 # ---------------------------------------------------------------------------
+
+
+_UNASSIGN_SENTINELS = frozenset({"none", "unassigned", "-"})
 
 
 @cli.command()
@@ -603,7 +621,7 @@ def assign(
     on_behalf_of: str | None,
     provenance_reason: str | None,
 ) -> None:
-    """Assign a task to an actor."""
+    """Assign a task to an actor. Use 'none', 'unassigned', or '-' to unassign."""
     is_json = output_json
 
     lattice_dir = require_root(is_json)
@@ -614,11 +632,16 @@ def assign(
 
     task_id = resolve_task_id(lattice_dir, task_id, is_json)
 
-    # Validate assignee actor format
-    if not validate_actor(actor_id):
+    # Check for unassignment sentinel values
+    is_unassign = actor_id.lower() in _UNASSIGN_SENTINELS
+    target_actor: str | None = None if is_unassign else actor_id
+
+    # Validate assignee actor format (skip for unassignment)
+    if not is_unassign and not validate_actor(actor_id):
         output_error(
             f"Invalid actor format: '{actor_id}'. "
-            "Expected prefix:identifier (e.g., human:atin, agent:claude).",
+            "Expected prefix:identifier (e.g., human:atin, agent:claude). "
+            "Use 'none', 'unassigned', or '-' to unassign.",
             "INVALID_ACTOR",
             is_json,
         )
@@ -626,11 +649,15 @@ def assign(
     snapshot = read_snapshot_or_exit(lattice_dir, task_id, is_json)
     current_assigned = snapshot.get("assigned_to")
 
-    if current_assigned == actor_id:
+    if current_assigned == target_actor:
+        if is_unassign:
+            label = "Already unassigned"
+        else:
+            label = f"Already assigned to {target_actor}"
         if is_json:
             click.echo(
                 json.dumps(
-                    {"ok": True, "data": {"message": f"Already assigned to {actor_id}"}},
+                    {"ok": True, "data": {"message": label}},
                     sort_keys=True,
                     indent=2,
                 )
@@ -639,14 +666,14 @@ def assign(
         elif quiet:
             click.echo("ok")
         else:
-            click.echo(f"Already assigned to {actor_id}")
+            click.echo(label)
         return
 
     event = create_event(
         type="assignment_changed",
         task_id=task_id,
         actor=actor,
-        data={"from": current_assigned, "to": actor_id},
+        data={"from": current_assigned, "to": target_actor},
         model=model,
         session=session,
         triggered_by=triggered_by,
@@ -657,9 +684,10 @@ def assign(
     write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
 
     from_label = current_assigned or "unassigned"
+    to_label = target_actor or "unassigned"
     output_result(
         data=updated_snapshot,
-        human_message=f"Assigned: {from_label} -> {actor_id}",
+        human_message=f"Assigned: {from_label} -> {to_label}",
         quiet_value="ok",
         is_json=is_json,
         is_quiet=quiet,

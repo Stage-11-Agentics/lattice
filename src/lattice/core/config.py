@@ -199,6 +199,30 @@ def validate_transition(
     return to_status in allowed
 
 
+def get_valid_transitions(config: dict, from_status: str) -> list[str]:
+    """Return the list of valid target statuses from *from_status*.
+
+    Includes both explicit transitions and universal targets, deduplicated
+    and in config order.
+    """
+    workflow = config.get("workflow", {})
+    universal = workflow.get("universal_targets", [])
+    transitions = workflow.get("transitions", {})
+    explicit = transitions.get(from_status, [])
+    # Merge explicit + universal, preserving order, deduplicating
+    seen: set[str] = set()
+    result: list[str] = []
+    for s in explicit:
+        if s not in seen:
+            seen.add(s)
+            result.append(s)
+    for s in universal:
+        if s not in seen:
+            seen.add(s)
+            result.append(s)
+    return result
+
+
 def validate_task_type(config: dict, task_type: str) -> bool:
     """Return ``True`` if *task_type* is listed in the config's task_types."""
     return task_type in config.get("task_types", [])

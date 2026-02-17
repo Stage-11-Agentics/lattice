@@ -22,6 +22,7 @@ from lattice.cli.helpers import (
 )
 from lattice.cli.main import cli
 from lattice.core.comments import materialize_comments
+from lattice.core.config import get_valid_transitions, validate_status
 from lattice.core.events import (
     BUILTIN_EVENT_TYPES,
     create_event,
@@ -56,6 +57,17 @@ def comments_cmd(
 
     task_id = resolve_task_id(lattice_dir, task_id, is_json, allow_archived=True)
 
+    # Read task snapshot for context header
+    snapshot = read_snapshot(lattice_dir, task_id)
+    if snapshot is None:
+        # Check archive
+        archive_path = lattice_dir / "archive" / "tasks" / f"{task_id}.json"
+        if archive_path.exists():
+            try:
+                snapshot = json.loads(archive_path.read_text())
+            except (json.JSONDecodeError, OSError):
+                pass
+
     # Try active first, then archive
     events = read_task_events(lattice_dir, task_id, is_archived=False)
     if not events:
@@ -64,11 +76,25 @@ def comments_cmd(
     comments = materialize_comments(events)
 
     if is_json:
-        click.echo(json_envelope(True, data=comments))
+        result_obj: dict = {"ok": True, "data": comments}
+        if snapshot:
+            result_obj["task_context"] = {
+                "id": snapshot.get("short_id") or task_id,
+                "title": snapshot.get("title"),
+                "status": snapshot.get("status"),
+            }
+        click.echo(json.dumps(result_obj, sort_keys=True, indent=2) + "\n")
     elif quiet:
         for comment in comments:
             click.echo(comment["id"])
     else:
+        # Print task context header
+        if snapshot:
+            display_id = snapshot.get("short_id") or task_id
+            title = snapshot.get("title", "?")
+            status = snapshot.get("status", "?")
+            click.echo(f'{display_id} "{title}" ({status})')
+            click.echo("---")
         if not comments:
             click.echo("No comments.")
             return
@@ -264,6 +290,12 @@ def event_cmd(
 @click.option("--assigned", default=None, help="Filter by assigned actor.")
 @click.option("--tag", default=None, help="Filter by tag.")
 @click.option("--type", "task_type", default=None, help="Filter by task type.")
+@click.option(
+    "--priority",
+    default=None,
+    help="Filter by priority (critical, high, medium, low).",
+)
+@click.option("--include-archived", is_flag=True, help="Include archived tasks.")
 @click.option("--compact", is_flag=True, help="Compact JSON output.")
 @click.option("--json", "output_json", is_flag=True, help="Output structured JSON.")
 @click.option("--quiet", is_flag=True, help="Print one task ID per line.")
@@ -272,6 +304,8 @@ def list_cmd(
     assigned: str | None,
     tag: str | None,
     task_type: str | None,
+    priority: str | None,
+    include_archived: bool,
     compact: bool,
     output_json: bool,
     quiet: bool,
@@ -280,6 +314,15 @@ def list_cmd(
     is_json = output_json
 
     lattice_dir = require_root(is_json)
+    config = load_project_config(lattice_dir)
+
+    # Validate --status filter value against configured statuses
+    status_warning: str | None = None
+    if status is not None and not validate_status(config, status):
+        valid = ", ".join(config.get("workflow", {}).get("statuses", []))
+        status_warning = (
+            f"'{status}' is not a configured status. Valid statuses: {valid}."
+        )
 
     # Scan all .json files in tasks/ directory
     tasks_dir = lattice_dir / "tasks"
@@ -293,6 +336,18 @@ def list_cmd(
                 continue
             snapshots.append(snap)
 
+    # Include archived tasks if requested
+    if include_archived:
+        archive_dir = lattice_dir / "archive" / "tasks"
+        if archive_dir.is_dir():
+            for task_file in sorted(archive_dir.glob("*.json")):
+                try:
+                    snap = json.loads(task_file.read_text())
+                except (json.JSONDecodeError, OSError):
+                    continue
+                snap["_archived"] = True
+                snapshots.append(snap)
+
     # Apply filters (AND combination)
     filtered: list[dict] = []
     for snap in snapshots:
@@ -303,6 +358,8 @@ def list_cmd(
         if tag is not None and tag not in (snap.get("tags") or []):
             continue
         if task_type is not None and snap.get("type") != task_type:
+            continue
+        if priority is not None and snap.get("priority") != priority:
             continue
         filtered.append(snap)
 
@@ -315,12 +372,19 @@ def list_cmd(
             data = [compact_snapshot(s) for s in filtered]
         else:
             data = filtered
-        click.echo(json_envelope(True, data=data))
+        result: dict = {"ok": True, "data": data}
+        if status_warning:
+            result["warnings"] = [status_warning]
+        click.echo(json.dumps(result, sort_keys=True, indent=2) + "\n")
     elif quiet:
+        if status_warning:
+            click.echo(f"Warning: {status_warning}", err=True)
         for snap in filtered:
             short_id = snap.get("short_id")
             click.echo(short_id if short_id else snap.get("id", ""))
     else:
+        if status_warning:
+            click.echo(f"Warning: {status_warning}", err=True)
         # Human output: compact one-line-per-task table
         for snap in filtered:
             short_id = snap.get("short_id")
@@ -535,15 +599,21 @@ def show_cmd(
     if snapshot is None:
         output_error(f"Task {task_id} not found.", "NOT_FOUND", is_json)
 
+    # Load config for valid_transitions
+    config = load_project_config(lattice_dir)
+    current_status = snapshot.get("status", "")
+    valid_transitions = get_valid_transitions(config, current_status)
+
     # Compact mode: just show compact fields, no events/relationships/artifacts
     if compact:
         if is_json:
             data = compact_snapshot(snapshot)
+            data["valid_transitions"] = valid_transitions
             if is_archived:
                 data["archived"] = True
             click.echo(json_envelope(True, data=data))
         else:
-            _print_compact_show(snapshot, is_archived)
+            _print_compact_show(snapshot, is_archived, valid_transitions)
         return
 
     # Read event log
@@ -568,6 +638,7 @@ def show_cmd(
     if is_json:
         data: dict = dict(snapshot)
         data["events"] = events
+        data["valid_transitions"] = valid_transitions
         if is_archived:
             data["archived"] = True
         if has_notes:
@@ -589,6 +660,7 @@ def show_cmd(
             task_id,
             is_archived,
             full,
+            valid_transitions,
         )
 
 
@@ -683,7 +755,9 @@ def _read_artifact_info(lattice_dir: Path, snapshot: dict) -> list[dict]:
     return artifacts
 
 
-def _print_compact_show(snapshot: dict, is_archived: bool) -> None:
+def _print_compact_show(
+    snapshot: dict, is_archived: bool, valid_transitions: list[str] | None = None
+) -> None:
     """Print compact human-readable show output."""
     task_id = snapshot.get("id", "?")
     short_id = snapshot.get("short_id")
@@ -696,8 +770,11 @@ def _print_compact_show(snapshot: dict, is_archived: bool) -> None:
     archived_note = "  [ARCHIVED]" if is_archived else ""
     header = f"{short_id} ({task_id})" if short_id else task_id
     click.echo(f'{header}  "{title}"{archived_note}')
+    next_str = ""
+    if valid_transitions:
+        next_str = f"\n  Next: {' | '.join(valid_transitions)}"
     click.echo(f"Status: {status}  Priority: {priority}  Type: {task_type}")
-    click.echo(f"Assigned: {assigned_to}")
+    click.echo(f"Assigned: {assigned_to}{next_str}")
 
 
 def _print_human_show(
@@ -710,6 +787,7 @@ def _print_human_show(
     task_id: str,
     is_archived: bool,
     full: bool,
+    valid_transitions: list[str] | None = None,
 ) -> None:
     """Print full human-readable show output."""
     short_id = snapshot.get("short_id")
@@ -727,6 +805,8 @@ def _print_human_show(
     header = f"{short_id} ({task_id})" if short_id else task_id
     click.echo(f'{header}  "{title}"{archived_note}')
     click.echo(f"Status: {status}  Priority: {priority}  Type: {task_type}")
+    if valid_transitions:
+        click.echo(f"  Next: {' | '.join(valid_transitions)}")
     click.echo(f"Assigned: {assigned_to}  Created by: {created_by}")
     click.echo(f"Created: {created_at}  Updated: {updated_at}")
 

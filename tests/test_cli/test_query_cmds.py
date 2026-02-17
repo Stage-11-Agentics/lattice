@@ -321,10 +321,19 @@ class TestList:
         assert "Task in backlog" not in result.output
 
     def test_no_matches(self, invoke, create_task):
-        """Filters that match nothing produce empty output."""
+        """Invalid status filter produces a warning and empty results."""
         create_task("Task A")
 
         result = invoke("list", "--status", "nonexistent")
+        assert result.exit_code == 0
+        assert "Task A" not in result.output
+        assert "not a configured status" in result.output
+
+    def test_no_matches_valid_status(self, invoke, create_task):
+        """Valid status filter with no matching tasks produces empty output."""
+        create_task("Task A")
+
+        result = invoke("list", "--status", "done")
         assert result.exit_code == 0
         assert result.output.strip() == ""
 
