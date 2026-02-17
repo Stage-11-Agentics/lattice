@@ -133,8 +133,13 @@ function Cube3DOrbitControls(camera, domElement) {
 
   function getZoomScale() { return Math.pow(0.95, scope.zoomSpeed); }
 
+  this.lockVertical = false;
+
   function rotateLeft(angle) { sphericalDelta.theta -= angle; }
-  function rotateUp(angle) { sphericalDelta.phi -= angle; }
+  function rotateUp(angle) {
+    if (scope.lockVertical) return;
+    sphericalDelta.phi -= angle;
+  }
 
   function panLeft(distance) {
     var v = new THREE.Vector3();
@@ -165,7 +170,9 @@ function Cube3DOrbitControls(camera, domElement) {
     offset.copy(camera.position).sub(scope.target);
     spherical.setFromVector3(offset);
     spherical.theta += sphericalDelta.theta;
-    spherical.phi += sphericalDelta.phi;
+    if (!scope.lockVertical) {
+      spherical.phi += sphericalDelta.phi;
+    }
     spherical.phi = Math.max(0.01, Math.min(Math.PI - 0.01, spherical.phi));
     spherical.radius *= scale;
     spherical.radius = Math.max(scope.minDistance, Math.min(scope.maxDistance, spherical.radius));
@@ -425,6 +432,7 @@ function _cube3dInitScene() {
 
   // Controls (inlined OrbitControls)
   var controls = new Cube3DOrbitControls(camera, webglRenderer.domElement);
+  controls.lockVertical = true;
   controls.target.set(300, 0, -100);
   controls.update();
 
@@ -451,7 +459,7 @@ function _cube3dInitSimulation(nodes, links) {
 
   var simulation = d3.forceSimulation(nodes)
     .numDimensions(3)
-    .force('x', d3.forceX(function(d) { return statusX[d.status] || 0; }).strength(0.8))
+    .force('x', d3.forceX(function(d) { return statusX[d.status] || 0; }).strength(0.95))
     .force('y', d3.forceY(function(d) { return CUBE3D_PRIORITY_Y[d.priority] || 0; }).strength(0.3))
     .force('z', d3.forceZ(function(d) { return cube3dRecencyZ(d.updated_at, now, maxAge); }).strength(0.35))
     .force('charge', d3.forceManyBody().strength(-60))
@@ -713,13 +721,11 @@ function _cube3dUpdateLOD() {
   var camPos = camera.position;
   var nodePos = new THREE.Vector3();
 
-  // Pool tracking
-  var spriteCount = 0;
-  var cardCount = 0;
-  var maxSprites = 50;
-  var maxCards = 8;
+  // Pool limits
+  var maxSprites = 30;
+  var maxCards = 4;
 
-  // Build distance-sorted list for pool priority (closest first)
+  // Build distance-sorted list (closest first)
   var nodeDistances = [];
   for (var i = 0; i < _cube3d.nodeData.length; i++) {
     var node = _cube3d.nodeData[i];
@@ -732,31 +738,52 @@ function _cube3dUpdateLOD() {
   // Clear previous LOD objects
   _cube3dClearLODObjects();
 
+  // Spatial dedup: once a node claims a card/sprite slot, nearby nodes
+  // (within MIN_LABEL_SEP) get demoted to sphere-only to avoid overlap.
+  var MIN_LABEL_SEP = 25;
+  var claimedPositions = [];
+  var spriteCount = 0;
+  var cardCount = 0;
+
+  function tooCloseToExisting(nx, ny, nz) {
+    for (var k = 0; k < claimedPositions.length; k++) {
+      var cp = claimedPositions[k];
+      var dx = nx - cp[0], dy = ny - cp[1], dz = nz - cp[2];
+      if (Math.sqrt(dx * dx + dy * dy + dz * dz) < MIN_LABEL_SEP) return true;
+    }
+    return false;
+  }
+
   for (var j = 0; j < nodeDistances.length; j++) {
     var nd = nodeDistances[j];
     var n = nd.node;
     var d = nd.dist;
     var idx = nd.index;
+    var nx = n.x || 0, ny = n.y || 0, nz = n.z || 0;
 
     if (d < 20 && !_cube3d.workspaceTaskId) {
-      // LOD 4 — workspace (max 1)
+      // LOD 4 — workspace (max 1, always wins)
       _cube3dShowWorkspace(n);
       _cube3dScaleInstance(idx, 0);
-    } else if (d < 80 && cardCount < maxCards) {
-      // LOD 3 — CSS3D card
+      claimedPositions.push([nx, ny, nz]);
+    } else if (d < 80 && cardCount < maxCards && !tooCloseToExisting(nx, ny, nz)) {
+      // LOD 3 — CSS3D card (skip if another card already nearby)
       cardCount++;
       _cube3dShowCard(n);
       _cube3dScaleInstance(idx, 0);
-    } else if (d < 300 && spriteCount < maxSprites) {
+      claimedPositions.push([nx, ny, nz]);
+    } else if (d < 300 && spriteCount < maxSprites && !tooCloseToExisting(nx, ny, nz)) {
       // LOD 2 — text sprite with title
       spriteCount++;
       _cube3dShowTextSprite(n, true);
-    } else if (d < 800 && spriteCount < maxSprites) {
+      claimedPositions.push([nx, ny, nz]);
+    } else if (d < 600 && spriteCount < maxSprites && !tooCloseToExisting(nx, ny, nz)) {
       // LOD 1 — text sprite ID only
       spriteCount++;
       _cube3dShowTextSprite(n, false);
+      claimedPositions.push([nx, ny, nz]);
     }
-    // LOD 0 — instanced sphere only (default)
+    // LOD 0 — instanced sphere only (default / too close to another label)
   }
 }
 
@@ -828,7 +855,7 @@ function _cube3dShowTextSprite(node, showTitle) {
   var scale = CUBE3D_PRIORITY_SCALE[node.priority] || 1.0;
   var yOffset = scale * 3 + 5;
   sprite.position.set(node.x || 0, (node.y || 0) + yOffset, node.z || 0);
-  sprite.scale.set(showTitle ? 60 : 40, showTitle ? 15 : 8, 1);
+  sprite.scale.set(showTitle ? 45 : 30, showTitle ? 12 : 7, 1);
   _cube3d.scene.add(sprite);
   _cube3d.textSprites.push(sprite);
 }
