@@ -73,10 +73,31 @@ lattice attach $LATTICE_TASK_ID "$REPORT" \
   --actor agent:review-bot
 ```
 
+### Step 6: Close the Process Lifecycle
+
+After attaching the report, you **must** close the process lifecycle. This removes the entry from `active_processes` and unblocks future runs:
+
+```bash
+# On success (after report is attached):
+lattice worker complete $LATTICE_TASK_ID $LATTICE_STARTED_EVENT_ID \
+  --actor agent:review-bot \
+  --result "Review complete — see attached report"
+```
+
+If you encounter an unrecoverable error at any point, call fail instead:
+
+```bash
+lattice worker fail $LATTICE_TASK_ID $LATTICE_STARTED_EVENT_ID \
+  --actor agent:review-bot \
+  --error "Description of what went wrong"
+```
+
+**This step is mandatory.** Without it, the task will appear to have a permanently running worker, and the dedup guard will block future reviews.
+
 ## Important Notes
 
 - You are running with `--dangerously-skip-permissions`. Be careful with destructive operations.
 - Do NOT modify any code. This is a read-only review.
 - Always produce a report, even if the diff is empty or tests fail.
 - The artifact attachment satisfies the `require_roles: ["review"]` completion policy.
-- If you crash or cannot complete, Lattice will detect it via the missing `process_completed` event.
+- Always call `lattice worker complete` or `lattice worker fail` as the very last step.

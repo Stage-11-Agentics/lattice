@@ -895,7 +895,7 @@ class TestProcessStarted:
         snap = _make_snapshot()
         event = _process_event(
             "process_started", _EV_P1, _TS_2,
-            {"process_type": "CodeReviewLite", "commit_sha": "abc1234"},
+            {"process_type": "CodeReviewLite", "commit_sha": "abc1234", "timeout_minutes": 15},
         )
         snap = apply_event_to_snapshot(snap, event)
         assert len(snap["active_processes"]) == 1
@@ -905,6 +905,17 @@ class TestProcessStarted:
         assert entry["commit_sha"] == "abc1234"
         assert entry["started_at"] == _TS_2
         assert entry["actor"] == _ACTOR
+        assert entry["timeout_minutes"] == 15
+
+    def test_timeout_minutes_defaults_to_none(self) -> None:
+        snap = _make_snapshot()
+        event = _process_event(
+            "process_started", _EV_P1, _TS_2,
+            {"process_type": "CodeReviewLite", "commit_sha": "abc1234"},
+        )
+        snap = apply_event_to_snapshot(snap, event)
+        entry = snap["active_processes"][0]
+        assert entry["timeout_minutes"] is None
 
     def test_multiple_processes(self) -> None:
         snap = _make_snapshot()

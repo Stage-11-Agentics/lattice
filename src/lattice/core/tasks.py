@@ -284,6 +284,7 @@ def _mut_process_started(snap: dict, event: dict) -> None:
         "started_at": event["ts"],
         "actor": event["actor"],
         "commit_sha": data.get("commit_sha"),
+        "timeout_minutes": data.get("timeout_minutes"),
     }
     snap.setdefault("active_processes", []).append(entry)
 
