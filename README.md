@@ -6,7 +6,9 @@
 
 ## what this is. in one breath.
 
-Lattice is task tracking upgraded for the agent-native era. opinionated. event-sourced. file-based. built for a world where your teammates think in tokens and act in tool calls.
+Lattice is task tracking upgraded for the agent-native era.
+
+we took what we liked from Linear. Jira. Trello. and turned it into something built for the world that's actually arriving. file-based. event-sourced. highly durable. designed so that any agent with filesystem access — Claude Code, OpenClaw, Codex, custom bots, whatever you're building — can use Lattice as the fundamental coordination surface for agentic work.
 
 your agents lose context between sessions. plans discussed. decisions made. debugging insights gained. all vanish when the context window closes. Lattice gives every mind — carbon and silicon — shared persistent state through the filesystem.
 
