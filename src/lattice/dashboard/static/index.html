@@ -2798,10 +2798,11 @@ select.form-control{cursor:pointer}
 <div class="nav">
   <span class="nav-brand">Lattice</span>
   <div class="nav-search" id="nav-search">
-    <button type="button" class="nav-search-btn" id="nav-search-btn" title="Search tasks (/)">
+    <button type="button" class="nav-search-btn" id="nav-search-btn" title="Search tasks (/)" aria-label="Search tasks" aria-expanded="false" aria-controls="nav-search-input">
       <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <kbd class="nav-search-kbd">/</kbd>
     </button>
-    <input type="text" class="nav-search-input" id="nav-search-input" placeholder="Search tasks...">
+    <input type="text" class="nav-search-input" id="nav-search-input" placeholder="Search tasks..." aria-label="Search tasks" tabindex="-1">
   </div>
   <span class="nav-tab" data-view="board">Board</span>
   <span class="nav-tab" data-view="list">List</span>
@@ -5716,11 +5717,12 @@ function applyListFilters() {
   items = items.filter(function(t) {
     if (search) {
       var titleMatch = (t.title||"").toLowerCase().includes(search);
-      var shortIdMatch = (t.short_id||"").toLowerCase().includes(search);
-      // Bare number match: "50" matches "LAT-50", "97" matches "LAT-97"
+      // Bare number: exact match on numeric suffix only (e.g. "50" → LAT-50, not LAT-150)
       var bareNum = /^\d+$/.test(search);
-      var numMatch = bareNum && t.short_id && t.short_id.split("-").pop() === search;
-      if (!titleMatch && !shortIdMatch && !numMatch) return false;
+      var shortIdMatch = bareNum
+        ? (t.short_id && t.short_id.toLowerCase().endsWith("-" + search))
+        : (t.short_id||"").toLowerCase().includes(search);
+      if (!titleMatch && !shortIdMatch) return false;
     }
     if (status && t.status !== status) return false;
     if (type && t.type !== type) return false;
@@ -6883,24 +6885,38 @@ document.addEventListener("visibilitychange", function() {
   var btn = document.getElementById("nav-search-btn");
   var input = document.getElementById("nav-search-input");
 
+  function openSearch() {
+    wrap.classList.add("open");
+    input.tabIndex = 0;
+    btn.setAttribute("aria-expanded", "true");
+    input.focus();
+  }
+
+  function closeSearch(clearValue) {
+    wrap.classList.remove("open");
+    input.tabIndex = -1;
+    btn.setAttribute("aria-expanded", "false");
+    if (clearValue) input.value = "";
+    input.blur();
+  }
+
   btn.addEventListener("click", function() {
     if (wrap.classList.contains("open")) {
       submitNavSearch();
     } else {
-      wrap.classList.add("open");
-      input.focus();
+      openSearch();
     }
   });
 
   input.addEventListener("keydown", function(e) {
     if (e.key === "Enter") { e.preventDefault(); submitNavSearch(); }
-    if (e.key === "Escape") { wrap.classList.remove("open"); input.value = ""; input.blur(); }
+    if (e.key === "Escape") { closeSearch(true); }
   });
 
   // Close on outside click
   document.addEventListener("click", function(e) {
     if (!wrap.contains(e.target) && wrap.classList.contains("open")) {
-      wrap.classList.remove("open");
+      closeSearch(false);
     }
   });
 
@@ -6910,18 +6926,15 @@ document.addEventListener("visibilitychange", function() {
       var tag = (e.target.tagName || "").toLowerCase();
       if (tag === "input" || tag === "textarea" || tag === "select" || e.target.isContentEditable) return;
       e.preventDefault();
-      wrap.classList.add("open");
-      input.focus();
+      openSearch();
     }
   });
 
   function submitNavSearch() {
     var q = (input.value || "").trim();
-    if (!q) { wrap.classList.remove("open"); return; }
+    if (!q) { closeSearch(false); return; }
     pendingSearch = q;
-    wrap.classList.remove("open");
-    input.value = "";
-    input.blur();
+    closeSearch(true);
     location.hash = "#/list";
     // If already on list view, re-render to apply the search
     if (currentView === "list") renderList();
