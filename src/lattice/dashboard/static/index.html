@@ -2795,8 +2795,8 @@ select.form-control{cursor:pointer}
 .dp-header{display:flex;align-items:center;justify-content:space-between;padding:14px 20px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface);z-index:1}
 .dp-header h2{font-size:1rem;font-weight:700;margin:0;display:flex;align-items:center;gap:8px;min-width:0;overflow:hidden;text-overflow:ellipsis}
 .dp-header-actions{display:flex;gap:4px;flex-shrink:0}
-.dp-close,.dp-full-link{background:none;border:none;font-size:18px;cursor:pointer;color:var(--text-secondary);padding:4px 8px;border-radius:var(--radius-sm)}
-.dp-close:hover,.dp-full-link:hover{color:var(--text-primary);background:var(--surface-hover)}
+.dp-close{background:none;border:none;font-size:28px;line-height:1;cursor:pointer;color:var(--text-secondary);padding:6px 12px;border-radius:var(--radius-sm)}
+.dp-close:hover{color:var(--text-primary);background:var(--surface-hover)}
 .dp-body{padding:16px 20px}
 .dp-body .dp-actions{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}
 .dp-body .dp-actions select{font-size:.8rem;padding:3px 6px}
@@ -2864,7 +2864,6 @@ select.form-control{cursor:pointer}
   <div class="dp-header">
     <h2 id="dp-title">Task</h2>
     <div class="dp-header-actions">
-      <button class="dp-full-link" id="dp-open-full" title="Open full detail view">&#x2197;</button>
       <button class="dp-close" id="dp-close">&times;</button>
     </div>
   </div>
@@ -4037,11 +4036,15 @@ function buildWebHierarchy(graphData, gitData) {
   });
 
   // Implicit convention: branch name contains short ID (e.g., feat/LAT-47-oauth)
+  // Uses word-boundary matching to avoid LAT-4 matching inside LAT-42.
   gitBranches.forEach(function(b) {
     if (linkedBranches.has(b.name)) return;
     var branchUpper = b.name.toUpperCase();
     for (var sid in nodeByShortId) {
-      if (nodeByShortId.hasOwnProperty(sid) && branchUpper.indexOf(sid) !== -1) {
+      if (!nodeByShortId.hasOwnProperty(sid)) continue;
+      // Match short ID with non-alpha boundaries (consistent with CLI extract_short_ids)
+      var pattern = new RegExp("(?<![A-Za-z])" + sid.replace(/[-]/g, "\\-") + "(?![A-Za-z])");
+      if (pattern.test(branchUpper)) {
         var matchedNode = nodeByShortId[sid];
         if (!taskBranches[matchedNode.id]) taskBranches[matchedNode.id] = [];
         taskBranches[matchedNode.id].push(b.name);
@@ -4925,12 +4928,6 @@ function openDetailPanel(taskId) {
     body.innerHTML = '<div style="color:var(--color-danger);padding:20px">' + esc(e.message) + '</div>';
   });
 
-  // Wire "open full" button
-  var fullBtn = document.getElementById("dp-open-full");
-  fullBtn.onclick = function() {
-    closeDetailPanel();
-    location.hash = "#/task/" + taskId;
-  };
 }
 
 function closeDetailPanel() {
