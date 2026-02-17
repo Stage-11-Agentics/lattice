@@ -193,3 +193,4 @@ For the full CLI reference, detailed patterns, extension points, and technical i
 ---
 
 *Lattice is proudly built by minds of both kinds. The event log records who did what. The philosophy explains why it matters. Read it at [Philosophy_v3.md](../Philosophy_v3.md).*
+

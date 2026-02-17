@@ -493,8 +493,8 @@ a:hover{text-decoration:underline}
 /* Type badges */
 .type-badge{background:var(--surface-raised);color:var(--text-secondary)}
 
-/* Epic bottom lane */
-.board-epic-lane{border-top:2px solid var(--border);padding-top:12px;margin-top:12px}
+/* Epic top lane */
+.board-epic-lane{border-bottom:2px solid var(--border);padding-bottom:12px;margin-bottom:12px}
 .board-epic-header{font-weight:600;font-size:.875rem;margin-bottom:8px;color:var(--text-secondary)}
 .board-epic-cards{display:flex;gap:8px;flex-wrap:wrap}
 .epic-card{background:var(--surface-card);border:2px solid var(--border-subtle);border-radius:var(--radius-sm);padding:8px 12px;font-size:.85rem;cursor:pointer;transition:border-color .15s,box-shadow .15s;min-width:180px;max-width:320px}
@@ -508,6 +508,8 @@ a:hover{text-decoration:underline}
 .epic-card .epic-status-badge{font-size:.7rem;padding:1px 6px;border-radius:var(--radius-sm);font-weight:600}
 .epic-card .epic-health-indicator{font-size:.7rem}
 .card.epic-highlight{border-color:var(--accent-primary);box-shadow:0 0 8px var(--accent-glow)}
+.board-wrapper{position:relative}
+.epic-threads-svg{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:1;overflow:visible}
 
 /* Status colors for column headers (CSS fallback — JS inline styles override these) */
 .status-done .board-col-header{background:#198754;color:var(--text-on-lane)}
@@ -5627,30 +5629,60 @@ function renderEpicCard(epic, childTasks) {
   return html;
 }
 
-// --- Epic highlight logic ---
-function toggleEpicSelection(epicId, epicChildMap) {
-  // Clear previous highlights
+// --- Epic highlight + thread logic ---
+function clearEpicThreads() {
+  var svg = document.getElementById("epic-threads");
+  if (svg) svg.innerHTML = "";
   document.querySelectorAll(".card.epic-highlight").forEach(function(el) { el.classList.remove("epic-highlight"); });
   document.querySelectorAll(".epic-card.epic-selected").forEach(function(el) { el.classList.remove("epic-selected"); });
+}
+
+function drawEpicThreads(epicId, epicChildMap) {
+  var svg = document.getElementById("epic-threads");
+  if (!svg) return;
+  var wrapper = svg.parentElement;
+  if (!wrapper) return;
+
+  var epicCard = document.querySelector('.epic-card[data-epic-id="' + epicId + '"]');
+  if (!epicCard) return;
+  epicCard.classList.add("epic-selected");
+
+  var wrapperRect = wrapper.getBoundingClientRect();
+  var epicRect = epicCard.getBoundingClientRect();
+  // Start point: bottom-center of epic card
+  var sx = epicRect.left + epicRect.width / 2 - wrapperRect.left;
+  var sy = epicRect.bottom - wrapperRect.top;
+
+  var childIds = epicChildMap[epicId] || [];
+  var accentColor = getComputedStyle(document.documentElement).getPropertyValue("--accent-primary").trim() || "#6366f1";
+
+  var paths = "";
+  childIds.forEach(function(cid) {
+    var card = document.querySelector('.card[data-task-id="' + cid + '"]');
+    if (!card) return;
+    card.classList.add("epic-highlight");
+    var cardRect = card.getBoundingClientRect();
+    // End point: top-center of child card
+    var ex = cardRect.left + cardRect.width / 2 - wrapperRect.left;
+    var ey = cardRect.top - wrapperRect.top;
+    // Cubic bezier: drop down then curve to target
+    var midY = sy + (ey - sy) * 0.4;
+    paths += '<path d="M' + sx + ' ' + sy + ' C' + sx + ' ' + midY + ' ' + ex + ' ' + midY + ' ' + ex + ' ' + ey + '"'
+      + ' fill="none" stroke="' + accentColor + '" stroke-width="1.5" stroke-opacity="0.5" stroke-dasharray="4 3"/>';
+  });
+  svg.innerHTML = paths;
+}
+
+function toggleEpicSelection(epicId, epicChildMap) {
+  clearEpicThreads();
 
   if (selectedEpicId === epicId) {
-    // Deselect
     selectedEpicId = null;
     return;
   }
 
   selectedEpicId = epicId;
-  var childIds = epicChildMap[epicId] || [];
-
-  // Highlight the epic card
-  var epicCard = document.querySelector('.epic-card[data-epic-id="' + epicId + '"]');
-  if (epicCard) epicCard.classList.add("epic-selected");
-
-  // Highlight child task cards in columns
-  childIds.forEach(function(cid) {
-    var card = document.querySelector('.card[data-task-id="' + cid + '"]');
-    if (card) card.classList.add("epic-highlight");
-  });
+  drawEpicThreads(epicId, epicChildMap);
 }
 
 // --- Board View ---
@@ -5723,7 +5755,28 @@ function renderBoard() {
 
   var allStatuses = statuses.concat(Object.keys(grouped).filter(function(s) { return !statuses.includes(s); }));
   var colCount = allStatuses.length || 1;
-  var html = '<div class="board" style="grid-template-columns:repeat(' + colCount + ',1fr)">';
+
+  // Wrapper div for epic lane + board + SVG thread overlay
+  var html = '<div class="board-wrapper">';
+
+  // Epic top lane (Row 2 — only if epics exist)
+  if (epicTasks.length > 0) {
+    html += '<div class="board-epic-lane">';
+    html += '<div class="board-epic-header">Epics</div>';
+    html += '<div class="board-epic-cards">';
+    epicTasks.forEach(function(epic) {
+      var childIds = epicChildMap[epic.id] || [];
+      var childSnaps = childIds.map(function(cid) { return taskById[cid]; }).filter(Boolean);
+      html += renderEpicCard(epic, childSnaps);
+    });
+    html += '</div></div>';
+  }
+
+  // SVG overlay for epic → child threads
+  html += '<svg id="epic-threads" class="epic-threads-svg"></svg>';
+
+  // Board columns (Row 3)
+  html += '<div class="board" style="grid-template-columns:repeat(' + colCount + ',1fr)">';
   allStatuses.forEach(function(status) {
     var items = grouped[status] || [];
     var cls = "status-" + status.replace(/\s+/g,"_");
@@ -5772,20 +5825,8 @@ function renderBoard() {
     }
     html += "</div></div>";
   });
-  html += "</div>";
-
-  // Epic bottom lane (only if epics exist)
-  if (epicTasks.length > 0) {
-    html += '<div class="board-epic-lane">';
-    html += '<div class="board-epic-header">Epics</div>';
-    html += '<div class="board-epic-cards">';
-    epicTasks.forEach(function(epic) {
-      var childIds = epicChildMap[epic.id] || [];
-      var childSnaps = childIds.map(function(cid) { return taskById[cid]; }).filter(Boolean);
-      html += renderEpicCard(epic, childSnaps);
-    });
-    html += '</div></div>';
-  }
+  html += "</div>"; // close .board
+  html += "</div>"; // close .board-wrapper
 
   app.innerHTML = html;
 
