@@ -147,11 +147,24 @@ def jsonl_append(path: Path, line: str) -> None:
     in append mode, writes the line, then flushes and fsyncs to ensure
     durability.
 
+    As a defensive measure, if the file exists and does not end with a
+    newline, one is prepended before writing to prevent concatenation
+    with the previous record.
+
     Args:
         path: Path to the JSONL file (created if it does not exist).
         line: A single JSONL record ending with a newline character.
     """
+    # Defensive: ensure file ends with newline before appending
+    needs_separator = False
+    if path.exists() and path.stat().st_size > 0:
+        with open(path, "rb") as fh:
+            fh.seek(-1, 2)
+            needs_separator = fh.read(1) != b"\n"
+
     with open(path, "a", encoding="utf-8") as fh:
+        if needs_separator:
+            fh.write("\n")
         fh.write(line)
         fh.flush()
         os.fsync(fh.fileno())
