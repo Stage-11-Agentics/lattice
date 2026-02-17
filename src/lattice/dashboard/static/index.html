@@ -3936,6 +3936,115 @@ function buildWebHierarchy(graphData, gitData) {
   };
 }
 
+// Semantic zoom thresholds — detail cards appear progressively as you zoom in
+var WEB_DETAIL_ZOOM = { epic: 1.5, ticket: 2.5, task: 4.0 };
+
+// Helper: truncate text to fit a max width on canvas
+function webTruncText(ctx, text, maxW) {
+  if (!text) return "";
+  if (ctx.measureText(text).width <= maxW) return text;
+  var t = text;
+  while (t.length > 1 && ctx.measureText(t + "\u2026").width > maxW) t = t.slice(0, -1);
+  return t + "\u2026";
+}
+
+// Helper: draw a rounded rect on canvas
+function webRoundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+// Helper: pick best card anchor direction based on node position in the graph.
+// Returns { dx, dy } unit-ish direction pointing away from center, so cards
+// fan outward. Avoids all cards stacking to one side.
+function webCardDir(node) {
+  var nx = node.x || 0;
+  var ny = node.y || 0;
+  var len = Math.sqrt(nx * nx + ny * ny) || 1;
+  // Normalize, but bias horizontally (cards are wider than tall)
+  var dx = (nx / len);
+  var dy = (ny / len) * 0.6;
+  // Re-normalize so magnitude ≈ 1
+  var len2 = Math.sqrt(dx * dx + dy * dy) || 1;
+  return { dx: dx / len2, dy: dy / len2 };
+}
+
+// Draw a detail card on canvas next to a node.
+// lines: [{text, bold, color}], statusColor, actColor
+function webDrawCard(ctx, node, radius, globalScale, lines, statusColor, actColor) {
+  var fs = 10 / globalScale;
+  if (fs > 12) fs = 12;
+  var lineH = fs * 1.35;
+  var pad = 6 / globalScale;
+  var cardW = 120 / globalScale;
+  var cardH = pad * 2 + lines.length * lineH;
+  var cornerR = 3 / globalScale;
+
+  // Pick direction: card fans outward from graph center
+  var dir = webCardDir(node);
+  var gap = (radius + 6) / globalScale * globalScale; // keep gap in graph units
+  gap = radius + 6;
+  var cx = node.x + dir.dx * (gap + cardW / 2);
+  var cy = node.y + dir.dy * (gap + cardH / 2);
+  var cardX = cx - cardW / 2;
+  var cardY = cy - cardH / 2;
+
+  // Card background
+  ctx.save();
+  webRoundRect(ctx, cardX, cardY, cardW, cardH, cornerR);
+  ctx.fillStyle = "rgba(30,30,40,0.88)";
+  ctx.fill();
+
+  // Status color left stripe
+  if (statusColor) {
+    var stripeW = 3 / globalScale;
+    webRoundRect(ctx, cardX, cardY, stripeW, cardH, cornerR);
+    ctx.fillStyle = statusColor;
+    ctx.fill();
+  }
+
+  // Activity dot top-right
+  if (actColor) {
+    var dotR = 3 / globalScale;
+    ctx.beginPath();
+    ctx.arc(cardX + cardW - pad, cardY + pad + dotR, dotR, 0, 2 * Math.PI);
+    ctx.fillStyle = actColor;
+    ctx.fill();
+  }
+
+  // Connector line from node to card
+  ctx.beginPath();
+  ctx.moveTo(node.x + dir.dx * radius, node.y + dir.dy * radius);
+  ctx.lineTo(cardX + cardW / 2 - dir.dx * cardW / 2, cardY + cardH / 2 - dir.dy * cardH / 2);
+  ctx.strokeStyle = "rgba(255,255,255,0.15)";
+  ctx.lineWidth = 0.5 / globalScale * globalScale;
+  ctx.lineWidth = 0.5;
+  ctx.stroke();
+
+  // Text lines
+  var textY = cardY + pad + fs * 0.85;
+  var textMaxW = cardW - pad * 2 - (actColor ? 8 / globalScale : 0);
+  lines.forEach(function(line) {
+    ctx.font = (line.bold ? "bold " : "") + fs + "px sans-serif";
+    ctx.fillStyle = line.color || "rgba(255,255,255,0.9)";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "alphabetic";
+    ctx.fillText(webTruncText(ctx, line.text, textMaxW), cardX + pad + 4 / globalScale, textY);
+    textY += lineH;
+  });
+
+  ctx.restore();
+}
+
 function drawWebNode(node, ctx, globalScale) {
   var tier = node.tier || "task";
   var radius = WEB_TIER_RADIUS[tier] || 4;
@@ -3985,41 +4094,90 @@ function drawWebNode(node, ctx, globalScale) {
     ctx.stroke();
   }
 
-  // Label
+  // Compute text color once
   var textColor = getComputedStyle(document.documentElement)
     .getPropertyValue("--text-primary").trim() || "#212529";
-  var fontSize;
-  if (tier === "epic") {
-    fontSize = 12 / globalScale;
+
+  // Semantic zoom: detail card threshold check
+  var showCard = globalScale >= (WEB_DETAIL_ZOOM[tier] || 4.0);
+
+  if (showCard) {
+    // Build card lines based on tier
+    var lines = [];
+    var sid = node.short_id || node.id.substring(0, 10);
+    var statusLabel = (node.status || "").replace(/_/g, " ");
+    var actColor = null;
+    if (act) {
+      if (act.git && act.lattice) actColor = WEB_ACTIVITY_COLORS.both;
+      else if (act.git) actColor = WEB_ACTIVITY_COLORS.git;
+      else actColor = WEB_ACTIVITY_COLORS.lattice;
+    }
+
+    if (tier === "epic") {
+      lines.push({ text: sid, bold: true, color: "rgba(255,255,255,1)" });
+      if (node.title) lines.push({ text: node.title, bold: false, color: "rgba(255,255,255,0.85)" });
+      lines.push({ text: statusLabel, bold: false, color: color });
+      if (node.assigned_to) lines.push({ text: node.assigned_to, bold: false, color: "rgba(200,200,255,0.7)" });
+      if (node.branches && node.branches.length > 0) {
+        lines.push({ text: "\u2514 " + node.branches[0], bold: false, color: "rgba(255,255,255,0.5)" });
+      }
+    } else if (tier === "ticket") {
+      lines.push({ text: sid, bold: true, color: "rgba(255,255,255,1)" });
+      if (node.title) lines.push({ text: node.title, bold: false, color: "rgba(255,255,255,0.8)" });
+      lines.push({ text: statusLabel, bold: false, color: color });
+      if (node.assigned_to) lines.push({ text: node.assigned_to, bold: false, color: "rgba(200,200,255,0.65)" });
+    } else {
+      lines.push({ text: sid, bold: true, color: "rgba(255,255,255,1)" });
+      if (node.title) lines.push({ text: node.title, bold: false, color: "rgba(255,255,255,0.75)" });
+      lines.push({ text: statusLabel, bold: false, color: color });
+    }
+
+    webDrawCard(ctx, node, radius, globalScale, lines, color, actColor);
+
+    // Still draw the short label below the circle at all zoom levels
+    var fontSize = (tier === "epic" ? 12 : tier === "ticket" ? 10 : 8) / globalScale;
     if (fontSize > 14) fontSize = 14;
-    if (fontSize < 3) { ctx.globalAlpha = 1.0; return; }
-    var label = node.short_id || node.title || node.id.substring(0, 8);
-    ctx.font = "bold " + fontSize + "px sans-serif";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "top";
-    ctx.fillStyle = textColor;
-    ctx.fillText(label, node.x, node.y + radius + 3);
-  } else if (tier === "ticket") {
-    fontSize = 10 / globalScale;
-    if (fontSize > 11) fontSize = 11;
-    if (fontSize < 2.5) { ctx.globalAlpha = 1.0; return; }
-    var tlabel = node.short_id || node.id.substring(0, 8);
-    ctx.font = fontSize + "px sans-serif";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "top";
-    ctx.fillStyle = textColor;
-    ctx.fillText(tlabel, node.x, node.y + radius + 2);
-  } else {
-    // Task: only label at high zoom
-    fontSize = 8 / globalScale;
-    if (fontSize > 9) fontSize = 9;
-    if (fontSize >= 4) {
-      var dlabel = node.short_id || node.id.substring(0, 6);
-      ctx.font = fontSize + "px sans-serif";
+    if (fontSize >= 2) {
+      ctx.font = (tier === "epic" ? "bold " : "") + fontSize + "px sans-serif";
       ctx.textAlign = "center";
       ctx.textBaseline = "top";
       ctx.fillStyle = textColor;
-      ctx.fillText(dlabel, node.x, node.y + radius + 1);
+      ctx.fillText(sid, node.x, node.y + radius + 2);
+    }
+  } else {
+    // Low zoom: just labels (original behavior)
+    var fontSize2;
+    if (tier === "epic") {
+      fontSize2 = 12 / globalScale;
+      if (fontSize2 > 14) fontSize2 = 14;
+      if (fontSize2 < 3) { ctx.globalAlpha = 1.0; return; }
+      var label = node.short_id || node.title || node.id.substring(0, 8);
+      ctx.font = "bold " + fontSize2 + "px sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      ctx.fillStyle = textColor;
+      ctx.fillText(label, node.x, node.y + radius + 3);
+    } else if (tier === "ticket") {
+      fontSize2 = 10 / globalScale;
+      if (fontSize2 > 11) fontSize2 = 11;
+      if (fontSize2 < 2.5) { ctx.globalAlpha = 1.0; return; }
+      var tlabel = node.short_id || node.id.substring(0, 8);
+      ctx.font = fontSize2 + "px sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      ctx.fillStyle = textColor;
+      ctx.fillText(tlabel, node.x, node.y + radius + 2);
+    } else {
+      fontSize2 = 8 / globalScale;
+      if (fontSize2 > 9) fontSize2 = 9;
+      if (fontSize2 >= 4) {
+        var dlabel = node.short_id || node.id.substring(0, 6);
+        ctx.font = fontSize2 + "px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "top";
+        ctx.fillStyle = textColor;
+        ctx.fillText(dlabel, node.x, node.y + radius + 1);
+      }
     }
   }
 
