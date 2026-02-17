@@ -497,9 +497,11 @@ a:hover{text-decoration:underline}
 .board-epic-lane{border-bottom:2px solid var(--border);padding-bottom:12px;margin-bottom:12px}
 .board-epic-header{font-weight:600;font-size:.875rem;margin-bottom:8px;color:var(--text-secondary)}
 .board-epic-cards{display:flex;gap:8px;flex-wrap:wrap}
-.epic-card{background:var(--surface-card);border:2px solid var(--border-subtle);border-radius:var(--radius-sm);padding:8px 12px;font-size:.85rem;cursor:pointer;transition:border-color .15s,box-shadow .15s;min-width:180px;max-width:320px}
+.epic-card{position:relative;background:var(--surface-card);border:2px solid var(--border-subtle);border-radius:var(--radius-sm);padding:8px 12px;font-size:.85rem;cursor:pointer;transition:border-color .15s,box-shadow .15s;min-width:180px;max-width:320px}
 .epic-card:hover{box-shadow:var(--shadow-card-hover)}
 .epic-card.epic-selected{border-color:var(--accent-primary);box-shadow:0 0 8px var(--accent-glow)}
+.epic-dismiss-btn{position:absolute;top:4px;right:4px;width:20px;height:20px;border:none;background:var(--surface-raised);color:var(--text-muted);border-radius:50%;font-size:.75rem;line-height:20px;text-align:center;cursor:pointer;opacity:.7;transition:opacity .15s,background .15s;padding:0;display:flex;align-items:center;justify-content:center;z-index:2}
+.epic-dismiss-btn:hover{opacity:1;background:var(--border);color:var(--text-primary)}
 .epic-card .epic-short-id{font-size:.7rem;font-weight:600;color:var(--accent-primary);margin-bottom:2px}
 .epic-card .epic-title{font-weight:600;margin-bottom:4px;word-break:break-word}
 .epic-card .epic-progress-bar{height:4px;background:var(--border);border-radius:2px;overflow:hidden;margin-bottom:4px}
@@ -5408,6 +5410,7 @@ function clearEpicThreads() {
   if (svg) svg.innerHTML = "";
   document.querySelectorAll(".card.epic-highlight").forEach(function(el) { el.classList.remove("epic-highlight"); });
   document.querySelectorAll(".epic-card.epic-selected").forEach(function(el) { el.classList.remove("epic-selected"); });
+  document.querySelectorAll(".epic-dismiss-btn").forEach(function(el) { el.remove(); });
 }
 
 function drawEpicThreads(epicId, epicChildMap) {
@@ -5419,6 +5422,18 @@ function drawEpicThreads(epicId, epicChildMap) {
   var epicCard = document.querySelector('.epic-card[data-epic-id="' + epicId + '"]');
   if (!epicCard) return;
   epicCard.classList.add("epic-selected");
+
+  // Add dismiss button to top-right of selected epic card
+  var dismissBtn = document.createElement("button");
+  dismissBtn.className = "epic-dismiss-btn";
+  dismissBtn.innerHTML = "\u2715";
+  dismissBtn.title = "Clear connections";
+  dismissBtn.addEventListener("click", function(e) {
+    e.stopPropagation();
+    selectedEpicId = null;
+    clearEpicThreads();
+  });
+  epicCard.appendChild(dismissBtn);
 
   var wrapperRect = wrapper.getBoundingClientRect();
   var epicRect = epicCard.getBoundingClientRect();
