@@ -575,6 +575,7 @@ class TestShow:
         data = parsed["data"]
         assert "id" in data
         assert "relationships_out_count" in data
+        assert "reopened_count" in data
         # No events in compact mode
         assert "events" not in data
 
@@ -847,6 +848,36 @@ class TestShow:
         parsed = json.loads(result.output)
         assert "events" in parsed["data"]
         assert len(parsed["data"]["events"]) == 2  # task_created + comment_added
+
+    def test_show_warns_when_task_was_reset_backward(self, invoke, create_task):
+        """Show prints warning when status history contains a backward transition."""
+        task = create_task("Reset warning")
+        task_id = task["id"]
+        invoke("status", task_id, "done", "--force", "--reason", "test", "--actor", "human:test")
+        invoke("status", task_id, "planned", "--force", "--reason", "test", "--actor", "human:test")
+
+        result = invoke("show", task_id)
+        assert result.exit_code == 0
+        assert "Warning: Previously completed, reset on " in result.output
+        assert "by human:test" in result.output
+
+    def test_show_json_includes_reopen_warning_metadata(self, invoke, create_task):
+        """JSON show output includes warning metadata for latest backward transition."""
+        task = create_task("Reset metadata")
+        task_id = task["id"]
+        invoke("status", task_id, "done", "--force", "--reason", "test", "--actor", "human:test")
+        invoke("status", task_id, "planned", "--force", "--reason", "test", "--actor", "human:test")
+
+        result = invoke("show", task_id, "--json")
+        assert result.exit_code == 0
+        parsed = json.loads(result.output)
+        data = parsed["data"]
+        assert data["reopened_count"] == 1
+        assert data["reopened_warning"].startswith("Previously completed, reset on ")
+        latest = data["latest_reopen"]
+        assert latest["actor"] == "human:test"
+        assert latest["from"] == "done"
+        assert latest["to"] == "planned"
 
     def test_json_output_includes_relationships_enriched(self, invoke, create_task):
         """JSON output includes enriched relationships."""

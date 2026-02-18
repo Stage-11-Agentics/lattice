@@ -94,6 +94,7 @@ class TestTaskCreated:
         assert snap["relationships_out"] == []
         assert snap["evidence_refs"] == []
         assert snap["branch_links"] == []
+        assert snap["reopened_count"] == 0
         assert snap["custom_fields"] == {"sprint": 12}
 
     def test_timestamps_from_event(self) -> None:
@@ -202,6 +203,45 @@ class TestStatusChanged:
         }
         snap = apply_event_to_snapshot(snap, ev)
         assert snap["done_at"] is None
+
+    def test_reopened_count_increments_on_backward_transition(self) -> None:
+        snap = _make_snapshot()
+        assert snap["reopened_count"] == 0
+        ev1 = {
+            "schema_version": 1,
+            "id": _EV_2,
+            "ts": _TS_2,
+            "type": "status_changed",
+            "task_id": _TASK_ID,
+            "actor": _ACTOR,
+            "data": {"from": "backlog", "to": "done"},
+        }
+        snap = apply_event_to_snapshot(snap, ev1)
+        ev2 = {
+            "schema_version": 1,
+            "id": _EV_3,
+            "ts": _TS_3,
+            "type": "status_changed",
+            "task_id": _TASK_ID,
+            "actor": _ACTOR,
+            "data": {"from": "done", "to": "planned"},
+        }
+        snap = apply_event_to_snapshot(snap, ev2)
+        assert snap["reopened_count"] == 1
+
+    def test_reopened_count_not_incremented_on_forward_transition(self) -> None:
+        snap = _make_snapshot()
+        ev = {
+            "schema_version": 1,
+            "id": _EV_2,
+            "ts": _TS_2,
+            "type": "status_changed",
+            "task_id": _TASK_ID,
+            "actor": _ACTOR,
+            "data": {"from": "backlog", "to": "in_progress"},
+        }
+        snap = apply_event_to_snapshot(snap, ev)
+        assert snap["reopened_count"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -937,6 +977,7 @@ class TestCompactSnapshot:
             "tags",
             "done_at",
             "comment_count",
+            "reopened_count",
             "relationships_out_count",
             "evidence_ref_count",
             "branch_link_count",

@@ -24,9 +24,42 @@ PROTECTED_FIELDS: frozenset[str] = frozenset(
         "evidence_refs",
         "branch_links",
         "comment_count",
+        "reopened_count",
         "custom_fields",
     }
 )
+
+# Canonical workflow order used for backwards-transition detection in snapshots.
+_DEFAULT_STATUS_ORDER: tuple[str, ...] = (
+    "backlog",
+    "in_planning",
+    "planned",
+    "in_progress",
+    "review",
+    "done",
+    "blocked",
+    "needs_human",
+    "cancelled",
+)
+_DEFAULT_STATUS_RANK: dict[str, int] = {
+    status: index for index, status in enumerate(_DEFAULT_STATUS_ORDER)
+}
+
+
+def is_backward_status_transition(
+    from_status: str | None,
+    to_status: str | None,
+    status_rank: dict[str, int] | None = None,
+) -> bool:
+    """Return True when *to_status* is earlier than *from_status* in workflow order."""
+    if not isinstance(from_status, str) or not isinstance(to_status, str):
+        return False
+    rank = status_rank if status_rank is not None else _DEFAULT_STATUS_RANK
+    from_rank = rank.get(from_status)
+    to_rank = rank.get(to_status)
+    if from_rank is None or to_rank is None:
+        return False
+    return to_rank < from_rank
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +125,7 @@ def compact_snapshot(snapshot: dict) -> dict:
         "tags": snapshot.get("tags"),
         "done_at": snapshot.get("done_at"),
         "comment_count": snapshot.get("comment_count", 0),
+        "reopened_count": snapshot.get("reopened_count", 0),
         "relationships_out_count": len(snapshot.get("relationships_out", [])),
         "evidence_ref_count": len(snapshot.get("evidence_refs", [])),
         "branch_link_count": len(snapshot.get("branch_links", [])),
@@ -130,6 +164,7 @@ def _init_snapshot(event: dict) -> dict:
         "evidence_refs": [],
         "branch_links": [],
         "comment_count": 0,
+        "reopened_count": 0,
         "custom_fields": data.get("custom_fields") or {},
         "last_event_id": event["id"],
     }
@@ -174,7 +209,13 @@ _NOOP_EVENT_TYPES: frozenset[str] = frozenset(
 
 @_register_mutation("status_changed")
 def _mut_status_changed(snap: dict, event: dict) -> None:
-    new_status = event["data"]["to"]
+    data = event["data"]
+    from_status = data.get("from")
+    new_status = data["to"]
+    if is_backward_status_transition(from_status, new_status):
+        snap["reopened_count"] = snap.get("reopened_count", 0) + 1
+    else:
+        snap.setdefault("reopened_count", 0)
     snap["status"] = new_status
     if new_status == "done":
         snap["done_at"] = event["ts"]

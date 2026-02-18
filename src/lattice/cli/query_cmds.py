@@ -31,7 +31,11 @@ from lattice.core.events import (
 from lattice.core.ids import extract_short_ids, validate_actor, validate_id
 from lattice.core.next import compute_claim_transitions, select_next
 from lattice.core.stats import load_all_snapshots
-from lattice.core.tasks import apply_event_to_snapshot, compact_snapshot
+from lattice.core.tasks import (
+    apply_event_to_snapshot,
+    compact_snapshot,
+    is_backward_status_transition,
+)
 from lattice.storage.locks import multi_lock
 from lattice.storage.readers import read_task_events
 
@@ -637,6 +641,22 @@ def show_cmd(
 
     # Read event log
     events = _read_events(lattice_dir, task_id, is_archived)
+    status_rank = _status_rank_from_config(config)
+    backward_count, latest_reopen = _scan_backward_status_transitions(events, status_rank)
+    reopened_count = snapshot.get("reopened_count", 0)
+    if not isinstance(reopened_count, int):
+        reopened_count = 0
+    # Legacy snapshots may not have this field; derive from events as fallback.
+    if reopened_count == 0 and backward_count > 0:
+        reopened_count = backward_count
+    snapshot["reopened_count"] = reopened_count
+
+    reopened_warning: str | None = None
+    if latest_reopen is not None:
+        reopened_warning = (
+            f"Previously completed, reset on {latest_reopen['date']} "
+            f"by {latest_reopen['actor']}"
+        )
 
     # Check for notes and plan files
     if is_archived:
@@ -678,6 +698,9 @@ def show_cmd(
         data["artifact_info"] = artifact_info
         if auto_branches:
             data["auto_detected_branches"] = auto_branches
+        if reopened_warning:
+            data["reopened_warning"] = reopened_warning
+            data["latest_reopen"] = latest_reopen
         if full:
             data["_full"] = True
         click.echo(json_envelope(True, data=data))
@@ -696,6 +719,7 @@ def show_cmd(
             valid_transitions,
             auto_branches,
             config=config,
+            reopened_warning=reopened_warning,
         )
 
 
@@ -785,6 +809,45 @@ def _auto_detect_branch_links(
 def _read_events(lattice_dir: Path, task_id: str, is_archived: bool) -> list[dict]:
     """Read all events for a task from the JSONL log."""
     return read_task_events(lattice_dir, task_id, is_archived=is_archived)
+
+
+def _status_rank_from_config(config: dict) -> dict[str, int]:
+    """Return ``{status: rank}`` using configured workflow order."""
+    statuses = config.get("workflow", {}).get("statuses", [])
+    if not isinstance(statuses, list):
+        return {}
+    return {status: idx for idx, status in enumerate(statuses) if isinstance(status, str)}
+
+
+def _scan_backward_status_transitions(
+    events: list[dict],
+    status_rank: dict[str, int],
+) -> tuple[int, dict | None]:
+    """Return backward transition count and latest backward transition metadata."""
+    count = 0
+    latest: dict | None = None
+    for event in events:
+        if event.get("type") != "status_changed":
+            continue
+        data = event.get("data", {})
+        from_status = data.get("from")
+        to_status = data.get("to")
+        if not is_backward_status_transition(from_status, to_status, status_rank):
+            continue
+        count += 1
+        ts = event.get("ts")
+        if isinstance(ts, str):
+            date = ts.split("T", 1)[0]
+        else:
+            date = "?"
+        latest = {
+            "ts": ts,
+            "date": date,
+            "actor": event.get("actor", "?"),
+            "from": from_status,
+            "to": to_status,
+        }
+    return count, latest
 
 
 def _enrich_relationships(lattice_dir: Path, snapshot: dict) -> list[dict]:
@@ -918,6 +981,7 @@ def _print_human_show(
     valid_transitions: list[str] | None = None,
     auto_detected_branches: list[str] | None = None,
     config: dict | None = None,
+    reopened_warning: str | None = None,
 ) -> None:
     """Print full human-readable show output."""
     from lattice.core.config import get_display_name
@@ -944,6 +1008,8 @@ def _print_human_show(
     comment_count = snapshot.get("comment_count", 0)
     click.echo(f"Assigned: {assigned_to}  Created by: {created_by}")
     click.echo(f"Created: {created_at}  Updated: {updated_at}")
+    if reopened_warning:
+        click.echo(f"Warning: {reopened_warning}")
     if comment_count:
         click.echo(f"Comments: {comment_count}")
 
