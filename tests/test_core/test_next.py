@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from lattice.core.next import compute_claim_transitions, select_all_ready, select_next
+from lattice.core.next import _actors_match, compute_claim_transitions, select_all_ready, select_next
 
 
 def _snap(
@@ -441,3 +441,70 @@ class TestComputeClaimTransitions:
 
         # cancelled -> in_progress (no path)
         assert compute_claim_transitions("cancelled", "in_progress", transitions) is None
+
+
+# ---------------------------------------------------------------------------
+# Structured actor matching
+# ---------------------------------------------------------------------------
+
+
+class TestActorsMatch:
+    """_actors_match handles both legacy strings and structured dicts."""
+
+    def test_both_none(self) -> None:
+        assert _actors_match(None, None)
+
+    def test_one_none(self) -> None:
+        assert not _actors_match("agent:claude", None)
+        assert not _actors_match(None, "agent:claude")
+
+    def test_legacy_strings_match(self) -> None:
+        assert _actors_match("agent:claude", "agent:claude")
+
+    def test_legacy_strings_no_match(self) -> None:
+        assert not _actors_match("agent:claude", "agent:codex")
+
+    def test_structured_dicts_match(self) -> None:
+        a = {"name": "Argus-3", "base_name": "Argus", "serial": 3}
+        b = {"name": "Argus-3", "base_name": "Argus", "serial": 3}
+        assert _actors_match(a, b)
+
+    def test_structured_dicts_no_match(self) -> None:
+        a = {"name": "Argus-3", "base_name": "Argus", "serial": 3}
+        b = {"name": "Beacon-1", "base_name": "Beacon", "serial": 1}
+        assert not _actors_match(a, b)
+
+    def test_mixed_no_match(self) -> None:
+        """Legacy string vs structured dict with different names."""
+        assert not _actors_match("agent:claude", {"name": "Argus-3"})
+
+
+class TestSelectNextStructuredActor:
+    """Resume and assignment with structured actor dicts."""
+
+    def test_resume_with_structured_actor(self) -> None:
+        actor_dict = {"name": "Argus-3", "base_name": "Argus", "serial": 3}
+        snaps = [
+            _snap("task_backlog", status="backlog", priority="critical"),
+            _snap("task_ip", status="in_progress", priority="low", assigned_to=actor_dict),
+        ]
+        result = select_next(snaps, actor=actor_dict)
+        assert result is not None
+        assert result["id"] == "task_ip"
+
+    def test_does_not_resume_different_structured_actor(self) -> None:
+        assigned = {"name": "Argus-3", "base_name": "Argus", "serial": 3}
+        requesting = {"name": "Beacon-1", "base_name": "Beacon", "serial": 1}
+        snaps = [
+            _snap("task_backlog", status="backlog"),
+            _snap("task_ip", status="in_progress", assigned_to=assigned),
+        ]
+        result = select_next(snaps, actor=requesting)
+        assert result is not None
+        assert result["id"] == "task_backlog"
+
+    def test_excludes_tasks_assigned_to_other_structured_actor(self) -> None:
+        other = {"name": "Beacon-1", "base_name": "Beacon", "serial": 1}
+        me = {"name": "Argus-3", "base_name": "Argus", "serial": 3}
+        snaps = [_snap("task_other", assigned_to=other)]
+        assert select_next(snaps, actor=me) is None

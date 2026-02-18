@@ -307,3 +307,66 @@ class TestNextActorValidation:
     def test_invalid_actor_format(self, invoke) -> None:
         result = invoke("next", "--actor", "noprefix")
         assert result.exit_code != 0
+
+
+class TestNextWithSessionName:
+    """--name flag resolves session identity for next/claim."""
+
+    def test_claim_with_name(self, create_task, invoke) -> None:
+        """--name resolves to structured actor for claim."""
+        # Start a session first
+        result = invoke(
+            "session", "start", "--name", "Argus",
+            "--model", "claude-opus-4", "--framework", "claude-code",
+        )
+        assert result.exit_code == 0
+
+        create_task("Session claimable task")
+        result = invoke("next", "--name", "Argus-1", "--claim", "--json")
+        assert result.exit_code == 0
+        parsed = json.loads(result.output)
+        assert parsed["ok"] is True
+        assert parsed["data"]["status"] == "in_progress"
+        # assigned_to should be a structured dict with name
+        assigned = parsed["data"]["assigned_to"]
+        assert isinstance(assigned, dict)
+        assert assigned["name"] == "Argus-1"
+
+    def test_claim_requires_name_or_actor(self, invoke) -> None:
+        """--claim without --name or --actor should error."""
+        result = invoke("next", "--claim", "--json")
+        assert result.exit_code != 0
+        parsed = json.loads(result.output)
+        assert parsed["error"]["code"] == "VALIDATION_ERROR"
+
+    def test_name_not_found(self, invoke) -> None:
+        """--name with nonexistent session should error."""
+        result = invoke("next", "--name", "Ghost-1", "--json")
+        assert result.exit_code != 0
+        parsed = json.loads(result.output)
+        assert parsed["error"]["code"] == "SESSION_NOT_FOUND"
+
+    def test_resume_with_name(self, create_task, invoke) -> None:
+        """Resume-first logic works with structured actor from --name."""
+        # Start session
+        invoke(
+            "session", "start", "--name", "Beacon",
+            "--model", "gpt-4.1", "--framework", "codex-cli",
+        )
+
+        # Create and claim a task using session identity
+        create_task("Resume target")
+        claim_result = invoke("next", "--name", "Beacon-1", "--claim", "--json")
+        assert claim_result.exit_code == 0
+        parsed = json.loads(claim_result.output)
+        task_id = parsed["data"]["id"]
+        assert parsed["data"]["status"] == "in_progress"
+
+        # Create another higher-priority task
+        create_task("Higher priority", "--priority", "critical")
+
+        # next with same session should resume the in_progress task, not pick new one
+        result = invoke("next", "--name", "Beacon-1", "--json")
+        assert result.exit_code == 0
+        parsed = json.loads(result.output)
+        assert parsed["data"]["id"] == task_id

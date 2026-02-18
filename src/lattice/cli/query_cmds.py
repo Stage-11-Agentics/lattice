@@ -432,6 +432,10 @@ def list_cmd(
     "--actor", default=None, help="Who is asking (filters by assignment, required for --claim)."
 )
 @click.option(
+    "--name", "session_name", default=None,
+    help="Session name (e.g., Argus-3). Resolves to full identity.",
+)
+@click.option(
     "--status",
     "status_csv",
     default=None,
@@ -442,6 +446,7 @@ def list_cmd(
 @click.option("--quiet", is_flag=True, help="Print only the task ID.")
 def next_cmd(
     actor: str | None,
+    session_name: str | None,
     status_csv: str | None,
     claim: bool,
     output_json: bool,
@@ -450,7 +455,7 @@ def next_cmd(
     """Pick the highest-priority task to work on next.
 
     Returns the top task from the ready pool (backlog/planned by default).
-    If --actor is specified, resumes in-progress work first.
+    If --actor/--name is specified, resumes in-progress work first.
     Use --claim to atomically assign and start the task.
     """
     is_json = output_json
@@ -458,16 +463,44 @@ def next_cmd(
     lattice_dir = require_root(is_json)
     config = load_project_config(lattice_dir)
 
-    # Validate --claim requires --actor
-    if claim and not actor:
+    # Resolve --name to structured actor
+    resolved_actor: str | dict | None = None
+    if session_name is not None:
+        from lattice.storage.sessions import resolve_session, touch_session
+
+        session_data = resolve_session(lattice_dir, session_name)
+        if session_data is None:
+            output_error(
+                f"No active session named '{session_name}'. "
+                "Start one with 'lattice session start'.",
+                "SESSION_NOT_FOUND",
+                is_json,
+            )
+        touch_session(lattice_dir, session_name)
+        resolved_actor = {
+            "name": session_data["name"],
+            "base_name": session_data["base_name"],
+            "serial": session_data["serial"],
+            "session": session_data["session"],
+            "model": session_data["model"],
+        }
+        if session_data.get("framework"):
+            resolved_actor["framework"] = session_data["framework"]
+        if session_data.get("agent_type"):
+            resolved_actor["agent_type"] = session_data["agent_type"]
+    elif actor is not None:
+        resolved_actor = actor
+
+    # Validate --claim requires identity
+    if claim and resolved_actor is None:
         output_error(
-            "--claim requires --actor.",
+            "--claim requires --actor or --name.",
             "VALIDATION_ERROR",
             is_json,
         )
 
-    # Validate actor format if provided
-    if actor and not validate_actor(actor):
+    # Validate legacy actor format if provided
+    if actor and not session_name and not validate_actor(actor):
         output_error(
             f"Invalid actor format: '{actor}'. "
             "Expected prefix:identifier (e.g., human:atin, agent:claude).",
@@ -484,7 +517,7 @@ def next_cmd(
     active, _archived = load_all_snapshots(lattice_dir)
 
     # Select next task
-    selected = select_next(active, actor=actor, ready_statuses=ready_statuses)
+    selected = select_next(active, actor=resolved_actor, ready_statuses=ready_statuses)
 
     if selected is None:
         if is_json:
@@ -511,14 +544,16 @@ def next_cmd(
 
             events = []
 
-            # Assignment event (if not already assigned to actor)
+            # Assignment event (if not already assigned to this actor)
+            from lattice.core.next import _actors_match
+
             current_assigned = snapshot.get("assigned_to")
-            if current_assigned != actor:
+            if not _actors_match(current_assigned, resolved_actor):
                 assign_event = create_event(
                     type="assignment_changed",
                     task_id=task_id,
-                    actor=actor,
-                    data={"from": current_assigned, "to": actor},
+                    actor=resolved_actor,
+                    data={"from": current_assigned, "to": resolved_actor},
                 )
                 events.append(assign_event)
                 snapshot = apply_event_to_snapshot(snapshot, assign_event)
@@ -540,7 +575,7 @@ def next_cmd(
                     status_event = create_event(
                         type="status_changed",
                         task_id=task_id,
-                        actor=actor,
+                        actor=resolved_actor,
                         data={"from": prev_status, "to": next_status},
                     )
                     events.append(status_event)

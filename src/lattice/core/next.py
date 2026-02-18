@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from lattice.core.events import get_actor_display
 
 # Priority and urgency sort orders (lower number = higher priority)
 PRIORITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
@@ -17,10 +18,23 @@ RESUME_STATUSES = frozenset({"in_progress", "in_planning"})
 DEFAULT_READY_STATUSES = frozenset({"backlog", "planned"})
 
 
+def _actors_match(assigned: str | dict | None, actor: str | dict | None) -> bool:
+    """Check if an assigned_to value matches a requesting actor.
+
+    Handles both legacy string actors and structured dict actors.
+    Comparison is by display name (``get_actor_display``), which is
+    the ``name`` field for structured actors or the string itself for
+    legacy actors.
+    """
+    if assigned is None or actor is None:
+        return assigned is None and actor is None
+    return get_actor_display(assigned) == get_actor_display(actor)
+
+
 def select_next(
     snapshots: list[dict],
     *,
-    actor: str | None = None,
+    actor: str | dict | None = None,
     ready_statuses: frozenset[str] | None = None,
 ) -> dict | None:
     """Select the highest-priority task an agent should work on.
@@ -49,7 +63,7 @@ def select_next(
         for snap in snapshots:
             status = snap.get("status", "")
             assigned = snap.get("assigned_to")
-            if status in RESUME_STATUSES and assigned == actor:
+            if status in RESUME_STATUSES and _actors_match(assigned, actor):
                 resume_candidates.append(snap)
         if resume_candidates:
             resume_candidates.sort(key=sort_key)
@@ -66,7 +80,7 @@ def select_next(
         if status in EXCLUDED_STATUSES:
             continue
         assigned = snap.get("assigned_to")
-        if assigned is not None and actor is not None and assigned != actor:
+        if assigned is not None and actor is not None and not _actors_match(assigned, actor):
             continue  # assigned to someone else
         if assigned is not None and actor is None:
             continue  # assigned but no actor specified
