@@ -650,6 +650,58 @@ Additional review findings that shaped this decision:
 
 ---
 
+## 2026-02-18: Mandatory planning and context-window separation (Two-Phase Advance)
+
+**Decision:** Every task must have a substantive plan file before execution begins — no exceptions. Planning and execution are separate phases that should happen in separate agent context windows. `lattice advance N` is replaced by single-task invocations where each task is executed in a fresh subprocess/subagent.
+
+**Context:** In practice, `lattice advance` was skipping the planning phase. Two root causes:
+
+1. **Mechanical:** `lattice next --claim` uses BFS (`compute_claim_transitions`) to find the shortest path from `backlog` to `in_progress`. The shortest path is `backlog → planned → in_progress` (2 hops), which bypasses `in_planning` entirely because `backlog → in_planning → planned → in_progress` is 3 hops.
+
+2. **Prompt-level:** The advance skill said "For trivial tasks where the description fully specifies the work, skip this and go straight to implementation." Agents under time pressure classified nearly everything as trivial.
+
+Additionally, `lattice advance N` processed multiple tasks in a single context window. By task 3-4, the context was full of irrelevant code, test output, and review comments from earlier tasks — degrading quality.
+
+**The philosophical insight:** Planning and execution are fundamentally different cognitive modes. Planning requires *breadth* (reading widely, weighing tradeoffs). Execution requires *depth* (focused implementation of a specific approach). Mixing them in one context window means the executing agent carries exploratory residue that dilutes its focus. Separating them creates a forcing function: the plan file must be good enough for a completely different mind to execute, because it *will be* a different mind.
+
+**Three principles:**
+
+1. **Mandatory planning.** Every task gets a plan file before execution begins. For trivial tasks, a one-line plan is fine ("Fix the typo on line 77 of `src/foo.py`"). But the plan must exist, because it's the handoff contract between the planning mind and the executing mind.
+
+2. **One task, one context window.** Each task's execution happens in a fresh subprocess/subagent. The parent agent is a thin orchestrator — it claims tasks, dispatches work, and records results. It never enters "developer mode." This ensures task 5 gets the same quality as task 1.
+
+3. **The plan file is the bridge.** It's the only artifact that crosses the context-window boundary. This elevates it from optional documentation to load-bearing coordination primitive. A bad plan = a confused executing agent.
+
+**Implementation — code-level enforcement:**
+
+- `lattice status <task> in_progress` rejects the transition if the plan file is scaffold-only. Clear error: "Plan is still scaffold. Write the plan first, or use `--force --reason`."
+- `lattice next --claim` (which targets `in_progress`) inherits the same gate.
+- The existing `_is_scaffold_plan_content()` function provides the detection logic.
+- `--force --reason` remains available for genuinely exceptional cases.
+
+**Implementation — skill/prompt changes:**
+
+- `/lattice-advance` becomes single-task: removes multi-advance counter, meta-learning pass, and "trivial task skip" language.
+- The advance skill spawns a subtask (fresh context window) for execution, passing only the task ID and plan file path.
+- Planning can also be a subtask: the orchestrator spawns a planning agent that writes the plan, then spawns an execution agent that implements it.
+
+**What this changes about `--claim`:**
+
+- `--claim` still works mechanically (assign + transition), but it can no longer reach `in_progress` if the plan is scaffold.
+- For Phase 1 (planning), claim target should be `in_planning`.
+- For Phase 2 (execution), claim from `planned` → `in_progress` (single valid hop, no BFS needed, but plan must be substantive).
+
+**Supersedes:** The 2026-02-16 `lattice next` decision's description of `--claim` atomically moving to `in_progress` is now gated by plan validation. The escape hatch in the advance skill ("for trivial tasks, skip planning") is removed.
+
+**Consequences:**
+- All CLAUDE.md files with Lattice workflow instructions must remove "skip planning" language.
+- The advance skill is rewritten for single-task, two-phase operation.
+- `query_cmds.py` and `task_cmds.py` gain plan-validation gates on `in_progress` transitions.
+- New tests for plan validation enforcement.
+- `needs-human-and-next-guide.md` updated to describe the two-phase model.
+
+---
+
 ## 2026-02-18: Auto-detect task commits in `lattice show` (LAT-144)
 
 **Decision:** `lattice show` now performs read-only git commit discovery by task short code. When a task has a short ID (for example `LAT-144`), show runs `git log --grep=<short_id>` and renders matches in a `Commits:` section. JSON output includes `auto_detected_commits` when matches are found.
