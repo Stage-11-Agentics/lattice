@@ -606,3 +606,13 @@ Additional review findings that shaped this decision:
 **Scope:** Auto-detection scans all local git branches on `lattice show` only (not `list`, which would be too expensive). The dashboard already had its own JS-side auto-detection which was updated to use consistent boundary matching.
 
 **Consequence:** CLAUDE.md template and project CLAUDE.md updated with "Branch Linking" section. Agents now have explicit guidance to run `branch-link` when creating feature branches.
+
+---
+
+## 2026-02-18: Completion policy errors now suggest satisfaction, not just bypass
+
+**Decision:** Changed completion policy error messages from `"Missing role: review. Use --force --reason to override."` to `"Missing role: review. Satisfy with: lattice attach --role review or lattice comment --role review. Override with --force --reason."` The error now tells agents how to satisfy the policy (the right thing) before telling them how to bypass it.
+
+**Context:** Agents encountering the old message would often `--force --reason` past the policy because that was the only action the error suggested. The policy exists to ensure reviews actually happen, so the primary guidance should be how to fulfill it.
+
+**Consequence:** Error code `COMPLETION_BLOCKED` is unchanged and stable. Agents or scripts matching on the human-readable message text (not the error code) will see different strings. The error code is the stable contract; message text is for human/agent comprehension.

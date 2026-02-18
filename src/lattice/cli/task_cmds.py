@@ -568,7 +568,7 @@ def status_cmd(
             failure_msg = "; ".join(policy_failures)
             output_error(
                 f"Completion policy not satisfied: {failure_msg}. "
-                "Use --force --reason to override.",
+                "Override with --force --reason.",
                 "COMPLETION_BLOCKED",
                 is_json,
             )

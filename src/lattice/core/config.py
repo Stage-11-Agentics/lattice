@@ -116,6 +116,8 @@ class LatticeConfig(TypedDict, total=False):
     resources: dict[str, ResourceDef]
     heartbeat: HeartbeatConfig
     workflow_preset: str
+    project_name: str
+    model: str
 
 
 def default_config(preset: str = "classic") -> LatticeConfig:
@@ -357,7 +359,11 @@ def validate_completion_policy(
         present_roles |= {r for r in comment_roles.values() if r is not None}
         for required in require_roles:
             if required not in present_roles:
-                failures.append(f"Missing role: {required}")
+                failures.append(
+                    f"Missing role: {required}. "
+                    f"Satisfy with: lattice attach --role {required} "
+                    f"or lattice comment --role {required}"
+                )
 
     # Check require_assigned
     if policy.get("require_assigned") and not snapshot.get("assigned_to"):
