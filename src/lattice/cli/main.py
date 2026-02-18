@@ -459,13 +459,18 @@ def init(
     if project_description is None and not non_interactive:
         try:
             click.echo("")
-            project_description = click.prompt(
-                "What is this project? (blank to skip)",
-                default="",
-                show_default=False,
-            ).strip()
+            wants_description = click.confirm(
+                "Want to tell Lattice what this project is?",
+                default=False,
+            )
+            if wants_description:
+                project_description = click.prompt(
+                    "Describe the project in a sentence or two",
+                    default="",
+                    show_default=False,
+                ).strip()
         except (click.Abort, EOFError):
-            project_description = ""
+            pass
 
     try:
         # Create directory structure
