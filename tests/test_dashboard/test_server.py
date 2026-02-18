@@ -480,7 +480,7 @@ class TestNonLoopbackWarning:
 
 class TestBindError:
     def test_bind_error_json_envelope(self, populated_lattice_dir):
-        """Port-in-use should produce a JSON error envelope with BIND_ERROR code."""
+        """Port-in-use should produce a JSON error envelope with PORT_IN_USE code."""
         import socket
 
         from click.testing import CliRunner
@@ -507,7 +507,7 @@ class TestBindError:
             assert result.exit_code != 0
             parsed = json.loads(result.output)
             assert parsed["ok"] is False
-            assert parsed["error"]["code"] == "BIND_ERROR"
+            assert parsed["error"]["code"] == "PORT_IN_USE"
         finally:
             sock.close()
 

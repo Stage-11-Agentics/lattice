@@ -24,6 +24,8 @@ from lattice.core.comments import (
 from lattice.core.config import (
     VALID_PRIORITIES,
     VALID_URGENCIES,
+    get_configured_roles,
+    validate_completion_policy,
     validate_status,
     validate_task_type,
     validate_transition,
@@ -390,6 +392,18 @@ def lattice_status(
         if not reason:
             raise ValueError("reason is required when force=True.")
 
+    # Check completion policies (evidence gating)
+    policy_ok, policy_failures = validate_completion_policy(config, snapshot, new_status)
+    if not policy_ok:
+        if not force:
+            failure_msg = "; ".join(policy_failures)
+            raise ValueError(
+                f"Completion policy not satisfied: {failure_msg}. "
+                "Set force=True and provide a reason to override."
+            )
+        if not reason:
+            raise ValueError("reason is required when force=True.")
+
     event_data: dict = {"from": current_status, "to": new_status}
     if force:
         event_data["force"] = True
@@ -442,6 +456,10 @@ def lattice_comment(
         str | None,
         Field(description="Event ID of parent comment for threading (one-level only)"),
     ] = None,
+    role: Annotated[
+        str | None,
+        Field(description="Role of this comment (e.g., 'review'). Satisfies completion policies."),
+    ] = None,
     lattice_root: Annotated[
         str | None, Field(description="Path to project directory containing .lattice/")
     ] = None,
@@ -455,11 +473,22 @@ def lattice_comment(
 
     text = validate_comment_body(text)
 
+    # Validate role against configured completion policy roles
+    if role is not None:
+        configured_roles = get_configured_roles(config)
+        if configured_roles and role not in configured_roles:
+            raise ValueError(
+                f"Unknown role: '{role}'. "
+                f"Valid roles: {', '.join(sorted(configured_roles))}."
+            )
+
     event_data: dict = {"body": text}
     if parent_id is not None:
         events = read_task_events(lattice_dir, task_id)
         validate_comment_for_reply(events, parent_id)
         event_data["parent_id"] = parent_id
+    if role is not None:
+        event_data["role"] = role
 
     event = create_event(type="comment_added", task_id=task_id, actor=actor, data=event_data)
     updated_snapshot = apply_event_to_snapshot(snapshot, event)
