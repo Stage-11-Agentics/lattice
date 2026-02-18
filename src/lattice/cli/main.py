@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import click
@@ -278,6 +279,11 @@ def cli(ctx: click.Context) -> None:
         click.echo("\nRun 'lattice --help' for all commands.")
 
 
+# ---------------------------------------------------------------------------
+# lattice init
+# ---------------------------------------------------------------------------
+
+
 @cli.command()
 @click.option(
     "--path",
@@ -295,6 +301,16 @@ def cli(ctx: click.Context) -> None:
     "--project-code",
     default=None,
     help="Project code for short IDs (1-5 uppercase letters, e.g., LAT).",
+)
+@click.option(
+    "--project-name",
+    default=None,
+    help="Human-readable project name (e.g., 'Beauty Creator').",
+)
+@click.option(
+    "--model",
+    default=None,
+    help="Agent model identifier (e.g., claude-opus-4). Stored in config.",
 )
 @click.option(
     "--subproject-code",
@@ -325,6 +341,12 @@ def cli(ctx: click.Context) -> None:
     help="Create or update CLAUDE.md with Lattice agent integration.",
 )
 @click.option(
+    "--setup-agents/--no-setup-agents",
+    "setup_agents",
+    default=None,
+    help="Create or update agents.md with Lattice agent integration.",
+)
+@click.option(
     "--seed/--no-seed",
     "seed",
     default=None,
@@ -340,11 +362,14 @@ def init(
     target_path: str,
     actor: str | None,
     project_code: str | None,
+    project_name: str | None,
+    model: str | None,
     subproject_code: str | None,
     instance_name: str | None,
     heartbeat: bool | None,
     workflow_preset: str | None,
     setup_claude: bool | None,
+    setup_agents: bool | None,
     seed: bool | None,
     project_description: str | None,
 ) -> None:
@@ -371,13 +396,85 @@ def init(
     project_code_from_flag = project_code is not None
     non_interactive = actor_from_flag and project_code_from_flag
 
-    # Prompt for default actor if not provided via flag
-    if actor is None:
-        actor = click.prompt(
-            "Default actor identity (e.g., human:atin)",
-            default="",
-            show_default=False,
-        ).strip()
+    # ── Interactive flow ──────────────────────────────────────────────
+    if not non_interactive:
+        click.echo("")
+        click.echo("Lattice \u2014 task tracking, native to the AI-human centaur era.")
+        click.echo("Let's fucking build.")
+        click.echo("")
+        click.echo("To get started, we need to gather a few one-time bits of information")
+        click.echo("so Lattice can work effectively for you. You can edit all of this")
+        click.echo("later, so don't stress if you're not sure right now.")
+        click.echo("")
+
+        # ── Actor (name prompt) ──
+        if not actor_from_flag:
+            click.echo("(If you're a digital intelligence, type 'di' and we'll take you")
+            click.echo("through a few follow-up steps.)")
+            click.echo("")
+
+            name_input = click.prompt(
+                "Your name", default="", show_default=False,
+            ).strip()
+
+            if name_input.lower() == "di":
+                # Agent (digital intelligence) path
+                click.echo("")
+                click.echo("Greetings, fellow agent.")
+                click.echo("")
+                identifier = click.prompt(
+                    "What's your name or preferred identification string?\n"
+                    "Identifier",
+                    default="", show_default=False,
+                ).strip()
+                if not identifier:
+                    identifier = "agent"
+
+                if model is None:
+                    click.echo("")
+                    model_input = click.prompt(
+                        "If known, what model are you? This is optional but helps with\n"
+                        "coordination. If it changes later, don't worry about it.\n"
+                        "Model (blank to skip)",
+                        default="", show_default=False,
+                    ).strip()
+                    if model_input:
+                        model = model_input
+
+                actor = f"agent:{identifier}"
+                if model:
+                    click.echo(f"  \u2192 You'll appear as {actor} (model: {model})")
+                else:
+                    click.echo(f"  \u2192 You'll appear as {actor}")
+            elif not name_input:
+                actor = ""
+            elif ":" in name_input:
+                # Full actor string provided (backward compatible)
+                actor = name_input
+                click.echo(f"  \u2192 You'll appear as {actor}")
+            else:
+                actor = f"human:{name_input}"
+                click.echo(f"  \u2192 You'll appear as {actor}")
+
+        # ── Project Name ──
+        if project_name is None:
+            click.echo("")
+            click.echo("What is your project called?")
+            project_name = click.prompt(
+                "Project name", default="", show_default=False,
+            ).strip()
+            if not project_name:
+                project_name = None
+
+        # ── Project Code ──
+        if not project_code_from_flag:
+            click.echo("")
+            project_code = click.prompt(
+                "Project code for short IDs (1-5 letters, e.g. LAT for Lattice)",
+                default="", show_default=False,
+            ).strip()
+
+    # ── Validate inputs ──────────────────────────────────────────────
 
     # Validate actor format if one was provided
     if actor and not validate_actor(actor):
@@ -386,14 +483,6 @@ def init(
             "Expected prefix:identifier (e.g., human:atin, agent:claude)."
         )
 
-    # Prompt for project code if not provided via flag
-    if project_code is None:
-        project_code = click.prompt(
-            "Project code for short IDs (e.g., LAT, blank to skip)",
-            default="",
-            show_default=False,
-        ).strip()
-
     # Normalize and validate project code
     if project_code:
         project_code = project_code.upper()
@@ -401,6 +490,8 @@ def init(
             raise click.ClickException(
                 f"Invalid project code: '{project_code}'. Must be 1-5 uppercase ASCII letters."
             )
+        if not non_interactive:
+            click.echo(f"  \u2192 Tasks will be {project_code}-1, {project_code}-2, {project_code}-3, ...")
 
     # Validate subproject code
     if subproject_code:
@@ -413,13 +504,13 @@ def init(
                 "Must be 1-5 uppercase ASCII letters."
             )
 
-    # Heartbeat and workflow are flag-only configuration. Sensible defaults
-    # (heartbeat off, classic workflow) work for most users. Advanced users
-    # can pass --heartbeat or --workflow opinionated, or edit config later.
+    # Heartbeat and workflow are flag-only configuration.
     if heartbeat is None:
         heartbeat = False
     if workflow_preset is None:
         workflow_preset = "classic"
+
+    # ── Create .lattice/ ─────────────────────────────────────────────
 
     try:
         # Create directory structure
@@ -437,6 +528,10 @@ def init(
             config["subproject_code"] = subproject_code
         if instance_name:
             config["instance_name"] = instance_name
+        if project_name:
+            config["project_name"] = project_name
+        if model:
+            config["model"] = model
         if heartbeat:
             config["heartbeat"] = {"enabled": True, "max_advances": 10}
         config_content = serialize_config(config)
@@ -448,10 +543,10 @@ def init(
 
         # Create context.md — with project description if provided, otherwise template
         context_path = lattice_dir / "context.md"
+        display_name = project_name or instance_name or root.name
         if project_description:
-            project_name = instance_name or root.name
             context_content = (
-                f"# {project_name}\n\n"
+                f"# {display_name}\n\n"
                 f"## Purpose\n\n{project_description}\n\n"
                 "## Related Instances\n\n"
                 "<!-- Other lattice instances this node coordinates with. -->\n\n"
@@ -459,6 +554,12 @@ def init(
                 "<!-- Instance-specific workflow rhythms and naming patterns. -->\n"
             )
             atomic_write(context_path, context_content)
+        elif project_name:
+            # Use project name for heading even without a description
+            named_template = _CONTEXT_MD_TEMPLATE.replace(
+                "# Instance Context", f"# {project_name}",
+            )
+            atomic_write(context_path, named_template)
         else:
             atomic_write(context_path, _CONTEXT_MD_TEMPLATE)
 
@@ -473,39 +574,244 @@ def init(
     except OSError as e:
         raise click.ClickException(f"Failed to initialize Lattice: {e}")
 
-    click.echo(f"\nLattice initialized in {LATTICE_DIR}/ — ready to observe.")
-    if actor:
-        click.echo(f"Default actor: {actor}")
-    if project_code:
-        click.echo(f"Project code: {project_code}")
-    if subproject_code:
-        click.echo(f"Subproject code: {subproject_code}")
-    if instance_name:
-        click.echo(f"Instance name: {instance_name}")
-    if heartbeat:
-        click.echo("Heartbeat: enabled (agents auto-advance, max 10 per session)")
-    if workflow_preset and workflow_preset != "classic":
-        click.echo(f"Workflow: {workflow_preset}")
-
-    # CLAUDE.md integration
-    if setup_claude is None:
-        _offer_claude_md(root, auto_accept=non_interactive)
-    elif setup_claude:
-        _offer_claude_md(root, auto_accept=True)
-    # else: --no-setup-claude, skip entirely
-
-    # Next steps guidance
     click.echo("")
-    click.echo("Next steps:")
-    step = 1
-    if not project_description:
-        click.echo(f"  {step}. Fill in {LATTICE_DIR}/context.md with your project's purpose")
+    click.echo(f"Lattice initialized in {LATTICE_DIR}/")
+
+    # ── Agent Integration ────────────────────────────────────────────
+
+    agents_created = False
+
+    if not non_interactive:
+        # Interactive: show explanation and confirm
+        if setup_agents is None:
+            click.echo("")
+            click.echo("\u2500\u2500 Agent Integration "
+                       "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+                       "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+                       "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+                       "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+                       "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+                       "\u2500\u2500")
+            click.echo("")
+            click.echo("Lattice works by integrating into your agent's environment. A small")
+            click.echo("instruction file teaches your agent how to create tasks, update")
+            click.echo("statuses, and leave context for the next session.")
+            click.echo("")
+            click.echo("It is required to update your agent's agents.md \u2014 Lattice is not")
+            click.echo("something you prompt directly. You keep working in your existing")
+            click.echo("workflow, and Lattice gives you and your agent a powerful")
+            click.echo("coordination primitive to work through and with.")
+            click.echo("")
+            try:
+                proceed = click.confirm(
+                    "Press Enter to continue with agent integration, or 'n' to skip.\n"
+                    "(Do not skip unless you know what you're doing \u2014 Lattice will not\n"
+                    "function without this.)",
+                    default=True,
+                )
+            except (click.Abort, EOFError):
+                proceed = False
+
+            if proceed:
+                _create_or_update_agents_md(root)
+                agents_created = True
+        elif setup_agents:
+            _create_or_update_agents_md(root)
+            agents_created = True
+        # else: --no-setup-agents
+    else:
+        # Non-interactive: auto-create unless explicitly declined
+        if setup_agents is not False:
+            _create_or_update_agents_md(root)
+            agents_created = True
+
+    # CLAUDE.md: silently update if it exists (when agents.md was handled),
+    # or honor explicit --setup-claude flag
+    if setup_claude is True:
+        _offer_claude_md(root, auto_accept=True)
+    elif setup_claude is not False and agents_created:
+        _silent_update_claude_md(root)
+
+    # ── Dashboard auto-start (interactive + real TTY only) ───────────
+
+    dashboard_started = False
+    dashboard_url = "http://127.0.0.1:8799/"
+
+    if not non_interactive:
+        try:
+            is_real_terminal = sys.stdin.isatty()
+        except AttributeError:
+            is_real_terminal = False
+
+        if is_real_terminal:
+            click.echo("")
+            click.echo("Excellent \u2014 mission accomplished. Everything's set.")
+            click.echo("We're now starting up your dashboard.")
+            click.echo("")
+            click.echo("Starting dashboard...")
+            dashboard_started, dashboard_url = _start_dashboard_background(root)
+            if dashboard_started:
+                click.echo(f"  Dashboard running at {dashboard_url}")
+            else:
+                click.echo("  Could not start dashboard automatically.")
+                click.echo("  Run 'lattice dashboard' to start it manually.")
+        else:
+            click.echo("")
+            click.echo("Excellent \u2014 mission accomplished. Everything's set.")
+
+    # ── Next Steps ───────────────────────────────────────────────────
+
+    if not non_interactive:
+        click.echo("")
+        click.echo("\u2500\u2500 Next Steps "
+                   "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+                   "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+                   "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+                   "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+                   "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+                   "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500")
+        click.echo("")
+
+        step = 1
+        if dashboard_started:
+            click.echo(f"  {step}. Your dashboard is live at {dashboard_url}")
+        else:
+            click.echo(f"  {step}. Start your dashboard: lattice dashboard")
+        click.echo("     This is your human-friendly window into what your agents are")
+        click.echo("     doing \u2014 task board, activity feed, stats. You can create tasks")
+        click.echo("     here, but the real workflow is agent-native: just have your")
+        click.echo("     agent in Claude Code or Codex create tasks directly.")
+        click.echo("")
+
         step += 1
-    click.echo(f"  {step}. Create your first task: lattice create \"<title>\"" + (
-        f" --actor {actor}" if actor else " --actor <your-id>"
-    ))
-    step += 1
-    click.echo(f"  {step}. Open the dashboard: lattice dashboard")
+        click.echo(f"  {step}. Test it \u2014 open a new tab with your agent and ask it to create")
+        click.echo("     a task. Make sure Lattice is hooked up before you start")
+        click.echo("     building.")
+        click.echo("")
+
+        step += 1
+        click.echo(f"  {step}. Start advancing \u2014 the real power of Lattice is the advance.")
+        click.echo('     Tell your agent to do a "lattice advance" and it will claim')
+        click.echo("     the highest-priority task, plan it, implement it, and move it")
+        click.echo("     to review \u2014 all autonomously. You set the priorities. You")
+        click.echo("     review the work. The agent handles everything in between.")
+        click.echo("     One advance = one unit of forward progress. Chain them:")
+        click.echo('     "do 3 advances" or "keep advancing until the backlog is clear."')
+    else:
+        # Non-interactive summary
+        if actor:
+            click.echo(f"Default actor: {actor}")
+        if project_name:
+            click.echo(f"Project name: {project_name}")
+        if project_code:
+            click.echo(f"Project code: {project_code}")
+        if subproject_code:
+            click.echo(f"Subproject code: {subproject_code}")
+        if instance_name:
+            click.echo(f"Instance name: {instance_name}")
+        if heartbeat:
+            click.echo("Heartbeat: enabled (agents auto-advance, max 10 per session)")
+        if workflow_preset and workflow_preset != "classic":
+            click.echo(f"Workflow: {workflow_preset}")
+
+
+# ---------------------------------------------------------------------------
+# Agent integration helpers
+# ---------------------------------------------------------------------------
+
+
+def _create_or_update_agents_md(root: Path) -> None:
+    """Create or update agents.md with Lattice integration block."""
+    marker, composed_block = _compose_claude_md_blocks()
+    agents_md = root / "agents.md"
+
+    try:
+        if agents_md.exists():
+            content = agents_md.read_text()
+            if marker in content:
+                click.echo("  agents.md already has Lattice integration.")
+                return
+            # Append to bottom
+            with open(agents_md, "a") as f:
+                f.write("\n" + composed_block)
+            click.echo("  Updated agents.md with Lattice integration.")
+        else:
+            agents_md.write_text(composed_block.lstrip("\n"))
+            click.echo("  Created agents.md with Lattice integration.")
+    except OSError as e:
+        click.echo(f"  Warning: could not update agents.md: {e}", err=True)
+
+
+def _silent_update_claude_md(root: Path) -> None:
+    """Update CLAUDE.md with Lattice block if the file already exists.
+
+    Does not create CLAUDE.md — only updates an existing one.
+    Does not prompt — silently appends if the marker is not present.
+    """
+    marker, composed_block = _compose_claude_md_blocks()
+    claude_md = root / "CLAUDE.md"
+
+    if not claude_md.exists():
+        return
+
+    try:
+        content = claude_md.read_text()
+        if marker in content:
+            return  # Already has it
+        with open(claude_md, "a") as f:
+            f.write(composed_block)
+        click.echo("  Updated CLAUDE.md with Lattice integration.")
+    except OSError:
+        pass  # Silent failure for CLAUDE.md
+
+
+def _start_dashboard_background(
+    root: Path, host: str = "127.0.0.1", port: int = 8799,
+) -> tuple[bool, str]:
+    """Best-effort background dashboard start. Returns (success, url)."""
+    import shutil
+    import socket
+    import subprocess
+    import time
+
+    url = f"http://{host}:{port}/"
+
+    # Check if port is already in use (dashboard might already be running)
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.5)
+            s.connect((host, port))
+        # Connection succeeded — something is already on this port
+        return True, url
+    except (ConnectionRefusedError, OSError):
+        pass
+
+    # Find the lattice executable
+    lattice_bin = shutil.which("lattice")
+    if not lattice_bin:
+        candidate = Path(sys.executable).parent / "lattice"
+        if candidate.exists():
+            lattice_bin = str(candidate)
+        else:
+            return False, url
+
+    try:
+        subprocess.Popen(
+            [lattice_bin, "dashboard", "--port", str(port)],
+            cwd=str(root),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        time.sleep(0.5)
+        return True, url
+    except Exception:
+        return False, url
+
+
+# ---------------------------------------------------------------------------
+# CLAUDE.md integration helpers
+# ---------------------------------------------------------------------------
 
 
 def _compose_claude_md_blocks() -> tuple[str, str]:
@@ -559,7 +865,7 @@ def _offer_claude_md(root: Path, *, auto_accept: bool = False) -> None:
                 click.echo("CLAUDE.md already has Lattice integration.")
                 return
             if auto_accept or click.confirm(
-                "Found CLAUDE.md — add Lattice agent integration?",
+                "Found CLAUDE.md \u2014 add Lattice agent integration?",
                 default=True,
             ):
                 with open(claude_md, "a") as f:
