@@ -69,7 +69,7 @@ LIFECYCLE_EVENT_TYPES: frozenset[str] = frozenset(
 def create_event(
     type: str,
     task_id: str,
-    actor: str,
+    actor: str | dict,
     data: dict,
     *,
     event_id: str | None = None,
@@ -82,8 +82,15 @@ def create_event(
 ) -> dict:
     """Build a complete event dict.
 
-    Auto-generates ``id`` and ``ts`` when not supplied.  The ``agent_meta``
-    object is included **only** when *model* or *session* is provided.
+    *actor* may be a legacy string (``"agent:claude"``) or a structured
+    identity dict (from ``ActorIdentity.to_dict()``).  Both are stored
+    directly in the ``actor`` field.
+
+    When *actor* is a string and *model*/*session* are provided, they are
+    stored in ``agent_meta`` for backward compatibility.  When *actor* is
+    already a structured dict, ``agent_meta`` is omitted (the identity
+    object carries model/session directly).
+
     The ``provenance`` object is included **only** when at least one of
     *triggered_by*, *on_behalf_of*, or *reason* is provided (sparse dict).
     """
@@ -97,7 +104,8 @@ def create_event(
         "data": data,
     }
 
-    if model is not None or session is not None:
+    # Only include agent_meta for legacy string actors
+    if isinstance(actor, str) and (model is not None or session is not None):
         event["agent_meta"] = {"model": model, "session": session}
 
     if triggered_by is not None or on_behalf_of is not None or reason is not None:
@@ -116,7 +124,7 @@ def create_event(
 def create_resource_event(
     type: str,
     resource_id: str,
-    actor: str,
+    actor: str | dict,
     data: dict,
     *,
     event_id: str | None = None,
@@ -130,8 +138,7 @@ def create_resource_event(
     """Build a complete resource event dict.
 
     Parallels ``create_event()`` but uses ``resource_id`` instead of
-    ``task_id``.  The ``agent_meta`` and ``provenance`` objects follow the
-    same sparse-inclusion rules.
+    ``task_id``.  Accepts both legacy string and structured dict actors.
     """
     event: dict = {
         "schema_version": 1,
@@ -143,7 +150,7 @@ def create_resource_event(
         "data": data,
     }
 
-    if model is not None or session is not None:
+    if isinstance(actor, str) and (model is not None or session is not None):
         event["agent_meta"] = {"model": model, "session": session}
 
     if triggered_by is not None or on_behalf_of is not None or reason is not None:
@@ -183,6 +190,30 @@ def validate_custom_event_type(event_type: str) -> bool:
     if not isinstance(event_type, str) or not event_type:
         return False
     return event_type.startswith("x_") and event_type not in BUILTIN_EVENT_TYPES
+
+
+# ---------------------------------------------------------------------------
+# Actor helpers
+# ---------------------------------------------------------------------------
+
+
+def get_actor_display(actor: str | dict) -> str:
+    """Return a human-readable display string for an actor.
+
+    If *actor* is a structured dict, returns the ``name`` field (e.g.,
+    ``"Argus-3"``).  If *actor* is a legacy string (``"agent:claude"``),
+    returns it as-is.
+    """
+    if isinstance(actor, dict):
+        return actor.get("name", str(actor))
+    return actor
+
+
+def get_actor_session(actor: str | dict) -> str | None:
+    """Extract the session ULID from an actor, if available."""
+    if isinstance(actor, dict):
+        return actor.get("session")
+    return None
 
 
 # ---------------------------------------------------------------------------
