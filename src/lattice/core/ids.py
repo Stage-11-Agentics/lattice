@@ -89,6 +89,11 @@ def generate_resource_id() -> str:
     return f"res_{ULID()}"
 
 
+def generate_session_id() -> str:
+    """Generate a new session ID with the sess_ prefix."""
+    return f"sess_{ULID()}"
+
+
 def validate_id(id_str: str, expected_prefix: str) -> bool:
     """Validate a ``<prefix>_<ulid>`` identifier.
 

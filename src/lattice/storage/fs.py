@@ -78,6 +78,8 @@ def ensure_lattice_dirs(root: Path) -> None:
         "notes",
         "plans",
         "resources",
+        "sessions",
+        "sessions/archive",
         "archive/tasks",
         "archive/events",
         "archive/notes",
