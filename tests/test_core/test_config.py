@@ -505,17 +505,40 @@ class TestValidateCompletionPolicy:
 
 
 # ---------------------------------------------------------------------------
-# get_configured_roles (LAT-137)
+# get_configured_roles (LAT-137, LAT-151)
 # ---------------------------------------------------------------------------
 
 
 class TestGetConfiguredRoles:
-    def test_no_policies_returns_empty(self) -> None:
+    def test_default_config_includes_explicit_roles(self) -> None:
+        """Default config defines workflow.roles: ['review']."""
         config = default_config()
+        assert get_configured_roles(config) == {"review"}
+
+    def test_no_roles_no_policies_returns_empty(self) -> None:
+        """Config with neither workflow.roles nor completion policies → empty set."""
+        config = default_config()
+        config["workflow"].pop("roles", None)
         assert get_configured_roles(config) == set()
+
+    def test_explicit_roles_without_policies(self) -> None:
+        """workflow.roles alone (no completion policies) is sufficient."""
+        config = default_config()
+        config["workflow"]["roles"] = ["review", "qa"]
+        assert get_configured_roles(config) == {"review", "qa"}
+
+    def test_explicit_roles_merged_with_policy_roles(self) -> None:
+        """Union of workflow.roles and completion policy require_roles."""
+        config = default_config()
+        config["workflow"]["roles"] = ["qa"]
+        config["workflow"]["completion_policies"] = {
+            "done": {"require_roles": ["review"]},
+        }
+        assert get_configured_roles(config) == {"review", "qa"}
 
     def test_single_policy_single_role(self) -> None:
         config = default_config()
+        config["workflow"].pop("roles", None)
         config["workflow"]["completion_policies"] = {
             "done": {"require_roles": ["review"]},
         }
@@ -523,21 +546,24 @@ class TestGetConfiguredRoles:
 
     def test_multiple_policies_multiple_roles(self) -> None:
         config = default_config()
+        config["workflow"].pop("roles", None)
         config["workflow"]["completion_policies"] = {
             "done": {"require_roles": ["review", "sign_off"]},
             "review": {"require_roles": ["triage"]},
         }
         assert get_configured_roles(config) == {"review", "sign_off", "triage"}
 
-    def test_empty_require_roles(self) -> None:
+    def test_empty_require_roles_with_no_explicit(self) -> None:
         config = default_config()
+        config["workflow"].pop("roles", None)
         config["workflow"]["completion_policies"] = {
             "done": {"require_roles": []},
         }
         assert get_configured_roles(config) == set()
 
-    def test_policy_without_require_roles(self) -> None:
+    def test_policy_without_require_roles_with_no_explicit(self) -> None:
         config = default_config()
+        config["workflow"].pop("roles", None)
         config["workflow"]["completion_policies"] = {
             "done": {"require_assigned": True},
         }

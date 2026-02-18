@@ -23,6 +23,7 @@ class Workflow(TypedDict, total=False):
     universal_targets: list[str]
     wip_limits: WipLimits
     completion_policies: dict[str, CompletionPolicy]
+    roles: list[str]
 
 
 class HooksOnConfig(TypedDict, total=False):
@@ -166,6 +167,7 @@ def default_config(preset: str = "classic") -> LatticeConfig:
             "cancelled": [],
         },
         "universal_targets": ["needs_human", "cancelled"],
+        "roles": ["review"],
         "wip_limits": {
             "in_progress": 10,
             "review": 5,
@@ -370,12 +372,19 @@ def validate_completion_policy(
 
 
 def get_configured_roles(config: LatticeConfig) -> set[str]:
-    """Collect all role strings from require_roles across all completion policies.
+    """Collect all valid role strings from explicit ``workflow.roles`` and
+    ``require_roles`` across completion policies.
 
-    Returns an empty set if no completion policies or no require_roles are configured.
+    Returns the union of both sources.  An empty set means no roles are
+    configured anywhere — callers should treat any ``--role`` value as valid
+    for backward compatibility.
     """
     roles: set[str] = set()
     workflow = config.get("workflow", {})
+    # Explicit roles list (the primary source)
+    for role in workflow.get("roles", []):
+        roles.add(role)
+    # Also include roles referenced by completion policies
     policies = workflow.get("completion_policies", {})
     for policy in policies.values():
         for role in policy.get("require_roles", []):

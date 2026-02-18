@@ -361,13 +361,54 @@ class TestCommentRoleValidation:
 
 
 class TestCommentRoleNoPolicies:
-    """When no completion policies exist, any role is accepted."""
+    """When no roles are configured anywhere, any role is accepted (backward compat)."""
 
-    def test_any_role_accepted_without_policies(self, invoke, create_task) -> None:
-        task = create_task("No policies")
+    @pytest.fixture(autouse=True)
+    def _strip_roles(self, initialized_root) -> None:
+        """Remove both workflow.roles and completion_policies so no roles are configured."""
+        from lattice.storage.fs import LATTICE_DIR
+
+        config_path = initialized_root / LATTICE_DIR / "config.json"
+        config = json.loads(config_path.read_text())
+        config["workflow"].pop("roles", None)
+        config["workflow"].pop("completion_policies", None)
+        config_path.write_text(json.dumps(config, sort_keys=True, indent=2) + "\n")
+
+    def test_any_role_accepted_without_any_config(self, invoke, create_task) -> None:
+        task = create_task("No roles configured")
         result = invoke(
             "comment", task["id"], "all good",
             "--role", "anything_goes",
+            "--actor", "human:test",
+        )
+        assert result.exit_code == 0
+
+
+class TestCommentRoleExplicitRoles:
+    """When workflow.roles is configured (no completion policies), validation enforces."""
+
+    def test_typo_rejected_by_explicit_roles(self, invoke, create_task) -> None:
+        """Default config has workflow.roles: ['review'], so typos are caught."""
+        task = create_task("Explicit roles")
+        result = invoke(
+            "comment", task["id"], "looks good",
+            "--role", "reveiw",
+            "--actor", "human:test",
+            "--json",
+        )
+        assert result.exit_code != 0
+        parsed = json.loads(result.output)
+        assert parsed["ok"] is False
+        assert parsed["error"]["code"] == "INVALID_ROLE"
+        assert "reveiw" in parsed["error"]["message"]
+        assert "review" in parsed["error"]["message"]
+
+    def test_valid_role_accepted_by_explicit_roles(self, invoke, create_task) -> None:
+        """Default config has workflow.roles: ['review'], so 'review' passes."""
+        task = create_task("Explicit roles OK")
+        result = invoke(
+            "comment", task["id"], "all good",
+            "--role", "review",
             "--actor", "human:test",
         )
         assert result.exit_code == 0

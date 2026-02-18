@@ -155,7 +155,7 @@ class TestAttachFile:
             task_id,
             str(src_file),
             "--role",
-            "debug_log",
+            "review",
             "--actor",
             _ACTOR,
         )
@@ -165,12 +165,12 @@ class TestAttachFile:
         event_path = lattice_dir / "events" / f"{task_id}.jsonl"
         lines = event_path.read_text().strip().split("\n")
         attach_event = json.loads(lines[1])
-        assert attach_event["data"]["role"] == "debug_log"
+        assert attach_event["data"]["role"] == "review"
 
         # Check snapshot evidence_refs stores role
         snap = json.loads((lattice_dir / "tasks" / f"{task_id}.json").read_text())
         art_refs = [r for r in snap["evidence_refs"] if r.get("source_type") == "artifact"]
-        assert art_refs[0]["role"] == "debug_log"
+        assert art_refs[0]["role"] == "review"
 
 
 # ---------------------------------------------------------------------------
