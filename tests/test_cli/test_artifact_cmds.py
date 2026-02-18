@@ -600,7 +600,45 @@ class TestAttachInline:
         assert result.exit_code == 0, result.output
         data = json.loads(result.output)["data"]
         assert data["type"] == "note"
-        assert data["title"] == "review"
+        assert data["title"] == "Inline: review"
+
+    def test_inline_rejects_reference_type(self, invoke, create_task) -> None:
+        """--inline cannot be paired with URL-like/reference artifact types."""
+        task = create_task("Inline invalid type")
+        result = invoke(
+            "attach",
+            task["id"],
+            "--inline",
+            "review content",
+            "--type",
+            "reference",
+            "--actor",
+            _ACTOR,
+            "--json",
+        )
+        assert result.exit_code != 0
+        parsed = json.loads(result.output)
+        assert parsed["error"]["code"] == "VALIDATION_ERROR"
+        assert "must be 'note' or 'file'" in parsed["error"]["message"]
+
+    def test_inline_rejects_url_type_alias(self, invoke, create_task) -> None:
+        """--inline rejects --type url with the same explicit guidance."""
+        task = create_task("Inline invalid url type")
+        result = invoke(
+            "attach",
+            task["id"],
+            "--inline",
+            "review content",
+            "--type",
+            "url",
+            "--actor",
+            _ACTOR,
+            "--json",
+        )
+        assert result.exit_code != 0
+        parsed = json.loads(result.output)
+        assert parsed["error"]["code"] == "VALIDATION_ERROR"
+        assert "must be 'note' or 'file'" in parsed["error"]["message"]
 
     def test_inline_payload_stored(self, invoke, create_task, initialized_root) -> None:
         """Inline text is saved as a .md payload file."""

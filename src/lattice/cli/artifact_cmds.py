@@ -83,6 +83,12 @@ def attach(
             "VALIDATION_ERROR",
             is_json,
         )
+    if inline_text is not None and art_type is not None and art_type not in {"note", "file"}:
+        output_error(
+            f"When using --inline, --type must be 'note' or 'file' (got '{art_type}').",
+            "VALIDATION_ERROR",
+            is_json,
+        )
 
     lattice_dir = require_root(is_json)
     config = load_project_config(lattice_dir)
@@ -122,7 +128,7 @@ def attach(
         source = tmp.name
         _inline_tmp_path = Path(tmp.name)
         if title is None:
-            title = role or "inline attachment"
+            title = f"Inline: {role}" if role else "inline attachment"
         if art_type is None:
             art_type = "note"
 
