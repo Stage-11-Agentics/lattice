@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import glob
 import json
+import tempfile
 
 from lattice.storage.fs import LATTICE_DIR
 
@@ -637,3 +639,98 @@ class TestAttachInline:
         task = create_task("Neither test")
         result = invoke("attach", task["id"], "--actor", _ACTOR)
         assert result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# Inline temp file cleanup (LAT-134)
+# ---------------------------------------------------------------------------
+
+
+def _inline_temp_files() -> list[str]:
+    """Return all lattice-inline-* temp files in the system temp dir."""
+    return glob.glob(str(tempfile.gettempdir()) + "/lattice-inline-*")
+
+
+class TestInlineTempFileCleanup:
+    """Verify --inline temp files are cleaned up on every exit path."""
+
+    def test_cleanup_on_invalid_artifact_type(self, invoke, create_task) -> None:
+        task = create_task("Temp cleanup - invalid type")
+        before = set(_inline_temp_files())
+        invoke(
+            "attach", task["id"],
+            "--inline", "text",
+            "--type", "invalid_type",
+            "--actor", _ACTOR,
+        )
+        leaked = set(_inline_temp_files()) - before
+        assert not leaked, f"Leaked temp files: {leaked}"
+
+    def test_cleanup_on_invalid_artifact_id(self, invoke, create_task) -> None:
+        task = create_task("Temp cleanup - invalid ID")
+        before = set(_inline_temp_files())
+        invoke(
+            "attach", task["id"],
+            "--inline", "text",
+            "--id", "bad_id",
+            "--actor", _ACTOR,
+        )
+        leaked = set(_inline_temp_files()) - before
+        assert not leaked, f"Leaked temp files: {leaked}"
+
+    def test_cleanup_on_idempotent_conflict(self, invoke, create_task, tmp_path) -> None:
+        task = create_task("Temp cleanup - conflict")
+        art_id = "art_01EEEEEEEEEEEEEEEEEEEEEEEE"
+
+        # First attach with a file to create the artifact
+        src = tmp_path / "orig.txt"
+        src.write_text("original")
+        invoke("attach", task["id"], str(src), "--id", art_id, "--actor", _ACTOR)
+
+        # Second attach with --inline and same ID but different content -> conflict
+        before = set(_inline_temp_files())
+        invoke(
+            "attach", task["id"],
+            "--inline", "different content",
+            "--id", art_id,
+            "--actor", _ACTOR,
+        )
+        leaked = set(_inline_temp_files()) - before
+        assert not leaked, f"Leaked temp files: {leaked}"
+
+    def test_cleanup_on_idempotent_success(self, invoke, create_task) -> None:
+        task = create_task("Temp cleanup - idempotent success")
+        art_id = "art_01FFFFFFFFFFFFFFFFFFFFFFFFFFFF"
+
+        # First attach with --inline
+        invoke(
+            "attach", task["id"],
+            "--inline", "review text",
+            "--id", art_id,
+            "--title", "inline attachment",
+            "--actor", _ACTOR,
+        )
+
+        # Second attach with identical --inline -> idempotent success early return
+        before = set(_inline_temp_files())
+        invoke(
+            "attach", task["id"],
+            "--inline", "review text",
+            "--id", art_id,
+            "--title", "inline attachment",
+            "--actor", _ACTOR,
+        )
+        leaked = set(_inline_temp_files()) - before
+        assert not leaked, f"Leaked temp files: {leaked}"
+
+    def test_cleanup_on_success(self, invoke, create_task) -> None:
+        task = create_task("Temp cleanup - success")
+        before = set(_inline_temp_files())
+        result = invoke(
+            "attach", task["id"],
+            "--inline", "review content",
+            "--actor", _ACTOR,
+        )
+        assert result.exit_code == 0
+        leaked = set(_inline_temp_files()) - before
+        assert not leaked, f"Leaked temp files: {leaked}"

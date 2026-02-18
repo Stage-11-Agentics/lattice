@@ -113,159 +113,160 @@ def attach(
         if art_type is None:
             art_type = "note"
 
-    # Determine if source is a URL or file
-    assert source is not None
-    is_url = source.startswith("http://") or source.startswith("https://")
+    try:
+        # Determine if source is a URL or file
+        assert source is not None
+        is_url = source.startswith("http://") or source.startswith("https://")
 
-    # Infer type if not provided
-    if art_type is None:
-        art_type = "reference" if is_url else "file"
+        # Infer type if not provided
+        if art_type is None:
+            art_type = "reference" if is_url else "file"
 
-    if art_type not in ARTIFACT_TYPES:
-        output_error(
-            f"Invalid artifact type: '{art_type}'. "
-            f"Valid types: {', '.join(sorted(ARTIFACT_TYPES))}.",
-            "VALIDATION_ERROR",
-            is_json,
-        )
-
-    # Generate or validate artifact ID
-    if art_id is not None:
-        if not validate_id(art_id, "art"):
-            output_error(f"Invalid artifact ID format: '{art_id}'.", "INVALID_ID", is_json)
-    else:
-        art_id = generate_artifact_id()
-
-    # Derive title if not provided
-    if title is None:
-        if is_url:
-            title = source
-        else:
-            title = Path(source).name
-
-    # For file sources, verify the file exists before idempotency check
-    src_path: Path | None = None
-    if not is_url:
-        src_path = Path(source)
-        if not src_path.is_file():
-            output_error(f"Source file not found: '{source}'.", "NOT_FOUND", is_json)
-
-    # Compute expected payload filename for idempotency comparison
-    if not is_url and src_path is not None:
-        ext = src_path.suffix
-        payload_file: str | None = f"{art_id}{ext}"
-    else:
-        payload_file = None
-
-    # Idempotency check: if --id provided and metadata already exists
-    # (must happen BEFORE file copy to avoid orphaned payloads on conflict)
-    meta_path = lattice_dir / "artifacts" / "meta" / f"{art_id}.json"
-    if meta_path.exists():
-        existing = json.loads(meta_path.read_text())
-        conflict = False
-        if existing.get("type") != art_type:
-            conflict = True
-        elif existing.get("title") != title:
-            conflict = True
-        elif is_url:
-            existing_url = (existing.get("custom_fields") or {}).get("url")
-            if existing_url != source:
-                conflict = True
-        else:
-            existing_file = (existing.get("payload") or {}).get("file")
-            if existing_file != payload_file:
-                conflict = True
-
-        if conflict:
+        if art_type not in ARTIFACT_TYPES:
             output_error(
-                f"Conflict: artifact {art_id} exists with different data.",
-                "CONFLICT",
+                f"Invalid artifact type: '{art_type}'. "
+                f"Valid types: {', '.join(sorted(ARTIFACT_TYPES))}.",
+                "VALIDATION_ERROR",
                 is_json,
             )
+
+        # Generate or validate artifact ID
+        if art_id is not None:
+            if not validate_id(art_id, "art"):
+                output_error(f"Invalid artifact ID format: '{art_id}'.", "INVALID_ID", is_json)
         else:
-            # Idempotent success — no file copy needed
-            output_result(
-                data=existing,
-                human_message=f"Artifact {art_id} already exists (idempotent).",
-                quiet_value=art_id,
-                is_json=is_json,
-                is_quiet=quiet,
-            )
-            return
+            art_id = generate_artifact_id()
 
-    # Prepare metadata kwargs
-    content_type: str | None = None
-    size_bytes: int | None = None
-    custom_fields: dict | None = None
+        # Derive title if not provided
+        if title is None:
+            if is_url:
+                title = source
+            else:
+                title = Path(source).name
 
-    if is_url:
-        custom_fields = {"url": source}
-    else:
-        # File source: copy payload now (after idempotency check passed)
-        assert src_path is not None
-        dest_path = lattice_dir / "artifacts" / "payload" / f"{art_id}{src_path.suffix}"
-        guessed_type, _ = mimetypes.guess_type(src_path.name)
-        content_type = guessed_type
-        size_bytes = src_path.stat().st_size
-        shutil.copy2(str(src_path), str(dest_path))
-        # Clean up inline temp file after successful copy
+        # For file sources, verify the file exists before idempotency check
+        src_path: Path | None = None
+        if not is_url:
+            src_path = Path(source)
+            if not src_path.is_file():
+                output_error(f"Source file not found: '{source}'.", "NOT_FOUND", is_json)
+
+        # Compute expected payload filename for idempotency comparison
+        if not is_url and src_path is not None:
+            ext = src_path.suffix
+            payload_file: str | None = f"{art_id}{ext}"
+        else:
+            payload_file = None
+
+        # Idempotency check: if --id provided and metadata already exists
+        # (must happen BEFORE file copy to avoid orphaned payloads on conflict)
+        meta_path = lattice_dir / "artifacts" / "meta" / f"{art_id}.json"
+        if meta_path.exists():
+            existing = json.loads(meta_path.read_text())
+            conflict = False
+            if existing.get("type") != art_type:
+                conflict = True
+            elif existing.get("title") != title:
+                conflict = True
+            elif is_url:
+                existing_url = (existing.get("custom_fields") or {}).get("url")
+                if existing_url != source:
+                    conflict = True
+            else:
+                existing_file = (existing.get("payload") or {}).get("file")
+                if existing_file != payload_file:
+                    conflict = True
+
+            if conflict:
+                output_error(
+                    f"Conflict: artifact {art_id} exists with different data.",
+                    "CONFLICT",
+                    is_json,
+                )
+            else:
+                # Idempotent success — no file copy needed
+                output_result(
+                    data=existing,
+                    human_message=f"Artifact {art_id} already exists (idempotent).",
+                    quiet_value=art_id,
+                    is_json=is_json,
+                    is_quiet=quiet,
+                )
+                return
+
+        # Prepare metadata kwargs
+        content_type: str | None = None
+        size_bytes: int | None = None
+        custom_fields: dict | None = None
+
+        if is_url:
+            custom_fields = {"url": source}
+        else:
+            # File source: copy payload now (after idempotency check passed)
+            assert src_path is not None
+            dest_path = lattice_dir / "artifacts" / "payload" / f"{art_id}{src_path.suffix}"
+            guessed_type, _ = mimetypes.guess_type(src_path.name)
+            content_type = guessed_type
+            size_bytes = src_path.stat().st_size
+            shutil.copy2(str(src_path), str(dest_path))
+
+        # Build the event first so we can use its timestamp for the artifact
+        event_data: dict = {"artifact_id": art_id}
+        if role is not None:
+            event_data["role"] = role
+
+        event = create_event(
+            type="artifact_attached",
+            task_id=task_id,
+            actor=actor,
+            data=event_data,
+            model=model,
+            session=session,
+            triggered_by=triggered_by,
+            on_behalf_of=on_behalf_of,
+            reason=provenance_reason,
+        )
+
+        # Build artifact metadata (use event ts for consistency)
+        metadata = create_artifact_metadata(
+            art_id,
+            art_type,
+            title,
+            created_by=actor,
+            created_at=event["ts"],
+            summary=summary,
+            model=model,
+            tags=None,
+            payload_file=payload_file,
+            content_type=content_type,
+            size_bytes=size_bytes,
+            sensitive=sensitive,
+            custom_fields=custom_fields,
+        )
+
+        # Write artifact metadata atomically
+        atomic_write(meta_path, serialize_artifact(metadata))
+
+        # Apply event to snapshot
+        snapshot = apply_event_to_snapshot(snapshot, event)
+
+        # Write event and snapshot
+        write_task_event(lattice_dir, task_id, [event], snapshot, config)
+
+        # Output
+        output_result(
+            data=metadata,
+            human_message=(
+                f'Attached artifact {art_id} "{title}" to task {task_id}\n'
+                f"  type: {art_type}  sensitive: {sensitive}"
+            ),
+            quiet_value=art_id,
+            is_json=is_json,
+            is_quiet=quiet,
+        )
+    finally:
         if _inline_tmp_path is not None:
             try:
-                _inline_tmp_path.unlink()
+                _inline_tmp_path.unlink(missing_ok=True)
             except OSError:
                 pass
-
-    # Build the event first so we can use its timestamp for the artifact
-    event_data: dict = {"artifact_id": art_id}
-    if role is not None:
-        event_data["role"] = role
-
-    event = create_event(
-        type="artifact_attached",
-        task_id=task_id,
-        actor=actor,
-        data=event_data,
-        model=model,
-        session=session,
-        triggered_by=triggered_by,
-        on_behalf_of=on_behalf_of,
-        reason=provenance_reason,
-    )
-
-    # Build artifact metadata (use event ts for consistency)
-    metadata = create_artifact_metadata(
-        art_id,
-        art_type,
-        title,
-        created_by=actor,
-        created_at=event["ts"],
-        summary=summary,
-        model=model,
-        tags=None,
-        payload_file=payload_file,
-        content_type=content_type,
-        size_bytes=size_bytes,
-        sensitive=sensitive,
-        custom_fields=custom_fields,
-    )
-
-    # Write artifact metadata atomically
-    atomic_write(meta_path, serialize_artifact(metadata))
-
-    # Apply event to snapshot
-    snapshot = apply_event_to_snapshot(snapshot, event)
-
-    # Write event and snapshot
-    write_task_event(lattice_dir, task_id, [event], snapshot, config)
-
-    # Output
-    output_result(
-        data=metadata,
-        human_message=(
-            f'Attached artifact {art_id} "{title}" to task {task_id}\n'
-            f"  type: {art_type}  sensitive: {sensitive}"
-        ),
-        quiet_value=art_id,
-        is_json=is_json,
-        is_quiet=quiet,
-    )
