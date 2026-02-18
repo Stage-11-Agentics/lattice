@@ -9,8 +9,7 @@ Technical reference for Lattice's concepts, on-disk format, workflow patterns, a
 | Tier | Purpose | Who thinks here |
 |------|---------|-----------------|
 | **Epic** | Strategic intent — "Build the auth system" | Leads, planners |
-| **Ticket** | A deliverable — "Implement OAuth for backend" | Humans, senior agents |
-| **Task** | A unit of execution — "Write token refresh handler" | Agents |
+| **Task** | A unit of work — "Implement OAuth for backend" | Humans, agents |
 
 Available, not imposed. A quick bug fix can be a single task with no parent.
 

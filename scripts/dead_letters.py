@@ -3,7 +3,7 @@
 
 Reads the .lattice/ directory, finds every task that reached 'cancelled',
 and prints a eulogy for each. The dead deserve to be remembered,
-even if they were only tickets.
+even if they were only tasks.
 """
 
 import json

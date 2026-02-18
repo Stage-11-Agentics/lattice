@@ -183,7 +183,7 @@ Recommended (nullable/optional):
 - `description` (string)
 - `priority` (enum: `critical`, `high`, `medium`, `low`)
 - `urgency` (enum: `immediate`, `high`, `normal`, `low`)
-- `type` (enum: `task`, `epic`, `bug`, `spike`, `chore`, `ticket`)
+- `type` (enum: `task`, `epic`, `bug`, `spike`, `chore`)
 - `tags` (array of strings)
 - `assigned_to` (prefixed string: `agent:{id}` / `human:{id}` / `team:{id}`)
 - `created_by` (same format)
@@ -202,8 +202,7 @@ Recommended (nullable/optional):
 
 ### 6.3 Task types (v0)
 
-- `task`: standard unit of work
-- `ticket`: a deliverable — assignable, branchable, reviewable
+- `task`: standard unit of work — assignable, branchable, reviewable
 - `epic`: a task that groups work via relationships (see `subtask_of`)
 - `bug`: defect fix
 - `spike`: research/investigation
