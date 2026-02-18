@@ -72,10 +72,10 @@ Moving a task to `review` is not a formality — it is a commitment to actually 
 **When you move a task to `review`:**
 1. Identify what changed — the commits, files modified, and scope of work under this task.
 2. Perform a code review. For substantial work, use a review skill (`/exit-review`, `/code_review`). For trivial tasks, a focused self-review is sufficient — but it must be real, not ceremonial.
-3. Record your findings with `lattice comment` — what you reviewed, what you found, whether it meets the acceptance criteria from the plan.
+3. Record your findings with `lattice comment --role review` — what you reviewed, what you found, and whether it meets the acceptance criteria from the plan. This satisfies completion policy `require_roles` checks.
 
 **When moving from `review` to `done`:**
-- If the completion policy blocks you for a missing review artifact, **do the review**. Do not `--force` past it. The policy is correct — you haven't reviewed yet.
+- If the completion policy blocks you, **do the review** and record it with `lattice comment <task> "<findings>" --role review --actor ...`. This is the lightweight path that satisfies `require_roles` checks. Do not `--force` past it.
 - `--force --reason` on the completion policy is for genuinely exceptional cases (task cancelled, review happened outside Lattice, process validation). It is not a convenience shortcut.
 
 **The test:** If you moved to `review` and then to `done` in the same breath with nothing in between, you skipped the review. That's the exact failure mode this gate exists to prevent.
@@ -429,10 +429,10 @@ Moving a task to `review` is not a formality — it is a commitment to actually 
 **When you move a task to `review`:**
 1. Identify what changed — the commits, files modified, and scope of work under this task.
 2. Perform a code review. For substantial work, use a review skill (`/exit-review`, `/code_review`). For trivial tasks, a focused self-review is sufficient — but it must be real, not ceremonial.
-3. Record your findings with `lattice comment` — what you reviewed, what you found, whether it meets the acceptance criteria from the plan.
+3. Record your findings with `lattice comment --role review` — what you reviewed, what you found, and whether it meets the acceptance criteria from the plan. This satisfies completion policy `require_roles` checks.
 
 **When moving from `review` to `done`:**
-- If the completion policy blocks you for a missing review artifact, **do the review**. Do not `--force` past it. The policy is correct — you haven't reviewed yet.
+- If the completion policy blocks you, **do the review** and record it with `lattice comment <task> "<findings>" --role review --actor ...`. This is the lightweight path that satisfies `require_roles` checks. Do not `--force` past it.
 - `--force --reason` on the completion policy is for genuinely exceptional cases (task cancelled, review happened outside Lattice, process validation). It is not a convenience shortcut.
 
 **The test:** If you moved to `review` and then to `done` in the same breath with nothing in between, you skipped the review. That's the exact failure mode this gate exists to prevent.

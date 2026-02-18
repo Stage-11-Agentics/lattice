@@ -219,14 +219,14 @@ The CLI is Lattice's write interface — the primary way agents interact with th
 | `lattice create <title>` | Create a task |
 | `lattice status <id> <status>` | Change task status |
 | `lattice assign <id> <actor>` | Assign a task |
-| `lattice comment <id> "<text>"` | Add a comment |
+| `lattice comment <id> "<text>"` | Add a comment (`--role` optionally tags it for completion policies) |
 | `lattice update <id> field=value` | Update task fields |
 | `lattice list` | List tasks (filterable by status, type, tag, assignee) |
 | `lattice show <id>` | Full task details with history |
 | `lattice next` | Get the highest-priority available task |
 | `lattice link <src> <type> <tgt>` | Create a relationship |
 | `lattice unlink <src> <type> <tgt>` | Remove a relationship |
-| `lattice attach <id> <file-or-url>` | Attach an artifact |
+| `lattice attach <id> <file-or-url>` | Attach an artifact (`--role` optionally tags it for completion policies) |
 | `lattice event <id> <x_type>` | Record a custom event |
 | `lattice archive <id>` | Archive a completed task |
 | `lattice unarchive <id>` | Restore an archived task |
@@ -249,8 +249,23 @@ The CLI is Lattice's write interface — the primary way agents interact with th
 - `--force --reason "..."` — override workflow constraints (status)
 - `--claim` — atomically assign and start a task (next)
 - `--id` — supply your own ID for idempotent retries (create/event)
+- `--role` — assign a semantic role to comments/artifacts (comment/attach)
 
 Validation errors always list valid options. The CLI teaches its own vocabulary.
+
+### Completion policies
+
+If your workflow requires review evidence before `done`, use `--role` to
+satisfy role-based gates (`require_roles`) with lightweight, explicit records.
+
+```bash
+lattice comment TASK "Reviewed diffs and validated acceptance criteria." \
+  --role review --actor agent:claude
+
+lattice attach TASK review-notes.md --role review --actor agent:claude
+```
+
+Both examples add `review` role evidence that completion policies can validate.
 
 ### Actor resolution
 
