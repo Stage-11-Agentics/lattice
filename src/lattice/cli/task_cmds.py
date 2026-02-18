@@ -717,11 +717,13 @@ def assign(
 @click.argument("task_id")
 @click.argument("text")
 @click.option("--reply-to", default=None, help="Event ID of the comment to reply to.")
+@click.option("--role", default=None, help="Role of this comment (e.g., 'review'). Satisfies completion policies.")
 @common_options
 def comment(
     task_id: str,
     text: str,
     reply_to: str | None,
+    role: str | None,
     actor: str,
     model: str | None,
     session: str | None,
@@ -761,6 +763,8 @@ def comment(
     event_data: dict = {"body": text}
     if reply_to is not None:
         event_data["parent_id"] = reply_to
+    if role is not None:
+        event_data["role"] = role
 
     event = create_event(
         type="comment_added",

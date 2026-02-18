@@ -39,22 +39,24 @@ from lattice.storage.fs import atomic_write
 
 @cli.command()
 @click.argument("task_id")
-@click.argument("source")
+@click.argument("source", required=False, default=None)
 @click.option("--type", "art_type", default=None, help="Artifact type.")
 @click.option("--title", default=None, help="Artifact title.")
 @click.option("--summary", default=None, help="Short summary.")
 @click.option("--sensitive", is_flag=True, help="Mark artifact as sensitive.")
 @click.option("--role", default=None, help="Role of artifact on the task.")
+@click.option("--inline", "inline_text", default=None, help="Inline text content (instead of file/URL).")
 @click.option("--id", "art_id", default=None, help="Caller-supplied artifact ID.")
 @common_options
 def attach(
     task_id: str,
-    source: str,
+    source: str | None,
     art_type: str | None,
     title: str | None,
     summary: str | None,
     sensitive: bool,
     role: str | None,
+    inline_text: str | None,
     art_id: str | None,
     actor: str,
     model: str | None,
@@ -68,6 +70,20 @@ def attach(
     """Attach a file or URL to a task as an artifact."""
     is_json = output_json
 
+    # Validate source/inline exclusivity
+    if source is not None and inline_text is not None:
+        output_error(
+            "Provide either SOURCE or --inline, not both.",
+            "VALIDATION_ERROR",
+            is_json,
+        )
+    if source is None and inline_text is None:
+        output_error(
+            "Provide either a SOURCE (file/URL) or --inline text.",
+            "VALIDATION_ERROR",
+            is_json,
+        )
+
     lattice_dir = require_root(is_json)
     config = load_project_config(lattice_dir)
 
@@ -80,7 +96,25 @@ def attach(
     # Validate task exists
     snapshot = read_snapshot_or_exit(lattice_dir, task_id, is_json)
 
+    # Handle inline text: write to a temp file and treat as file source
+    _inline_tmp_path: Path | None = None
+    if inline_text is not None:
+        import tempfile
+
+        tmp = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".md", delete=False, prefix="lattice-inline-"
+        )
+        tmp.write(inline_text)
+        tmp.close()
+        source = tmp.name
+        _inline_tmp_path = Path(tmp.name)
+        if title is None:
+            title = role or "inline attachment"
+        if art_type is None:
+            art_type = "note"
+
     # Determine if source is a URL or file
+    assert source is not None
     is_url = source.startswith("http://") or source.startswith("https://")
 
     # Infer type if not provided
@@ -171,6 +205,12 @@ def attach(
         assert src_path is not None
         dest_path = lattice_dir / "artifacts" / "payload" / f"{art_id}{src_path.suffix}"
         shutil.copy2(str(src_path), str(dest_path))
+        # Clean up inline temp file after successful copy
+        if _inline_tmp_path is not None:
+            try:
+                _inline_tmp_path.unlink()
+            except OSError:
+                pass
 
         guessed_type, _ = mimetypes.guess_type(src_path.name)
         content_type = guessed_type

@@ -59,6 +59,7 @@ REQUIRED_SNAPSHOT_FIELDS = {
     "updated_at",
     "done_at",
     "comment_count",
+    "comment_role_refs",
     "relationships_out",
     "artifact_refs",
     "branch_links",

@@ -130,6 +130,7 @@ def _init_snapshot(event: dict) -> dict:
         "artifact_refs": [],
         "branch_links": [],
         "comment_count": 0,
+        "comment_role_refs": [],
         "custom_fields": data.get("custom_fields") or {},
         "last_event_id": event["id"],
     }
@@ -280,11 +281,20 @@ def _mut_branch_unlinked(snap: dict, event: dict) -> None:
 @_register_mutation("comment_added")
 def _mut_comment_added(snap: dict, event: dict) -> None:
     snap["comment_count"] = snap.get("comment_count", 0) + 1
+    role = event.get("data", {}).get("role")
+    if role is not None:
+        comment_role_refs = snap.setdefault("comment_role_refs", [])
+        comment_role_refs.append({"id": event["id"], "role": role})
 
 
 @_register_mutation("comment_deleted")
 def _mut_comment_deleted(snap: dict, event: dict) -> None:
     snap["comment_count"] = max(0, snap.get("comment_count", 0) - 1)
+    comment_id = event.get("data", {}).get("comment_id")
+    if comment_id and "comment_role_refs" in snap:
+        snap["comment_role_refs"] = [
+            cr for cr in snap["comment_role_refs"] if cr.get("id") != comment_id
+        ]
 
 
 def get_artifact_roles(snapshot: dict) -> dict[str, str | None]:
@@ -299,6 +309,17 @@ def get_artifact_roles(snapshot: dict) -> dict[str, str | None]:
             result[ref["id"]] = ref.get("role")
         else:
             result[ref] = None
+    return result
+
+
+def get_comment_role_refs(snapshot: dict) -> dict[str, str | None]:
+    """Return ``{comment_id: role}`` from a snapshot's ``comment_role_refs``.
+
+    Comment roles are populated when ``lattice comment --role <role>`` is used.
+    """
+    result: dict[str, str | None] = {}
+    for ref in snapshot.get("comment_role_refs", []):
+        result[ref["id"]] = ref.get("role")
     return result
 
 
