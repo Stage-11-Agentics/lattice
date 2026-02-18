@@ -121,7 +121,7 @@ def _seed_example_tasks(lattice_dir: Path, config: dict) -> None:
     from lattice.storage.operations import scaffold_plan, write_task_event
 
     project_code = config.get("project_code", "")
-    actor = "agent:gregorovich"
+    actor = "system:init"
 
     # --- Create the epic first ---
     epic_id = generate_task_id()
@@ -330,6 +330,12 @@ def cli(ctx: click.Context) -> None:
     default=None,
     help="Seed example tasks to demonstrate the workflow (default: off).",
 )
+@click.option(
+    "--description",
+    "project_description",
+    default=None,
+    help="One-line description of what this project is.",
+)
 def init(
     target_path: str,
     actor: str | None,
@@ -340,6 +346,7 @@ def init(
     workflow_preset: str | None,
     setup_claude: bool | None,
     seed: bool | None,
+    project_description: str | None,
 ) -> None:
     """Initialize a new Lattice project."""
     root = Path(target_path)
@@ -448,6 +455,18 @@ def init(
             except (click.Abort, EOFError):
                 workflow_preset = "classic"
 
+    # Prompt for project description if not provided via flag
+    if project_description is None and not non_interactive:
+        try:
+            click.echo("")
+            project_description = click.prompt(
+                "What is this project? (blank to skip)",
+                default="",
+                show_default=False,
+            ).strip()
+        except (click.Abort, EOFError):
+            project_description = ""
+
     try:
         # Create directory structure
         ensure_lattice_dirs(root)
@@ -473,9 +492,21 @@ def init(
         if project_code:
             save_id_index(lattice_dir, _default_index())
 
-        # Create context.md template
+        # Create context.md — with project description if provided, otherwise template
         context_path = lattice_dir / "context.md"
-        atomic_write(context_path, _CONTEXT_MD_TEMPLATE)
+        if project_description:
+            project_name = instance_name or root.name
+            context_content = (
+                f"# {project_name}\n\n"
+                f"## Purpose\n\n{project_description}\n\n"
+                "## Related Instances\n\n"
+                "<!-- Other lattice instances this node coordinates with. -->\n\n"
+                "## Conventions\n\n"
+                "<!-- Instance-specific workflow rhythms and naming patterns. -->\n"
+            )
+            atomic_write(context_path, context_content)
+        else:
+            atomic_write(context_path, _CONTEXT_MD_TEMPLATE)
 
         # Seed example tasks (requires project_code for short IDs)
         should_seed = seed  # explicit --seed/--no-seed
@@ -524,11 +555,15 @@ def init(
     # Next steps guidance
     click.echo("")
     click.echo("Next steps:")
-    click.echo(f"  1. Fill in {LATTICE_DIR}/context.md with your project's purpose")
-    click.echo("  2. Create your first task: lattice create \"<title>\"" + (
+    step = 1
+    if not project_description:
+        click.echo(f"  {step}. Fill in {LATTICE_DIR}/context.md with your project's purpose")
+        step += 1
+    click.echo(f"  {step}. Create your first task: lattice create \"<title>\"" + (
         f" --actor {actor}" if actor else " --actor <your-id>"
     ))
-    click.echo("  3. Open the dashboard: lattice dashboard")
+    step += 1
+    click.echo(f"  {step}. Open the dashboard: lattice dashboard")
 
 
 def _compose_claude_md_blocks() -> tuple[str, str]:
