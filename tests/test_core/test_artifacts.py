@@ -17,8 +17,8 @@ from lattice.core.artifacts import (
 
 
 class TestArtifactTypes:
-    def test_contains_all_five_types(self) -> None:
-        expected = {"conversation", "prompt", "file", "log", "reference"}
+    def test_contains_all_types(self) -> None:
+        expected = {"conversation", "note", "prompt", "file", "log", "reference"}
         assert ARTIFACT_TYPES == expected
 
     def test_is_frozenset(self) -> None:

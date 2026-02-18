@@ -204,6 +204,9 @@ def attach(
         # File source: copy payload now (after idempotency check passed)
         assert src_path is not None
         dest_path = lattice_dir / "artifacts" / "payload" / f"{art_id}{src_path.suffix}"
+        guessed_type, _ = mimetypes.guess_type(src_path.name)
+        content_type = guessed_type
+        size_bytes = src_path.stat().st_size
         shutil.copy2(str(src_path), str(dest_path))
         # Clean up inline temp file after successful copy
         if _inline_tmp_path is not None:
@@ -211,10 +214,6 @@ def attach(
                 _inline_tmp_path.unlink()
             except OSError:
                 pass
-
-        guessed_type, _ = mimetypes.guess_type(src_path.name)
-        content_type = guessed_type
-        size_bytes = src_path.stat().st_size
 
     # Build the event first so we can use its timestamp for the artifact
     event_data: dict = {"artifact_id": art_id}

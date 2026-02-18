@@ -243,3 +243,59 @@ class TestCommentsReadCommand:
         result = invoke("comments", task_id)
         assert result.exit_code == 0
         assert "[deleted]" in result.output.lower()
+
+
+# ---------------------------------------------------------------------------
+# lattice comment --role
+# ---------------------------------------------------------------------------
+
+
+class TestCommentRole:
+    def test_comment_with_role_stored_in_snapshot(self, invoke, create_task) -> None:
+        """--role stores role in snapshot's comment_role_refs."""
+        task = create_task("Role test")
+        task_id = task["id"]
+
+        result = invoke(
+            "comment", task_id, "LGTM — all good",
+            "--role", "review",
+            "--actor", "human:test",
+            "--json",
+        )
+        assert result.exit_code == 0, result.output
+        snapshot = json.loads(result.output)["data"]
+        refs = snapshot.get("comment_role_refs", [])
+        assert len(refs) == 1
+        assert refs[0]["role"] == "review"
+
+    def test_comment_without_role_not_tracked(self, invoke, create_task) -> None:
+        """Comment without --role does not populate comment_role_refs."""
+        task = create_task("No role")
+        task_id = task["id"]
+
+        result = invoke(
+            "comment", task_id, "Just a note",
+            "--actor", "human:test",
+            "--json",
+        )
+        assert result.exit_code == 0
+        snapshot = json.loads(result.output)["data"]
+        assert snapshot.get("comment_role_refs", []) == []
+
+    def test_deleted_role_comment_removed_from_refs(self, invoke, create_task) -> None:
+        """Deleting a role comment removes it from comment_role_refs."""
+        task = create_task("Delete role")
+        task_id = task["id"]
+
+        result = invoke(
+            "comment", task_id, "review findings",
+            "--role", "review",
+            "--actor", "human:test",
+            "--json",
+        )
+        comment_id = json.loads(result.output)["data"]["last_event_id"]
+
+        result = invoke("comment-delete", task_id, comment_id, "--actor", "human:test", "--json")
+        assert result.exit_code == 0
+        snapshot = json.loads(result.output)["data"]
+        assert snapshot.get("comment_role_refs", []) == []

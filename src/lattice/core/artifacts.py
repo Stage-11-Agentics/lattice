@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 ARTIFACT_TYPES: frozenset[str] = frozenset(
     {
         "conversation",
+        "note",
         "prompt",
         "file",
         "log",

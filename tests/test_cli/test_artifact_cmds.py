@@ -571,3 +571,69 @@ class TestTypeInference:
         )
         data = json.loads(result.output)["data"]
         assert data["type"] == "log"
+
+
+# ---------------------------------------------------------------------------
+# Attach inline
+# ---------------------------------------------------------------------------
+
+
+class TestAttachInline:
+    def test_inline_creates_artifact(self, invoke, create_task) -> None:
+        """--inline creates a note artifact without needing a file."""
+        task = create_task("Inline test")
+        task_id = task["id"]
+
+        result = invoke(
+            "attach", task_id,
+            "--inline", "Review passed. No issues found.",
+            "--role", "review",
+            "--actor", _ACTOR,
+            "--json",
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)["data"]
+        assert data["type"] == "note"
+        assert data["title"] == "review"
+
+    def test_inline_payload_stored(self, invoke, create_task, initialized_root) -> None:
+        """Inline text is saved as a .md payload file."""
+        from lattice.storage.fs import LATTICE_DIR
+
+        task = create_task("Inline payload")
+        task_id = task["id"]
+
+        result = invoke(
+            "attach", task_id,
+            "--inline", "some review text",
+            "--actor", _ACTOR,
+            "--json",
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)["data"]
+        payload_file = data["payload"]["file"]
+        assert payload_file is not None
+
+        lattice_dir = initialized_root / LATTICE_DIR
+        payload_path = lattice_dir / "artifacts" / "payload" / payload_file
+        assert payload_path.exists()
+        assert payload_path.read_text() == "some review text"
+
+    def test_inline_and_source_mutually_exclusive(self, invoke, create_task, tmp_path) -> None:
+        """Providing both SOURCE and --inline is an error."""
+        task = create_task("Exclusivity test")
+        src = tmp_path / "f.txt"
+        src.write_text("hi")
+        result = invoke(
+            "attach", task["id"], str(src),
+            "--inline", "also this",
+            "--actor", _ACTOR,
+        )
+        assert result.exit_code != 0
+        assert "not both" in result.output.lower()
+
+    def test_neither_source_nor_inline_errors(self, invoke, create_task) -> None:
+        """Providing neither SOURCE nor --inline is an error."""
+        task = create_task("Neither test")
+        result = invoke("attach", task["id"], "--actor", _ACTOR)
+        assert result.exit_code != 0

@@ -164,3 +164,55 @@ class TestCompletionPolicyGating:
 
         r = invoke("status", task_id, "done", "--actor", _ACTOR, "--json")
         assert r.exit_code == 0
+
+    def test_passes_with_review_comment_role(self, invoke, initialized_root) -> None:
+        """A comment with --role review satisfies the require_roles policy."""
+        _config_with_policy(initialized_root, {"done": {"require_roles": ["review"]}})
+
+        r = invoke("create", "Test task", "--actor", _ACTOR, "--json")
+        task_id = json.loads(r.output)["data"]["id"]
+        invoke("status", task_id, "in_progress", "--actor", _ACTOR, "--force", "--reason", "skip")
+        invoke("status", task_id, "review", "--actor", _ACTOR)
+
+        r = invoke("comment", task_id, "LGTM — no issues found", "--role", "review", "--actor", _ACTOR)
+        assert r.exit_code == 0, r.output
+
+        r = invoke("status", task_id, "done", "--actor", _ACTOR, "--json")
+        assert r.exit_code == 0, r.output
+        assert json.loads(r.output)["ok"] is True
+
+    def test_blocked_when_only_non_role_comment(self, invoke, initialized_root) -> None:
+        """A comment without a role does NOT satisfy the require_roles policy."""
+        _config_with_policy(initialized_root, {"done": {"require_roles": ["review"]}})
+
+        r = invoke("create", "Test task", "--actor", _ACTOR, "--json")
+        task_id = json.loads(r.output)["data"]["id"]
+        invoke("status", task_id, "in_progress", "--actor", _ACTOR, "--force", "--reason", "skip")
+        invoke("status", task_id, "review", "--actor", _ACTOR)
+
+        invoke("comment", task_id, "Just a regular comment", "--actor", _ACTOR)
+
+        r = invoke("status", task_id, "done", "--actor", _ACTOR, "--json")
+        assert r.exit_code != 0
+        assert json.loads(r.output)["error"]["code"] == "COMPLETION_BLOCKED"
+
+    def test_passes_with_inline_attach_review_role(self, invoke, initialized_root) -> None:
+        """Inline artifact with --role review satisfies the require_roles policy."""
+        _config_with_policy(initialized_root, {"done": {"require_roles": ["review"]}})
+
+        r = invoke("create", "Test task", "--actor", _ACTOR, "--json")
+        task_id = json.loads(r.output)["data"]["id"]
+        invoke("status", task_id, "in_progress", "--actor", _ACTOR, "--force", "--reason", "skip")
+        invoke("status", task_id, "review", "--actor", _ACTOR)
+
+        r = invoke(
+            "attach", task_id,
+            "--inline", "Reviewed thoroughly. LGTM.",
+            "--role", "review",
+            "--actor", _ACTOR,
+        )
+        assert r.exit_code == 0, r.output
+
+        r = invoke("status", task_id, "done", "--actor", _ACTOR, "--json")
+        assert r.exit_code == 0, r.output
+        assert json.loads(r.output)["ok"] is True
