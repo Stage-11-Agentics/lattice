@@ -455,23 +455,6 @@ def init(
             except (click.Abort, EOFError):
                 workflow_preset = "classic"
 
-    # Prompt for project description if not provided via flag
-    if project_description is None and not non_interactive:
-        try:
-            click.echo("")
-            wants_description = click.confirm(
-                "Want to tell Lattice what this project is?",
-                default=False,
-            )
-            if wants_description:
-                project_description = click.prompt(
-                    "Describe the project in a sentence or two",
-                    default="",
-                    show_default=False,
-                ).strip()
-        except (click.Abort, EOFError):
-            pass
-
     try:
         # Create directory structure
         ensure_lattice_dirs(root)
