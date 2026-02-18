@@ -116,6 +116,13 @@ lattice dashboard
 
 reads and writes the same `.lattice/` directory your agents use. an agent commits a status change via CLI. your dashboard reflects it on refresh. one source of truth. many windows into it.
 
+if an agent makes changes that need a dashboard reset (schema updates, config changes), it can restart your running dashboard in place without killing your terminal session:
+
+```bash
+lattice restart              # default port 8799
+lattice restart --port 8769  # specific port
+```
+
 ### what you see
 
 - **Board** — Kanban columns per status. drag tasks between columns to move them. the primary view. where you. see everything at a glance.
@@ -355,6 +362,7 @@ and then. let go. the agents will be here when you return. the event log will ho
 | Health check | `lattice doctor [--fix]` |
 | Rebuild | `lattice rebuild --all` |
 | Dashboard | `lattice dashboard` |
+| Restart dashboard | `lattice restart [--port PORT]` |
 | CLAUDE.md setup | `lattice setup-claude [--force]` |
 | OpenClaw setup | `lattice setup-openclaw [--global] [--force]` |
 

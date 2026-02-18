@@ -616,3 +616,20 @@ Additional review findings that shaped this decision:
 **Context:** Agents encountering the old message would often `--force --reason` past the policy because that was the only action the error suggested. The policy exists to ensure reviews actually happen, so the primary guidance should be how to fulfill it.
 
 **Consequence:** Error code `COMPLETION_BLOCKED` is unchanged and stable. Agents or scripts matching on the human-readable message text (not the error code) will see different strings. The error code is the stable contract; message text is for human/agent comprehension.
+
+---
+
+## 2026-02-18: SIGHUP-based dashboard restart
+
+**Decision:** The dashboard now handles SIGHUP as a graceful restart signal. A new `lattice restart --port PORT` command finds the process on the given port and sends SIGHUP.
+
+**Context:** The dashboard runs as a foreground process in a dedicated terminal window. When agents make changes that require a dashboard reset (config changes, schema updates, static asset changes), the human previously had to manually Ctrl+C and re-run `lattice dashboard`. Agents couldn't trigger this themselves.
+
+**Alternatives considered:**
+- External wrapper script: works but lives outside the CLI, easy to lose track of.
+- Process manager / supervisor: too heavy for a local dev tool. Violates the "no process management" non-goal.
+- File watcher with auto-reload: adds a dependency and complexity for something that happens infrequently.
+
+**Implementation:** `serve_forever()` runs in a while loop. SIGHUP handler sets a flag and triggers shutdown (signal-handler safe — sets `_BaseServer__shutdown_request` directly to avoid deadlock from `shutdown()`'s internal `wait()`). After `serve_forever()` returns, the loop checks the flag: restart on SIGHUP, exit on anything else. `lattice restart` uses `lsof -ti:PORT` to find the PID and `os.kill(pid, SIGHUP)` to send the signal.
+
+**Consequence:** Unix-only (SIGHUP doesn't exist on Windows). Acceptable — the dashboard is a local dev tool and the primary audience is macOS/Linux.
