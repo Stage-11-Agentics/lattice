@@ -717,7 +717,7 @@ class TestSetupClaude:
         content = claude_md.read_text()
         assert content.startswith(f"# {tmp_path.name}\n")
         assert "## Lattice" in content
-        assert "The First Act" in content
+        assert "Creating Tasks (Non-Negotiable)" in content
 
     def test_setup_claude_appends(self, tmp_path: Path) -> None:
         """setup-claude with existing CLAUDE.md without Lattice block -> appends."""
@@ -732,7 +732,7 @@ class TestSetupClaude:
         content = claude_md.read_text()
         assert "Existing content" in content
         assert "## Lattice" in content
-        assert "The First Act" in content
+        assert "Creating Tasks (Non-Negotiable)" in content
 
     def test_setup_claude_already_present(self, tmp_path: Path) -> None:
         """setup-claude when block already exists (no --force) -> message, no change."""
@@ -761,7 +761,7 @@ class TestSetupClaude:
         content = claude_md.read_text()
         assert "# My Project" in content
         assert "Old content" not in content
-        assert "The First Act" in content
+        assert "Creating Tasks (Non-Negotiable)" in content
         # Should have exactly one base Lattice block (plugins may add their own)
         assert content.count("## Lattice\n") == 1
 
@@ -784,4 +784,4 @@ class TestSetupClaude:
         assert "## Other Section" in content
         assert "Other content" in content
         assert "Old lattice info" not in content
-        assert "The First Act" in content
+        assert "Creating Tasks (Non-Negotiable)" in content

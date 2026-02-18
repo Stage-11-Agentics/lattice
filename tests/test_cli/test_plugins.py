@@ -139,7 +139,7 @@ class TestSetupClaudeWithPlugins:
 
         content = (tmp_path / "CLAUDE.md").read_text()
         assert "## Lattice" in content
-        assert "The First Act" in content
+        assert "Creating Tasks (Non-Negotiable)" in content
         assert "Stage 11 specific content" in content
 
     @patch("lattice.plugins.discover_template_blocks")
@@ -178,7 +178,7 @@ class TestSetupClaudeWithPlugins:
         assert "Old lattice info" not in content
         assert "Old stage 11 info" not in content
         # New content present
-        assert "The First Act" in content
+        assert "Creating Tasks (Non-Negotiable)" in content
         assert "Stage 11 specific content" in content
 
     @patch("lattice.plugins.discover_template_blocks", return_value=[])
@@ -192,6 +192,6 @@ class TestSetupClaudeWithPlugins:
 
         content = (tmp_path / "CLAUDE.md").read_text()
         assert "## Lattice\n" in content
-        assert "The First Act" in content
+        assert "Creating Tasks (Non-Negotiable)" in content
         # Only one H2 Lattice section (base only)
         assert content.count("## Lattice\n") == 1
