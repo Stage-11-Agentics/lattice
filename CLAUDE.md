@@ -216,6 +216,18 @@ When someone says "is Lattice set up?" they could mean either. Clarify which:
 
 ## Architecture
 
+### Architecture Deep Dives
+
+Before exploring source files, start with the subsystem summary that matches your task:
+
+- `docs/architecture/README.md` — index for all architecture summaries
+- `docs/architecture/event-system.md` — event schema, append-only logs, lifecycle stream
+- `docs/architecture/snapshot-materialization.md` — reducer model, snapshot fields, rebuild flow
+- `docs/architecture/completion-policies.md` — policy gates, role evidence, assignment requirements
+- `docs/architecture/cli-command-structure.md` — CLI module layout and write/read command flow
+- `docs/architecture/storage-layer.md` — atomic writes, lock ordering, hooks, durability rules
+- `docs/architecture/dashboard.md` — dashboard server routes, API model, and safety constraints
+
 ### Core Principle: Events are Authoritative
 
 The event log (JSONL) is the source of truth. Task JSON files are materialized snapshots for fast reads. If they disagree, events win. `lattice rebuild` replays events to regenerate snapshots.
