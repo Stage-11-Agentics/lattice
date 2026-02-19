@@ -106,6 +106,37 @@ This is the **review sub-agent's** job. Spawn a sub-agent with fresh context —
 
 **The test:** If the same agent that wrote the code also reviewed it without a fresh context boundary, the review gate is not doing its job. The whole point is independent verification.
 
+### Review Rework Loop
+
+When a review agent evaluates work, it produces one of three outcomes:
+
+1. **Pass (with optional minor fix):** The review agent uses vibes-based judgment. If the only issues are trivial (obvious typos, missing semicolons, etc.), fix them inline, record what was changed in the review comment, and move to `done`. No strict line-count threshold -- the review agent decides.
+
+2. **Fail -- implementation-level:** The plan was sound but the implementation has issues. The review agent explicitly states "implementation-level rework needed" in its comment. The orchestrator transitions the task `review -> in_progress`. Critical findings from the review are appended to the plan file under a new `## Review Cycle N Findings` section. A fresh sub-agent is encouraged (but not mandated) for the rework.
+
+3. **Fail -- plan-level:** The original plan was flawed -- wrong approach, missing requirements, etc. The review agent explicitly states "plan-level rework needed" in its comment. The orchestrator transitions the task `review -> in_planning`. The plan gets reworked (not just amended), then back through the full lifecycle.
+
+**Who decides what:**
+
+| Decision | Who | How |
+|----------|-----|-----|
+| Fix inline vs send back | Review agent | Vibes-based judgment, recorded in review comment |
+| Implementation-level vs plan-level | Review agent | Explicitly stated in review comment |
+| Route to in_progress vs in_planning | Orchestrator | Follows review agent's recommendation |
+| Whether to spawn fresh sub-agent | Orchestrator | Encouraged by convention, not enforced |
+
+**3-cycle safety valve:** After 3 review-to-rework transitions (any combination of `review -> in_progress` and `review -> in_planning`), the CLI blocks the 4th attempt. The error message instructs the agent to move the task to `needs_human` with a comment explaining the situation. The limit is configurable via `review_cycle_limit` in the workflow config (default: 3). Override with `--force --reason` for genuinely exceptional cases.
+
+**Allowed lifecycle paths:**
+
+```
+Normal:       in_progress -> review -> done
+Minor fix:    in_progress -> review -> (fix inline) -> done
+1 impl rework: in_progress -> review -> in_progress -> review -> done
+1 plan rework: in_progress -> review -> in_planning -> planned -> in_progress -> review -> done
+Max cycles:   3 review->rework transitions, then CLI blocks -> needs_human
+```
+
 ### Actor Attribution
 
 Every Lattice operation requires an `--actor`. Attribution follows authorship of the decision, not authorship of the keystroke.
@@ -487,6 +518,37 @@ This is the **review sub-agent's** job. Spawn a sub-agent with fresh context —
 
 **The test:** If the same agent that wrote the code also reviewed it without a fresh context boundary, the review gate is not doing its job. The whole point is independent verification.
 
+### Review Rework Loop
+
+When a review agent evaluates work, it produces one of three outcomes:
+
+1. **Pass (with optional minor fix):** The review agent uses vibes-based judgment. If the only issues are trivial (obvious typos, missing semicolons, etc.), fix them inline, record what was changed in the review comment, and move to `done`. No strict line-count threshold -- the review agent decides.
+
+2. **Fail -- implementation-level:** The plan was sound but the implementation has issues. The review agent explicitly states "implementation-level rework needed" in its comment. The orchestrator transitions the task `review -> in_progress`. Critical findings from the review are appended to the plan file under a new `## Review Cycle N Findings` section. A fresh sub-agent is encouraged (but not mandated) for the rework.
+
+3. **Fail -- plan-level:** The original plan was flawed -- wrong approach, missing requirements, etc. The review agent explicitly states "plan-level rework needed" in its comment. The orchestrator transitions the task `review -> in_planning`. The plan gets reworked (not just amended), then back through the full lifecycle.
+
+**Who decides what:**
+
+| Decision | Who | How |
+|----------|-----|-----|
+| Fix inline vs send back | Review agent | Vibes-based judgment, recorded in review comment |
+| Implementation-level vs plan-level | Review agent | Explicitly stated in review comment |
+| Route to in_progress vs in_planning | Orchestrator | Follows review agent's recommendation |
+| Whether to spawn fresh sub-agent | Orchestrator | Encouraged by convention, not enforced |
+
+**3-cycle safety valve:** After 3 review-to-rework transitions (any combination of `review -> in_progress` and `review -> in_planning`), the CLI blocks the 4th attempt. The error message instructs the agent to move the task to `needs_human` with a comment explaining the situation. The limit is configurable via `review_cycle_limit` in the workflow config (default: 3). Override with `--force --reason` for genuinely exceptional cases.
+
+**Allowed lifecycle paths:**
+
+```
+Normal:       in_progress -> review -> done
+Minor fix:    in_progress -> review -> (fix inline) -> done
+1 impl rework: in_progress -> review -> in_progress -> review -> done
+1 plan rework: in_progress -> review -> in_planning -> planned -> in_progress -> review -> done
+Max cycles:   3 review->rework transitions, then CLI blocks -> needs_human
+```
+
 ### When You're Stuck
 
 If you hit a point where you need human decision, approval, or input — **signal it immediately** with `needs_human`. This is different from `blocked` (generic external dependency). `needs_human` creates a clear queue of "things waiting on the human."
@@ -534,6 +596,17 @@ If the branch name contains the task's short code (e.g., `feat/LAT-42-login`), L
 ### Leave Breadcrumbs
 
 You are not the last mind that will touch this work. Use `lattice comment` to record what you tried, what you chose, what you left undone. Use `.lattice/plans/<task_id>.md` for the structured plan (scope, steps, acceptance criteria) and `.lattice/notes/<task_id>.md` for working notes, debug logs, and context dumps. The agent that picks up where you left off has no hallway to find you in, no Slack channel to ask. The record you leave is the only bridge between your context and theirs.
+
+### Shared Worktree Discipline
+
+Multiple agents may work in the same repository concurrently on different tasks. The `git status` snapshot from your session start goes stale the moment another agent commits.
+
+**When you encounter unfamiliar changes** (unexpected files, diffs you didn't make, new commits on HEAD):
+1. **Investigate first.** Check `git log` and `lattice list` to see if another task/agent is responsible.
+2. **Ask "who made this?" before "this shouldn't be here."** The change is almost certainly another agent's legitimate work.
+3. **Never revert, reset, or delete changes you can't attribute.** If you're unsure, leave them alone and ask the human.
+
+This applies to uncommitted changes in the working tree, unexpected commits on the branch, and new files that weren't there when your session started. The instinct to "clean up" unfamiliar state is exactly wrong in a multi-agent worktree — it destroys a sibling agent's work.
 
 ### Quick Reference
 
