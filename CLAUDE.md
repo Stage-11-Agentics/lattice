@@ -56,6 +56,26 @@ lattice status <task> <status> --actor agent:<your-id>
 - Moving to `done`? Only after a review has been performed and recorded.
 - Spawning a sub-agent to work on a task? Update status in the parent context before the sub-agent launches.
 
+### Branch Awareness
+
+In multi-agent environments, another agent or user can switch the git branch out from under you. An agent that doesn't notice will implement against wrong code, commit to the wrong branch, or both.
+
+**Record the branch when you start a task:**
+```
+git branch --show-current
+```
+
+**Verify the branch hasn't changed:**
+- Before every `lattice status` transition
+- Before every `git commit`
+- If you encounter unexpected file changes (files you didn't touch are suddenly different, stale-file errors on files you just read)
+
+**If the branch changed: stop immediately.** Do not commit. Do not continue implementing. Surface the problem to the user:
+
+> "Branch changed from `main` to `feat/other-work` since I started this task. My work may be against the wrong codebase. How should I proceed?"
+
+This check is cheap (one shell command) and prevents a class of failure that is expensive to recover from — work committed to the wrong branch, implementations built against wrong code, or merge conflicts from branch contamination.
+
 ### Sub-Agent Execution Model
 
 Each lifecycle stage gets its own sub-agent with fresh context. This is the default execution pattern — not a suggestion, not complexity-gated. Every task, every time.
@@ -436,6 +456,12 @@ backlog → in_planning → planned → in_progress → review → done
                                        ↕            ↕
                                     blocked      needs_human
 ```
+
+### Branch Awareness
+
+In multi-agent environments, another agent or user can switch the git branch out from under you. An agent that doesn't notice will implement against wrong code, commit to the wrong branch, or both.
+
+**Record the branch when you start a task** (`git branch --show-current`). **Verify it hasn't changed** before every `lattice status` transition, before every `git commit`, and whenever you encounter unexpected file changes. **If the branch changed: stop immediately** — do not commit, do not continue. Surface the problem to the user.
 
 ### Sub-Agent Execution Model
 
