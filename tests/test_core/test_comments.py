@@ -21,11 +21,17 @@ from lattice.core.comments import (
 
 
 def _comment_event(
-    event_id: str, body: str, actor: str = "human:atin", parent_id: str | None = None
+    event_id: str,
+    body: str,
+    actor: str = "human:atin",
+    parent_id: str | None = None,
+    role: str | None = None,
 ) -> dict:
     data: dict = {"body": body}
     if parent_id is not None:
         data["parent_id"] = parent_id
+    if role is not None:
+        data["role"] = role
     return {
         "id": event_id,
         "type": "comment_added",
@@ -35,13 +41,22 @@ def _comment_event(
     }
 
 
-def _edit_event(comment_id: str, body: str, previous_body: str, actor: str = "human:atin") -> dict:
+def _edit_event(
+    comment_id: str,
+    body: str,
+    previous_body: str,
+    actor: str = "human:atin",
+    role: str | None = None,
+) -> dict:
+    data: dict = {"comment_id": comment_id, "body": body, "previous_body": previous_body}
+    if role is not None:
+        data["role"] = role
     return {
         "id": f"ev_edit_{comment_id}",
         "type": "comment_edited",
         "ts": "2026-02-17T01:01:00Z",
         "actor": actor,
-        "data": {"comment_id": comment_id, "body": body, "previous_body": previous_body},
+        "data": data,
     }
 
 
@@ -211,8 +226,13 @@ class TestMaterializeComments:
 
     def test_non_comment_events_ignored(self) -> None:
         events = [
-            {"id": "ev_status", "type": "status_changed", "ts": "2026-01-01T00:00:00Z",
-             "actor": "human:atin", "data": {"from": "backlog", "to": "in_progress"}},
+            {
+                "id": "ev_status",
+                "type": "status_changed",
+                "ts": "2026-01-01T00:00:00Z",
+                "actor": "human:atin",
+                "data": {"from": "backlog", "to": "in_progress"},
+            },
             _comment_event("ev_1", "hello"),
         ]
         result = materialize_comments(events)
@@ -251,8 +271,15 @@ class TestValidateCommentForReply:
 class TestValidateCommentForEdit:
     def test_valid_edit(self) -> None:
         events = [_comment_event("ev_1", "original")]
-        body = validate_comment_for_edit(events, "ev_1")
+        body, role = validate_comment_for_edit(events, "ev_1")
         assert body == "original"
+        assert role is None
+
+    def test_valid_edit_returns_role(self) -> None:
+        events = [_comment_event("ev_1", "LGTM", role="review")]
+        body, role = validate_comment_for_edit(events, "ev_1")
+        assert body == "LGTM"
+        assert role == "review"
 
     def test_edit_nonexistent(self) -> None:
         with pytest.raises(ValueError, match="not found"):
@@ -335,7 +362,11 @@ class TestMaterializeCommentsEdgeCases:
                 "type": "comment_edited",
                 "ts": "2026-02-17T01:05:00Z",
                 "actor": "human:atin",
-                "data": {"comment_id": "ev_1", "body": "second edit", "previous_body": "first edit"},
+                "data": {
+                    "comment_id": "ev_1",
+                    "body": "second edit",
+                    "previous_body": "first edit",
+                },
             },
         ]
         result = materialize_comments(events)
@@ -357,3 +388,22 @@ class TestMaterializeCommentsEdgeCases:
         reply = result[0]["replies"][0]
         assert reply["id"] == "ev_2"
         assert reply["reactions"] == {"thumbsup": ["human:atin"]}
+
+    def test_edit_updates_role(self) -> None:
+        """Editing a comment with --role updates the materialized role."""
+        events = [
+            _comment_event("ev_1", "looks good"),
+            _edit_event("ev_1", "looks good", "looks good", role="review"),
+        ]
+        result = materialize_comments(events)
+        assert result[0]["role"] == "review"
+
+    def test_edit_preserves_role_without_role_in_event(self) -> None:
+        """Editing body only preserves the existing role."""
+        events = [
+            _comment_event("ev_1", "LGTM", role="review"),
+            _edit_event("ev_1", "LGTM — no issues found", "LGTM"),
+        ]
+        result = materialize_comments(events)
+        assert result[0]["role"] == "review"
+        assert result[0]["body"] == "LGTM — no issues found"

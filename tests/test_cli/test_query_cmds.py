@@ -619,9 +619,7 @@ class TestShow:
             {"sha": "def5678", "date": "2026-02-18", "subject": "LAT-9 fix bug"}
         ]
 
-    def test_auto_detect_commits_returns_empty_when_git_missing(
-        self, monkeypatch, cli_env
-    ):
+    def test_auto_detect_commits_returns_empty_when_git_missing(self, monkeypatch, cli_env):
         """Commit auto-detection degrades cleanly when git is unavailable."""
         from lattice.cli import query_cmds
 
@@ -631,9 +629,7 @@ class TestShow:
         commits = query_cmds._auto_detect_commits("LAT-144", lattice_dir)
         assert commits == []
 
-    def test_auto_detect_commits_returns_empty_when_not_a_repo(
-        self, monkeypatch, cli_env
-    ):
+    def test_auto_detect_commits_returns_empty_when_not_a_repo(self, monkeypatch, cli_env):
         """Commit auto-detection degrades cleanly outside a git repository."""
         from lattice.cli import query_cmds
 
@@ -641,15 +637,15 @@ class TestShow:
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/git")
         monkeypatch.setattr(
             "subprocess.run",
-            lambda *args, **kwargs: CompletedProcess(args[0], 128, "", "fatal: not a git repository"),
+            lambda *args, **kwargs: CompletedProcess(
+                args[0], 128, "", "fatal: not a git repository"
+            ),
         )
 
         commits = query_cmds._auto_detect_commits("LAT-144", lattice_dir)
         assert commits == []
 
-    def test_auto_detect_commits_parses_git_log_output(
-        self, monkeypatch, cli_env
-    ):
+    def test_auto_detect_commits_parses_git_log_output(self, monkeypatch, cli_env):
         """Commit auto-detection parses git log output into structured commits."""
         from lattice.cli import query_cmds
 
@@ -892,9 +888,7 @@ class TestShow:
         snap_path = lattice_dir / "tasks" / f"{task_id}.json"
         snap = json.loads(snap_path.read_text())
         art_id = "art_01J0000000000000000000000"
-        snap["evidence_refs"] = [
-            {"id": art_id, "role": None, "source_type": "artifact"}
-        ]
+        snap["evidence_refs"] = [{"id": art_id, "role": None, "source_type": "artifact"}]
         snap_path.write_text(serialize_snapshot(snap))
 
         result = invoke("show", task_id)
@@ -976,7 +970,9 @@ class TestShow:
         task = create_task("Reset warning")
         task_id = task["id"]
         invoke("status", task_id, "done", "--force", "--reason", "test", "--actor", "human:test")
-        invoke("status", task_id, "planned", "--force", "--reason", "test", "--actor", "human:test")
+        invoke(
+            "status", task_id, "planned", "--force", "--reason", "test", "--actor", "human:test"
+        )
 
         result = invoke("show", task_id)
         assert result.exit_code == 0
@@ -988,7 +984,9 @@ class TestShow:
         task = create_task("Reset metadata")
         task_id = task["id"]
         invoke("status", task_id, "done", "--force", "--reason", "test", "--actor", "human:test")
-        invoke("status", task_id, "planned", "--force", "--reason", "test", "--actor", "human:test")
+        invoke(
+            "status", task_id, "planned", "--force", "--reason", "test", "--actor", "human:test"
+        )
 
         result = invoke("show", task_id, "--json")
         assert result.exit_code == 0

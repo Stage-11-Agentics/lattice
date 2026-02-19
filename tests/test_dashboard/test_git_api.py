@@ -116,12 +116,21 @@ def git_repo(tmp_path: Path) -> Path:
     repo.mkdir()
 
     # Initialize the repo
-    subprocess.run(["git", "init", "--initial-branch=main"], cwd=str(repo), check=True,
-                   capture_output=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(repo),
-                   check=True, capture_output=True)
-    subprocess.run(["git", "config", "user.name", "Test Author"], cwd=str(repo),
-                   check=True, capture_output=True)
+    subprocess.run(
+        ["git", "init", "--initial-branch=main"], cwd=str(repo), check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=str(repo),
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test Author"],
+        cwd=str(repo),
+        check=True,
+        capture_output=True,
+    )
 
     # First commit on main
     (repo / "README.md").write_text("# Test Project\n")
@@ -146,8 +155,12 @@ def git_repo(tmp_path: Path) -> Path:
     )
 
     # Create a feature branch with a commit
-    subprocess.run(["git", "checkout", "-b", "feat/LAT-42-login"], cwd=str(repo),
-                   check=True, capture_output=True)
+    subprocess.run(
+        ["git", "checkout", "-b", "feat/LAT-42-login"],
+        cwd=str(repo),
+        check=True,
+        capture_output=True,
+    )
     (repo / "login.py").write_text("# login module\n")
     subprocess.run(["git", "add", "login.py"], cwd=str(repo), check=True, capture_output=True)
     subprocess.run(
@@ -427,9 +440,7 @@ class TestGitApiEndpoint:
             assert etag.startswith('"') and etag.endswith('"')
 
             # Second request with If-None-Match — should get 304
-            status2, body2, hdrs2 = _get(
-                base_url, "/api/git", headers={"If-None-Match": etag}
-            )
+            status2, body2, hdrs2 = _get(base_url, "/api/git", headers={"If-None-Match": etag})
             assert status2 == 304
             assert hdrs2.get("ETag") == etag
         finally:
@@ -439,9 +450,7 @@ class TestGitApiEndpoint:
     def test_git_summary_etag_mismatch(self, lattice_in_git_repo: Path):
         base_url, server = _start_server(lattice_in_git_repo)
         try:
-            status, body, hdrs = _get(
-                base_url, "/api/git", headers={"If-None-Match": '"wrong"'}
-            )
+            status, body, hdrs = _get(base_url, "/api/git", headers={"If-None-Match": '"wrong"'})
             assert status == 200
             assert body["ok"] is True
             assert body["data"]["available"] is True
@@ -495,9 +504,7 @@ class TestGitBranchCommitsEndpoint:
         try:
             # URL-encode the branch name: feat/LAT-42-login -> feat%2FLAT-42-login
             encoded = quote("feat/LAT-42-login", safe="")
-            status, body, _hdrs = _get(
-                base_url, f"/api/git/branches/{encoded}/commits"
-            )
+            status, body, _hdrs = _get(base_url, f"/api/git/branches/{encoded}/commits")
             assert status == 200
             assert body["ok"] is True
             assert body["data"]["branch"] == "feat/LAT-42-login"
@@ -510,9 +517,7 @@ class TestGitBranchCommitsEndpoint:
         """Requesting commits for a nonexistent branch returns empty list."""
         base_url, server = _start_server(lattice_in_git_repo)
         try:
-            status, body, _hdrs = _get(
-                base_url, "/api/git/branches/nonexistent/commits"
-            )
+            status, body, _hdrs = _get(base_url, "/api/git/branches/nonexistent/commits")
             assert status == 200
             assert body["ok"] is True
             assert body["data"]["commits"] == []
@@ -543,9 +548,7 @@ class TestGitBranchCommitsEndpoint:
         base_url, server = _start_server(lattice_in_git_repo)
         try:
             encoded = quote("feat/LAT-42-login", safe="")
-            status, body, _hdrs = _get(
-                base_url, f"/api/git/branches/{encoded}/commits"
-            )
+            status, body, _hdrs = _get(base_url, f"/api/git/branches/{encoded}/commits")
             assert status == 200
             commits = body["data"]["commits"]
             # The first (most recent) commit should reference LAT-42

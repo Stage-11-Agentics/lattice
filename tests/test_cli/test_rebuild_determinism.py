@@ -224,7 +224,9 @@ class TestRebuildDeterminism:
                 f"Snapshot for {task['id']} differs between individual and batch rebuild"
             )
 
-    def test_rebuild_after_status_round_trip(self, invoke, create_task, initialized_root, fill_plan):
+    def test_rebuild_after_status_round_trip(
+        self, invoke, create_task, initialized_root, fill_plan
+    ):
         """Status changes through multiple transitions must rebuild identically."""
         task = create_task("Status round trip")
         task_id = task["id"]

@@ -303,10 +303,7 @@ def doctor(fix: bool, output_json: bool) -> None:
         # Read artifact refs from evidence_refs (new) or artifact_refs (legacy)
         evidence_refs = snap.get("evidence_refs")
         if evidence_refs is not None:
-            art_ids = [
-                ref["id"] for ref in evidence_refs
-                if ref.get("source_type") == "artifact"
-            ]
+            art_ids = [ref["id"] for ref in evidence_refs if ref.get("source_type") == "artifact"]
         else:
             art_ids = [
                 (ref["id"] if isinstance(ref, dict) else ref)
@@ -1026,7 +1023,9 @@ def rebuild(task_id: str | None, rebuild_all: bool, output_json: bool) -> None:
         else:
             parts = [f"Rebuilt {len(rebuilt_ids)} task{'s' if len(rebuilt_ids) != 1 else ''}"]
             if rebuilt_resources:
-                parts.append(f"{len(rebuilt_resources)} resource{'s' if len(rebuilt_resources) != 1 else ''}")
+                parts.append(
+                    f"{len(rebuilt_resources)} resource{'s' if len(rebuilt_resources) != 1 else ''}"
+                )
             parts.append("regenerated lifecycle log")
             click.echo(", ".join(parts))
     else:

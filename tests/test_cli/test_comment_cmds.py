@@ -40,9 +40,13 @@ class TestCommentReplyTo:
         comment_id = _add_comment(invoke, task_id, "top-level comment")
         # Reply to it
         result = invoke(
-            "comment", task_id, "this is a reply",
-            "--reply-to", comment_id,
-            "--actor", "human:test",
+            "comment",
+            task_id,
+            "this is a reply",
+            "--reply-to",
+            comment_id,
+            "--actor",
+            "human:test",
         )
         assert result.exit_code == 0
         assert "Reply added" in result.output
@@ -50,9 +54,13 @@ class TestCommentReplyTo:
     def test_reply_to_nonexistent(self, invoke, create_task) -> None:
         task = create_task("Comment test")
         result = invoke(
-            "comment", task["id"], "orphan reply",
-            "--reply-to", "ev_nonexistent",
-            "--actor", "human:test",
+            "comment",
+            task["id"],
+            "orphan reply",
+            "--reply-to",
+            "ev_nonexistent",
+            "--actor",
+            "human:test",
         )
         assert result.exit_code != 0
         assert "not found" in result.output.lower()
@@ -63,9 +71,13 @@ class TestCommentReplyTo:
         comment_id = _add_comment(invoke, task_id, "top-level")
         reply_id = _add_comment(invoke, task_id, "reply", reply_to=comment_id)
         result = invoke(
-            "comment", task_id, "nested reply",
-            "--reply-to", reply_id,
-            "--actor", "human:test",
+            "comment",
+            task_id,
+            "nested reply",
+            "--reply-to",
+            reply_id,
+            "--actor",
+            "human:test",
         )
         assert result.exit_code != 0
 
@@ -81,8 +93,12 @@ class TestCommentEdit:
         task_id = task["id"]
         comment_id = _add_comment(invoke, task_id, "original text")
         result = invoke(
-            "comment-edit", task_id, comment_id, "edited text",
-            "--actor", "human:test",
+            "comment-edit",
+            task_id,
+            comment_id,
+            "edited text",
+            "--actor",
+            "human:test",
         )
         assert result.exit_code == 0
         assert "edited" in result.output.lower() or "Comment edited" in result.output
@@ -90,8 +106,12 @@ class TestCommentEdit:
     def test_edit_nonexistent(self, invoke, create_task) -> None:
         task = create_task("Edit test")
         result = invoke(
-            "comment-edit", task["id"], "ev_nonexistent", "new text",
-            "--actor", "human:test",
+            "comment-edit",
+            task["id"],
+            "ev_nonexistent",
+            "new text",
+            "--actor",
+            "human:test",
         )
         assert result.exit_code != 0
 
@@ -101,8 +121,12 @@ class TestCommentEdit:
         comment_id = _add_comment(invoke, task_id, "to be deleted")
         invoke("comment-delete", task_id, comment_id, "--actor", "human:test")
         result = invoke(
-            "comment-edit", task_id, comment_id, "should fail",
-            "--actor", "human:test",
+            "comment-edit",
+            task_id,
+            comment_id,
+            "should fail",
+            "--actor",
+            "human:test",
         )
         assert result.exit_code != 0
 
@@ -118,8 +142,11 @@ class TestCommentDelete:
         task_id = task["id"]
         comment_id = _add_comment(invoke, task_id, "to be deleted")
         result = invoke(
-            "comment-delete", task_id, comment_id,
-            "--actor", "human:test",
+            "comment-delete",
+            task_id,
+            comment_id,
+            "--actor",
+            "human:test",
         )
         assert result.exit_code == 0
 
@@ -129,8 +156,11 @@ class TestCommentDelete:
         comment_id = _add_comment(invoke, task_id, "to be deleted")
         invoke("comment-delete", task_id, comment_id, "--actor", "human:test")
         result = invoke(
-            "comment-delete", task_id, comment_id,
-            "--actor", "human:test",
+            "comment-delete",
+            task_id,
+            comment_id,
+            "--actor",
+            "human:test",
         )
         assert result.exit_code != 0
 
@@ -146,8 +176,12 @@ class TestReact:
         task_id = task["id"]
         comment_id = _add_comment(invoke, task_id, "react to this")
         result = invoke(
-            "react", task_id, comment_id, "thumbsup",
-            "--actor", "human:test",
+            "react",
+            task_id,
+            comment_id,
+            "thumbsup",
+            "--actor",
+            "human:test",
         )
         assert result.exit_code == 0
 
@@ -157,8 +191,12 @@ class TestReact:
         comment_id = _add_comment(invoke, task_id, "react twice")
         invoke("react", task_id, comment_id, "thumbsup", "--actor", "human:test")
         result = invoke(
-            "react", task_id, comment_id, "thumbsup",
-            "--actor", "human:test",
+            "react",
+            task_id,
+            comment_id,
+            "thumbsup",
+            "--actor",
+            "human:test",
         )
         assert result.exit_code == 0  # no-op, should succeed
 
@@ -167,8 +205,12 @@ class TestReact:
         task_id = task["id"]
         comment_id = _add_comment(invoke, task_id, "bad emoji")
         result = invoke(
-            "react", task_id, comment_id, ":bad:",
-            "--actor", "human:test",
+            "react",
+            task_id,
+            comment_id,
+            ":bad:",
+            "--actor",
+            "human:test",
         )
         assert result.exit_code != 0
 
@@ -180,8 +222,12 @@ class TestUnreact:
         comment_id = _add_comment(invoke, task_id, "unreact from this")
         invoke("react", task_id, comment_id, "thumbsup", "--actor", "human:test")
         result = invoke(
-            "unreact", task_id, comment_id, "thumbsup",
-            "--actor", "human:test",
+            "unreact",
+            task_id,
+            comment_id,
+            "thumbsup",
+            "--actor",
+            "human:test",
         )
         assert result.exit_code == 0
 
@@ -190,8 +236,12 @@ class TestUnreact:
         task_id = task["id"]
         comment_id = _add_comment(invoke, task_id, "no reactions")
         result = invoke(
-            "unreact", task_id, comment_id, "thumbsup",
-            "--actor", "human:test",
+            "unreact",
+            task_id,
+            comment_id,
+            "thumbsup",
+            "--actor",
+            "human:test",
         )
         assert result.exit_code != 0
 
@@ -259,14 +309,20 @@ class TestCommentRole:
         task_id = task["id"]
 
         result = invoke(
-            "comment", task_id, "LGTM — all good",
-            "--role", "review",
-            "--actor", "human:test",
+            "comment",
+            task_id,
+            "LGTM — all good",
+            "--role",
+            "review",
+            "--actor",
+            "human:test",
             "--json",
         )
         assert result.exit_code == 0, result.output
         snapshot = json.loads(result.output)["data"]
-        comment_refs = [r for r in snapshot.get("evidence_refs", []) if r.get("source_type") == "comment"]
+        comment_refs = [
+            r for r in snapshot.get("evidence_refs", []) if r.get("source_type") == "comment"
+        ]
         assert len(comment_refs) == 1
         assert comment_refs[0]["role"] == "review"
 
@@ -276,13 +332,18 @@ class TestCommentRole:
         task_id = task["id"]
 
         result = invoke(
-            "comment", task_id, "Just a note",
-            "--actor", "human:test",
+            "comment",
+            task_id,
+            "Just a note",
+            "--actor",
+            "human:test",
             "--json",
         )
         assert result.exit_code == 0
         snapshot = json.loads(result.output)["data"]
-        comment_refs = [r for r in snapshot.get("evidence_refs", []) if r.get("source_type") == "comment"]
+        comment_refs = [
+            r for r in snapshot.get("evidence_refs", []) if r.get("source_type") == "comment"
+        ]
         assert comment_refs == []
 
     def test_deleted_role_comment_removed_from_refs(self, invoke, create_task) -> None:
@@ -291,9 +352,13 @@ class TestCommentRole:
         task_id = task["id"]
 
         result = invoke(
-            "comment", task_id, "review findings",
-            "--role", "review",
-            "--actor", "human:test",
+            "comment",
+            task_id,
+            "review findings",
+            "--role",
+            "review",
+            "--actor",
+            "human:test",
             "--json",
         )
         comment_id = json.loads(result.output)["data"]["last_event_id"]
@@ -301,7 +366,9 @@ class TestCommentRole:
         result = invoke("comment-delete", task_id, comment_id, "--actor", "human:test", "--json")
         assert result.exit_code == 0
         snapshot = json.loads(result.output)["data"]
-        comment_refs = [r for r in snapshot.get("evidence_refs", []) if r.get("source_type") == "comment"]
+        comment_refs = [
+            r for r in snapshot.get("evidence_refs", []) if r.get("source_type") == "comment"
+        ]
         assert comment_refs == []
 
 
@@ -319,9 +386,13 @@ class TestCommentRoleValidation:
         """Typo'd role produces an error with valid role list."""
         task = create_task("Role validation")
         result = invoke(
-            "comment", task["id"], "looks good",
-            "--role", "reveiw",
-            "--actor", "human:test",
+            "comment",
+            task["id"],
+            "looks good",
+            "--role",
+            "reveiw",
+            "--actor",
+            "human:test",
             "--json",
         )
         assert result.exit_code != 0
@@ -335,9 +406,13 @@ class TestCommentRoleValidation:
         """Valid role (matching completion policy) succeeds."""
         task = create_task("Role validation OK")
         result = invoke(
-            "comment", task["id"], "all good",
-            "--role", "review",
-            "--actor", "human:test",
+            "comment",
+            task["id"],
+            "all good",
+            "--role",
+            "review",
+            "--actor",
+            "human:test",
             "--json",
         )
         assert result.exit_code == 0
@@ -346,8 +421,11 @@ class TestCommentRoleValidation:
         """Comment without --role skips role validation."""
         task = create_task("No role")
         result = invoke(
-            "comment", task["id"], "just a note",
-            "--actor", "human:test",
+            "comment",
+            task["id"],
+            "just a note",
+            "--actor",
+            "human:test",
         )
         assert result.exit_code == 0
 
@@ -369,9 +447,13 @@ class TestCommentRoleNoPolicies:
     def test_any_role_accepted_without_any_config(self, invoke, create_task) -> None:
         task = create_task("No roles configured")
         result = invoke(
-            "comment", task["id"], "all good",
-            "--role", "anything_goes",
-            "--actor", "human:test",
+            "comment",
+            task["id"],
+            "all good",
+            "--role",
+            "anything_goes",
+            "--actor",
+            "human:test",
         )
         assert result.exit_code == 0
 
@@ -383,9 +465,13 @@ class TestCommentRoleExplicitRoles:
         """Default config has workflow.roles: ['review'], so typos are caught."""
         task = create_task("Explicit roles")
         result = invoke(
-            "comment", task["id"], "looks good",
-            "--role", "reveiw",
-            "--actor", "human:test",
+            "comment",
+            task["id"],
+            "looks good",
+            "--role",
+            "reveiw",
+            "--actor",
+            "human:test",
             "--json",
         )
         assert result.exit_code != 0
@@ -399,9 +485,13 @@ class TestCommentRoleExplicitRoles:
         """Default config has workflow.roles: ['review'], so 'review' passes."""
         task = create_task("Explicit roles OK")
         result = invoke(
-            "comment", task["id"], "all good",
-            "--role", "review",
-            "--actor", "human:test",
+            "comment",
+            task["id"],
+            "all good",
+            "--role",
+            "review",
+            "--actor",
+            "human:test",
         )
         assert result.exit_code == 0
 
@@ -421,9 +511,12 @@ class TestCommentFile:
         body_file.write_text("Detailed review findings here.")
 
         result = invoke(
-            "comment", task["id"],
-            "--file", str(body_file),
-            "--actor", "human:test",
+            "comment",
+            task["id"],
+            "--file",
+            str(body_file),
+            "--actor",
+            "human:test",
             "--json",
         )
         assert result.exit_code == 0
@@ -437,9 +530,13 @@ class TestCommentFile:
         body_file.write_text("content")
 
         result = invoke(
-            "comment", task["id"], "inline text",
-            "--file", str(body_file),
-            "--actor", "human:test",
+            "comment",
+            task["id"],
+            "inline text",
+            "--file",
+            str(body_file),
+            "--actor",
+            "human:test",
         )
         assert result.exit_code != 0
         assert "not both" in result.output.lower() or "VALIDATION_ERROR" in result.output
@@ -447,8 +544,10 @@ class TestCommentFile:
     def test_neither_text_nor_file_is_error(self, invoke, create_task) -> None:
         """Providing neither TEXT nor --file is an error."""
         result = invoke(
-            "comment", create_task("No body")["id"],
-            "--actor", "human:test",
+            "comment",
+            create_task("No body")["id"],
+            "--actor",
+            "human:test",
         )
         assert result.exit_code != 0
 
@@ -459,14 +558,198 @@ class TestCommentFile:
         body_file.write_text("LGTM — all checks pass.")
 
         result = invoke(
-            "comment", task["id"],
-            "--file", str(body_file),
-            "--role", "review",
-            "--actor", "human:test",
+            "comment",
+            task["id"],
+            "--file",
+            str(body_file),
+            "--role",
+            "review",
+            "--actor",
+            "human:test",
             "--json",
         )
         assert result.exit_code == 0
         snapshot = json.loads(result.output)["data"]
-        comment_refs = [r for r in snapshot.get("evidence_refs", []) if r.get("source_type") == "comment"]
+        comment_refs = [
+            r for r in snapshot.get("evidence_refs", []) if r.get("source_type") == "comment"
+        ]
         assert len(comment_refs) == 1
         assert comment_refs[0]["role"] == "review"
+
+
+# ---------------------------------------------------------------------------
+# lattice comment-edit --role (LAT-141)
+# ---------------------------------------------------------------------------
+
+
+class TestCommentEditRole:
+    """Tests for --role option on comment-edit."""
+
+    def test_add_role_to_roleless_comment(self, invoke, create_task) -> None:
+        """Adding --role to a comment without a role creates an evidence_ref."""
+        task = create_task("Edit role test")
+        task_id = task["id"]
+        comment_id = _add_comment(invoke, task_id, "looks good")
+
+        result = invoke(
+            "comment-edit", task_id, comment_id, "looks good",
+            "--role", "review",
+            "--actor", "human:test",
+            "--json",
+        )
+        assert result.exit_code == 0, result.output
+        snapshot = json.loads(result.output)["data"]
+        comment_refs = [
+            r for r in snapshot.get("evidence_refs", [])
+            if r.get("source_type") == "comment"
+        ]
+        assert len(comment_refs) == 1
+        assert comment_refs[0]["id"] == comment_id
+        assert comment_refs[0]["role"] == "review"
+
+    def test_change_role_on_existing_role_comment(self, invoke, initialized_root) -> None:
+        """Changing --role on a comment with an existing role updates evidence_refs."""
+        from tests.conftest import _add_policies_to_config
+
+        _add_policies_to_config(initialized_root, {
+            "done": {"require_roles": ["review", "security"]},
+        })
+        from lattice.storage.fs import LATTICE_DIR
+        config_path = initialized_root / LATTICE_DIR / "config.json"
+        config = json.loads(config_path.read_text())
+        config["workflow"]["roles"] = ["review", "security"]
+        config_path.write_text(json.dumps(config, sort_keys=True, indent=2) + "\n")
+
+        r = invoke("create", "Role change test", "--actor", "human:test", "--json")
+        task_id = json.loads(r.output)["data"]["id"]
+
+        r = invoke(
+            "comment", task_id, "initial review",
+            "--role", "review", "--actor", "human:test", "--json",
+        )
+        comment_id = json.loads(r.output)["data"]["last_event_id"]
+
+        r = invoke(
+            "comment-edit", task_id, comment_id, "actually a security review",
+            "--role", "security", "--actor", "human:test", "--json",
+        )
+        assert r.exit_code == 0, r.output
+        snapshot = json.loads(r.output)["data"]
+        comment_refs = [
+            ref for ref in snapshot.get("evidence_refs", [])
+            if ref.get("source_type") == "comment"
+        ]
+        assert len(comment_refs) == 1
+        assert comment_refs[0]["role"] == "security"
+
+    def test_body_only_edit_preserves_role(self, invoke, create_task) -> None:
+        """Editing body without --role preserves the existing role evidence."""
+        task = create_task("Preserve role test")
+        task_id = task["id"]
+
+        r = invoke(
+            "comment", task_id, "LGTM",
+            "--role", "review", "--actor", "human:test", "--json",
+        )
+        comment_id = json.loads(r.output)["data"]["last_event_id"]
+
+        r = invoke(
+            "comment-edit", task_id, comment_id, "LGTM — no issues found",
+            "--actor", "human:test", "--json",
+        )
+        assert r.exit_code == 0, r.output
+        snapshot = json.loads(r.output)["data"]
+        comment_refs = [
+            ref for ref in snapshot.get("evidence_refs", [])
+            if ref.get("source_type") == "comment"
+        ]
+        assert len(comment_refs) == 1
+        assert comment_refs[0]["role"] == "review"
+
+    def test_completion_policy_satisfied_after_role_edit(
+        self, invoke_with_policies, initialized_root_with_policies,
+    ) -> None:
+        """Adding a review role via comment-edit satisfies completion policy."""
+        r = invoke_with_policies(
+            "create", "Policy test", "--actor", "human:test", "--json",
+        )
+        task_id = json.loads(r.output)["data"]["id"]
+        invoke_with_policies(
+            "status", task_id, "in_progress", "--actor", "human:test",
+            "--force", "--reason", "skip",
+        )
+        invoke_with_policies("status", task_id, "review", "--actor", "human:test")
+
+        r = invoke_with_policies(
+            "comment", task_id, "looks good",
+            "--actor", "human:test", "--json",
+        )
+        comment_id = json.loads(r.output)["data"]["last_event_id"]
+
+        r = invoke_with_policies(
+            "status", task_id, "done", "--actor", "human:test", "--json",
+        )
+        assert r.exit_code != 0
+        assert json.loads(r.output)["error"]["code"] == "COMPLETION_BLOCKED"
+
+        r = invoke_with_policies(
+            "comment-edit", task_id, comment_id, "looks good",
+            "--role", "review", "--actor", "human:test",
+        )
+        assert r.exit_code == 0, r.output
+
+        r = invoke_with_policies(
+            "status", task_id, "done", "--actor", "human:test", "--json",
+        )
+        assert r.exit_code == 0, r.output
+        assert json.loads(r.output)["ok"] is True
+
+
+class TestCommentEditRoleValidation:
+    """Role validation on comment-edit mirrors comment and attach."""
+
+    @pytest.fixture(autouse=True)
+    def _with_policies(self, initialized_root_with_policies) -> None:
+        """Ensure standard completion policies are active."""
+
+    def test_typo_role_rejected(self, invoke_with_policies) -> None:
+        """Typo'd role on comment-edit produces INVALID_ROLE error."""
+        r = invoke_with_policies(
+            "create", "Validation test", "--actor", "human:test", "--json",
+        )
+        task_id = json.loads(r.output)["data"]["id"]
+
+        r = invoke_with_policies(
+            "comment", task_id, "original", "--actor", "human:test", "--json",
+        )
+        comment_id = json.loads(r.output)["data"]["last_event_id"]
+
+        r = invoke_with_policies(
+            "comment-edit", task_id, comment_id, "updated",
+            "--role", "reveiw",
+            "--actor", "human:test", "--json",
+        )
+        assert r.exit_code != 0
+        parsed = json.loads(r.output)
+        assert parsed["error"]["code"] == "INVALID_ROLE"
+        assert "reveiw" in parsed["error"]["message"]
+        assert "review" in parsed["error"]["message"]
+
+    def test_valid_role_accepted(self, invoke_with_policies) -> None:
+        """Valid role on comment-edit succeeds."""
+        r = invoke_with_policies(
+            "create", "Validation OK", "--actor", "human:test", "--json",
+        )
+        task_id = json.loads(r.output)["data"]["id"]
+
+        r = invoke_with_policies(
+            "comment", task_id, "original", "--actor", "human:test", "--json",
+        )
+        comment_id = json.loads(r.output)["data"]["last_event_id"]
+
+        r = invoke_with_policies(
+            "comment-edit", task_id, comment_id, "updated",
+            "--role", "review",
+            "--actor", "human:test",
+        )
+        assert r.exit_code == 0

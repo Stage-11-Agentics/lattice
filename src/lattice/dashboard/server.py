@@ -31,7 +31,12 @@ from lattice.core.config import (
 )
 from lattice.core.events import create_event, serialize_event, utc_now
 from lattice.core.ids import generate_task_id, validate_actor, validate_id
-from lattice.core.tasks import apply_event_to_snapshot, compact_snapshot, compute_epic_derived_status, serialize_snapshot
+from lattice.core.tasks import (
+    apply_event_to_snapshot,
+    compact_snapshot,
+    compute_epic_derived_status,
+    serialize_snapshot,
+)
 from lattice.storage.fs import atomic_write, jsonl_append
 from lattice.storage.locks import multi_lock
 from lattice.storage.hooks import execute_hooks
@@ -92,7 +97,7 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                 self._route_api(path)
             elif path.startswith("/static/"):
                 # Serve static assets (JS, CSS) with path traversal protection
-                rel_path = path[len("/static/"):]
+                rel_path = path[len("/static/") :]
                 # Block path traversal
                 if ".." in rel_path or rel_path.startswith("/"):
                     self._send_json(403, _err("FORBIDDEN", "Path traversal not allowed"))
@@ -179,7 +184,7 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                 self._handle_git_summary(ld)
             elif path.startswith("/api/git/branches/"):
                 # /api/git/branches/<name>/commits
-                remainder = path[len("/api/git/branches/"):]
+                remainder = path[len("/api/git/branches/") :]
                 if remainder.endswith("/commits"):
                     branch_name = remainder[: -len("/commits")]
                     self._handle_git_branch_commits(ld, branch_name)
@@ -438,20 +443,28 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                             task_filter = resolved
                         else:
                             # Unknown short ID — return empty
-                            self._send_json(200, _ok({
-                                "events": [],
-                                "total": 0,
-                                "offset": offset,
-                                "limit": limit,
-                                "has_more": False,
-                                "facets": {"types": [], "actors": [], "tasks": []},
-                            }))
+                            self._send_json(
+                                200,
+                                _ok(
+                                    {
+                                        "events": [],
+                                        "total": 0,
+                                        "offset": offset,
+                                        "limit": limit,
+                                        "has_more": False,
+                                        "facets": {"types": [], "actors": [], "tasks": []},
+                                    }
+                                ),
+                            )
                             return
                     else:
-                        self._send_json(400, _err(
-                            "VALIDATION_ERROR",
-                            f"Invalid task filter: '{task_param}'",
-                        ))
+                        self._send_json(
+                            400,
+                            _err(
+                                "VALIDATION_ERROR",
+                                f"Invalid task filter: '{task_param}'",
+                            ),
+                        )
                         return
 
             # Collect events — full scan when filters active, tail otherwise
@@ -478,14 +491,19 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
             page = filtered[offset : offset + limit]
             has_more = (offset + limit) < total
 
-            self._send_json(200, _ok({
-                "events": page,
-                "total": total,
-                "offset": offset,
-                "limit": limit,
-                "has_more": has_more,
-                "facets": facets,
-            }))
+            self._send_json(
+                200,
+                _ok(
+                    {
+                        "events": page,
+                        "total": total,
+                        "offset": offset,
+                        "limit": limit,
+                        "has_more": has_more,
+                        "facets": facets,
+                    }
+                ),
+            )
 
         def _handle_stats(self, ld: Path) -> None:
             config_path = ld / "config.json"
@@ -618,11 +636,13 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                 for rel in snap.get("relationships_out", []):
                     target_id = rel.get("target_task_id")
                     if target_id and target_id in active_ids and rel.get("type") == "subtask_of":
-                        graph_links.append({
-                            "source": snap["id"],
-                            "target": target_id,
-                            "type": "subtask_of",
-                        })
+                        graph_links.append(
+                            {
+                                "source": snap["id"],
+                                "target": target_id,
+                                "type": "subtask_of",
+                            }
+                        )
 
             # Find which tasks are children (have a subtask_of relationship)
             child_ids: set[str] = {link["source"] for link in graph_links}
@@ -645,7 +665,9 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                     return None
                 children_ids = parent_to_children.get(task_id, [])
                 children = []
-                for cid in sorted(children_ids, key=lambda x: snap_by_id.get(x, {}).get("short_id", x)):
+                for cid in sorted(
+                    children_ids, key=lambda x: snap_by_id.get(x, {}).get("short_id", x)
+                ):
                     child_node = build_tree_node(cid, depth + 1)
                     if child_node:
                         children.append(child_node)
@@ -679,23 +701,30 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
             for oid in sorted(orphan_ids, key=lambda x: snap_by_id.get(x, {}).get("short_id", x)):
                 snap = snap_by_id.get(oid)
                 if snap:
-                    orphans.append({
-                        "id": snap.get("id"),
-                        "short_id": snap.get("short_id"),
-                        "title": snap.get("title"),
-                        "status": snap.get("status"),
-                        "priority": snap.get("priority"),
-                        "type": snap.get("type"),
-                        "assigned_to": snap.get("assigned_to"),
-                        "depth": 0,
-                    })
+                    orphans.append(
+                        {
+                            "id": snap.get("id"),
+                            "short_id": snap.get("short_id"),
+                            "title": snap.get("title"),
+                            "status": snap.get("status"),
+                            "priority": snap.get("priority"),
+                            "type": snap.get("type"),
+                            "assigned_to": snap.get("assigned_to"),
+                            "depth": 0,
+                        }
+                    )
 
-            self._send_json(200, _ok({
-                "trees": trees,
-                "orphans": orphans,
-                "total_tasks": len(snapshots),
-                "total_epics": len(root_ids),
-            }))
+            self._send_json(
+                200,
+                _ok(
+                    {
+                        "trees": trees,
+                        "orphans": orphans,
+                        "total_tasks": len(snapshots),
+                        "total_epics": len(root_ids),
+                    }
+                ),
+            )
 
         # ---------------------------------------------------------------
         # Git API handlers
@@ -1728,9 +1757,7 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                 return
 
             if not emoji or not isinstance(emoji, str):
-                self._send_json(
-                    400, _err("VALIDATION_ERROR", "Missing or invalid 'emoji' field")
-                )
+                self._send_json(400, _err("VALIDATION_ERROR", "Missing or invalid 'emoji' field"))
                 return
 
             if not validate_emoji(emoji):
@@ -1823,9 +1850,7 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                 return
 
             if not emoji or not isinstance(emoji, str):
-                self._send_json(
-                    400, _err("VALIDATION_ERROR", "Missing or invalid 'emoji' field")
-                )
+                self._send_json(400, _err("VALIDATION_ERROR", "Missing or invalid 'emoji' field"))
                 return
 
             if not validate_emoji(emoji):
@@ -1879,7 +1904,9 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
             if not found:
                 self._send_json(
                     404,
-                    _err("NOT_FOUND", f"No '{emoji}' reaction by {actor} on comment {comment_id}."),
+                    _err(
+                        "NOT_FOUND", f"No '{emoji}' reaction by {actor} on comment {comment_id}."
+                    ),
                 )
                 return
 
@@ -1993,7 +2020,6 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
 
             self._send_json(200, _ok({"opened": str(resolved)}))
 
-
     return LatticeHandler
 
 
@@ -2101,8 +2127,7 @@ def _apply_activity_filters(
         from lattice.core.events import get_actor_display
 
         result = [
-            e for e in result
-            if e.get("actor") and get_actor_display(e["actor"]) == actor_filter
+            e for e in result if e.get("actor") and get_actor_display(e["actor"]) == actor_filter
         ]
 
     if after:
@@ -2158,8 +2183,6 @@ def _read_snapshot_archive(ld: Path, task_id: str) -> dict | None:
         return json.loads(path.read_text())
     except (json.JSONDecodeError, OSError):
         return None
-
-
 
 
 def _read_artifact_info(ld: Path, snapshot: dict) -> list[dict]:

@@ -30,7 +30,9 @@ def _create_task_at_review(lattice_env: Path, *, assigned_to: str | None = None)
         kwargs["assigned_to"] = assigned_to
     snapshot = lattice_create(**kwargs)
     task_id = snapshot["id"]
-    lattice_status(task_id=task_id, new_status="in_progress", actor=_ACTOR, force=True, reason="skip for test")
+    lattice_status(
+        task_id=task_id, new_status="in_progress", actor=_ACTOR, force=True, reason="skip for test"
+    )
     lattice_status(task_id=task_id, new_status="review", actor=_ACTOR)
     return task_id
 
@@ -49,7 +51,9 @@ class TestMCPCompletionPolicy:
         _config_with_policy(lattice_env, {"done": {"require_roles": ["review"]}})
         task_id = _create_task_at_review(lattice_env)
 
-        lattice_comment(task_id=task_id, text="LGTM — no issues found", actor=_ACTOR, role="review")
+        lattice_comment(
+            task_id=task_id, text="LGTM — no issues found", actor=_ACTOR, role="review"
+        )
         snapshot = lattice_status(task_id=task_id, new_status="done", actor=_ACTOR)
         assert snapshot["status"] == "done"
 
@@ -70,10 +74,13 @@ class TestMCPCompletionPolicy:
         assert snapshot["status"] == "done"
 
     def test_universal_target_bypasses_policy(self, lattice_env: Path) -> None:
-        _config_with_policy(lattice_env, {
-            "done": {"require_roles": ["review"]},
-            "needs_human": {"require_roles": ["review"]},
-        })
+        _config_with_policy(
+            lattice_env,
+            {
+                "done": {"require_roles": ["review"]},
+                "needs_human": {"require_roles": ["review"]},
+            },
+        )
         task_id = _create_task_at_review(lattice_env)
 
         # needs_human is a universal target — should bypass policy

@@ -333,9 +333,7 @@ def list_cmd(
     status_warning: str | None = None
     if status is not None and not validate_status(config, status):
         valid = ", ".join(config.get("workflow", {}).get("statuses", []))
-        status_warning = (
-            f"'{status}' is not a configured status. Valid statuses: {valid}."
-        )
+        status_warning = f"'{status}' is not a configured status. Valid statuses: {valid}."
 
     # Scan all .json files in tasks/ directory
     tasks_dir = lattice_dir / "tasks"
@@ -423,7 +421,9 @@ def list_cmd(
             assigned_to = snap.get("assigned_to") or "unassigned"
             prefix = ">>> " if s == "needs_human" else ""
             archived_marker = " [A]" if snap.get("_archived") else ""
-            click.echo(f'{prefix}{display_id}  {s_display}  {p}  {t}  "{title}"  {assigned_to}{archived_marker}')
+            click.echo(
+                f'{prefix}{display_id}  {s_display}  {p}  {t}  "{title}"  {assigned_to}{archived_marker}'
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -433,13 +433,19 @@ def list_cmd(
 
 @cli.command("next")
 @click.option(
-    "--actor", default=None, expose_value=False,
+    "--actor",
+    default=None,
+    expose_value=False,
     callback=helpers._store_actor,
     help="Who is asking (filters by assignment, required for --claim).",
 )
 @click.option(
-    "--name", "session_name", default=None, expose_value=False,
-    callback=helpers._store_session_name, is_eager=True,
+    "--name",
+    "session_name",
+    default=None,
+    expose_value=False,
+    callback=helpers._store_session_name,
+    is_eager=True,
     help="Session name (e.g., Argus-3). Resolves to full identity.",
 )
 @click.option(
@@ -520,7 +526,9 @@ def next_cmd(
 
             current_assigned = snapshot.get("assigned_to")
             current_status = snapshot.get("status", "")
-            if current_assigned is not None and not _actors_match(current_assigned, resolved_actor):
+            if current_assigned is not None and not _actors_match(
+                current_assigned, resolved_actor
+            ):
                 owner = get_actor_display(current_assigned)
                 output_error(
                     f"Task already claimed by {owner}.",
@@ -708,8 +716,7 @@ def show_cmd(
     reopened_warning: str | None = None
     if latest_reopen is not None:
         reopened_warning = (
-            f"Previously completed, reset on {latest_reopen['date']} "
-            f"by {latest_reopen['actor']}"
+            f"Previously completed, reset on {latest_reopen['date']} by {latest_reopen['actor']}"
         )
 
     # Check for notes and plan files
@@ -1182,7 +1189,10 @@ def _print_human_show(
         click.echo("")
         click.echo("Review evidence:")
         for role, sources in sorted(role_sources.items()):
-            source_summary = ", ".join(f"{s} x{sources.count(s)}" if sources.count(s) > 1 else s for s in sorted(set(sources)))
+            source_summary = ", ".join(
+                f"{s} x{sources.count(s)}" if sources.count(s) > 1 else s
+                for s in sorted(set(sources))
+            )
             click.echo(f"  {role}: {source_summary}")
 
     branch_links = snapshot.get("branch_links", [])
@@ -1273,9 +1283,9 @@ def _event_summary(event: dict, full: bool) -> str:
         cid = data.get("comment_id", "?")
         return f"deleted comment {cid[:20]}..."
     elif etype == "reaction_added":
-        return f':{data.get("emoji", "?")}: on {data.get("comment_id", "?")[:20]}...'
+        return f":{data.get('emoji', '?')}: on {data.get('comment_id', '?')[:20]}..."
     elif etype == "reaction_removed":
-        return f'removed :{data.get("emoji", "?")}: from {data.get("comment_id", "?")[:20]}...'
+        return f"removed :{data.get('emoji', '?')}: from {data.get('comment_id', '?')[:20]}..."
     elif etype == "task_created":
         return ""
     elif etype == "task_short_id_assigned":

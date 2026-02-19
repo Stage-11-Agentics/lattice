@@ -12,6 +12,7 @@ from lattice.core.config import (
     VALID_URGENCIES,
     default_config,
     get_configured_roles,
+    get_review_cycle_limit,
     get_status_description,
     get_wip_limit,
     load_config,
@@ -452,9 +453,11 @@ class TestValidateCompletionPolicy:
         config["workflow"]["completion_policies"] = {
             "done": {"require_roles": ["review"]},
         }
-        snap = _snap_with_evidence([
-            {"id": "art_A", "role": "review", "source_type": "artifact"},
-        ])
+        snap = _snap_with_evidence(
+            [
+                {"id": "art_A", "role": "review", "source_type": "artifact"},
+            ]
+        )
         ok, failures = validate_completion_policy(config, snap, "done")
         assert ok is True
         assert failures == []
@@ -464,9 +467,11 @@ class TestValidateCompletionPolicy:
         config["workflow"]["completion_policies"] = {
             "done": {"require_roles": ["review"]},
         }
-        snap = _snap_with_evidence([
-            {"id": "ev_C", "role": "review", "source_type": "comment"},
-        ])
+        snap = _snap_with_evidence(
+            [
+                {"id": "ev_C", "role": "review", "source_type": "comment"},
+            ]
+        )
         ok, failures = validate_completion_policy(config, snap, "done")
         assert ok is True
         assert failures == []
@@ -476,9 +481,11 @@ class TestValidateCompletionPolicy:
         config["workflow"]["completion_policies"] = {
             "done": {"require_roles": ["review", "security"]},
         }
-        snap = _snap_with_evidence([
-            {"id": "art_A", "role": "review", "source_type": "artifact"},
-        ])
+        snap = _snap_with_evidence(
+            [
+                {"id": "art_A", "role": "review", "source_type": "artifact"},
+            ]
+        )
         ok, failures = validate_completion_policy(config, snap, "done")
         assert ok is False
         assert any("security" in f for f in failures)
@@ -489,10 +496,12 @@ class TestValidateCompletionPolicy:
         config["workflow"]["completion_policies"] = {
             "done": {"require_roles": ["review", "security"]},
         }
-        snap = _snap_with_evidence([
-            {"id": "art_A", "role": "review", "source_type": "artifact"},
-            {"id": "ev_B", "role": "security", "source_type": "comment"},
-        ])
+        snap = _snap_with_evidence(
+            [
+                {"id": "art_A", "role": "review", "source_type": "artifact"},
+                {"id": "ev_B", "role": "security", "source_type": "comment"},
+            ]
+        )
         ok, failures = validate_completion_policy(config, snap, "done")
         assert ok is True
 
@@ -548,9 +557,11 @@ class TestValidateCompletionPolicy:
         config["workflow"]["completion_policies"] = {
             "done": {"require_roles": ["review"]},
         }
-        snap = _snap_with_evidence([
-            {"id": "art_A", "role": None, "source_type": "artifact"},
-        ])
+        snap = _snap_with_evidence(
+            [
+                {"id": "art_A", "role": None, "source_type": "artifact"},
+            ]
+        )
         ok, failures = validate_completion_policy(config, snap, "done")
         assert ok is False
 
@@ -622,6 +633,37 @@ class TestGetConfiguredRoles:
 
 
 # ---------------------------------------------------------------------------
+# get_review_cycle_limit (LAT-168)
+# ---------------------------------------------------------------------------
+
+
+class TestGetReviewCycleLimit:
+    """get_review_cycle_limit() returns the review cycle limit or default."""
+
+    def test_returns_default_when_not_configured(self) -> None:
+        config = default_config()
+        assert get_review_cycle_limit(config) == 3
+
+    def test_returns_configured_value(self) -> None:
+        config = default_config()
+        config["workflow"]["review_cycle_limit"] = 5
+        assert get_review_cycle_limit(config) == 5
+
+    def test_returns_default_when_workflow_missing(self) -> None:
+        config: dict = {"schema_version": 1}
+        assert get_review_cycle_limit(config) == 3
+
+    def test_returns_default_when_workflow_empty(self) -> None:
+        config: dict = {"workflow": {}}
+        assert get_review_cycle_limit(config) == 3
+
+    def test_returns_one_when_set_to_one(self) -> None:
+        config = default_config()
+        config["workflow"]["review_cycle_limit"] = 1
+        assert get_review_cycle_limit(config) == 1
+
+
+# ---------------------------------------------------------------------------
 # Workflow invariants (parametrized)
 # ---------------------------------------------------------------------------
 
@@ -649,9 +691,7 @@ class TestWorkflowInvariants:
         if status in _UNIVERSAL_TARGETS:
             return  # universal targets are reachable from any status
         # Check if any other status can transition to this one
-        reachable_from = [
-            src for src, targets in _TRANSITIONS.items() if status in targets
-        ]
+        reachable_from = [src for src, targets in _TRANSITIONS.items() if status in targets]
         assert reachable_from, f"Status '{status}' is unreachable — no status transitions to it"
 
     @pytest.mark.parametrize("status", _ALL_STATUSES)

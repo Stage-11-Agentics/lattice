@@ -287,7 +287,11 @@ def _archive_stale(
     tasks_dir = lattice_dir / "tasks"
     if not tasks_dir.is_dir():
         if is_json:
-            click.echo(json.dumps({"ok": True, "data": {"archived": [], "failed": []}}, sort_keys=True, indent=2))
+            click.echo(
+                json.dumps(
+                    {"ok": True, "data": {"archived": [], "failed": []}}, sort_keys=True, indent=2
+                )
+            )
         elif not is_quiet:
             click.echo("No stale done tasks found.")
         return
@@ -315,7 +319,11 @@ def _archive_stale(
 
     if not candidates:
         if is_json:
-            click.echo(json.dumps({"ok": True, "data": {"archived": [], "failed": []}}, sort_keys=True, indent=2))
+            click.echo(
+                json.dumps(
+                    {"ok": True, "data": {"archived": [], "failed": []}}, sort_keys=True, indent=2
+                )
+            )
         elif not is_quiet:
             click.echo("No stale done tasks found.")
         return
@@ -515,9 +523,7 @@ def unarchive(
 
     for raw_id in parsed_ids:
         try:
-            resolved = resolve_task_id(
-                lattice_dir, raw_id, is_json=False, allow_archived=True
-            )
+            resolved = resolve_task_id(lattice_dir, raw_id, is_json=False, allow_archived=True)
         except SystemExit:
             failed.append((raw_id, f"Invalid or unresolvable task ID: {raw_id}"))
             continue

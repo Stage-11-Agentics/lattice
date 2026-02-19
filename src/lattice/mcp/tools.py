@@ -479,8 +479,7 @@ def lattice_comment(
         configured_roles = get_configured_roles(config)
         if configured_roles and role not in configured_roles:
             raise ValueError(
-                f"Unknown role: '{role}'. "
-                f"Valid roles: {', '.join(sorted(configured_roles))}."
+                f"Unknown role: '{role}'. Valid roles: {', '.join(sorted(configured_roles))}."
             )
 
     event_data: dict = {"body": text}

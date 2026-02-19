@@ -261,13 +261,19 @@ def common_options(f):  # noqa: ANN001, ANN201
     f = click.option("--session", default=None, help="Session identifier (legacy).")(f)
     f = click.option("--model", default=None, help="Model identifier (legacy).")(f)
     f = click.option(
-        "--actor", default=None, expose_value=False,
+        "--actor",
+        default=None,
+        expose_value=False,
         callback=_store_actor,
         help="Actor (e.g., human:atin, agent:claude). Deprecated: prefer --name.",
     )(f)
     f = click.option(
-        "--name", "session_name", default=None, expose_value=False,
-        callback=_store_session_name, is_eager=True,
+        "--name",
+        "session_name",
+        default=None,
+        expose_value=False,
+        callback=_store_session_name,
+        is_eager=True,
         help="Session name (e.g., Argus-3). Resolves to full identity.",
     )(f)
     f = click.option("--reason", "provenance_reason", default=None, help="Reason (provenance).")(f)
@@ -367,9 +373,7 @@ def read_resource_snapshot(lattice_dir: Path, resource_name: str) -> dict | None
     return json.loads(snap_path.read_text())
 
 
-def read_resource_snapshot_or_exit(
-    lattice_dir: Path, resource_name: str, is_json: bool
-) -> dict:
+def read_resource_snapshot_or_exit(lattice_dir: Path, resource_name: str, is_json: bool) -> dict:
     """Read a resource snapshot or exit with NOT_FOUND error."""
     snapshot = read_resource_snapshot(lattice_dir, resource_name)
     if snapshot is None:

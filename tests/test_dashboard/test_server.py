@@ -339,8 +339,7 @@ class TestActivityEndpoint:
         # Should find the comment "Starting dependency audit."
         assert len(events) >= 1
         found = any(
-            "dependency audit" in (e.get("data", {}).get("body") or "").lower()
-            for e in events
+            "dependency audit" in (e.get("data", {}).get("body") or "").lower() for e in events
         )
         assert found
 

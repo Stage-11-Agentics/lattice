@@ -418,9 +418,7 @@ class TestBulkArchive:
         t2 = create_task("Bulk two")
         t3 = create_task("Bulk three")
 
-        result = invoke(
-            "archive", t1["id"], t2["id"], t3["id"], "--actor", "human:test"
-        )
+        result = invoke("archive", t1["id"], t2["id"], t3["id"], "--actor", "human:test")
         assert result.exit_code == 0
         assert "3 task(s)" in result.output
 
@@ -434,9 +432,7 @@ class TestBulkArchive:
         t1 = create_task("Comma one")
         t2 = create_task("Comma two")
 
-        result = invoke(
-            "archive", f"{t1['id']},{t2['id']}", "--actor", "human:test"
-        )
+        result = invoke("archive", f"{t1['id']},{t2['id']}", "--actor", "human:test")
         assert result.exit_code == 0
         assert "2 task(s)" in result.output
 
@@ -451,9 +447,7 @@ class TestBulkArchive:
         t2 = create_task("Mixed two")
         t3 = create_task("Mixed three")
 
-        result = invoke(
-            "archive", f"{t1['id']},{t2['id']}", t3["id"], "--actor", "human:test"
-        )
+        result = invoke("archive", f"{t1['id']},{t2['id']}", t3["id"], "--actor", "human:test")
         assert result.exit_code == 0
         assert "3 task(s)" in result.output
 
@@ -462,9 +456,7 @@ class TestBulkArchive:
         t1 = create_task("Valid task")
         fake_id = "task_00000000000000000000000099"
 
-        result = invoke(
-            "archive", t1["id"], fake_id, "--actor", "human:test"
-        )
+        result = invoke("archive", t1["id"], fake_id, "--actor", "human:test")
         assert result.exit_code == 1
         assert "1 task(s)" in result.output
         assert "Failed" in result.stderr
@@ -474,9 +466,7 @@ class TestBulkArchive:
         t1 = create_task("JSON bulk one")
         t2 = create_task("JSON bulk two")
 
-        result = invoke(
-            "archive", t1["id"], t2["id"], "--actor", "human:test", "--json"
-        )
+        result = invoke("archive", t1["id"], t2["id"], "--actor", "human:test", "--json")
         assert result.exit_code == 0
         parsed = json.loads(result.output)
         assert parsed["ok"] is True
@@ -488,9 +478,7 @@ class TestBulkArchive:
         t1 = create_task("JSON valid")
         fake_id = "task_00000000000000000000000099"
 
-        result = invoke(
-            "archive", t1["id"], fake_id, "--actor", "human:test", "--json"
-        )
+        result = invoke("archive", t1["id"], fake_id, "--actor", "human:test", "--json")
         assert result.exit_code == 1
         parsed = json.loads(result.output)
         assert parsed["ok"] is False
@@ -502,9 +490,7 @@ class TestBulkArchive:
         t1 = create_task("Quiet bulk one")
         t2 = create_task("Quiet bulk two")
 
-        result = invoke(
-            "archive", t1["id"], t2["id"], "--actor", "human:test", "--quiet"
-        )
+        result = invoke("archive", t1["id"], t2["id"], "--actor", "human:test", "--quiet")
         assert result.exit_code == 0
         lines = result.output.strip().split("\n")
         assert len(lines) == 2
@@ -583,7 +569,16 @@ class TestArchiveStale:
     def test_stale_leaves_non_done_tasks(self, create_task, invoke, initialized_root):
         """--stale should not archive tasks that are not in done status."""
         t1 = create_task("In progress task")
-        invoke("status", t1["id"], "in_progress", "--actor", "human:test", "--force", "--reason", "test")
+        invoke(
+            "status",
+            t1["id"],
+            "in_progress",
+            "--actor",
+            "human:test",
+            "--force",
+            "--reason",
+            "test",
+        )
 
         result = invoke("archive", "--stale", "--actor", "human:test")
         assert result.exit_code == 0
@@ -597,18 +592,14 @@ class TestArchiveStale:
 class TestBulkUnarchive:
     """Tests for bulk unarchive (multiple task IDs)."""
 
-    def test_unarchive_multiple_space_separated(
-        self, create_task, invoke, initialized_root
-    ):
+    def test_unarchive_multiple_space_separated(self, create_task, invoke, initialized_root):
         """Unarchive multiple tasks via space-separated IDs."""
         t1 = create_task("Bulk un one")
         t2 = create_task("Bulk un two")
 
         invoke("archive", t1["id"], t2["id"], "--actor", "human:test")
 
-        result = invoke(
-            "unarchive", t1["id"], t2["id"], "--actor", "human:test"
-        )
+        result = invoke("unarchive", t1["id"], t2["id"], "--actor", "human:test")
         assert result.exit_code == 0
         assert "2 task(s)" in result.output
 
@@ -617,18 +608,14 @@ class TestBulkUnarchive:
             assert (lattice / "tasks" / f"{t['id']}.json").exists()
             assert not (lattice / "archive" / "tasks" / f"{t['id']}.json").exists()
 
-    def test_unarchive_multiple_comma_separated(
-        self, create_task, invoke, initialized_root
-    ):
+    def test_unarchive_multiple_comma_separated(self, create_task, invoke, initialized_root):
         """Unarchive multiple tasks via comma-separated IDs."""
         t1 = create_task("Comma un one")
         t2 = create_task("Comma un two")
 
         invoke("archive", t1["id"], t2["id"], "--actor", "human:test")
 
-        result = invoke(
-            "unarchive", f"{t1['id']},{t2['id']}", "--actor", "human:test"
-        )
+        result = invoke("unarchive", f"{t1['id']},{t2['id']}", "--actor", "human:test")
         assert result.exit_code == 0
         assert "2 task(s)" in result.output
 
@@ -639,9 +626,7 @@ class TestBulkUnarchive:
 
         invoke("archive", t1["id"], t2["id"], "--actor", "human:test")
 
-        result = invoke(
-            "unarchive", t1["id"], t2["id"], "--actor", "human:test", "--json"
-        )
+        result = invoke("unarchive", t1["id"], t2["id"], "--actor", "human:test", "--json")
         assert result.exit_code == 0
         parsed = json.loads(result.output)
         assert parsed["ok"] is True

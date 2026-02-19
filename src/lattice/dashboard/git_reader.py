@@ -272,10 +272,7 @@ def _prune_expired_cache() -> None:
     Called on each cache read/write to prevent unbounded growth.
     """
     now = time.monotonic()
-    expired = [
-        k for k, (ts, _, _) in _summary_cache.items()
-        if now - ts > CACHE_TTL_SECONDS
-    ]
+    expired = [k for k, (ts, _, _) in _summary_cache.items() if now - ts > CACHE_TTL_SECONDS]
     for k in expired:
         del _summary_cache[k]
 

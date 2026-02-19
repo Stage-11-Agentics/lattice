@@ -71,11 +71,32 @@ def _next_serial(index: dict, base_name: str) -> int:
 
 # Word list for auto-generated names when no name is provided.
 _AUTO_NAMES = [
-    "Aether", "Beacon", "Cipher", "Drift", "Echo",
-    "Flint", "Grove", "Helix", "Iris", "Jade",
-    "Kite", "Lumen", "Mote", "Nexus", "Onyx",
-    "Pulse", "Quill", "Rune", "Shard", "Thorn",
-    "Umbra", "Vault", "Wren", "Xenon", "Yarrow", "Zephyr",
+    "Aether",
+    "Beacon",
+    "Cipher",
+    "Drift",
+    "Echo",
+    "Flint",
+    "Grove",
+    "Helix",
+    "Iris",
+    "Jade",
+    "Kite",
+    "Lumen",
+    "Mote",
+    "Nexus",
+    "Onyx",
+    "Pulse",
+    "Quill",
+    "Rune",
+    "Shard",
+    "Thorn",
+    "Umbra",
+    "Vault",
+    "Wren",
+    "Xenon",
+    "Yarrow",
+    "Zephyr",
 ]
 
 

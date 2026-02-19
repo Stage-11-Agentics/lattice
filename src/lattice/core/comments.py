@@ -78,6 +78,8 @@ def _build_comments_map(events: list[dict]) -> dict[str, dict]:
                     }
                 )
                 comment["body"] = data.get("body", comment["body"])
+                if "role" in data:
+                    comment["role"] = data["role"]
                 comment["edited"] = True
                 comment["edited_at"] = ev.get("ts", "")
 
@@ -148,9 +150,7 @@ def _flat_comments(events: list[dict]) -> list[dict]:
     return list(_build_comments_map(events).values())
 
 
-def validate_comment_for_reply(
-    events: list[dict], parent_id: str
-) -> None:
+def validate_comment_for_reply(events: list[dict], parent_id: str) -> None:
     """Validate that *parent_id* is a valid reply target.
 
     Raises ``ValueError`` if the parent doesn't exist, is itself a reply,
@@ -168,12 +168,10 @@ def validate_comment_for_reply(
         )
 
 
-def validate_comment_for_edit(
-    events: list[dict], comment_id: str
-) -> str:
+def validate_comment_for_edit(events: list[dict], comment_id: str) -> tuple[str, str | None]:
     """Validate that *comment_id* can be edited.
 
-    Returns the previous body text.
+    Returns ``(previous_body, previous_role)`` tuple.
     Raises ``ValueError`` if the comment doesn't exist or is deleted.
     """
     comments = {c["id"]: c for c in _flat_comments(events)}
@@ -182,12 +180,10 @@ def validate_comment_for_edit(
         raise ValueError(f"Comment {comment_id} not found.")
     if comment["deleted"]:
         raise ValueError(f"Cannot edit deleted comment {comment_id}.")
-    return comment["body"]
+    return comment["body"], comment.get("role")
 
 
-def validate_comment_for_delete(
-    events: list[dict], comment_id: str
-) -> None:
+def validate_comment_for_delete(events: list[dict], comment_id: str) -> None:
     """Validate that *comment_id* can be deleted.
 
     Raises ``ValueError`` if the comment doesn't exist or is already deleted.
@@ -200,9 +196,7 @@ def validate_comment_for_delete(
         raise ValueError(f"Comment {comment_id} is already deleted.")
 
 
-def validate_comment_for_react(
-    events: list[dict], comment_id: str
-) -> None:
+def validate_comment_for_react(events: list[dict], comment_id: str) -> None:
     """Validate that *comment_id* can receive reactions.
 
     Raises ``ValueError`` if the comment doesn't exist or is deleted.
