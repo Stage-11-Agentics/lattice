@@ -1149,3 +1149,234 @@ def _flatten_comments(comments: list[dict]) -> list[dict]:
         flat.append(c)
         flat.extend(c.get("replies", []))
     return flat
+
+
+# ---------------------------------------------------------------------------
+# lattice complete
+# ---------------------------------------------------------------------------
+
+
+@cli.command("complete")
+@click.argument("task_id")
+@click.option("--review", "review_text", required=True, help="Review findings text.")
+@common_options
+def complete_cmd(
+    task_id: str,
+    review_text: str,
+    model: str | None,
+    session: str | None,
+    output_json: bool,
+    quiet: bool,
+    triggered_by: str | None,
+    on_behalf_of: str | None,
+    provenance_reason: str | None,
+) -> None:
+    """Complete a task with review-to-done ceremony in one command.
+
+    Emits 4 discrete events (3 if already in review):
+    comment_added (role=review), status_changed -> review,
+    artifact_attached (role=review), status_changed -> done.
+    """
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    from lattice.core.artifacts import create_artifact_metadata, serialize_artifact
+    from lattice.core.comments import validate_comment_body
+    from lattice.core.config import (
+        get_configured_roles,
+        get_valid_transitions,
+        validate_completion_policy,
+        validate_transition,
+    )
+    from lattice.core.ids import generate_artifact_id
+    from lattice.storage.fs import atomic_write
+
+    is_json = output_json
+
+    lattice_dir = require_root(is_json)
+    config = load_project_config(lattice_dir)
+    actor = require_actor(is_json)
+    if on_behalf_of is not None:
+        validate_actor_format_or_exit(on_behalf_of, is_json)
+
+    task_id = resolve_task_id(lattice_dir, task_id, is_json)
+    snapshot = read_snapshot_or_exit(lattice_dir, task_id, is_json)
+
+    # Epics cannot be completed directly
+    if snapshot.get("type") == "epic":
+        output_error(
+            "Cannot complete epics. Epic status is derived from subtask completion.",
+            "EPIC_STATUS_REJECTED",
+            is_json,
+        )
+
+    current_status = snapshot["status"]
+    already_in_review = current_status == "review"
+
+    # Validate that we can reach review (or are already there)
+    if not already_in_review:
+        if not validate_transition(config, current_status, "review"):
+            valid_targets = get_valid_transitions(config, current_status)
+            valid_list = ", ".join(valid_targets) if valid_targets else "(none)"
+            output_error(
+                f"Cannot complete: task is in '{current_status}' which cannot "
+                f"transition to review. Valid transitions: {valid_list}.",
+                "INVALID_TRANSITION",
+                is_json,
+            )
+
+    # Validate review -> done transition exists
+    if not validate_transition(config, "review", "done"):
+        output_error(
+            "Cannot complete: no transition from review to done in workflow.",
+            "INVALID_TRANSITION",
+            is_json,
+        )
+
+    # Validate role is accepted
+    configured_roles = get_configured_roles(config)
+    if configured_roles and "review" not in configured_roles:
+        output_error(
+            "Unknown role: 'review'. "
+            f"Valid roles: {', '.join(sorted(configured_roles))}.",
+            "INVALID_ROLE",
+            is_json,
+        )
+
+    # Validate review text
+    try:
+        review_text = validate_comment_body(review_text)
+    except ValueError as exc:
+        output_error(str(exc), "VALIDATION_ERROR", is_json)
+
+    # --- Build events sequentially, applying each to snapshot ---
+    shared_ts = utc_now()
+    events: list[dict] = []
+    art_id = generate_artifact_id()
+
+    # 1. Review comment
+    comment_event = create_event(
+        type="comment_added",
+        task_id=task_id,
+        actor=actor,
+        data={"body": review_text, "role": "review"},
+        ts=shared_ts,
+        model=model,
+        session=session,
+        triggered_by=triggered_by,
+        on_behalf_of=on_behalf_of,
+        reason=provenance_reason,
+    )
+    events.append(comment_event)
+    snapshot = apply_event_to_snapshot(snapshot, comment_event)
+
+    # 2. Status -> review (skip if already in review)
+    if not already_in_review:
+        review_status_event = create_event(
+            type="status_changed",
+            task_id=task_id,
+            actor=actor,
+            data={"from": current_status, "to": "review"},
+            ts=shared_ts,
+            model=model,
+            session=session,
+            triggered_by=triggered_by,
+            on_behalf_of=on_behalf_of,
+            reason=provenance_reason,
+        )
+        events.append(review_status_event)
+        snapshot = apply_event_to_snapshot(snapshot, review_status_event)
+
+    # 3. Attach inline review artifact
+    artifact_event = create_event(
+        type="artifact_attached",
+        task_id=task_id,
+        actor=actor,
+        data={"artifact_id": art_id, "role": "review"},
+        ts=shared_ts,
+        model=model,
+        session=session,
+        triggered_by=triggered_by,
+        on_behalf_of=on_behalf_of,
+        reason=provenance_reason,
+    )
+    events.append(artifact_event)
+    snapshot = apply_event_to_snapshot(snapshot, artifact_event)
+
+    # 4. Validate completion policy BEFORE the done transition
+    policy_ok, policy_failures = validate_completion_policy(
+        config, snapshot, "done",
+    )
+    if not policy_ok:
+        failure_msg = "; ".join(policy_failures)
+        output_error(
+            f"Completion policy not satisfied: {failure_msg}.",
+            "COMPLETION_BLOCKED",
+            is_json,
+        )
+
+    # 5. Status -> done
+    done_status_event = create_event(
+        type="status_changed",
+        task_id=task_id,
+        actor=actor,
+        data={"from": "review", "to": "done"},
+        ts=shared_ts,
+        model=model,
+        session=session,
+        triggered_by=triggered_by,
+        on_behalf_of=on_behalf_of,
+        reason=provenance_reason,
+    )
+    events.append(done_status_event)
+    snapshot = apply_event_to_snapshot(snapshot, done_status_event)
+
+    # --- Write artifact metadata ---
+    # Write inline review text as artifact payload
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".md", delete=False, prefix="lattice-review-",
+    )
+    tmp.write(review_text)
+    tmp.close()
+    tmp_path = Path(tmp.name)
+
+    try:
+        payload_file = f"{art_id}.md"
+        dest_path = lattice_dir / "artifacts" / "payload" / payload_file
+        shutil.copy2(str(tmp_path), str(dest_path))
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    actor_str = actor if isinstance(actor, str) else actor.get("name", "unknown")
+    metadata = create_artifact_metadata(
+        art_id,
+        "note",
+        "Review findings",
+        created_by=actor_str,
+        created_at=shared_ts,
+        summary=review_text[:200] if len(review_text) > 200 else review_text,
+        model=model,
+        payload_file=payload_file,
+        content_type="text/markdown",
+        size_bytes=len(review_text.encode("utf-8")),
+    )
+
+    meta_path = lattice_dir / "artifacts" / "meta" / f"{art_id}.json"
+    atomic_write(meta_path, serialize_artifact(metadata))
+
+    # --- Write all events + snapshot atomically ---
+    write_task_event(lattice_dir, task_id, events, snapshot, config)
+
+    display_id = snapshot.get("short_id") or task_id
+    event_count = len(events)
+    output_result(
+        data=snapshot,
+        human_message=(
+            f"Completed {display_id}: {event_count} events "
+            f"({current_status} -> review -> done)"
+        ),
+        quiet_value="ok",
+        is_json=is_json,
+        is_quiet=quiet,
+    )
