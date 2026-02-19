@@ -312,16 +312,8 @@ class TestCommentRole:
 
 class TestCommentRoleValidation:
     @pytest.fixture(autouse=True)
-    def _add_completion_policy(self, initialized_root) -> None:
-        """Inject a completion policy with require_roles: [review]."""
-        from lattice.storage.fs import LATTICE_DIR
-
-        config_path = initialized_root / LATTICE_DIR / "config.json"
-        config = json.loads(config_path.read_text())
-        config["workflow"]["completion_policies"] = {
-            "done": {"require_roles": ["review"]}
-        }
-        config_path.write_text(json.dumps(config, sort_keys=True, indent=2) + "\n")
+    def _with_policies(self, initialized_root_with_policies) -> None:
+        """Ensure standard completion policies are active."""
 
     def test_typo_role_rejected(self, invoke, create_task) -> None:
         """Typo'd role produces an error with valid role list."""

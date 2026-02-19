@@ -199,20 +199,15 @@ class TestRoleEvidenceIntegration:
         leaked = set(_inline_temp_files()) - before
         assert not leaked, f"Leaked temp files: {leaked}"
 
-    def test_done_policy_satisfied_by_review_comment(self, invoke, initialized_root) -> None:
+    def test_done_policy_satisfied_by_review_comment(
+        self, invoke_with_policies, initialized_root_with_policies,
+    ) -> None:
         """A review-role comment satisfies require_roles policy for done transition."""
-        config_path = initialized_root / ".lattice" / "config.json"
-        config = json.loads(config_path.read_text())
-        config["workflow"]["completion_policies"] = {
-            "done": {"require_roles": ["review"]}
-        }
-        config_path.write_text(json.dumps(config, sort_keys=True, indent=2) + "\n")
-
-        created = invoke("create", "Policy integration", "--actor", "human:test", "--json")
+        created = invoke_with_policies("create", "Policy integration", "--actor", "human:test", "--json")
         assert created.exit_code == 0, created.output
         task_id = json.loads(created.output)["data"]["id"]
 
-        invoke(
+        invoke_with_policies(
             "status",
             task_id,
             "in_progress",
@@ -222,9 +217,9 @@ class TestRoleEvidenceIntegration:
             "--actor",
             "human:test",
         )
-        invoke("status", task_id, "review", "--actor", "human:test")
+        invoke_with_policies("status", task_id, "review", "--actor", "human:test")
 
-        review_comment = invoke(
+        review_comment = invoke_with_policies(
             "comment",
             task_id,
             "LGTM",
@@ -235,7 +230,7 @@ class TestRoleEvidenceIntegration:
         )
         assert review_comment.exit_code == 0, review_comment.output
 
-        done = invoke("status", task_id, "done", "--actor", "human:test", "--json")
+        done = invoke_with_policies("status", task_id, "done", "--actor", "human:test", "--json")
         assert done.exit_code == 0, done.output
         assert json.loads(done.output)["ok"] is True
 

@@ -785,14 +785,8 @@ class TestInlineTempFileCleanup:
 
 class TestAttachRoleValidation:
     @pytest.fixture(autouse=True)
-    def _add_completion_policy(self, initialized_root) -> None:
-        """Inject a completion policy with require_roles: [review]."""
-        config_path = initialized_root / LATTICE_DIR / "config.json"
-        config = json.loads(config_path.read_text())
-        config["workflow"]["completion_policies"] = {
-            "done": {"require_roles": ["review"]}
-        }
-        config_path.write_text(json.dumps(config, sort_keys=True, indent=2) + "\n")
+    def _with_policies(self, initialized_root_with_policies) -> None:
+        """Ensure standard completion policies are active."""
 
     def test_typo_role_rejected(self, invoke, create_task, tmp_path) -> None:
         """Typo'd role on attach produces INVALID_ROLE error."""

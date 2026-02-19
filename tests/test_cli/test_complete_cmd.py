@@ -7,18 +7,10 @@ from pathlib import Path
 
 from lattice.storage.fs import LATTICE_DIR
 
+from tests.conftest import _add_policies_to_config
+
 
 _ACTOR = "human:test"
-
-
-def _config_with_policy(initialized_root: Path, policy: dict | None = None) -> None:
-    """Write a config with completion policies to the initialized root."""
-    lattice_dir = initialized_root / LATTICE_DIR
-    config_path = lattice_dir / "config.json"
-    config = json.loads(config_path.read_text())
-    if policy is not None:
-        config["workflow"]["completion_policies"] = policy
-    config_path.write_text(json.dumps(config, sort_keys=True, indent=2) + "\n")
 
 
 def _create_and_advance_to(invoke, fill_plan, target_status: str) -> str:
@@ -270,14 +262,14 @@ class TestCompleteCompletionPolicy:
     """Verify completion policies are properly enforced/satisfied."""
 
     def test_satisfies_review_role_policy(
-        self, invoke, initialized_root, fill_plan,
+        self, invoke_with_policies, initialized_root_with_policies,
+        fill_plan_with_policies,
     ) -> None:
-        _config_with_policy(
-            initialized_root, {"done": {"require_roles": ["review"]}},
+        task_id = _create_and_advance_to(
+            invoke_with_policies, fill_plan_with_policies, "in_progress",
         )
-        task_id = _create_and_advance_to(invoke, fill_plan, "in_progress")
 
-        r = invoke(
+        r = invoke_with_policies(
             "complete", task_id,
             "--review", "Review findings", "--actor", _ACTOR,
         )
@@ -287,7 +279,7 @@ class TestCompleteCompletionPolicy:
     def test_fails_unmet_non_review_policy(
         self, invoke, initialized_root, fill_plan,
     ) -> None:
-        _config_with_policy(
+        _add_policies_to_config(
             initialized_root,
             {"done": {"require_roles": ["review", "security"]}},
         )

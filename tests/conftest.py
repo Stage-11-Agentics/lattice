@@ -111,3 +111,69 @@ def create_task(cli_runner: CliRunner, cli_env: dict[str, str]):
         return json.loads(result.output)["data"]
 
     return _create
+
+
+# ---------------------------------------------------------------------------
+# Production-like fixtures (with completion policies)
+# ---------------------------------------------------------------------------
+
+STANDARD_COMPLETION_POLICIES = {
+    "done": {"require_roles": ["review"]},
+}
+
+
+def _add_policies_to_config(lattice_root: Path, policies: dict) -> None:
+    """Inject completion policies into an initialized root's config."""
+    from lattice.storage.fs import LATTICE_DIR
+
+    config_path = lattice_root / LATTICE_DIR / "config.json"
+    config = json.loads(config_path.read_text())
+    config["workflow"]["completion_policies"] = policies
+    config_path.write_text(json.dumps(config, sort_keys=True, indent=2) + "\n")
+
+
+@pytest.fixture()
+def initialized_root_with_policies(initialized_root: Path) -> Path:
+    """Return an initialized root with standard completion policies.
+
+    Mirrors production config: ``done`` requires a ``review`` role.
+    Use this for tests that exercise completion gates, role validation,
+    or policy-dependent behavior.
+    """
+    _add_policies_to_config(initialized_root, STANDARD_COMPLETION_POLICIES)
+    return initialized_root
+
+
+@pytest.fixture()
+def cli_env_with_policies(initialized_root_with_policies: Path) -> dict[str, str]:
+    """Return env dict pointing to root with standard policies."""
+    return {"LATTICE_ROOT": str(initialized_root_with_policies)}
+
+
+@pytest.fixture()
+def invoke_with_policies(cli_runner: CliRunner, cli_env_with_policies: dict[str, str]):
+    """Like invoke, but backed by a root with standard completion policies."""
+    from lattice.cli.main import cli
+
+    def _invoke(*args: str, **kwargs):
+        return cli_runner.invoke(cli, list(args), env=cli_env_with_policies, **kwargs)
+
+    return _invoke
+
+
+@pytest.fixture()
+def fill_plan_with_policies(cli_env_with_policies: dict[str, str]):
+    """Like fill_plan, but backed by a root with standard completion policies."""
+
+    def _fill(task_id: str, title: str = "Task") -> None:
+        plan_path = (
+            Path(cli_env_with_policies["LATTICE_ROOT"])
+            / ".lattice"
+            / "plans"
+            / f"{task_id}.md"
+        )
+        plan_path.write_text(
+            f"# {title}\n\n## Approach\n\n- Implement the feature.\n"
+        )
+
+    return _fill
