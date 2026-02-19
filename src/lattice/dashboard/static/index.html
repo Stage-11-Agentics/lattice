@@ -6,26 +6,26 @@
 <title>Lattice Dashboard</title>
 <style>
 /* === Theme Variables === */
-:root,[data-theme="linear"]{
-  --col-min-w:300px;--card-font-size:.85rem;--scroll-shadow:rgba(0,0,0,.1);
-  --bg-base:#f8f9fa;--surface:#ffffff;--surface-hover:#e9ecef;--surface-raised:#e9ecef;--surface-card:#f8f9fa;
-  --border:#dee2e6;--border-subtle:#e9ecef;--border-row:#f0f0f0;
-  --text-primary:#212529;--text-secondary:#495057;--text-muted:#6c757d;--text-on-accent:#fff;
-  --accent-primary:#0d6efd;--accent-hover:#0b5ed7;--accent-glow:rgba(13,110,253,.15);--danger-glow:rgba(220,53,69,.25);
-  --color-success:#198754;--color-danger:#dc3545;--color-danger-hover:#bb2d3b;
-  --color-warning:#ffc107;--color-warning-bg:#fff3cd;
-  --pri-critical-bg:#dc3545;--pri-high-bg:#fd7e14;--pri-medium-bg:#0d6efd;--pri-low-bg:#6c757d;
-  --shadow-card-hover:0 1px 4px rgba(0,0,0,.1);--shadow-toast:0 2px 8px rgba(0,0,0,.15);
-  --shadow-modal:0 8px 32px rgba(0,0,0,.2);--shadow-settings:-2px 0 8px rgba(0,0,0,.1);
-  --overlay-bg:rgba(0,0,0,.4);
-  --radius-sm:4px;--radius-md:6px;--radius-lg:8px;
-  --font-body:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-  --font-mono:ui-monospace,SFMono-Regular,Menlo,monospace;
-  --text-on-lane:#fff;--text-on-lane-muted:rgba(255,255,255,.8);--lane-btn-border:rgba(255,255,255,.6);
-  --text-on-warning:#212529;
-  --chip-human-bg:#e8f5e9;--chip-human-text:#2e7d32;--chip-human-border:#c8e6c9;--chip-human-hover:#c8e6c9;
-  --chip-agent-bg:#e3f2fd;--chip-agent-text:#1565c0;--chip-agent-border:#bbdefb;--chip-agent-hover:#bbdefb;
-  --chip-team-bg:#fff3e0;--chip-team-text:#e65100;--chip-team-border:#ffe0b2;--chip-team-hover:#ffe0b2;
+:root,[data-theme="carbon"]{
+  --col-min-w:300px;--card-font-size:.85rem;--scroll-shadow:rgba(0,0,0,.3);
+  --bg-base:#171717;--surface:#1E1E1E;--surface-hover:#292929;--surface-raised:#252525;--surface-card:#1C1C1C;
+  --border:#333333;--border-subtle:#2A2A2A;--border-row:#222222;
+  --text-primary:#E0E0E0;--text-secondary:#A0A0A0;--text-muted:#666666;--text-on-accent:#fff;
+  --accent-primary:#EA580C;--accent-hover:#C2410C;--accent-glow:rgba(234,88,12,.18);--danger-glow:rgba(220,53,69,.25);
+  --color-success:#16A34A;--color-danger:#DC2626;--color-danger-hover:#B91C1C;
+  --color-warning:#D97706;--color-warning-bg:rgba(217,119,6,.12);
+  --pri-critical-bg:#DC2626;--pri-high-bg:#EA580C;--pri-medium-bg:#2563EB;--pri-low-bg:#525252;
+  --shadow-card-hover:0 1px 4px rgba(0,0,0,.4);--shadow-toast:0 2px 10px rgba(0,0,0,.5);
+  --shadow-modal:0 8px 32px rgba(0,0,0,.7);--shadow-settings:-2px 0 10px rgba(0,0,0,.5);
+  --overlay-bg:rgba(0,0,0,.7);
+  --radius-sm:3px;--radius-md:4px;--radius-lg:6px;
+  --font-body:ui-monospace,SFMono-Regular,Menlo,"Cascadia Mono",monospace;
+  --font-mono:ui-monospace,SFMono-Regular,Menlo,"Cascadia Mono",monospace;
+  --text-on-lane:#fff;--text-on-lane-muted:rgba(255,255,255,.75);--lane-btn-border:rgba(255,255,255,.5);
+  --text-on-warning:#E0E0E0;
+  --chip-human-bg:rgba(22,163,74,.12);--chip-human-text:#4ADE80;--chip-human-border:rgba(22,163,74,.28);--chip-human-hover:rgba(22,163,74,.2);
+  --chip-agent-bg:rgba(234,88,12,.12);--chip-agent-text:#FB923C;--chip-agent-border:rgba(234,88,12,.28);--chip-agent-hover:rgba(234,88,12,.2);
+  --chip-team-bg:rgba(99,102,241,.12);--chip-team-text:#A5B4FC;--chip-team-border:rgba(99,102,241,.28);--chip-team-hover:rgba(99,102,241,.2);
   --glow-primary:transparent;--glow-primary-strong:transparent
 }
 
@@ -52,27 +52,6 @@
   --chip-human-bg:#e8f5e9;--chip-human-text:#2e7d32;--chip-human-border:#c8e6c9;--chip-human-hover:#c8e6c9;
   --chip-agent-bg:#ede7f6;--chip-agent-text:#5e35b1;--chip-agent-border:#d1c4e9;--chip-agent-hover:#d1c4e9;
   --chip-team-bg:#fff3e0;--chip-team-text:#e65100;--chip-team-border:#ffe0b2;--chip-team-hover:#ffe0b2;
-}
-[data-theme="carbon"]{
-  --bg-base:#171717;--surface:#1E1E1E;--surface-hover:#292929;--surface-raised:#252525;--surface-card:#1C1C1C;
-  --border:#333333;--border-subtle:#2A2A2A;--border-row:#222222;
-  --text-primary:#E0E0E0;--text-secondary:#A0A0A0;--text-muted:#666666;--text-on-accent:#fff;
-  --accent-primary:#EA580C;--accent-hover:#C2410C;--accent-glow:rgba(234,88,12,.18);
-  --color-success:#16A34A;--color-danger:#DC2626;--color-danger-hover:#B91C1C;
-  --color-warning:#D97706;--color-warning-bg:rgba(217,119,6,.12);
-  --pri-critical-bg:#DC2626;--pri-high-bg:#EA580C;--pri-medium-bg:#2563EB;--pri-low-bg:#525252;
-  --shadow-card-hover:0 1px 4px rgba(0,0,0,.4);--shadow-toast:0 2px 10px rgba(0,0,0,.5);
-  --shadow-modal:0 8px 32px rgba(0,0,0,.7);--shadow-settings:-2px 0 10px rgba(0,0,0,.5);
-  --overlay-bg:rgba(0,0,0,.7);
-  --radius-sm:3px;--radius-md:4px;--radius-lg:6px;
-  --font-body:ui-monospace,SFMono-Regular,Menlo,"Cascadia Mono",monospace;
-  --font-mono:ui-monospace,SFMono-Regular,Menlo,"Cascadia Mono",monospace;
-  --text-on-lane:#fff;--text-on-lane-muted:rgba(255,255,255,.75);--lane-btn-border:rgba(255,255,255,.5);
-  --text-on-warning:#E0E0E0;
-  --chip-human-bg:rgba(22,163,74,.12);--chip-human-text:#4ADE80;--chip-human-border:rgba(22,163,74,.28);--chip-human-hover:rgba(22,163,74,.2);
-  --chip-agent-bg:rgba(234,88,12,.12);--chip-agent-text:#FB923C;--chip-agent-border:rgba(234,88,12,.28);--chip-agent-hover:rgba(234,88,12,.2);
-  --chip-team-bg:rgba(99,102,241,.12);--chip-team-text:#A5B4FC;--chip-team-border:rgba(99,102,241,.28);--chip-team-hover:rgba(99,102,241,.2);
-  --glow-primary:transparent;--glow-primary-strong:transparent
 }
 [data-theme="vaporwave"]{
   --bg-base:#0d0221;--surface:rgba(26,10,46,.85);--surface-hover:rgba(255,113,206,.1);--surface-raised:rgba(45,20,80,.7);--surface-card:rgba(30,12,55,.6);
@@ -570,7 +549,7 @@ select.form-control{cursor:pointer}
 [data-theme="carbon"] .nav-tab.active{background:#EA580C;color:#fff;border-radius:2px}
 [data-theme="carbon"] .board-col{background:#1E1E1E;border-color:#333;border-radius:3px}
 [data-theme="carbon"] .board-col-header{font-size:.78rem;text-transform:uppercase;letter-spacing:.1em;font-weight:700;border-radius:3px 3px 0 0;padding:6px 10px}
-[data-theme="carbon"] .card{background:#1C1C1C;border-color:#2A2A2A;border-radius:2px;padding:6px 8px;margin-bottom:4px;font-size:.8rem}
+[data-theme="carbon"] .card{background:#1C1C1C;border-color:#2A2A2A;border-radius:2px;padding:6px 8px;margin-bottom:4px}
 [data-theme="carbon"] .card:hover{box-shadow:0 1px 6px rgba(0,0,0,.4);border-color:#EA580C}
 [data-theme="carbon"] .card-title{font-size:.82rem}
 [data-theme="carbon"] .board-col.drag-over{border-color:#EA580C;box-shadow:inset 0 0 0 1px #EA580C}
@@ -757,20 +736,6 @@ select.form-control{cursor:pointer}
 [data-theme="vaporwave"] a{color:#01CDFE}
 [data-theme="vaporwave"] a:hover{color:#00FFD1}
 [data-theme="vaporwave"] .member-chip{text-shadow:0 0 8px currentColor}
-
-/* === Neon Noir Theme Overrides === */
-@keyframes nn-brand-flicker{
-  0%,100%{text-shadow:0 0 10px rgba(255,0,128,.6),0 0 30px rgba(255,0,128,.3),0 0 60px rgba(255,0,128,.15)}
-  92%{text-shadow:0 0 10px rgba(255,0,128,.6),0 0 30px rgba(255,0,128,.3),0 0 60px rgba(255,0,128,.15)}
-  93%{text-shadow:0 0 4px rgba(255,0,128,.2)}
-  94%{text-shadow:0 0 10px rgba(255,0,128,.6),0 0 30px rgba(255,0,128,.3),0 0 60px rgba(255,0,128,.15)}
-  96%{text-shadow:0 0 2px rgba(255,0,128,.1)}
-  97%{text-shadow:0 0 10px rgba(255,0,128,.6),0 0 30px rgba(255,0,128,.3),0 0 60px rgba(255,0,128,.15)}
-}
-@keyframes nn-pulse-critical{
-  0%,100%{box-shadow:0 0 6px rgba(255,0,64,.5),0 0 12px rgba(255,0,64,.2)}
-  50%{box-shadow:0 0 14px rgba(255,0,64,.8),0 0 28px rgba(255,0,64,.3),0 0 56px rgba(255,0,64,.1)}
-}
 
 /* === Matrix Theme Overrides === */
 /* Matrix rain background animation */
@@ -1032,43 +997,6 @@ select.form-control{cursor:pointer}
 [data-theme="matrix"] .comment-item{
   background:rgba(0,10,0,.5);
   border:1px solid rgba(57,255,20,.1);
-}
-
-/* === Solar Flare Theme Overrides === */
-@keyframes solar-pulse{
-  0%,100%{box-shadow:0 0 20px rgba(234,88,12,.15),0 0 40px rgba(234,88,12,.05)}
-  50%{box-shadow:0 0 30px rgba(234,88,12,.25),0 0 60px rgba(234,88,12,.1)}
-}
-@keyframes solar-header-glow{
-  0%,100%{text-shadow:0 0 10px rgba(252,211,77,.3)}
-  50%{text-shadow:0 0 20px rgba(252,211,77,.5),0 0 40px rgba(234,88,12,.2)}
-}
-@keyframes solar-card-ember{
-  0%,100%{box-shadow:0 0 8px rgba(234,88,12,.08),inset 0 -2px 10px rgba(234,88,12,.03)}
-  50%{box-shadow:0 0 12px rgba(234,88,12,.12),inset 0 -2px 15px rgba(234,88,12,.05)}
-}
-@keyframes solar-critical-hotglow{
-  0%,100%{box-shadow:0 0 6px rgba(254,252,232,.4)}
-  50%{box-shadow:0 0 12px rgba(254,252,232,.6),0 0 20px rgba(252,211,77,.3)}
-}
-/* Subtle heat distortion shimmer on body */
-/* Bottom ember glow */
-/* Warm inner glow along bottom edge */
-/* Priority badges as heat levels */
-
-/* === Ultraviolet Theme Overrides === */
-/* UV background pulse animation */
-@keyframes uvPulse {
-  0%, 100% { background-color: #0D001A; }
-  50% { background-color: #110022; }
-}
-@keyframes uvGlow {
-  0%, 100% { box-shadow: 0 0 8px rgba(191,64,255,.15), inset 0 0 8px rgba(191,64,255,.03); }
-  50% { box-shadow: 0 0 16px rgba(191,64,255,.25), inset 0 0 12px rgba(191,64,255,.06); }
-}
-@keyframes uvBorderPulse {
-  0%, 100% { border-color: rgba(191,64,255,.2); }
-  50% { border-color: rgba(191,64,255,.35); }
 }
 
 /* === Holographic Theme Overrides === */
@@ -1493,7 +1421,7 @@ select.form-control{cursor:pointer}
     </div>
     <div class="settings-group">
       <label for="font-size-slider">Font Size <span id="font-size-value" style="font-weight:400;color:var(--text-muted)">14px</span></label>
-      <input type="range" id="font-size-slider" min="10" max="20" step="1" value="14" style="width:100%;cursor:pointer">
+      <input type="range" id="font-size-slider" min="6" max="100" step="1" value="14" style="width:100%;cursor:pointer">
       <div class="hint">Adjust the font size of board cards.</div>
     </div>
     <div class="settings-group">
@@ -1576,15 +1504,15 @@ var LANE_COLORS_BY_THEME = {
   cancelled: "#3a2a2a"
 }
 };
-var DEFAULT_LANE_COLORS = LANE_COLORS_BY_THEME.linear;
+var DEFAULT_LANE_COLORS = LANE_COLORS_BY_THEME.carbon;
 
 // --- Themes ---
 var THEMES = [
-  {id: "linear", name: "Linear", desc: "Tight, modern product UI"},
   {id: "carbon", name: "Carbon", desc: "Industrial dark engineering dashboard"},
-  {id: "vaporwave", name: "Vaporwave", desc: "Pink-purple retro-future dreamscape"},
+  {id: "holographic", name: "Holographic", desc: "Iridescent rainbow-edge trading card aesthetic"},
+  {id: "linear", name: "Linear", desc: "Tight, modern product UI"},
   {id: "matrix", name: "Matrix", desc: "Full hacker terminal: matrix rain, scanlines, green-on-black everything"},
-  {id: "holographic", name: "Holographic", desc: "Iridescent rainbow-edge trading card aesthetic"}
+  {id: "vaporwave", name: "Vaporwave", desc: "Pink-purple retro-future dreamscape"}
 ];
 
 // --- Voice Packs (i18n) ---
@@ -3694,11 +3622,11 @@ function getBackgroundImage() {
 
 function getTheme() {
   var dc = getDashboardConfig();
-  return dc.theme || "linear";
+  return dc.theme || "carbon";
 }
 
 function applyTheme(themeId) {
-  document.documentElement.dataset.theme = themeId || "linear";
+  document.documentElement.dataset.theme = themeId || "carbon";
 }
 
 function populateThemeSelector() {

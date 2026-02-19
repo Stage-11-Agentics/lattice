@@ -914,12 +914,12 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
             if "font_size" in body:
                 fs = body["font_size"]
                 if fs is not None:
-                    if not isinstance(fs, (int, float)) or fs < 10 or fs > 20:
+                    if not isinstance(fs, (int, float)) or fs < 6 or fs > 100:
                         self._send_json(
                             400,
                             _err(
                                 "VALIDATION_ERROR",
-                                "'font_size' must be a number between 10 and 20, or null",
+                                "'font_size' must be a number between 6 and 100, or null",
                             ),
                         )
                         return
