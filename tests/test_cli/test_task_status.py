@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from lattice.storage.fs import LATTICE_DIR
@@ -18,16 +19,6 @@ def _set_review_cycle_limit(lattice_root: Path, limit: int) -> None:
     config_path = lattice_root / LATTICE_DIR / "config.json"
     config = json.loads(config_path.read_text())
     config["workflow"]["review_cycle_limit"] = limit
-    config_path.write_text(json.dumps(config, sort_keys=True, indent=2) + "\n")
-
-
-def _add_in_planning_to_review_transitions(lattice_root: Path) -> None:
-    """Add in_planning to the review transitions list (for plan-level rework)."""
-    config_path = lattice_root / LATTICE_DIR / "config.json"
-    config = json.loads(config_path.read_text())
-    review_transitions = config["workflow"]["transitions"]["review"]
-    if "in_planning" not in review_transitions:
-        review_transitions.append("in_planning")
     config_path.write_text(json.dumps(config, sort_keys=True, indent=2) + "\n")
 
 
@@ -540,3 +531,53 @@ class TestReviewCycleLimitGating:
         assert r.exit_code != 0
         parsed = json.loads(r.output)
         assert parsed["error"]["code"] == "REVIEW_CYCLE_LIMIT"
+
+
+
+class TestBackwardStatusPlanReset:
+    """Backward status transitions append reset breadcrumbs to plan files."""
+
+    def test_backward_transition_appends_reset_section(
+        self,
+        invoke,
+        initialized_root,
+        fill_plan,
+    ) -> None:
+        r = invoke("create", "Reset append task", "--actor", _ACTOR, "--json")
+        task_id = json.loads(r.output)["data"]["id"]
+        plan_path = initialized_root / LATTICE_DIR / "plans" / f"{task_id}.md"
+
+        invoke("status", task_id, "in_planning", "--actor", _ACTOR)
+        fill_plan(task_id, "Reset append task")
+        invoke("status", task_id, "planned", "--actor", _ACTOR)
+        invoke("status", task_id, "in_progress", "--actor", _ACTOR)
+        invoke("status", task_id, "review", "--actor", _ACTOR)
+
+        before = plan_path.read_text()
+        r = invoke("status", task_id, "in_progress", "--actor", _ACTOR, "--json")
+        assert r.exit_code == 0, r.output
+        after = plan_path.read_text()
+
+        assert after.startswith(before)
+        assert re.search(r"## Reset \d{4}-\d{2}-\d{2} by human:test", after) is not None
+
+    def test_forward_transition_does_not_append_reset_section(
+        self,
+        invoke,
+        initialized_root,
+        fill_plan,
+    ) -> None:
+        r = invoke("create", "No reset append task", "--actor", _ACTOR, "--json")
+        task_id = json.loads(r.output)["data"]["id"]
+        plan_path = initialized_root / LATTICE_DIR / "plans" / f"{task_id}.md"
+
+        invoke("status", task_id, "in_planning", "--actor", _ACTOR)
+        fill_plan(task_id, "No reset append task")
+        invoke("status", task_id, "planned", "--actor", _ACTOR)
+
+        before = plan_path.read_text()
+        r = invoke("status", task_id, "in_progress", "--actor", _ACTOR, "--json")
+        assert r.exit_code == 0, r.output
+        after = plan_path.read_text()
+
+        assert after == before
