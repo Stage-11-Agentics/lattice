@@ -608,6 +608,10 @@ Multiple agents may work in the same repository concurrently on different tasks.
 
 This applies to uncommitted changes in the working tree, unexpected commits on the branch, and new files that weren't there when your session started. The instinct to "clean up" unfamiliar state is exactly wrong in a multi-agent worktree — it destroys a sibling agent's work.
 
+### Where Learnings Go
+
+When you discover something important about how this project works — a pattern, a gotcha, a convention — **do not save it to auto-memory**. Memory is per-session and per-user; future Lattice agents in other installations will never see it. Instead, add it to this project's `CLAUDE.md` (for project-specific conventions) or propose updating the Lattice template (`src/lattice/templates/claude_md_block.py`) for universal patterns that should ship with every `lattice init`. The goal: every future agent, in every future installation, benefits from what you learned.
+
 ### Quick Reference
 
 ```
