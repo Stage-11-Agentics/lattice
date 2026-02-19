@@ -44,7 +44,7 @@ from lattice.core.config import (
 )
 from lattice.core.events import count_review_rework_cycles, create_event, utc_now
 from lattice.core.ids import generate_task_id, validate_actor, validate_id
-from lattice.core.tasks import apply_event_to_snapshot
+from lattice.core.tasks import apply_event_to_snapshot, is_backward_status_transition
 from lattice.storage.readers import read_task_events
 from lattice.storage.short_ids import allocate_short_id
 
@@ -464,6 +464,34 @@ def update(
 # ---------------------------------------------------------------------------
 
 
+def _status_rank_from_config(config: dict) -> dict[str, int] | None:
+    statuses = config.get("workflow", {}).get("statuses", [])
+    if not isinstance(statuses, list):
+        return None
+    rank = {status: idx for idx, status in enumerate(statuses) if isinstance(status, str)}
+    return rank or None
+
+
+def _append_plan_reset_section(
+    lattice_dir,
+    task_id: str,
+    actor: str,
+    event_ts: str | None,
+) -> None:
+    plan_path = lattice_dir / "plans" / f"{task_id}.md"
+    if not plan_path.exists():
+        return
+
+    date = "unknown-date"
+    if isinstance(event_ts, str) and event_ts:
+        date = event_ts.split("T", 1)[0]
+
+    content = plan_path.read_text(encoding="utf-8")
+    separator = "" if content.endswith("\n") else "\n"
+    reset_heading = f"## Reset {date} by {actor}"
+    plan_path.write_text(f"{content}{separator}\n{reset_heading}\n", encoding="utf-8")
+
+
 @cli.command("status")
 @click.argument("task_id")
 @click.argument("new_status")
@@ -534,6 +562,13 @@ def status_cmd(
         else:
             click.echo(f"Already at status {new_status}")
         return
+
+    status_rank = _status_rank_from_config(config)
+    is_backward_transition = is_backward_status_transition(
+        current_status,
+        new_status,
+        status_rank,
+    )
 
     # Check transition validity
     if not validate_transition(config, current_status, new_status):
@@ -627,6 +662,8 @@ def status_cmd(
     )
     updated_snapshot = apply_event_to_snapshot(snapshot, event)
     write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
+    if is_backward_transition:
+        _append_plan_reset_section(lattice_dir, task_id, actor, event.get("ts"))
 
     display_id = updated_snapshot.get("short_id") or task_id
     output_result(
