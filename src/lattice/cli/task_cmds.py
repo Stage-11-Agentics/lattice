@@ -35,13 +35,14 @@ from lattice.core.config import (
     VALID_PRIORITIES,
     VALID_URGENCIES,
     get_configured_roles,
+    get_review_cycle_limit,
     get_valid_transitions,
     validate_completion_policy,
     validate_status,
     validate_task_type,
     validate_transition,
 )
-from lattice.core.events import create_event, utc_now
+from lattice.core.events import count_review_rework_cycles, create_event, utc_now
 from lattice.core.ids import generate_task_id, validate_actor, validate_id
 from lattice.core.tasks import apply_event_to_snapshot
 from lattice.storage.readers import read_task_events
@@ -72,7 +73,9 @@ _CREATE_COMPARE_FIELDS = (
 
 @cli.command()
 @click.argument("title")
-@click.option("--type", "task_type", default=None, help="Task type (task, epic, bug, spike, chore).")
+@click.option(
+    "--type", "task_type", default=None, help="Task type (task, epic, bug, spike, chore)."
+)
 @click.option("--priority", default=None, help="Priority (critical, high, medium, low).")
 @click.option("--urgency", default=None, help="Urgency (immediate, high, normal, low).")
 @click.option("--complexity", default=None, help="Agentic complexity (low, medium, high).")
@@ -561,14 +564,28 @@ def status_cmd(
                 is_json,
             )
 
+    # Review cycle limit: block rework transitions if cycle limit reached
+    if current_status == "review" and new_status in ("in_progress", "in_planning") and not force:
+        events = read_task_events(lattice_dir, task_id)
+        cycle_count = count_review_rework_cycles(events)
+        cycle_limit = get_review_cycle_limit(config)
+        if cycle_count >= cycle_limit:
+            msg = (
+                f"Review cycle limit reached ({cycle_count}/{cycle_limit}). "
+                f"This task has been sent back from review {cycle_count} time(s). "
+                "Move to needs_human with a comment explaining the situation "
+                "instead of cycling further. "
+                "Override with --force --reason."
+            )
+            output_error(msg, "REVIEW_CYCLE_LIMIT", is_json)
+
     # Check completion policies (evidence gating)
     policy_ok, policy_failures = validate_completion_policy(config, snapshot, new_status)
     if not policy_ok:
         if not force:
             failure_msg = "; ".join(policy_failures)
             output_error(
-                f"Completion policy not satisfied: {failure_msg}. "
-                "Override with --force --reason.",
+                f"Completion policy not satisfied: {failure_msg}. Override with --force --reason.",
                 "COMPLETION_BLOCKED",
                 is_json,
             )
@@ -725,9 +742,19 @@ def assign(
 @cli.command()
 @click.argument("task_id")
 @click.argument("text", required=False, default=None)
-@click.option("--file", "file_path", default=None, type=click.Path(exists=True), help="Read comment body from a file.")
+@click.option(
+    "--file",
+    "file_path",
+    default=None,
+    type=click.Path(exists=True),
+    help="Read comment body from a file.",
+)
 @click.option("--reply-to", default=None, help="Event ID of the comment to reply to.")
-@click.option("--role", default=None, help="Role of this comment (e.g., 'review'). Satisfies completion policies.")
+@click.option(
+    "--role",
+    default=None,
+    help="Role of this comment (e.g., 'review'). Satisfies completion policies.",
+)
 @common_options
 def comment(
     task_id: str,
@@ -793,8 +820,7 @@ def comment(
         configured_roles = get_configured_roles(config)
         if configured_roles and role not in configured_roles:
             output_error(
-                f"Unknown role: '{role}'. "
-                f"Valid roles: {', '.join(sorted(configured_roles))}.",
+                f"Unknown role: '{role}'. Valid roles: {', '.join(sorted(configured_roles))}.",
                 "INVALID_ROLE",
                 is_json,
             )
@@ -838,11 +864,13 @@ def comment(
 @click.argument("task_id")
 @click.argument("comment_id")
 @click.argument("new_text")
+@click.option("--role", default=None, help="Set or change the comment's role (e.g. review).")
 @common_options
 def comment_edit(
     task_id: str,
     comment_id: str,
     new_text: str,
+    role: str | None,
     model: str | None,
     session: str | None,
     output_json: bool,
@@ -870,21 +898,37 @@ def comment_edit(
     except ValueError as exc:
         output_error(str(exc), "VALIDATION_ERROR", is_json)
 
+    # Validate role against configured completion policy roles
+    if role is not None:
+        configured_roles = get_configured_roles(config)
+        if configured_roles and role not in configured_roles:
+            output_error(
+                f"Unknown role: '{role}'. Valid roles: {', '.join(sorted(configured_roles))}.",
+                "INVALID_ROLE",
+                is_json,
+            )
+
     events = read_task_events(lattice_dir, task_id)
     try:
-        previous_body = validate_comment_for_edit(events, comment_id)
+        previous_body, previous_role = validate_comment_for_edit(events, comment_id)
     except ValueError as exc:
         output_error(str(exc), "VALIDATION_ERROR", is_json)
+
+    event_data: dict = {
+        "comment_id": comment_id,
+        "body": new_text,
+        "previous_body": previous_body,
+    }
+    if role is not None:
+        event_data["role"] = role
+        if previous_role != role:
+            event_data["previous_role"] = previous_role
 
     event = create_event(
         type="comment_edited",
         task_id=task_id,
         actor=actor,
-        data={
-            "comment_id": comment_id,
-            "body": new_text,
-            "previous_body": previous_body,
-        },
+        data=event_data,
         model=model,
         session=session,
         triggered_by=triggered_by,
@@ -1238,8 +1282,7 @@ def complete_cmd(
     configured_roles = get_configured_roles(config)
     if configured_roles and "review" not in configured_roles:
         output_error(
-            "Unknown role: 'review'. "
-            f"Valid roles: {', '.join(sorted(configured_roles))}.",
+            f"Unknown role: 'review'. Valid roles: {', '.join(sorted(configured_roles))}.",
             "INVALID_ROLE",
             is_json,
         )
@@ -1306,7 +1349,9 @@ def complete_cmd(
 
     # 4. Validate completion policy BEFORE the done transition
     policy_ok, policy_failures = validate_completion_policy(
-        config, snapshot, "done",
+        config,
+        snapshot,
+        "done",
     )
     if not policy_ok:
         failure_msg = "; ".join(policy_failures)
@@ -1335,7 +1380,10 @@ def complete_cmd(
     # --- Write artifact metadata ---
     # Write inline review text as artifact payload
     tmp = tempfile.NamedTemporaryFile(
-        mode="w", suffix=".md", delete=False, prefix="lattice-review-",
+        mode="w",
+        suffix=".md",
+        delete=False,
+        prefix="lattice-review-",
     )
     tmp.write(review_text)
     tmp.close()
@@ -1373,8 +1421,7 @@ def complete_cmd(
     output_result(
         data=snapshot,
         human_message=(
-            f"Completed {display_id}: {event_count} events "
-            f"({current_status} -> review -> done)"
+            f"Completed {display_id}: {event_count} events ({current_status} -> review -> done)"
         ),
         quiet_value="ok",
         is_json=is_json,

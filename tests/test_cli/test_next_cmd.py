@@ -198,7 +198,9 @@ class TestNextClaim:
         result = invoke("next", "--actor", "badformat", "--claim")
         assert result.exit_code != 0
 
-    def test_claim_json_includes_plan_content_when_non_scaffold(self, create_task, invoke, cli_env) -> None:
+    def test_claim_json_includes_plan_content_when_non_scaffold(
+        self, create_task, invoke, cli_env
+    ) -> None:
         task = create_task("Plan content task")
         task_id = task["id"]
         plan_path = Path(cli_env["LATTICE_ROOT"]) / ".lattice" / "plans" / f"{task_id}.md"
@@ -261,7 +263,9 @@ class TestNextClaimTransitions:
         assert parsed["data"]["status"] == "in_progress"
         assert parsed["data"]["assigned_to"] == "agent:claude"
 
-    def test_claim_backlog_emits_intermediate_transitions(self, create_task, invoke, fill_plan) -> None:
+    def test_claim_backlog_emits_intermediate_transitions(
+        self, create_task, invoke, fill_plan
+    ) -> None:
         """Claiming a backlog task should emit backlog -> planned -> in_progress."""
         task = create_task("Backlog task")
         task_id = task["id"]
@@ -321,8 +325,14 @@ class TestNextWithSessionName:
         """--name resolves to structured actor for claim."""
         # Start a session first
         result = invoke(
-            "session", "start", "--name", "Argus",
-            "--model", "claude-opus-4", "--framework", "claude-code",
+            "session",
+            "start",
+            "--name",
+            "Argus",
+            "--model",
+            "claude-opus-4",
+            "--framework",
+            "claude-code",
         )
         assert result.exit_code == 0
 
@@ -356,8 +366,14 @@ class TestNextWithSessionName:
         """Resume-first logic works with structured actor from --name."""
         # Start session
         invoke(
-            "session", "start", "--name", "Beacon",
-            "--model", "gpt-4.1", "--framework", "codex-cli",
+            "session",
+            "start",
+            "--name",
+            "Beacon",
+            "--model",
+            "gpt-4.1",
+            "--framework",
+            "codex-cli",
         )
 
         # Create and claim a task using session identity
@@ -397,7 +413,9 @@ class TestNextClaimConcurrency:
        REAL snapshot (assigned to alpha, in_progress) and rejects.
     """
 
-    def test_guard_rejects_when_snapshot_shows_other_owner(self, create_task, invoke, fill_plan, cli_env, monkeypatch) -> None:
+    def test_guard_rejects_when_snapshot_shows_other_owner(
+        self, create_task, invoke, fill_plan, cli_env, monkeypatch
+    ) -> None:
         """Patch read_snapshot to return a claimed snapshot inside the lock.
 
         select_next uses load_all_snapshots (not read_snapshot), so the only
@@ -410,6 +428,7 @@ class TestNextClaimConcurrency:
         fill_plan(task_id, "Race task")
 
         import lattice.cli.query_cmds as qmod
+
         original_read = qmod.read_snapshot
 
         def patched_read(lattice_dir, tid):
@@ -430,13 +449,16 @@ class TestNextClaimConcurrency:
         assert parsed["error"]["code"] == "ALREADY_CLAIMED"
         assert "alpha" in parsed["error"]["message"]
 
-    def test_guard_allows_reclaim_by_same_actor(self, create_task, invoke, fill_plan, cli_env, monkeypatch) -> None:
+    def test_guard_allows_reclaim_by_same_actor(
+        self, create_task, invoke, fill_plan, cli_env, monkeypatch
+    ) -> None:
         """If the snapshot shows the SAME actor, claim should proceed (no false reject)."""
         task = create_task("Own task")
         task_id = task["id"]
         fill_plan(task_id, "Own task")
 
         import lattice.cli.query_cmds as qmod
+
         original_read = qmod.read_snapshot
 
         def patched_read(lattice_dir, tid):
@@ -502,6 +524,7 @@ class TestNextClaimConcurrency:
         fill_plan(task_id, "Contested HR task")
 
         import lattice.cli.query_cmds as qmod
+
         original_read = qmod.read_snapshot
 
         def patched_read(lattice_dir, tid):

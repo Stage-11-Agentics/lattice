@@ -37,8 +37,12 @@ def session() -> None:
 @session.command("start")
 @click.option("--name", "base_name", default=None, help="Self-chosen name (e.g., 'Argus').")
 @click.option("--model", required=True, help="Model identifier ('human', 'claude-opus-4', etc.).")
-@click.option("--framework", default=None, help="Framework/interface ('claude-code', 'codex-cli', etc.).")
-@click.option("--agent-type", default=None, help="Categorical type for grouping ('advance', 'review', etc.).")
+@click.option(
+    "--framework", default=None, help="Framework/interface ('claude-code', 'codex-cli', etc.)."
+)
+@click.option(
+    "--agent-type", default=None, help="Categorical type for grouping ('advance', 'review', etc.)."
+)
 @click.option("--prompt", default=None, help="Active skill/workflow.")
 @click.option("--parent", default=None, help="Who launched this agent (e.g., 'human:atin').")
 @click.option("--json", "output_json", is_flag=True, help="Output structured JSON.")

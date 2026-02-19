@@ -185,9 +185,7 @@ class TestInitActorConfig:
     def test_init_prompts_for_actor_when_flag_omitted(self, tmp_path: Path) -> None:
         runner = CliRunner()
         # Name prompt: "atin" (becomes human:atin), project-name, project-code, agents.md
-        result = runner.invoke(
-            cli, ["init", "--path", str(tmp_path)], input="atin\n\n\nn\n"
-        )
+        result = runner.invoke(cli, ["init", "--path", str(tmp_path)], input="atin\n\n\nn\n")
         assert result.exit_code == 0
 
         config = json.loads((tmp_path / ".lattice" / "config.json").read_text())
@@ -227,7 +225,8 @@ class TestInitActorConfig:
         runner = CliRunner()
         # di, identifier, model, project-name, project-code, agents.md
         result = runner.invoke(
-            cli, ["init", "--path", str(tmp_path)],
+            cli,
+            ["init", "--path", str(tmp_path)],
             input="di\nbuilder\nclaude-opus-4\n\n\nn\n",
         )
         assert result.exit_code == 0
@@ -242,7 +241,8 @@ class TestInitActorConfig:
         runner = CliRunner()
         # di, identifier, blank model, project-name, project-code, agents.md
         result = runner.invoke(
-            cli, ["init", "--path", str(tmp_path)],
+            cli,
+            ["init", "--path", str(tmp_path)],
             input="di\nscout\n\n\n\nn\n",
         )
         assert result.exit_code == 0
@@ -259,8 +259,17 @@ class TestInitProjectName:
         runner = CliRunner()
         result = runner.invoke(
             cli,
-            ["init", "--path", str(tmp_path), "--actor", "human:test",
-             "--project-code", "BC", "--project-name", "Beauty Creator"],
+            [
+                "init",
+                "--path",
+                str(tmp_path),
+                "--actor",
+                "human:test",
+                "--project-code",
+                "BC",
+                "--project-name",
+                "Beauty Creator",
+            ],
         )
         assert result.exit_code == 0
 
@@ -271,7 +280,8 @@ class TestInitProjectName:
         runner = CliRunner()
         # name, project-name, project-code, agents.md
         result = runner.invoke(
-            cli, ["init", "--path", str(tmp_path)],
+            cli,
+            ["init", "--path", str(tmp_path)],
             input="sarah\nBeauty Creator\nBC\nn\n",
         )
         assert result.exit_code == 0
@@ -284,8 +294,17 @@ class TestInitProjectName:
         runner = CliRunner()
         result = runner.invoke(
             cli,
-            ["init", "--path", str(tmp_path), "--actor", "human:test",
-             "--project-code", "BC", "--project-name", "Beauty Creator"],
+            [
+                "init",
+                "--path",
+                str(tmp_path),
+                "--actor",
+                "human:test",
+                "--project-code",
+                "BC",
+                "--project-name",
+                "Beauty Creator",
+            ],
         )
         assert result.exit_code == 0
 
@@ -370,8 +389,17 @@ class TestInitInstanceIdentity:
         runner = CliRunner()
         result = runner.invoke(
             cli,
-            ["init", "--path", str(tmp_path), "--instance-name", "Frontend",
-             "--actor", "human:test", "--project-code", "TST"],
+            [
+                "init",
+                "--path",
+                str(tmp_path),
+                "--instance-name",
+                "Frontend",
+                "--actor",
+                "human:test",
+                "--project-code",
+                "TST",
+            ],
         )
         assert result.exit_code == 0
         assert "Instance name: Frontend" in result.output
@@ -481,9 +509,7 @@ class TestInitAgentsMd:
         """Interactive init, confirm agents.md -> file created."""
         runner = CliRunner()
         # name, project-name, project-code, 'y' for agents.md
-        result = runner.invoke(
-            cli, ["init", "--path", str(tmp_path)], input="\n\n\ny\n"
-        )
+        result = runner.invoke(cli, ["init", "--path", str(tmp_path)], input="\n\n\ny\n")
         assert result.exit_code == 0
         assert "Created agents.md with Lattice integration" in result.output
 
@@ -496,7 +522,9 @@ class TestInitAgentsMd:
         """Interactive init, decline agents.md -> file not created."""
         runner = CliRunner()
         result = runner.invoke(
-            cli, ["init", "--path", str(tmp_path)], input=_SKIP_ALL  # 'n' for agents.md
+            cli,
+            ["init", "--path", str(tmp_path)],
+            input=_SKIP_ALL,  # 'n' for agents.md
         )
         assert result.exit_code == 0
 
@@ -509,9 +537,7 @@ class TestInitAgentsMd:
         agents_md.write_text("# My Agent Instructions\n\nExisting content.\n")
 
         runner = CliRunner()
-        result = runner.invoke(
-            cli, ["init", "--path", str(tmp_path)], input="\n\n\ny\n"
-        )
+        result = runner.invoke(cli, ["init", "--path", str(tmp_path)], input="\n\n\ny\n")
         assert result.exit_code == 0
         assert "Updated agents.md with Lattice integration" in result.output
 
@@ -525,9 +551,7 @@ class TestInitAgentsMd:
         agents_md.write_text("# My Agent\n\n## Lattice\n\nAlready here.\n")
 
         runner = CliRunner()
-        result = runner.invoke(
-            cli, ["init", "--path", str(tmp_path)], input="\n\n\ny\n"
-        )
+        result = runner.invoke(cli, ["init", "--path", str(tmp_path)], input="\n\n\ny\n")
         assert result.exit_code == 0
         assert "already has Lattice integration" in result.output
 
@@ -553,8 +577,16 @@ class TestInitAgentsMd:
         runner = CliRunner()
         result = runner.invoke(
             cli,
-            ["init", "--path", str(tmp_path), "--actor", "human:test",
-             "--project-code", "TST", "--no-setup-agents"],
+            [
+                "init",
+                "--path",
+                str(tmp_path),
+                "--actor",
+                "human:test",
+                "--project-code",
+                "TST",
+                "--no-setup-agents",
+            ],
         )
         assert result.exit_code == 0
 
@@ -599,8 +631,16 @@ class TestInitClaudeMd:
         runner = CliRunner()
         result = runner.invoke(
             cli,
-            ["init", "--path", str(tmp_path), "--actor", "human:test",
-             "--project-code", "TST", "--setup-claude"],
+            [
+                "init",
+                "--path",
+                str(tmp_path),
+                "--actor",
+                "human:test",
+                "--project-code",
+                "TST",
+                "--setup-claude",
+            ],
         )
         assert result.exit_code == 0
         assert "Created CLAUDE.md with Lattice integration" in result.output
@@ -618,8 +658,16 @@ class TestInitClaudeMd:
         runner = CliRunner()
         result = runner.invoke(
             cli,
-            ["init", "--path", str(tmp_path), "--actor", "human:test",
-             "--project-code", "TST", "--no-setup-claude"],
+            [
+                "init",
+                "--path",
+                str(tmp_path),
+                "--actor",
+                "human:test",
+                "--project-code",
+                "TST",
+                "--no-setup-claude",
+            ],
         )
         assert result.exit_code == 0
         assert claude_md.read_text() == original_content
@@ -644,8 +692,16 @@ class TestInitClaudeMd:
         runner = CliRunner()
         result = runner.invoke(
             cli,
-            ["init", "--path", str(tmp_path), "--actor", "human:test",
-             "--project-code", "TST", "--heartbeat"],
+            [
+                "init",
+                "--path",
+                str(tmp_path),
+                "--actor",
+                "human:test",
+                "--project-code",
+                "TST",
+                "--heartbeat",
+            ],
         )
         assert result.exit_code == 0
         assert "Heartbeat: enabled" in result.output
@@ -659,8 +715,16 @@ class TestInitClaudeMd:
         runner = CliRunner()
         result = runner.invoke(
             cli,
-            ["init", "--path", str(tmp_path), "--actor", "human:test",
-             "--project-code", "TST", "--no-heartbeat"],
+            [
+                "init",
+                "--path",
+                str(tmp_path),
+                "--actor",
+                "human:test",
+                "--project-code",
+                "TST",
+                "--no-heartbeat",
+            ],
         )
         assert result.exit_code == 0
         assert "Heartbeat" not in result.output

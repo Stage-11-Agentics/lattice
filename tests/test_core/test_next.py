@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from lattice.core.next import _actors_match, compute_claim_transitions, select_all_ready, select_next
+from lattice.core.next import (
+    _actors_match,
+    compute_claim_transitions,
+    select_all_ready,
+    select_next,
+)
 
 
 def _snap(

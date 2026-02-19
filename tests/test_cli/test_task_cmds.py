@@ -343,7 +343,9 @@ class TestStatus:
         # Try to change its status
         result = invoke("status", epic_id, "in_progress", "--actor", "human:test")
         assert result.exit_code != 0
-        assert "Cannot set status on epics" in (result.output + (result.stderr if hasattr(result, 'stderr') else ""))
+        assert "Cannot set status on epics" in (
+            result.output + (result.stderr if hasattr(result, "stderr") else "")
+        )
 
     def test_epic_status_rejected_json(self, invoke_json):
         """JSON mode: setting status on an epic returns EPIC_STATUS_REJECTED error."""

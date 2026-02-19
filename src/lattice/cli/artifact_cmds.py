@@ -46,7 +46,9 @@ from lattice.storage.fs import atomic_write
 @click.option("--summary", default=None, help="Short summary.")
 @click.option("--sensitive", is_flag=True, help="Mark artifact as sensitive.")
 @click.option("--role", default=None, help="Role of artifact on the task.")
-@click.option("--inline", "inline_text", default=None, help="Inline text content (instead of file/URL).")
+@click.option(
+    "--inline", "inline_text", default=None, help="Inline text content (instead of file/URL)."
+)
 @click.option("--id", "art_id", default=None, help="Caller-supplied artifact ID.")
 @common_options
 def attach(
@@ -104,8 +106,7 @@ def attach(
         configured_roles = get_configured_roles(config)
         if configured_roles and role not in configured_roles:
             output_error(
-                f"Unknown role: '{role}'. "
-                f"Valid roles: {', '.join(sorted(configured_roles))}.",
+                f"Unknown role: '{role}'. Valid roles: {', '.join(sorted(configured_roles))}.",
                 "INVALID_ROLE",
                 is_json,
             )

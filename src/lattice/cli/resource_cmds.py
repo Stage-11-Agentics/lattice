@@ -141,7 +141,12 @@ def resource_create(
         snapshot = apply_resource_event_to_snapshot(None, event)
         config = load_project_config(lattice_dir)
         write_resource_event(
-            lattice_dir, resource_id, name, [event], snapshot, config,
+            lattice_dir,
+            resource_id,
+            name,
+            [event],
+            snapshot,
+            config,
             _caller_holds_lock=True,
         )
 
@@ -194,8 +199,10 @@ def resource_acquire(
 
     # Common event kwargs
     event_kwargs = dict(
-        model=model, session=session,
-        triggered_by=triggered_by, on_behalf_of=on_behalf_of,
+        model=model,
+        session=session,
+        triggered_by=triggered_by,
+        on_behalf_of=on_behalf_of,
         reason=provenance_reason,
     )
 
@@ -208,14 +215,16 @@ def resource_acquire(
         # Lock is released between polls so other operations (release) can proceed.
         with resource_write_context(lattice_dir, name):
             # Resolve resource under lock (handles auto-create from config)
-            resource_id, resource_name, snapshot = resolve_resource(
-                lattice_dir, name, is_json
-            )
+            resource_id, resource_name, snapshot = resolve_resource(lattice_dir, name, is_json)
 
             # Auto-create from config if needed (under same lock)
             if not resource_id:
                 resource_id, resource_name, snapshot = _auto_create_resource(
-                    lattice_dir, resource_name, actor, config, is_json,
+                    lattice_dir,
+                    resource_name,
+                    actor,
+                    config,
+                    is_json,
                     **event_kwargs,
                 )
 
@@ -262,8 +271,12 @@ def resource_acquire(
 
                 if events_to_write:
                     write_resource_event(
-                        lattice_dir, resource_id, resource_name,
-                        events_to_write, snapshot, config,
+                        lattice_dir,
+                        resource_id,
+                        resource_name,
+                        events_to_write,
+                        snapshot,
+                        config,
                         _caller_holds_lock=True,
                     )
 
@@ -318,8 +331,12 @@ def resource_acquire(
                 events_to_write.append(acq_event)
 
                 write_resource_event(
-                    lattice_dir, resource_id, resource_name,
-                    events_to_write, snapshot, config,
+                    lattice_dir,
+                    resource_id,
+                    resource_name,
+                    events_to_write,
+                    snapshot,
+                    config,
                     _caller_holds_lock=True,
                 )
 
@@ -335,8 +352,12 @@ def resource_acquire(
             # Write any stale eviction events even if we can't acquire yet
             if events_to_write:
                 write_resource_event(
-                    lattice_dir, resource_id, resource_name,
-                    events_to_write, snapshot, config,
+                    lattice_dir,
+                    resource_id,
+                    resource_name,
+                    events_to_write,
+                    snapshot,
+                    config,
                     _caller_holds_lock=True,
                 )
 
@@ -400,9 +421,7 @@ def resource_release(
 
     # Lock: read-check-write atomically
     with resource_write_context(lattice_dir, name):
-        resource_id, resource_name, snapshot = resolve_resource(
-            lattice_dir, name, is_json
-        )
+        resource_id, resource_name, snapshot = resolve_resource(lattice_dir, name, is_json)
         if snapshot is None:
             output_error(f"Resource '{name}' does not exist.", "NOT_FOUND", is_json)
 
@@ -440,7 +459,12 @@ def resource_release(
 
         snapshot = apply_resource_event_to_snapshot(snapshot, event)
         write_resource_event(
-            lattice_dir, resource_id, resource_name, [event], snapshot, config,
+            lattice_dir,
+            resource_id,
+            resource_name,
+            [event],
+            snapshot,
+            config,
             _caller_holds_lock=True,
         )
 
@@ -479,9 +503,7 @@ def resource_heartbeat(
 
     # Lock: read-check-write atomically
     with resource_write_context(lattice_dir, name):
-        resource_id, resource_name, snapshot = resolve_resource(
-            lattice_dir, name, is_json
-        )
+        resource_id, resource_name, snapshot = resolve_resource(lattice_dir, name, is_json)
         if snapshot is None:
             output_error(f"Resource '{name}' does not exist.", "NOT_FOUND", is_json)
 
@@ -523,7 +545,12 @@ def resource_heartbeat(
 
         snapshot = apply_resource_event_to_snapshot(snapshot, event)
         write_resource_event(
-            lattice_dir, resource_id, resource_name, [event], snapshot, config,
+            lattice_dir,
+            resource_id,
+            resource_name,
+            [event],
+            snapshot,
+            config,
             _caller_holds_lock=True,
         )
 
@@ -583,10 +610,7 @@ def _check_id_uniqueness(lattice_dir: Path, resource_id: str, is_json: bool) -> 
 
 def _filter_active_holders(snapshot: dict, now: str) -> list[dict]:
     """Return holders that are not expired at *now*."""
-    return [
-        h for h in snapshot.get("holders", [])
-        if not is_holder_stale(h, now)
-    ]
+    return [h for h in snapshot.get("holders", []) if not is_holder_stale(h, now)]
 
 
 def _auto_create_resource(
@@ -641,7 +665,12 @@ def _auto_create_resource(
 
     snapshot = apply_resource_event_to_snapshot(None, event)
     write_resource_event(
-        lattice_dir, resource_id, resource_name, [event], snapshot, config,
+        lattice_dir,
+        resource_id,
+        resource_name,
+        [event],
+        snapshot,
+        config,
         _caller_holds_lock=True,
     )
     return resource_id, resource_name, snapshot
@@ -693,14 +722,16 @@ def _show_all_resources(lattice_dir: Path, is_json: bool) -> None:
     existing_names = {r.get("name") for r in resources}
     for cfg_name, cfg_def in config_resources.items():
         if cfg_name not in existing_names:
-            resources.append({
-                "name": cfg_name,
-                "description": cfg_def.get("description"),
-                "max_holders": cfg_def.get("max_holders", 1),
-                "ttl_seconds": cfg_def.get("ttl_seconds", 300),
-                "holders": [],
-                "_config_only": True,
-            })
+            resources.append(
+                {
+                    "name": cfg_name,
+                    "description": cfg_def.get("description"),
+                    "max_holders": cfg_def.get("max_holders", 1),
+                    "ttl_seconds": cfg_def.get("ttl_seconds", 300),
+                    "holders": [],
+                    "_config_only": True,
+                }
+            )
 
     from lattice.core.events import utc_now
 

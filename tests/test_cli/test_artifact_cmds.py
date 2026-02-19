@@ -591,10 +591,14 @@ class TestAttachInline:
         task_id = task["id"]
 
         result = invoke(
-            "attach", task_id,
-            "--inline", "Review passed. No issues found.",
-            "--role", "review",
-            "--actor", _ACTOR,
+            "attach",
+            task_id,
+            "--inline",
+            "Review passed. No issues found.",
+            "--role",
+            "review",
+            "--actor",
+            _ACTOR,
             "--json",
         )
         assert result.exit_code == 0, result.output
@@ -648,9 +652,12 @@ class TestAttachInline:
         task_id = task["id"]
 
         result = invoke(
-            "attach", task_id,
-            "--inline", "some review text",
-            "--actor", _ACTOR,
+            "attach",
+            task_id,
+            "--inline",
+            "some review text",
+            "--actor",
+            _ACTOR,
             "--json",
         )
         assert result.exit_code == 0, result.output
@@ -669,9 +676,13 @@ class TestAttachInline:
         src = tmp_path / "f.txt"
         src.write_text("hi")
         result = invoke(
-            "attach", task["id"], str(src),
-            "--inline", "also this",
-            "--actor", _ACTOR,
+            "attach",
+            task["id"],
+            str(src),
+            "--inline",
+            "also this",
+            "--actor",
+            _ACTOR,
         )
         assert result.exit_code != 0
         assert "not both" in result.output.lower()
@@ -700,10 +711,14 @@ class TestInlineTempFileCleanup:
         task = create_task("Temp cleanup - invalid type")
         before = set(_inline_temp_files())
         invoke(
-            "attach", task["id"],
-            "--inline", "text",
-            "--type", "invalid_type",
-            "--actor", _ACTOR,
+            "attach",
+            task["id"],
+            "--inline",
+            "text",
+            "--type",
+            "invalid_type",
+            "--actor",
+            _ACTOR,
         )
         leaked = set(_inline_temp_files()) - before
         assert not leaked, f"Leaked temp files: {leaked}"
@@ -712,10 +727,14 @@ class TestInlineTempFileCleanup:
         task = create_task("Temp cleanup - invalid ID")
         before = set(_inline_temp_files())
         invoke(
-            "attach", task["id"],
-            "--inline", "text",
-            "--id", "bad_id",
-            "--actor", _ACTOR,
+            "attach",
+            task["id"],
+            "--inline",
+            "text",
+            "--id",
+            "bad_id",
+            "--actor",
+            _ACTOR,
         )
         leaked = set(_inline_temp_files()) - before
         assert not leaked, f"Leaked temp files: {leaked}"
@@ -732,10 +751,14 @@ class TestInlineTempFileCleanup:
         # Second attach with --inline and same ID but different content -> conflict
         before = set(_inline_temp_files())
         invoke(
-            "attach", task["id"],
-            "--inline", "different content",
-            "--id", art_id,
-            "--actor", _ACTOR,
+            "attach",
+            task["id"],
+            "--inline",
+            "different content",
+            "--id",
+            art_id,
+            "--actor",
+            _ACTOR,
         )
         leaked = set(_inline_temp_files()) - before
         assert not leaked, f"Leaked temp files: {leaked}"
@@ -746,21 +769,31 @@ class TestInlineTempFileCleanup:
 
         # First attach with --inline
         invoke(
-            "attach", task["id"],
-            "--inline", "review text",
-            "--id", art_id,
-            "--title", "inline attachment",
-            "--actor", _ACTOR,
+            "attach",
+            task["id"],
+            "--inline",
+            "review text",
+            "--id",
+            art_id,
+            "--title",
+            "inline attachment",
+            "--actor",
+            _ACTOR,
         )
 
         # Second attach with identical --inline -> idempotent success early return
         before = set(_inline_temp_files())
         invoke(
-            "attach", task["id"],
-            "--inline", "review text",
-            "--id", art_id,
-            "--title", "inline attachment",
-            "--actor", _ACTOR,
+            "attach",
+            task["id"],
+            "--inline",
+            "review text",
+            "--id",
+            art_id,
+            "--title",
+            "inline attachment",
+            "--actor",
+            _ACTOR,
         )
         leaked = set(_inline_temp_files()) - before
         assert not leaked, f"Leaked temp files: {leaked}"
@@ -769,9 +802,12 @@ class TestInlineTempFileCleanup:
         task = create_task("Temp cleanup - success")
         before = set(_inline_temp_files())
         result = invoke(
-            "attach", task["id"],
-            "--inline", "review content",
-            "--actor", _ACTOR,
+            "attach",
+            task["id"],
+            "--inline",
+            "review content",
+            "--actor",
+            _ACTOR,
         )
         assert result.exit_code == 0
         leaked = set(_inline_temp_files()) - before
@@ -794,9 +830,13 @@ class TestAttachRoleValidation:
         src = tmp_path / "file.txt"
         src.write_text("content")
         result = invoke(
-            "attach", task["id"], str(src),
-            "--role", "reveiw",
-            "--actor", _ACTOR,
+            "attach",
+            task["id"],
+            str(src),
+            "--role",
+            "reveiw",
+            "--actor",
+            _ACTOR,
             "--json",
         )
         assert result.exit_code != 0
@@ -812,9 +852,13 @@ class TestAttachRoleValidation:
         src = tmp_path / "file.txt"
         src.write_text("content")
         result = invoke(
-            "attach", task["id"], str(src),
-            "--role", "review",
-            "--actor", _ACTOR,
+            "attach",
+            task["id"],
+            str(src),
+            "--role",
+            "review",
+            "--actor",
+            _ACTOR,
             "--json",
         )
         assert result.exit_code == 0
@@ -825,8 +869,11 @@ class TestAttachRoleValidation:
         src = tmp_path / "file.txt"
         src.write_text("content")
         result = invoke(
-            "attach", task["id"], str(src),
-            "--actor", _ACTOR,
+            "attach",
+            task["id"],
+            str(src),
+            "--actor",
+            _ACTOR,
         )
         assert result.exit_code == 0
 
@@ -835,10 +882,14 @@ class TestAttachRoleValidation:
         task = create_task("Inline role validation")
         before = set(_inline_temp_files())
         result = invoke(
-            "attach", task["id"],
-            "--inline", "review text",
-            "--role", "reveiw",
-            "--actor", _ACTOR,
+            "attach",
+            task["id"],
+            "--inline",
+            "review text",
+            "--role",
+            "reveiw",
+            "--actor",
+            _ACTOR,
             "--json",
         )
         assert result.exit_code != 0

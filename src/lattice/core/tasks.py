@@ -197,7 +197,6 @@ def _register_mutation(etype: str):  # noqa: ANN202
 # bookkeeping (last_event_id, updated_at) handled by the caller.
 _NOOP_EVENT_TYPES: frozenset[str] = frozenset(
     {
-        "comment_edited",
         "reaction_added",
         "reaction_removed",
         "git_event",
@@ -328,13 +327,35 @@ def _mut_comment_added(snap: dict, event: dict) -> None:
         evidence_refs.append({"id": event["id"], "role": role, "source_type": "comment"})
 
 
+@_register_mutation("comment_edited")
+def _mut_comment_edited(snap: dict, event: dict) -> None:
+    data = event.get("data", {})
+    comment_id = data.get("comment_id")
+    if "role" not in data or comment_id is None:
+        return  # body-only edit — no evidence_refs changes
+    new_role = data["role"]
+    evidence_refs = snap.setdefault("evidence_refs", [])
+    # Remove old evidence_ref for this comment (if any)
+    snap["evidence_refs"] = [
+        er
+        for er in evidence_refs
+        if not (er.get("source_type") == "comment" and er.get("id") == comment_id)
+    ]
+    # Add new evidence_ref if role is set
+    if new_role is not None:
+        snap["evidence_refs"].append(
+            {"id": comment_id, "role": new_role, "source_type": "comment"}
+        )
+
+
 @_register_mutation("comment_deleted")
 def _mut_comment_deleted(snap: dict, event: dict) -> None:
     snap["comment_count"] = max(0, snap.get("comment_count", 0) - 1)
     comment_id = event.get("data", {}).get("comment_id")
     if comment_id and "evidence_refs" in snap:
         snap["evidence_refs"] = [
-            er for er in snap["evidence_refs"]
+            er
+            for er in snap["evidence_refs"]
             if not (er.get("source_type") == "comment" and er.get("id") == comment_id)
         ]
 

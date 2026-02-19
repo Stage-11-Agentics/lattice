@@ -109,9 +109,7 @@ def dashboard_cmd(host: str, port: int, output_json: bool) -> None:
 
         if first_start:
             if output_json:
-                click.echo(
-                    json_envelope(True, data={"host": host, "port": port, "url": url})
-                )
+                click.echo(json_envelope(True, data={"host": host, "port": port, "url": url}))
             else:
                 click.echo(f"Lattice dashboard: {url}")
                 click.echo("Press Ctrl+C to stop.")
@@ -144,9 +142,7 @@ def restart_cmd(port: int) -> None:
     causing the dashboard to gracefully restart in place.
     """
     if not hasattr(signal, "SIGHUP"):
-        click.echo(
-            "Error: restart via signal is not supported on this platform.", err=True
-        )
+        click.echo("Error: restart via signal is not supported on this platform.", err=True)
         raise SystemExit(1)
 
     result = subprocess.run(

@@ -160,8 +160,7 @@ class TestRoleEvidenceIntegration:
         snapshot = json.loads(result.output)["data"]
 
         comment_refs = [
-            ref for ref in snapshot.get("evidence_refs", [])
-            if ref.get("source_type") == "comment"
+            ref for ref in snapshot.get("evidence_refs", []) if ref.get("source_type") == "comment"
         ]
         assert len(comment_refs) == 1
         assert comment_refs[0]["role"] == "review"
@@ -191,19 +190,26 @@ class TestRoleEvidenceIntegration:
         snapshot_path = initialized_root / ".lattice" / "tasks" / f"{task_id}.json"
         snapshot = json.loads(snapshot_path.read_text())
         artifact_refs = [
-            ref for ref in snapshot.get("evidence_refs", [])
+            ref
+            for ref in snapshot.get("evidence_refs", [])
             if ref.get("source_type") == "artifact"
         ]
-        assert any(ref["id"] == artifact_id and ref.get("role") == "review" for ref in artifact_refs)
+        assert any(
+            ref["id"] == artifact_id and ref.get("role") == "review" for ref in artifact_refs
+        )
 
         leaked = set(_inline_temp_files()) - before
         assert not leaked, f"Leaked temp files: {leaked}"
 
     def test_done_policy_satisfied_by_review_comment(
-        self, invoke_with_policies, initialized_root_with_policies,
+        self,
+        invoke_with_policies,
+        initialized_root_with_policies,
     ) -> None:
         """A review-role comment satisfies require_roles policy for done transition."""
-        created = invoke_with_policies("create", "Policy integration", "--actor", "human:test", "--json")
+        created = invoke_with_policies(
+            "create", "Policy integration", "--actor", "human:test", "--json"
+        )
         assert created.exit_code == 0, created.output
         task_id = json.loads(created.output)["data"]["id"]
 

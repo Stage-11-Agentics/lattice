@@ -25,6 +25,7 @@ class Workflow(TypedDict, total=False):
     completion_policies: dict[str, CompletionPolicy]
     roles: list[str]
     descriptions: dict[str, str]
+    review_cycle_limit: int
 
 
 class HooksOnConfig(TypedDict, total=False):
@@ -175,7 +176,7 @@ def default_config(preset: str = "classic") -> LatticeConfig:
             "in_planning": ["planned", "needs_human", "cancelled"],
             "planned": ["in_progress", "review", "blocked", "needs_human", "cancelled"],
             "in_progress": ["review", "blocked", "needs_human", "cancelled"],
-            "review": ["done", "in_progress", "needs_human", "cancelled"],
+            "review": ["done", "in_progress", "in_planning", "needs_human", "cancelled"],
             "done": [],
             "blocked": ["in_planning", "planned", "in_progress", "cancelled"],
             "needs_human": [
@@ -349,6 +350,11 @@ def validate_task_type(config: dict, task_type: str) -> bool:
 def get_wip_limit(config: dict, status: str) -> int | None:
     """Return the WIP limit for *status*, or ``None`` if not set."""
     return config.get("workflow", {}).get("wip_limits", {}).get(status)
+
+
+def get_review_cycle_limit(config: dict) -> int:
+    """Return the review cycle limit from workflow config, default 3."""
+    return config.get("workflow", {}).get("review_cycle_limit", 3)
 
 
 def validate_completion_policy(

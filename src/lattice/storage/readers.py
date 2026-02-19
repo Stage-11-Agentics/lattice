@@ -6,9 +6,7 @@ import json
 from pathlib import Path
 
 
-def read_task_events(
-    lattice_dir: Path, task_id: str, *, is_archived: bool = False
-) -> list[dict]:
+def read_task_events(lattice_dir: Path, task_id: str, *, is_archived: bool = False) -> list[dict]:
     """Read all events for a task from its JSONL log.
 
     Returns an empty list if the event file does not exist.

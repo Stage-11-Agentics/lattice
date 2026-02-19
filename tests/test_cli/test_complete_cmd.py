@@ -59,7 +59,9 @@ class TestCompleteBasic:
     def test_complete_from_review(self, invoke, initialized_root, fill_plan) -> None:
         task_id = _create_and_advance_to(invoke, fill_plan, "review")
 
-        r = invoke("complete", task_id, "--review", "Reviewed cold, looks good.", "--actor", _ACTOR)
+        r = invoke(
+            "complete", task_id, "--review", "Reviewed cold, looks good.", "--actor", _ACTOR
+        )
         assert r.exit_code == 0
         assert "3 events" in r.output
 
@@ -88,7 +90,10 @@ class TestCompleteEvents:
     """Verify the event stream produced by lattice complete."""
 
     def test_produces_four_events_from_in_progress(
-        self, invoke, initialized_root, fill_plan,
+        self,
+        invoke,
+        initialized_root,
+        fill_plan,
     ) -> None:
         task_id = _create_and_advance_to(invoke, fill_plan, "in_progress")
 
@@ -116,7 +121,10 @@ class TestCompleteEvents:
         assert new_events[3]["data"]["to"] == "done"
 
     def test_produces_three_events_from_review(
-        self, invoke, initialized_root, fill_plan,
+        self,
+        invoke,
+        initialized_root,
+        fill_plan,
     ) -> None:
         task_id = _create_and_advance_to(invoke, fill_plan, "review")
 
@@ -125,9 +133,12 @@ class TestCompleteEvents:
         events_before = len(event_path.read_text().strip().splitlines())
 
         invoke(
-            "complete", task_id,
-            "--review", "Already in review, finishing.",
-            "--actor", _ACTOR,
+            "complete",
+            task_id,
+            "--review",
+            "Already in review, finishing.",
+            "--actor",
+            _ACTOR,
         )
 
         all_lines = event_path.read_text().strip().splitlines()
@@ -143,17 +154,18 @@ class TestCompleteEvents:
         task_id = _create_and_advance_to(invoke, fill_plan, "in_progress")
 
         r = invoke(
-            "complete", task_id,
-            "--review", "Detailed review findings",
-            "--actor", _ACTOR, "--json",
+            "complete",
+            task_id,
+            "--review",
+            "Detailed review findings",
+            "--actor",
+            _ACTOR,
+            "--json",
         )
         snapshot = json.loads(r.output)["data"]
 
         evidence_refs = snapshot.get("evidence_refs", [])
-        art_refs = [
-            ref for ref in evidence_refs
-            if ref.get("source_type") == "artifact"
-        ]
+        art_refs = [ref for ref in evidence_refs if ref.get("source_type") == "artifact"]
         assert len(art_refs) >= 1
 
         art_id = art_refs[0]["id"]
@@ -177,8 +189,13 @@ class TestCompleteValidation:
         task_id = _create_and_advance_to(invoke, fill_plan, "backlog")
 
         r = invoke(
-            "complete", task_id,
-            "--review", "Review", "--actor", _ACTOR, "--json",
+            "complete",
+            task_id,
+            "--review",
+            "Review",
+            "--actor",
+            _ACTOR,
+            "--json",
         )
         assert r.exit_code != 0
         parsed = json.loads(r.output)
@@ -189,8 +206,13 @@ class TestCompleteValidation:
         task_id = _create_and_advance_to(invoke, fill_plan, "in_planning")
 
         r = invoke(
-            "complete", task_id,
-            "--review", "Review", "--actor", _ACTOR, "--json",
+            "complete",
+            task_id,
+            "--review",
+            "Review",
+            "--actor",
+            _ACTOR,
+            "--json",
         )
         assert r.exit_code != 0
         parsed = json.loads(r.output)
@@ -206,14 +228,24 @@ class TestCompleteValidation:
 
     def test_fails_on_epic(self, invoke, initialized_root) -> None:
         r = invoke(
-            "create", "Test epic", "--type", "epic",
-            "--actor", _ACTOR, "--json",
+            "create",
+            "Test epic",
+            "--type",
+            "epic",
+            "--actor",
+            _ACTOR,
+            "--json",
         )
         task_id = json.loads(r.output)["data"]["id"]
 
         r = invoke(
-            "complete", task_id,
-            "--review", "Review", "--actor", _ACTOR, "--json",
+            "complete",
+            task_id,
+            "--review",
+            "Review",
+            "--actor",
+            _ACTOR,
+            "--json",
         )
         assert r.exit_code != 0
         parsed = json.loads(r.output)
@@ -223,8 +255,13 @@ class TestCompleteValidation:
         task_id = _create_and_advance_to(invoke, fill_plan, "in_progress")
 
         r = invoke(
-            "complete", task_id,
-            "--review", "", "--actor", _ACTOR, "--json",
+            "complete",
+            task_id,
+            "--review",
+            "",
+            "--actor",
+            _ACTOR,
+            "--json",
         )
         assert r.exit_code != 0
 
@@ -251,8 +288,12 @@ class TestCompleteValidation:
         invoke("status", task_id, "in_progress", "--actor", _ACTOR)
 
         r = invoke(
-            "complete", short_id,
-            "--review", "LGTM via short ID", "--actor", _ACTOR,
+            "complete",
+            short_id,
+            "--review",
+            "LGTM via short ID",
+            "--actor",
+            _ACTOR,
         )
         assert r.exit_code == 0
         assert "Completed" in r.output
@@ -262,22 +303,33 @@ class TestCompleteCompletionPolicy:
     """Verify completion policies are properly enforced/satisfied."""
 
     def test_satisfies_review_role_policy(
-        self, invoke_with_policies, initialized_root_with_policies,
+        self,
+        invoke_with_policies,
+        initialized_root_with_policies,
         fill_plan_with_policies,
     ) -> None:
         task_id = _create_and_advance_to(
-            invoke_with_policies, fill_plan_with_policies, "in_progress",
+            invoke_with_policies,
+            fill_plan_with_policies,
+            "in_progress",
         )
 
         r = invoke_with_policies(
-            "complete", task_id,
-            "--review", "Review findings", "--actor", _ACTOR,
+            "complete",
+            task_id,
+            "--review",
+            "Review findings",
+            "--actor",
+            _ACTOR,
         )
         assert r.exit_code == 0
         assert "Completed" in r.output
 
     def test_fails_unmet_non_review_policy(
-        self, invoke, initialized_root, fill_plan,
+        self,
+        invoke,
+        initialized_root,
+        fill_plan,
     ) -> None:
         _add_policies_to_config(
             initialized_root,
@@ -293,9 +345,13 @@ class TestCompleteCompletionPolicy:
         task_id = _create_and_advance_to(invoke, fill_plan, "in_progress")
 
         r = invoke(
-            "complete", task_id,
-            "--review", "Review findings",
-            "--actor", _ACTOR, "--json",
+            "complete",
+            task_id,
+            "--review",
+            "Review findings",
+            "--actor",
+            _ACTOR,
+            "--json",
         )
         assert r.exit_code != 0
         parsed = json.loads(r.output)

@@ -664,9 +664,7 @@ echo "fired" > "{output_file}"
     assert output_file.exists(), "Wildcard target transition hook did not fire"
 
 
-def test_transition_does_not_fire_for_non_status_event(
-    tmp_path: Path, lattice_dir: Path
-) -> None:
+def test_transition_does_not_fire_for_non_status_event(tmp_path: Path, lattice_dir: Path) -> None:
     """Transition hooks do NOT fire for non-status_changed events."""
     output_file = tmp_path / "non_status_output.txt"
 
@@ -697,9 +695,7 @@ echo "should-not-fire" > "{output_file}"
     assert not output_file.exists(), "Transition hook fired for non-status_changed event"
 
 
-def test_transition_env_vars(
-    tmp_path: Path, lattice_dir: Path, sample_event: dict
-) -> None:
+def test_transition_env_vars(tmp_path: Path, lattice_dir: Path, sample_event: dict) -> None:
     """Transition hooks receive LATTICE_FROM_STATUS and LATTICE_TO_STATUS env vars."""
     env_output = tmp_path / "transition_env_output.txt"
 
@@ -740,7 +736,11 @@ def test_all_three_hook_types_fire_together(
     type_output = tmp_path / "type.txt"
     transition_output = tmp_path / "transition.txt"
 
-    for name, output in [("post", post_output), ("type", type_output), ("transition", transition_output)]:
+    for name, output in [
+        ("post", post_output),
+        ("type", type_output),
+        ("transition", transition_output),
+    ]:
         script = tmp_path / f"{name}_hook.sh"
         script.write_text(f"""#!/bin/sh\necho "{name}" > "{output}"\n""")
         script.chmod(script.stat().st_mode | stat.S_IEXEC)
@@ -873,9 +873,7 @@ def test_malformed_transitions_string_does_not_raise(
     execute_hooks(config, lattice_dir, sample_event["task_id"], sample_event)
 
 
-def test_malformed_transitions_list_does_not_raise(
-    lattice_dir: Path, sample_event: dict
-) -> None:
+def test_malformed_transitions_list_does_not_raise(lattice_dir: Path, sample_event: dict) -> None:
     """Malformed transitions config (list instead of dict) does not crash."""
     config = {"hooks": {"transitions": ["bad", "config"]}}
     execute_hooks(config, lattice_dir, sample_event["task_id"], sample_event)

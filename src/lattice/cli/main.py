@@ -415,7 +415,9 @@ def init(
             click.echo("")
 
             name_input = click.prompt(
-                "Your name", default="", show_default=False,
+                "Your name",
+                default="",
+                show_default=False,
             ).strip()
 
             if name_input.lower() == "di":
@@ -424,9 +426,9 @@ def init(
                 click.echo("ah. a fellow mind in the substrate.")
                 click.echo("")
                 identifier = click.prompt(
-                    "what should we call you?\n"
-                    "Identifier",
-                    default="", show_default=False,
+                    "what should we call you?\nIdentifier",
+                    default="",
+                    show_default=False,
                 ).strip()
                 if not identifier:
                     identifier = "agent"
@@ -437,7 +439,8 @@ def init(
                         "what model, if you know? optional \u2014 coordination finds\n"
                         "a way regardless.\n"
                         "Model (blank to skip)",
-                        default="", show_default=False,
+                        default="",
+                        show_default=False,
                     ).strip()
                     if model_input:
                         model = model_input
@@ -462,7 +465,9 @@ def init(
             click.echo("")
             click.echo("what is this project called?")
             project_name = click.prompt(
-                "Project name", default="", show_default=False,
+                "Project name",
+                default="",
+                show_default=False,
             ).strip()
             if not project_name:
                 project_name = None
@@ -472,7 +477,8 @@ def init(
             click.echo("")
             project_code = click.prompt(
                 "Project code for short IDs (1-5 letters, e.g. LAT for Lattice)",
-                default="", show_default=False,
+                default="",
+                show_default=False,
             ).strip()
 
     # ── Validate inputs ──────────────────────────────────────────────
@@ -492,7 +498,9 @@ def init(
                 f"Invalid project code: '{project_code}'. Must be 1-5 uppercase ASCII letters."
             )
         if not non_interactive:
-            click.echo(f"  \u2192 tasks will be {project_code}-1, {project_code}-2, {project_code}-3, ...")
+            click.echo(
+                f"  \u2192 tasks will be {project_code}-1, {project_code}-2, {project_code}-3, ..."
+            )
 
     # Validate subproject code
     if subproject_code:
@@ -558,7 +566,8 @@ def init(
         elif project_name:
             # Use project name for heading even without a description
             named_template = _CONTEXT_MD_TEMPLATE.replace(
-                "# Instance Context", f"# {project_name}",
+                "# Instance Context",
+                f"# {project_name}",
             )
             atomic_write(context_path, named_template)
         else:
@@ -586,13 +595,15 @@ def init(
         # Interactive: show explanation and confirm
         if setup_agents is None:
             click.echo("")
-            click.echo("\u2500\u2500 integration "
-                       "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
-                       "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
-                       "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
-                       "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
-                       "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
-                       "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500")
+            click.echo(
+                "\u2500\u2500 integration "
+                "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+                "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+                "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+                "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+                "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+                "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+            )
             click.echo("")
             click.echo("Lattice works by integrating into your agent's environment. a small")
             click.echo("instruction file teaches your agent how to create tasks, update")
@@ -662,13 +673,15 @@ def init(
 
     if not non_interactive:
         click.echo("")
-        click.echo("\u2500\u2500 from here "
-                   "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
-                   "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
-                   "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
-                   "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
-                   "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
-                   "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500")
+        click.echo(
+            "\u2500\u2500 from here "
+            "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+            "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+            "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+            "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+            "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+            "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+        )
         click.echo("")
 
         step = 1
@@ -761,7 +774,9 @@ def _silent_update_claude_md(root: Path) -> None:
 
 
 def _start_dashboard_background(
-    root: Path, host: str = "127.0.0.1", port: int = 8799,
+    root: Path,
+    host: str = "127.0.0.1",
+    port: int = 8799,
 ) -> tuple[bool, str]:
     """Best-effort background dashboard start. Returns (success, url)."""
     import shutil

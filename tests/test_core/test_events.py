@@ -7,6 +7,7 @@ import json
 from lattice.core.events import (
     BUILTIN_EVENT_TYPES,
     LIFECYCLE_EVENT_TYPES,
+    count_review_rework_cycles,
     create_event,
     serialize_event,
     validate_custom_event_type,
@@ -339,3 +340,80 @@ class TestProvenance:
         assert "provenance" in parsed
         assert parsed["provenance"]["triggered_by"] == "ev_TRIGGER"
         assert parsed["provenance"]["reason"] == "test serialization"
+
+
+# ---------------------------------------------------------------------------
+# count_review_rework_cycles
+# ---------------------------------------------------------------------------
+
+
+def _status_event(from_status: str, to_status: str) -> dict:
+    """Build a minimal status_changed event for testing."""
+    return {
+        "type": "status_changed",
+        "data": {"from": from_status, "to": to_status},
+    }
+
+
+class TestCountReviewReworkCycles:
+    """Test review rework cycle counting from event logs."""
+
+    def test_empty_events(self) -> None:
+        assert count_review_rework_cycles([]) == 0
+
+    def test_no_status_changed_events(self) -> None:
+        events = [
+            {"type": "task_created", "data": {"title": "Test"}},
+            {"type": "comment_added", "data": {"body": "hello"}},
+        ]
+        assert count_review_rework_cycles(events) == 0
+
+    def test_status_changes_not_involving_review_rework(self) -> None:
+        events = [
+            _status_event("backlog", "in_planning"),
+            _status_event("in_planning", "planned"),
+            _status_event("planned", "in_progress"),
+            _status_event("in_progress", "review"),
+        ]
+        assert count_review_rework_cycles(events) == 0
+
+    def test_counts_review_to_in_progress(self) -> None:
+        events = [
+            _status_event("in_progress", "review"),
+            _status_event("review", "in_progress"),
+        ]
+        assert count_review_rework_cycles(events) == 1
+
+    def test_counts_review_to_in_planning(self) -> None:
+        events = [
+            _status_event("in_progress", "review"),
+            _status_event("review", "in_planning"),
+        ]
+        assert count_review_rework_cycles(events) == 1
+
+    def test_counts_mixed_rework_types(self) -> None:
+        events = [
+            _status_event("in_progress", "review"),
+            _status_event("review", "in_progress"),
+            _status_event("in_progress", "review"),
+            _status_event("review", "in_planning"),
+            _status_event("in_planning", "planned"),
+            _status_event("planned", "in_progress"),
+            _status_event("in_progress", "review"),
+            _status_event("review", "in_progress"),
+        ]
+        assert count_review_rework_cycles(events) == 3
+
+    def test_does_not_count_review_to_done(self) -> None:
+        events = [
+            _status_event("in_progress", "review"),
+            _status_event("review", "done"),
+        ]
+        assert count_review_rework_cycles(events) == 0
+
+    def test_does_not_count_review_to_needs_human(self) -> None:
+        events = [
+            _status_event("in_progress", "review"),
+            _status_event("review", "needs_human"),
+        ]
+        assert count_review_rework_cycles(events) == 0

@@ -81,15 +81,8 @@ def fill_plan(cli_env: dict[str, str]):
     """
 
     def _fill(task_id: str, title: str = "Task") -> None:
-        plan_path = (
-            Path(cli_env["LATTICE_ROOT"])
-            / ".lattice"
-            / "plans"
-            / f"{task_id}.md"
-        )
-        plan_path.write_text(
-            f"# {title}\n\n## Approach\n\n- Implement the feature.\n"
-        )
+        plan_path = Path(cli_env["LATTICE_ROOT"]) / ".lattice" / "plans" / f"{task_id}.md"
+        plan_path.write_text(f"# {title}\n\n## Approach\n\n- Implement the feature.\n")
 
     return _fill
 
@@ -167,13 +160,8 @@ def fill_plan_with_policies(cli_env_with_policies: dict[str, str]):
 
     def _fill(task_id: str, title: str = "Task") -> None:
         plan_path = (
-            Path(cli_env_with_policies["LATTICE_ROOT"])
-            / ".lattice"
-            / "plans"
-            / f"{task_id}.md"
+            Path(cli_env_with_policies["LATTICE_ROOT"]) / ".lattice" / "plans" / f"{task_id}.md"
         )
-        plan_path.write_text(
-            f"# {title}\n\n## Approach\n\n- Implement the feature.\n"
-        )
+        plan_path.write_text(f"# {title}\n\n## Approach\n\n- Implement the feature.\n")
 
     return _fill

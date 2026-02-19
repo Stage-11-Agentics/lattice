@@ -28,18 +28,22 @@ def res_env(initialized_root: Path) -> dict[str, str]:
 @pytest.fixture()
 def res_invoke(cli_runner: CliRunner, res_env: dict[str, str]):
     """Helper that invokes CLI commands for resource tests."""
+
     def _invoke(*args: str, **kwargs):
         return cli_runner.invoke(cli, list(args), env=res_env, **kwargs)
+
     return _invoke
 
 
 @pytest.fixture()
 def res_invoke_json(res_invoke):
     """Like res_invoke, but appends --json and parses the response."""
+
     def _invoke_json(*args: str) -> tuple[dict, int]:
         result = res_invoke(*args, "--json")
         parsed = json.loads(result.output)
         return parsed, result.exit_code
+
     return _invoke_json
 
 
@@ -79,18 +83,28 @@ class TestResourceCreate:
 
     def test_create_with_options(self, res_invoke) -> None:
         result = res_invoke(
-            "resource", "create", "browser",
-            "--description", "Chrome browser",
-            "--max-holders", "2",
-            "--ttl", "600",
-            "--actor", "human:atin",
+            "resource",
+            "create",
+            "browser",
+            "--description",
+            "Chrome browser",
+            "--max-holders",
+            "2",
+            "--ttl",
+            "600",
+            "--actor",
+            "human:atin",
         )
         assert result.exit_code == 0
         assert "Created resource 'browser'" in result.output
 
     def test_create_json_output(self, res_invoke_json) -> None:
         data, code = res_invoke_json(
-            "resource", "create", "browser", "--actor", "human:atin",
+            "resource",
+            "create",
+            "browser",
+            "--actor",
+            "human:atin",
         )
         assert code == 0
         assert data["ok"] is True
@@ -110,18 +124,26 @@ class TestResourceCreate:
 
         custom_id = generate_resource_id()
         data1, code1 = res_invoke_json(
-            "resource", "create", "browser",
-            "--id", custom_id,
-            "--actor", "human:atin",
+            "resource",
+            "create",
+            "browser",
+            "--id",
+            custom_id,
+            "--actor",
+            "human:atin",
         )
         assert code1 == 0
         assert data1["data"]["id"] == custom_id
 
         # Same ID + same name = idempotent
         data2, code2 = res_invoke_json(
-            "resource", "create", "browser",
-            "--id", custom_id,
-            "--actor", "human:atin",
+            "resource",
+            "create",
+            "browser",
+            "--id",
+            custom_id,
+            "--actor",
+            "human:atin",
         )
         assert code2 == 0
 
@@ -133,7 +155,12 @@ class TestResourceCreate:
 
     def test_creates_event_log(self, res_invoke, initialized_root: Path) -> None:
         result = res_invoke(
-            "resource", "create", "browser", "--actor", "human:atin", "--json",
+            "resource",
+            "create",
+            "browser",
+            "--actor",
+            "human:atin",
+            "--json",
         )
         data = json.loads(result.output)
         resource_id = data["data"]["id"]
@@ -161,7 +188,11 @@ class TestResourceAcquire:
     def test_acquire_json(self, res_invoke, res_invoke_json) -> None:
         res_invoke("resource", "create", "browser", "--actor", "human:atin")
         data, code = res_invoke_json(
-            "resource", "acquire", "browser", "--actor", "agent:claude",
+            "resource",
+            "acquire",
+            "browser",
+            "--actor",
+            "agent:claude",
         )
         assert code == 0
         assert data["ok"] is True
@@ -186,7 +217,12 @@ class TestResourceAcquire:
         res_invoke("resource", "create", "browser", "--actor", "human:atin")
         res_invoke("resource", "acquire", "browser", "--actor", "agent:claude")
         result = res_invoke(
-            "resource", "acquire", "browser", "--actor", "agent:codex", "--force",
+            "resource",
+            "acquire",
+            "browser",
+            "--actor",
+            "agent:codex",
+            "--force",
         )
         assert result.exit_code == 0
         assert "Acquired" in result.output
@@ -197,12 +233,18 @@ class TestResourceAcquire:
         res_invoke("resource", "create", "browser", "--actor", "human:atin")
         # We can't easily get the task ID without --json, so just test the flag works
         data, code = res_invoke_json(
-            "resource", "acquire", "browser", "--actor", "agent:claude",
+            "resource",
+            "acquire",
+            "browser",
+            "--actor",
+            "agent:claude",
         )
         assert code == 0
 
     def test_acquire_auto_creates_from_config(
-        self, cli_runner: CliRunner, config_with_resources: Path,
+        self,
+        cli_runner: CliRunner,
+        config_with_resources: Path,
     ) -> None:
         env = {"LATTICE_ROOT": str(config_with_resources)}
         result = cli_runner.invoke(
@@ -327,7 +369,9 @@ class TestResourceStatus:
         assert data["data"]["name"] == "browser"
 
     def test_list_includes_config_only(
-        self, cli_runner: CliRunner, config_with_resources: Path,
+        self,
+        cli_runner: CliRunner,
+        config_with_resources: Path,
     ) -> None:
         """Resources declared in config but not yet created show in list."""
         env = {"LATTICE_ROOT": str(config_with_resources)}
@@ -361,7 +405,12 @@ class TestResourceLifecycle:
     def test_event_log_has_all_events(self, res_invoke, initialized_root: Path) -> None:
         # Create
         result = res_invoke(
-            "resource", "create", "browser", "--actor", "human:atin", "--json",
+            "resource",
+            "create",
+            "browser",
+            "--actor",
+            "human:atin",
+            "--json",
         )
         resource_id = json.loads(result.output)["data"]["id"]
 
@@ -429,16 +478,24 @@ class TestIdUniqueness:
 
         shared_id = generate_resource_id()
         result1 = res_invoke(
-            "resource", "create", "browser",
-            "--id", shared_id,
-            "--actor", "human:atin",
+            "resource",
+            "create",
+            "browser",
+            "--id",
+            shared_id,
+            "--actor",
+            "human:atin",
         )
         assert result1.exit_code == 0
 
         result2 = res_invoke(
-            "resource", "create", "simulator",
-            "--id", shared_id,
-            "--actor", "human:atin",
+            "resource",
+            "create",
+            "simulator",
+            "--id",
+            shared_id,
+            "--actor",
+            "human:atin",
         )
         assert result2.exit_code == 1
         assert "already used" in result2.output

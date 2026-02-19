@@ -92,8 +92,15 @@ class ActorIdentity:
         Unknown keys are captured in ``extra``.
         """
         known = {
-            "name", "base_name", "serial", "session", "model",
-            "framework", "agent_type", "prompt", "parent",
+            "name",
+            "base_name",
+            "serial",
+            "session",
+            "model",
+            "framework",
+            "agent_type",
+            "prompt",
+            "parent",
         }
         extra = {k: v for k, v in d.items() if k not in known}
         return cls(

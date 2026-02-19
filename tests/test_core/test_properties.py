@@ -42,6 +42,7 @@ valid_rel_types = st.sampled_from(
     ]
 )
 
+
 def _make_task_created_event(
     title: str,
     status: str,
