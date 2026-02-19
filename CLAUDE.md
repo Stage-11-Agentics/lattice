@@ -100,6 +100,7 @@ Each lifecycle stage gets its own sub-agent with fresh context. This is the defa
 1. Move the task to `in_planning` before spawning the planning sub-agent.
 2. After the planner finishes, move to `in_progress` and spawn the implementation sub-agent.
 3. After the implementer finishes, the review sub-agent runs independently.
+4. After review passes, **merge to main before marking `done`**. A task is not done until its code is on the target branch.
 
 Each sub-agent should use a distinct actor ID (e.g., `agent:claude-opus-4-planner`, `agent:claude-opus-4-impl`, `agent:claude-opus-4-reviewer`) so the event log shows who did what.
 
@@ -534,6 +535,7 @@ Each lifecycle stage gets its own sub-agent with fresh context. This is the defa
 1. Move the task to `in_planning` before spawning the planning sub-agent.
 2. After the planner finishes, move to `in_progress` and spawn the implementation sub-agent.
 3. After the implementer finishes, the review sub-agent runs independently.
+4. After review passes, **merge to main before marking `done`**. A task is not done until its code is on the target branch.
 
 Each sub-agent should use a distinct actor ID (e.g., `agent:claude-opus-4-planner`, `agent:claude-opus-4-impl`, `agent:claude-opus-4-reviewer`) so the event log shows who did what.
 
