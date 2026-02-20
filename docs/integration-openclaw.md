@@ -210,7 +210,7 @@ For multi-agent setups, give each agent a unique ID:
 
 ## The advance pattern for OpenClaw
 
-Since OpenClaw doesn't have a built-in `/lattice-advance` command like Claude Code, here's the pattern your agent follows:
+Since OpenClaw doesn't have a built-in `/lattice` skill like Claude Code, here's the pattern your agent follows:
 
 ```bash
 # 1. Claim the next task

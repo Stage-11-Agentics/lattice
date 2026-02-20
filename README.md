@@ -155,7 +155,7 @@ this is. your job. the part only you can do.
 
 ### 2. agents claim and execute
 
-tell your agent to advance. in Claude Code: `/lattice-advance`. or just "advance the project." the agent:
+tell your agent to advance. in Claude Code: `/lattice` teaches the full lifecycle. or just say "advance the project." the agent:
 
 - claims the highest-priority available task
 - works it. implements. tests. iterates.
@@ -287,7 +287,7 @@ without this block, Claude Code *can* use Lattice if you prompt it. with this bl
 lattice setup-claude --force   # update to latest template
 ```
 
-**how it works in practice:** you open Claude Code in your project. the agent reads `CLAUDE.md`, sees the Lattice block, and knows the protocol. you say "advance the project" or `/lattice-advance`. the agent claims the top task, does the work, updates the status, leaves a comment. you come back to the dashboard and see what happened.
+**how it works in practice:** you open Claude Code in your project. the agent reads `CLAUDE.md`, sees the Lattice block, and knows the protocol. you say "advance the project" or `/lattice`. the agent claims the top task, does the work, updates the status, leaves a comment. you come back to the dashboard and see what happened.
 
 ### Codex CLI
 

@@ -101,10 +101,10 @@ Your dashboard now shows four tasks in the Backlog column. You've defined *what*
 Open Claude Code in your project and type:
 
 ```
-/lattice-advance
+/lattice
 ```
 
-That's it. One command. Here's what happens behind the scenes:
+That's it. One command teaches the agent the full lifecycle. Here's what happens behind the scenes:
 
 1. The agent runs `lattice next --claim` — this finds the highest-priority ready task and atomically assigns it
 2. The agent reads the task details, any plans or notes from previous sessions
@@ -126,7 +126,7 @@ Refresh your dashboard. The board tells the story:
 You review the completed work. You make the decisions the agent couldn't. You drag `needs_human` tasks back to In Progress after leaving your answer as a comment. Then you advance again.
 
 ```
-/lattice-advance
+/lattice
 ```
 
 The agent picks up the next task. Or resumes the one you just unblocked. The cycle continues.
@@ -151,7 +151,7 @@ Three things:
 
 **Morning.** Open the dashboard. Scan the board. Handle the `needs_human` queue first — those are agents waiting on you. Make the decisions. Drag tasks back to active.
 
-**Working.** Run `/lattice-advance` when you want the agent to make progress. One advance = one task. Want more? "Do 3 advances" or "keep advancing until blocked." Control the pace.
+**Working.** Run `/lattice` when you want the agent to make progress. One advance = one task. Want more? "Do 3 advances" or "keep advancing until blocked." Control the pace.
 
 **Review.** Check the Review column. Read agent comments. Approve, reject, or redirect. Create new tasks from what you learned. Priorities shift — let them.
 
@@ -165,7 +165,7 @@ You don't have to advance one at a time:
 
 ```
 # In Claude Code:
-/lattice-advance                    # one task
+/lattice                            # one task
 "Advance the project 3 times"      # explicit count
 "Keep advancing until blocked"      # manual loop
 ```
@@ -223,7 +223,7 @@ The tasks may be assigned to a different actor, or all remaining tasks are in te
 | Update integration | `lattice setup-claude --force` |
 | Open dashboard | `lattice dashboard` |
 | Create task | `lattice create "Title" --actor human:you` |
-| Advance (in Claude Code) | `/lattice-advance` |
+| Advance (in Claude Code) | `/lattice` |
 | Check inbox | `lattice list --status review` / `lattice list --status needs_human` |
 | Daily digest | `lattice weather` |
 

@@ -159,7 +159,7 @@ this is. your job. the part only you can do.
 
 ### 2. agents claim and execute
 
-tell your agent to advance. in Claude Code: `/lattice-advance`. or just "advance the project." the agent:
+tell your agent to advance. in Claude Code: `/lattice` teaches the full lifecycle. or just say "advance the project." the agent:
 
 - claims the highest-priority available task
 - works it. implements. tests. iterates.

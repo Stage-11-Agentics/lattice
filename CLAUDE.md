@@ -12,9 +12,7 @@ This project tracks all work through Lattice. **Before you do anything else, rea
 lattice create "<title>" --actor agent:<your-id>
 ```
 
-**Use `/lattice` for:** CLI commands, status transitions, planning gates, review gates, sub-agent execution model, rework loops, actor attribution, branch linking, on-disk layout, identifiers — everything about *how Lattice works and how to use it*.
-
-**Use `/lattice-advance` for:** picking up a task and driving it through one unit of forward progress.
+The `/lattice` skill covers everything: CLI commands, lifecycle discipline (claim, work, complete), status transitions, planning gates, review gates, sub-agent execution model, rework loops, actor attribution, branch linking, on-disk layout, identifiers, and coordination patterns.
 
 
 ### Project-Specific Conventions

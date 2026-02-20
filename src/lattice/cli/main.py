@@ -699,11 +699,10 @@ def init(
         click.echo("")
 
         step += 1
-        click.echo(f"  {step}. start advancing. 'lattice advance' claims the next task,")
-        click.echo("     plans it, implements it, moves it to review. autonomously.")
-        click.echo("     one advance = one unit of forward progress.")
-        click.echo('     chain them: "do 3 advances" or "advance until the backlog')
-        click.echo('     is clear." you set priorities. you review. the agent handles')
+        click.echo(f"  {step}. start advancing. 'lattice next --claim' grabs the next task,")
+        click.echo("     plans it, implements it, completes it. autonomously.")
+        click.echo("     one claim = one unit of forward progress.")
+        click.echo("     you set priorities. you review. the agent handles")
         click.echo("     everything in between.")
     else:
         # Non-interactive summary

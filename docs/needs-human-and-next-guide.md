@@ -4,7 +4,7 @@ This guide covers three features that work together to create a smooth human-age
 
 1. **`needs_human` status** — Agents signal when they're blocked on you
 2. **`lattice next`** — Deterministic task selection for agents
-3. **`/lattice-advance`** — One unit of forward progress
+3. **The advance pattern** — One unit of forward progress (driven by `/lattice`)
 
 ---
 
@@ -150,19 +150,19 @@ Check `lattice list` to see what's actually in the system.
 
 ---
 
-## 3. `/lattice-advance` — One Unit of Forward Progress
+## 3. The Advance Pattern — One Unit of Forward Progress
 
 ### What it is
 
-A Claude Code slash command that advances the project by one task. The agent claims the highest-priority ready task, does the work, transitions it, and reports what happened. One task, one advance.
+The advance is the core lifecycle pattern in Lattice. The agent claims the highest-priority ready task, does the work, transitions it, and reports what happened. One task, one advance. The `/lattice` skill teaches agents this full lifecycle.
 
 ### How to use it
 
 ```
-/lattice-advance
+/lattice
 ```
 
-That's it. The agent claims the next task and works it to completion (or to a transition point like `needs_human` or `blocked`).
+That's it. The `/lattice` skill teaches the agent the full lifecycle, including how to claim the next task and work it to completion (or to a transition point like `needs_human` or `blocked`).
 
 For multiple advances, just invoke it again or tell the agent "do 3 advances" or "keep advancing until blocked."
 
@@ -204,8 +204,8 @@ After an advance, you'll typically:
 # Check the backlog
 lattice weather
 
-# Advance by one task
-/lattice-advance
+# Advance by one task (invoke /lattice to teach the agent, then ask it to advance)
+/lattice
 
 # Check what needs you
 lattice list --status needs_human
@@ -216,7 +216,7 @@ lattice status LAT-15 in_progress --actor human:atin
 lattice comment LAT-15 "Approved: use the proposed schema" --actor human:atin
 
 # Advance again
-/lattice-advance
+/lattice
 ```
 
 ---

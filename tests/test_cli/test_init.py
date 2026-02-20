@@ -757,7 +757,7 @@ class TestInitWelcomeMessage:
         result = runner.invoke(cli, ["init", "--path", str(tmp_path)], input=_SKIP_ALL)
         assert result.exit_code == 0
         assert "from here" in result.output
-        assert "lattice advance" in result.output
+        assert "lattice next" in result.output
 
     def test_interactive_shows_mission_accomplished(self, tmp_path: Path) -> None:
         runner = CliRunner()

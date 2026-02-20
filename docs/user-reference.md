@@ -126,7 +126,7 @@ The pattern that turns a prioritized backlog into completed work — one task at
 5. **Commit** — save the work
 6. **Report** — tell the user what happened
 
-In Claude Code, `/lattice-advance` runs one advance. For multiple, just invoke it again or say "do N advances."
+In Claude Code, `/lattice` teaches the agent the full lifecycle including advancing. For multiple advances, just invoke it again or say "do N advances."
 
 ### Parallel agent builds
 
