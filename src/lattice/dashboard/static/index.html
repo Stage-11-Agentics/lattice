@@ -3878,14 +3878,29 @@ function loadHeatMapSetting() {
 }
 
 // --- Board Card Helper ---
+function formatHeatAge(ts) {
+  if (!ts) return "no ts";
+  var diff = Math.floor((Date.now() - new Date(ts).getTime()) / 1000);
+  if (diff < 60) return diff + "s";
+  if (diff < 3600) return Math.floor(diff / 60) + "m";
+  if (diff < 86400) return Math.floor(diff / 3600) + "h";
+  return Math.floor(diff / 86400) + "d";
+}
+
 function renderBoardCard(t) {
-  var heatCls = isHeatMapEnabled() ? " " + getHeatClass(t.last_status_changed_at) : "";
-  var html = '<div class="card' + heatCls + '" draggable="true" data-task-id="' + esc(t.id) + '" data-task-status="' + esc(t.status || "") + '"';
+  var heatCls = isHeatMapEnabled() ? getHeatClass(t.last_status_changed_at) : "";
+  var html = '<div class="card' + (heatCls ? " " + heatCls : "") + '" draggable="true" data-task-id="' + esc(t.id) + '" data-task-status="' + esc(t.status || "") + '"';
   html += ' ondragstart="window._boardDragStart(event)" ondragend="window._boardDragEnd(event)">';
   if (t.short_id) {
     html += '<div style="font-size:.7rem;font-weight:600;color:var(--accent-primary);margin-bottom:2px;display:flex;align-items:center;gap:5px">';
     if (t.has_active_session) html += '<span class="active-dot" title="Actively being worked"></span>';
-    html += esc(t.short_id) + '</div>';
+    html += esc(t.short_id);
+    // Heat age indicator
+    if (isHeatMapEnabled() && t.last_status_changed_at) {
+      var heatColor = heatCls === "heat-hot" ? "#ef4444" : heatCls === "heat-warm" ? "#f97316" : heatCls === "heat-cooling" ? "#eab308" : "var(--text-muted)";
+      html += '<span style="font-size:.65rem;color:' + heatColor + ';font-weight:400" title="Last status change">' + formatHeatAge(t.last_status_changed_at) + '</span>';
+    }
+    html += '</div>';
   } else if (t.has_active_session) {
     html += '<div style="margin-bottom:2px"><span class="active-dot" title="Actively being worked"></span></div>';
   }
