@@ -740,3 +740,9 @@ Additionally, `lattice advance N` processed multiple tasks in a single context w
 **Context:** Epics were redundant with the subtask_of relationship system and created lifecycle management overhead (zombie epics that nobody closes).
 **Decision:** Remove `type: epic` entirely. Grouping is handled by subtask_of relationships. The web visualization uses topology-based "hub" detection (nodes with children but no parent) instead of checking for epic type.
 **Consequences:** Existing epics in live instances will retain their type field in event history but the type value will no longer be validated as a known type. New task creation will reject "epic" as a type.
+
+---
+
+## Note: This file is append-only
+
+`Decisions.md` is an append-only log. Entries are never edited or deleted after recording. Superseded decisions are noted inline with a reference to the superseding entry. Cross-cutting architectural decisions go here; task-scoped design decisions belong in the plan file (`.lattice/plans/<task_id>.md`).
