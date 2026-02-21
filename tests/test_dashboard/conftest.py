@@ -236,7 +236,9 @@ def dashboard_server(populated_lattice_dir: tuple[Path, dict[str, str]]):
     host = "127.0.0.1"
     server = create_server(ld, host, port)
 
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(
+        target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
+    )
     thread.start()
 
     base_url = f"http://{host}:{port}"

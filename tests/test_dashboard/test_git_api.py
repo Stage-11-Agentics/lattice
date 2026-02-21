@@ -85,7 +85,9 @@ def _start_server(lattice_dir: Path) -> tuple[str, object]:
     port = _get_free_port()
     host = "127.0.0.1"
     server = create_server(lattice_dir, host, port)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(
+        target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
+    )
     thread.start()
     return f"http://{host}:{port}", server
 

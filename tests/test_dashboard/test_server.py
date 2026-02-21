@@ -1171,7 +1171,11 @@ class TestReadonlyMode:
             port = s.getsockname()[1]
 
         server = create_server(ld, "127.0.0.1", port, readonly=True)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread = threading.Thread(
+            target=server.serve_forever,
+            kwargs={"poll_interval": 0.05},
+            daemon=True,
+        )
         thread.start()
 
         base_url = f"http://127.0.0.1:{port}"
