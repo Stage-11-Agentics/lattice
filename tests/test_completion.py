@@ -1,6 +1,6 @@
 import json
 from click.shell_completion import CompletionItem
-from lattice.completion import complete_task_id, complete_status
+from lattice.completion import complete_task_id, complete_status, complete_actor, complete_resource_name, complete_session_name, complete_relationship_type
 
 
 def _make_ids_json(tmp_path, entries):
@@ -81,3 +81,94 @@ def test_complete_status_falls_back_when_no_config(tmp_path, monkeypatch):
     values = [r.value for r in results]
     assert "backlog" in values
     assert "done" in values
+
+
+def _make_snapshot(tmp_path, task_id, actor):
+    tasks_dir = tmp_path / ".lattice" / "tasks"
+    tasks_dir.mkdir(parents=True, exist_ok=True)
+    snapshot = {"id": task_id, "assigned_to": actor, "title": "Test task"}
+    (tasks_dir / f"{task_id}.json").write_text(json.dumps(snapshot))
+
+
+def test_complete_actor_returns_unique_actors(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".lattice").mkdir(exist_ok=True)
+    _make_snapshot(tmp_path, "ulid1", "human:fede")
+    _make_snapshot(tmp_path, "ulid2", "human:fede")
+    _make_snapshot(tmp_path, "ulid3", "agent:claude")
+    results = complete_actor(None, None, "")
+    values = [r.value for r in results]
+    assert len(values) == len(set(values))
+    assert "human:fede" in values
+    assert "agent:claude" in values
+
+
+def test_complete_actor_filters_by_prefix(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".lattice").mkdir(exist_ok=True)
+    _make_snapshot(tmp_path, "ulid1", "human:fede")
+    _make_snapshot(tmp_path, "ulid2", "agent:claude")
+    results = complete_actor(None, None, "human")
+    values = [r.value for r in results]
+    assert "human:fede" in values
+    assert "agent:claude" not in values
+
+
+def _make_resource(tmp_path, name):
+    res_dir = tmp_path / ".lattice" / "resources"
+    res_dir.mkdir(parents=True, exist_ok=True)
+    (res_dir / f"{name}.json").write_text(json.dumps({"name": name}))
+
+
+def test_complete_resource_name_returns_names(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".lattice").mkdir(exist_ok=True)
+    _make_resource(tmp_path, "gpu-slot")
+    _make_resource(tmp_path, "db-lock")
+    results = complete_resource_name(None, None, "")
+    values = [r.value for r in results]
+    assert "gpu-slot" in values
+    assert "db-lock" in values
+
+
+def test_complete_resource_name_filters_by_prefix(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".lattice").mkdir(exist_ok=True)
+    _make_resource(tmp_path, "gpu-slot")
+    _make_resource(tmp_path, "db-lock")
+    results = complete_resource_name(None, None, "gpu")
+    values = [r.value for r in results]
+    assert values == ["gpu-slot"]
+
+
+def _make_session(tmp_path, name):
+    sess_dir = tmp_path / ".lattice" / "sessions"
+    sess_dir.mkdir(parents=True, exist_ok=True)
+    (sess_dir / f"{name}.json").write_text(json.dumps({"name": name, "status": "active"}))
+
+
+def test_complete_session_name_returns_names(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".lattice").mkdir(exist_ok=True)
+    _make_session(tmp_path, "argus")
+    _make_session(tmp_path, "builder")
+    results = complete_session_name(None, None, "")
+    values = [r.value for r in results]
+    assert "argus" in values
+    assert "builder" in values
+
+
+def test_complete_relationship_type_returns_all(tmp_path):
+    results = complete_relationship_type(None, None, "")
+    values = [r.value for r in results]
+    assert "blocks" in values
+    assert "blocked_by" in values
+    assert "depends_on" in values
+
+
+def test_complete_relationship_type_filters(tmp_path):
+    results = complete_relationship_type(None, None, "b")
+    values = [r.value for r in results]
+    assert "blocks" in values
+    assert "blocked_by" in values
+    assert "subtask_of" not in values
