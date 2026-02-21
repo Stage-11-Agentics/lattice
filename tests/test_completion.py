@@ -42,3 +42,11 @@ def test_complete_task_id_returns_completion_items(tmp_path, monkeypatch):
     _make_ids_json(tmp_path, {"LAT-1": "ulid1"})
     results = complete_task_id(None, None, "")
     assert all(isinstance(r, CompletionItem) for r in results)
+
+
+def test_complete_task_id_corrupted_json_returns_empty(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".lattice").mkdir()
+    (tmp_path / ".lattice" / "ids.json").write_text("not json {{{")
+    results = complete_task_id(None, None, "")
+    assert results == []
