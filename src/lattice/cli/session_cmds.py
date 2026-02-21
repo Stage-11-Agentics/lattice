@@ -11,6 +11,7 @@ from lattice.cli.helpers import (
     require_root,
 )
 from lattice.cli.main import cli
+from lattice.completion import complete_session_name
 from lattice.storage.sessions import (
     create_session,
     end_session,
@@ -107,7 +108,7 @@ def session_start(
 
 
 @session.command("end")
-@click.argument("name")
+@click.argument("name", shell_complete=complete_session_name)
 @click.option("--reason", default=None, help="Reason for ending the session.")
 @click.option("--json", "output_json", is_flag=True, help="Output structured JSON.")
 def session_end(
@@ -181,7 +182,7 @@ def session_list(
 
 
 @session.command("show")
-@click.argument("name")
+@click.argument("name", shell_complete=complete_session_name)
 @click.option("--json", "output_json", is_flag=True, help="Output structured JSON.")
 def session_show(
     name: str,

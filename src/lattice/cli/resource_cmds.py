@@ -20,6 +20,7 @@ from lattice.cli.helpers import (
     resolve_resource,
 )
 from lattice.cli.main import cli
+from lattice.completion import complete_resource_name
 from lattice.core.events import create_resource_event
 from lattice.core.ids import generate_resource_id, validate_id
 from lattice.core.resources import (
@@ -51,7 +52,7 @@ def resource() -> None:
 
 
 @resource.command("create")
-@click.argument("name")
+@click.argument("name", shell_complete=complete_resource_name)
 @click.option("--description", default=None, help="Human-readable description.")
 @click.option("--max-holders", type=int, default=1, help="Max concurrent holders (default 1).")
 @click.option("--ttl", type=int, default=300, help="Lock TTL in seconds (default 300).")
@@ -165,7 +166,7 @@ def resource_create(
 
 
 @resource.command("acquire")
-@click.argument("name")
+@click.argument("name", shell_complete=complete_resource_name)
 @click.option("--task", "task_id", default=None, help="Link to a task (e.g., LAT-88).")
 @click.option("--force", is_flag=True, help="Evict current holder.")
 @click.option("--wait", "do_wait", is_flag=True, help="Poll until available.")
@@ -401,7 +402,7 @@ def resource_acquire(
 
 
 @resource.command("release")
-@click.argument("name")
+@click.argument("name", shell_complete=complete_resource_name)
 @common_options
 def resource_release(
     name: str,
@@ -483,7 +484,7 @@ def resource_release(
 
 
 @resource.command("heartbeat")
-@click.argument("name")
+@click.argument("name", shell_complete=complete_resource_name)
 @common_options
 def resource_heartbeat(
     name: str,
@@ -569,7 +570,7 @@ def resource_heartbeat(
 
 
 @resource.command("status")
-@click.argument("name", required=False, default=None)
+@click.argument("name", required=False, default=None, shell_complete=complete_resource_name)
 @click.option("--json", "output_json", is_flag=True, help="Output structured JSON.")
 def resource_status(name: str | None, output_json: bool) -> None:
     """Show resource status. No args = all resources."""

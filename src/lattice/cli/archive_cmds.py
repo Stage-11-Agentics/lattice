@@ -21,6 +21,7 @@ from lattice.cli.helpers import (
     validate_actor_format_or_exit,
 )
 from lattice.cli.main import cli
+from lattice.completion import complete_task_id
 from lattice.core.events import create_event, serialize_event
 from lattice.core.tasks import apply_event_to_snapshot, serialize_snapshot
 from lattice.storage.fs import atomic_write, jsonl_append
@@ -120,7 +121,7 @@ def _archive_one(
 
 
 @cli.command()
-@click.argument("task_ids", nargs=-1, required=False)
+@click.argument("task_ids", nargs=-1, required=False, shell_complete=complete_task_id)
 @click.option("--stale", is_flag=True, help="Archive all done tasks older than yesterday.")
 @common_options
 def archive(
@@ -461,7 +462,7 @@ def _unarchive_one(
 
 
 @cli.command()
-@click.argument("task_ids", nargs=-1, required=True)
+@click.argument("task_ids", nargs=-1, required=True, shell_complete=complete_task_id)
 @common_options
 def unarchive(
     task_ids: tuple[str, ...],
