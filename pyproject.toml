@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "lattice-tracker"
-version = "0.2.0"
+version = "0.2.1"
 description = "File-based, agent-native task tracker with an event-sourced core."
 requires-python = ">=3.12"
 license = "MIT"
