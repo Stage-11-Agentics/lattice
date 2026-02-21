@@ -113,6 +113,12 @@ def dashboard_cmd(host: str, port: int, output_json: bool) -> None:
             else:
                 click.echo(f"Lattice dashboard: {url}")
                 click.echo("Press Ctrl+C to stop.")
+                import webbrowser
+
+                try:
+                    webbrowser.open(url)
+                except Exception:
+                    pass
             first_start = False
         else:
             click.echo(f"Lattice dashboard restarted: {url}", err=True)

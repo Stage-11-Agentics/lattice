@@ -688,6 +688,7 @@ def init(
             dashboard_started, dashboard_url = _start_dashboard_background(root)
             if dashboard_started:
                 click.echo(f"  dashboard running at {dashboard_url}")
+                _open_url(dashboard_url)
             else:
                 click.echo("  could not start dashboard. run 'lattice dashboard' when ready.")
         else:
@@ -847,6 +848,16 @@ def _silent_update_claude_md(root: Path) -> None:
         click.echo("  Updated CLAUDE.md with Lattice integration.")
     except OSError:
         pass  # Silent failure for CLAUDE.md
+
+
+def _open_url(url: str) -> None:
+    """Best-effort open a URL in the default browser."""
+    import webbrowser
+
+    try:
+        webbrowser.open(url)
+    except Exception:
+        pass
 
 
 def _start_dashboard_background(
