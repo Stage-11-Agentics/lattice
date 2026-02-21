@@ -22,6 +22,20 @@ If you see a warning that `lattice` is not on your PATH, run `uv tool update-she
 
 If you prefer pipx: `pipx install lattice-tracker`. Or plain pip: `pip install lattice-tracker`.
 
+## Upgrading
+
+```bash
+uv tool upgrade lattice-tracker
+```
+
+If you installed with pipx: `pipx upgrade lattice-tracker`. If you installed with pip: `pip install --upgrade lattice-tracker`.
+
+To check your current version:
+
+```bash
+lattice --version
+```
+
 ## Try the demo (optional)
 
 Before setting up your own project, you can explore a fully populated example:

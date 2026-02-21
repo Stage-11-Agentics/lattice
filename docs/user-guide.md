@@ -283,6 +283,16 @@ for MCP server support (agent integration via tool-use protocol):
 pip install lattice-tracker[mcp]
 ```
 
+### upgrade
+
+```bash
+uv tool upgrade lattice-tracker
+# or
+pip install --upgrade lattice-tracker
+```
+
+check your version with `lattice --version`.
+
 ### initialize
 
 ```bash

@@ -84,6 +84,14 @@ that's it. your agents now track their own work. you watch. steer. decide.
 
 the hard part is not the install. the hard part is trusting the loop. give it time.
 
+### upgrading
+
+```bash
+uv tool upgrade lattice-tracker
+```
+
+if you installed with pipx: `pipx upgrade lattice-tracker`. pip: `pip install --upgrade lattice-tracker`. check your version with `lattice --version`.
+
 ### what just happened
 
 - `uv tool install` put the `lattice` command on your PATH globally
