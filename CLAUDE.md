@@ -44,18 +44,30 @@ Lattice is installed two ways on this machine. Mixing them up causes silent bugs
 
 **The failure mode:** You edit source files in `src/lattice/`, then run `lattice dashboard` (bare). The global tool serves its own installed copy of the code, not your source tree. Your changes are invisible. Everything looks wrong and you waste time debugging CSS/JS/Python that is actually correct.
 
+**Critical: `uv tool install` uses a build cache.** Running `uv tool install . --force` does NOT guarantee a fresh build. uv caches the built wheel and will reuse it if the package version hasn't changed. To force a true rebuild:
+
+```bash
+# WRONG: may serve stale cached wheel
+uv tool install . --force
+
+# RIGHT: clean cache first, then install
+uv cache clean lattice-tracker && uv tool install . --force
+```
+
+Look for `Building lattice-tracker` in the output. If you only see `Prepared 1 package` without `Building`, you got the cached wheel.
+
 **How to avoid it:**
 - **During development**, always use `uv run lattice` (not bare `lattice`)
-- **After finishing work**, update the global tool: `uv tool install . --force`
-- **When the dashboard looks stale**, check which binary is running: `ps aux | grep lattice` — if it shows `~/.local/share/uv/tools/`, that's the global install
+- **After finishing work**, use the publish script: `./scripts/publish-global.sh`
+- **When the dashboard looks stale**, check which binary is running: `ps aux | grep lattice` -- if it shows `~/.local/share/uv/tools/`, that's the global install
 
 **Quick reference:**
 ```bash
 # Dev: run from source (changes take effect immediately)
 uv run lattice dashboard
 
-# Global: update after committing changes
-uv tool install . --force
+# Global: update after committing changes (always use the script)
+./scripts/publish-global.sh
 lattice dashboard
 ```
 
