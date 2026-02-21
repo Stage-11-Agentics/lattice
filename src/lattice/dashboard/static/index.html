@@ -197,6 +197,22 @@ a:hover{text-decoration:underline}
 .card-title{font-weight:600;margin-bottom:4px;word-break:break-word}
 .card-meta{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
 
+/* Active session indicator (pulsing dot) */
+.active-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--color-success);vertical-align:middle;flex-shrink:0;animation:activePulse 2s ease-in-out infinite}
+@keyframes activePulse{0%,100%{opacity:1;box-shadow:0 0 0 0 var(--color-success)}50%{opacity:.7;box-shadow:0 0 0 4px transparent}}
+.active-badge{display:inline-flex;align-items:center;gap:4px;padding:1px 7px;border-radius:10px;font-size:.7rem;font-weight:600;background:rgba(22,163,74,.15);color:var(--color-success);border:1px solid rgba(22,163,74,.3);white-space:nowrap}
+.active-badge .active-dot{width:6px;height:6px}
+
+/* Heat indicator (based on last_status_changed_at) */
+.card.heat-hot{border-left:3px solid #ef4444}
+.card.heat-warm{border-left:3px solid #f97316}
+.card.heat-cooling{border-left:3px solid #eab308}
+.card.heat-cold{border-left:3px solid #6b7280}
+tr.heat-hot td:first-child{border-left:3px solid #ef4444}
+tr.heat-warm td:first-child{border-left:3px solid #f97316}
+tr.heat-cooling td:first-child{border-left:3px solid #eab308}
+tr.heat-cold td:first-child{border-left:3px solid #6b7280}
+
 /* Priority badges */
 .pri-critical{background:var(--pri-critical-bg);color:var(--text-on-accent)}
 .pri-high{background:var(--pri-high-bg);color:var(--text-on-accent)}
@@ -1443,6 +1459,13 @@ select.form-control{cursor:pointer}
       <button type="button" class="btn" id="lane-colors-save" style="margin-top:8px">Apply Lane Colors</button>
       <button type="button" class="btn" id="lane-colors-reset" style="margin-top:4px">Reset to Defaults</button>
     </div>
+    <div class="settings-group">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+        <input type="checkbox" id="heat-map-toggle">
+        Heat Map
+      </label>
+      <div class="hint">Show a colored border indicating how recently each task's status changed. Hot (red) = last hour, warm (orange) = last day, cooling (yellow) = last week, cold (grey) = older.</div>
+    </div>
   </div>
 </div>
 
@@ -2115,6 +2138,7 @@ async function init() {
     loadColumnWidthSetting();
     loadFontSizeSetting();
     loadBackgroundSetting();
+    loadHeatMapSetting();
     await route(hash);
   } catch(e) {
     showError(e.message);
@@ -3190,6 +3214,7 @@ function _renderPanelContent(taskId, task, events) {
   // Header
   var sid = task.short_id || task.id.substring(0, 12);
   title.innerHTML = '<span style="color:var(--accent-primary);font-family:var(--font-mono)">' + esc(sid) + '</span> ' + esc(task.title || "Untitled");
+  if (task.has_active_session) title.innerHTML += ' <span class="active-badge"><span class="active-dot"></span>Active</span>';
 
   var html = '';
 
@@ -3822,15 +3847,47 @@ function populateLaneColorSettings() {
   container.innerHTML = html;
 }
 
+// --- Heat map helpers ---
+function isHeatMapEnabled() {
+  return !!(config && config.dashboard && config.dashboard.heat_map_enabled);
+}
+
+function getHeatClass(ts) {
+  if (!ts) return "heat-cold";
+  var now = Date.now();
+  var then = new Date(ts).getTime();
+  var diffMs = now - then;
+  var oneHour = 3600000;
+  var oneDay = 86400000;
+  var oneWeek = 604800000;
+  if (diffMs < oneHour) return "heat-hot";
+  if (diffMs < oneDay) return "heat-warm";
+  if (diffMs < oneWeek) return "heat-cooling";
+  return "heat-cold";
+}
+
+function loadHeatMapSetting() {
+  var toggle = document.getElementById("heat-map-toggle");
+  if (toggle) toggle.checked = isHeatMapEnabled();
+}
+
 // --- Board Card Helper ---
 function renderBoardCard(t) {
-  var html = '<div class="card" draggable="true" data-task-id="' + esc(t.id) + '" data-task-status="' + esc(t.status || "") + '"';
+  var heatCls = isHeatMapEnabled() ? " " + getHeatClass(t.last_status_changed_at) : "";
+  var html = '<div class="card' + heatCls + '" draggable="true" data-task-id="' + esc(t.id) + '" data-task-status="' + esc(t.status || "") + '"';
   html += ' ondragstart="window._boardDragStart(event)" ondragend="window._boardDragEnd(event)">';
-  if (t.short_id) html += '<div style="font-size:.7rem;font-weight:600;color:var(--accent-primary);margin-bottom:2px">' + esc(t.short_id) + '</div>';
+  if (t.short_id) {
+    html += '<div style="font-size:.7rem;font-weight:600;color:var(--accent-primary);margin-bottom:2px;display:flex;align-items:center;gap:5px">';
+    if (t.has_active_session) html += '<span class="active-dot" title="Actively being worked"></span>';
+    html += esc(t.short_id) + '</div>';
+  } else if (t.has_active_session) {
+    html += '<div style="margin-bottom:2px"><span class="active-dot" title="Actively being worked"></span></div>';
+  }
   html += '<div class="card-title">' + esc(t.title || "Untitled") + "</div>";
   html += '<div class="card-meta">';
   if (t.priority) html += '<span class="badge pri-' + esc(t.priority) + '">' + esc(t.priority) + "</span>";
   if (t.type) html += '<span class="badge type-badge">' + esc(t.type) + "</span>";
+  if (t.has_active_session) html += '<span class="active-badge"><span class="active-dot"></span>Active</span>';
   if (t.assigned_to) html += '<span style="color:var(--text-muted);font-size:.8rem">' + esc(t.assigned_to) + "</span>";
   if (t.comment_count) html += '<span style="color:var(--text-muted);font-size:.75rem;margin-left:auto" title="' + t.comment_count + ' comment' + (t.comment_count === 1 ? '' : 's') + '">\uD83D\uDCAC ' + t.comment_count + "</span>";
   html += "</div></div>";
@@ -4137,10 +4194,11 @@ function applyListFilters() {
   items.forEach(function(t) {
     var displayId = t.short_id || (t.id ? t.id.slice(0,18) + "..." : "?");
     var updated = t.updated_at ? t.updated_at.slice(0,16).replace("T"," ") : "";
-    html += '<tr style="cursor:pointer" onclick="openDetailPanel(\'' + esc(t.id) + '\')">';
+    var rowHeatCls = isHeatMapEnabled() ? " " + getHeatClass(t.last_status_changed_at) : "";
+    html += '<tr class="' + rowHeatCls.trim() + '" style="cursor:pointer" onclick="openDetailPanel(\'' + esc(t.id) + '\')">';
     html += '<td class="id-cell" title="' + esc(t.id) + '">' + (t.short_id ? '<span style="font-weight:600;color:var(--accent-primary)">' + esc(t.short_id) + '</span>' : esc(displayId)) + "</td>";
     html += "<td>" + esc(t.title || "Untitled") + (t.archived ? ' <span class="archived-badge">archived</span>' : "") + (t.comment_count ? ' <span style="color:var(--text-muted);font-size:.75rem" title="' + t.comment_count + ' comment' + (t.comment_count === 1 ? '' : 's') + '">\uD83D\uDCAC ' + t.comment_count + '</span>' : '') + "</td>";
-    html += "<td>" + esc(t.status || "") + "</td>";
+    html += "<td>" + esc(t.status || "") + (t.has_active_session ? ' <span class="active-badge"><span class="active-dot"></span>Active</span>' : "") + "</td>";
     html += "<td>";
     if (t.priority) html += '<span class="badge pri-' + esc(t.priority) + '">' + esc(t.priority) + "</span>";
     html += "</td>";
@@ -4182,6 +4240,7 @@ async function renderDetail(taskId) {
     } else {
       html += '<div class="detail-title editable" id="detail-title" title="Click to edit">' + esc(task.title || "Untitled") + '</div>';
     }
+    if (task.has_active_session) html += '<div style="margin-bottom:8px"><span class="active-badge"><span class="active-dot"></span>Actively being worked</span></div>';
 
     // --- Status + Action bar ---
     if (!isArchived) {
@@ -5877,6 +5936,19 @@ document.getElementById("lane-colors-reset").addEventListener("click", async fun
   }
 });
 
+// Heat map toggle
+document.getElementById("heat-map-toggle").addEventListener("change", async function() {
+  var enabled = this.checked;
+  try {
+    var result = await apiPost("/api/config/dashboard", {heat_map_enabled: enabled});
+    if (config) config.dashboard = result;
+    if (currentView === "board") renderBoard();
+    else if (currentView === "list") applyListFilters();
+  } catch(e) {
+    showToast(e.message, "error");
+  }
+});
+
 // --- Nav Events ---
 document.querySelectorAll(".nav-tab").forEach(function(el) {
   el.addEventListener("click", function() { location.hash = "#/" + el.dataset.view; });
@@ -5904,6 +5976,7 @@ document.getElementById("refresh-btn").addEventListener("click", async function(
     loadColumnWidthSetting();
     loadFontSizeSetting();
     loadBackgroundSetting();
+    loadHeatMapSetting();
     await route(location.hash.slice(1));
   } catch(e) { showError(e.message); }
 });
@@ -5974,6 +6047,7 @@ function startAutoRefresh() {
           loadColumnWidthSetting();
           loadFontSizeSetting();
           loadBackgroundSetting();
+          loadHeatMapSetting();
         }
         await route(location.hash.slice(1));
         // Silently refresh floating detail panel if open and no active edit

@@ -592,16 +592,20 @@ class TestCommentEditRole:
         comment_id = _add_comment(invoke, task_id, "looks good")
 
         result = invoke(
-            "comment-edit", task_id, comment_id, "looks good",
-            "--role", "review",
-            "--actor", "human:test",
+            "comment-edit",
+            task_id,
+            comment_id,
+            "looks good",
+            "--role",
+            "review",
+            "--actor",
+            "human:test",
             "--json",
         )
         assert result.exit_code == 0, result.output
         snapshot = json.loads(result.output)["data"]
         comment_refs = [
-            r for r in snapshot.get("evidence_refs", [])
-            if r.get("source_type") == "comment"
+            r for r in snapshot.get("evidence_refs", []) if r.get("source_type") == "comment"
         ]
         assert len(comment_refs) == 1
         assert comment_refs[0]["id"] == comment_id
@@ -611,10 +615,14 @@ class TestCommentEditRole:
         """Changing --role on a comment with an existing role updates evidence_refs."""
         from tests.conftest import _add_policies_to_config
 
-        _add_policies_to_config(initialized_root, {
-            "done": {"require_roles": ["review", "security"]},
-        })
+        _add_policies_to_config(
+            initialized_root,
+            {
+                "done": {"require_roles": ["review", "security"]},
+            },
+        )
         from lattice.storage.fs import LATTICE_DIR
+
         config_path = initialized_root / LATTICE_DIR / "config.json"
         config = json.loads(config_path.read_text())
         config["workflow"]["roles"] = ["review", "security"]
@@ -624,20 +632,32 @@ class TestCommentEditRole:
         task_id = json.loads(r.output)["data"]["id"]
 
         r = invoke(
-            "comment", task_id, "initial review",
-            "--role", "review", "--actor", "human:test", "--json",
+            "comment",
+            task_id,
+            "initial review",
+            "--role",
+            "review",
+            "--actor",
+            "human:test",
+            "--json",
         )
         comment_id = json.loads(r.output)["data"]["last_event_id"]
 
         r = invoke(
-            "comment-edit", task_id, comment_id, "actually a security review",
-            "--role", "security", "--actor", "human:test", "--json",
+            "comment-edit",
+            task_id,
+            comment_id,
+            "actually a security review",
+            "--role",
+            "security",
+            "--actor",
+            "human:test",
+            "--json",
         )
         assert r.exit_code == 0, r.output
         snapshot = json.loads(r.output)["data"]
         comment_refs = [
-            ref for ref in snapshot.get("evidence_refs", [])
-            if ref.get("source_type") == "comment"
+            ref for ref in snapshot.get("evidence_refs", []) if ref.get("source_type") == "comment"
         ]
         assert len(comment_refs) == 1
         assert comment_refs[0]["role"] == "security"
@@ -648,58 +668,100 @@ class TestCommentEditRole:
         task_id = task["id"]
 
         r = invoke(
-            "comment", task_id, "LGTM",
-            "--role", "review", "--actor", "human:test", "--json",
+            "comment",
+            task_id,
+            "LGTM",
+            "--role",
+            "review",
+            "--actor",
+            "human:test",
+            "--json",
         )
         comment_id = json.loads(r.output)["data"]["last_event_id"]
 
         r = invoke(
-            "comment-edit", task_id, comment_id, "LGTM — no issues found",
-            "--actor", "human:test", "--json",
+            "comment-edit",
+            task_id,
+            comment_id,
+            "LGTM — no issues found",
+            "--actor",
+            "human:test",
+            "--json",
         )
         assert r.exit_code == 0, r.output
         snapshot = json.loads(r.output)["data"]
         comment_refs = [
-            ref for ref in snapshot.get("evidence_refs", [])
-            if ref.get("source_type") == "comment"
+            ref for ref in snapshot.get("evidence_refs", []) if ref.get("source_type") == "comment"
         ]
         assert len(comment_refs) == 1
         assert comment_refs[0]["role"] == "review"
 
     def test_completion_policy_satisfied_after_role_edit(
-        self, invoke_with_policies, initialized_root_with_policies,
+        self,
+        invoke_with_policies,
+        initialized_root_with_policies,
     ) -> None:
         """Adding a review role via comment-edit satisfies completion policy."""
         r = invoke_with_policies(
-            "create", "Policy test", "--actor", "human:test", "--json",
+            "create",
+            "Policy test",
+            "--actor",
+            "human:test",
+            "--json",
         )
         task_id = json.loads(r.output)["data"]["id"]
         invoke_with_policies(
-            "status", task_id, "in_progress", "--actor", "human:test",
-            "--force", "--reason", "skip",
+            "status",
+            task_id,
+            "in_progress",
+            "--actor",
+            "human:test",
+            "--force",
+            "--reason",
+            "skip",
         )
         invoke_with_policies("status", task_id, "review", "--actor", "human:test")
 
         r = invoke_with_policies(
-            "comment", task_id, "looks good",
-            "--actor", "human:test", "--json",
+            "comment",
+            task_id,
+            "looks good",
+            "--actor",
+            "human:test",
+            "--json",
         )
         comment_id = json.loads(r.output)["data"]["last_event_id"]
 
         r = invoke_with_policies(
-            "status", task_id, "done", "--actor", "human:test", "--json",
+            "status",
+            task_id,
+            "done",
+            "--actor",
+            "human:test",
+            "--json",
         )
         assert r.exit_code != 0
         assert json.loads(r.output)["error"]["code"] == "COMPLETION_BLOCKED"
 
         r = invoke_with_policies(
-            "comment-edit", task_id, comment_id, "looks good",
-            "--role", "review", "--actor", "human:test",
+            "comment-edit",
+            task_id,
+            comment_id,
+            "looks good",
+            "--role",
+            "review",
+            "--actor",
+            "human:test",
         )
         assert r.exit_code == 0, r.output
 
         r = invoke_with_policies(
-            "status", task_id, "done", "--actor", "human:test", "--json",
+            "status",
+            task_id,
+            "done",
+            "--actor",
+            "human:test",
+            "--json",
         )
         assert r.exit_code == 0, r.output
         assert json.loads(r.output)["ok"] is True
@@ -715,19 +777,34 @@ class TestCommentEditRoleValidation:
     def test_typo_role_rejected(self, invoke_with_policies) -> None:
         """Typo'd role on comment-edit produces INVALID_ROLE error."""
         r = invoke_with_policies(
-            "create", "Validation test", "--actor", "human:test", "--json",
+            "create",
+            "Validation test",
+            "--actor",
+            "human:test",
+            "--json",
         )
         task_id = json.loads(r.output)["data"]["id"]
 
         r = invoke_with_policies(
-            "comment", task_id, "original", "--actor", "human:test", "--json",
+            "comment",
+            task_id,
+            "original",
+            "--actor",
+            "human:test",
+            "--json",
         )
         comment_id = json.loads(r.output)["data"]["last_event_id"]
 
         r = invoke_with_policies(
-            "comment-edit", task_id, comment_id, "updated",
-            "--role", "reveiw",
-            "--actor", "human:test", "--json",
+            "comment-edit",
+            task_id,
+            comment_id,
+            "updated",
+            "--role",
+            "reveiw",
+            "--actor",
+            "human:test",
+            "--json",
         )
         assert r.exit_code != 0
         parsed = json.loads(r.output)
@@ -738,18 +815,32 @@ class TestCommentEditRoleValidation:
     def test_valid_role_accepted(self, invoke_with_policies) -> None:
         """Valid role on comment-edit succeeds."""
         r = invoke_with_policies(
-            "create", "Validation OK", "--actor", "human:test", "--json",
+            "create",
+            "Validation OK",
+            "--actor",
+            "human:test",
+            "--json",
         )
         task_id = json.loads(r.output)["data"]["id"]
 
         r = invoke_with_policies(
-            "comment", task_id, "original", "--actor", "human:test", "--json",
+            "comment",
+            task_id,
+            "original",
+            "--actor",
+            "human:test",
+            "--json",
         )
         comment_id = json.loads(r.output)["data"]["last_event_id"]
 
         r = invoke_with_policies(
-            "comment-edit", task_id, comment_id, "updated",
-            "--role", "review",
-            "--actor", "human:test",
+            "comment-edit",
+            task_id,
+            comment_id,
+            "updated",
+            "--role",
+            "review",
+            "--actor",
+            "human:test",
         )
         assert r.exit_code == 0

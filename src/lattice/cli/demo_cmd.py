@@ -1347,13 +1347,17 @@ def _seed_demo(target_dir: Path, quiet: bool = False) -> None:
         )
 
     if not quiet:
-        parent_count = sum(1 for t in task_defs if "parent_idx" not in t and any(
-            other.get("parent_idx") == i for i, other in enumerate(task_defs)
-        ))
+        parent_count = sum(
+            1
+            for t in task_defs
+            if "parent_idx" not in t
+            and any(other.get("parent_idx") == i for i, other in enumerate(task_defs))
+        )
         standalone_count = sum(
-            1 for i, t in enumerate(task_defs) if "parent_idx" not in t and not any(
-                other.get("parent_idx") == i for other in task_defs
-            )
+            1
+            for i, t in enumerate(task_defs)
+            if "parent_idx" not in t
+            and not any(other.get("parent_idx") == i for other in task_defs)
         )
         click.echo(
             f"\nSeeded {len(task_defs)} tasks ({parent_count} parents, {standalone_count} standalone)."

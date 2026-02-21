@@ -533,7 +533,6 @@ class TestReviewCycleLimitGating:
         assert parsed["error"]["code"] == "REVIEW_CYCLE_LIMIT"
 
 
-
 class TestBackwardStatusPlanReset:
     """Backward status transitions append reset breadcrumbs to plan files."""
 

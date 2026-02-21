@@ -1027,6 +1027,7 @@ class TestCompactSnapshot:
             "assigned_to",
             "tags",
             "done_at",
+            "last_status_changed_at",
             "comment_count",
             "reopened_count",
             "relationships_out_count",
@@ -1122,5 +1123,3 @@ class TestMutationRegistryCompleteness:
         assert etype not in _NOOP_EVENT_TYPES, (
             f"Event type '{etype}' is in both handler registry and noop set"
         )
-
-

@@ -283,6 +283,10 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                     compact["updated_at"] = snap.get("updated_at")
                     compact["created_at"] = snap.get("created_at")
                     compact["done_at"] = snap.get("done_at")
+                    # Active session indicator: task is in_progress with an assignee
+                    compact["has_active_session"] = bool(
+                        snap.get("status") == "in_progress" and snap.get("assigned_to")
+                    )
                     snapshots.append(compact)
             # Sort by ID
             snapshots.sort(key=lambda s: s.get("id", ""))
@@ -318,6 +322,9 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
             result["notes_exists"] = notes_path.exists()
             result["plan_exists"] = plan_path.exists()
             result["artifacts"] = _read_artifact_info(ld, snapshot)
+            result["has_active_session"] = bool(
+                snapshot.get("status") == "in_progress" and snapshot.get("assigned_to")
+            )
             if is_archived:
                 result["archived"] = True
 
@@ -389,6 +396,9 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
             result["notes_exists"] = notes_path.exists()
             result["plan_exists"] = plan_path.exists()
             result["artifacts"] = _read_artifact_info(ld, snapshot)
+            result["has_active_session"] = bool(
+                snapshot.get("status") == "in_progress" and snapshot.get("assigned_to")
+            )
             result["recent_events"] = recent_events
             result["comments"] = comments
             if is_archived:
@@ -835,7 +845,15 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                 return  # error already sent
 
             # Validate body structure: only allow known keys
-            allowed_keys = {"background_image", "column_width", "font_size", "lane_colors", "theme", "voice"}
+            allowed_keys = {
+                "background_image",
+                "column_width",
+                "font_size",
+                "heat_map_enabled",
+                "lane_colors",
+                "theme",
+                "voice",
+            }
             unknown = set(body.keys()) - allowed_keys
             if unknown:
                 self._send_json(
@@ -887,6 +905,16 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                         _err(
                             "VALIDATION_ERROR", "'background_image' must be an http or https URL"
                         ),
+                    )
+                    return
+
+            # Validate heat_map_enabled if present
+            if "heat_map_enabled" in body:
+                hm = body["heat_map_enabled"]
+                if not isinstance(hm, bool):
+                    self._send_json(
+                        400,
+                        _err("VALIDATION_ERROR", "'heat_map_enabled' must be a boolean"),
                     )
                     return
 
@@ -975,6 +1003,9 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                             dashboard.pop("font_size", None)
                         else:
                             dashboard["font_size"] = fs
+
+                    if "heat_map_enabled" in body:
+                        dashboard["heat_map_enabled"] = body["heat_map_enabled"]
 
                     if dashboard:
                         config["dashboard"] = dashboard

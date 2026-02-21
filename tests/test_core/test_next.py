@@ -319,7 +319,6 @@ class TestSelectAllReady:
         assert result[0]["id"] == "task_bl"
 
 
-
 class TestComputeClaimTransitions:
     """BFS transition path computation."""
 

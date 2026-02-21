@@ -18,6 +18,7 @@ PROTECTED_FIELDS: frozenset[str] = frozenset(
         "updated_at",
         "done_at",
         "last_event_id",
+        "last_status_changed_at",
         "status",
         "assigned_to",
         "relationships_out",
@@ -124,6 +125,7 @@ def compact_snapshot(snapshot: dict) -> dict:
         "assigned_to": snapshot.get("assigned_to"),
         "tags": snapshot.get("tags"),
         "done_at": snapshot.get("done_at"),
+        "last_status_changed_at": snapshot.get("last_status_changed_at"),
         "comment_count": snapshot.get("comment_count", 0),
         "reopened_count": snapshot.get("reopened_count", 0),
         "relationships_out_count": len(snapshot.get("relationships_out", [])),
@@ -160,6 +162,7 @@ def _init_snapshot(event: dict) -> dict:
         "created_at": event["ts"],
         "updated_at": event["ts"],
         "done_at": event["ts"] if data.get("status") == "done" else None,
+        "last_status_changed_at": event["ts"],
         "relationships_out": [],
         "evidence_refs": [],
         "branch_links": [],
@@ -216,6 +219,7 @@ def _mut_status_changed(snap: dict, event: dict) -> None:
     else:
         snap.setdefault("reopened_count", 0)
     snap["status"] = new_status
+    snap["last_status_changed_at"] = event["ts"]
     if new_status == "done":
         snap["done_at"] = event["ts"]
     elif snap.get("done_at") is not None:
@@ -430,8 +434,6 @@ def get_evidence_roles(snapshot: dict) -> set[str]:
         if role is not None:
             roles.add(role)
     return roles
-
-
 
 
 def _apply_mutation(snap: dict, etype: str, event: dict) -> None:
