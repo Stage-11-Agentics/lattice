@@ -28,3 +28,31 @@ def complete_task_id(ctx, param, incomplete):
         ]
     except Exception:
         return []
+
+
+_DEFAULT_STATUSES = [
+    "backlog",
+    "ready",
+    "in_progress",
+    "in_review",
+    "done",
+    "cancelled",
+    "needs_human",
+]
+
+
+def complete_status(ctx, param, incomplete):
+    """Complete task status values from config or defaults."""
+    import json
+
+    statuses = _DEFAULT_STATUSES
+    try:
+        root = _find_lattice_root()
+        if root is not None:
+            config_file = root / ".lattice" / "config.json"
+            if config_file.exists():
+                data = json.loads(config_file.read_text())
+                statuses = data.get("workflow", {}).get("statuses", statuses)
+    except Exception:
+        pass
+    return [CompletionItem(s) for s in statuses if s.startswith(incomplete)]

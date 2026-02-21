@@ -1,6 +1,6 @@
 import json
 from click.shell_completion import CompletionItem
-from lattice.completion import complete_task_id
+from lattice.completion import complete_task_id, complete_status
 
 
 def _make_ids_json(tmp_path, entries):
@@ -50,3 +50,34 @@ def test_complete_task_id_corrupted_json_returns_empty(tmp_path, monkeypatch):
     (tmp_path / ".lattice" / "ids.json").write_text("not json {{{")
     results = complete_task_id(None, None, "")
     assert results == []
+
+
+def _make_config_json(tmp_path, statuses):
+    lattice_dir = tmp_path / ".lattice"
+    lattice_dir.mkdir(exist_ok=True)
+    config = {"workflow": {"statuses": statuses}}
+    (lattice_dir / "config.json").write_text(json.dumps(config))
+
+
+def test_complete_status_reads_from_config(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _make_config_json(tmp_path, ["backlog", "in_progress", "done"])
+    results = complete_status(None, None, "")
+    values = [r.value for r in results]
+    assert values == ["backlog", "in_progress", "done"]
+
+
+def test_complete_status_filters_by_prefix(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _make_config_json(tmp_path, ["backlog", "in_progress", "done"])
+    results = complete_status(None, None, "in")
+    values = [r.value for r in results]
+    assert values == ["in_progress"]
+
+
+def test_complete_status_falls_back_when_no_config(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    results = complete_status(None, None, "")
+    values = [r.value for r in results]
+    assert "backlog" in values
+    assert "done" in values
