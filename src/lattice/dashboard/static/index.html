@@ -3922,6 +3922,11 @@ function getHeatBarRatio(ts) {
   return 1 - (diffMs / HEAT_CONFIG.fullDurationMs);
 }
 
+// Build the CSS background value for a heat bar: solid at bottom, fading to transparent.
+function heatBarBackground(color) {
+  return "linear-gradient(to top, " + color + ", transparent)";
+}
+
 function loadHeatMapSetting() {
   var toggle = document.getElementById("heat-map-toggle");
   if (toggle) toggle.checked = isHeatMapEnabled();
@@ -3947,9 +3952,9 @@ function renderBoardCard(t) {
   if (t.last_status_changed_at) html += ' data-heat-ts="' + esc(t.last_status_changed_at) + '"';
   html += ' ondragstart="window._boardDragStart(event)" ondragend="window._boardDragEnd(event)">';
 
-  // Heat bar: vertical bar on left that shrinks as heat cools
+  // Heat bar: vertical bar on left that shrinks as heat cools (gradient: solid at bottom, fading to transparent)
   if (heatEnabled && tier && tier.color && ratio > 0) {
-    html += '<div class="heat-bar" style="background:' + tier.color + ';height:' + (ratio * 100).toFixed(1) + '%;width:' + HEAT_CONFIG.barWidth + 'px"></div>';
+    html += '<div class="heat-bar" style="background:' + heatBarBackground(tier.color) + ';height:' + (ratio * 100).toFixed(1) + '%;width:' + HEAT_CONFIG.barWidth + 'px"></div>';
   }
 
   if (t.short_id) {
@@ -6206,7 +6211,7 @@ function startHeatBarTick() {
       }
       if (bar) {
         bar.style.height = (ratio * 100).toFixed(1) + "%";
-        bar.style.background = tier.color;
+        bar.style.background = heatBarBackground(tier.color);
       }
     }
   }, HEAT_CONFIG.refreshIntervalMs);
