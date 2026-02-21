@@ -1,6 +1,6 @@
 # Lattice
 
-<p align="center"><b><i>Linear for agent/human centaur hyper-engineers.</i></b></p>
+<p align="center"><b><i>Linear for agent/human hyper-engineers.</i></b></p>
 
 ---
 
