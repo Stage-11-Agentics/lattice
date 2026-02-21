@@ -26,7 +26,7 @@ Lattice is not an app you open. it's not a website. it's not a standalone thing.
 
 if you're using **Claude Code**: you install Lattice, run `lattice setup-claude`, and from that point on every Claude Code session in that project automatically knows how to create tasks, claim work, update status, and leave context for the next session. you didn't teach it. Lattice did.
 
-if you're using **Codex CLI**: same install, and Codex uses the `lattice` commands through the shell. tell it to advance the project. it reads the backlog and gets to work.
+if you're using **Codex CLI**: same install, run `lattice setup-codex`, and Codex reads the Lattice skill at session start. same pattern. same result.
 
 if you're using **OpenClaw**: `lattice setup-openclaw` installs a skill. same pattern. same result.
 
@@ -79,8 +79,11 @@ cd your-project/
 lattice init
 
 # 3. connect to your coding agent (pick one)
-lattice setup-claude            # Claude Code
-# or: lattice setup-openclaw    # OpenClaw
+lattice setup-claude            # Claude Code (writes to CLAUDE.md)
+lattice setup-claude-skill      # Claude Code (installs as global skill)
+lattice setup-codex             # Codex CLI
+lattice setup-openclaw          # OpenClaw
+lattice setup-prompt            # any agent (prints instructions to stdout)
 # or: configure MCP (see docs)  # Cursor, Windsurf, custom tools
 
 # 4. open the dashboard
@@ -364,13 +367,17 @@ and then. let go. the agents will be here when you return. the event log will ho
 | Dashboard | `lattice dashboard` |
 | Restart dashboard | `lattice restart [--port PORT]` |
 | CLAUDE.md setup | `lattice setup-claude [--force]` |
+| Claude Code skill | `lattice setup-claude-skill [--force]` |
+| Codex CLI setup | `lattice setup-codex [--force]` |
 | OpenClaw setup | `lattice setup-openclaw [--global] [--force]` |
+| Print instructions | `lattice setup-prompt [--claude-md]` |
 
 ---
 
 ## going deeper
 
 - [Claude Code integration](integration-claude-code.md) — how agents learn the workflow
+- [Codex CLI integration](integration-codex.md) — skill-based setup and workflows
 - [OpenClaw integration](integration-openclaw.md) — skill and MCP configuration
 - [MCP server reference](integration-mcp.md) — tool-use protocol for any agent
 - [Codex CLI workflows](integration-codex.md) — Codex-specific patterns

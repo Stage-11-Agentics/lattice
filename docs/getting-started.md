@@ -59,7 +59,11 @@ This writes a block into your project's `CLAUDE.md` — the file Claude Code rea
 
 **Codex CLI:**
 
-Codex can use the `lattice` CLI directly through shell access. For deeper integration, add Lattice workflow instructions to your Codex prompts or use the MCP server (below).
+```bash
+lattice setup-codex
+```
+
+Installs the Lattice skill to `~/.agents/skills/lattice/`. Codex reads it at session start and knows the full protocol. [Full guide →](integration-codex.md)
 
 **OpenClaw:**
 
@@ -89,7 +93,12 @@ This exposes Lattice as native tool calls — no CLI parsing needed. [Full MCP g
 
 **Any agent with shell access:**
 
-If your agent can run commands and read files, it can use Lattice. Add the CLI patterns to whatever instructions your agent reads at startup. No special integration required.
+If your agent can run commands and read files, it can use Lattice. Use `lattice setup-prompt` to print the full instructions to stdout, then paste them into your agent's config:
+
+```bash
+lattice setup-prompt              # SKILL.md content (default)
+lattice setup-prompt --claude-md  # CLAUDE.md block instead
+```
 
 ## Open the dashboard
 

@@ -1308,6 +1308,39 @@ def setup_codex(force: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
+# lattice setup-prompt
+# ---------------------------------------------------------------------------
+
+
+@cli.command("setup-prompt")
+@click.option(
+    "--claude-md",
+    "use_claude_md",
+    is_flag=True,
+    help="Output the CLAUDE.md integration block instead of the SKILL.md content.",
+)
+def setup_prompt(use_claude_md: bool) -> None:
+    """Print Lattice agent instructions to stdout.
+
+    Outputs the full Lattice protocol instructions that you can paste into
+    any agent's configuration, prompt file, or system instructions.
+
+    By default, prints the SKILL.md content (the skill-based instructions).
+    Use --claude-md to get the CLAUDE.md integration block instead.
+    """
+    if use_claude_md:
+        from lattice.templates.claude_md_block import CLAUDE_MD_BLOCK
+
+        click.echo(CLAUDE_MD_BLOCK.strip())
+    else:
+        skill_src = Path(__file__).resolve().parent.parent / "skills" / "lattice"
+        skill_file = skill_src / "SKILL.md"
+        if not skill_file.exists():
+            raise click.ClickException("Bundled SKILL.md not found.")
+        click.echo(skill_file.read_text().strip())
+
+
+# ---------------------------------------------------------------------------
 # lattice plugins
 # ---------------------------------------------------------------------------
 

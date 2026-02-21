@@ -73,6 +73,7 @@ lattice setup-claude              # Claude Code — adds workflow to CLAUDE.md
 lattice setup-claude-skill        # Claude Code — installs as a skill (~/.claude/skills/)
 lattice setup-codex               # Codex CLI — installs as a skill (~/.agents/skills/)
 lattice setup-openclaw            # OpenClaw — installs the Lattice skill
+lattice setup-prompt              # any agent — prints instructions to stdout
 # or: configure MCP (see below)  # any MCP-compatible tool
 
 # 4. open the dashboard
@@ -333,7 +334,14 @@ lattice comment PROJ-1 "Implemented the feature" --actor agent:my-bot
 lattice status PROJ-1 review --actor agent:my-bot
 ```
 
-add these patterns to whatever prompt or instructions your agent reads at startup.
+add these patterns to whatever prompt or instructions your agent reads at startup. or use `setup-prompt` to get the full instructions:
+
+```bash
+lattice setup-prompt              # print the SKILL.md instructions to stdout
+lattice setup-prompt --claude-md  # print the CLAUDE.md block instead
+```
+
+copy the output into your agent's system prompt, config file, or instructions. this is the universal fallback for any agent that doesn't have a dedicated setup command.
 
 ### hooks and plugins
 
@@ -358,6 +366,7 @@ lattice plugins    # list installed plugins
 | `lattice setup-claude-skill` | install Lattice skill for Claude Code (~/.claude/skills/) |
 | `lattice setup-codex` | install Lattice skill for Codex CLI (~/.agents/skills/) |
 | `lattice setup-openclaw` | install Lattice skill for OpenClaw |
+| `lattice setup-prompt` | print agent instructions to stdout (universal fallback) |
 | `lattice backfill-ids` | assign short IDs to existing tasks |
 
 ### task operations
