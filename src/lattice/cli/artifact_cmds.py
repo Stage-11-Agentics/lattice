@@ -22,6 +22,7 @@ from lattice.cli.helpers import (
     write_task_event,
 )
 from lattice.cli.main import cli
+from lattice.completion import complete_task_id
 from lattice.core.artifacts import (
     ARTIFACT_TYPES,
     create_artifact_metadata,
@@ -39,7 +40,7 @@ from lattice.storage.fs import atomic_write
 
 
 @cli.command()
-@click.argument("task_id")
+@click.argument("task_id", shell_complete=complete_task_id)
 @click.argument("source", required=False, default=None)
 @click.option("--type", "art_type", default=None, help="Artifact type.")
 @click.option("--title", default=None, help="Artifact title.")
