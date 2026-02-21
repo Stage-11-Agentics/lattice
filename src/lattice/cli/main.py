@@ -248,6 +248,10 @@ def _seed_example_tasks(lattice_dir: Path, config: dict) -> None:
 @click.pass_context
 def cli(ctx: click.Context) -> None:
     """Lattice: file-based, agent-native task tracker."""
+    from lattice.update_check import maybe_print_update_notice
+
+    ctx.call_on_close(maybe_print_update_notice)
+
     if ctx.invoked_subcommand is not None:
         return
 

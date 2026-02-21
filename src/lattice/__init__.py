@@ -1,3 +1,5 @@
 """Lattice: file-based, agent-native task tracker with an event-sourced core."""
 
-__version__ = "0.1.0"
+from importlib.metadata import version as _version
+
+__version__ = _version("lattice-tracker")
