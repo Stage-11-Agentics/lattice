@@ -207,11 +207,9 @@ a:hover{text-decoration:underline}
 .card.heat-hot{border-left:3px solid #ef4444}
 .card.heat-warm{border-left:3px solid #f97316}
 .card.heat-cooling{border-left:3px solid #eab308}
-.card.heat-cold{border-left:3px solid #6b7280}
 tr.heat-hot td:first-child{border-left:3px solid #ef4444}
 tr.heat-warm td:first-child{border-left:3px solid #f97316}
 tr.heat-cooling td:first-child{border-left:3px solid #eab308}
-tr.heat-cold td:first-child{border-left:3px solid #6b7280}
 
 /* Priority badges */
 .pri-critical{background:var(--pri-critical-bg);color:var(--text-on-accent)}
@@ -3853,17 +3851,17 @@ function isHeatMapEnabled() {
 }
 
 function getHeatClass(ts) {
-  if (!ts) return "heat-cold";
+  if (!ts) return "";
   var now = Date.now();
   var then = new Date(ts).getTime();
   var diffMs = now - then;
+  var oneMin = 60000;
+  var tenMin = 600000;
   var oneHour = 3600000;
-  var oneDay = 86400000;
-  var oneWeek = 604800000;
-  if (diffMs < oneHour) return "heat-hot";
-  if (diffMs < oneDay) return "heat-warm";
-  if (diffMs < oneWeek) return "heat-cooling";
-  return "heat-cold";
+  if (diffMs < oneMin) return "heat-hot";
+  if (diffMs < tenMin) return "heat-warm";
+  if (diffMs < oneHour) return "heat-cooling";
+  return "";
 }
 
 function loadHeatMapSetting() {
