@@ -471,31 +471,40 @@ def init(
         # ── Project Code ──
         if not project_code_from_flag:
             click.echo("")
-            project_code = click.prompt(
-                "Project code for short IDs (1-5 letters, e.g. LAT for Lattice)",
-                default="",
-                show_default=False,
-            ).strip()
+            while True:
+                project_code = click.prompt(
+                    "Project code for short IDs (1-5 letters, e.g. LAT for Lattice)",
+                    default="",
+                    show_default=False,
+                ).strip()
+                if not project_code:
+                    break
+                project_code = project_code.upper()
+                if validate_project_code(project_code):
+                    click.echo(
+                        f"  \u2192 tasks will be {project_code}-1, {project_code}-2, "
+                        f"{project_code}-3, ..."
+                    )
+                    break
+                click.echo(f"  '{project_code}' is not valid. Use 1-5 letters (e.g. LAT).")
 
-    # ── Validate inputs ──────────────────────────────────────────────
+    # ── Validate inputs (flag-provided values only) ───────────────────
+    # Interactive prompts validate inline with retry loops above.
 
-    # Validate actor format if one was provided
+    # Validate actor format if one was provided via flag
     if actor and not validate_actor(actor):
-        raise click.ClickException(
-            f"Invalid actor format: '{actor}'. "
-            "Expected prefix:identifier (e.g., human:atin, agent:claude)."
-        )
+        if actor_from_flag:
+            raise click.ClickException(
+                f"Invalid actor format: '{actor}'. "
+                "Expected prefix:identifier (e.g., human:atin, agent:claude)."
+            )
 
-    # Normalize and validate project code
-    if project_code:
+    # Normalize and validate project code (flag-provided)
+    if project_code and project_code_from_flag:
         project_code = project_code.upper()
         if not validate_project_code(project_code):
             raise click.ClickException(
                 f"Invalid project code: '{project_code}'. Must be 1-5 uppercase ASCII letters."
-            )
-        if not non_interactive:
-            click.echo(
-                f"  \u2192 tasks will be {project_code}-1, {project_code}-2, {project_code}-3, ..."
             )
 
     # Validate subproject code
