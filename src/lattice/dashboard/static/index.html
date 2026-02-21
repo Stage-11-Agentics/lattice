@@ -564,6 +564,9 @@ select.form-control{cursor:pointer}
 [data-theme="carbon"] .board-col{background:#1E1E1E;border-color:#333;border-radius:3px}
 [data-theme="carbon"] .board-col-header{font-size:.78rem;text-transform:uppercase;letter-spacing:.1em;font-weight:700;border-radius:3px 3px 0 0;padding:6px 10px}
 [data-theme="carbon"] .card{background:#1C1C1C;border-color:#2A2A2A;border-radius:2px;padding:6px 8px;margin-bottom:4px}
+[data-theme="carbon"] .card.heat-hot{border-left:3px solid #ef4444}
+[data-theme="carbon"] .card.heat-warm{border-left:3px solid #f97316}
+[data-theme="carbon"] .card.heat-cooling{border-left:3px solid #eab308}
 [data-theme="carbon"] .card:hover{box-shadow:0 1px 6px rgba(0,0,0,.4);border-color:#EA580C}
 [data-theme="carbon"] .card-title{}
 [data-theme="carbon"] .board-col.drag-over{border-color:#EA580C;box-shadow:inset 0 0 0 1px #EA580C}
@@ -1458,11 +1461,15 @@ select.form-control{cursor:pointer}
       <button type="button" class="btn" id="lane-colors-reset" style="margin-top:4px">Reset to Defaults</button>
     </div>
     <div class="settings-group">
-      <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-        <input type="checkbox" id="heat-map-toggle">
-        Heat Map
-      </label>
-      <div class="hint">Show a colored border indicating how recently each task's status changed. Hot (red) = last hour, warm (orange) = last day, cooling (yellow) = last week, cold (grey) = older.</div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;flex:1">
+          <input type="checkbox" id="heat-map-toggle">
+          Heat Map
+        </label>
+        <button type="button" id="heat-map-info-btn" title="What is Heat Map?" style="background:none;border:1px solid var(--border-subtle);border-radius:var(--radius-sm);cursor:pointer;padding:2px 6px;color:var(--text-muted);font-size:.8rem;display:flex;align-items:center;gap:4px;white-space:nowrap">
+          &#x1F441; Info
+        </button>
+      </div>
     </div>
   </div>
 </div>
@@ -3847,7 +3854,8 @@ function populateLaneColorSettings() {
 
 // --- Heat map helpers ---
 function isHeatMapEnabled() {
-  return !!(config && config.dashboard && config.dashboard.heat_map_enabled);
+  if (!config || !config.dashboard || config.dashboard.heat_map_enabled === undefined) return true;
+  return !!config.dashboard.heat_map_enabled;
 }
 
 function getHeatClass(ts) {
@@ -5945,6 +5953,33 @@ document.getElementById("heat-map-toggle").addEventListener("change", async func
   } catch(e) {
     showToast(e.message, "error");
   }
+});
+
+// Heat map info popup
+document.getElementById("heat-map-info-btn").addEventListener("click", function(e) {
+  e.stopPropagation();
+  var existing = document.getElementById("heat-map-info-popup");
+  if (existing) { existing.remove(); return; }
+  var popup = document.createElement("div");
+  popup.id = "heat-map-info-popup";
+  popup.style.cssText = "position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:200;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-md,6px);padding:20px 24px;max-width:360px;box-shadow:0 8px 32px rgba(0,0,0,.3)";
+  popup.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><strong style="font-size:.95rem">Heat Map</strong><button type="button" id="heat-map-info-close" style="background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:1.1rem;padding:0 2px">&times;</button></div>'
+    + '<p style="margin:0 0 10px;font-size:.85rem;color:var(--text-secondary);line-height:1.5">The heat map shows how recently a task changed status. A colored left border appears on each card:</p>'
+    + '<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:14px">'
+    + '<div style="display:flex;align-items:center;gap:8px;font-size:.83rem"><span style="width:14px;height:14px;border-radius:2px;background:#ef4444;flex-shrink:0"></span> <strong>Red</strong> &mdash; changed in the last minute</div>'
+    + '<div style="display:flex;align-items:center;gap:8px;font-size:.83rem"><span style="width:14px;height:14px;border-radius:2px;background:#f97316;flex-shrink:0"></span> <strong>Orange</strong> &mdash; changed in the last 10 minutes</div>'
+    + '<div style="display:flex;align-items:center;gap:8px;font-size:.83rem"><span style="width:14px;height:14px;border-radius:2px;background:#eab308;flex-shrink:0"></span> <strong>Yellow</strong> &mdash; changed in the last hour</div>'
+    + '<div style="display:flex;align-items:center;gap:8px;font-size:.83rem"><span style="width:14px;height:14px;border-radius:2px;background:var(--border-subtle);flex-shrink:0"></span> <strong>No border</strong> &mdash; older than one hour</div>'
+    + '</div>'
+    + '<p style="margin:0;font-size:.8rem;color:var(--text-muted);line-height:1.4;font-style:italic">Don\'t like one of these? Have your agents change it.</p>';
+  document.body.appendChild(popup);
+  var overlay = document.createElement("div");
+  overlay.id = "heat-map-info-overlay";
+  overlay.style.cssText = "position:fixed;top:0;left:0;width:100%;height:100%;z-index:199;background:rgba(0,0,0,.25)";
+  document.body.appendChild(overlay);
+  function closePopup() { popup.remove(); overlay.remove(); }
+  document.getElementById("heat-map-info-close").addEventListener("click", closePopup);
+  overlay.addEventListener("click", closePopup);
 });
 
 // --- Nav Events ---
