@@ -682,12 +682,12 @@ def init(
 
         if is_real_terminal:
             click.echo("")
-            click.echo("the lattice exists. starting your dashboard.")
+            click.echo("the lattice exists.")
             click.echo("")
-            click.echo("Starting dashboard...")
             dashboard_started, dashboard_url = _start_dashboard_background(root)
             if dashboard_started:
-                click.echo(f"  dashboard running at {dashboard_url}")
+                click.echo(f"your dashboard is live at {dashboard_url}")
+                click.echo("opening it now.")
                 _open_url(dashboard_url)
             else:
                 click.echo("  could not start dashboard. run 'lattice dashboard' when ready.")
@@ -1222,16 +1222,12 @@ def setup_claude_skill(force: bool) -> None:
 
     if dest.exists():
         if not force:
-            click.echo(
-                f"Lattice skill already exists at {dest}. Use --force to overwrite."
-            )
+            click.echo(f"Lattice skill already exists at {dest}. Use --force to overwrite.")
             return
         try:
             shutil.rmtree(dest)
         except OSError as exc:
-            raise click.ClickException(
-                f"Failed to remove existing skill: {exc}"
-            ) from exc
+            raise click.ClickException(f"Failed to remove existing skill: {exc}") from exc
 
     # Ensure parent directory exists
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -1275,16 +1271,12 @@ def setup_codex(force: bool) -> None:
 
     if dest.exists():
         if not force:
-            click.echo(
-                f"Lattice skill already exists at {dest}. Use --force to overwrite."
-            )
+            click.echo(f"Lattice skill already exists at {dest}. Use --force to overwrite.")
             return
         try:
             shutil.rmtree(dest)
         except OSError as exc:
-            raise click.ClickException(
-                f"Failed to remove existing skill: {exc}"
-            ) from exc
+            raise click.ClickException(f"Failed to remove existing skill: {exc}") from exc
 
     # Ensure parent directory exists
     dest.parent.mkdir(parents=True, exist_ok=True)
