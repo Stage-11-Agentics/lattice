@@ -40,9 +40,7 @@ def _write_cache(version: str) -> None:
     """Persist latest version to cache file."""
     try:
         _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        _CACHE_FILE.write_text(
-            json.dumps({"version": version, "ts": time.time()}) + "\n"
-        )
+        _CACHE_FILE.write_text(json.dumps({"version": version, "ts": time.time()}) + "\n")
     except Exception:
         pass
 

@@ -299,7 +299,9 @@ def event_cmd(
 
 @cli.command("list")
 @click.option("--status", default=None, shell_complete=complete_status, help="Filter by status.")
-@click.option("--assigned", default=None, shell_complete=complete_actor, help="Filter by assigned actor.")
+@click.option(
+    "--assigned", default=None, shell_complete=complete_actor, help="Filter by assigned actor."
+)
 @click.option("--tag", default=None, help="Filter by tag.")
 @click.option("--type", "task_type", default=None, help="Filter by task type.")
 @click.option(

@@ -44,9 +44,7 @@ class TestCache:
         monkeypatch.setattr("lattice.update_check._CACHE_DIR", tmp_path)
 
         # Write a cache entry that's older than TTL
-        cache_file.write_text(
-            json.dumps({"version": "1.2.3", "ts": time.time() - _CACHE_TTL - 1})
-        )
+        cache_file.write_text(json.dumps({"version": "1.2.3", "ts": time.time() - _CACHE_TTL - 1}))
         assert _read_cache() is None
 
     def test_missing_cache_returns_none(self, tmp_path, monkeypatch):
@@ -99,9 +97,7 @@ class TestMaybePrintUpdateNotice:
                 create=True,
             ),
             patch("lattice.update_check._fetch_latest", return_value="0.3.0"),
-            patch(
-                "importlib.metadata.version", return_value="0.1.0"
-            ),
+            patch("importlib.metadata.version", return_value="0.1.0"),
         ):
             maybe_print_update_notice()
 
@@ -131,9 +127,7 @@ class TestMaybePrintUpdateNotice:
         monkeypatch.setattr("lattice.update_check._CACHE_DIR", tmp_path)
 
         # Pre-populate fresh cache
-        cache_file.write_text(
-            json.dumps({"version": "0.2.0", "ts": time.time()})
-        )
+        cache_file.write_text(json.dumps({"version": "0.2.0", "ts": time.time()}))
 
         fake_stderr = self._tty_stderr()
         with (
@@ -153,9 +147,7 @@ class TestMaybePrintUpdateNotice:
         monkeypatch.setattr("lattice.update_check._CACHE_DIR", tmp_path)
 
         # Write stale cache
-        cache_file.write_text(
-            json.dumps({"version": "0.1.0", "ts": time.time() - _CACHE_TTL - 1})
-        )
+        cache_file.write_text(json.dumps({"version": "0.1.0", "ts": time.time() - _CACHE_TTL - 1}))
 
         fake_stderr = self._tty_stderr()
         with (

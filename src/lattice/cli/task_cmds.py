@@ -82,10 +82,17 @@ _CREATE_COMPARE_FIELDS = (
 @click.option("--priority", default=None, help="Priority (critical, high, medium, low).")
 @click.option("--urgency", default=None, help="Urgency (immediate, high, normal, low).")
 @click.option("--complexity", default=None, help="Agentic complexity (low, medium, high).")
-@click.option("--status", default=None, shell_complete=complete_status, help="Initial status (default: backlog).")
+@click.option(
+    "--status",
+    default=None,
+    shell_complete=complete_status,
+    help="Initial status (default: backlog).",
+)
 @click.option("--description", default=None, help="Task description.")
 @click.option("--tags", default=None, help="Comma-separated tags.")
-@click.option("--assigned-to", default=None, shell_complete=complete_actor, help="Assignee (actor format).")
+@click.option(
+    "--assigned-to", default=None, shell_complete=complete_actor, help="Assignee (actor format)."
+)
 @click.option("--id", "task_id", default=None, help="Caller-supplied task ID.")
 @common_options
 def create(

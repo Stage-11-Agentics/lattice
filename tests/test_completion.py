@@ -1,17 +1,28 @@
 import json
 from click.shell_completion import CompletionItem
-from lattice.completion import complete_task_id, complete_status, complete_actor, complete_resource_name, complete_session_name, complete_relationship_type
+from lattice.completion import (
+    complete_task_id,
+    complete_status,
+    complete_actor,
+    complete_resource_name,
+    complete_session_name,
+    complete_relationship_type,
+)
 
 
 def _make_ids_json(tmp_path, entries):
     lattice_dir = tmp_path / ".lattice"
     lattice_dir.mkdir()
     ids_file = lattice_dir / "ids.json"
-    ids_file.write_text(json.dumps({
-        "schema_version": 2,
-        "next_seqs": {},
-        "map": entries,
-    }))
+    ids_file.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "next_seqs": {},
+                "map": entries,
+            }
+        )
+    )
 
 
 def test_complete_task_id_returns_matching_short_ids(tmp_path, monkeypatch):

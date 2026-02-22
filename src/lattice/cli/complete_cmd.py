@@ -1,4 +1,5 @@
 """lattice completion — shell autocompletion setup."""
+
 from __future__ import annotations
 
 import json
@@ -167,9 +168,7 @@ def completion_cmd(
                 )
             return
         _install(shell, config_file)
-        reload_hint = (
-            f"source {config_file}" if shell != "fish" else "open a new terminal"
-        )
+        reload_hint = f"source {config_file}" if shell != "fish" else "open a new terminal"
         if as_json:
             click.echo(
                 json.dumps(
@@ -224,7 +223,6 @@ def completion_cmd(
             )
         else:
             click.echo(
-                f"Completion removed from {config_file} "
-                f"(backup at {config_file}.lattice.bak)",
+                f"Completion removed from {config_file} (backup at {config_file}.lattice.bak)",
                 err=True,
             )
