@@ -143,4 +143,4 @@ the experience is identical. same CLI. same dashboard. same `.lattice/` structur
 
 *this is not metaphor. this is. architecture.*
 
-*built by [Stage 11 Agentics](https://stage11agentic.com).*
+*built by [Stage 11 Agentics](https://stage11agentics.com).*
