@@ -3,26 +3,32 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
+import click
 from click.shell_completion import CompletionItem
 
 
-def _find_lattice_root():
+def _find_lattice_root() -> Path | None:
     """Locate .lattice/ root independently of Click context."""
     from lattice.storage.fs import find_root  # deferred to avoid import-time side effects
+
     return find_root()
 
 
-def complete_task_id(ctx, param, incomplete):
+def complete_task_id(
+    ctx: click.Context, param: click.Parameter, incomplete: str
+) -> list[CompletionItem]:
     """Complete task short IDs (e.g. LAT-1) from .lattice/ids.json."""
     try:
         from lattice.storage.short_ids import load_id_index
+
         root = _find_lattice_root()
         if root is None:
             return []
         lattice_dir = root / ".lattice"
         index = load_id_index(lattice_dir)
-        id_map = index.get("map", {})
+        id_map: dict[str, str] = index.get("map", {})
         return [
             CompletionItem(short_id)
             for short_id in sorted(id_map)
@@ -43,7 +49,9 @@ _DEFAULT_STATUSES = [
 ]
 
 
-def complete_status(ctx, param, incomplete):
+def complete_status(
+    ctx: click.Context, param: click.Parameter, incomplete: str
+) -> list[CompletionItem]:
     """Complete task status values from config or defaults."""
     statuses = _DEFAULT_STATUSES
     try:
@@ -58,7 +66,9 @@ def complete_status(ctx, param, incomplete):
     return [CompletionItem(s) for s in statuses if s.startswith(incomplete)]
 
 
-def complete_actor(ctx, param, incomplete):
+def complete_actor(
+    ctx: click.Context, param: click.Parameter, incomplete: str
+) -> list[CompletionItem]:
     """Complete actor IDs from recent task snapshots."""
     try:
         root = _find_lattice_root()
@@ -67,7 +77,7 @@ def complete_actor(ctx, param, incomplete):
         tasks_dir = root / ".lattice" / "tasks"
         if not tasks_dir.exists():
             return []
-        actors = set()
+        actors: set[str] = set()
         snapshot_files = sorted(
             tasks_dir.glob("*.json"),
             key=lambda p: p.stat().st_mtime,
@@ -86,7 +96,9 @@ def complete_actor(ctx, param, incomplete):
         return []
 
 
-def complete_resource_name(ctx, param, incomplete):
+def complete_resource_name(
+    ctx: click.Context, param: click.Parameter, incomplete: str
+) -> list[CompletionItem]:
     """Complete resource names from .lattice/resources/."""
     try:
         root = _find_lattice_root()
@@ -101,7 +113,9 @@ def complete_resource_name(ctx, param, incomplete):
         return []
 
 
-def complete_session_name(ctx, param, incomplete):
+def complete_session_name(
+    ctx: click.Context, param: click.Parameter, incomplete: str
+) -> list[CompletionItem]:
     """Complete session names from .lattice/sessions/."""
     try:
         root = _find_lattice_root()
@@ -126,6 +140,8 @@ _RELATIONSHIP_TYPES = [
 ]
 
 
-def complete_relationship_type(ctx, param, incomplete):
+def complete_relationship_type(
+    ctx: click.Context, param: click.Parameter, incomplete: str
+) -> list[CompletionItem]:
     """Complete relationship types for link/unlink commands."""
     return [CompletionItem(t) for t in _RELATIONSHIP_TYPES if t.startswith(incomplete)]
