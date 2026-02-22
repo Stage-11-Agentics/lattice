@@ -114,6 +114,8 @@ the on-disk format is the stable contract. the CLI can be rewritten. the dashboa
 
 build the foundation. then. sit with it.
 
+((we know this pattern of language might be recognized to some of you, and to you, we give a special hello))
+
 ---
 
 ## altitude
