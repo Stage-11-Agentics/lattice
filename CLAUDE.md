@@ -33,43 +33,24 @@ This project **dogfoods itself**. Two distinct things called "Lattice":
 
 **Rule:** Never confuse changes to `src/lattice/` (source code) with changes to `.lattice/` (instance data). They are independent. Editing source code does not affect the running instance until you reinstall (`uv pip install -e ".[dev]"`).
 
-## Global Tool vs. Dev Install — Known Failure Mode
+## Global Tool — Editable Install
 
-Lattice is installed two ways on this machine. Mixing them up causes silent bugs where your code changes have no effect.
-
-| Install | Binary | Python path | When to use |
-|---------|--------|-------------|-------------|
-| **Global tool** | `lattice` (bare) | `~/.local/share/uv/tools/lattice-tracker/` | End-user usage, running the dashboard day-to-day |
-| **Dev install** | `uv run lattice` | Project venv, reads `src/` directly | Development, testing code changes |
-
-**The failure mode:** You edit source files in `src/lattice/`, then run `lattice dashboard` (bare). The global tool serves its own installed copy of the code, not your source tree. Your changes are invisible. Everything looks wrong and you waste time debugging CSS/JS/Python that is actually correct.
-
-**Critical: `uv tool install` uses a build cache.** Running `uv tool install . --force` does NOT guarantee a fresh build. uv caches the built wheel and will reuse it if the package version hasn't changed. To force a true rebuild:
+The global `lattice` command is installed in editable mode, pointing directly at the source tree:
 
 ```bash
-# WRONG: may serve stale cached wheel
-uv tool install . --force
-
-# RIGHT: clean cache first, then install
-uv cache clean lattice-tracker && uv tool install . --force
+uv tool install -e /Users/atin/Projects/Stage11/code/Lattice --force
 ```
 
-Look for `Building lattice-tracker` in the output. If you only see `Prepared 1 package` without `Building`, you got the cached wheel.
+This means **all changes to `src/` are immediately live** — Python code, static files, templates. No rebuild, no publish step, no cache issues. Just edit and run.
 
-**How to avoid it:**
-- **During development**, always use `uv run lattice` (not bare `lattice`)
-- **After finishing work**, use the publish script: `./scripts/publish-global.sh`
-- **When the dashboard looks stale**, check which binary is running: `ps aux | grep lattice` -- if it shows `~/.local/share/uv/tools/`, that's the global install
+The `.pth` file at `~/.local/share/uv/tools/lattice-tracker/` redirects imports to `code/Lattice/src/`. Both `lattice` (bare) and `uv run lattice` read from the same source tree.
 
-**Quick reference:**
+**If the editable install ever breaks** (e.g., after moving the repo), reinstall:
 ```bash
-# Dev: run from source (changes take effect immediately)
-uv run lattice dashboard
-
-# Global: update after committing changes (always use the script)
-./scripts/publish-global.sh
-lattice dashboard
+uv cache clean lattice-tracker && uv tool install -e /Users/atin/Projects/Stage11/code/Lattice --force
 ```
+
+**Note for dashboards:** After editing static files (HTML/JS/CSS), a running dashboard still serves from memory. Restart it to pick up changes (`lattice restart` or stop/start).
 
 ## Quick Reference
 
