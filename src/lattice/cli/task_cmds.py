@@ -21,6 +21,11 @@ from lattice.cli.helpers import (
 )
 from lattice.storage.operations import scaffold_plan
 from lattice.cli.main import cli
+from lattice.completion import (
+    complete_actor,
+    complete_status,
+    complete_task_id,
+)
 from lattice.core.comments import (
     materialize_comments,
     validate_comment_body,
@@ -77,10 +82,17 @@ _CREATE_COMPARE_FIELDS = (
 @click.option("--priority", default=None, help="Priority (critical, high, medium, low).")
 @click.option("--urgency", default=None, help="Urgency (immediate, high, normal, low).")
 @click.option("--complexity", default=None, help="Agentic complexity (low, medium, high).")
-@click.option("--status", default=None, help="Initial status (default: backlog).")
+@click.option(
+    "--status",
+    default=None,
+    shell_complete=complete_status,
+    help="Initial status (default: backlog).",
+)
 @click.option("--description", default=None, help="Task description.")
 @click.option("--tags", default=None, help="Comma-separated tags.")
-@click.option("--assigned-to", default=None, help="Assignee (actor format).")
+@click.option(
+    "--assigned-to", default=None, shell_complete=complete_actor, help="Assignee (actor format)."
+)
 @click.option("--id", "task_id", default=None, help="Caller-supplied task ID.")
 @common_options
 def create(
@@ -282,7 +294,7 @@ _REDIRECT_FIELDS = {
 
 
 @cli.command()
-@click.argument("task_id")
+@click.argument("task_id", shell_complete=complete_task_id)
 @click.argument("pairs", nargs=-1)
 @common_options
 def update(
@@ -491,8 +503,8 @@ def _append_plan_reset_section(
 
 
 @cli.command("status")
-@click.argument("task_id")
-@click.argument("new_status")
+@click.argument("task_id", shell_complete=complete_task_id)
+@click.argument("new_status", shell_complete=complete_status)
 @click.option("--force", is_flag=True, help="Force an invalid transition.")
 @common_options
 def status_cmd(
@@ -674,8 +686,8 @@ _UNASSIGN_SENTINELS = frozenset({"none", "unassigned", "-"})
 
 
 @cli.command()
-@click.argument("task_id")
-@click.argument("actor_id")
+@click.argument("task_id", shell_complete=complete_task_id)
+@click.argument("actor_id", shell_complete=complete_actor)
 @common_options
 def assign(
     task_id: str,
@@ -767,7 +779,7 @@ def assign(
 
 
 @cli.command()
-@click.argument("task_id")
+@click.argument("task_id", shell_complete=complete_task_id)
 @click.argument("text", required=False, default=None)
 @click.option(
     "--file",
@@ -888,7 +900,7 @@ def comment(
 
 
 @cli.command("comment-edit")
-@click.argument("task_id")
+@click.argument("task_id", shell_complete=complete_task_id)
 @click.argument("comment_id")
 @click.argument("new_text")
 @click.option("--role", default=None, help="Set or change the comment's role (e.g. review).")
@@ -980,7 +992,7 @@ def comment_edit(
 
 
 @cli.command("comment-delete")
-@click.argument("task_id")
+@click.argument("task_id", shell_complete=complete_task_id)
 @click.argument("comment_id")
 @common_options
 def comment_delete(
@@ -1042,7 +1054,7 @@ def comment_delete(
 
 
 @cli.command()
-@click.argument("task_id")
+@click.argument("task_id", shell_complete=complete_task_id)
 @click.argument("comment_id")
 @click.argument("emoji")
 @common_options
@@ -1129,7 +1141,7 @@ def react(
 
 
 @cli.command()
-@click.argument("task_id")
+@click.argument("task_id", shell_complete=complete_task_id)
 @click.argument("comment_id")
 @click.argument("emoji")
 @common_options
@@ -1228,7 +1240,7 @@ def _flatten_comments(comments: list[dict]) -> list[dict]:
 
 
 @cli.command("complete")
-@click.argument("task_id")
+@click.argument("task_id", shell_complete=complete_task_id)
 @click.option("--review", "review_text", required=True, help="Review findings text.")
 @common_options
 def complete_cmd(
