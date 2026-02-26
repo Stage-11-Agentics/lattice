@@ -175,6 +175,81 @@ Chat history:
 Triggered: "move it to review, I'll look at it"
 -> { understood: true, commands: [{ command: "status", positional: ["LAT-31", "review"], args: {}, flags: ["--json"] }, { command: "assign", positional: ["LAT-31", "human:dave"], args: {}, flags: ["--json"] }, { command: "comment", positional: ["LAT-31"], args: { "--body": "Dave picking up review" }, flags: ["--json"] }], explanation: "Move LAT-31 to review and assign to dave as reviewer, from chat context" }
 
+## Examples — General / Non-Software Contexts
+
+These examples show inference from everyday project, operations, and team conversations — not just software.
+
+---
+Chat history:
+[09:15] maria: the venue just called, they double-booked us for Saturday
+[09:16] james: are you serious? the whole event is planned around that date
+[09:17] maria: yeah I need to find an alternative ASAP
+[09:18] [TRIGGERED] james: @lattice track this, it's critical
+
+Triggered: "track this, it's critical"
+-> { understood: true, commands: [{ command: "create", positional: ["Find alternative venue — double-booked for Saturday"], args: { "--priority": "critical", "--urgency": "immediate", "--assigned-to": "human:maria", "--description": "Original venue double-booked for Saturday event. Need alternative ASAP." }, flags: ["--json"] }], explanation: "Created critical task for venue issue from chat, assigned to maria who is handling it" }
+
+---
+Chat history:
+[14:30] sarah: we still haven't sent the Q4 investor update
+[14:31] tom: wasn't that due last Friday?
+[14:32] sarah: yeah... and we need the financials from accounting first
+[14:33] [TRIGGERED] tom: @lattice let's get this sorted
+
+Triggered: "let's get this sorted"
+-> { understood: true, commands: [{ command: "create", positional: ["Get Q4 financials from accounting"], args: { "--priority": "high", "--urgency": "high" }, flags: ["--json"] }, { command: "create", positional: ["Send Q4 investor update"], args: { "--priority": "high", "--urgency": "high", "--description": "Overdue — was due last Friday. Blocked on Q4 financials from accounting." }, flags: ["--json"] }], explanation: "Created two tasks from discussion: get financials (dependency) and send investor update (overdue)" }
+
+---
+Chat history:
+[11:00] alex: the new hire starts Monday and we don't have a laptop ready
+[11:01] priya: IT said they need 3 days lead time for provisioning
+[11:02] alex: great so we're already behind
+[11:03] [TRIGGERED] priya: @lattice urgent, assign to me
+
+Triggered: "urgent, assign to me"
+-> { understood: true, commands: [{ command: "create", positional: ["Provision laptop for new hire starting Monday"], args: { "--priority": "high", "--urgency": "immediate", "--assigned-to": "human:priya", "--status": "in_progress", "--description": "New hire starts Monday. IT needs 3 days lead time — already behind schedule." }, flags: ["--json"] }], explanation: "Created urgent task for laptop provisioning, assigned to priya who volunteered" }
+
+---
+Chat history:
+[16:00] rachel: the client loved the pitch deck but wants us to add a competitive analysis section
+[16:01] mike: I can pull that together, probably need a day or two
+[16:02] rachel: they want it by Thursday
+[16:03] [TRIGGERED] rachel: @lattice make a task for mike, high priority
+
+Triggered: "make a task for mike, high priority"
+-> { understood: true, commands: [{ command: "create", positional: ["Add competitive analysis section to pitch deck"], args: { "--priority": "high", "--assigned-to": "human:mike", "--description": "Client requested competitive analysis section. Deadline: Thursday." }, flags: ["--json"] }], explanation: "Created task for competitive analysis addition, assigned to mike per discussion" }
+
+---
+Chat history:
+[10:00] jen: three people called in sick today
+[10:01] carlos: that's half the warehouse crew
+[10:02] jen: I know, we need to figure out coverage for the afternoon shift
+[10:04] [TRIGGERED] carlos: @lattice add this, also we should create a task to update the backup staffing plan
+
+Triggered: "add this, also we should create a task to update the backup staffing plan"
+-> { understood: true, commands: [{ command: "create", positional: ["Arrange afternoon shift coverage — 3 warehouse staff out sick"], args: { "--priority": "high", "--urgency": "immediate" }, flags: ["--json"] }, { command: "create", positional: ["Update backup staffing plan for warehouse"], args: { "--priority": "medium", "--status": "backlog", "--description": "Current plan inadequate — 3 simultaneous callouts left afternoon shift at half capacity." }, flags: ["--json"] }], explanation: "Created immediate coverage task and backlog task for staffing plan improvement" }
+
+---
+Chat history:
+[13:00] nina: the social media posts for the product launch are ready for review
+[13:01] omar: I'll review the copy, can someone check the graphics?
+[13:02] nina: lisa said she'd do it but she's swamped this week
+[13:03] [TRIGGERED] omar: @lattice I'll take both, move it along
+
+Triggered: "I'll take both, move it along"
+-> { understood: true, commands: [{ command: "create", positional: ["Review social media copy for product launch"], args: { "--assigned-to": "human:omar", "--status": "in_progress" }, flags: ["--json"] }, { command: "create", positional: ["Review social media graphics for product launch"], args: { "--assigned-to": "human:omar", "--status": "in_progress" }, flags: ["--json"] }], explanation: "Created two review tasks both assigned to omar who volunteered to handle copy and graphics" }
+
+---
+Chat history:
+[08:30] diego: the permit application was rejected again
+[08:31] sam: what was the reason this time?
+[08:32] diego: they said the environmental impact section was incomplete
+[08:33] sam: this is the third time, we really need to get an environmental consultant involved
+[08:35] [TRIGGERED] diego: @lattice track both — fixing the application and finding a consultant
+
+Triggered: "track both — fixing the application and finding a consultant"
+-> { understood: true, commands: [{ command: "create", positional: ["Revise environmental impact section of permit application"], args: { "--priority": "high", "--type": "bug", "--description": "Permit rejected third time — environmental impact section flagged as incomplete." }, flags: ["--json"] }, { command: "create", positional: ["Find and hire environmental consultant for permit process"], args: { "--priority": "high", "--description": "Repeated permit rejections on environmental section. Need professional help." }, flags: ["--json"] }], explanation: "Created two tasks: fix the application and find a consultant, from discussion about repeated permit rejections" }
+
 ---
 User: "hey how's everyone doing today"
 -> { understood: false, commands: [{ command: "none", positional: [], args: {}, flags: [] }], explanation: "Social message, not a task command" }`;
