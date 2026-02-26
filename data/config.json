@@ -1,0 +1,44 @@
+{
+  "_generated_at": "2026-02-26T05:18:27.614893+00:00",
+  "_item_count": 60,
+  "dashboard": {
+    "theme": "carbon"
+  },
+  "default_priority": "medium",
+  "default_status": "backlog",
+  "github": {
+    "org": "BreadchainCoop",
+    "project_number": 19,
+    "repo": "BreadchainCoop/saving-circles"
+  },
+  "instance_name": "BreadchainCoop Project #19",
+  "mode": "github",
+  "project_code": "GH",
+  "task_types": [
+    "task",
+    "bug",
+    "feature",
+    "chore"
+  ],
+  "workflow": {
+    "statuses": [
+      "backlog",
+      "in_progress",
+      "done"
+    ],
+    "transitions": {
+      "backlog": [
+        "in_progress",
+        "done"
+      ],
+      "done": [
+        "backlog",
+        "in_progress"
+      ],
+      "in_progress": [
+        "backlog",
+        "done"
+      ]
+    }
+  }
+}
