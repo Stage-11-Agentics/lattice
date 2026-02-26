@@ -1483,6 +1483,7 @@ select.form-control{cursor:pointer}
 <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
 <link rel="stylesheet" href="/static/cube3d.css">
 <script src="/static/cube3d.js" defer></script>
+<script type="module" src="/static/sync.js" defer></script>
 <script>
 (function(){
 "use strict";
@@ -3567,6 +3568,14 @@ async function _refreshAfterPanelEdit(taskId) {
   // Re-render the underlying view
   if (currentView === "board") renderBoard();
   else if (currentView === "list") renderList();
+
+  // Notify sync.js of the local write so it can broadcast to peers
+  if (window._lattice && window._lattice.onLocalWrite) {
+    try {
+      var taskData = await api("/api/tasks/" + taskId);
+      window._lattice.onLocalWrite(taskId, "_full", taskData);
+    } catch(e) { /* task may have been archived */ }
+  }
 
   // Re-render panel content if still open and no active edit
   if (_detailPanelTaskId === taskId) {
@@ -6304,7 +6313,14 @@ window._lattice = {
   getStatusDisplayName: getStatusDisplayName,
   getStatusDescription: getStatusDescription,
   getConfig: function() { return config; },
-  getCurrentView: function() { return currentView; }
+  getCurrentView: function() { return currentView; },
+  // Sync integration points (set by sync.js when ready)
+  onLocalWrite: null,
+  _setTasks: function(newTasks) {
+    tasks = newTasks;
+    updateAllBadges();
+    route(location.hash.slice(1));
+  }
 };
 
 // --- Boot ---

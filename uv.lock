@@ -34,6 +34,19 @@ wheels = [
 ]
 
 [[package]]
+name = "automerge"
+version = "1.0.0rc1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ba/bb/97d812838891fb284e4fb7a0dbbc602c309043c095fda5c42d6598c667d1/automerge-1.0.0rc1.tar.gz", hash = "sha256:c615a5f590db3749795d61b5fbd6ac56aece9427fa1e2fe51a1d8b739ad227d6", size = 13055, upload-time = "2024-03-19T17:50:07.955Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/02/6e/707ad526bb3be7ef0bbca103388d694cde7b63b6bfc6b1cf85dad036e242/automerge-1.0.0rc1-cp312-cp312-macosx_10_12_x86_64.whl", hash = "sha256:575feea165a1e8842220cd5d0f93681504cbf91057473da6c6f9401481de67d6", size = 1012685, upload-time = "2024-03-19T17:50:05.164Z" },
+    { url = "https://files.pythonhosted.org/packages/0e/f9/f62098bec586631059963ef9aea35e1cd1b38885514cdb30d49c30f2a392/automerge-1.0.0rc1-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:0055f7aad314e15d4b4f62e8c0f6cafa641f2ee07b379a65bc01e1a09bc20360", size = 959962, upload-time = "2024-03-19T17:50:00.201Z" },
+    { url = "https://files.pythonhosted.org/packages/94/d6/1ba7f7ec255598b50f05b3fe5ea8fad0ebae73167ba86f7baaa93d376e26/automerge-1.0.0rc1-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:8915b9da6d59a02df210b5008e0017eb525d0735439f32b6c2ac045316e75277", size = 1798487, upload-time = "2024-03-19T17:49:32.592Z" },
+    { url = "https://files.pythonhosted.org/packages/77/dc/6aae665e04bb48981db56b9501b20f448bb43f74270ae66d55f644204278/automerge-1.0.0rc1-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:19ee3bb5d56b5608fbd3dcdda22766f22538acc47df2850f522f632803cbb0b4", size = 1841958, upload-time = "2024-03-19T17:49:47.971Z" },
+    { url = "https://files.pythonhosted.org/packages/3f/be/0e62784e8f1a369ea7d130e4887c12c06a5e2af8d49c936baf057fc5df3c/automerge-1.0.0rc1-cp312-none-win_amd64.whl", hash = "sha256:27a038259c0025dd010d6af76ec13d3b46726cbb932de1cc52be85ea8fe7afa3", size = 839882, upload-time = "2024-03-19T17:50:11.886Z" },
+]
+
+[[package]]
 name = "certifi"
 version = "2026.1.4"
 source = { registry = "https://pypi.org/simple" }
@@ -308,9 +321,13 @@ dev = [
 mcp = [
     { name = "mcp" },
 ]
+sync = [
+    { name = "automerge" },
+]
 
 [package.metadata]
 requires-dist = [
+    { name = "automerge", marker = "extra == 'sync'", specifier = ">=0.2.0.dev3" },
     { name = "click", specifier = ">=8.1" },
     { name = "filelock", specifier = ">=3.13" },
     { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=6.100" },
@@ -323,7 +340,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4" },
     { name = "typing-extensions", marker = "python_full_version < '3.14'", specifier = ">=4.0" },
 ]
-provides-extras = ["mcp", "dev"]
+provides-extras = ["mcp", "sync", "dev"]
 
 [[package]]
 name = "librt"

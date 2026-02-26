@@ -176,6 +176,16 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                 self._handle_activity(ld)
             elif path == "/api/archived":
                 self._handle_archived(ld)
+            elif path == "/api/sync-config":
+                self._send_json(
+                    200,
+                    _ok(
+                        {
+                            "relay_url": getattr(self.server, "_relay_url", ""),
+                            "enabled": getattr(self.server, "_relay_enabled", False),
+                        }
+                    ),
+                )
             elif path == "/api/graph":
                 self._handle_graph(ld)
             elif path == "/api/git":

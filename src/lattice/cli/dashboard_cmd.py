@@ -49,8 +49,11 @@ def _find_free_port(host: str, near: int) -> int | None:
 @cli.command("dashboard")
 @click.option("--host", default="127.0.0.1", help="Host to bind to.")
 @click.option("--port", default=None, type=int, help="Port to bind to. Defaults to dashboard_port in config, or 8799.")
+@click.option("--relay-port", default=9801, type=int, help="WebSocket relay port for browser sync (default: 9801).")
+@click.option("--no-relay", is_flag=True, help="Don't host a WebSocket relay (browser can still connect to a remote one via --relay-url).")
+@click.option("--relay-url", default=None, help="WebSocket relay URL for browser sync (e.g. ws://localhost:9801). Auto-set when hosting.")
 @click.option("--json", "output_json", is_flag=True, help="Output structured JSON.")
-def dashboard_cmd(host: str, port: int | None, output_json: bool) -> None:
+def dashboard_cmd(host: str, port: int | None, relay_port: int, no_relay: bool, relay_url: str | None, output_json: bool) -> None:
     """Launch a read-only local web dashboard.
 
     Supports graceful restart via SIGHUP — the server shuts down and
@@ -81,6 +84,7 @@ def dashboard_cmd(host: str, port: int | None, output_json: bool) -> None:
 
     from lattice.dashboard.server import create_server
 
+    relay = None
     first_start = True
 
     while True:
@@ -113,6 +117,36 @@ def dashboard_cmd(host: str, port: int | None, output_json: bool) -> None:
 
         _active_server = server
         url = f"http://{host}:{port}/"
+
+        # Start WebSocket relay on first successful server creation
+        if relay is None and not no_relay:
+            try:
+                from lattice.dashboard.relay import start_relay_thread
+
+                relay = start_relay_thread(host, relay_port)
+
+                import json as _json
+
+                from lattice.storage.bus import register_listener
+
+                def _on_server_write(task_id: str, events: list, snapshot: dict) -> None:  # noqa: ARG001
+                    msg = _json.dumps({"type": "server_write", "task_id": task_id, "origin": "server"})
+                    relay.inject_message(msg)
+
+                register_listener(_on_server_write)
+            except ImportError:
+                click.echo("Warning: websockets not installed, relay disabled.", err=True)
+            except Exception as exc:
+                click.echo(f"Warning: relay failed to start: {exc}", err=True)
+
+        # Determine relay URL for browser sync-config endpoint
+        if relay is not None:
+            server._relay_url = f"ws://{host}:{relay_port}"
+        elif relay_url:
+            server._relay_url = relay_url
+        else:
+            server._relay_url = ""
+        server._relay_enabled = bool(server._relay_url)
 
         if first_start:
             if output_json:

@@ -1412,6 +1412,11 @@ from lattice.cli import resource_cmds as _resource_cmds  # noqa: E402, F401
 from lattice.cli import demo_cmd as _demo_cmd  # noqa: E402, F401
 from lattice.cli import session_cmds as _session_cmds  # noqa: E402, F401
 
+try:
+    from lattice.cli import sync_cmds as _sync_cmds  # noqa: E402, F401
+except ImportError:
+    pass  # sync extra not installed
+
 # ---------------------------------------------------------------------------
 # Load CLI plugins (must be after all built-in commands are registered)
 # ---------------------------------------------------------------------------
