@@ -5,9 +5,9 @@ import {
 import type { Config } from "../config";
 import type { ParsedMessage } from "../signal/types";
 import {
-  LatticeCommandSchema,
-  ExecResultSchema,
+  InterpretationSchema,
   WRITE_COMMANDS,
+  type SingleCommand,
 } from "./schemas";
 import { LatticeInterpreterAgent } from "./agent";
 import { buildCommandString, executeLatticeCommand } from "./execute";
@@ -26,7 +26,7 @@ export interface WorkflowResult {
 // This sets up SQLite persistence for durable workflow state.
 const { Workflow, Task, smithers, outputs } = createSmithers(
   {
-    interpret: LatticeCommandSchema,
+    interpret: InterpretationSchema,
   },
   { dbPath: "./smithers.db" },
 );
@@ -34,7 +34,7 @@ const { Workflow, Task, smithers, outputs } = createSmithers(
 /**
  * Build a Smithers workflow definition for message interpretation.
  * The workflow has one agent task: Claude interprets the NL message
- * into a structured LatticeCommand via the Zod schema.
+ * into a list of structured LatticeCommands via the Zod schema.
  */
 function buildInterpretWorkflow(config: Config) {
   const agent = new LatticeInterpreterAgent(config.llm.model);
@@ -42,18 +42,41 @@ function buildInterpretWorkflow(config: Config) {
   return smithers((ctx) => (
     <Workflow name="lattice-signal-bot">
       <Task id="interpret" output={outputs.interpret} agent={agent}>
-        {`Signal message from ${(ctx.input as any).sender}:\n\n"${(ctx.input as any).text}"\n\nInterpret this as a Lattice command.`}
+        {`Signal message from ${(ctx.input as any).sender}:\n\n"${(ctx.input as any).text}"\n\nInterpret this as one or more Lattice commands.`}
       </Task>
     </Workflow>
   ));
 }
 
 /**
+ * Substitute $PREV_ID placeholders in a command's positional args.
+ */
+function substituteId(cmd: SingleCommand, prevId: string | null): SingleCommand {
+  if (!prevId) return cmd;
+  return {
+    ...cmd,
+    positional: cmd.positional.map((arg) =>
+      arg === "$PREV_ID" ? prevId : arg,
+    ),
+  };
+}
+
+/**
+ * Extract a task ID from a Lattice CLI JSON response.
+ * Looks for short_id first, then falls back to full id.
+ */
+function extractTaskId(parsed: any): string | null {
+  if (!parsed?.ok) return null;
+  const data = parsed.data;
+  return data?.short_id || data?.id || null;
+}
+
+/**
  * Run the full workflow for a single Signal message:
- * 1. Smithers workflow: Claude interprets NL → LatticeCommand (durable, schema-validated)
- * 2. Execute the Lattice CLI command
- * 3. If write command, generate kanban board PNG
- * 4. Return text + optional image
+ * 1. Smithers workflow: Claude interprets NL → list of LatticeCommands
+ * 2. Execute each command sequentially, chaining $PREV_ID
+ * 3. If any write command, generate kanban board PNG
+ * 4. Return aggregated text + optional image
  */
 export async function runWorkflow(
   msg: ParsedMessage,
@@ -86,24 +109,25 @@ export async function runWorkflow(
 
   // Extract the interpretation output row
   const rows = (result.output as any[]) ?? [];
-  const cmd = rows[0];
+  const interpretation = rows[0];
 
-  if (!cmd) {
+  if (!interpretation) {
     return {
       text: "Sorry, I couldn't interpret that message.",
       kanbanBase64: null,
     };
   }
 
+  const { understood, commands, explanation } = interpretation;
   console.log(
-    `[workflow] Interpreted: ${cmd.command} (understood=${cmd.understood})`,
+    `[workflow] Interpreted: ${commands?.length ?? 0} command(s), understood=${understood}`,
   );
 
   // Not understood
-  if (!cmd.understood || cmd.command === "none") {
+  if (!understood || !commands?.length || commands[0].command === "none") {
     return {
       text:
-        cmd.explanation ||
+        explanation ||
         config.bot.help_text ||
         "I didn't understand that. Try @lattice help",
       kanbanBase64: null,
@@ -111,7 +135,7 @@ export async function runWorkflow(
   }
 
   // Help
-  if (cmd.command === "help") {
+  if (commands.length === 1 && commands[0].command === "help") {
     return {
       text:
         config.bot.help_text ||
@@ -132,20 +156,45 @@ export async function runWorkflow(
     };
   }
 
-  // Step 2: Execute Lattice CLI command
+  // Step 2: Execute commands sequentially with $PREV_ID chaining
   const latticeConfig = {
     project_root: config.lattice.project_root,
     actor: config.lattice.actor,
   };
-  const cmdStr = buildCommandString(cmd, latticeConfig);
-  console.log(`[workflow] Executing: ${cmdStr}`);
 
-  const execResult = executeLatticeCommand(cmdStr, latticeConfig);
-  const formattedMessage = formatLatticeResult(cmd.command, execResult.parsed);
+  const resultTexts: string[] = [];
+  let prevId: string | null = null;
+  let anyWrite = false;
 
-  // Step 3: Generate kanban image for write commands
+  for (let i = 0; i < commands.length; i++) {
+    const raw = commands[i];
+    const cmd = substituteId(raw, prevId);
+
+    const cmdStr = buildCommandString(cmd, latticeConfig);
+    console.log(`[workflow] Executing [${i + 1}/${commands.length}]: ${cmdStr}`);
+
+    const execResult = executeLatticeCommand(cmdStr, latticeConfig);
+    const formatted = formatLatticeResult(cmd.command, execResult.parsed);
+    resultTexts.push(formatted);
+
+    // Track the produced task ID for chaining
+    const taskId = extractTaskId(execResult.parsed);
+    if (taskId) prevId = taskId;
+
+    if (WRITE_COMMANDS.has(cmd.command)) anyWrite = true;
+
+    // Stop executing further commands if one fails
+    if (!execResult.ok) {
+      console.warn(`[workflow] Command ${i + 1} failed, stopping chain`);
+      break;
+    }
+  }
+
+  const text = resultTexts.join("\n\n");
+
+  // Step 3: Generate kanban image if any command was a write
   let kanbanBase64: string | null = null;
-  if (WRITE_COMMANDS.has(cmd.command)) {
+  if (anyWrite) {
     console.log("[workflow] Generating kanban board image...");
     const mermaid = generateKanbanMermaid(config.lattice.project_root);
     if (mermaid) {
@@ -158,5 +207,5 @@ export async function runWorkflow(
     }
   }
 
-  return { text: formattedMessage, kanbanBase64 };
+  return { text, kanbanBase64 };
 }

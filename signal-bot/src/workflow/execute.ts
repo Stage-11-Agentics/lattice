@@ -1,6 +1,5 @@
 import { execSync } from "node:child_process";
-import type { LatticeCommand } from "./schemas";
-import { formatLatticeResult } from "../signal/formatter";
+import type { SingleCommand } from "./schemas";
 
 interface LatticeConfig {
   project_root: string;
@@ -13,9 +12,9 @@ function shellEscape(s: string): string {
   return "'" + s.replace(/'/g, "'\\''") + "'";
 }
 
-/** Build a CLI command string from a parsed LatticeCommand */
+/** Build a CLI command string from a parsed SingleCommand */
 export function buildCommandString(
-  cmd: LatticeCommand,
+  cmd: SingleCommand,
   config: LatticeConfig,
 ): string {
   const parts: string[] = ["lattice", cmd.command];
@@ -96,21 +95,3 @@ export function executeLatticeCommand(
   }
 }
 
-/** Interpret, execute, and format a Lattice command - returns formatted text and command name */
-export function runLatticeCommand(
-  cmd: LatticeCommand,
-  config: LatticeConfig,
-): { command: string; commandString: string; formattedMessage: string; success: boolean } {
-  const commandString = buildCommandString(cmd, config);
-  console.log(`[execute] ${commandString}`);
-
-  const result = executeLatticeCommand(commandString, config);
-  const formattedMessage = formatLatticeResult(cmd.command, result.parsed);
-
-  return {
-    command: cmd.command,
-    commandString,
-    formattedMessage,
-    success: result.ok,
-  };
-}
