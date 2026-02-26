@@ -1,6 +1,994 @@
 {
-  "ok": true,
   "data": {
-    "links": []
-  }
+    "links": [
+      {
+        "source": "PVTI_lADOBejdOM4BEnYuzgk23o4",
+        "target": "PVTI_lADOBejdOM4BEnYuzgjdX7k",
+        "type": "related_to"
+      },
+      {
+        "source": "PVTI_lADOBejdOM4BEnYuzgk21QU",
+        "target": "PVTI_lADOBejdOM4BEnYuzgmD8kQ",
+        "type": "depends_on"
+      },
+      {
+        "source": "PVTI_lADOBejdOM4BEnYuzgkRcSU",
+        "target": "PVTI_lADOBejdOM4BEnYuzgju188",
+        "type": "depends_on"
+      },
+      {
+        "source": "PVTI_lADOBejdOM4BEnYuzgkRcSU",
+        "target": "PVTI_lADOBejdOM4BEnYuzgkZMAE",
+        "type": "related_to"
+      },
+      {
+        "source": "PVTI_lADOBejdOM4BEnYuzgk65x4",
+        "target": "PVTI_lADOBejdOM4BEnYuzgk21QU",
+        "type": "related_to"
+      },
+      {
+        "source": "PVTI_lADOBejdOM4BEnYuzgfkVsU",
+        "target": "PVTI_lADOBejdOM4BEnYuzgfkVrM",
+        "type": "related_to"
+      },
+      {
+        "source": "PVTI_lADOBejdOM4BEnYuzgfkWdM",
+        "target": "PVTI_lADOBejdOM4BEnYuzgfkV84",
+        "type": "related_to"
+      },
+      {
+        "source": "PVTI_lADOBejdOM4BEnYuzgfkWdM",
+        "target": "PVTI_lADOBejdOM4BEnYuzgfkV34",
+        "type": "related_to"
+      },
+      {
+        "source": "PVTI_lADOBejdOM4BEnYuzgfkV1U",
+        "target": "PVTI_lADOBejdOM4BEnYuzgfkV84",
+        "type": "related_to"
+      },
+      {
+        "source": "PVTI_lADOBejdOM4BEnYuzgfkV84",
+        "target": "PVTI_lADOBejdOM4BEnYuzgju1ok",
+        "type": "related_to"
+      },
+      {
+        "source": "PVTI_lADOBejdOM4BEnYuzgfkV84",
+        "target": "PVTI_lADOBejdOM4BEnYuzgju1sM",
+        "type": "depends_on"
+      },
+      {
+        "source": "PVTI_lADOBejdOM4BEnYuzgfkVrw",
+        "target": "PVTI_lADOBejdOM4BEnYuzgi9LTs",
+        "type": "related_to"
+      },
+      {
+        "source": "PVTI_lADOBejdOM4BEnYuzgfkV2Q",
+        "target": "PVTI_lADOBejdOM4BEnYuzghHv3o",
+        "type": "depends_on"
+      },
+      {
+        "source": "PVTI_lADOBejdOM4BEnYuzggaaRY",
+        "target": "PVTI_lADOBejdOM4BEnYuzggaaSU",
+        "type": "related_to"
+      },
+      {
+        "source": "PVTI_lADOBejdOM4BEnYuzghHso0",
+        "target": "PVTI_lADOBejdOM4BEnYuzghHsV8",
+        "type": "related_to"
+      },
+      {
+        "source": "PVTI_lADOBejdOM4BEnYuzgiAUMA",
+        "target": "PVTI_lADOBejdOM4BEnYuzgju1ps",
+        "type": "related_to"
+      },
+      {
+        "source": "PVTI_lADOBejdOM4BEnYuzgiAURw",
+        "target": "PVTI_lADOBejdOM4BEnYuzggDq2c",
+        "type": "related_to"
+      },
+      {
+        "source": "PVTI_lADOBejdOM4BEnYuzgiAULA",
+        "target": "PVTI_lADOBejdOM4BEnYuzgju188",
+        "type": "related_to"
+      },
+      {
+        "source": "PVTI_lADOBejdOM4BEnYuzghWBGk",
+        "target": "PVTI_lADOBejdOM4BEnYuzghHsV8",
+        "type": "related_to"
+      },
+      {
+        "source": "PVTI_lADOBejdOM4BEnYuzghWBGk",
+        "target": "PVTI_lADOBejdOM4BEnYuzgfkV34",
+        "type": "related_to"
+      },
+      {
+        "source": "PVTI_lADOBejdOM4BEnYuzgfkVss",
+        "target": "PVTI_lADOBejdOM4BEnYuzglbas4",
+        "type": "depends_on"
+      },
+      {
+        "source": "PVTI_lADOBejdOM4BEnYuzgiiyWs",
+        "target": "PVTI_lADOBejdOM4BEnYuzgkB0ng",
+        "type": "related_to"
+      },
+      {
+        "source": "PVTI_lADOBejdOM4BEnYuzgi9LTs",
+        "target": "PVTI_lADOBejdOM4BEnYuzgiIf4Q",
+        "type": "related_to"
+      },
+      {
+        "source": "PVTI_lADOBejdOM4BEnYuzgjdUHA",
+        "target": "PVTI_lADOBejdOM4BEnYuzglba54",
+        "type": "depends_on"
+      },
+      {
+        "source": "PVTI_lADOBejdOM4BEnYuzgjdUHA",
+        "target": "PVTI_lADOBejdOM4BEnYuzgiafdw",
+        "type": "related_to"
+      },
+      {
+        "source": "PVTI_lADOBejdOM4BEnYuzgkoGL8",
+        "target": "PVTI_lADOBejdOM4BEnYuzgfkV2Q",
+        "type": "related_to"
+      },
+      {
+        "source": "PVTI_lADOBejdOM4BEnYuzgiAUSw",
+        "target": "PVTI_lADOBejdOM4BEnYuzgju1ps",
+        "type": "related_to"
+      },
+      {
+        "source": "PVTI_lADOBejdOM4BEnYuzgf74YM",
+        "target": "PVTI_lADOBejdOM4BEnYuzgijFpM",
+        "type": "subtask_of"
+      },
+      {
+        "source": "PVTI_lADOBejdOM4BEnYuzgjdZJQ",
+        "target": "PVTI_lADOBejdOM4BEnYuzgkak4M",
+        "type": "related_to"
+      },
+      {
+        "source": "PVTI_lADOBejdOM4BEnYuzgju1s4",
+        "target": "PVTI_lADOBejdOM4BEnYuzgkk-Y0",
+        "type": "related_to"
+      },
+      {
+        "source": "PVTI_lADOBejdOM4BEnYuzgkak4M",
+        "target": "PVTI_lADOBejdOM4BEnYuzgijFpM",
+        "type": "subtask_of"
+      },
+      {
+        "source": "PVTI_lADOBejdOM4BEnYuzgkaoi8",
+        "target": "PVTI_lADOBejdOM4BEnYuzgkB0ng",
+        "type": "related_to"
+      },
+      {
+        "source": "PVTI_lADOBejdOM4BEnYuzgkk-Y0",
+        "target": "PVTI_lADOBejdOM4BEnYuzgkk-lY",
+        "type": "related_to"
+      },
+      {
+        "source": "PVTI_lADOBejdOM4BEnYuzgkvDj4",
+        "target": "PVTI_lADOBejdOM4BEnYuzgju1ps",
+        "type": "related_to"
+      },
+      {
+        "source": "PVTI_lADOBejdOM4BEnYuzglbas4",
+        "target": "PVTI_lADOBejdOM4BEnYuzgju1sM",
+        "type": "related_to"
+      },
+      {
+        "source": "PVTI_lADOBejdOM4BEnYuzglba54",
+        "target": "PVTI_lADOBejdOM4BEnYuzgkB1Jo",
+        "type": "depends_on"
+      },
+      {
+        "source": "PVTI_lADOBejdOM4BEnYuzglba54",
+        "target": "PVTI_lADOBejdOM4BEnYuzgkoGig",
+        "type": "depends_on"
+      },
+      {
+        "source": "PVTI_lADOBejdOM4BEnYuzgmKt_M",
+        "target": "PVTI_lADOBejdOM4BEnYuzgju1ps",
+        "type": "depends_on"
+      },
+      {
+        "source": "PVTI_lADOBejdOM4BEnYuzgmKt_M",
+        "target": "PVTI_lADOBejdOM4BEnYuzgmKuZA",
+        "type": "depends_on"
+      },
+      {
+        "source": "PVTI_lADOBejdOM4BEnYuzgmKzYo",
+        "target": "PVTI_lADOBejdOM4BEnYuzggaaQM",
+        "type": "related_to"
+      },
+      {
+        "source": "PVTI_lADOBejdOM4BEnYuzgmKzbU",
+        "target": "PVTI_lADOBejdOM4BEnYuzgiiyWs",
+        "type": "related_to"
+      }
+    ],
+    "nodes": [
+      {
+        "assigned_to": "human:franrolotti",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#71](https://github.com/BreadchainCoop/saving-circles/issues/71)\n\nSet up automated CI, testnet deployment, and mainnet deployment for the SavingCircles cont",
+        "id": "PVTI_lADOBejdOM4BEnYuzgiIf4Q",
+        "priority": "medium",
+        "short_id": "STKS-1",
+        "status": "backlog",
+        "title": "Integrate etherform CI/CD & deployment into SavingCircles",
+        "type": "task",
+        "updated_at": "2026-02-26T05:33:59Z"
+      },
+      {
+        "assigned_to": "human:exo404",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#123](https://github.com/BreadchainCoop/saving-circles/pull/123)\n\nTo solve the issue #114, I implemented 2 view functions\r\n\r\nFirst one is `circleState` that",
+        "id": "PVTI_lADOBejdOM4BEnYuzgmD8kQ",
+        "priority": "medium",
+        "short_id": "STKS-2",
+        "status": "backlog",
+        "title": "Add Stacks Card details",
+        "type": "task",
+        "updated_at": "2026-02-26T05:33:59Z"
+      },
+      {
+        "assigned_to": "human:Olaleye-Blessing",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#76](https://github.com/BreadchainCoop/saving-circles/issues/76)",
+        "id": "PVTI_lADOBejdOM4BEnYuzgijFpM",
+        "priority": "medium",
+        "short_id": "STKS-3",
+        "status": "done",
+        "title": "Stack app front-end development",
+        "type": "task",
+        "updated_at": "2026-02-26T05:33:59Z"
+      },
+      {
+        "assigned_to": "human:Olaleye-Blessing",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#115](https://github.com/BreadchainCoop/saving-circles/issues/115)\n\nWe should consider that the number of members part of the Stack will always be:\n\n- The c",
+        "id": "PVTI_lADOBejdOM4BEnYuzgk23o4",
+        "priority": "medium",
+        "short_id": "STKS-4",
+        "status": "done",
+        "title": "Be clear about the number of members that are part of the Stack",
+        "type": "task",
+        "updated_at": "2026-02-26T05:36:54Z"
+      },
+      {
+        "assigned_to": "human:Olaleye-Blessing",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#114](https://github.com/BreadchainCoop/saving-circles/issues/114)\n\nWhile the backend team is working on adding the information necessary to show the person",
+        "id": "PVTI_lADOBejdOM4BEnYuzgk21QU",
+        "priority": "medium",
+        "short_id": "STKS-5",
+        "status": "done",
+        "title": "Hide \"Your Stacks\" section for the alpha group testing",
+        "type": "task",
+        "updated_at": "2026-02-26T05:36:52Z"
+      },
+      {
+        "assigned_to": "human:Olaleye-Blessing",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#99](https://github.com/BreadchainCoop/saving-circles/issues/99)\n\n- Gather information about the bug (screenshoots, name of the wallet, when does it occurs?",
+        "id": "PVTI_lADOBejdOM4BEnYuzgkB0ng",
+        "priority": "medium",
+        "short_id": "STKS-6",
+        "status": "done",
+        "title": "Check issues regarding wallet connections on the app",
+        "type": "task",
+        "updated_at": "2026-02-26T05:33:59Z"
+      },
+      {
+        "assigned_to": "human:franrolotti",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#98](https://github.com/BreadchainCoop/saving-circles/issues/98)\n\n**Context**\nToday, users can claim/withdraw as soon as the round deposits have been made. ",
+        "id": "PVTI_lADOBejdOM4BEnYuzgkRcSU",
+        "priority": "medium",
+        "short_id": "STKS-7",
+        "status": "done",
+        "title": "Move claim availability to the last day of deposit period (maximize token holding time)",
+        "type": "task",
+        "updated_at": "2026-02-26T05:36:53Z"
+      },
+      {
+        "assigned_to": "human:franrolotti",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#104](https://github.com/BreadchainCoop/saving-circles/issues/104)\n\n**Context / Problem**\nRight now we calculate time in two different ways:\n\n* **Round prog",
+        "id": "PVTI_lADOBejdOM4BEnYuzgkZMAE",
+        "priority": "medium",
+        "short_id": "STKS-8",
+        "status": "done",
+        "title": "Assess time based rounds: derive `currentIndex` from time; define behavior for unclaimed rounds",
+        "type": "task",
+        "updated_at": "2026-02-26T05:33:59Z"
+      },
+      {
+        "assigned_to": "human:Olaleye-Blessing",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#116](https://github.com/BreadchainCoop/saving-circles/issues/116)\n\nThere's a current issue in the contract code that doesn't allow @Olaleye-Blessing show t",
+        "id": "PVTI_lADOBejdOM4BEnYuzgk65x4",
+        "priority": "medium",
+        "short_id": "STKS-9",
+        "status": "in_progress",
+        "title": "Show the card details information in the \"Your Stack\" section",
+        "type": "task",
+        "updated_at": "2026-02-26T05:36:54Z"
+      },
+      {
+        "assigned_to": "human:franrolotti",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#95](https://github.com/BreadchainCoop/saving-circles/issues/95)\n\n**Goal**\nAudit the time/period rules in the SavingCircles smart contracts: exactly **when ",
+        "id": "PVTI_lADOBejdOM4BEnYuzgju188",
+        "priority": "medium",
+        "short_id": "STKS-10",
+        "status": "done",
+        "title": "Verify periods/time logic : when deposits and claims are allowed",
+        "type": "task",
+        "updated_at": "2026-02-26T05:33:59Z"
+      },
+      {
+        "assigned_to": "human:daopunk",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#13](https://github.com/BreadchainCoop/saving-circles/issues/13)",
+        "id": "PVTI_lADOBejdOM4BEnYuzgfkVsU",
+        "priority": "medium",
+        "short_id": "STKS-11",
+        "status": "done",
+        "title": "using multiple if-revert statements is cheaper than using one long if-revert statement that uses && / ||.",
+        "type": "task",
+        "updated_at": "2026-02-26T05:36:55Z"
+      },
+      {
+        "assigned_to": null,
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#48](https://github.com/BreadchainCoop/saving-circles/pull/48)\n\n## Summary\n- Added complete technical specification for the Saving Circles frontend applicat",
+        "id": "PVTI_lADOBejdOM4BEnYuzgfkWdM",
+        "priority": "medium",
+        "short_id": "STKS-12",
+        "status": "backlog",
+        "title": "Add comprehensive static frontend specification",
+        "type": "task",
+        "updated_at": "2026-02-26T05:36:52Z"
+      },
+      {
+        "assigned_to": "human:Copilot",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#37](https://github.com/BreadchainCoop/saving-circles/issues/37)\n\n**Insight:**\n\nBased on user feedback from another solution, their saving circles flow was ",
+        "id": "PVTI_lADOBejdOM4BEnYuzgfkV34",
+        "priority": "medium",
+        "short_id": "STKS-13",
+        "status": "backlog",
+        "title": "Adapt circle creation flow: start off-chain with email, then move on-chain",
+        "type": "task",
+        "updated_at": "2026-02-26T05:33:59Z"
+      },
+      {
+        "assigned_to": null,
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#53](https://github.com/BreadchainCoop/saving-circles/issues/53)\n\nEvaluate whether circle members should be able to join dynamically or must be fixed at cre",
+        "id": "PVTI_lADOBejdOM4BEnYuzggaaSU",
+        "priority": "medium",
+        "short_id": "STKS-14",
+        "status": "done",
+        "title": "Assess possibility of dynamic membership and joining mechanism",
+        "type": "task",
+        "updated_at": "2026-02-26T05:33:59Z"
+      },
+      {
+        "assigned_to": null,
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#50](https://github.com/BreadchainCoop/saving-circles/issues/50)\n\n### Description\nThe initial implementation introduced automated deposit functions using ER",
+        "id": "PVTI_lADOBejdOM4BEnYuzgfkV1U",
+        "priority": "medium",
+        "short_id": "STKS-15",
+        "status": "done",
+        "title": "Add Account Abstraction Support for Automated Deposits",
+        "type": "task",
+        "updated_at": "2026-02-26T05:36:53Z"
+      },
+      {
+        "assigned_to": "human:brendaasfjnso",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#61](https://github.com/BreadchainCoop/saving-circles/issues/61)\n\n- Create the general decisions for the V1",
+        "id": "PVTI_lADOBejdOM4BEnYuzghHv3o",
+        "priority": "medium",
+        "short_id": "STKS-16",
+        "status": "done",
+        "title": "Define the scope for the project",
+        "type": "task",
+        "updated_at": "2026-02-26T05:33:59Z"
+      },
+      {
+        "assigned_to": null,
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#39](https://github.com/BreadchainCoop/saving-circles/issues/39)\n\n## Background\nBreadchainCoop's Saving Circles platform provides a collaborative mechanism ",
+        "id": "PVTI_lADOBejdOM4BEnYuzgfkV84",
+        "priority": "medium",
+        "short_id": "STKS-17",
+        "status": "done",
+        "title": "Automated ERC20 Allowance-Based Deposits and Batch Account Abstraction",
+        "type": "task",
+        "updated_at": "2026-02-26T05:36:53Z"
+      },
+      {
+        "assigned_to": "human:RonTuretzky",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#20](https://github.com/BreadchainCoop/saving-circles/issues/20)\n\nAs enforced by the template, however due to technical debt from [here](https://github.com/",
+        "id": "PVTI_lADOBejdOM4BEnYuzgfkVrM",
+        "priority": "medium",
+        "short_id": "STKS-18",
+        "status": "done",
+        "title": "Fuzz & Invariant Testing",
+        "type": "task",
+        "updated_at": "2026-02-26T05:33:59Z"
+      },
+      {
+        "assigned_to": "human:RonTuretzky",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#19](https://github.com/BreadchainCoop/saving-circles/issues/19)\n\nEither add tokens to the initializer and update deploy utils or add a function that accept",
+        "id": "PVTI_lADOBejdOM4BEnYuzgfkVrw",
+        "priority": "medium",
+        "short_id": "STKS-19",
+        "status": "done",
+        "title": "Token allowlist deployment handling",
+        "type": "task",
+        "updated_at": "2026-02-26T05:36:55Z"
+      },
+      {
+        "assigned_to": null,
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#49](https://github.com/BreadchainCoop/saving-circles/issues/49)\n\n### Description\nWe need to update the entire project to reflect the new name stacks instea",
+        "id": "PVTI_lADOBejdOM4BEnYuzgfkV2Q",
+        "priority": "medium",
+        "short_id": "STKS-20",
+        "status": "done",
+        "title": "Rebrand project from \"saving-circles\" to \"stacks\"",
+        "type": "task",
+        "updated_at": "2026-02-26T05:36:55Z"
+      },
+      {
+        "assigned_to": "human:franrolotti",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#51](https://github.com/BreadchainCoop/saving-circles/issues/51)",
+        "id": "PVTI_lADOBejdOM4BEnYuzggDq2c",
+        "priority": "medium",
+        "short_id": "STKS-21",
+        "status": "done",
+        "title": "Invite function integration from Safety Net",
+        "type": "task",
+        "updated_at": "2026-02-26T05:33:59Z"
+      },
+      {
+        "assigned_to": "human:franrolotti",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#55](https://github.com/BreadchainCoop/saving-circles/issues/55)\n\nIdentify and fix the flaw where `withdrawFor` is restricted to circle members, preventing ",
+        "id": "PVTI_lADOBejdOM4BEnYuzggaaQM",
+        "priority": "medium",
+        "short_id": "STKS-22",
+        "status": "done",
+        "title": "Design flaw in withdrawal function for non-circle members (`withdrawFor` should be permissionless)",
+        "type": "task",
+        "updated_at": "2026-02-26T05:33:59Z"
+      },
+      {
+        "assigned_to": "human:franrolotti",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#54](https://github.com/BreadchainCoop/saving-circles/issues/54)\n\nEvaluate removing `maxDeposits` and deriving the number of rounds from `members.length` to",
+        "id": "PVTI_lADOBejdOM4BEnYuzggaaRY",
+        "priority": "medium",
+        "short_id": "STKS-23",
+        "status": "done",
+        "title": "Assess whether to deprecate `maxDeposits` in favor of `members.length`",
+        "type": "task",
+        "updated_at": "2026-02-26T05:36:54Z"
+      },
+      {
+        "assigned_to": null,
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#59](https://github.com/BreadchainCoop/saving-circles/issues/59)\n\n- Invites are generated for each invited member\n- The creator needs to start the circle on",
+        "id": "PVTI_lADOBejdOM4BEnYuzghHsV8",
+        "priority": "medium",
+        "short_id": "STKS-24",
+        "status": "done",
+        "title": "The Creator of the Stack needs to \"Start\" the circle",
+        "type": "task",
+        "updated_at": "2026-02-26T05:33:59Z"
+      },
+      {
+        "assigned_to": "human:brendaasfjnso",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#60](https://github.com/BreadchainCoop/saving-circles/issues/60)",
+        "id": "PVTI_lADOBejdOM4BEnYuzghHso0",
+        "priority": "medium",
+        "short_id": "STKS-25",
+        "status": "done",
+        "title": "Create a decision tree diagram for Start the circle/stack",
+        "type": "task",
+        "updated_at": "2026-02-26T05:36:54Z"
+      },
+      {
+        "assigned_to": "human:exo404",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#68](https://github.com/BreadchainCoop/saving-circles/issues/68)\n\n## Summary\nThe conditions for decommissioning a circle are subtle and time-dependent. UI l",
+        "id": "PVTI_lADOBejdOM4BEnYuzgiAUMA",
+        "priority": "medium",
+        "short_id": "STKS-26",
+        "status": "done",
+        "title": "Add Viewer Helper: `canDecommission(id)`",
+        "type": "task",
+        "updated_at": "2026-02-26T05:36:53Z"
+      },
+      {
+        "assigned_to": "human:exo404",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#66](https://github.com/BreadchainCoop/saving-circles/issues/66)\n\n## Summary\nWhen `circleEnd` is reached and all rounds are done, the circle is still marked",
+        "id": "PVTI_lADOBejdOM4BEnYuzgiAUQs",
+        "priority": "medium",
+        "short_id": "STKS-27",
+        "status": "done",
+        "title": "Add explicit \u201cCompleted\u201d state or deactivate when finished",
+        "type": "task",
+        "updated_at": "2026-02-26T05:33:59Z"
+      },
+      {
+        "assigned_to": "human:franrolotti",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#64](https://github.com/BreadchainCoop/saving-circles/issues/64)\n\n## Summary\nThe current `create()` function requires passing a full `members[]` array.  \nIn",
+        "id": "PVTI_lADOBejdOM4BEnYuzgiAURw",
+        "priority": "medium",
+        "short_id": "STKS-28",
+        "status": "done",
+        "title": "`create()` Must Allow Zero Members (Invite-Based Flow)",
+        "type": "task",
+        "updated_at": "2026-02-26T05:36:54Z"
+      },
+      {
+        "assigned_to": "human:franrolotti",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#69](https://github.com/BreadchainCoop/saving-circles/issues/69)\n\n## Summary\nFrontend has no easy way to compute how much each member still needs to deposit",
+        "id": "PVTI_lADOBejdOM4BEnYuzgiAULA",
+        "priority": "medium",
+        "short_id": "STKS-29",
+        "status": "done",
+        "title": "Add Viewer Helper: Remaining deposit amount",
+        "type": "task",
+        "updated_at": "2026-02-26T05:36:54Z"
+      },
+      {
+        "assigned_to": "human:brendaasfjnso",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#63](https://github.com/BreadchainCoop/saving-circles/issues/63)\n\nHello! I was working on the user flow when Creating and Starting a Stack (based on the cal",
+        "id": "PVTI_lADOBejdOM4BEnYuzghWBGk",
+        "priority": "medium",
+        "short_id": "STKS-30",
+        "status": "done",
+        "title": "\"Creating and starting a Stack\" User Flow",
+        "type": "task",
+        "updated_at": "2026-02-26T05:36:54Z"
+      },
+      {
+        "assigned_to": "human:exo404",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#8](https://github.com/BreadchainCoop/saving-circles/issues/8)\n\n- [ ] Add a view function that iterates through all circles and returns an encoded array of ",
+        "id": "PVTI_lADOBejdOM4BEnYuzgfkVss",
+        "priority": "medium",
+        "short_id": "STKS-31",
+        "status": "backlog",
+        "title": "Add Gelato Automation (v2 scope)",
+        "type": "task",
+        "updated_at": "2026-02-26T05:36:53Z"
+      },
+      {
+        "assigned_to": "human:diterra-code",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#75](https://github.com/BreadchainCoop/saving-circles/issues/75)\n\n- [ ] Conduct research for the next wallet connection integration (if it's changing)\n- Pro",
+        "id": "PVTI_lADOBejdOM4BEnYuzgiiyWs",
+        "priority": "medium",
+        "short_id": "STKS-32",
+        "status": "done",
+        "title": "Wallet connection integration (v2 scope)",
+        "type": "task",
+        "updated_at": "2026-02-26T05:36:54Z"
+      },
+      {
+        "assigned_to": "human:franrolotti",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#96](https://github.com/BreadchainCoop/saving-circles/issues/96)\n\n**Goal**\nValidate the contract rules around **decommissioning** and **missed deposits**, a",
+        "id": "PVTI_lADOBejdOM4BEnYuzgju1ps",
+        "priority": "medium",
+        "short_id": "STKS-33",
+        "status": "backlog",
+        "title": "Clarify decommission + missed deposit behavior (is it ideal?)",
+        "type": "task",
+        "updated_at": "2026-02-26T05:33:59Z"
+      },
+      {
+        "assigned_to": "human:exo404",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#73](https://github.com/BreadchainCoop/saving-circles/issues/73)\n\n**Problem**\nWe want users to be able to identify the Stacks they create and/or join, so fa",
+        "id": "PVTI_lADOBejdOM4BEnYuzgiafdw",
+        "priority": "medium",
+        "short_id": "STKS-34",
+        "status": "done",
+        "title": "Apply the cookie storage solution for the naming of Stacks",
+        "type": "task",
+        "updated_at": "2026-02-26T05:33:59Z"
+      },
+      {
+        "assigned_to": "human:diterra-code",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#74](https://github.com/BreadchainCoop/saving-circles/issues/74)\n\nThe idea:\n\nHaving a soft launch / internal launch can help us tack internal issues before ",
+        "id": "PVTI_lADOBejdOM4BEnYuzgiixjo",
+        "priority": "medium",
+        "short_id": "STKS-35",
+        "status": "done",
+        "title": "Internal feedback groups after V1 launch",
+        "type": "task",
+        "updated_at": "2026-02-26T05:33:59Z"
+      },
+      {
+        "assigned_to": "human:franrolotti",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#80](https://github.com/BreadchainCoop/saving-circles/issues/80)\n\n## Problem\nOur production deploy script only deploys the upgradeable SavingCircles proxy. ",
+        "id": "PVTI_lADOBejdOM4BEnYuzgi9LTs",
+        "priority": "medium",
+        "short_id": "STKS-36",
+        "status": "done",
+        "title": "Deploy script should deploy all contracts",
+        "type": "task",
+        "updated_at": "2026-02-26T05:36:55Z"
+      },
+      {
+        "assigned_to": "human:exo404",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#84](https://github.com/BreadchainCoop/saving-circles/issues/84)\n\nA string will be implemented with the creating of every Stack containing their name. The c",
+        "id": "PVTI_lADOBejdOM4BEnYuzgjdUHA",
+        "priority": "medium",
+        "short_id": "STKS-37",
+        "status": "in_progress",
+        "title": "Use Supabase as a storage solution for stacks naming (v2 scope)",
+        "type": "task",
+        "updated_at": "2026-02-26T05:36:52Z"
+      },
+      {
+        "assigned_to": "human:diterra-code",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#110](https://github.com/BreadchainCoop/saving-circles/issues/110)\n\nGlossary can be found [here](https://docs.google.com/document/d/1ufLb71JQuLkKLj22dibjypw",
+        "id": "PVTI_lADOBejdOM4BEnYuzgkoGL8",
+        "priority": "medium",
+        "short_id": "STKS-38",
+        "status": "in_progress",
+        "title": "Work on the Stacks glossary in order to ensure consistency between products",
+        "type": "task",
+        "updated_at": "2026-02-26T05:36:55Z"
+      },
+      {
+        "assigned_to": "human:diterra-code",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#65](https://github.com/BreadchainCoop/saving-circles/issues/65)\n\n## Summary\nIf any member fails to fully deposit during a round, the circle becomes blocked",
+        "id": "PVTI_lADOBejdOM4BEnYuzgiAUSw",
+        "priority": "medium",
+        "short_id": "STKS-39",
+        "status": "in_progress",
+        "title": "Define policy when a member stops depositing mid-circle [v2 scope]",
+        "type": "task",
+        "updated_at": "2026-02-26T05:36:53Z"
+      },
+      {
+        "assigned_to": "human:diterra-code",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/app-stacks#1](https://github.com/BreadchainCoop/app-stacks/issues/1)\n\n## Description / Context\n\nWe want to abstract the BREAD token from the user experience and present o",
+        "id": "PVTI_lADOBejdOM4BEnYuzgf74YM",
+        "priority": "medium",
+        "short_id": "STKS-40",
+        "status": "in_progress",
+        "title": "Abstract BREAD Token \u2014 Show Only USD Balances on Frontend (Inspired by Hyperliquid & Polymarket)",
+        "type": "task",
+        "updated_at": "2026-02-26T05:36:54Z"
+      },
+      {
+        "assigned_to": "human:diterra-code",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#93](https://github.com/BreadchainCoop/saving-circles/issues/93)\n\nCreate a spec for autodeposit functions and automations and relate it with the current Gel",
+        "id": "PVTI_lADOBejdOM4BEnYuzgju1sM",
+        "priority": "medium",
+        "short_id": "STKS-41",
+        "status": "done",
+        "title": "Create a spec for autodeposit functions and automations",
+        "type": "task",
+        "updated_at": "2026-02-26T05:33:59Z"
+      },
+      {
+        "assigned_to": "human:Olaleye-Blessing",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#85](https://github.com/BreadchainCoop/saving-circles/issues/85)\n\nThere's an inconsistency the way it's being shown how many members have joined the Stack b",
+        "id": "PVTI_lADOBejdOM4BEnYuzgjdX7k",
+        "priority": "medium",
+        "short_id": "STKS-42",
+        "status": "done",
+        "title": "Fix inconsistency when showing the amount of members that have joined and accepted the invite",
+        "type": "task",
+        "updated_at": "2026-02-26T05:33:59Z"
+      },
+      {
+        "assigned_to": "human:diterra-code",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#86](https://github.com/BreadchainCoop/saving-circles/issues/86)\n\nRight now the cards aren't clear enough regarding how many deposits have been made by the ",
+        "id": "PVTI_lADOBejdOM4BEnYuzgjdZJQ",
+        "priority": "medium",
+        "short_id": "STKS-43",
+        "status": "done",
+        "title": "Designing deposit and claim card states to show information in a clearer way",
+        "type": "task",
+        "updated_at": "2026-02-26T05:36:54Z"
+      },
+      {
+        "assigned_to": "human:Olaleye-Blessing",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#97](https://github.com/BreadchainCoop/saving-circles/issues/97)\n\n**Context / Problem**\nToday, a user deposit often takes **two transactions**:\n\n1. ERC20 **",
+        "id": "PVTI_lADOBejdOM4BEnYuzgju1ok",
+        "priority": "medium",
+        "short_id": "STKS-44",
+        "status": "done",
+        "title": "Deposit UX: avoid repeated \"spending cap\" tx by setting a total default allowance",
+        "type": "task",
+        "updated_at": "2026-02-26T05:33:59Z"
+      },
+      {
+        "assigned_to": "human:diterra-code",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#94](https://github.com/BreadchainCoop/saving-circles/issues/94)\n\n**Context**\n`invites.tsx` currently generates invite links by:\n\n* picking unused nonces (`",
+        "id": "PVTI_lADOBejdOM4BEnYuzgju1s4",
+        "priority": "medium",
+        "short_id": "STKS-45",
+        "status": "done",
+        "title": "Invite links: UX for \"many signatures\" vs hiding/batching, and who pays gas",
+        "type": "task",
+        "updated_at": "2026-02-26T05:36:53Z"
+      },
+      {
+        "assigned_to": "human:brendaasfjnso",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#100](https://github.com/BreadchainCoop/saving-circles/issues/100)\n\nData needed:\n- Stack name\n- Number of invitations and status",
+        "id": "PVTI_lADOBejdOM4BEnYuzgkB1Jo",
+        "priority": "medium",
+        "short_id": "STKS-46",
+        "status": "done",
+        "title": "Gather the data needed to be storage on the Supabase",
+        "type": "task",
+        "updated_at": "2026-02-26T05:33:59Z"
+      },
+      {
+        "assigned_to": "human:Olaleye-Blessing",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#105](https://github.com/BreadchainCoop/saving-circles/issues/105)\n\nThe new states of the cards are ready to be applied on the front-end.",
+        "id": "PVTI_lADOBejdOM4BEnYuzgkak4M",
+        "priority": "medium",
+        "short_id": "STKS-47",
+        "status": "done",
+        "title": "Apply UI changes to the front-end of the app",
+        "type": "task",
+        "updated_at": "2026-02-26T05:36:54Z"
+      },
+      {
+        "assigned_to": "human:Olaleye-Blessing",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#106](https://github.com/BreadchainCoop/saving-circles/issues/106)\n\nUsers found difficult or impossible to connect with other wallets that weren't metamask ",
+        "id": "PVTI_lADOBejdOM4BEnYuzgkaoi8",
+        "priority": "medium",
+        "short_id": "STKS-48",
+        "status": "done",
+        "title": "Testing wallet connection to the app with different wallets",
+        "type": "task",
+        "updated_at": "2026-02-26T05:36:54Z"
+      },
+      {
+        "assigned_to": "human:franrolotti",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#108](https://github.com/BreadchainCoop/saving-circles/issues/108)\n\nIn order to reduce the amount of clicks when creating invites for Stack members, we need",
+        "id": "PVTI_lADOBejdOM4BEnYuzgkk-Y0",
+        "priority": "medium",
+        "short_id": "STKS-49",
+        "status": "done",
+        "title": "Batch transaction when creating invite links",
+        "type": "task",
+        "updated_at": "2026-02-26T05:36:53Z"
+      },
+      {
+        "assigned_to": "human:exo404",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#109](https://github.com/BreadchainCoop/saving-circles/issues/109)\n\nFrom the feedback we got from users: links were too long when shared to other users\n\n- B",
+        "id": "PVTI_lADOBejdOM4BEnYuzgkk-lY",
+        "priority": "medium",
+        "short_id": "STKS-50",
+        "status": "done",
+        "title": "Implement a shorter link structure",
+        "type": "task",
+        "updated_at": "2026-02-26T05:33:59Z"
+      },
+      {
+        "assigned_to": "human:diterra-code",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#111](https://github.com/BreadchainCoop/saving-circles/issues/111)\n\nBased on the UI, gather the information needed to be stored in a database like stack nam",
+        "id": "PVTI_lADOBejdOM4BEnYuzgkoGig",
+        "priority": "medium",
+        "short_id": "STKS-51",
+        "status": "done",
+        "title": "Communicate to the backend team what information we need to storage in the database",
+        "type": "task",
+        "updated_at": "2026-02-26T05:33:59Z"
+      },
+      {
+        "assigned_to": "human:franrolotti",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#112](https://github.com/BreadchainCoop/saving-circles/issues/112)\n\n`SavingCircles.decommission` deletes `circles[_id]`, and `getCircle` is guarded by `only",
+        "id": "PVTI_lADOBejdOM4BEnYuzgkvDj4",
+        "priority": "medium",
+        "short_id": "STKS-52",
+        "status": "backlog",
+        "title": "`decommission` deletes circle data, causing `getUserCircleData` to revert",
+        "type": "task",
+        "updated_at": "2026-02-26T05:36:53Z"
+      },
+      {
+        "assigned_to": null,
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#113](https://github.com/BreadchainCoop/saving-circles/issues/113)\n\n_Originally posted by @RonTuretzky in https://github.com/BreadchainCoop/saving-circles/p",
+        "id": "PVTI_lADOBejdOM4BEnYuzgkxknw",
+        "priority": "medium",
+        "short_id": "STKS-53",
+        "status": "backlog",
+        "title": "Code duplication issues",
+        "type": "task",
+        "updated_at": "2026-02-26T05:33:59Z"
+      },
+      {
+        "assigned_to": "human:exo404",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#118](https://github.com/BreadchainCoop/saving-circles/issues/118)\n\n## 1. Background\n\n### Problem Statement  \nThe Stacks project requires periodic and/or co",
+        "id": "PVTI_lADOBejdOM4BEnYuzglbas4",
+        "priority": "medium",
+        "short_id": "STKS-54",
+        "status": "backlog",
+        "title": "Technical Spec for Gelato Automation Integration for Stacks",
+        "type": "task",
+        "updated_at": "2026-02-26T05:36:53Z"
+      },
+      {
+        "assigned_to": "human:exo404",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/app-stacks#24](https://github.com/BreadchainCoop/app-stacks/issues/24)\n\n## 1. Background\n\n### Problem Statement \nIn the Stacks project, several user-facing metadata field",
+        "id": "PVTI_lADOBejdOM4BEnYuzglba54",
+        "priority": "medium",
+        "short_id": "STKS-55",
+        "status": "backlog",
+        "title": "Technical Spec for the Stacks Supabase integration",
+        "type": "task",
+        "updated_at": "2026-02-26T05:36:52Z"
+      },
+      {
+        "assigned_to": "human:franrolotti",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#120](https://github.com/BreadchainCoop/saving-circles/issues/120)\n\n**Problem**\n`decommission()` refunds via **rounds \u00d7 members** loops (`len \u00d7 len`), so it",
+        "id": "PVTI_lADOBejdOM4BEnYuzgmKt_M",
+        "priority": "medium",
+        "short_id": "STKS-56",
+        "status": "backlog",
+        "title": "Optimize `decommission()` refund logic to avoid gas blowups",
+        "type": "task",
+        "updated_at": "2026-02-26T05:36:53Z"
+      },
+      {
+        "assigned_to": null,
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#122](https://github.com/BreadchainCoop/saving-circles/issues/122)\n\n### Summary\n`SavingCircles` credits deposits using the requested `_value` instead of the",
+        "id": "PVTI_lADOBejdOM4BEnYuzgmKt_0",
+        "priority": "medium",
+        "short_id": "STKS-57",
+        "status": "backlog",
+        "title": "Fee-on-transfer / rebasing ERC20s break deposit accounting and can cause cross-circle fund loss / insolvency",
+        "type": "task",
+        "updated_at": "2026-02-26T05:33:59Z"
+      },
+      {
+        "assigned_to": "human:franrolotti",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#124](https://github.com/BreadchainCoop/saving-circles/issues/124)",
+        "id": "PVTI_lADOBejdOM4BEnYuzgmKuZA",
+        "priority": "medium",
+        "short_id": "STKS-58",
+        "status": "backlog",
+        "title": "Create spec for the optimization for this issue",
+        "type": "task",
+        "updated_at": "2026-02-26T05:33:59Z"
+      },
+      {
+        "assigned_to": "human:franrolotti",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/saving-circles#125](https://github.com/BreadchainCoop/saving-circles/issues/125)\n\n### Summary\n\nLate claims are valid at the contract level because `_claimable(id, member)",
+        "id": "PVTI_lADOBejdOM4BEnYuzgmKzYo",
+        "priority": "medium",
+        "short_id": "STKS-59",
+        "status": "in_progress",
+        "title": "Fix Viewer `canWithdraw` for late claims",
+        "type": "task",
+        "updated_at": "2026-02-26T05:36:54Z"
+      },
+      {
+        "assigned_to": "human:franrolotti",
+        "branch_links": [],
+        "created_at": "2026-02-26T05:33:59Z",
+        "description_snippet": "GitHub Issue: [BreadchainCoop/app-stacks#34](https://github.com/BreadchainCoop/app-stacks/issues/34)\n\nWe need a user-facing funding flow that gets users closer to being deposit-ready for Stacks, where",
+        "id": "PVTI_lADOBejdOM4BEnYuzgmKzbU",
+        "priority": "medium",
+        "short_id": "STKS-60",
+        "status": "in_progress",
+        "title": "Implement funding flow for Privy embedded wallets",
+        "type": "task",
+        "updated_at": "2026-02-26T05:36:55Z"
+      }
+    ]
+  },
+  "ok": true
 }
