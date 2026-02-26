@@ -36,6 +36,9 @@ coverage.xml
 notes/
 research/
 
+# Generated dashboard data (rebuilt by CI from GitHub Project)
+data/
+
 # OS
 .DS_Store
 Thumbs.db

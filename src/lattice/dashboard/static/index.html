@@ -1337,6 +1337,7 @@ select.form-control{cursor:pointer}
   <span class="nav-tab" data-view="cube" onclick="location.hash='#/cube'">Cube</span>
   <span class="nav-tab" data-view="web" onclick="location.hash='#/web'">Web</span>
   <div class="nav-right" style="position:relative">
+    <span id="gh-auth-container" style="display:inline-flex;align-items:center;gap:4px"></span>
     <span id="stats-badges"></span>
     <button type="button" class="btn btn-new-task" id="new-task-btn" title="Create new task">+ New Task</button>
     <button type="button" class="btn btn-with-icon" id="settings-btn" title="Dashboard Settings"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg> Settings</button>
@@ -1481,8 +1482,8 @@ select.form-control{cursor:pointer}
 <script src="https://unpkg.com/d3-force-3d@3"></script>
 <script src="https://unpkg.com/force-graph@1/dist/force-graph.min.js"></script>
 <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
-<link rel="stylesheet" href="/static/cube3d.css">
-<script src="/static/cube3d.js" defer></script>
+<link rel="stylesheet" href="static/cube3d.css">
+<script src="static/cube3d.js" defer></script>
 <script>
 (function(){
 "use strict";
@@ -2068,8 +2069,299 @@ var WEB_LINK_DISTANCE = { "hub-task": 100, "task-task": 60, "cross-cutting": 120
 var WEB_CHARGE = { hub: -400, task: -50 };
 var WEB_COLLISION_RADIUS = { hub: 30, task: 10 };
 
+// --- GitHub Pages Mode ---
+var ghMode = {
+  enabled: false,
+  token: null,
+  user: null,
+  org: "",
+  projectNumber: 0,
+  repo: "",
+  oauthClientId: "",
+  oauthProxyUrl: "",
+  projectFieldCache: null,  // cached project field metadata
+
+  init: function() {
+    // Detect GitHub Pages hosting
+    if (location.hostname.endsWith("github.io") || location.search.includes("gh_mode=1")) {
+      this.enabled = true;
+      this.token = localStorage.getItem("gh_token");
+      this.user = localStorage.getItem("gh_user");
+      // Handle OAuth callback
+      var params = new URLSearchParams(location.search);
+      var code = params.get("code");
+      if (code && !this.token) {
+        this._exchangeOAuthCode(code);
+        return;
+      }
+      this._updateAuthUI();
+    }
+  },
+
+  _exchangeOAuthCode: async function(code) {
+    try {
+      var configResp = await fetch("data/config.json");
+      var configData = await configResp.json();
+      var gh = configData.github || {};
+      this.oauthProxyUrl = gh.oauth_proxy_url || "";
+      if (!this.oauthProxyUrl) {
+        showToast("OAuth proxy URL not configured", "error");
+        return;
+      }
+      var r = await fetch(this.oauthProxyUrl, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({code: code})
+      });
+      var data = await r.json();
+      if (data.access_token) {
+        localStorage.setItem("gh_token", data.access_token);
+        this.token = data.access_token;
+        // Fetch user info
+        var userR = await fetch("https://api.github.com/user", {
+          headers: {"Authorization": "Bearer " + data.access_token}
+        });
+        var userData = await userR.json();
+        if (userData.login) {
+          localStorage.setItem("gh_user", userData.login);
+          this.user = userData.login;
+        }
+        // Clean URL and reload
+        window.history.replaceState({}, "", location.pathname + location.hash);
+        location.reload();
+      } else {
+        showToast("OAuth failed: " + (data.error || "unknown error"), "error");
+      }
+    } catch(e) {
+      showToast("OAuth exchange failed: " + e.message, "error");
+    }
+  },
+
+  _updateAuthUI: function() {
+    var container = document.getElementById("gh-auth-container");
+    if (!container) return;
+    if (this.token && this.user) {
+      container.innerHTML = '<span style="color:var(--text-secondary);font-size:.8rem;margin-right:8px">' + this.user + '</span>' +
+        '<button type="button" class="btn" onclick="ghMode.signOut()" style="font-size:.75rem;padding:2px 8px">Sign Out</button>';
+    } else {
+      container.innerHTML = '<button type="button" class="btn btn-with-icon" onclick="ghMode.signIn()" style="font-size:.75rem;padding:3px 10px">' +
+        '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>' +
+        ' Sign in with GitHub</button>';
+    }
+  },
+
+  signIn: function() {
+    if (!this.oauthClientId) {
+      // Try manual token entry fallback
+      var token = prompt("Enter a GitHub Personal Access Token with 'repo' and 'project' scopes.\n\nOr configure OAuth: set oauth_client_id in data/config.json.");
+      if (token) {
+        localStorage.setItem("gh_token", token);
+        this.token = token;
+        // Fetch user
+        fetch("https://api.github.com/user", {headers: {"Authorization": "Bearer " + token}})
+          .then(function(r) { return r.json(); })
+          .then(function(u) {
+            if (u.login) {
+              localStorage.setItem("gh_user", u.login);
+              ghMode.user = u.login;
+            }
+            location.reload();
+          });
+      }
+      return;
+    }
+    var redirectUri = location.origin + location.pathname;
+    window.location.href = "https://github.com/login/oauth/authorize?client_id=" +
+      encodeURIComponent(this.oauthClientId) +
+      "&redirect_uri=" + encodeURIComponent(redirectUri) +
+      "&scope=repo,project";
+  },
+
+  signOut: function() {
+    localStorage.removeItem("gh_token");
+    localStorage.removeItem("gh_user");
+    this.token = null;
+    this.user = null;
+    location.reload();
+  },
+
+  graphql: async function(query, variables) {
+    var r = await fetch("https://api.github.com/graphql", {
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer " + this.token,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({query: query, variables: variables || {}})
+    });
+    var body = await r.json();
+    if (body.errors) throw new Error(body.errors[0].message);
+    return body.data;
+  },
+
+  restApi: async function(path, opts) {
+    opts = opts || {};
+    opts.headers = opts.headers || {};
+    opts.headers["Authorization"] = "Bearer " + this.token;
+    opts.headers["Accept"] = "application/vnd.github+json";
+    if (opts.body && typeof opts.body === "object") {
+      opts.headers["Content-Type"] = "application/json";
+      opts.body = JSON.stringify(opts.body);
+    }
+    var r = await fetch("https://api.github.com" + path, opts);
+    if (!r.ok) {
+      var errBody = await r.json().catch(function() { return {}; });
+      throw new Error(errBody.message || "GitHub API error " + r.status);
+    }
+    return r.json();
+  },
+
+  fetchProjectItems: async function() {
+    var query = 'query($org: String!, $num: Int!, $cursor: String) { organization(login: $org) { projectV2(number: $num) { id title items(first: 100, after: $cursor) { pageInfo { hasNextPage endCursor } nodes { id fieldValues(first: 20) { nodes { ... on ProjectV2ItemFieldTextValue { text field { ... on ProjectV2Field { name } } } ... on ProjectV2ItemFieldSingleSelectValue { name optionId field { ... on ProjectV2SingleSelectField { name } } } ... on ProjectV2ItemFieldIterationValue { title field { ... on ProjectV2IterationField { name } } } ... on ProjectV2ItemFieldDateValue { date field { ... on ProjectV2Field { name } } } } } content { ... on Issue { number title url body state labels(first:10) { nodes { name } } assignees(first:5) { nodes { login } } createdAt updatedAt comments { totalCount } } ... on PullRequest { number title url body state createdAt updatedAt } } } } fields(first: 30) { nodes { ... on ProjectV2SingleSelectField { id name options { id name } } ... on ProjectV2Field { id name } } } } } }';
+    // Also try user-level if org fails
+    var userQuery = query.replace("organization(login: $org)", "user(login: $org)");
+
+    var allItems = [];
+    var cursor = null;
+    var projectId = null;
+    var fields = null;
+    var useUser = false;
+
+    while (true) {
+      try {
+        var data = await this.graphql(useUser ? userQuery : query, {org: this.org, num: this.projectNumber, cursor: cursor});
+        var owner = data.organization || data.user;
+        var project = owner.projectV2;
+        projectId = project.id;
+        fields = project.fields.nodes;
+        var items = project.items;
+        allItems = allItems.concat(items.nodes);
+        if (items.pageInfo.hasNextPage) {
+          cursor = items.pageInfo.endCursor;
+        } else {
+          break;
+        }
+      } catch(e) {
+        if (!useUser && e.message.toLowerCase().includes("not found")) {
+          useUser = true;
+          cursor = null;
+          allItems = [];
+          continue;
+        }
+        throw e;
+      }
+    }
+
+    this.projectFieldCache = {projectId: projectId, fields: fields};
+    return this._mapItems(allItems);
+  },
+
+  _mapItems: function(items) {
+    var statusMap = {"Backlog":"backlog","Todo":"backlog","In Progress":"in_progress","In Review":"review","Needs review":"review","Review":"review","Done":"done","Cancelled":"cancelled","Blocked":"blocked"};
+    var priMap = {"Critical":"critical","High":"high","Medium":"medium","Low":"low"};
+
+    return items.map(function(item, idx) {
+      var content = item.content || {};
+      var fieldValues = (item.fieldValues && item.fieldValues.nodes) || [];
+
+      // Extract status and priority from field values
+      var ghStatus = "Todo";
+      var ghPriority = "Medium";
+      fieldValues.forEach(function(fv) {
+        if (!fv || !fv.field) return;
+        var fname = fv.field.name || "";
+        if (fname === "Status" && fv.name) ghStatus = fv.name;
+        if (fname === "Priority" && fv.name) ghPriority = fv.name;
+      });
+
+      var issueNumber = content.number;
+      var assignees = ((content.assignees && content.assignees.nodes) || []).map(function(a) { return a.login; });
+      var labels = ((content.labels && content.labels.nodes) || []).map(function(l) { return l.name; });
+      var latticeStatus = statusMap[ghStatus] || "backlog";
+
+      return {
+        id: item.id,
+        short_id: issueNumber ? "GH-" + issueNumber : "GH-" + (idx + 1),
+        title: content.title || "(untitled)",
+        status: latticeStatus,
+        priority: priMap[ghPriority] || "medium",
+        type: "task",
+        assigned_to: assignees.length ? "human:" + assignees[0] : null,
+        tags: labels.length ? labels.map(function(l) { return l.toLowerCase().replace(/\s+/g, "-"); }) : null,
+        created_at: content.createdAt || "",
+        updated_at: content.updatedAt || content.createdAt || "",
+        done_at: latticeStatus === "done" ? (content.updatedAt || "") : null,
+        last_status_changed_at: content.updatedAt || content.createdAt || "",
+        comment_count: (content.comments && content.comments.totalCount) || 0,
+        reopened_count: 0,
+        relationships_out_count: 0,
+        evidence_ref_count: 0,
+        branch_link_count: 0,
+        has_active_session: latticeStatus === "in_progress" && assignees.length > 0,
+        description: content.body || null,
+        custom_fields: {
+          github_url: content.url || "",
+          github_issue_number: issueNumber ? String(issueNumber) : "",
+          github_project_item_id: item.id,
+          _gh_status_name: ghStatus  // preserve original for mutations
+        }
+      };
+    });
+  },
+
+  updateItemStatus: async function(itemId, newGhStatus) {
+    if (!this.projectFieldCache) throw new Error("Project metadata not loaded");
+    // Find the Status field and option
+    var statusField = null;
+    var targetOption = null;
+    (this.projectFieldCache.fields || []).forEach(function(f) {
+      if (f.name === "Status" && f.options) {
+        statusField = f;
+        f.options.forEach(function(opt) {
+          if (opt.name === newGhStatus) targetOption = opt;
+        });
+      }
+    });
+    if (!statusField || !targetOption) throw new Error("Status '" + newGhStatus + "' not found in project fields");
+
+    var mutation = 'mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) { updateProjectV2ItemFieldValue(input: {projectId: $projectId, itemId: $itemId, fieldId: $fieldId, value: {singleSelectOptionId: $optionId}}) { projectV2Item { id } } }';
+    await this.graphql(mutation, {
+      projectId: this.projectFieldCache.projectId,
+      itemId: itemId,
+      fieldId: statusField.id,
+      optionId: targetOption.id
+    });
+  },
+
+  addComment: async function(issueNumber, body) {
+    // Extract owner/repo from the repo config or the first item's URL
+    var repoParts = this.repo.split("/");
+    if (repoParts.length !== 2) throw new Error("Repo not configured for comments");
+    await this.restApi("/repos/" + repoParts[0] + "/" + repoParts[1] + "/issues/" + issueNumber + "/comments", {
+      method: "POST",
+      body: {body: body}
+    });
+  },
+
+  updateAssignees: async function(issueNumber, assignees) {
+    var repoParts = this.repo.split("/");
+    if (repoParts.length !== 2) throw new Error("Repo not configured");
+    await this.restApi("/repos/" + repoParts[0] + "/" + repoParts[1] + "/issues/" + issueNumber, {
+      method: "PATCH",
+      body: {assignees: assignees}
+    });
+  },
+
+  // Reverse mapping: Lattice status -> GitHub Project status name
+  _reverseStatusMap: {"backlog":"Backlog","in_progress":"In Progress","review":"In Review","done":"Done","cancelled":"Cancelled","blocked":"Blocked"}
+};
+
 // --- API ---
 async function api(path, opts) {
+  // GitHub Pages mode: intercept API calls
+  if (ghMode.enabled) {
+    return ghApi(path, opts);
+  }
   var r = await fetch(path, opts);
   var body = await r.json();
   if (!body.ok) throw new Error(body.error ? body.error.message : "API error");
@@ -2077,6 +2369,9 @@ async function api(path, opts) {
 }
 
 async function apiPost(path, data) {
+  if (ghMode.enabled) {
+    return ghApiPost(path, data);
+  }
   return api(path, {
     method: "POST",
     headers: {"Content-Type": "application/json"},
@@ -2084,9 +2379,228 @@ async function apiPost(path, data) {
   });
 }
 
+// GitHub Pages API adapter for GET requests
+async function ghApi(path) {
+  // Config
+  if (path === "/api/config") {
+    var r = await fetch("data/config.json");
+    var cfg = await r.json();
+    // Store GitHub config for later use
+    var gh = cfg.github || {};
+    ghMode.org = gh.org || "";
+    ghMode.projectNumber = gh.project_number || 0;
+    ghMode.repo = gh.repo || "";
+    ghMode.oauthClientId = gh.oauth_client_id || "";
+    ghMode.oauthProxyUrl = gh.oauth_proxy_url || "";
+    ghMode._updateAuthUI();
+    return cfg;
+  }
+
+  // Tasks list
+  if (path === "/api/tasks") {
+    // If authenticated, fetch live from GitHub API
+    if (ghMode.token) {
+      try {
+        return await ghMode.fetchProjectItems();
+      } catch(e) {
+        console.warn("Live fetch failed, falling back to snapshot:", e);
+      }
+    }
+    // Fall back to static snapshot
+    var r2 = await fetch("data/snapshot.json");
+    var snap = await r2.json();
+    return snap.data || snap;
+  }
+
+  // Graph data — build nodes from tasks array for Cube 3D
+  if (path === "/api/graph" || path.startsWith("/api/graph")) {
+    // Fetch tasks directly to avoid race with parallel Promise.all
+    var graphTasks = tasks;
+    if (!graphTasks || graphTasks.length === 0) {
+      var r3 = await fetch("data/snapshot.json");
+      var snap3 = await r3.json();
+      graphTasks = snap3.data || snap3;
+    }
+    var graphNodes = (graphTasks || []).map(function(t) {
+      return {
+        id: t.id,
+        short_id: t.short_id,
+        title: t.title,
+        status: t.status,
+        priority: t.priority,
+        type: t.type,
+        assigned_to: t.assigned_to,
+        branch_links: [],
+        created_at: t.created_at,
+        updated_at: t.updated_at,
+        description_snippet: (t.description || "").slice(0, 200)
+      };
+    });
+    // Fetch pre-built graph with links from data/graph.json
+    var graphLinks = [];
+    try {
+      var r4 = await fetch("data/graph.json");
+      var graphFile = await r4.json();
+      graphLinks = (graphFile.data && graphFile.data.links) || graphFile.links || [];
+    } catch(e) { /* no links available */ }
+    return {nodes: graphNodes, links: graphLinks, revision: graphNodes.length + ":" + (graphNodes[0] && graphNodes[0].updated_at || "")};
+  }
+
+  // Archived tasks (not available in GH Pages mode)
+  if (path === "/api/archived") {
+    return [];
+  }
+
+  // Task detail
+  var taskMatch = path.match(/^\/api\/tasks\/([^\/]+)$/);
+  if (taskMatch) {
+    // Find in current tasks array
+    var tid = taskMatch[1];
+    for (var i = 0; i < tasks.length; i++) {
+      if (tasks[i].id === tid) return tasks[i];
+    }
+    throw new Error("Task not found");
+  }
+
+  // Task full detail
+  var fullMatch = path.match(/^\/api\/tasks\/([^\/]+)\/full$/);
+  if (fullMatch) {
+    var tid2 = fullMatch[1];
+    for (var j = 0; j < tasks.length; j++) {
+      if (tasks[j].id === tid2) {
+        var t2 = Object.assign({}, tasks[j]);
+        t2.recent_events = [];
+        t2.comments = [];
+        return t2;
+      }
+    }
+    throw new Error("Task not found");
+  }
+
+  // Events / comments — not available in static mode
+  if (path.match(/\/events$/) || path.match(/\/comments$/)) {
+    return [];
+  }
+
+  // Activity
+  if (path === "/api/activity") {
+    return {events: [], has_more: false};
+  }
+
+  // Stats
+  if (path === "/api/stats") {
+    return {};
+  }
+
+  // Git
+  if (path === "/api/git" || path.startsWith("/api/git/")) {
+    return {branches: []};
+  }
+
+  throw new Error("Not available in GitHub Pages mode: " + path);
+}
+
+// GitHub Pages API adapter for POST requests (mutations)
+async function ghApiPost(path, data) {
+  if (!ghMode.token) {
+    showToast("Sign in with GitHub to make changes", "error");
+    throw new Error("Authentication required");
+  }
+
+  // Status change
+  var statusMatch = path.match(/^\/api\/tasks\/([^\/]+)\/status$/);
+  if (statusMatch) {
+    var taskId = statusMatch[1];
+    var newLatticeStatus = data.status;
+    var ghStatusName = ghMode._reverseStatusMap[newLatticeStatus] || newLatticeStatus;
+    await ghMode.updateItemStatus(taskId, ghStatusName);
+    // Refresh tasks from live API
+    tasks = await ghMode.fetchProjectItems();
+    return {};
+  }
+
+  // Comment
+  var commentMatch = path.match(/^\/api\/tasks\/([^\/]+)\/comment$/);
+  if (commentMatch) {
+    var ctid = commentMatch[1];
+    // Find the issue number
+    var task = null;
+    for (var i = 0; i < tasks.length; i++) {
+      if (tasks[i].id === ctid) { task = tasks[i]; break; }
+    }
+    if (task && task.custom_fields && task.custom_fields.github_issue_number) {
+      await ghMode.addComment(parseInt(task.custom_fields.github_issue_number), data.body);
+      return {};
+    }
+    throw new Error("Cannot comment: issue number not found");
+  }
+
+  // Assign
+  var assignMatch = path.match(/^\/api\/tasks\/([^\/]+)\/assign$/);
+  if (assignMatch) {
+    var atid = assignMatch[1];
+    var assignTask = null;
+    for (var k = 0; k < tasks.length; k++) {
+      if (tasks[k].id === atid) { assignTask = tasks[k]; break; }
+    }
+    if (assignTask && assignTask.custom_fields && assignTask.custom_fields.github_issue_number) {
+      var assignee = (data.assigned_to || "").replace(/^human:/, "");
+      await ghMode.updateAssignees(
+        parseInt(assignTask.custom_fields.github_issue_number),
+        assignee ? [assignee] : []
+      );
+      tasks = await ghMode.fetchProjectItems();
+      return {};
+    }
+    throw new Error("Cannot assign: issue number not found");
+  }
+
+  // Create task -> create GitHub issue
+  if (path === "/api/tasks") {
+    if (ghMode.repo) {
+      var repoParts = ghMode.repo.split("/");
+      if (repoParts.length === 2) {
+        var issueData = {title: data.title || "New Task"};
+        if (data.description) issueData.body = data.description;
+        if (data.tags && data.tags.length) issueData.labels = data.tags;
+        var created = await ghMode.restApi("/repos/" + repoParts[0] + "/" + repoParts[1] + "/issues", {
+          method: "POST",
+          body: issueData
+        });
+        // Refresh tasks
+        tasks = await ghMode.fetchProjectItems();
+        return {id: "gh_" + created.number, short_id: "GH-" + created.number};
+      }
+    }
+    throw new Error("Cannot create tasks: repo not configured");
+  }
+
+  // Config save — store in localStorage in GH Pages mode
+  if (path === "/api/config/dashboard") {
+    localStorage.setItem("gh_dashboard_config", JSON.stringify(data));
+    if (config) config.dashboard = Object.assign(config.dashboard || {}, data);
+    return {};
+  }
+
+  // Unsupported mutations
+  showToast("This action is not yet supported in GitHub Pages mode", "error");
+  throw new Error("Not supported in GitHub Pages mode: " + path);
+}
+
 // --- Open Notes / Plans in System Editor ---
 // Exposed on window because inline onclick handlers can't reach IIFE scope
 window.openNotes = async function(taskId) {
+  if (ghMode.enabled) {
+    // In GitHub mode, try to open the issue URL
+    for (var i = 0; i < tasks.length; i++) {
+      if (tasks[i].id === taskId && tasks[i].custom_fields && tasks[i].custom_fields.github_url) {
+        window.open(tasks[i].custom_fields.github_url, "_blank");
+        return;
+      }
+    }
+    showToast("No GitHub URL for this task", "error");
+    return;
+  }
   try {
     await apiPost("/api/tasks/" + taskId + "/open-notes", {});
     showToast(t("toast.notes_opened"));
@@ -2096,6 +2610,17 @@ window.openNotes = async function(taskId) {
 };
 
 window.openPlans = async function(taskId) {
+  if (ghMode.enabled) {
+    // In GitHub mode, open the issue URL
+    for (var i = 0; i < tasks.length; i++) {
+      if (tasks[i].id === taskId && tasks[i].custom_fields && tasks[i].custom_fields.github_url) {
+        window.open(tasks[i].custom_fields.github_url, "_blank");
+        return;
+      }
+    }
+    showToast("No GitHub URL for this task", "error");
+    return;
+  }
   try {
     await apiPost("/api/tasks/" + taskId + "/open-plans", {});
     showToast(t("toast.plans_opened"));
@@ -6304,10 +6829,12 @@ window._lattice = {
   getStatusDisplayName: getStatusDisplayName,
   getStatusDescription: getStatusDescription,
   getConfig: function() { return config; },
-  getCurrentView: function() { return currentView; }
+  getCurrentView: function() { return currentView; },
+  ghMode: ghMode
 };
 
 // --- Boot ---
+ghMode.init();
 init().then(function() { startAutoRefresh(); startHeatBarTick(); });
 
 })();
