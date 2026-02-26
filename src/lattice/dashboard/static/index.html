@@ -2414,7 +2414,14 @@ async function ghApi(path) {
 
   // Graph data — build nodes from tasks array for Cube 3D
   if (path === "/api/graph" || path.startsWith("/api/graph")) {
-    var graphNodes = (tasks || []).map(function(t) {
+    // Fetch tasks directly to avoid race with parallel Promise.all
+    var graphTasks = tasks;
+    if (!graphTasks || graphTasks.length === 0) {
+      var r3 = await fetch("data/snapshot.json");
+      var snap3 = await r3.json();
+      graphTasks = snap3.data || snap3;
+    }
+    var graphNodes = (graphTasks || []).map(function(t) {
       return {
         id: t.id,
         short_id: t.short_id,
