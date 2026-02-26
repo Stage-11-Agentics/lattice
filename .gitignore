@@ -36,6 +36,10 @@ coverage.xml
 notes/
 research/
 
+# Node / Bun
+node_modules/
+bun.lock
+
 # OS
 .DS_Store
 Thumbs.db
