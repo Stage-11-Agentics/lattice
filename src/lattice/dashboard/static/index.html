@@ -2412,15 +2412,24 @@ async function ghApi(path) {
     return snap.data || snap;
   }
 
-  // Graph data
+  // Graph data — build nodes from tasks array for Cube 3D
   if (path === "/api/graph" || path.startsWith("/api/graph")) {
-    try {
-      var r3 = await fetch("data/graph.json");
-      var gd = await r3.json();
-      return gd.data || {links: []};
-    } catch(e) {
-      return {links: []};
-    }
+    var graphNodes = (tasks || []).map(function(t) {
+      return {
+        id: t.id,
+        short_id: t.short_id,
+        title: t.title,
+        status: t.status,
+        priority: t.priority,
+        type: t.type,
+        assigned_to: t.assigned_to,
+        branch_links: [],
+        created_at: t.created_at,
+        updated_at: t.updated_at,
+        description_snippet: (t.description || "").slice(0, 200)
+      };
+    });
+    return {nodes: graphNodes, links: [], revision: graphNodes.length + ":" + (graphNodes[0] && graphNodes[0].updated_at || "")};
   }
 
   // Archived tasks (not available in GH Pages mode)
