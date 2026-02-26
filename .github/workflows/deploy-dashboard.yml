@@ -1,0 +1,59 @@
+name: Deploy Dashboard to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  issues:
+    types: [opened, edited, closed, reopened, labeled, unlabeled, assigned, unassigned]
+  workflow_dispatch:
+  schedule:
+    - cron: "0 */6 * * *"  # Rebuild every 6 hours as fallback
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Generate dashboard data from GitHub Project
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_ORG: ${{ vars.GH_ORG }}
+          GH_PROJECT_NUMBER: ${{ vars.GH_PROJECT_NUMBER }}
+          GH_REPO: ${{ vars.GH_REPO }}
+          OAUTH_CLIENT_ID: ${{ vars.OAUTH_CLIENT_ID }}
+          OAUTH_PROXY_URL: ${{ vars.OAUTH_PROXY_URL }}
+        run: python scripts/generate_dashboard_data.py
+
+      - name: Prepare Pages artifact
+        run: |
+          mkdir -p _site/data _site/static
+          cp src/lattice/dashboard/static/index.html _site/
+          cp src/lattice/dashboard/static/cube3d.css _site/static/
+          cp src/lattice/dashboard/static/cube3d.js _site/static/
+          cp data/snapshot.json _site/data/
+          cp data/config.json _site/data/
+          cp data/graph.json _site/data/
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
