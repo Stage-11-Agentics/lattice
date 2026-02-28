@@ -79,30 +79,6 @@ the filesystem is the one substrate every agent already has access to. Claude Co
 
 this is why Lattice works where other tools don't. it meets agents where they are. on disk. in the project. next to the code.
 
-### every write has a who
-
-every operation requires an `--actor` in `prefix:identifier` format:
-
-- `human:atin` -- a person
-- `agent:claude-opus-4` -- an AI agent
-- `team:frontend` -- a team or group
-
-you cannot write anonymously. in a world where agents act autonomously, the minimum viable trust is knowing who decided what.
-
-### events are the source of truth
-
-every change becomes an immutable event with a timestamp and actor identity. task files are materialized snapshots for fast reads. but events are the real record. full audit trail. crash recovery. and git-friendly -- two agents on different machines append independently. histories merge through git. no coordination protocol needed.
-
-### statuses and relationships
-
-```
-backlog -> in_planning -> planned -> in_progress -> review -> done
-```
-
-plus `blocked`, `needs_human` (reachable from any active status), and `cancelled`. transitions are defined and enforced.
-
-tasks connect with typed relationships: `blocks`, `depends_on`, `subtask_of`, `related_to`, `spawned_by`, `duplicate_of`, `supersedes`. you cannot just "link" two tasks -- you must declare *why*.
-
 ---
 
 ## status
