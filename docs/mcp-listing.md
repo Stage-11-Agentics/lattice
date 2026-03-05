@@ -250,5 +250,5 @@ Legend: 🐍 = Python, 🏠 = Local, 🍎 = macOS, 🪟 = Windows, 🐧 = Linux
 | Repository | https://github.com/Stage-11-Agentics/lattice |
 | PyPI | https://pypi.org/project/lattice-tracker/ |
 | Issues | https://github.com/Stage-11-Agentics/lattice/issues |
-| Author | [Stage 11 Agentics](https://stage11agentic.com) |
+| Author | [Stage 11 Agentics](https://stage11agentics.com) |
 | License | MIT |

@@ -13,7 +13,7 @@ requires-python = ">=3.12"
 license = "MIT"
 readme = "README.md"
 authors = [
-    { name = "Stage 11 Agentics", email = "hello@stage11agentic.com" },
+    { name = "Stage 11 Agentics", email = "hello@stage11agentics.com" },
 ]
 keywords = ["task-tracker", "agent", "ai", "event-sourcing", "cli", "mcp"]
 classifiers = [
