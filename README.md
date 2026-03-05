@@ -65,7 +65,16 @@ a local web UI for the human side of the loop. Kanban board, activity feed, stat
 
 the dashboard reads and writes the same `.lattice/` directory your agents use. an agent commits a status change via CLI. your dashboard reflects it on refresh. one source of truth. many windows into it.
 
-<!-- TODO: screenshot -->
+<table>
+  <tr>
+    <td><img src="docs/images/dashboard-dark.png" alt="Lattice dashboard — dark theme" width="480"></td>
+    <td><img src="docs/images/dashboard-neon.png" alt="Lattice dashboard — neon theme" width="480"></td>
+  </tr>
+  <tr>
+    <td align="center"><em>task detail panel — event timeline, comments, inline editing</em></td>
+    <td align="center"><em>kanban overview — multiple themes ship built-in</em></td>
+  </tr>
+</table>
 
 click any task to open its detail panel: edit fields inline, change status, add comments with decisions and context for the next agent session, view the complete event timeline.
 
