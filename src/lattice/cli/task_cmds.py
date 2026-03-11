@@ -841,7 +841,7 @@ def comment(
     if file_path is not None:
         from pathlib import Path
 
-        text = Path(file_path).read_text()
+        text = Path(file_path).read_text(encoding="utf-8")
 
     lattice_dir = require_root(is_json)
     config = load_project_config(lattice_dir)

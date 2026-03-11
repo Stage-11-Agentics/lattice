@@ -140,12 +140,12 @@ def resource_notes(task_id: str) -> str:
 
     notes_path = lattice_dir / "notes" / f"{task_id}.md"
     if notes_path.exists():
-        return notes_path.read_text()
+        return notes_path.read_text(encoding="utf-8")
 
     # Check archive
     archive_notes = lattice_dir / "archive" / "notes" / f"{task_id}.md"
     if archive_notes.exists():
-        return archive_notes.read_text()
+        return archive_notes.read_text(encoding="utf-8")
 
     raise ValueError(f"No notes file found for task {task_id}.")
 
@@ -158,11 +158,11 @@ def resource_plans(task_id: str) -> str:
 
     plan_path = lattice_dir / "plans" / f"{task_id}.md"
     if plan_path.exists():
-        return plan_path.read_text()
+        return plan_path.read_text(encoding="utf-8")
 
     # Check archive
     archive_plans = lattice_dir / "archive" / "plans" / f"{task_id}.md"
     if archive_plans.exists():
-        return archive_plans.read_text()
+        return archive_plans.read_text(encoding="utf-8")
 
     raise ValueError(f"No plan file found for task {task_id}.")

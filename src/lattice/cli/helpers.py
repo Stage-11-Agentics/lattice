@@ -488,7 +488,7 @@ def check_plan_gate(
         )
 
     try:
-        content = plan_path.read_text()
+        content = plan_path.read_text(encoding="utf-8")
     except OSError:
         return  # Can't read → don't block (filesystem issue, not a planning issue)
 

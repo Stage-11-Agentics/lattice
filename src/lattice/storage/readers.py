@@ -19,7 +19,7 @@ def read_task_events(lattice_dir: Path, task_id: str, *, is_archived: bool = Fal
     events: list[dict] = []
     if event_path.exists():
         try:
-            for line in event_path.read_text().splitlines():
+            for line in event_path.read_text(encoding="utf-8").splitlines():
                 line = line.strip()
                 if line:
                     try:

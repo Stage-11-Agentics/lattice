@@ -626,7 +626,7 @@ def _read_plan_content_for_next(lattice_dir: Path, task_id: str) -> str | None:
     if not plan_path.exists():
         return None
     try:
-        content = plan_path.read_text()
+        content = plan_path.read_text(encoding="utf-8")
     except OSError:
         return None
     if _is_scaffold_plan_content(content):

@@ -1208,13 +1208,13 @@ def _seed_demo(target_dir: Path, quiet: bool = False) -> None:
 
     claude_md = target_dir / "CLAUDE.md"
     if not claude_md.exists():
-        claude_md.write_text(f"# The Lighthouse\n{composed_block}")
+        claude_md.write_text(f"# The Lighthouse\n{composed_block}", encoding="utf-8")
         if not quiet:
             click.echo("  CLAUDE.md        Claude Code integration")
 
     agents_md = target_dir / "agents.md"
     if not agents_md.exists():
-        agents_md.write_text(composed_block.lstrip("\n"))
+        agents_md.write_text(composed_block.lstrip("\n"), encoding="utf-8")
         if not quiet:
             click.echo("  agents.md        agent integration instructions")
 

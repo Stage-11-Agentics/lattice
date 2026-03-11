@@ -248,6 +248,13 @@ def _seed_example_tasks(lattice_dir: Path, config: dict) -> None:
 @click.pass_context
 def cli(ctx: click.Context) -> None:
     """Lattice: file-based, agent-native task tracker."""
+    # Windows UTF-8 guard: re-exec with -X utf8 if not already in UTF-8 mode
+    if sys.platform == "win32" and not sys.flags.utf8_mode:
+        import os
+
+        os.environ["PYTHONUTF8"] = "1"
+        os.execv(sys.executable, [sys.executable, "-X", "utf8"] + sys.argv)
+
     from lattice.update_check import maybe_print_update_notice
 
     ctx.call_on_close(maybe_print_update_notice)
@@ -822,16 +829,16 @@ def _create_or_update_agents_md(root: Path) -> None:
 
     try:
         if agents_md.exists():
-            content = agents_md.read_text()
+            content = agents_md.read_text(encoding="utf-8")
             if marker in content:
                 click.echo("  agents.md already has Lattice integration.")
                 return
             # Append to bottom
-            with open(agents_md, "a") as f:
+            with open(agents_md, "a", encoding="utf-8") as f:
                 f.write("\n" + composed_block)
             click.echo("  Updated agents.md with Lattice integration.")
         else:
-            agents_md.write_text(composed_block.lstrip("\n"))
+            agents_md.write_text(composed_block.lstrip("\n"), encoding="utf-8")
             click.echo("  Created agents.md with Lattice integration.")
     except OSError as e:
         click.echo(f"  Warning: could not update agents.md: {e}", err=True)
@@ -881,10 +888,10 @@ def _silent_update_claude_md(root: Path) -> None:
         return
 
     try:
-        content = claude_md.read_text()
+        content = claude_md.read_text(encoding="utf-8")
         if marker in content:
             return  # Already has it
-        with open(claude_md, "a") as f:
+        with open(claude_md, "a", encoding="utf-8") as f:
             f.write(composed_block)
         click.echo("  Updated CLAUDE.md with Lattice integration.")
     except OSError:
@@ -998,7 +1005,7 @@ def _offer_claude_md(root: Path, *, auto_accept: bool = False) -> None:
 
     try:
         if claude_md.exists():
-            content = claude_md.read_text()
+            content = claude_md.read_text(encoding="utf-8")
             if marker in content:
                 click.echo("  CLAUDE.md already has Lattice integration.")
                 return
@@ -1006,7 +1013,7 @@ def _offer_claude_md(root: Path, *, auto_accept: bool = False) -> None:
                 "Found CLAUDE.md \u2014 add Lattice agent integration?",
                 default=True,
             ):
-                with open(claude_md, "a") as f:
+                with open(claude_md, "a", encoding="utf-8") as f:
                     f.write(composed_block)
                 click.echo("  Updated CLAUDE.md with Lattice integration.")
         else:
@@ -1014,7 +1021,7 @@ def _offer_claude_md(root: Path, *, auto_accept: bool = False) -> None:
                 "Create CLAUDE.md with Lattice agent integration?",
                 default=True,
             ):
-                claude_md.write_text(f"# {root.name}\n{composed_block}")
+                claude_md.write_text(f"# {root.name}\n{composed_block}", encoding="utf-8")
                 click.echo("  Created CLAUDE.md with Lattice integration.")
     except (click.Abort, EOFError):
         # Non-interactive mode — skip CLAUDE.md prompt silently.
@@ -1137,7 +1144,7 @@ def setup_claude(target_path: str, force: bool) -> None:
     claude_md = root / "CLAUDE.md"
 
     if claude_md.exists():
-        content = claude_md.read_text()
+        content = claude_md.read_text(encoding="utf-8")
         if marker in content:
             if not force:
                 click.echo("CLAUDE.md already has Lattice integration. Use --force to replace.")
@@ -1164,14 +1171,14 @@ def setup_claude(target_path: str, force: bool) -> None:
                     new_lines.append(line)
             content = "\n".join(new_lines).rstrip("\n") + "\n"
             content += composed_block
-            claude_md.write_text(content)
+            claude_md.write_text(content, encoding="utf-8")
             click.echo("Updated Lattice integration in CLAUDE.md.")
         else:
-            with open(claude_md, "a") as f:
+            with open(claude_md, "a", encoding="utf-8") as f:
                 f.write(composed_block)
             click.echo("Added Lattice integration to CLAUDE.md.")
     else:
-        claude_md.write_text(f"# {root.name}\n{composed_block}")
+        claude_md.write_text(f"# {root.name}\n{composed_block}", encoding="utf-8")
         click.echo("Created CLAUDE.md with Lattice integration.")
 
 
@@ -1370,7 +1377,7 @@ def setup_prompt(use_claude_md: bool) -> None:
         skill_file = skill_src / "SKILL.md"
         if not skill_file.exists():
             raise click.ClickException("Bundled SKILL.md not found.")
-        click.echo(skill_file.read_text().strip())
+        click.echo(skill_file.read_text(encoding="utf-8").strip())
 
 
 # ---------------------------------------------------------------------------
