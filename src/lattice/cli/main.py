@@ -1478,6 +1478,11 @@ from lattice.cli import wait_cmd as _wait_cmd  # noqa: E402, F401
 from lattice.cli import watch_cmd as _watch_cmd  # noqa: E402, F401
 from lattice.cli import claim_cmd as _claim_cmd  # noqa: E402, F401
 
+try:
+    from lattice.cli import sync_cmds as _sync_cmds  # noqa: E402, F401
+except ImportError:
+    pass  # sync extra not installed
+
 # ---------------------------------------------------------------------------
 # Load CLI plugins (must be after all built-in commands are registered)
 # ---------------------------------------------------------------------------

@@ -128,6 +128,11 @@ def write_task_event(
         for event in events:
             execute_hooks(config, lattice_dir, task_id, event)
 
+    # Notify bus listeners (sync bridge, etc.)
+    from lattice.storage.bus import notify
+
+    notify(task_id, events, snapshot)
+
 
 @contextlib.contextmanager
 def resource_write_context(
