@@ -1,16 +1,31 @@
-"""Core review logic: diff resolution, agent spawning, artifact storage."""
+"""Core review logic: diff resolution, agent spawning, artifact storage.
+
+The agent-spawning primitive lives in ``lattice.core.agent_spawn`` (with the
+``HeadlessBackend`` in ``lattice.storage.agent_spawn`` and detached backends
+under ``lattice.integrations``). This module composes that primitive into
+the review-specific orchestration (single + triple + merge) and keeps the
+backward-compatible ``spawn_agent`` shim for any out-of-tree callers.
+"""
 
 from __future__ import annotations
 
 import glob as glob_mod
 import json
 import os
+import shutil
 import subprocess
 import tempfile
-import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from lattice.core.agent_spawn import (
+    SpawnRequest,
+    SpawnResult,
+    select_backend,
+    spawn_many,
+    spawn_one,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -427,68 +442,45 @@ def spawn_agent(
     output_file: Path,
     timeout: int = DEFAULT_AGENT_TIMEOUT,
 ) -> tuple[bool, str]:
-    """Spawn a review agent subprocess and wait for it.
+    """Backwards-compatible shim that delegates to ``agent_spawn.spawn_one``.
 
-    Returns (success, output_text_or_error).
+    Returns ``(success, output_text_or_error)`` to preserve the legacy
+    contract for any out-of-tree callers. New code should call
+    ``lattice.core.agent_spawn.spawn_one`` directly.
+
+    Always uses the headless backend so existing call sites (which build
+    their own per-agent scratch dirs and don't expect a cmux/terminal pane)
+    behave identically to the legacy implementation.
     """
-    cmd = _build_agent_command(agent_type, str(prompt_file), str(output_file))
-    if cmd is None:
-        return False, f"Unknown agent type: {agent_type}"
+    from lattice.storage.agent_spawn import HeadlessBackend
 
-    env = os.environ.copy()
-    env.pop("CLAUDECODE", None)  # allow nested claude
-
-    try:
-        result = subprocess.run(
-            cmd,
-            shell=True,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired:
-        return False, f"Agent '{agent_type}' timed out after {timeout}s"
-    except OSError as e:
-        return False, f"Failed to spawn agent '{agent_type}': {e}"
-
-    if result.returncode != 0:
-        stderr = result.stderr.strip() if result.stderr else ""
-        return False, f"Agent '{agent_type}' exited with code {result.returncode}. {stderr}"
-
-    # Read output file if written
-    if output_file.exists():
-        try:
-            return True, output_file.read_text(encoding="utf-8")
-        except OSError as e:
-            return False, f"Agent '{agent_type}' ran but output could not be read: {e}"
-
-    # No output file — use stdout if present
-    if result.stdout.strip():
-        return True, result.stdout
-
-    return False, f"Agent '{agent_type}' produced no output."
-
-
-def _build_agent_command(agent_type: str, prompt_file: str, output_file: str) -> str | None:
-    """Build the shell command string for spawning an agent.
-
-    Uses ``--dangerously-skip-permissions`` for Claude so that sub-agents can
-    read/write without hitting interactive permission prompts in non-attended
-    contexts.
-    """
-    instruction = (
-        f"Read {prompt_file} and follow the instructions. Write output to {output_file}"
+    request = SpawnRequest(
+        agent=agent_type,
+        prompt_file=prompt_file,
+        output_file=output_file,
+        label=f"shim :: {agent_type}",
+        timeout_seconds=timeout,
     )
-    if agent_type == "claude":
-        return f'env -u CLAUDECODE claude --dangerously-skip-permissions -p "{instruction}"'
-    if agent_type == "codex":
-        return (
-            f'codex exec --full-auto --skip-git-repo-check "{instruction}"'
-        )
-    if agent_type == "gemini":
-        return f'gemini -m gemini-3-pro-preview --yolo "{instruction}"'
-    return None
+    result = spawn_one(
+        request,
+        workspace_label=f"shim-{agent_type}",
+        backend=HeadlessBackend(),
+    )
+    if result.success:
+        return True, result.output_text
+    return False, _format_legacy_error(agent_type, result, timeout)
+
+
+def _format_legacy_error(agent_type: str, result: SpawnResult, timeout: int) -> str:
+    """Match the message shapes that legacy callers parse on failure."""
+    err = result.error or ""
+    if "timed out" in err:
+        return f"Agent '{agent_type}' timed out after {timeout}s"
+    if err.startswith("Unknown agent type"):
+        return err
+    if "produced no output" in err or "no output" in err:
+        return f"Agent '{agent_type}' produced no output."
+    return f"Agent '{agent_type}': {err}"
 
 
 # ---------------------------------------------------------------------------
@@ -503,11 +495,16 @@ def run_single_review(
     prompt_content: str,
     actor: str | dict,
     timeout: int = DEFAULT_AGENT_TIMEOUT,
+    *,
+    headless: bool = False,
+    backend_force: str | None = None,
 ) -> tuple[bool, str, str | None]:
-    """Run a single-agent review.
+    """Run a single-agent review via ``agent_spawn.spawn_one``.
 
-    Returns (success, message, output_text_or_None).
-    Stores in-flight state throughout.
+    Returns ``(success, message, output_text_or_None)`` — unchanged from the
+    pre-LAT-205 contract. ``headless`` / ``backend_force`` are pass-through
+    overrides for the new spawn primitive; defaults preserve today's auto
+    selection behavior.
     """
     started_at = _now_iso()
     state: dict[str, Any] = {
@@ -519,29 +516,41 @@ def run_single_review(
     }
     write_review_state(lattice_dir, state)
 
-    import shutil
-
     tmp = _make_prompt_dir(lattice_dir, prefix="review-")
-    prompt_file = tmp / "prompt.md"
-    output_file = tmp / "review.md"
+    agent_dir = tmp / "claude"
+    agent_dir.mkdir()
+    prompt_file = agent_dir / "prompt.md"
+    output_file = agent_dir / "output.md"
     prompt_file.write_text(prompt_content, encoding="utf-8")
 
     try:
-        success, text = spawn_agent("claude", prompt_file, output_file, timeout=timeout)
+        request = SpawnRequest(
+            agent="claude",
+            prompt_file=prompt_file,
+            output_file=output_file,
+            label=f"{review_type} :: claude",
+            timeout_seconds=timeout,
+        )
+        result = spawn_one(
+            request,
+            workspace_label=f"{review_type}-{task_id}",
+            force=backend_force,
+            headless=headless,
+        )
 
         finished_at = _now_iso()
-        state["agents"][0]["status"] = "done" if success else "failed"
+        state["agents"][0]["status"] = "done" if result.success else "failed"
         state["agents"][0]["finished_at"] = finished_at
         write_review_state(lattice_dir, state)
 
-        if not success:
+        if not result.success:
             actor_str = _extract_actor_str(actor)
             _handle_agent_failure(lattice_dir, "claude", task_id, actor_str)
             clear_review_state(lattice_dir, task_id)
-            return False, text, None
+            return False, _format_legacy_error("claude", result, timeout), None
 
         clear_review_state(lattice_dir, task_id)
-        return True, "Review complete.", text
+        return True, "Review complete.", result.output_text
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -553,11 +562,15 @@ def run_triple_review(
     prompt_content: str,
     actor: str | dict,
     timeout: int = DEFAULT_AGENT_TIMEOUT,
+    *,
+    headless: bool = False,
+    backend_force: str | None = None,
 ) -> tuple[bool, str, list[tuple[str, bool, str]]]:
-    """Run a triple-agent review (Claude, Codex, Gemini) in parallel.
+    """Run a triple-agent review (Claude, Codex, Gemini) in parallel via ``spawn_many``.
 
-    Returns (overall_success, message, [(agent_name, success, text), ...]).
-    The overall_success is True if at least one agent succeeded.
+    Returns ``(overall_success, message, [(agent_name, success, text), ...])``
+    — unchanged from the pre-LAT-205 contract. ``headless`` / ``backend_force``
+    are pass-through overrides for the new spawn primitive.
     """
     agents = ["claude", "codex", "gemini"]
     overall_started = _now_iso()
@@ -573,49 +586,60 @@ def run_triple_review(
     }
     write_review_state(lattice_dir, state)
 
-    results: list[tuple[str, bool, str]] = [("", False, "")] * len(agents)
-    lock = threading.Lock()
-
-    def _run_agent(idx: int, agent: str, prompt_content: str) -> None:
-        import shutil
-
-        agent_started = _now_iso()
-        with lock:
-            state["agents"][idx]["started_at"] = agent_started
-            write_review_state(lattice_dir, state)
-        tmp = _make_prompt_dir(lattice_dir, prefix=f"{agent}-")
-        try:
-            prompt_file = tmp / "prompt.md"
-            output_file = tmp / "review.md"
+    tmp = _make_prompt_dir(lattice_dir, prefix=f"{review_type}-")
+    try:
+        requests: list[SpawnRequest] = []
+        for agent in agents:
+            agent_dir = tmp / agent
+            agent_dir.mkdir()
+            prompt_file = agent_dir / "prompt.md"
+            output_file = agent_dir / "output.md"
             prompt_file.write_text(prompt_content, encoding="utf-8")
-            success, text = spawn_agent(agent, prompt_file, output_file, timeout=timeout)
-            finished_at = _now_iso()
-            with lock:
-                results[idx] = (agent, success, text)
-                state["agents"][idx]["status"] = "done" if success else "failed"
-                state["agents"][idx]["finished_at"] = finished_at
-                write_review_state(lattice_dir, state)
-        finally:
-            shutil.rmtree(tmp, ignore_errors=True)
+            requests.append(
+                SpawnRequest(
+                    agent=agent,
+                    prompt_file=prompt_file,
+                    output_file=output_file,
+                    label=f"{review_type} :: {agent}",
+                    timeout_seconds=timeout,
+                )
+            )
 
-    threads = [
-        threading.Thread(target=_run_agent, args=(i, agent, prompt_content), daemon=True)
-        for i, agent in enumerate(agents)
-    ]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=timeout + 30)
+        spawn_results = spawn_many(
+            requests,
+            workspace_label=f"{review_type}-{task_id}",
+            force=backend_force,
+            headless=headless,
+        )
 
-    # Record failures for persistent tracking
-    actor_str = _extract_actor_str(actor)
-    for agent, success, _text in results:
-        if not success and agent:
-            _handle_agent_failure(lattice_dir, agent, task_id, actor_str)
+        # Preserve legacy result ordering (claude, codex, gemini).
+        by_agent = {r.agent: r for r in spawn_results}
+        results: list[tuple[str, bool, str]] = []
+        finished_at = _now_iso()
+        for idx, agent in enumerate(agents):
+            r = by_agent.get(agent)
+            if r is None:
+                results.append((agent, False, "no result returned"))
+                state["agents"][idx]["status"] = "failed"
+            elif r.success:
+                results.append((agent, True, r.output_text))
+                state["agents"][idx]["status"] = "done"
+            else:
+                results.append((agent, False, r.error))
+                state["agents"][idx]["status"] = "failed"
+            state["agents"][idx]["finished_at"] = finished_at
+        write_review_state(lattice_dir, state)
 
-    any_success = any(r[1] for r in results)
-    clear_review_state(lattice_dir, task_id)
-    return any_success, "Triple review complete.", results
+        actor_str = _extract_actor_str(actor)
+        for agent, success, _text in results:
+            if not success:
+                _handle_agent_failure(lattice_dir, agent, task_id, actor_str)
+
+        any_success = any(r[1] for r in results)
+        clear_review_state(lattice_dir, task_id)
+        return any_success, "Triple review complete.", results
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def build_merge_prompt(
@@ -662,27 +686,43 @@ def run_merge_agent(
     task_id: str,
     reviews: list[tuple[str, bool, str]],
     review_type: str,
+    *,
+    headless: bool = False,
+    backend_force: str | None = None,
 ) -> tuple[bool, str]:
-    """Run the Claude Opus merge agent to synthesize triple reviews.
+    """Run the Claude Opus merge agent via ``agent_spawn.spawn_one``.
 
-    Returns (success, merged_text_or_error).
+    Returns ``(success, merged_text_or_error)`` — unchanged contract.
+    ``headless`` / ``backend_force`` pass through to the spawn primitive.
     """
-    import shutil
-
     prompt = build_merge_prompt(task_id, reviews, review_type)
 
     tmp = _make_prompt_dir(lattice_dir, prefix="merge-")
     try:
-        prompt_file = tmp / "merge_prompt.md"
-        output_file = tmp / "merged_review.md"
+        agent_dir = tmp / "merge"
+        agent_dir.mkdir()
+        prompt_file = agent_dir / "prompt.md"
+        output_file = agent_dir / "output.md"
 
-        # Fill in the output path placeholder
         filled = prompt.replace("{output_path}", str(output_file))
         prompt_file.write_text(filled, encoding="utf-8")
 
-        # Use Claude for merging (Opus via the same claude CLI)
-        success, text = spawn_agent("claude", prompt_file, output_file)
-        return success, text
+        request = SpawnRequest(
+            agent="claude",
+            prompt_file=prompt_file,
+            output_file=output_file,
+            label=f"{review_type} :: merge",
+            timeout_seconds=DEFAULT_AGENT_TIMEOUT,
+        )
+        result = spawn_one(
+            request,
+            workspace_label=f"merge-{task_id}",
+            force=backend_force,
+            headless=headless,
+        )
+        if result.success:
+            return True, result.output_text
+        return False, _format_legacy_error("claude", result, DEFAULT_AGENT_TIMEOUT)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
