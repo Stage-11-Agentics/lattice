@@ -121,7 +121,7 @@ def _launch_macos(req: SpawnRequest, *, workspace_label: str, repo_root: Path) -
         f"end tell"
     )
     try:
-        subprocess.run(
+        result = subprocess.run(
             ["osascript", "-e", script],
             capture_output=True,
             timeout=10,
@@ -129,6 +129,11 @@ def _launch_macos(req: SpawnRequest, *, workspace_label: str, repo_root: Path) -
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise BackendUnavailableError(f"osascript launch failed: {exc}") from exc
+    if result.returncode != 0:
+        raise BackendUnavailableError(
+            f"osascript launch failed (exit {result.returncode}): "
+            f"{result.stderr.decode(errors='replace').strip()}"
+        )
 
 
 def _launch_gnome_terminal(req: SpawnRequest, *, workspace_label: str, repo_root: Path) -> None:
