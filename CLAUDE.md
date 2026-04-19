@@ -56,7 +56,10 @@ uv cache clean lattice-tracker && uv tool install -e /Users/atin/Projects/Stage1
 - **`core/`** — pure business logic. No filesystem calls.
 - **`storage/`** — all filesystem I/O. Atomic writes, locking, directory traversal.
 - **`cli/`** — wires core + storage via Click commands. Output formatting.
+- **`integrations/`** — optional, environment-aware backends (cmux, terminal). Loaded lazily; absence never blocks core paths.
 - **`dashboard/`** — read-only. Reads `.lattice/` files, serves JSON + static HTML.
+
+**Spawning fresh-context agents:** `lattice.core.agent_spawn` is the public primitive (`SpawnRequest`, `SpawnResult`, `spawn_one`, `spawn_many`). Backends auto-select cmux → terminal → headless; force via `--backend` / `LATTICE_SPAWN_BACKEND`. Use this for any "open a clean agent for one task" use case (review, summarization, PR description, etc.) rather than rolling a new `subprocess.run`.
 
 ## Development Setup
 
