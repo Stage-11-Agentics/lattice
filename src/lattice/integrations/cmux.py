@@ -261,13 +261,16 @@ def _focus_pane(ws_ref: str, pane_ref: str) -> None:
 
 
 def _focus_by_surface(ws_ref: str, surface_ref: str) -> None:
-    """Best-effort surface focus — used when we never got a pane ref."""
-    _bridge_run_cmux(
-        "tab-action",
-        "--workspace", ws_ref,
-        "--surface", surface_ref,
-        "--action", "focus",
-    )
+    """Best-effort surface focus — used when we never got a pane ref.
+
+    The cmux ``tab-action`` binary doesn't expose a ``focus`` action, so the
+    fallback is the surface-focus subset that exists today: ``focus-pane`` is
+    pane-scoped, but ``send-key`` against a surface raises focus side-effects
+    in practice. If the caller has the pane ref, ``_focus_pane`` is preferred.
+    """
+    # No safe surface-only focus command in current cmux CLI; the resolved
+    # cmux backend always passes pane refs, so this is a no-op fallback.
+    return
 
 
 def _rename_tab(ws_ref: str, surface_ref: str, title: str) -> None:
@@ -280,11 +283,13 @@ def _rename_tab(ws_ref: str, surface_ref: str, title: str) -> None:
 
 
 def _set_description(ws_ref: str, surface_ref: str, text: str) -> None:
+    # cmux only accepts --source values explicit|declare|osc|heuristic;
+    # `explicit` is the right choice for an external CLI driver.
     _bridge_run_cmux(
         "set-description",
         "--workspace", ws_ref,
         "--surface", surface_ref,
-        "--source", "lattice",
+        "--source", "explicit",
         text,
     )
 

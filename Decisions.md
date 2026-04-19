@@ -743,6 +743,15 @@ Additionally, `lattice advance N` processed multiple tasks in a single context w
 
 ---
 
+## 2026-04-19: Layer-boundary exception in core/agent_spawn.py (LAT-205)
+
+- **Context:** LAT-205 carved a backend-pluggable agent spawning primitive out of `core/review.py`. The new module `core/agent_spawn.py` ships the public contract (`SpawnRequest`, `SpawnResult`, `Backend` ABC, `spawn_one`, `spawn_many`) plus the env-aware `select_backend()` selector. The CLAUDE.md layer rule says `core/` is pure business logic with no filesystem calls.
+- **Decision:** Keep `select_backend()` in `core/agent_spawn.py` as an acknowledged exception. The selector instantiates concrete backends (`HeadlessBackend` from `storage/`, `CmuxBackend` / `TerminalBackend` from `integrations/`), which forces a `core → storage` and `core → integrations` import direction the layer model normally forbids. Splitting the selector into `storage/agent_spawn.py` would either invert the *type* contract (storage owning the ABC) or introduce a registry/factory in `core/` that does the same instantiation indirectly. The `HeadlessBackend` itself, plus the polling helper, do live in `storage/agent_spawn.py` — that piece of the split was tractable.
+- **Rationale:** Pre-existing `core/review.py` already runs subprocesses and writes review state to disk; the new primitive is a successor to that pattern, not an escalation of it. The existing layer rule was already de-facto bent for the same reason. Formalizing the exception in writing beats hiding it.
+- **Consequence:** Follow-up Lattice task tracks rectifying the import direction (e.g., introducing a registry pattern or moving the selector entirely). Until that lands, treat `core/agent_spawn.py`'s I/O surface (env-var reads, `shutil.which`, best-effort `cmux identify`) as the documented exception, not precedent for further drift.
+
+---
+
 ## Note: This file is append-only
 
 `Decisions.md` is an append-only log. Entries are never edited or deleted after recording. Superseded decisions are noted inline with a reference to the superseding entry. Cross-cutting architectural decisions go here; task-scoped design decisions belong in the plan file (`.lattice/plans/<task_id>.md`).
