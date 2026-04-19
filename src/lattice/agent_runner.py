@@ -32,6 +32,7 @@ import os
 import shlex
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -99,46 +100,74 @@ def _run_agent_mode() -> int:
     env = os.environ.copy()
     env.pop("CLAUDECODE", None)
 
+    # Stream stdout/stderr live so the cmux/terminal pane hosting this
+    # wrapper shows output as the agent produces it, rather than dumping
+    # a block after the subprocess exits. The old capture_output=True
+    # path hid the agent entirely until completion, which nullified the
+    # visibility motivation of the cmux/terminal backends.
     start = time.monotonic()
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             cmd,
             shell=True,
             env=env,
-            timeout=timeout_s,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
-            capture_output=True,
+            bufsize=1,
         )
-    except subprocess.TimeoutExpired:
-        _emit_failure(out_path, f"timed out after {timeout_s}s", code=124)
-        _maybe_set_cmux_metadata(label, status="failed")
-        return 124
     except OSError as exc:
         _emit_failure(out_path, f"failed to spawn: {exc}", code=2)
         _maybe_set_cmux_metadata(label, status="failed")
         return 2
 
-    duration = time.monotonic() - start
-    print(f"[agent_runner] finished rc={result.returncode} duration={duration:.1f}s")
+    captured: list[str] = []
 
-    if result.stdout:
-        sys.stdout.write(result.stdout)
-    if result.stderr:
-        sys.stderr.write(result.stderr)
+    def _reader() -> None:
+        assert proc.stdout is not None
+        try:
+            for line in proc.stdout:
+                sys.stdout.write(line)
+                sys.stdout.flush()
+                captured.append(line)
+        except Exception:  # pragma: no cover - defensive
+            pass
 
-    if result.returncode != 0:
-        msg = (result.stderr or result.stdout or "").strip().splitlines()
-        first_line = msg[0] if msg else f"exit {result.returncode}"
-        _emit_failure(out_path, first_line, code=result.returncode)
+    reader_t = threading.Thread(target=_reader, daemon=True)
+    reader_t.start()
+
+    try:
+        rc = proc.wait(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        reader_t.join(timeout=1)
+        _emit_failure(out_path, f"timed out after {timeout_s}s", code=124)
         _maybe_set_cmux_metadata(label, status="failed")
-        return result.returncode
+        return 124
 
-    # Make sure the output file has content. Fall back to stdout if the
-    # agent CLI didn't write the file itself.
+    # Drain any trailing buffered output before we print the finished marker.
+    reader_t.join(timeout=1)
+
+    duration = time.monotonic() - start
+    print(f"[agent_runner] finished rc={rc} duration={duration:.1f}s")
+
+    if rc != 0:
+        combined = "".join(captured).strip().splitlines()
+        first_line = combined[0] if combined else f"exit {rc}"
+        _emit_failure(out_path, first_line, code=rc)
+        _maybe_set_cmux_metadata(label, status="failed")
+        return rc
+
+    # Make sure the output file has content. Fall back to captured stdout
+    # if the agent CLI didn't write the file itself.
     if not out_path.exists() or not out_path.read_text(encoding="utf-8").strip():
-        captured = (result.stdout or "").strip()
-        if captured:
-            out_path.write_text(captured + "\n", encoding="utf-8")
+        captured_text = "".join(captured).strip()
+        if captured_text:
+            out_path.write_text(captured_text + "\n", encoding="utf-8")
         else:
             _emit_failure(out_path, "no output produced", code=2)
             _maybe_set_cmux_metadata(label, status="failed")
