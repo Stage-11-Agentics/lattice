@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import threading
 import time
 from collections.abc import Sequence
 from pathlib import Path
@@ -10,7 +9,6 @@ from pathlib import Path
 import pytest
 
 from lattice.core.agent_spawn import (
-    DEFAULT_POLL_INTERVAL_S,
     Backend,
     BackendUnavailableError,
     ProgressCallback,

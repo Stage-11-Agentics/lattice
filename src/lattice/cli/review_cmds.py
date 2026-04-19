@@ -46,11 +46,25 @@ from lattice.templates import load_review_template
     help="Review mode (overrides config). One of: inline, single, triple.",
 )
 @click.option("--base", default=None, help="Base git ref for diff (branch or commit).")
+@click.option(
+    "--headless",
+    is_flag=True,
+    default=False,
+    help="Force the headless spawn backend (subprocess.run; no panes/windows).",
+)
+@click.option(
+    "--backend",
+    type=click.Choice(["cmux", "terminal", "headless"]),
+    default=None,
+    help="Force a specific spawn backend. Raises if unavailable instead of falling through.",
+)
 @common_options
 def code_review(
     task_id: str,
     mode: str | None,
     base: str | None,
+    headless: bool,
+    backend: str | None,
     model: str | None,
     session: str | None,
     output_json: bool,
@@ -128,6 +142,8 @@ def code_review(
             model=model,
             session=session,
             timeout=timeout,
+            headless=headless,
+            backend_force=backend,
         )
 
     elif mode == "triple":
@@ -142,6 +158,8 @@ def code_review(
             model=model,
             session=session,
             timeout=timeout,
+            headless=headless,
+            backend_force=backend,
         )
 
 
@@ -158,10 +176,24 @@ def code_review(
     default=None,
     help="Review mode (overrides config). One of: inline, single, triple.",
 )
+@click.option(
+    "--headless",
+    is_flag=True,
+    default=False,
+    help="Force the headless spawn backend (subprocess.run; no panes/windows).",
+)
+@click.option(
+    "--backend",
+    type=click.Choice(["cmux", "terminal", "headless"]),
+    default=None,
+    help="Force a specific spawn backend. Raises if unavailable instead of falling through.",
+)
 @common_options
 def plan_review(
     task_id: str,
     mode: str | None,
+    headless: bool,
+    backend: str | None,
     model: str | None,
     session: str | None,
     output_json: bool,
@@ -234,6 +266,8 @@ def plan_review(
             model=model,
             session=session,
             timeout=timeout,
+            headless=headless,
+            backend_force=backend,
         )
         if art_id and plan_approval == "human":
             _move_to_needs_human(lattice_dir, task_id, actor, is_json)
@@ -250,6 +284,8 @@ def plan_review(
             model=model,
             session=session,
             timeout=timeout,
+            headless=headless,
+            backend_force=backend,
         )
         if art_ids and plan_approval == "human":
             _move_to_needs_human(lattice_dir, task_id, actor, is_json)
@@ -333,6 +369,8 @@ def _run_single_and_store(
     model: str | None,
     session: str | None,
     timeout: int = 600,
+    headless: bool = False,
+    backend_force: str | None = None,
 ) -> str | None:
     """Run single-agent review, store artifact, print result. Returns artifact ID or None."""
     click.echo(f"Running {review_type} (single mode)...")
@@ -344,6 +382,8 @@ def _run_single_and_store(
         prompt_content=prompt,
         actor=actor,
         timeout=timeout,
+        headless=headless,
+        backend_force=backend_force,
     )
 
     if not success:
@@ -387,6 +427,8 @@ def _run_triple_and_store(
     model: str | None,
     session: str | None,
     timeout: int = 600,
+    headless: bool = False,
+    backend_force: str | None = None,
 ) -> list[str]:
     """Run triple-agent review, store artifacts, print result. Returns list of artifact IDs."""
     click.echo(f"Running {review_type} (triple mode — spawning claude, codex, gemini)...")
@@ -398,6 +440,8 @@ def _run_triple_and_store(
         prompt_content=prompt,
         actor=actor,
         timeout=timeout,
+        headless=headless,
+        backend_force=backend_force,
     )
 
     artifact_ids: list[str] = []
@@ -432,6 +476,8 @@ def _run_triple_and_store(
         task_id=task_id,
         reviews=results,
         review_type=review_type,
+        headless=headless,
+        backend_force=backend_force,
     )
 
     if merge_success:

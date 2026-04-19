@@ -34,29 +34,15 @@ def test_agent_mode_writes_sentinel_and_output(
     prompt = tmp_path / "prompt.md"
     prompt.write_text("hello", encoding="utf-8")
 
-    # Patch the command builder via a tiny shim — easier than monkeypatching
-    # the wrapper subprocess: stub _agent_cli_command at the module level
-    # using a sitecustomize-like injection isn't practical here, so we instead
-    # use the LATTICE_AGENT_TYPE=claude path with a fake agent invocation by
-    # monkeypatching the resolved command via the runner script's importable
-    # module. Simpler path: set up env so the production claude command runs
-    # the fake_agent script.
-    fake_cmd = (
-        f"LATTICE_AGENT_PROMPT={prompt} LATTICE_AGENT_OUTPUT={out} "
-        f"{sys.executable} {FAKE_AGENT_PATH}"
-    )
-
     env = {
         "LATTICE_AGENT_TYPE": "claude",
         "LATTICE_AGENT_PROMPT": str(prompt),
         "LATTICE_AGENT_OUTPUT": str(out),
         "LATTICE_AGENT_TIMEOUT": "10",
         "LATTICE_AGENT_LABEL": "test :: claude",
-        # The wrapper builds its own command from _agent_cli_command. We want
-        # to bypass the real claude binary, so we temporarily monkeypatch via
-        # a sitecustomize file written into PYTHONSTARTUP-equivalent path.
     }
-    # The cleaner path: use Python -c to invoke the runner with patched module.
+    # Stub _agent_cli_command in-process so the wrapper invokes the fake
+    # agent instead of the real claude binary.
     runner_inline = (
         "import sys, lattice.core.agent_spawn as a, lattice.storage.agent_spawn as s; "
         f"cmd=lambda agent, p, o: 'LATTICE_AGENT_PROMPT='+p+' LATTICE_AGENT_OUTPUT='+o+' "
