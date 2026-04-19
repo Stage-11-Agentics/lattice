@@ -520,9 +520,11 @@ class TestSpawnAgent:
             output = tmp / "out.md"
             prompt.write_text("test", encoding="utf-8")
 
-            # Patch the command builder to return a command that will fail
+            # Patch the command builder (now lives in agent_spawn after
+            # LAT-205) to return a command that will fail. The shim delegates
+            # via storage.agent_spawn.HeadlessBackend → _agent_cli_command.
             with patch(
-                "lattice.core.review._build_agent_command",
+                "lattice.storage.agent_spawn._agent_cli_command",
                 return_value="exit 1",
             ):
                 success, msg = spawn_agent("claude", prompt, output)

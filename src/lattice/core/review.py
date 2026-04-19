@@ -22,7 +22,6 @@ from typing import Any
 from lattice.core.agent_spawn import (
     SpawnRequest,
     SpawnResult,
-    select_backend,
     spawn_many,
     spawn_one,
 )
