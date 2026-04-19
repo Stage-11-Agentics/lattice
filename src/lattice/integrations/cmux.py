@@ -234,11 +234,30 @@ def _set_workspace_metadata(ws_ref: str, label: str) -> None:
 
 
 def _initial_surface(ws_ref: str) -> str | None:
-    """Pull the surface ref of the workspace's initial (only) pane."""
+    """Pull the surface ref of the workspace's initial (only) pane.
+
+    Primary path uses ``cmux list-pane-surfaces --workspace <ref>`` — the
+    dedicated command for enumerating surfaces. Verified against the c11mux
+    build shipping on 2026-04-19 (``cmux --help`` lists the command; manual
+    validation during LAT-205 impl-cycle-1 confirmed it on workspace:14).
+
+    If the primary command returns nothing (older builds or future CLI
+    churn), fall back to ``cmux tree --workspace <ref>``, whose text output
+    includes ``surface:<N>`` refs that the shared ``_parse_refs`` helper
+    already pulls. The regex grabs the first surface it sees — fresh
+    workspaces have exactly one pane with one surface, so this is
+    deterministic for our use case.
+    """
     out = _cmux_capture("list-pane-surfaces", "--workspace", ws_ref)
-    if not out:
+    if out:
+        surface = _parse_refs(out).get("surface")
+        if surface:
+            return surface
+    # Fallback: tree output also contains surface refs.
+    tree_out = _cmux_capture("tree", "--workspace", ws_ref)
+    if not tree_out:
         return None
-    return _parse_refs(out).get("surface")
+    return _parse_refs(tree_out).get("surface")
 
 
 def _new_pane(ws_ref: str, *, direction: str) -> _Slot | None:
