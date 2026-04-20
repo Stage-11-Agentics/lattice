@@ -36,6 +36,23 @@ To check your current version:
 lattice --version
 ```
 
+## Shell tab-completion (optional)
+
+Lattice can tab-complete commands, flags, status values, task IDs, actors, resource names, and session names. Lattice prints a script — you source it from your shell config. Pick your shell:
+
+```bash
+# bash
+echo 'source <(lattice completion --shell bash)' >> ~/.bashrc
+
+# zsh
+echo 'source <(lattice completion --shell zsh)' >> ~/.zshrc
+
+# fish
+lattice completion --shell fish > ~/.config/fish/completions/lattice.fish
+```
+
+Open a new shell (or `source` your rc file) and press `TAB` after a `lattice` command.
+
 ## Try the demo (optional)
 
 Before setting up your own project, you can explore a fully populated example:
