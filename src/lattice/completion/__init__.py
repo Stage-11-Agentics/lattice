@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import click
 from click.shell_completion import CompletionItem
+
+from lattice.core.relationships import RELATIONSHIP_TYPES
 
 
 def _find_lattice_root() -> Path | None:
@@ -53,14 +56,18 @@ def complete_status(
     ctx: click.Context, param: click.Parameter, incomplete: str
 ) -> list[CompletionItem]:
     """Complete task status values from config or defaults."""
-    statuses = _DEFAULT_STATUSES
+    statuses: list[str] = list(_DEFAULT_STATUSES)
     try:
         root = _find_lattice_root()
         if root is not None:
             config_file = root / ".lattice" / "config.json"
             if config_file.exists():
                 data = json.loads(config_file.read_text())
-                statuses = data.get("workflow", {}).get("statuses", statuses)
+                configured = data.get("workflow", {}).get("statuses", statuses)
+                if isinstance(configured, list) and all(
+                    isinstance(s, str) for s in configured
+                ):
+                    statuses = configured
     except Exception:
         pass
     return [CompletionItem(s) for s in statuses if s.startswith(incomplete)]
@@ -78,19 +85,17 @@ def complete_actor(
         if not tasks_dir.exists():
             return []
         actors: set[str] = set()
-        snapshot_files = sorted(
-            tasks_dir.glob("*.json"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-        for snap_file in snapshot_files[:50]:
-            try:
-                data = json.loads(snap_file.read_text())
-                actor = data.get("assigned_to")
-                if actor and isinstance(actor, str):
-                    actors.add(actor)
-            except Exception:
-                continue
+        with os.scandir(tasks_dir) as it:
+            for entry in it:
+                if not entry.is_file() or not entry.name.endswith(".json"):
+                    continue
+                try:
+                    data = json.loads(Path(entry.path).read_text())
+                    actor = data.get("assigned_to")
+                    if actor and isinstance(actor, str):
+                        actors.add(actor)
+                except Exception:
+                    continue
         return [CompletionItem(a) for a in sorted(actors) if a.startswith(incomplete)]
     except Exception:
         return []
@@ -130,14 +135,7 @@ def complete_session_name(
         return []
 
 
-_RELATIONSHIP_TYPES = [
-    "blocks",
-    "blocked_by",
-    "subtask_of",
-    "parent_of",
-    "related_to",
-    "depends_on",
-]
+_RELATIONSHIP_TYPES = sorted(RELATIONSHIP_TYPES)
 
 
 def complete_relationship_type(

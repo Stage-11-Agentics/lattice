@@ -20,7 +20,7 @@ from lattice.cli.helpers import (
     resolve_resource,
 )
 from lattice.cli.main import cli
-from lattice.completion import complete_resource_name
+from lattice.completion import complete_resource_name, complete_task_id
 from lattice.core.events import create_resource_event
 from lattice.core.ids import generate_resource_id, validate_id
 from lattice.core.resources import (
@@ -167,7 +167,13 @@ def resource_create(
 
 @resource.command("acquire")
 @click.argument("name", shell_complete=complete_resource_name)
-@click.option("--task", "task_id", default=None, help="Link to a task (e.g., LAT-88).")
+@click.option(
+    "--task",
+    "task_id",
+    default=None,
+    help="Link to a task (e.g., LAT-88).",
+    shell_complete=complete_task_id,
+)
 @click.option("--force", is_flag=True, help="Evict current holder.")
 @click.option("--wait", "do_wait", is_flag=True, help="Poll until available.")
 @click.option("--timeout", type=int, default=60, help="Max wait time in seconds (default 60).")

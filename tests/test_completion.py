@@ -170,16 +170,16 @@ def test_complete_session_name_returns_names(tmp_path, monkeypatch):
 
 
 def test_complete_relationship_type_returns_all(tmp_path):
+    from lattice.core.relationships import RELATIONSHIP_TYPES
+
     results = complete_relationship_type(None, None, "")
-    values = [r.value for r in results]
-    assert "blocks" in values
-    assert "blocked_by" in values
-    assert "depends_on" in values
+    values = {r.value for r in results}
+    assert values == set(RELATIONSHIP_TYPES)
 
 
 def test_complete_relationship_type_filters(tmp_path):
     results = complete_relationship_type(None, None, "b")
     values = [r.value for r in results]
     assert "blocks" in values
-    assert "blocked_by" in values
     assert "subtask_of" not in values
+    assert all(v.startswith("b") for v in values)

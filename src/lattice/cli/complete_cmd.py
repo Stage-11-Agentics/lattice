@@ -11,6 +11,7 @@ import click
 from click.shell_completion import BashComplete, FishComplete, ZshComplete
 
 from lattice.cli.main import cli
+from lattice.storage.fs import atomic_write
 
 _SHELLS = ["bash", "zsh", "fish"]
 _EVAL_LINES = {
@@ -38,15 +39,16 @@ def _get_config_file(shell: str, home: Path) -> Path:
         return home / ".bashrc"
     if shell == "zsh":
         return home / ".zshrc"
-    fish_dir = home / ".config" / "fish" / "completions"
-    fish_dir.mkdir(parents=True, exist_ok=True)
-    return fish_dir / "lattice.fish"
+    return home / ".config" / "fish" / "completions" / "lattice.fish"
 
 
 def _is_installed(shell: str, config_file: Path) -> bool:
     if not config_file.exists():
         return False
-    content = config_file.read_text()
+    try:
+        content = config_file.read_text()
+    except OSError:
+        return False
     if shell == "fish":
         return _FISH_MARKER in content
     marker = f"_LATTICE_COMPLETE={shell}_source lattice"
@@ -61,8 +63,12 @@ def _is_installed(shell: str, config_file: Path) -> bool:
 
 def _install(shell: str, config_file: Path) -> None:
     if shell == "fish":
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+        if config_file.exists():
+            backup = Path(str(config_file) + ".lattice.bak")
+            shutil.copy2(config_file, backup)
         script = _get_script("fish")
-        config_file.write_text(f"{_FISH_MARKER}\n{script}")
+        atomic_write(config_file, f"{_FISH_MARKER}\n{script}")
         return
     eval_line = _EVAL_LINES[shell]
     with config_file.open("a") as f:
@@ -78,7 +84,7 @@ def _uninstall(shell: str, config_file: Path) -> None:
     marker = f"_LATTICE_COMPLETE={shell}_source lattice"
     lines = config_file.read_text().splitlines(keepends=True)
     filtered = [ln for ln in lines if marker not in ln]
-    config_file.write_text("".join(filtered))
+    atomic_write(config_file, "".join(filtered))
 
 
 @cli.command("completion")
@@ -134,7 +140,12 @@ def completion_cmd(
       lattice completion --install                # install for detected shell
       lattice completion --shell zsh --uninstall  # remove zsh completion
     """
-    if not do_print and not do_install and not do_uninstall:
+    selected = sum([do_print, do_install, do_uninstall])
+    if selected > 1:
+        raise click.UsageError(
+            "--print, --install, and --uninstall are mutually exclusive."
+        )
+    if selected == 0:
         do_print = True
 
     shell = shell_name or _detect_shell()
