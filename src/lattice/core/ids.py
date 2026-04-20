@@ -11,12 +11,17 @@ _CROCKFORD_B32_RE = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}$", re.IGNORECASE)
 
 _VALID_ACTOR_PREFIXES = frozenset({"agent", "human", "team", "dashboard"})
 
-SHORT_ID_RE = re.compile(r"^[A-Z]{1,5}(?:-[A-Z]{1,5})?-\d+$")
+# Project and subproject codes are 1-5 uppercase ASCII letters/digits,
+# starting with a letter. Short IDs are ``<PROJECT>-<NUM>`` or
+# ``<PROJECT>-<SUBPROJECT>-<NUM>``. Numeric suffix is always pure digits,
+# and the letter-first requirement on prefixes keeps parsing unambiguous.
+SHORT_ID_RE = re.compile(r"^[A-Z][A-Z0-9]{0,4}(?:-[A-Z][A-Z0-9]{0,4})?-\d+$")
 
 # Pattern for extracting short IDs embedded in arbitrary strings (e.g., branch names).
-# Uses word boundaries to avoid partial matches.  Case-insensitive.
+# Boundaries exclude letters and digits on either side to avoid partial matches
+# now that prefixes themselves can contain digits.  Case-insensitive.
 _EMBEDDED_SHORT_ID_RE = re.compile(
-    r"(?<![A-Za-z])([A-Z]{1,5}(?:-[A-Z]{1,5})?-\d+)(?![A-Za-z])",
+    r"(?<![A-Za-z0-9])([A-Z][A-Z0-9]{0,4}(?:-[A-Z][A-Z0-9]{0,4})?-\d+)(?![A-Za-z0-9])",
     re.IGNORECASE,
 )
 

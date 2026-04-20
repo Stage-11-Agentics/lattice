@@ -294,16 +294,25 @@ VALID_PRIORITIES: tuple[str, ...] = ("critical", "high", "medium", "low")
 VALID_URGENCIES: tuple[str, ...] = ("immediate", "high", "normal", "low")
 VALID_COMPLEXITIES: tuple[str, ...] = ("low", "medium", "high")
 
-_PROJECT_CODE_RE = re.compile(r"^[A-Z]{1,5}$")
+_PROJECT_CODE_RE = re.compile(r"^[A-Z][A-Z0-9]{0,4}$")
 
 
 def validate_project_code(code: str) -> bool:
-    """Return ``True`` if *code* is a valid project code (1-5 uppercase ASCII letters)."""
+    """Return ``True`` if *code* is a valid project code.
+
+    Rules: 1-5 chars, uppercase ASCII letters and digits, must start with a
+    letter. The leading-letter requirement keeps the prefix unambiguous
+    against the trailing numeric sequence in short IDs like ``C11-42``.
+    """
     return bool(_PROJECT_CODE_RE.match(code))
 
 
 def validate_subproject_code(code: str) -> bool:
-    """Return ``True`` if *code* is a valid subproject code (1-5 uppercase ASCII letters)."""
+    """Return ``True`` if *code* is a valid subproject code.
+
+    Same rules as project code: 1-5 chars, uppercase ASCII letters and
+    digits, must start with a letter.
+    """
     return bool(_PROJECT_CODE_RE.match(code))
 
 
