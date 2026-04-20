@@ -69,7 +69,7 @@ def backfill_ids(
         code = code.upper()
         if not validate_project_code(code):
             output_error(
-                f"Invalid project code: '{code}'. Must be 1-5 uppercase ASCII letters.",
+                f"Invalid project code: '{code}'. Must be 1-5 uppercase ASCII letters/digits, starting with a letter.",
                 "VALIDATION_ERROR",
                 is_json,
             )

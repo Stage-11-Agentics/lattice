@@ -537,7 +537,10 @@ def init(
                         f"{project_code}-3, ..."
                     )
                     break
-                click.echo(f"  '{project_code}' is not valid. Use 1-5 letters (e.g. LAT).")
+                click.echo(
+                    f"  '{project_code}' is not valid. Use 1-5 uppercase letters/digits "
+                    "starting with a letter (e.g. LAT, C11, AUT2)."
+                )
 
     # ── Validate inputs (flag-provided values only) ───────────────────
     # Interactive prompts validate inline with retry loops above.
@@ -555,7 +558,8 @@ def init(
         project_code = project_code.upper()
         if not validate_project_code(project_code):
             raise click.ClickException(
-                f"Invalid project code: '{project_code}'. Must be 1-5 uppercase ASCII letters."
+                f"Invalid project code: '{project_code}'. "
+                "Must be 1-5 uppercase ASCII letters/digits, starting with a letter."
             )
 
     # Validate subproject code
@@ -566,7 +570,7 @@ def init(
         if not validate_subproject_code(subproject_code):
             raise click.ClickException(
                 f"Invalid subproject code: '{subproject_code}'. "
-                "Must be 1-5 uppercase ASCII letters."
+                "Must be 1-5 uppercase ASCII letters/digits, starting with a letter."
             )
 
     # Heartbeat and workflow are flag-only configuration.
@@ -1088,7 +1092,8 @@ def set_project_code(code: str, force: bool) -> None:
     code = code.upper()
     if not validate_project_code(code):
         raise click.ClickException(
-            f"Invalid project code: '{code}'. Must be 1-5 uppercase ASCII letters."
+            f"Invalid project code: '{code}'. "
+            "Must be 1-5 uppercase ASCII letters/digits, starting with a letter."
         )
 
     existing_code = config.get("project_code")
@@ -1134,7 +1139,8 @@ def set_subproject_code(code: str, force: bool) -> None:
     code = code.upper()
     if not validate_subproject_code(code):
         raise click.ClickException(
-            f"Invalid subproject code: '{code}'. Must be 1-5 uppercase ASCII letters."
+            f"Invalid subproject code: '{code}'. "
+            "Must be 1-5 uppercase ASCII letters/digits, starting with a letter."
         )
 
     if not config.get("project_code"):
