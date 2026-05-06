@@ -51,6 +51,7 @@ class TestDefaultConfig:
             "planned",
             "in_progress",
             "review",
+            "pr_open",
             "done",
             "blocked",
             "needs_human",
@@ -67,6 +68,7 @@ class TestDefaultConfig:
             "planned",
             "in_progress",
             "review",
+            "pr_open",
             "done",
             "blocked",
             "needs_human",
@@ -89,7 +91,7 @@ class TestDefaultConfig:
     def test_wip_limits(self) -> None:
         config = default_config()
         wip = config["workflow"]["wip_limits"]
-        assert wip == {"in_progress": 10, "review": 5}
+        assert wip == {"in_progress": 10, "review": 5, "pr_open": 10}
 
     def test_has_completion_policies(self) -> None:
         config = default_config()

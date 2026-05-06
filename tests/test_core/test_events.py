@@ -419,3 +419,24 @@ class TestCountReviewReworkCycles:
             _status_event("review", "needs_human"),
         ]
         assert count_review_rework_cycles(events) == 0
+
+    def test_counts_pr_open_to_in_progress(self) -> None:
+        events = [
+            _status_event("review", "pr_open"),
+            _status_event("pr_open", "in_progress"),
+        ]
+        assert count_review_rework_cycles(events) == 1
+
+    def test_counts_pr_open_to_in_planning(self) -> None:
+        events = [
+            _status_event("review", "pr_open"),
+            _status_event("pr_open", "in_planning"),
+        ]
+        assert count_review_rework_cycles(events) == 1
+
+    def test_does_not_count_pr_open_to_done(self) -> None:
+        events = [
+            _status_event("review", "pr_open"),
+            _status_event("pr_open", "done"),
+        ]
+        assert count_review_rework_cycles(events) == 0
