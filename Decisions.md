@@ -781,6 +781,16 @@ Additionally, `lattice advance N` processed multiple tasks in a single context w
 
 ---
 
+## 2026-05-06: LAT-210 review-fix decisions (post-PASS absorption)
+
+- **Context:** The LAT-210 implementation passed code review with 3 MAJOR + 5 MINOR findings flagged for in-PR absorption. Two findings produced architectural decisions worth recording.
+- **Decision (cube views — alert overlay):** Wired `CV2_ALERT_COLORS` and `CUBE3D_ALERT_COLORS` constants into the cube / cube3d node-color path so alerted cards render with their alert hue in those views, analogous to the main-board border treatment. The alternative (drop the unused constants and ship a follow-up ticket) was rejected — keep the mechanism cohesive within this PR.
+- **Decision (legacy status colors — three-file consistency):** `LANE_COLORS_BY_THEME` in `index.html` retained its `needs_human` / `blocked` per-theme entries so legacy snapshots from sibling Lattice instances (or this project before migration) render with sensible colors instead of gray fallback. For consistency, **added matching entries to `CV2_STATUS_COLORS` (cube-v2.js) and `CUBE3D_STATUS_COLORS` (cube3d.js)**. All three rendering surfaces now treat `needs_human` / `blocked` as legacy-fallback status colors. The mechanism for the *current* model is the alert overlay (already wired via `CV2_ALERT_COLORS` / `CUBE3D_ALERT_COLORS`); these legacy entries only matter when a snapshot still carries `status: needs_human` or `status: blocked`.
+- **Decision (plan_approval=human verdict gate):** `lattice plan-review` raises `needs_human` whenever `plan_approval == "human"` AND a plan-review artifact was produced — *regardless of verdict*. This is the locked behavior. Verdict-driven routing (fail → in_planning rework) lives in the in_planning loop already; the plan-approval handshake is purely the human-go/no-go signal at the gate, so a fail-verdict still raises (the human is the one who decides whether to accept or reject the plan). Documented in code via comments in both the single- and triple-mode branches of `plan_review`. A fail-verdict test (`test_plan_approval_human_raises_alert_even_when_verdict_fails`) locks this behavior in.
+- **Consequence:** No follow-up tickets are needed for the cube alert-rendering gap or the dashboard color inconsistency; both close inside this PR. Future agents reading the dashboard layer should treat the `*_ALERT_COLORS` constants as the alert overlay (current model) and the `needs_human` / `blocked` status-color entries as legacy-snapshot fallback only.
+
+---
+
 ## Note: This file is append-only
 
 `Decisions.md` is an append-only log. Entries are never edited or deleted after recording. Superseded decisions are noted inline with a reference to the superseding entry. Cross-cutting architectural decisions go here; task-scoped design decisions belong in the plan file (`.lattice/plans/<task_id>.md`).

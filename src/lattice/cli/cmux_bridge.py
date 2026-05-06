@@ -182,8 +182,8 @@ def raise_alert_visual(
     alert_name: str,
     short: str,
     long: str | None,
-    flash: bool,
-    notify: bool,
+    should_flash: bool,
+    should_notify: bool,
     visual_overrides: dict | None = None,
 ) -> None:
     """Wire a c11 sidebar pill + optional flash + optional notify for an alert.
@@ -191,6 +191,9 @@ def raise_alert_visual(
     Order: metadata first (durable), then sidebar pill, then flash
     (one-shot), then OS-level notification.  Subprocess failures inside
     ``_run_cmux`` are logged and swallowed — this never raises.
+
+    The ``should_flash`` / ``should_notify`` parameters are named to avoid
+    shadowing the module-level ``notify`` helper and ``trigger_flash``.
     """
     if not cmux_available():
         return
@@ -230,11 +233,11 @@ def raise_alert_visual(
     )
 
     # 3. Flash
-    if flash:
+    if should_flash:
         _run_cmux("trigger-flash", "--workspace", workspace, "--surface", surface)
 
     # 4. Notification
-    if notify:
+    if should_notify:
         body = (long or short)[:200]
         _run_cmux(
             "notify",

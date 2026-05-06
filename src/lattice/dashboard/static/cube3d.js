@@ -41,14 +41,39 @@ function _cube3dCurrentView() { return (_L.getCurrentView ? _L.getCurrentView() 
 var CUBE3D_STATUS_COLORS = {
   backlog: '#6b7280', in_planning: '#a78bfa', planned: '#60a5fa',
   in_progress: '#34d399', review: '#fbbf24', pr_open: '#06b6d4',
-  done: '#22d3ee', cancelled: '#374151'
+  done: '#22d3ee', cancelled: '#374151',
+  // LAT-210: legacy fallback for snapshots from sibling instances that
+  // still carry needs_human/blocked as a status.  Mirrors index.html's
+  // LANE_COLORS_BY_THEME and cube-v2.js's CV2_STATUS_COLORS.
+  needs_human: '#F2994A', blocked: '#EB5757'
 };
 
-// LAT-210: alert overlay colors (rendered as a card border).
+// LAT-210: alert overlay colors.  When a node has any active alert, its
+// rendered color is the alert hue (priority: needs_human > blocked) — the
+// 3D analogue of the main board's alert border.
 var CUBE3D_ALERT_COLORS = {
   needs_human: '#FFD600',
   blocked: '#FFA500'
 };
+
+// Pick the dominant alert color for a node, or null if no alerts are active.
+function cube3dAlertColor(node) {
+  var a = node && node.alerts;
+  if (!a) return null;
+  if (a.needs_human) return CUBE3D_ALERT_COLORS.needs_human;
+  if (a.blocked) return CUBE3D_ALERT_COLORS.blocked;
+  for (var k in a) {
+    if (Object.prototype.hasOwnProperty.call(a, k)) {
+      return CUBE3D_ALERT_COLORS[k] || '#FFD600';
+    }
+  }
+  return null;
+}
+
+// Resolve the rendered color for a node: alert color when alerted, else status.
+function cube3dNodeColor(node) {
+  return cube3dAlertColor(node) || cube3dStatusColor(node.status);
+}
 
 var CUBE3D_EDGE_COLORS = {
   blocks: '#ef4444', depends_on: '#f97316', subtask_of: '#3b82f6',
@@ -505,7 +530,7 @@ function _cube3dCreateNodes(nodes) {
     dummy.updateMatrix();
     mesh.setMatrixAt(i, dummy.matrix);
 
-    var rgb = cube3dHexToRgb(cube3dStatusColor(node.status));
+    var rgb = cube3dHexToRgb(cube3dNodeColor(node));
     colors[i * 3]     = rgb.r;
     colors[i * 3 + 1] = rgb.g;
     colors[i * 3 + 2] = rgb.b;
@@ -1156,7 +1181,7 @@ function _cube3dApplySearch(query) {
   for (var j = 0; j < _cube3d.nodeData.length; j++) {
     var n = _cube3d.nodeData[j];
     if (_cube3d.searchMatches.has(j)) {
-      var rgb = cube3dHexToRgb(cube3dStatusColor(n.status));
+      var rgb = cube3dHexToRgb(cube3dNodeColor(n));
       arr[j * 3]     = rgb.r;
       arr[j * 3 + 1] = rgb.g;
       arr[j * 3 + 2] = rgb.b;
@@ -1201,7 +1226,7 @@ function _cube3dClearSearchHighlight() {
   var arr = colors.array;
   for (var i = 0; i < _cube3d.nodeData.length; i++) {
     var n = _cube3d.nodeData[i];
-    var rgb = cube3dHexToRgb(cube3dStatusColor(n.status));
+    var rgb = cube3dHexToRgb(cube3dNodeColor(n));
     arr[i * 3]     = rgb.r;
     arr[i * 3 + 1] = rgb.g;
     arr[i * 3 + 2] = rgb.b;

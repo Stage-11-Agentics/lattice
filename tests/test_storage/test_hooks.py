@@ -374,6 +374,128 @@ cat > "{output_file}"
 
 
 # ---------------------------------------------------------------------------
+# 8b. CLI integration: lattice raise / clear fire alert hooks (LAT-210)
+# ---------------------------------------------------------------------------
+
+
+def test_cli_raise_fires_alert_raised_hook(tmp_path: Path, cli_runner, cli_env: dict) -> None:
+    """`lattice raise` fires on.alert_raised hook."""
+    from lattice.cli.main import cli
+
+    output_file = tmp_path / "raise_hook_output.json"
+
+    hook_script = tmp_path / "raise_hook.sh"
+    hook_script.write_text(
+        f"""#!/bin/sh
+cat > "{output_file}"
+"""
+    )
+    hook_script.chmod(hook_script.stat().st_mode | stat.S_IEXEC)
+
+    # Create a task first
+    result = cli_runner.invoke(
+        cli,
+        ["create", "Alert hook task", "--actor", "human:test", "--json"],
+        env=cli_env,
+    )
+    assert result.exit_code == 0
+    task_id = json.loads(result.output)["data"]["id"]
+
+    # Update config with alert_raised hook
+    lattice_dir = Path(cli_env["LATTICE_ROOT"]) / ".lattice"
+    config = json.loads((lattice_dir / "config.json").read_text())
+    config["hooks"] = {"on": {"alert_raised": str(hook_script)}}
+    (lattice_dir / "config.json").write_text(json.dumps(config, sort_keys=True, indent=2) + "\n")
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "raise",
+            task_id,
+            "needs_human",
+            "--short",
+            "Need a decision",
+            "--actor",
+            "agent:test",
+            "--no-c11",
+        ],
+        env=cli_env,
+    )
+    assert result.exit_code == 0, f"raise failed: {result.output}"
+
+    assert output_file.exists(), "alert_raised hook did not fire"
+    event = json.loads(output_file.read_text())
+    assert event["type"] == "alert_raised"
+    assert event["data"]["name"] == "needs_human"
+
+
+def test_cli_clear_fires_alert_cleared_hook(tmp_path: Path, cli_runner, cli_env: dict) -> None:
+    """`lattice clear` fires on.alert_cleared hook."""
+    from lattice.cli.main import cli
+
+    output_file = tmp_path / "clear_hook_output.json"
+
+    hook_script = tmp_path / "clear_hook.sh"
+    hook_script.write_text(
+        f"""#!/bin/sh
+cat > "{output_file}"
+"""
+    )
+    hook_script.chmod(hook_script.stat().st_mode | stat.S_IEXEC)
+
+    # Create + raise so there is an active alert to clear
+    result = cli_runner.invoke(
+        cli,
+        ["create", "Alert clear task", "--actor", "human:test", "--json"],
+        env=cli_env,
+    )
+    assert result.exit_code == 0
+    task_id = json.loads(result.output)["data"]["id"]
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "raise",
+            task_id,
+            "blocked",
+            "--short",
+            "CI down",
+            "--actor",
+            "agent:test",
+            "--no-c11",
+        ],
+        env=cli_env,
+    )
+    assert result.exit_code == 0
+
+    # Now wire up the alert_cleared hook (after the raise so the raise hook
+    # doesn't run and overwrite the sentinel).
+    lattice_dir = Path(cli_env["LATTICE_ROOT"]) / ".lattice"
+    config = json.loads((lattice_dir / "config.json").read_text())
+    config["hooks"] = {"on": {"alert_cleared": str(hook_script)}}
+    (lattice_dir / "config.json").write_text(json.dumps(config, sort_keys=True, indent=2) + "\n")
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "clear",
+            task_id,
+            "blocked",
+            "--actor",
+            "human:test",
+            "--no-c11",
+        ],
+        env=cli_env,
+    )
+    assert result.exit_code == 0, f"clear failed: {result.output}"
+
+    assert output_file.exists(), "alert_cleared hook did not fire"
+    event = json.loads(output_file.read_text())
+    assert event["type"] == "alert_cleared"
+    assert event["data"]["name"] == "blocked"
+
+
+# ---------------------------------------------------------------------------
 # 9. _parse_transition_key unit tests
 # ---------------------------------------------------------------------------
 

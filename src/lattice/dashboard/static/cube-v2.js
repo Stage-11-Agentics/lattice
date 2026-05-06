@@ -44,7 +44,13 @@ function _cv2CloseDetailPanel() {
 var CV2_STATUS_COLORS = {
   backlog: '#6b7280', in_planning: '#a78bfa', planned: '#60a5fa',
   in_progress: '#34d399', review: '#fbbf24', pr_open: '#06b6d4',
-  done: '#22d3ee', cancelled: '#374151'
+  done: '#22d3ee', cancelled: '#374151',
+  // LAT-210: needs_human/blocked are no longer statuses in the default
+  // workflow, but legacy snapshots (or sibling instances that haven't
+  // migrated their config) may still carry these as a status value.  Keep
+  // entries here so those nodes render with a sensible color rather than
+  // the gray fallback.  Mirrors LANE_COLORS_BY_THEME in index.html.
+  needs_human: '#F2994A', blocked: '#EB5757'
 };
 
 // LAT-210: alerts are orthogonal modifiers; the dashboard renders an
@@ -53,6 +59,27 @@ var CV2_ALERT_COLORS = {
   needs_human: '#FFD600',
   blocked: '#FFA500'
 };
+
+// Pick the dominant alert color for a node, or null if no alerts are active.
+// Sort priority: needs_human > blocked (matches index.html alertCls block).
+function _cv2AlertColor(node) {
+  var a = node && node.alerts;
+  if (!a) return null;
+  if (a.needs_human) return CV2_ALERT_COLORS.needs_human;
+  if (a.blocked) return CV2_ALERT_COLORS.blocked;
+  // Generic fallback: any alert key present → use its color or yellow default.
+  for (var k in a) {
+    if (Object.prototype.hasOwnProperty.call(a, k)) {
+      return CV2_ALERT_COLORS[k] || '#FFD600';
+    }
+  }
+  return null;
+}
+
+// Resolve the rendered color for a node: alert color when alerted, else status.
+function _cv2NodeColor(node) {
+  return _cv2AlertColor(node) || CV2_STATUS_COLORS[node.status] || '#6b7280';
+}
 
 var CV2_EDGE_COLORS = {
   blocks: '#ef4444', depends_on: '#f97316', subtask_of: '#3b82f6',
@@ -328,7 +355,7 @@ function _cv2InitSimulation(nodes, links) {
   _cv2.nodeTargetColors = [];
   _cv2.nodeCurrentColors = [];
   for (var i = 0; i < nodes.length; i++) {
-    var c = new THREE.Color(CV2_STATUS_COLORS[nodes[i].status] || '#6b7280');
+    var c = new THREE.Color(_cv2NodeColor(nodes[i]));
     _cv2.nodeTargetColors.push({ r: c.r, g: c.g, b: c.b });
     _cv2.nodeCurrentColors.push({ r: c.r, g: c.g, b: c.b });
   }
@@ -1196,7 +1223,7 @@ function updateCubeV2Data(data) {
   _cv2.nodeTargetColors = [];
   _cv2.nodeCurrentColors = _cv2.nodeCurrentColors || [];
   for (var i = 0; i < nodes.length; i++) {
-    var c = new THREE.Color(CV2_STATUS_COLORS[nodes[i].status] || '#6b7280');
+    var c = new THREE.Color(_cv2NodeColor(nodes[i]));
     _cv2.nodeTargetColors.push({ r: c.r, g: c.g, b: c.b });
     // Preserve current colors for smooth transition, or init if new
     if (!_cv2.nodeCurrentColors[i]) {

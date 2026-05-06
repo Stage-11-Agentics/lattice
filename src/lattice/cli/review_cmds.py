@@ -233,7 +233,11 @@ def code_review(
         )
         review_artifact_id = art_ids[-1] if art_ids else None
 
-    if escalate_on_fail or escalate_after:
+    if (escalate_on_fail or escalate_after) and mode in ("single", "triple"):
+        # Guard: only single/triple produce a review_text we can parse.  The
+        # ``inline`` mode short-circuits earlier in this function, but a future
+        # mode could reach here without populating review_text — skip rather
+        # than dereference None.
         verdict = parse_verdict(review_text or "")
         should_escalate = bool(escalate_after) or (
             escalate_on_fail and verdict == "fail-decision"
@@ -372,6 +376,11 @@ def plan_review(
             backend_force=backend,
         )
         if art_id and plan_approval == "human":
+            # LAT-210 locked behavior: always raise needs_human on
+            # plan_approval=human regardless of verdict.  This gate is purely
+            # the human-approval handshake — a fail-verdict still routes
+            # through the existing in_planning rework loop, but the human is
+            # the one who decides whether to accept or reject the plan.
             short = (
                 f"Plan reviewed (mode: {plan_review_mode}). Approve to continue."
             )
@@ -402,6 +411,9 @@ def plan_review(
             backend_force=backend,
         )
         if art_ids and plan_approval == "human":
+            # See locked-behavior comment in the single-mode branch above:
+            # plan_approval=human raises unconditionally; verdict-driven
+            # routing is handled separately by the in_planning rework loop.
             short = (
                 f"Plan reviewed (mode: {plan_review_mode}). Approve to continue."
             )
@@ -793,7 +805,12 @@ def _raise_needs_human_alert(
     if prompt is not None:
         args += ["--prompt", prompt]
 
-    result = subprocess.run(args, capture_output=True, text=True)
+    result = subprocess.run(
+        args,
+        capture_output=True,
+        text=True,
+        cwd=str(lattice_dir.parent),
+    )
     if result.returncode == 0:
         click.echo("Raised needs_human alert.")
     else:

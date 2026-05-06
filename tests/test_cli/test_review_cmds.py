@@ -423,6 +423,41 @@ class TestPlanReviewSingle:
         assert kwargs.get("evidence_ref") == fake_art_id
         assert "Plan reviewed" in kwargs.get("short", "")
 
+    def test_plan_approval_human_raises_alert_even_when_verdict_fails(self, tmp_path):
+        """LAT-210 locked behavior: plan_approval=human raises unconditionally.
+
+        Verdict-driven routing is handled separately by the in_planning rework
+        loop; this gate is purely the human-approval handshake, so a failing
+        plan-review still raises the alert.
+        """
+        root = _make_board(tmp_path, {"plan_review_mode": "single", "plan_approval": "human"})
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+        _write_plan(root, task_id, "## Plan\nRefactor the auth module.")
+
+        fake_review = "### 1. Verdict\n**FAIL**\n\nVERDICT: fail-rework\n"
+        fake_art_id = "art_failart_456"
+
+        with (
+            patch(
+                "lattice.cli.review_cmds.run_single_review", return_value=(True, "ok", fake_review)
+            ),
+            patch(
+                "lattice.cli.review_cmds._attach_review_artifact",
+                return_value=fake_art_id,
+            ),
+            patch("lattice.cli.review_cmds._raise_needs_human_alert") as mock_raise,
+        ):
+            runner.invoke(
+                cli,
+                ["plan-review", task_id, "--mode", "single", "--actor", "agent:test"],
+                env={"LATTICE_ROOT": str(root)},
+                catch_exceptions=False,
+            )
+        mock_raise.assert_called_once()
+        kwargs = mock_raise.call_args.kwargs
+        assert kwargs.get("evidence_ref") == fake_art_id
+
 
 # ---------------------------------------------------------------------------
 # Tests: triple mode (mocked agents)

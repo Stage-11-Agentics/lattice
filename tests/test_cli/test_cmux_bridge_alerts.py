@@ -35,8 +35,8 @@ class TestRaiseAlertVisual:
             alert_name="needs_human",
             short="Approve plan",
             long="Reviewer says PASS, awaiting human approval.",
-            flash=True,
-            notify=True,
+            should_flash=True,
+            should_notify=True,
         )
 
         # 4 calls: set-metadata, set-status, trigger-flash, notify
@@ -67,8 +67,8 @@ class TestRaiseAlertVisual:
             alert_name="blocked",
             short="CI failing",
             long=None,
-            flash=False,
-            notify=False,
+            should_flash=False,
+            should_notify=False,
         )
         verbs = [c[0] for c in rec.calls]
         assert "trigger-flash" not in verbs
@@ -86,8 +86,8 @@ class TestRaiseAlertVisual:
             alert_name="needs_human",
             short="Override color",
             long=None,
-            flash=False,
-            notify=False,
+            should_flash=False,
+            should_notify=False,
             visual_overrides={"color": "#00FF00"},
         )
         status_args = rec.calls[1]

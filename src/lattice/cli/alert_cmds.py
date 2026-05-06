@@ -103,12 +103,12 @@ def _maybe_raise_visual(
             alert_name=alert_name,
             short=short,
             long=long,
-            flash=flash,
-            notify=notify,
+            should_flash=flash,
+            should_notify=notify,
             visual_overrides=workflow_visuals_override,
         )
     except Exception:  # noqa: BLE001 — visual side-effect must never block
-        return {"type": "c11", "workspace": workspace, "surface": surface}
+        pass
     return {"type": "c11", "workspace": workspace, "surface": surface}
 
 
