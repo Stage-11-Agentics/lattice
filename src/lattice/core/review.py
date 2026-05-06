@@ -77,6 +77,51 @@ def cleanup_prompt_dirs(lattice_dir: Path) -> int:
 # ---------------------------------------------------------------------------
 # In-flight state helpers
 # ---------------------------------------------------------------------------
+#
+# ``review_state`` lifecycle for the auto-fire path (LAT-211).
+#
+# The ``review_state/<task_id>.json`` record is the single source of truth for
+# "is a review in flight for this task?". For the auto-fire workflow it is
+# written and re-written at three sites; understanding the order matters
+# because ``auto_fired`` (and ``started_by_pid``) shifts at each step.
+#
+# 1. **Parent (``status_cmd`` → ``cli.auto_review.auto_fire_review``).**  When
+#    the operator runs ``lattice status <id> review`` (or ``planned``), the
+#    parent process synchronously calls ``claim_review_state`` *before* it
+#    spawns the detached ``lattice code-review`` / ``plan-review`` subprocess.
+#    On success the record carries ``auto_fired=True`` and
+#    ``started_by_pid=<parent pid>``. The parent then ``Popen``s the child and
+#    exits.
+#
+# 2. **Child CLI body (``code_review`` / ``plan_review``).**  The detached
+#    review subprocess starts and reads the existing record. Two paths:
+#
+#    * **Adoption (parent-still-alive edge).**  If ``--triggered-by`` was
+#      passed AND the existing record has ``auto_fired=True`` AND
+#      ``started_by_pid == os.getppid()`` (the parent is still alive on the
+#      same machine), the child writes a new record directly with
+#      ``auto_fired=True`` and ``started_by_pid=os.getpid()``. This bypasses
+#      ``claim_review_state``'s live-PID refusal — the child is taking over
+#      the parent's claim, not contending with a stranger.
+#
+#    * **Normal claim.**  Otherwise (no record, stale parent PID, or no
+#      ``--triggered-by``) the child calls
+#      ``claim_review_state(..., auto_fired=False)``. The standard stale-PID
+#      reclaim path overwrites the parent's dead record with the child's
+#      live PID. ``auto_fired=False`` here is intentional: ``review_state``
+#      is transient coordination state; the durable "this review was
+#      auto-fired" signal lives in the ``auto_review_spawned`` event in the
+#      task's event log.
+#
+# 3. **``run_single_review`` / ``run_triple_review``.**  Once inside the
+#    review orchestrator the existing in-place ``write_review_state`` calls
+#    update ``agents[*].status`` and timestamps as agents progress, then
+#    ``clear_review_state`` removes the record on exit. These calls preserve
+#    whatever ``started_by_pid`` and ``auto_fired`` the CLI body wrote in
+#    step 2 — they never recompute them.
+#
+# Manual ``lattice code-review`` / ``plan-review`` invocations follow the
+# normal-claim path with ``auto_fired=False`` from the start.
 
 
 def _state_path(lattice_dir: Path, task_id: str) -> Path:
@@ -108,6 +153,73 @@ def clear_review_state(lattice_dir: Path, task_id: str) -> None:
     """Remove in-flight review state after completion."""
     path = _state_path(lattice_dir, task_id)
     path.unlink(missing_ok=True)
+
+
+def _pid_alive(pid: int) -> bool:
+    """Return True if ``pid`` refers to a live process on this machine.
+
+    Uses ``os.kill(pid, 0)`` (signal 0) which performs the kernel's existence
+    check without delivering a signal. ``PermissionError`` is treated as
+    "alive" — the process exists but we lack permission to signal it
+    (different uid, sandbox boundary). Non-positive PIDs are never alive.
+    """
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def claim_review_state(
+    lattice_dir: Path,
+    task_id: str,
+    *,
+    mode: str,
+    review_type: str,
+    started_by_pid: int,
+    auto_fired: bool,
+) -> tuple[bool, dict | None]:
+    """Best-effort claim of the in-flight review slot for ``task_id``.
+
+    Reads the existing record. If it carries a different live ``started_by_pid``
+    the claim is refused and the existing record is returned unchanged. If
+    no record exists, the holder PID is dead, or the holder is the caller
+    itself, the slot is reclaimed: a fresh record is written with the supplied
+    ``mode``, ``review_type``, ``started_by_pid``, and ``auto_fired`` values
+    (and an empty ``agents`` list — the orchestrator fills it in later).
+
+    Returns ``(True, written_state)`` on success or ``(False, existing_state)``
+    on contention.
+
+    Note: this is *not* a true compare-and-swap. ``write_review_state`` does
+    an atomic temp-file replace, but the read-decide-write window is not
+    locked. Two callers passing the read check within microseconds will both
+    write — last writer wins. The realistic race is handled in §5 of the
+    LAT-211 plan (see module-level docstring); the residual race spawns
+    duplicate work but never corrupts state.
+    """
+    existing = read_review_state(lattice_dir, task_id)
+    if existing is not None:
+        holder = existing.get("started_by_pid")
+        if isinstance(holder, int) and holder != started_by_pid and _pid_alive(holder):
+            return False, existing
+        # Otherwise: stale (no PID field, dead PID, or our own PID) — reclaim.
+
+    new_state: dict[str, Any] = {
+        "task_id": task_id,
+        "mode": mode,
+        "review_type": review_type,
+        "started_at": _now_iso(),
+        "started_by_pid": started_by_pid,
+        "auto_fired": auto_fired,
+        "agents": [],
+    }
+    write_review_state(lattice_dir, new_state)
+    return True, new_state
 
 
 # ---------------------------------------------------------------------------
@@ -517,11 +629,17 @@ def run_single_review(
     selection behavior.
     """
     started_at = _now_iso()
+    # Preserve fields written by an earlier ``claim_review_state`` call (e.g.
+    # by the CLI body — see module docstring). If no record exists or the
+    # caller never went through ``claim_review_state``, fall back to defaults.
+    existing = read_review_state(lattice_dir, task_id) or {}
     state: dict[str, Any] = {
         "task_id": task_id,
         "mode": "single",
         "review_type": review_type,
         "started_at": started_at,
+        "started_by_pid": existing.get("started_by_pid", os.getpid()),
+        "auto_fired": existing.get("auto_fired", False),
         "agents": [
             {"name": "claude", "status": "running", "started_at": started_at, "artifact_id": None}
         ],
@@ -586,11 +704,14 @@ def run_triple_review(
     """
     agents = ["claude", "codex", "gemini"]
     overall_started = _now_iso()
+    existing = read_review_state(lattice_dir, task_id) or {}
     state: dict[str, Any] = {
         "task_id": task_id,
         "mode": "triple",
         "review_type": review_type,
         "started_at": overall_started,
+        "started_by_pid": existing.get("started_by_pid", os.getpid()),
+        "auto_fired": existing.get("auto_fired", False),
         "agents": [
             {"name": a, "status": "running", "started_at": overall_started, "artifact_id": None}
             for a in agents

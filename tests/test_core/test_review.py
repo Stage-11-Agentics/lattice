@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 from pathlib import Path
 
@@ -12,6 +13,8 @@ from lattice.core.review import (
     DEFAULT_AGENT_TIMEOUT,
     FAILURE_THRESHOLD,
     _extract_actor_str,
+    _pid_alive,
+    claim_review_state,
     cleanup_temp_files,
     clear_review_state,
     count_agent_failures,
@@ -52,6 +55,166 @@ class TestReviewState:
     def test_clear_nonexistent(self, lattice_dir: Path) -> None:
         # Should not raise
         clear_review_state(lattice_dir, "nonexistent")
+
+
+# ---------------------------------------------------------------------------
+# PID liveness check (LAT-211)
+# ---------------------------------------------------------------------------
+
+
+class TestPidAlive:
+    def test_self_pid_is_alive(self) -> None:
+        assert _pid_alive(os.getpid()) is True
+
+    def test_known_dead_pid_is_not_alive(self) -> None:
+        # 2**31-1 is far above typical PID range; never live in practice.
+        assert _pid_alive(2**31 - 1) is False
+
+    def test_zero_pid_is_not_alive(self) -> None:
+        assert _pid_alive(0) is False
+
+    def test_negative_pid_is_not_alive(self) -> None:
+        assert _pid_alive(-1) is False
+
+
+# ---------------------------------------------------------------------------
+# claim_review_state (LAT-211)
+# ---------------------------------------------------------------------------
+
+
+class TestClaimReviewState:
+    def test_claims_when_no_existing_state(self, lattice_dir: Path) -> None:
+        ok, state = claim_review_state(
+            lattice_dir,
+            "t1",
+            mode="single",
+            review_type="code-review",
+            started_by_pid=os.getpid(),
+            auto_fired=False,
+        )
+        assert ok is True
+        assert state is not None
+        assert state["task_id"] == "t1"
+        assert state["started_by_pid"] == os.getpid()
+        assert state["auto_fired"] is False
+        # Round-trip through disk.
+        loaded = read_review_state(lattice_dir, "t1")
+        assert loaded is not None
+        assert loaded["started_by_pid"] == os.getpid()
+        assert loaded["auto_fired"] is False
+        assert loaded["agents"] == []
+
+    def test_refuses_when_live_other_pid_holds(self, lattice_dir: Path) -> None:
+        # Seed a record held by a different live pid (parent of test process).
+        ppid = os.getppid()
+        if ppid == os.getpid() or ppid <= 1:
+            pytest.skip("Cannot exercise live-other-pid path: no usable parent pid.")
+        write_review_state(
+            lattice_dir,
+            {
+                "task_id": "t1",
+                "mode": "single",
+                "review_type": "code-review",
+                "started_at": "2026-05-06T00:00:00Z",
+                "started_by_pid": ppid,
+                "auto_fired": False,
+                "agents": [],
+            },
+        )
+        ok, existing = claim_review_state(
+            lattice_dir,
+            "t1",
+            mode="single",
+            review_type="code-review",
+            started_by_pid=os.getpid(),
+            auto_fired=False,
+        )
+        assert ok is False
+        assert existing is not None
+        assert existing["started_by_pid"] == ppid
+        # On-disk record still belongs to the live holder.
+        loaded = read_review_state(lattice_dir, "t1")
+        assert loaded is not None
+        assert loaded["started_by_pid"] == ppid
+
+    def test_reclaims_when_holder_pid_is_dead(self, lattice_dir: Path) -> None:
+        write_review_state(
+            lattice_dir,
+            {
+                "task_id": "t1",
+                "mode": "single",
+                "review_type": "code-review",
+                "started_at": "2026-05-06T00:00:00Z",
+                "started_by_pid": 2**31 - 1,
+                "auto_fired": True,
+                "agents": [{"name": "claude", "status": "running"}],
+            },
+        )
+        ok, state = claim_review_state(
+            lattice_dir,
+            "t1",
+            mode="single",
+            review_type="code-review",
+            started_by_pid=os.getpid(),
+            auto_fired=False,
+        )
+        assert ok is True
+        assert state is not None
+        assert state["started_by_pid"] == os.getpid()
+        assert state["auto_fired"] is False
+        # ``agents`` is reset to an empty list — orchestrator fills in.
+        assert state["agents"] == []
+
+    def test_reclaims_when_existing_state_has_no_pid(self, lattice_dir: Path) -> None:
+        # Legacy/manual state without ``started_by_pid``.
+        write_review_state(
+            lattice_dir,
+            {
+                "task_id": "t1",
+                "mode": "single",
+                "review_type": "code-review",
+                "started_at": "2026-05-06T00:00:00Z",
+                "agents": [],
+            },
+        )
+        ok, state = claim_review_state(
+            lattice_dir,
+            "t1",
+            mode="single",
+            review_type="code-review",
+            started_by_pid=os.getpid(),
+            auto_fired=False,
+        )
+        assert ok is True
+        assert state is not None
+        assert state["started_by_pid"] == os.getpid()
+
+    def test_claim_passes_when_holder_is_self(self, lattice_dir: Path) -> None:
+        # Same-PID re-claim is a no-op-ish overwrite (defensive).
+        write_review_state(
+            lattice_dir,
+            {
+                "task_id": "t1",
+                "mode": "single",
+                "review_type": "code-review",
+                "started_at": "2026-05-06T00:00:00Z",
+                "started_by_pid": os.getpid(),
+                "auto_fired": True,
+                "agents": [],
+            },
+        )
+        ok, state = claim_review_state(
+            lattice_dir,
+            "t1",
+            mode="single",
+            review_type="code-review",
+            started_by_pid=os.getpid(),
+            auto_fired=True,
+        )
+        assert ok is True
+        assert state is not None
+        assert state["started_by_pid"] == os.getpid()
+        assert state["auto_fired"] is True
 
 
 # ---------------------------------------------------------------------------
