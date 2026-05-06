@@ -527,30 +527,7 @@ def compute_next_steps(
             "then": "done",
         }
 
-    if new_status == "needs_human":
-        # Try to surface the latest comment as a reminder of what's needed.
-        try:
-            events = read_task_events(lattice_dir, task_id)
-            comments = materialize_comments(events)
-            # Find the latest non-deleted top-level comment.
-            latest = None
-            for c in reversed(comments):
-                if not c.get("deleted"):
-                    latest = c
-                    break
-            if latest:
-                body = latest.get("body", "")
-                truncated = (body[:200] + "...") if len(body) > 200 else body
-                hint = f"Waiting on human.  Latest comment: {truncated}"
-                return hint, {
-                    "action": "awaiting_human",
-                    "latest_comment": body,
-                }
-        except Exception:
-            pass
-        hint = "Waiting on human input."
-        return hint, {"action": "awaiting_human"}
-
+    # LAT-210: ``needs_human`` is no longer a status — see lattice raise / clear.
     return None, None
 
 

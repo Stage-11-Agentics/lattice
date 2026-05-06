@@ -691,7 +691,7 @@ def _task_definitions(ts: dict[str, str]) -> list[dict]:
             "title": "Know who to wake at 3am",
             "type": "task",
             "priority": "critical",
-            "status": "needs_human",
+            "status": "in_planning",
             "assigned_to": "human:kai",
             "ts": ts["fri_noon"],
             "description": (
@@ -704,8 +704,14 @@ def _task_definitions(ts: dict[str, str]) -> list[dict]:
             "tags": ["alerting", "on-call"],
             "status_history": [
                 ("in_planning", ts["fri_noon"], "agent:gregorovich"),
-                ("needs_human", ts["fri_2pm"], "agent:gregorovich"),
             ],
+            "alerts": {
+                "needs_human": {
+                    "short": "Pick an escalation model",
+                    "raised_at": ts["fri_2pm"],
+                    "raised_by": "agent:gregorovich",
+                },
+            },
             "parent_idx": 2,
             "comments": [
                 (
@@ -989,7 +995,7 @@ def _task_definitions(ts: dict[str, str]) -> list[dict]:
             "title": "The question of trust",
             "type": "task",
             "priority": "critical",
-            "status": "needs_human",
+            "status": "in_planning",
             "assigned_to": "human:kai",
             "ts": ts["thu_9am"],
             "description": (
@@ -1002,8 +1008,14 @@ def _task_definitions(ts: dict[str, str]) -> list[dict]:
             "tags": ["infrastructure", "security", "decision"],
             "status_history": [
                 ("in_planning", ts["thu_9am"], "agent:gregorovich"),
-                ("needs_human", ts["thu_11am"], "agent:gregorovich"),
             ],
+            "alerts": {
+                "needs_human": {
+                    "short": "Pick auth model (A/B/C)",
+                    "raised_at": ts["thu_11am"],
+                    "raised_by": "agent:gregorovich",
+                },
+            },
             "comments": [
                 (
                     "The gateway routes are authenticated with placeholder "
@@ -1030,7 +1042,7 @@ def _task_definitions(ts: dict[str, str]) -> list[dict]:
             "title": "When two truths disagree",
             "type": "task",
             "priority": "high",
-            "status": "needs_human",
+            "status": "in_planning",
             "assigned_to": "human:lena",
             "ts": ts["fri_9am"],
             "description": (
@@ -1043,8 +1055,14 @@ def _task_definitions(ts: dict[str, str]) -> list[dict]:
             "tags": ["monitoring", "operations", "decision"],
             "status_history": [
                 ("in_planning", ts["fri_9am"], "agent:meridian"),
-                ("needs_human", ts["fri_11am"], "agent:meridian"),
             ],
+            "alerts": {
+                "needs_human": {
+                    "short": "Choose metric source of truth",
+                    "raised_at": ts["fri_11am"],
+                    "raised_by": "agent:meridian",
+                },
+            },
             "comments": [
                 (
                     "Real example from testing: Prometheus reports "
@@ -1329,6 +1347,27 @@ def _seed_demo(target_dir: Path, quiet: bool = False) -> None:
             )
             snapshot = apply_event_to_snapshot(snapshot, branch_event)
             all_events.append(branch_event)
+
+        # Apply seeded alerts (LAT-210)
+        for alert_name, alert_payload in (tdef.get("alerts") or {}).items():
+            raised_at = alert_payload.get("raised_at", tdef.get("ts", ts["mon_9am"]))
+            raised_by = alert_payload.get("raised_by", create_actor)
+            event_data = {
+                "name": alert_name,
+                "short": alert_payload.get("short", ""),
+            }
+            for optional in ("long", "prompt", "evidence_ref"):
+                if alert_payload.get(optional) is not None:
+                    event_data[optional] = alert_payload[optional]
+            alert_event = create_event(
+                type="alert_raised",
+                task_id=task_id,
+                actor=raised_by,
+                data=event_data,
+                ts=raised_at,
+            )
+            snapshot = apply_event_to_snapshot(snapshot, alert_event)
+            all_events.append(alert_event)
 
         # Write all events + snapshot
         write_task_event(lattice_dir, task_id, all_events, snapshot, config)

@@ -158,7 +158,7 @@ class TestStatsCommand:
             "busiest",
             "velocity",
             "time_in_status",
-            "blocked",
+            "alert_episodes",
             "agent_activity",
         }
         assert expected_keys == set(data.keys())

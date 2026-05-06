@@ -77,12 +77,13 @@ class TestInitConfig:
         config = json.loads(config_path.read_text())
         assert isinstance(config, dict)
 
-    def test_config_has_schema_version_1(self, tmp_path: Path) -> None:
+    def test_config_has_schema_version_2(self, tmp_path: Path) -> None:
         runner = CliRunner()
         runner.invoke(cli, ["init", "--path", str(tmp_path)], input=_SKIP_ALL)
 
         config = json.loads((tmp_path / ".lattice" / "config.json").read_text())
-        assert config["schema_version"] == 1
+        # LAT-210 bumped the config schema_version to 2 (workflow contract change).
+        assert config["schema_version"] == 2
 
     def test_config_contains_default_fields(self, tmp_path: Path) -> None:
         """Config on disk must contain all default config fields plus instance_id."""

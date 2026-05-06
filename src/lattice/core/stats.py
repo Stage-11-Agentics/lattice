@@ -212,41 +212,71 @@ def _compute_time_in_status(events: list[dict], now: datetime) -> list[dict]:
     return result
 
 
-def _compute_blocked_counts(events: list[dict], active: list[dict]) -> dict:
-    """Compute blocked-related metrics.
+def _compute_alert_episode_counts(events: list[dict], active: list[dict]) -> dict:
+    """Compute alert-episode metrics (LAT-210 replacement for blocked counts).
 
-    Returns {currently_blocked, total_blocked_episodes, avg_blocked_hours}.
+    Walks ``alert_raised`` / ``alert_cleared`` event pairs.  Returns a
+    summary block plus per-alert-name breakdowns.
     """
-    currently_blocked = sum(1 for s in active if s.get("status") == "blocked")
-
-    # Count how many times any task entered "blocked"
-    unblocked_times: list[float] = []  # hours spent blocked
-
-    task_blocked_at: dict[str, datetime] = {}  # task_id -> when it entered blocked
+    # Per-alert tracking.
+    open_at: dict[tuple[str, str], datetime] = {}  # (task_id, alert_name) -> raised ts
+    durations_by_name: dict[str, list[float]] = {}  # alert_name -> hours per closed episode
 
     for ev in events:
-        if ev.get("type") != "status_changed":
+        et = ev.get("type")
+        if et not in ("alert_raised", "alert_cleared"):
             continue
-        data = ev.get("data", {})
-        ts = parse_ts(ev.get("ts", ""))
+        data = ev.get("data") or {}
+        name = data.get("name")
         tid = ev.get("task_id", "")
-        if not ts:
+        ts = parse_ts(ev.get("ts", ""))
+        if not name or not ts:
             continue
+        key = (tid, name)
+        if et == "alert_raised":
+            # Replace any existing open episode (double-raise overwrites raised_at).
+            open_at[key] = ts
+        else:  # alert_cleared
+            raised_at = open_at.pop(key, None)
+            if raised_at is not None:
+                hours = (ts - raised_at).total_seconds() / 3600
+                durations_by_name.setdefault(name, []).append(hours)
 
-        if data.get("to") == "blocked":
-            task_blocked_at[tid] = ts
-        elif data.get("from") == "blocked" and tid in task_blocked_at:
-            hours = (ts - task_blocked_at[tid]).total_seconds() / 3600
-            unblocked_times.append(hours)
-            del task_blocked_at[tid]
+    # Active counts come from snapshots (the source of truth post-replay).
+    currently_alerted = 0
+    by_name_active: dict[str, int] = {}
+    for snap in active:
+        alerts = snap.get("alerts") or {}
+        if alerts:
+            currently_alerted += 1
+        for alert_name in alerts:
+            by_name_active[alert_name] = by_name_active.get(alert_name, 0) + 1
 
-    total_episodes = len(unblocked_times) + len(task_blocked_at)  # resolved + still blocked
-    avg_hours = round(sum(unblocked_times) / len(unblocked_times), 1) if unblocked_times else 0
+    # Per-alert summary
+    by_alert: dict[str, dict] = {}
+    all_names = set(durations_by_name) | set(by_name_active) | {n for (_t, n) in open_at}
+    for name in sorted(all_names):
+        durations = durations_by_name.get(name, [])
+        still_open = sum(1 for k in open_at if k[1] == name)
+        total_episodes = len(durations) + still_open
+        avg_hours = round(sum(durations) / len(durations), 1) if durations else 0
+        by_alert[name] = {
+            "currently_alerted": by_name_active.get(name, 0),
+            "total_alert_episodes": total_episodes,
+            "avg_alert_hours": avg_hours,
+        }
+
+    total_episodes = sum(b["total_alert_episodes"] for b in by_alert.values())
+    all_durations = [d for ds in durations_by_name.values() for d in ds]
+    overall_avg = (
+        round(sum(all_durations) / len(all_durations), 1) if all_durations else 0
+    )
 
     return {
-        "currently_blocked": currently_blocked,
-        "total_blocked_episodes": total_episodes,
-        "avg_blocked_hours": avg_hours,
+        "currently_alerted": currently_alerted,
+        "total_alert_episodes": total_episodes,
+        "avg_alert_hours": overall_avg,
+        "by_alert": by_alert,
     }
 
 
@@ -389,7 +419,7 @@ def build_stats(lattice_dir: Path, config: dict) -> dict:
     all_events = load_all_events(lattice_dir)
     velocity = _compute_velocity(all_events, now)
     time_in_status = _compute_time_in_status(all_events, now)
-    blocked = _compute_blocked_counts(all_events, active)
+    alert_episodes = _compute_alert_episode_counts(all_events, active)
     agent_activity = _compute_agent_activity(all_events)
 
     return {
@@ -411,6 +441,6 @@ def build_stats(lattice_dir: Path, config: dict) -> dict:
         "busiest": busiest,
         "velocity": velocity,
         "time_in_status": time_in_status,
-        "blocked": blocked,
+        "alert_episodes": alert_episodes,
         "agent_activity": agent_activity,
     }

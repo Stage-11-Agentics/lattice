@@ -29,7 +29,7 @@ class TestDefaultConfig:
 
     def test_has_schema_version(self) -> None:
         config = default_config()
-        assert config["schema_version"] == 1
+        assert config["schema_version"] == 2
 
     def test_has_default_status(self) -> None:
         config = default_config()
@@ -53,11 +53,33 @@ class TestDefaultConfig:
             "review",
             "pr_open",
             "done",
-            "blocked",
-            "needs_human",
             "cancelled",
         ]
         assert config["workflow"]["statuses"] == expected
+
+    def test_no_needs_human_or_blocked_in_default_statuses(self) -> None:
+        """LAT-210: needs_human/blocked moved out of statuses into alerts."""
+        config = default_config()
+        assert "needs_human" not in config["workflow"]["statuses"]
+        assert "blocked" not in config["workflow"]["statuses"]
+
+    def test_default_workflow_alerts_listed(self) -> None:
+        config = default_config()
+        assert config["workflow"]["alerts"] == ["needs_human", "blocked"]
+
+    def test_alert_visuals_present(self) -> None:
+        config = default_config()
+        visuals = config["workflow"]["alert_visuals"]
+        assert "needs_human" in visuals
+        assert "blocked" in visuals
+        assert visuals["needs_human"]["color"]
+        assert visuals["blocked"]["color"]
+
+    def test_alert_descriptions_present(self) -> None:
+        config = default_config()
+        descs = config["workflow"]["alert_descriptions"]
+        assert "needs_human" in descs
+        assert "blocked" in descs
 
     def test_workflow_transitions_keys(self) -> None:
         config = default_config()
@@ -70,8 +92,6 @@ class TestDefaultConfig:
             "review",
             "pr_open",
             "done",
-            "blocked",
-            "needs_human",
             "cancelled",
         }
         assert set(transitions.keys()) == expected_keys
@@ -85,8 +105,8 @@ class TestDefaultConfig:
     def test_has_universal_targets(self) -> None:
         config = default_config()
         assert "universal_targets" in config["workflow"]
-        assert "needs_human" in config["workflow"]["universal_targets"]
-        assert "cancelled" in config["workflow"]["universal_targets"]
+        # LAT-210: needs_human is no longer a status; only cancelled remains.
+        assert config["workflow"]["universal_targets"] == ["cancelled"]
 
     def test_wip_limits(self) -> None:
         config = default_config()
@@ -278,17 +298,26 @@ class TestValidateTransition:
                     f"Universal target {target!r} should be reachable from {from_s!r}"
                 )
 
-    def test_universal_target_backlog_to_needs_human(self) -> None:
+    def test_universal_target_backlog_to_cancelled(self) -> None:
         config = default_config()
-        assert validate_transition(config, "backlog", "needs_human") is True
+        assert validate_transition(config, "backlog", "cancelled") is True
 
-    def test_universal_target_done_to_needs_human(self) -> None:
+    def test_universal_target_in_progress_to_cancelled(self) -> None:
         config = default_config()
-        assert validate_transition(config, "done", "needs_human") is True
+        assert validate_transition(config, "in_progress", "cancelled") is True
 
     def test_universal_target_done_to_cancelled(self) -> None:
         config = default_config()
         assert validate_transition(config, "done", "cancelled") is True
+
+    def test_needs_human_no_longer_a_status(self) -> None:
+        """LAT-210: transitions to ``needs_human`` are invalid; it is an alert now."""
+        config = default_config()
+        assert validate_transition(config, "in_progress", "needs_human") is False
+
+    def test_blocked_no_longer_a_status(self) -> None:
+        config = default_config()
+        assert validate_transition(config, "in_progress", "blocked") is False
 
     def test_no_universal_targets_falls_back_to_explicit(self) -> None:
         config: dict = {
@@ -551,12 +580,13 @@ class TestValidateCompletionPolicy:
         assert ok is True
 
     def test_universal_target_bypasses_policy(self) -> None:
+        # LAT-210: cancelled is the only universal target now.
         config = default_config()
         config["workflow"]["completion_policies"] = {
-            "needs_human": {"require_roles": ["review"]},
+            "cancelled": {"require_roles": ["review"]},
         }
         snap = _snap_with_evidence([])
-        ok, failures = validate_completion_policy(config, snap, "needs_human")
+        ok, failures = validate_completion_policy(config, snap, "cancelled")
         assert ok is True
 
     def test_cancelled_bypasses_policy(self) -> None:

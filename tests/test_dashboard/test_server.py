@@ -1049,7 +1049,8 @@ class TestPostDashboardConfig:
         cfg = json.loads((ld / "config.json").read_text())
         assert "workflow" in cfg
         assert "statuses" in cfg["workflow"]
-        assert cfg["schema_version"] == 1
+        # LAT-210 bumped schema_version 1 -> 2.
+        assert cfg["schema_version"] == 2
         assert cfg["dashboard"]["background_image"] == "https://example.com/bg.jpg"
 
     def test_config_returned_via_get_after_save(self, dashboard_server):

@@ -419,7 +419,7 @@ def list_cmd(
             t = snap.get("type", "?")
             title = snap.get("title", "?")
             assigned_to = snap.get("assigned_to") or "unassigned"
-            prefix = ">>> " if s == "needs_human" else ""
+            prefix = ">>> " if (snap.get("alerts") or {}) else ""
             archived_marker = " [A]" if snap.get("_archived") else ""
             click.echo(
                 f'{prefix}{display_id}  {s_display}  {p}  {t}  "{title}"  {assigned_to}{archived_marker}'

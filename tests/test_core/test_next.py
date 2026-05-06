@@ -130,18 +130,28 @@ class TestSelectNextExclusions:
         snaps = [_snap("task_cancel", status="cancelled")]
         assert select_next(snaps) is None
 
-    def test_excludes_blocked(self) -> None:
-        snaps = [_snap("task_block", status="blocked")]
-        assert select_next(snaps) is None
-
-    def test_excludes_needs_human(self) -> None:
-        snaps = [_snap("task_human", status="needs_human")]
-        assert select_next(snaps) is None
-
     def test_excludes_in_progress_without_actor(self) -> None:
         """in_progress is not in ready_statuses by default."""
         snaps = [_snap("task_ip", status="in_progress")]
         assert select_next(snaps) is None
+
+    def test_alerted_task_excluded_regardless_of_status(self) -> None:
+        """LAT-210: any task with non-empty alerts is unpickable, regardless of status."""
+        snap = _snap("task_alerted", status="backlog")
+        snap["alerts"] = {
+            "needs_human": {"short": "decision", "raised_at": "2026-05-06T00:00:00Z"}
+        }
+        assert select_next([snap]) is None
+
+    def test_alerted_in_progress_task_not_resumed(self) -> None:
+        """LAT-210: an in_progress + alerted task is not picked even via resume-first."""
+        snap = _snap(
+            "task_resumable",
+            status="in_progress",
+            assigned_to="agent:claude",
+        )
+        snap["alerts"] = {"blocked": {"short": "stuck", "raised_at": "x"}}
+        assert select_next([snap], actor="agent:claude") is None
 
 
 class TestSelectNextAssignment:

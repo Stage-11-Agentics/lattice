@@ -218,15 +218,21 @@ def _find_attention_needed(
                 }
             )
 
-    # Tasks waiting for human input
+    # Alerted tasks (LAT-210: replaces the needs_human-status check)
     for snap in active:
-        if snap.get("status") == "needs_human":
+        alerts = snap.get("alerts") or {}
+        if not alerts:
+            continue
+        # Surface needs_human first (highest priority alert) and then any others.
+        for alert_name in sorted(alerts.keys(), key=lambda n: (n != "needs_human", n)):
+            payload = alerts[alert_name] or {}
             items.append(
                 {
-                    "type": "needs_human",
+                    "type": f"alert:{alert_name}",
                     "id": snap.get("short_id") or snap.get("id", "?"),
                     "title": snap.get("title", "?"),
-                    "detail": "Waiting for human decision or input",
+                    "alert": alert_name,
+                    "detail": payload.get("short") or "Alert raised",
                 }
             )
 
@@ -333,8 +339,9 @@ def _print_text_weather(data: dict) -> None:
                 click.echo(f"  [WIP]   {item['status']} — {item['detail']}")
             elif item["type"] == "unassigned_active":
                 click.echo(f'  [UNASGN] {item["id"]} — {item["status"]} — "{item["title"]}"')
-            elif item["type"] == "needs_human":
-                click.echo(f'  [HUMAN] {item["id"]} — {item["detail"]} — "{item["title"]}"')
+            elif item.get("type", "").startswith("alert:"):
+                tag = (item.get("alert") or "alert").upper()
+                click.echo(f'  [{tag}] {item["id"]} — {item["detail"]} — "{item["title"]}"')
         click.echo("")
     else:
         click.echo("Attention Needed: None")
@@ -397,9 +404,10 @@ def _print_markdown_weather(data: dict) -> None:
                 click.echo(f"- **WIP BREACH** `{item['status']}` — {item['detail']}")
             elif item["type"] == "unassigned_active":
                 click.echo(f"- **UNASSIGNED** `{item['id']}` — {item['status']} — {item['title']}")
-            elif item["type"] == "needs_human":
+            elif item.get("type", "").startswith("alert:"):
+                tag = (item.get("alert") or "alert").upper().replace("_", " ")
                 click.echo(
-                    f"- **NEEDS HUMAN** `{item['id']}` — {item['detail']} — {item['title']}"
+                    f"- **{tag}** `{item['id']}` — {item['detail']} — {item['title']}"
                 )
     else:
         click.echo("Nothing needs attention.")

@@ -99,8 +99,6 @@ WORKFLOW_PRESETS: dict[str, dict[str, str]] = {
             "review": "check my work",
             "pr_open": "PR up",
             "done": "shipped",
-            "blocked": "stuck",
-            "needs_human": "ask flesh",
             "cancelled": "never mind",
         },
     },
@@ -122,9 +120,44 @@ STATUS_DESCRIPTIONS: dict[str, str] = {
     "review": "Local review is underway. A review sub-agent is examining the diff before a PR is opened.",
     "pr_open": "PR is open and awaiting human review, CI, or merge. Local review artifact is recorded.",
     "done": "Work is reviewed, merged, and shipped. No further action needed.",
-    "blocked": "Work cannot proceed due to an external dependency or unresolved issue.",
-    "needs_human": "A human decision, approval, or input is required before work can continue.",
     "cancelled": "Work has been abandoned. No further action will be taken.",
+}
+
+
+# Alert descriptions parallel STATUS_DESCRIPTIONS — what each alert means.
+ALERT_DESCRIPTIONS: dict[str, str] = {
+    "needs_human": (
+        "A human decision, approval, or input is required before work can continue. "
+        "The task stays in its current workflow status; the alert is a modifier that "
+        "surfaces the card in 'needs attention' views."
+    ),
+    "blocked": (
+        "Work cannot proceed due to an external dependency or unresolved issue. "
+        "The task stays in its current workflow status; clear the alert when the "
+        "blocker resolves."
+    ),
+}
+
+
+# Alert visual defaults baked into config (overridable by per-instance config).
+# Mirrors cmux_bridge.ALERT_VISUALS for the dashboard to consume server-side.
+ALERT_VISUALS_DEFAULTS: dict[str, dict] = {
+    "needs_human": {
+        "color": "#FFD600",
+        "icon": "exclamationmark.triangle.fill",
+        "flash": True,
+        "notify": True,
+        "label": "NEEDS HUMAN",
+        "sort_priority": 0,
+    },
+    "blocked": {
+        "color": "#FFA500",
+        "icon": "nosign",
+        "flash": False,
+        "notify": False,
+        "label": "BLOCKED",
+        "sort_priority": 1,
+    },
 }
 
 
@@ -182,37 +215,24 @@ def default_config(preset: str = "classic") -> LatticeConfig:
             "review",
             "pr_open",
             "done",
-            "blocked",
-            "needs_human",
             "cancelled",
         ],
         "transitions": {
             "backlog": ["in_planning", "planned", "cancelled"],
-            "in_planning": ["planned", "needs_human", "cancelled"],
-            "planned": ["in_progress", "review", "blocked", "needs_human", "cancelled"],
-            "in_progress": ["review", "blocked", "needs_human", "cancelled"],
-            "review": ["pr_open", "done", "in_progress", "in_planning", "needs_human", "cancelled"],
+            "in_planning": ["planned", "cancelled"],
+            "planned": ["in_progress", "review", "cancelled"],
+            "in_progress": ["review", "cancelled"],
+            "review": ["pr_open", "done", "in_progress", "in_planning", "cancelled"],
             "pr_open": [
                 "done",
                 "in_progress",
                 "review",
-                "blocked",
-                "needs_human",
                 "cancelled",
             ],
             "done": [],
-            "blocked": ["in_planning", "planned", "in_progress", "pr_open", "cancelled"],
-            "needs_human": [
-                "in_planning",
-                "planned",
-                "in_progress",
-                "review",
-                "pr_open",
-                "cancelled",
-            ],
             "cancelled": [],
         },
-        "universal_targets": ["needs_human", "cancelled"],
+        "universal_targets": ["cancelled"],
         "roles": ["review", "plan-review", "review-individual"],
         "wip_limits": {
             "in_progress": 10,
@@ -222,6 +242,11 @@ def default_config(preset: str = "classic") -> LatticeConfig:
         "completion_policies": {
             "done": {"require_roles": ["review"]},
         },
+        "alerts": ["needs_human", "blocked"],
+        "alert_descriptions": dict(ALERT_DESCRIPTIONS),
+        "alert_visuals": {
+            name: dict(visuals) for name, visuals in ALERT_VISUALS_DEFAULTS.items()
+        },
     }
 
     if display_names:
@@ -230,7 +255,7 @@ def default_config(preset: str = "classic") -> LatticeConfig:
     workflow["descriptions"] = dict(STATUS_DESCRIPTIONS)
 
     config: LatticeConfig = {
-        "schema_version": 1,
+        "schema_version": 2,
         "default_status": "backlog",
         "default_priority": "medium",
         "task_types": [

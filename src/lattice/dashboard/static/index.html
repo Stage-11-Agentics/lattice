@@ -2621,9 +2621,8 @@ function drawWebNode(node, ctx, globalScale) {
   var color = getLaneColor(node.status);
   var alpha = 1.0;
 
-  // Dimming for done/blocked
+  // Dimming for terminal statuses (LAT-210: blocked is now an alert, not a status)
   if (node.status === "done" || node.status === "cancelled") alpha = 0.3;
-  else if (node.status === "blocked") alpha = 0.4;
 
   ctx.globalAlpha = alpha;
 
@@ -6150,14 +6149,15 @@ async function renderStats() {
       html += '</div>';
     }
 
-    // Blocked counts
-    if (data.blocked) {
-      html += '<div class="stats-section"><h3>Blocked</h3>';
+    // Alert episodes (LAT-210; replaces the old blocked-status counts)
+    if (data.alert_episodes) {
+      var ae = data.alert_episodes;
+      html += '<div class="stats-section"><h3>Alerts</h3>';
       html += '<div class="blocked-cards">';
-      html += '<div class="blocked-card"><div class="blocked-card-value' + (data.blocked.currently_blocked > 0 ? ' danger' : '') + '">' + esc(data.blocked.currently_blocked) + '</div><div class="blocked-card-label">Currently Blocked</div></div>';
-      html += '<div class="blocked-card"><div class="blocked-card-value">' + esc(data.blocked.total_blocked_episodes) + '</div><div class="blocked-card-label">Total Episodes</div></div>';
-      var avgBlk = data.blocked.avg_blocked_hours >= 24 ? (data.blocked.avg_blocked_hours / 24).toFixed(1) + 'd' : data.blocked.avg_blocked_hours.toFixed(1) + 'h';
-      html += '<div class="blocked-card"><div class="blocked-card-value">' + esc(avgBlk) + '</div><div class="blocked-card-label">Avg Resolution</div></div>';
+      html += '<div class="blocked-card"><div class="blocked-card-value' + (ae.currently_alerted > 0 ? ' danger' : '') + '">' + esc(ae.currently_alerted) + '</div><div class="blocked-card-label">Currently Alerted</div></div>';
+      html += '<div class="blocked-card"><div class="blocked-card-value">' + esc(ae.total_alert_episodes) + '</div><div class="blocked-card-label">Total Episodes</div></div>';
+      var avgAlert = ae.avg_alert_hours >= 24 ? (ae.avg_alert_hours / 24).toFixed(1) + 'd' : ae.avg_alert_hours.toFixed(1) + 'h';
+      html += '<div class="blocked-card"><div class="blocked-card-value">' + esc(avgAlert) + '</div><div class="blocked-card-label">Avg Resolution</div></div>';
       html += '</div></div>';
     }
 

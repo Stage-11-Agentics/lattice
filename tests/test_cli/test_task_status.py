@@ -148,12 +148,12 @@ class TestCompletionPolicyGating:
         assert parsed["ok"] is True
 
     def test_universal_target_bypasses_policy(self, invoke, initialized_root, fill_plan) -> None:
-        """Universal targets bypass policies — even with a policy on needs_human."""
+        """Universal targets bypass policies — LAT-210: cancelled is the only universal target."""
         _add_policies_to_config(
             initialized_root,
             {
                 "done": {"require_roles": ["review"]},
-                "needs_human": {"require_roles": ["review"]},
+                "cancelled": {"require_roles": ["review"]},
             },
         )
 
@@ -164,7 +164,7 @@ class TestCompletionPolicyGating:
         invoke("status", task_id, "planned", "--actor", _ACTOR)
         invoke("status", task_id, "in_progress", "--actor", _ACTOR)
 
-        r = invoke("status", task_id, "needs_human", "--actor", _ACTOR, "--json")
+        r = invoke("status", task_id, "cancelled", "--actor", _ACTOR, "--json")
         assert r.exit_code == 0
 
     def test_no_policy_no_gating(self, invoke, initialized_root, fill_plan) -> None:
@@ -665,28 +665,9 @@ class TestNextStepsHints:
         assert "implement the plan" in r.output
         assert "move to review" in r.output
 
-    def test_needs_human_echoes_latest_comment(self, invoke, initialized_root) -> None:
-        r = invoke("create", "Needs human hint", "--actor", _ACTOR, "--json")
-        task_id = json.loads(r.output)["data"]["id"]
-        invoke("status", task_id, "in_planning", "--actor", _ACTOR)
-        invoke("comment", task_id, "Need API design decision", "--actor", _ACTOR)
-
-        r = invoke("status", task_id, "needs_human", "--actor", _ACTOR)
-        assert r.exit_code == 0
-        assert "Need API design decision" in r.output
-
-    def test_needs_human_json_includes_comment(self, invoke, initialized_root) -> None:
-        r = invoke("create", "NH json", "--actor", _ACTOR, "--json")
-        task_id = json.loads(r.output)["data"]["id"]
-        invoke("status", task_id, "in_planning", "--actor", _ACTOR)
-        invoke("comment", task_id, "Blocked on credentials", "--actor", _ACTOR)
-
-        r = invoke("status", task_id, "needs_human", "--actor", _ACTOR, "--json")
-        assert r.exit_code == 0
-        data = json.loads(r.output)["data"]
-        ns = data["next_steps"]
-        assert ns["action"] == "awaiting_human"
-        assert ns["latest_comment"] == "Blocked on credentials"
+    # LAT-210: needs_human is no longer a status; the "echo latest comment"
+    # hint moved out with it. Equivalent context now lives in the alert
+    # payload (lattice raise <task> needs_human --short ...).
 
     def test_planned_no_hint_when_inline(self, invoke, initialized_root, fill_plan) -> None:
         """When plan_review_mode is inline, planned produces no hint."""

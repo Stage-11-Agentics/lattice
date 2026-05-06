@@ -8,15 +8,22 @@ from lattice.core.events import get_actor_display
 PRIORITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 URGENCY_ORDER = {"immediate": 0, "high": 1, "normal": 2, "low": 3}
 
-# Statuses that are NOT eligible for next (terminal, waiting, or active).
+# Statuses that are NOT eligible for next (terminal or waiting on external work).
 # pr_open is waiting on external review/merge, so it is not pickable as next work.
-EXCLUDED_STATUSES = frozenset({"needs_human", "blocked", "done", "cancelled", "pr_open"})
+# needs_human and blocked are no longer statuses (LAT-210); see _has_alerts below
+# — any task with a non-empty alerts dict is ineligible regardless of status.
+EXCLUDED_STATUSES = frozenset({"done", "cancelled", "pr_open"})
 
 # Statuses indicating work already in progress (for resume-first logic)
 RESUME_STATUSES = frozenset({"in_progress", "in_planning"})
 
 # Default statuses considered "ready to pick up"
 DEFAULT_READY_STATUSES = frozenset({"backlog", "planned"})
+
+
+def _has_alerts(snap: dict) -> bool:
+    """Return True when *snap* has any active alerts."""
+    return bool(snap.get("alerts"))
 
 
 def _actors_match(assigned: str | dict | None, actor: str | dict | None) -> bool:
@@ -61,6 +68,8 @@ def select_next(
         for snap in snapshots:
             status = snap.get("status", "")
             assigned = snap.get("assigned_to")
+            if _has_alerts(snap):
+                continue  # alerted tasks are unpickable regardless of status
             if status in RESUME_STATUSES and _actors_match(assigned, actor):
                 resume_candidates.append(snap)
         if resume_candidates:
@@ -77,6 +86,8 @@ def select_next(
         # terminal/waiting states, still exclude them.
         if status in EXCLUDED_STATUSES:
             continue
+        if _has_alerts(snap):
+            continue  # alerted tasks are unpickable regardless of status
         assigned = snap.get("assigned_to")
         if assigned is not None and actor is not None and not _actors_match(assigned, actor):
             continue  # assigned to someone else
@@ -110,6 +121,8 @@ def select_all_ready(
         if status not in ready_statuses:
             continue
         if status in EXCLUDED_STATUSES:
+            continue
+        if _has_alerts(snap):
             continue
         candidates.append(snap)
 
