@@ -13,6 +13,7 @@ Design principles:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import subprocess
@@ -30,8 +31,6 @@ STATUS_VISUALS: dict[str, dict[str, str]] = {
     "in_progress": {"icon": "play.fill",                         "color": "#E67E22"},
     "review":      {"icon": "eye.fill",                          "color": "#FFD700"},
     "done":        {"icon": "checkmark.circle.fill",             "color": "#2ECC71"},
-    "blocked":     {"icon": "exclamationmark.triangle.fill",     "color": "#E74C3C"},
-    "needs_human": {"icon": "person.fill.questionmark",          "color": "#E74C3C"},
     "cancelled":   {"icon": "xmark.circle.fill",                 "color": "#95A5A6"},
 }
 
@@ -39,10 +38,28 @@ STATUS_VISUALS: dict[str, dict[str, str]] = {
 STATUS_LABELS: dict[str, str] = {
     "in_progress": "on it",
     "review": "review",
-    "blocked": "blocked",
-    "needs_human": "needs human",
     "done": "done",
     "cancelled": "cancelled",
+}
+
+# Alert visuals (LAT-210) — orthogonal "needs attention" markers.
+# Per-key overrides come from workflow.alert_visuals; these are the
+# canonical defaults.
+ALERT_VISUALS: dict[str, dict] = {
+    "needs_human": {
+        "color": "#FFD600",
+        "icon": "exclamationmark.triangle.fill",
+        "flash": True,
+        "notify": True,
+        "label": "NEEDS HUMAN",
+    },
+    "blocked": {
+        "color": "#FFA500",
+        "icon": "nosign",
+        "flash": False,
+        "notify": False,
+        "label": "BLOCKED",
+    },
 }
 
 
@@ -52,18 +69,21 @@ STATUS_LABELS: dict[str, str] = {
 
 
 def cmux_available() -> bool:
-    """Return True if we are running inside cmux."""
-    return bool(os.environ.get("CMUX_WORKSPACE_ID"))
+    """Return True if we are running inside cmux/c11."""
+    return bool(
+        os.environ.get("CMUX_WORKSPACE_ID")
+        or os.environ.get("C11_WORKSPACE_ID")
+    )
 
 
 def get_workspace() -> str | None:
-    """Return the current cmux workspace ref from the environment."""
-    return os.environ.get("CMUX_WORKSPACE_ID")
+    """Return the current cmux/c11 workspace ref from the environment."""
+    return os.environ.get("CMUX_WORKSPACE_ID") or os.environ.get("C11_WORKSPACE_ID")
 
 
 def get_surface() -> str | None:
-    """Return the current cmux surface ref from the environment."""
-    return os.environ.get("CMUX_SURFACE_ID")
+    """Return the current cmux/c11 surface ref from the environment."""
+    return os.environ.get("CMUX_SURFACE_ID") or os.environ.get("C11_SURFACE_ID")
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +168,111 @@ def notify(title: str, body: str | None = None) -> bool:
     if body:
         args += ["--body", body]
     return _run_cmux(*args)
+
+
+# ---------------------------------------------------------------------------
+# Alert visuals (LAT-210)
+# ---------------------------------------------------------------------------
+
+
+def raise_alert_visual(
+    *,
+    workspace: str,
+    surface: str,
+    alert_name: str,
+    short: str,
+    long: str | None,
+    flash: bool,
+    notify: bool,
+    visual_overrides: dict | None = None,
+) -> None:
+    """Wire a c11 sidebar pill + optional flash + optional notify for an alert.
+
+    Order: metadata first (durable), then sidebar pill, then flash
+    (one-shot), then OS-level notification.  Subprocess failures inside
+    ``_run_cmux`` are logged and swallowed — this never raises.
+    """
+    if not cmux_available():
+        return
+
+    visuals = dict(ALERT_VISUALS.get(alert_name, {}))
+    if visual_overrides:
+        for k, v in visual_overrides.items():
+            visuals[k] = v
+
+    color = visuals.get("color", "#FFD600")
+    icon = visuals.get("icon", "exclamationmark.triangle.fill")
+
+    # 1. Metadata (durable; survives sidebar refresh)
+    _run_cmux(
+        "set-metadata",
+        "--workspace",
+        workspace,
+        "--surface",
+        surface,
+        "--json",
+        json.dumps({"lattice": {alert_name: {"short": short}}}),
+    )
+
+    # 2. Sidebar pill
+    _run_cmux(
+        "set-status",
+        alert_name,
+        short[:32],
+        "--workspace",
+        workspace,
+        "--surface",
+        surface,
+        "--color",
+        color,
+        "--icon",
+        icon,
+    )
+
+    # 3. Flash
+    if flash:
+        _run_cmux("trigger-flash", "--workspace", workspace, "--surface", surface)
+
+    # 4. Notification
+    if notify:
+        body = (long or short)[:200]
+        _run_cmux(
+            "notify",
+            "--title",
+            f"Lattice: {alert_name}",
+            "--subtitle",
+            short[:80],
+            "--body",
+            body,
+        )
+
+
+def clear_alert_visual(
+    *,
+    workspace: str,
+    surface: str,
+    alert_name: str,
+) -> None:
+    """Clear the c11 sidebar pill and metadata key for an alert.  No un-flash."""
+    if not cmux_available():
+        return
+    _run_cmux(
+        "clear-status",
+        alert_name,
+        "--workspace",
+        workspace,
+        "--surface",
+        surface,
+    )
+    _run_cmux(
+        "clear-metadata",
+        "--key",
+        f"lattice.{alert_name}",
+        "--workspace",
+        workspace,
+        "--surface",
+        surface,
+    )
 
 
 # ---------------------------------------------------------------------------

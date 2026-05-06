@@ -28,6 +28,7 @@ PROTECTED_FIELDS: frozenset[str] = frozenset(
         "comment_count",
         "reopened_count",
         "custom_fields",
+        "alerts",
     }
 )
 
@@ -40,8 +41,6 @@ _DEFAULT_STATUS_ORDER: tuple[str, ...] = (
     "review",
     "pr_open",
     "done",
-    "blocked",
-    "needs_human",
     "cancelled",
 )
 _DEFAULT_STATUS_RANK: dict[str, int] = {
@@ -173,6 +172,7 @@ def _init_snapshot(event: dict) -> dict:
         "comment_count": 0,
         "reopened_count": 0,
         "custom_fields": data.get("custom_fields") or {},
+        "alerts": {},
         "last_event_id": event["id"],
     }
     short_id = data.get("short_id")
@@ -383,6 +383,38 @@ def _mut_comment_deleted(snap: dict, event: dict) -> None:
             for er in snap["evidence_refs"]
             if not (er.get("source_type") == "comment" and er.get("id") == comment_id)
         ]
+
+
+@_register_mutation("alert_raised")
+def _mut_alert_raised(snap: dict, event: dict) -> None:
+    from lattice.core.events import truncate_alert_payload
+
+    data = truncate_alert_payload(event.get("data") or {})
+    name = data.get("name")
+    if not isinstance(name, str) or not name:
+        # Malformed historical event — skip, don't crash replay.
+        return
+    alerts = snap.setdefault("alerts", {})
+    alerts[name] = {
+        "short": data.get("short", ""),
+        "long": data.get("long"),
+        "prompt": data.get("prompt"),
+        "location": data.get("location"),
+        "evidence_ref": data.get("evidence_ref"),
+        "raised_by": event.get("actor"),
+        "raised_at": event.get("ts"),
+    }
+
+
+@_register_mutation("alert_cleared")
+def _mut_alert_cleared(snap: dict, event: dict) -> None:
+    data = event.get("data") or {}
+    name = data.get("name")
+    if not isinstance(name, str) or not name:
+        return
+    alerts = snap.get("alerts") or {}
+    alerts.pop(name, None)
+    snap["alerts"] = alerts
 
 
 @_register_mutation("surface_bound")

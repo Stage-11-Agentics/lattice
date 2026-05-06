@@ -26,6 +26,9 @@ class Workflow(TypedDict, total=False):
     roles: list[str]
     descriptions: dict[str, str]
     review_cycle_limit: int
+    alerts: list[str]
+    alert_descriptions: dict[str, str]
+    alert_visuals: dict[str, dict]
 
 
 class HooksOnConfig(TypedDict, total=False):
@@ -43,6 +46,8 @@ class HooksOnConfig(TypedDict, total=False):
     relationship_added: str
     relationship_removed: str
     artifact_attached: str
+    alert_raised: str
+    alert_cleared: str
     branch_linked: str
     branch_unlinked: str
 
@@ -454,6 +459,61 @@ def validate_completion_policy(
         failures.append("Task must be assigned")
 
     return (len(failures) == 0, failures)
+
+
+# ---------------------------------------------------------------------------
+# Alerts (LAT-210) — orthogonal "needs attention" markers on a card
+# ---------------------------------------------------------------------------
+
+# Default fallback when a config predates LAT-210 and has no workflow.alerts.
+# The two original "modifier statuses" become the seed alert vocabulary.
+_LEGACY_ALERTS_FALLBACK: tuple[str, ...] = ("needs_human", "blocked")
+
+
+def get_workflow_alerts(config: dict) -> list[str]:
+    """Return the list of valid alert names for this project.
+
+    Reads ``workflow.alerts`` from config.  Falls back to the legacy
+    needs_human/blocked pair only when the field is missing entirely —
+    which makes pre-LAT-210 instances continue to work without
+    intervention.  An empty list in config is respected as-is (the
+    project has explicitly declared no alerts).
+    """
+    workflow = config.get("workflow") or {}
+    if "alerts" in workflow:
+        alerts = workflow.get("alerts") or []
+        if isinstance(alerts, list):
+            return [a for a in alerts if isinstance(a, str)]
+        return []
+    return list(_LEGACY_ALERTS_FALLBACK)
+
+
+def get_alert_descriptions(config: dict) -> dict[str, str]:
+    """Return ``workflow.alert_descriptions`` (empty dict when missing)."""
+    return dict(config.get("workflow", {}).get("alert_descriptions") or {})
+
+
+def get_alert_visual(config: dict, alert_name: str) -> dict:
+    """Return the visual-config dict for *alert_name*, merging config + defaults.
+
+    Resolution order: per-key override from ``workflow.alert_visuals.<name>``
+    falls back to the bridge defaults (``ALERT_VISUALS``) per-key.  This is
+    a per-key merge, not total replacement, so partial overrides are safe.
+    """
+    from lattice.cli.cmux_bridge import ALERT_VISUALS  # local import — CLI layer
+
+    bridge_defaults = ALERT_VISUALS.get(alert_name, {})
+    workflow = config.get("workflow") or {}
+    config_visuals = (workflow.get("alert_visuals") or {}).get(alert_name) or {}
+    merged: dict = dict(bridge_defaults)
+    for key, value in config_visuals.items():
+        merged[key] = value
+    return merged
+
+
+def validate_alert_name(config: dict, alert_name: str) -> bool:
+    """Return True when *alert_name* is in the configured alerts list."""
+    return alert_name in get_workflow_alerts(config)
 
 
 def get_configured_roles(config: LatticeConfig) -> set[str]:
