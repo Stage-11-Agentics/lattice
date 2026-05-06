@@ -9,8 +9,45 @@ from unittest.mock import patch
 from click.testing import CliRunner
 
 from lattice.cli.main import cli
+from lattice.cli.review_cmds import parse_verdict
 from lattice.core.config import default_config, serialize_config
 from lattice.storage.fs import LATTICE_DIR, ensure_lattice_dirs, atomic_write
+
+
+# ---------------------------------------------------------------------------
+# Verdict parser (LAT-210)
+# ---------------------------------------------------------------------------
+
+
+class TestParseVerdict:
+    def test_pass(self):
+        assert parse_verdict("Some content\n\nVERDICT: pass\n") == "pass"
+
+    def test_fail_rework(self):
+        assert parse_verdict("VERDICT: fail-rework") == "fail-rework"
+
+    def test_fail_decision(self):
+        assert parse_verdict("VERDICT: fail-decision") == "fail-decision"
+
+    def test_trailing_period_parses(self):
+        assert parse_verdict("VERDICT: pass.") == "pass"
+
+    def test_trailing_exclamation_parses(self):
+        assert parse_verdict("VERDICT: fail-rework!") == "fail-rework"
+
+    def test_lowercase_does_not_parse(self):
+        # Only uppercase VERDICT: is the contract.
+        assert parse_verdict("verdict: pass") == "fail-rework"
+
+    def test_two_verdict_lines_last_wins(self):
+        body = "VERDICT: fail-rework\n\n... more text ...\n\nVERDICT: pass\n"
+        assert parse_verdict(body) == "pass"
+
+    def test_missing_verdict_defaults_to_fail_rework(self):
+        assert parse_verdict("Looks good to me, no issues") == "fail-rework"
+
+    def test_empty_defaults_to_fail_rework(self):
+        assert parse_verdict("") == "fail-rework"
 
 
 # ---------------------------------------------------------------------------
@@ -354,13 +391,14 @@ class TestPlanReviewSingle:
         # Should not crash
         assert result.exit_code == 0 or "failed" in result.output
 
-    def test_plan_approval_human_moves_status(self, tmp_path):
+    def test_plan_approval_human_raises_alert(self, tmp_path):
+        """LAT-210: plan_approval=human raises a needs_human alert (not a status move)."""
         root = _make_board(tmp_path, {"plan_review_mode": "single", "plan_approval": "human"})
         runner = CliRunner()
         task_id = _create_task(runner, root)
         _write_plan(root, task_id, "## Plan\nRefactor the auth module.")
 
-        fake_review = "### 1. Verdict\n**PASS**"
+        fake_review = "### 1. Verdict\n**PASS**\n\nVERDICT: pass\n"
         fake_art_id = "art_fakeid123"
 
         with (
@@ -371,7 +409,7 @@ class TestPlanReviewSingle:
                 "lattice.cli.review_cmds._attach_review_artifact",
                 return_value=fake_art_id,
             ),
-            patch("lattice.cli.review_cmds._move_to_needs_human") as mock_move,
+            patch("lattice.cli.review_cmds._raise_needs_human_alert") as mock_raise,
         ):
             runner.invoke(
                 cli,
@@ -379,7 +417,11 @@ class TestPlanReviewSingle:
                 env={"LATTICE_ROOT": str(root)},
                 catch_exceptions=False,
             )
-        mock_move.assert_called_once()
+        mock_raise.assert_called_once()
+        # evidence_ref should be the artifact id we mocked.
+        kwargs = mock_raise.call_args.kwargs
+        assert kwargs.get("evidence_ref") == fake_art_id
+        assert "Plan reviewed" in kwargs.get("short", "")
 
 
 # ---------------------------------------------------------------------------

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import re
 import subprocess
 import tempfile
 from datetime import datetime, timezone
@@ -32,6 +34,38 @@ from lattice.core.review import (
 from lattice.templates import load_review_template
 
 
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Verdict parsing (LAT-210)
+# ---------------------------------------------------------------------------
+
+# Reviewers must terminate their artifact with a line like:
+#     VERDICT: pass | fail-rework | fail-decision
+# Last match wins so a "VERDICT: fail-rework" mid-document is overridden by the
+# trailing convention.  Lowercase ``verdict:`` is intentionally rejected — only
+# the uppercase form is the contract.
+_VERDICT_RE = re.compile(
+    r"^VERDICT:\s*(pass|fail-rework|fail-decision)[\s.!]*$",
+    re.MULTILINE,
+)
+
+
+def parse_verdict(body: str) -> str:
+    """Return the parsed verdict from a review artifact body.
+
+    Returns one of ``"pass"``, ``"fail-rework"``, ``"fail-decision"``.  When
+    no valid VERDICT line is present, returns ``"fail-rework"`` and logs a
+    warning — defaulting toward "needs rework" rather than "passed".
+    """
+    matches = _VERDICT_RE.findall(body or "")
+    if matches:
+        return matches[-1]
+    logger.warning("Review artifact missing VERDICT line; defaulting to fail-rework")
+    return "fail-rework"
+
+
 # ---------------------------------------------------------------------------
 # lattice code-review
 # ---------------------------------------------------------------------------
@@ -58,6 +92,31 @@ from lattice.templates import load_review_template
     default=None,
     help="Force a specific spawn backend. Raises if unavailable instead of falling through.",
 )
+@click.option(
+    "--escalate-on-fail",
+    is_flag=True,
+    default=False,
+    help="Raise a needs_human alert when verdict is fail-decision (LAT-210).",
+)
+@click.option(
+    "--escalate-after",
+    is_flag=True,
+    default=False,
+    help="Raise a needs_human alert after the review regardless of verdict.",
+)
+@click.option(
+    "--escalate-short",
+    "escalate_short",
+    default=None,
+    help="Short text for the escalation alert.",
+)
+@click.option(
+    "--escalate-long-from-file",
+    "escalate_long_from_file",
+    default=None,
+    type=click.Path(exists=True),
+    help="Read long alert text from a file.",
+)
 @common_options
 def code_review(
     task_id: str,
@@ -65,6 +124,10 @@ def code_review(
     base: str | None,
     headless: bool,
     backend: str | None,
+    escalate_on_fail: bool,
+    escalate_after: bool,
+    escalate_short: str | None,
+    escalate_long_from_file: str | None,
     model: str | None,
     session: str | None,
     output_json: bool,
@@ -131,8 +194,11 @@ def code_review(
 
     timeout = config.get("review_timeout_seconds", 600)
 
+    review_artifact_id: str | None = None
+    review_text: str | None = None
+
     if mode == "single":
-        _run_single_and_store(
+        review_artifact_id, review_text = _run_single_and_store(
             lattice_dir=lattice_dir,
             task_id=task_id,
             review_type="code-review",
@@ -146,10 +212,11 @@ def code_review(
             timeout=timeout,
             headless=headless,
             backend_force=backend,
+            return_text=True,
         )
 
     elif mode == "triple":
-        _run_triple_and_store(
+        art_ids, review_text = _run_triple_and_store(
             lattice_dir=lattice_dir,
             task_id=task_id,
             review_type="code-review",
@@ -162,7 +229,36 @@ def code_review(
             timeout=timeout,
             headless=headless,
             backend_force=backend,
+            return_text=True,
         )
+        review_artifact_id = art_ids[-1] if art_ids else None
+
+    if escalate_on_fail or escalate_after:
+        verdict = parse_verdict(review_text or "")
+        should_escalate = bool(escalate_after) or (
+            escalate_on_fail and verdict == "fail-decision"
+        )
+        if should_escalate:
+            display_id = snapshot.get("short_id") or task_id
+            short = escalate_short or (
+                f"Code review verdict: {verdict}. Human input requested."
+            )
+            long_text: str | None = None
+            if escalate_long_from_file:
+                try:
+                    long_text = Path(escalate_long_from_file).read_text(encoding="utf-8")
+                except OSError as exc:
+                    click.echo(f"Could not read --escalate-long-from-file: {exc}", err=True)
+            _raise_needs_human_alert(
+                lattice_dir,
+                task_id,
+                actor,
+                is_json,
+                short=short,
+                long_text=long_text,
+                evidence_ref=review_artifact_id,
+                prompt=f"lattice clear {display_id} needs_human --answer '...'",
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -257,6 +353,8 @@ def plan_review(
     plan_approval = config.get("plan_approval", "auto")
     timeout = config.get("review_timeout_seconds", 600)
 
+    plan_review_mode = mode
+
     if mode == "single":
         art_id = _run_single_and_store(
             lattice_dir=lattice_dir,
@@ -274,7 +372,19 @@ def plan_review(
             backend_force=backend,
         )
         if art_id and plan_approval == "human":
-            _move_to_needs_human(lattice_dir, task_id, actor, is_json)
+            short = (
+                f"Plan reviewed (mode: {plan_review_mode}). Approve to continue."
+            )
+            display_id = snapshot.get("short_id") or task_id
+            _raise_needs_human_alert(
+                lattice_dir,
+                task_id,
+                actor,
+                is_json,
+                short=short,
+                evidence_ref=art_id,
+                prompt=f"lattice clear {display_id} needs_human --answer 'approved'",
+            )
 
     elif mode == "triple":
         art_ids = _run_triple_and_store(
@@ -292,7 +402,20 @@ def plan_review(
             backend_force=backend,
         )
         if art_ids and plan_approval == "human":
-            _move_to_needs_human(lattice_dir, task_id, actor, is_json)
+            short = (
+                f"Plan reviewed (mode: {plan_review_mode}). Approve to continue."
+            )
+            display_id = snapshot.get("short_id") or task_id
+            # Last artifact id is the merged artifact (per _run_triple_and_store).
+            _raise_needs_human_alert(
+                lattice_dir,
+                task_id,
+                actor,
+                is_json,
+                short=short,
+                evidence_ref=art_ids[-1] if art_ids else None,
+                prompt=f"lattice clear {display_id} needs_human --answer 'approved'",
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -381,8 +504,14 @@ def _run_single_and_store(
     timeout: int = 600,
     headless: bool = False,
     backend_force: str | None = None,
-) -> str | None:
-    """Run single-agent review, store artifact, print result. Returns artifact ID or None."""
+    return_text: bool = False,
+):
+    """Run single-agent review, store artifact, print result.
+
+    Returns ``artifact_id`` by default (str | None).  When *return_text* is
+    True, returns ``(artifact_id, review_text)`` so callers can parse the
+    verdict for escalation decisions.
+    """
     click.echo(f"Running {review_type} (single mode)...")
 
     success, message, text = run_single_review(
@@ -399,7 +528,7 @@ def _run_single_and_store(
     if not success:
         click.echo(f"Review failed: {message}", err=True)
         cleanup_temp_files(task_id)
-        return None
+        return (None, None) if return_text else None
 
     assert text is not None
     art_id = _attach_review_artifact(
@@ -424,7 +553,7 @@ def _run_single_and_store(
         else:
             click.echo(f"Review stored as artifact {art_id} (role={role}).")
 
-    return art_id
+    return (art_id, text) if return_text else art_id
 
 
 def _run_triple_and_store(
@@ -441,8 +570,15 @@ def _run_triple_and_store(
     timeout: int = 600,
     headless: bool = False,
     backend_force: str | None = None,
-) -> list[str]:
-    """Run triple-agent review, store artifacts, print result. Returns list of artifact IDs."""
+    return_text: bool = False,
+):
+    """Run triple-agent review, store artifacts, print result.
+
+    Default return: ``list[str]`` of artifact IDs (last entry is the merged
+    artifact when merge succeeds).  When *return_text* is True, returns
+    ``(artifact_ids, merged_text_or_first_success)`` so callers can parse
+    the verdict.
+    """
     click.echo(f"Running {review_type} (triple mode — spawning claude, codex, gemini)...")
 
     overall_success, message, results = run_triple_review(
@@ -480,7 +616,7 @@ def _run_triple_and_store(
     if not overall_success:
         click.echo("All agents failed. No merged review produced.", err=True)
         cleanup_temp_files(task_id)
-        return artifact_ids
+        return (artifact_ids, None) if return_text else artifact_ids
 
     click.echo("Merging reviews...")
     merge_success, merged_text = run_merge_agent(
@@ -517,6 +653,15 @@ def _run_triple_and_store(
         click.echo(f"Merge agent failed: {merged_text}", err=True)
 
     cleanup_temp_files(task_id)
+    if return_text:
+        text_for_verdict = merged_text if merge_success else None
+        if text_for_verdict is None:
+            # Fall back to the first successful individual review.
+            for _agent, _success, _text in results:
+                if _success:
+                    text_for_verdict = _text
+                    break
+        return artifact_ids, text_for_verdict
     return artifact_ids
 
 
@@ -610,35 +755,50 @@ def _read_project_context(lattice_dir: Path) -> str:
     return "(no project context found)"
 
 
-def _move_to_needs_human(
+def _raise_needs_human_alert(
     lattice_dir: Path,
     task_id: str,
     actor: str | dict,
     is_json: bool,
+    *,
+    short: str,
+    long_text: str | None = None,
+    evidence_ref: str | None = None,
+    prompt: str | None = None,
 ) -> None:
-    """Move task to needs_human when plan_approval == 'human'."""
+    """Raise a ``needs_human`` alert (LAT-210 — replaces moving to that status).
+
+    Used by plan-review when ``plan_approval == 'human'`` and by
+    code-review's ``--escalate-on-fail`` / ``--escalate-after`` paths.
+    """
     actor_flag = _actor_flag(actor)
     if actor_flag is None:
-        click.echo("Cannot determine actor for status update.", err=True)
+        click.echo("Cannot determine actor for alert raise.", err=True)
         return
 
-    result = subprocess.run(
-        [
-            "lattice",
-            "status",
-            task_id,
-            "needs_human",
-            "--actor",
-            actor_flag,
-        ],
-        capture_output=True,
-        text=True,
-    )
+    args = [
+        "lattice",
+        "raise",
+        task_id,
+        "needs_human",
+        "--short",
+        short,
+        "--actor",
+        actor_flag,
+    ]
+    if long_text is not None:
+        args += ["--long", long_text]
+    if evidence_ref is not None:
+        args += ["--evidence-ref", evidence_ref]
+    if prompt is not None:
+        args += ["--prompt", prompt]
+
+    result = subprocess.run(args, capture_output=True, text=True)
     if result.returncode == 0:
-        click.echo("Task moved to needs_human (plan_approval=human).")
+        click.echo("Raised needs_human alert.")
     else:
         click.echo(
-            f"Note: Could not move to needs_human: {result.stderr.strip()}",
+            f"Note: Could not raise needs_human alert: {result.stderr.strip()}",
             err=True,
         )
 

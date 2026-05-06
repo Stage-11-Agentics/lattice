@@ -164,10 +164,15 @@ def create_failure_diagnostic_task(
     agent_type: str,
     failure_count: int,
     actor: str,
+    *,
+    evidence_ref: str | None = None,
 ) -> str | None:
-    """Create a needs_human task for investigating persistent agent failures.
+    """Create a diagnostic task with a ``needs_human`` alert raised on it
+    (LAT-210 — replaces the old "move new task to needs_human status" path).
 
-    Returns the created task ID, or None on failure.
+    The new task is created at the default ``backlog`` status; the alert
+    is the signal for human attention.  Returns the created task ID, or
+    ``None`` on failure.
     """
     title = f"Investigate {agent_type} review failures — failed {failure_count} times"
     try:
@@ -189,16 +194,22 @@ def create_failure_diagnostic_task(
         new_task_id = result.stdout.strip()
         if not new_task_id:
             return None
-        # Move to needs_human
+        # Raise a needs_human alert on the diagnostic task instead of moving
+        # to needs_human status (LAT-210).
+        raise_args = [
+            "lattice",
+            "raise",
+            new_task_id,
+            "needs_human",
+            "--short",
+            f"Persistent {agent_type} agent failure ({failure_count}x)",
+            "--actor",
+            actor,
+        ]
+        if evidence_ref is not None:
+            raise_args += ["--evidence-ref", evidence_ref]
         subprocess.run(
-            [
-                "lattice",
-                "status",
-                new_task_id,
-                "needs_human",
-                "--actor",
-                actor,
-            ],
+            raise_args,
             capture_output=True,
             text=True,
             cwd=str(lattice_dir.parent),
