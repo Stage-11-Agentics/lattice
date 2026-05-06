@@ -41,8 +41,14 @@ class TestValidateShortId:
     def test_invalid_empty(self) -> None:
         assert validate_short_id("") is False
 
-    def test_invalid_digits_in_prefix(self) -> None:
-        assert validate_short_id("L1T-1") is False
+    def test_valid_digits_after_letter_in_prefix(self) -> None:
+        assert validate_short_id("L1T-1") is True
+        assert validate_short_id("C11-42") is True
+        assert validate_short_id("K8S-7") is True
+
+    def test_invalid_digit_first_in_prefix(self) -> None:
+        assert validate_short_id("1LT-1") is False
+        assert validate_short_id("123-1") is False
 
     # --- Subproject format tests ---
 
