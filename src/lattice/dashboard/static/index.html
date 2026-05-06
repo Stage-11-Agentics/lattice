@@ -260,6 +260,19 @@ tr.heat-cooling td:first-child{border-left:3px solid #eab308}
 .alert-strip{display:block;font-size:.65rem;font-weight:700;letter-spacing:.08em;padding:1px 4px;margin-bottom:2px;border-radius:2px}
 .alert-strip-needs_human{background:#FFD600;color:#212529}
 .alert-strip-blocked{background:#FFA500;color:#212529}
+/* LAT-210: top-of-board alerts banner + filter (Phase 6). */
+.board-alerts-controls{display:flex;align-items:center;gap:12px;margin:0 0 6px 0;padding:0 4px;font-size:.8rem;color:var(--text-secondary)}
+.board-alerts-controls select{padding:0.2rem 0.4rem;border:1px solid var(--border);border-radius:var(--radius-sm);font-size:.8rem;background:var(--surface);color:var(--text-primary)}
+.board-alerts-summary{font-size:.75rem;color:var(--text-muted)}
+.board-alerts-banner{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 10px 0;padding:6px 8px;border-radius:var(--radius-sm,4px);background:var(--surface);border:1px solid var(--border-subtle,var(--border))}
+.board-alerts-banner-item{display:inline-flex;align-items:center;gap:6px;padding:3px 8px;border-radius:var(--radius-sm,4px);border:1px solid transparent;cursor:pointer;font:inherit;font-size:.72rem;max-width:340px;overflow:hidden}
+.board-alerts-banner-item.alert-strip-needs_human{background:#FFD600;color:#212529}
+.board-alerts-banner-item.alert-strip-blocked{background:#FFA500;color:#212529}
+.board-alerts-banner-tag{font-weight:700;font-size:.62rem;letter-spacing:.06em}
+.board-alerts-banner-id{font-weight:600;font-size:.68rem;opacity:.9}
+.board-alerts-banner-title{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px}
+.card.alert-flash{animation:alert-flash-anim 1.5s ease-out}
+@keyframes alert-flash-anim{0%{box-shadow:0 0 0 6px rgba(255,214,0,.85)}100%{box-shadow:0 0 0 0 transparent}}
 .status-review .board-col-header{background:#6f42c1;color:var(--text-on-lane)}
 
 /* List view */
@@ -4289,6 +4302,31 @@ function renderBoardCard(t) {
 }
 
 // --- Board View ---
+// LAT-210 Phase 6: alert filter state.  One of: "any", "needs_human_only",
+// "blocked_only", "no_alerts".  Persisted across renders within a session.
+var boardAlertFilter = "any";
+
+function _alertNamesOf(t) { return (t && t.alerts) ? Object.keys(t.alerts) : []; }
+function _hasAlert(t, name) { return !!(t && t.alerts && Object.prototype.hasOwnProperty.call(t.alerts, name)); }
+function _matchesAlertFilter(t) {
+  switch (boardAlertFilter) {
+    case "needs_human_only": return _hasAlert(t, "needs_human");
+    case "blocked_only": return _hasAlert(t, "blocked");
+    case "no_alerts": return _alertNamesOf(t).length === 0;
+    default: return true;
+  }
+}
+function _primaryAlertOf(t) {
+  if (_hasAlert(t, "needs_human")) return "needs_human";
+  var names = _alertNamesOf(t);
+  return names.length > 0 ? names[0] : null;
+}
+function _alertSortRank(name) {
+  if (name === "needs_human") return 0;
+  if (name === "blocked") return 1;
+  return 2;
+}
+
 function renderBoard() {
   var app = document.getElementById("app");
   if (!config || !tasks) { app.innerHTML = '<div class="loading"><div class="spinner"></div></div>'; return; }
@@ -4305,9 +4343,22 @@ function renderBoard() {
   window._latticeBoardData = tasks;
 
   var transitions = (config.workflow && config.workflow.transitions) || {};
+
+  // LAT-210 Phase 6: collect alerted tasks for the top banner (always shows
+  // every alerted card, regardless of the active filter), then apply the
+  // alert filter to the column-rendering pass.
+  var alertedTasks = tasks.filter(function(tt) { return _alertNamesOf(tt).length > 0; });
+  alertedTasks.sort(function(a, b) {
+    var ra = _alertSortRank(_primaryAlertOf(a));
+    var rb = _alertSortRank(_primaryAlertOf(b));
+    if (ra !== rb) return ra - rb;
+    return (a.short_id || "").localeCompare(b.short_id || "");
+  });
+  var visibleTasks = tasks.filter(_matchesAlertFilter);
+
   var grouped = {};
   statuses.forEach(function(s) { grouped[s] = []; });
-  tasks.forEach(function(t) {
+  visibleTasks.forEach(function(t) {
     var s = t.status || "unknown";
     if (!grouped[s]) grouped[s] = [];
     grouped[s].push(t);
@@ -4323,6 +4374,38 @@ function renderBoard() {
   }).join(' ');
 
   var html = '<div class="board-wrapper">';
+
+  // LAT-210 Phase 6: alerts controls strip + top-of-board banner.
+  html += '<div class="board-alerts-controls">';
+  html += '<label>Alerts: ';
+  html += '<select id="board-alert-filter">';
+  [["any","Any"],["needs_human_only","needs_human only"],["blocked_only","blocked only"],["no_alerts","No alerts"]].forEach(function(opt) {
+    var sel = boardAlertFilter === opt[0] ? ' selected' : '';
+    html += '<option value="' + opt[0] + '"' + sel + '>' + esc(opt[1]) + '</option>';
+  });
+  html += '</select>';
+  html += '</label>';
+  if (alertedTasks.length > 0) {
+    html += '<span class="board-alerts-summary">' + alertedTasks.length + ' alerted</span>';
+  }
+  html += '</div>';
+
+  if (alertedTasks.length > 0) {
+    html += '<div class="board-alerts-banner" role="region" aria-label="Active alerts">';
+    alertedTasks.forEach(function(at) {
+      var prim = _primaryAlertOf(at);
+      var label = (prim || "alert").toUpperCase().replace(/_/g, " ");
+      var alertObj = (at.alerts && prim && at.alerts[prim]) || {};
+      var shortText = alertObj.short || "";
+      var cls = prim ? " alert-strip-" + prim : "";
+      html += '<button type="button" class="board-alerts-banner-item' + cls + '" data-task-id="' + esc(at.id) + '" title="' + esc(shortText) + '">';
+      html += '<span class="board-alerts-banner-tag">' + esc(label) + '</span>';
+      if (at.short_id) html += '<span class="board-alerts-banner-id">' + esc(at.short_id) + '</span>';
+      html += '<span class="board-alerts-banner-title">' + esc(at.title || "") + '</span>';
+      html += '</button>';
+    });
+    html += '</div>';
+  }
 
   // Board columns
   html += '<div class="board-scroll-outer"><div class="board-scroll">';
@@ -4433,6 +4516,32 @@ function renderBoard() {
   html += "</div>"; // close .board-wrapper
 
   app.innerHTML = html;
+
+  // LAT-210 Phase 6: alert filter dropdown.  On change, save the new filter
+  // value to the module-level state and re-render the board.
+  var alertFilterSelect = document.getElementById("board-alert-filter");
+  if (alertFilterSelect) {
+    alertFilterSelect.addEventListener("change", function() {
+      boardAlertFilter = this.value;
+      renderBoard();
+    });
+  }
+
+  // LAT-210 Phase 6: alerts banner — clicking an entry scrolls its card
+  // into view and flashes a halo to draw the eye.
+  app.querySelectorAll(".board-alerts-banner-item").forEach(function(btn) {
+    btn.addEventListener("click", function() {
+      var tid = btn.getAttribute("data-task-id");
+      if (!tid) return;
+      var sel = '.card[data-task-id="' + (window.CSS && CSS.escape ? CSS.escape(tid) : tid) + '"]';
+      var card = app.querySelector(sel);
+      if (card) {
+        card.scrollIntoView({ behavior: "smooth", block: "center" });
+        card.classList.add("alert-flash");
+        setTimeout(function() { card.classList.remove("alert-flash"); }, 1500);
+      }
+    });
+  });
 
   // Add click handlers for card → floating detail panel (separate from drag)
   app.querySelectorAll(".card").forEach(function(card) {
