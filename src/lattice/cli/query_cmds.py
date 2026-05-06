@@ -302,6 +302,24 @@ def event_cmd(
     default=None,
     help="Filter by priority (critical, high, medium, low).",
 )
+@click.option(
+    "--alerted",
+    is_flag=True,
+    default=False,
+    help="Show only tasks with at least one active alert (LAT-210).",
+)
+@click.option(
+    "--alert",
+    "alert_name_filter",
+    default=None,
+    help="Show only tasks with the named alert active (e.g. needs_human).",
+)
+@click.option(
+    "--no-alerts",
+    is_flag=True,
+    default=False,
+    help="Show only tasks without any active alerts.",
+)
 @click.option("--include-archived", is_flag=True, help="Include archived tasks.")
 @click.option("--compact", is_flag=True, help="Compact JSON output.")
 @click.option("--json", "output_json", is_flag=True, help="Output structured JSON.")
@@ -312,6 +330,9 @@ def list_cmd(
     tag: str | None,
     task_type: str | None,
     priority: str | None,
+    alerted: bool,
+    alert_name_filter: str | None,
+    no_alerts: bool,
     include_archived: bool,
     compact: bool,
     output_json: bool,
@@ -359,6 +380,14 @@ def list_cmd(
                 snap["_archived"] = True
                 snapshots.append(snap)
 
+    # Validate alert filter combinations.
+    if no_alerts and (alerted or alert_name_filter):
+        output_error(
+            "--no-alerts is mutually exclusive with --alerted/--alert.",
+            "VALIDATION_ERROR",
+            is_json,
+        )
+
     # Apply filters (AND combination)
     filtered: list[dict] = []
     for snap in snapshots:
@@ -373,6 +402,13 @@ def list_cmd(
         if task_type is not None and snap.get("type") != task_type:
             continue
         if priority is not None and snap.get("priority") != priority:
+            continue
+        snap_alerts = snap.get("alerts") or {}
+        if alerted and not snap_alerts:
+            continue
+        if alert_name_filter is not None and alert_name_filter not in snap_alerts:
+            continue
+        if no_alerts and snap_alerts:
             continue
         filtered.append(snap)
 
@@ -491,16 +527,25 @@ def next_cmd(
     # Load all active snapshots
     active, _archived = load_all_snapshots(lattice_dir)
 
+    # LAT-210: count alerted tasks for the banner.
+    alerted_count = sum(1 for snap in active if snap.get("alerts"))
+
     # Select next task
     selected = select_next(active, actor=resolved_actor, ready_statuses=ready_statuses)
 
     if selected is None:
         if is_json:
-            # json_envelope skips data=None, so build manually
-            click.echo(json.dumps({"ok": True, "data": None}, sort_keys=True, indent=2) + "\n")
+            data: dict = {"ok": True, "data": None}
+            if alerted_count:
+                data["alerted_count"] = alerted_count
+            click.echo(json.dumps(data, sort_keys=True, indent=2) + "\n")
         elif quiet:
             pass  # no output
         else:
+            if alerted_count:
+                click.echo(
+                    f"[{alerted_count} task(s) need attention — see lattice list --alerted]"
+                )
             click.echo("No tasks available.")
         return
 
@@ -608,10 +653,18 @@ def next_cmd(
     if is_json:
         result_data = dict(selected)
         result_data["plan_content"] = _read_plan_content_for_next(lattice_dir, task_id)
+        if alerted_count:
+            result_data["alerted_count"] = alerted_count
+
+    banner = (
+        f"[{alerted_count} task(s) need attention — see lattice list --alerted]\n"
+        if alerted_count and not is_json and not quiet
+        else ""
+    )
     output_result(
         data=result_data,
         human_message=(
-            f"{display_id}  {selected.get('status', '?')}  "
+            f"{banner}{display_id}  {selected.get('status', '?')}  "
             f'{selected.get("priority", "?")}  "{selected.get("title", "?")}"'
         ),
         quiet_value=display_id,
@@ -1127,6 +1180,32 @@ def _print_human_show(
         click.echo(f"Warning: {reopened_warning}")
     if comment_count:
         click.echo(f"Comments: {comment_count}")
+
+    # LAT-210: render alerts prominently above relationships/comments.
+    alerts = snapshot.get("alerts") or {}
+    if alerts:
+        click.echo("")
+        click.echo("Alerts:")
+        # Sort: needs_human first, then alphabetical.
+        for alert_name in sorted(alerts.keys(), key=lambda n: (n != "needs_human", n)):
+            payload = alerts[alert_name] or {}
+            short = payload.get("short", "")
+            click.echo(f"  [{alert_name.upper()}] {short}")
+            raised_by = payload.get("raised_by")
+            raised_at = payload.get("raised_at")
+            if raised_by or raised_at:
+                click.echo(
+                    f"    raised by {get_actor_display(raised_by) or '?'} at {raised_at or '?'}"
+                )
+            prompt = payload.get("prompt")
+            if prompt:
+                click.echo(f"    prompt: {prompt}")
+            location = payload.get("location")
+            if location:
+                click.echo(f"    location: {location}")
+            evidence = payload.get("evidence_ref")
+            if evidence:
+                click.echo(f"    evidence_ref: {evidence}")
 
     if description:
         click.echo("")
