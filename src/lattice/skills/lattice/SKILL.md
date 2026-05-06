@@ -49,8 +49,8 @@ The `--review` text is your breadcrumb for every future agent and human who read
 | Outcome | Action |
 |---------|--------|
 | **Done** | `lattice complete <task_id> --review "..." --actor agent:claude-cli` |
-| **Need human input** | `lattice status <task_id> needs_human --actor agent:claude-cli` + comment explaining what you need |
-| **Blocked on dependency** | `lattice status <task_id> blocked --actor agent:claude-cli` + comment explaining the blocker |
+| **Need human input** | `lattice raise <task_id> needs_human --short "..." --actor agent:claude-cli` (LAT-210; alert is orthogonal to status) |
+| **Blocked on dependency** | `lattice raise <task_id> blocked --short "..." --actor agent:claude-cli` |
 
 ## The Work In Between
 
@@ -120,12 +120,29 @@ Relationship types for `link`: `blocks`, `blocked_by`, `subtask_of`, `parent_of`
 ## Status Workflow
 
 ```
-backlog → in_planning → planned → in_progress → review → done
-                                       ↕            ↕
-                                    blocked      needs_human
+backlog → in_planning → planned → in_progress → review → pr_open → done
+                                                   ↘ cancelled
 ```
 
 Transitions are enforced. Use `--force --reason "..."` to override when genuinely needed.
+
+## Alerts (LAT-210)
+
+`needs_human` and `blocked` are no longer statuses — they are **alerts**, orthogonal to lifecycle position. Raise an alert to signal "this card needs attention right now"; the task stays in its current column.
+
+```bash
+lattice raise PROJ-1 needs_human --short "Decide REST or GraphQL?" --actor agent:claude-cli
+lattice raise PROJ-1 blocked     --short "CI down on shared runner" --actor agent:claude-cli
+lattice clear PROJ-1 needs_human --answer "REST. Client simplicity wins." --actor human:atin
+```
+
+- `lattice next` excludes any task with active alerts.
+- `lattice list --alerted`, `--alert <name>`, `--no-alerts` filter the queue.
+- `lattice show <task>` renders an Alerts: block.
+- The dashboard paints a colored border + ALERT strip on the card.
+- The c11 sidebar gets a pill (yellow for needs_human, orange for blocked); needs_human flashes the surface and posts a notification by default.
+
+Clearing a not-raised alert is a no-op success (idempotent). Re-raising overwrites the snapshot entry and writes a second `alert_raised` event for audit.
 
 ## Actor IDs
 
@@ -146,7 +163,7 @@ All commands support `--json` for structured output: `{"ok": true, "data": ...}`
 
 Check if enabled: look for `"heartbeat": {"enabled": true}` in `.lattice/config.json`.
 
-When enabled, keep advancing after each task: complete the current task → `lattice next --claim` → work the next one → repeat. Stop after `max_advances` (default 10), when the backlog is empty, or when a task hits `needs_human` or `blocked`.
+When enabled, keep advancing after each task: complete the current task → `lattice next --claim` → work the next one → repeat. Stop after `max_advances` (default 10), when the backlog is empty, or when a task has any active alerts (`lattice next` skips alerted tasks).
 
 ## Rules
 
@@ -154,7 +171,7 @@ When enabled, keep advancing after each task: complete the current task → `lat
 2. **Close with `lattice complete`.** Never raw `lattice status ... done`.
 3. **One task at a time.** Finish or transition before claiming the next.
 4. **Don't force transitions.** If a transition fails, investigate why.
-5. **Don't cancel human tasks.** Use `needs_human` instead — let the human decide.
+5. **Don't cancel work that needs human input.** Raise a `needs_human` alert instead — let the human decide.
 6. **Comment liberally.** The next agent has no hallway to find you in.
 
 ## References

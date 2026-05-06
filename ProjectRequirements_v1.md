@@ -217,9 +217,12 @@ Recommended (nullable/optional):
   - allowed statuses
   - allowed transitions
   - optional WIP limits per status (advisory in v0)
+  - alerts: a list of orthogonal "needs attention" markers (LAT-210)
+  - alert_descriptions and alert_visuals (per-key, mergeable with bridge defaults)
 - Default workflow ships with:
-  - `backlog -> ready -> in_progress -> review -> done`
-  - plus `blocked` and `cancelled`
+  - `backlog -> in_planning -> planned -> in_progress -> review -> pr_open -> done`
+  - plus `cancelled` (the only universal target).
+  - **Alerts (orthogonal):** `needs_human` and `blocked`. Alerts decorate a card without changing its lifecycle status; raised via `lattice raise`, cleared via `lattice clear`. Any task with active alerts is excluded from `lattice next`. See `Decisions.md` (LAT-210).
 
 ### 7.2 Force override (v0)
 

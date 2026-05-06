@@ -26,7 +26,7 @@ lattice create "<title>" --actor agent:<your-id>
 
 When in doubt, create the task. A small task costs nothing. Lost visibility costs everything.
 
-**Recurring observations become tasks.** If you observe the same issue in 2+ consecutive sessions or advances (e.g., a failing test, a lint warning, a flaky behavior), create a task for it. Agents are disciplined about tracking assigned work but not discovered work — this convention closes that gap. Create discovered issues at `needs_human` if they need scoping, or `backlog` if they're well-understood.
+**Recurring observations become tasks.** If you observe the same issue in 2+ consecutive sessions or advances (e.g., a failing test, a lint warning, a flaky behavior), create a task for it. Agents are disciplined about tracking assigned work but not discovered work — this convention closes that gap. Create discovered issues at `backlog` if they're well-understood; if they need human scoping, raise a `needs_human` alert via `lattice raise <task> needs_human --short "..."`.
 
 ### Descriptions Carry Context
 
@@ -45,10 +45,23 @@ lattice status <task> <status> --actor agent:<your-id>
 ```
 
 ```
-backlog → in_planning → planned → in_progress → review → done
-                                       ↕            ↕
-                                    blocked      needs_human
+backlog → in_planning → planned → in_progress → review → pr_open → done
+                                                   ↘ cancelled
 ```
+
+**Alerts are orthogonal to status (LAT-210).** When work needs human input or is
+blocked on something external, you raise an *alert* on the card — it stays in
+its current lifecycle position, and the alert decorates it.
+
+```
+lattice raise <task> needs_human --short "Decide approach" --actor agent:<id>
+lattice raise <task> blocked     --short "CI down"           --actor agent:<id>
+lattice clear <task> needs_human --answer "REST"             --actor human:<id>
+```
+
+Alerts auto-exclude a task from `lattice next`. The dashboard renders an alert
+border + strip on the card. `lattice list --alerted` and `--alert <name>`
+surface the queue.
 
 **Transition discipline:**
 - `in_planning` — before you open the first file to read. Then write the plan.
@@ -105,7 +118,7 @@ cat .lattice/config.json | python3 -c "import sys,json; d=json.load(sys.stdin); 
 | `single` | Spawns one review agent |
 | `inline` | Reviews the plan in-session (use when codex/gemini aren't available, or for small/throwaway projects) |
 
-When `plan_approval` is `human`, the CLI automatically moves the task to `needs_human` after `lattice plan-review` completes. Wait for human approval before proceeding to `in_progress`.
+When `plan_approval` is `human`, the CLI automatically raises a `needs_human` alert on the task after `lattice plan-review` completes (LAT-210; the task stays in its current status). Wait for the human to clear the alert (`lattice clear <task> needs_human --answer "approved"`) before proceeding to `in_progress`.
 
 ### Plan Review Triage
 
@@ -115,7 +128,7 @@ When the plan review returns (trident or otherwise), the orchestrator sorts ever
 |--------|--------------------|----------------|
 | **Obvious** | Missing acceptance criteria, contradictions, plan bugs, trivial clarifications, concrete omissions | Fix directly — amend the plan file, record a short `lattice comment` noting what was resolved. |
 | **Evolutionary** | Speculative additions, "while we're at it" scope creep, refactor suggestions not tied to the ticket's goal, nice-to-haves | Be skeptical. Default to skip. If worth tracking, create a new Lattice task (`lattice create ...`) and link it — do not fold into this ticket. Record a comment explaining why it was deferred. |
-| **Complex** | Genuine design decisions, ambiguity the agent can't resolve alone, trade-offs with real stakes, requirement questions | Bring to the human. Move to `needs_human` with a short comment stating the open question(s). |
+| **Complex** | Genuine design decisions, ambiguity the agent can't resolve alone, trade-offs with real stakes, requirement questions | Bring to the human. Raise a `needs_human` alert (`lattice raise <task> needs_human --short "..."`) and pause until it is cleared. |
 
 Every finding must be explicitly triaged — no silent drops. If triage produces no complex questions, advance to `in_progress`. Otherwise, wait for the human answer, fold it into the plan, then advance.
 
@@ -183,7 +196,7 @@ When a review agent evaluates work, it produces one of three outcomes:
 | Route to in_progress vs in_planning | Orchestrator | Follows review agent's recommendation |
 | Whether to spawn fresh sub-agent | Orchestrator | Encouraged by convention, not enforced |
 
-**3-cycle safety valve:** After 3 review-to-rework transitions (any combination of `review -> in_progress` and `review -> in_planning`), the CLI blocks the 4th attempt. The error message instructs the agent to move the task to `needs_human` with a comment explaining the situation. The limit is configurable via `review_cycle_limit` in the workflow config (default: 3). Override with `--force --reason` for genuinely exceptional cases.
+**3-cycle safety valve:** After 3 review-to-rework transitions (any combination of `review -> in_progress` and `review -> in_planning`), the CLI blocks the 4th attempt. The error message instructs the agent to raise a `needs_human` alert with a comment explaining the situation. The limit is configurable via `review_cycle_limit` in the workflow config (default: 3). Override with `--force --reason` for genuinely exceptional cases.
 
 **Allowed lifecycle paths:**
 
@@ -192,7 +205,7 @@ Normal:       in_progress -> review -> done
 Minor fix:    in_progress -> review -> (fix inline) -> done
 1 impl rework: in_progress -> review -> in_progress -> review -> done
 1 plan rework: in_progress -> review -> in_planning -> planned -> in_progress -> review -> done
-Max cycles:   3 review->rework transitions, then CLI blocks -> needs_human
+Max cycles:   3 review->rework transitions, then CLI blocks -> raise needs_human alert
 ```
 
 ### Review Config Reference
@@ -203,22 +216,28 @@ Three settings in `.lattice/config.json` control review behavior:
 |---------|--------|---------|---------|
 | `review_mode` | `inline`, `single`, `triple` | `single` | How code review is performed at the review gate |
 | `plan_review_mode` | `inline`, `single`, `triple` | `triple` | How plan review is performed after the plan is written |
-| `plan_approval` | `auto`, `human` | `auto` | After plan-review: `auto` proceeds, `human` moves to `needs_human` for approval |
+| `plan_approval` | `auto`, `human` | `auto` | After plan-review: `auto` proceeds, `human` raises a `needs_human` alert and waits for the human to clear it |
 
 **`inline`** — review happens in the same agent session (no subprocess spawned).
 **`single`** — one review agent is spawned; result stored as a `review` or `plan-review` artifact.
 **`triple`** — three agents (claude, codex, gemini) run in parallel; individual results stored as `review-individual` artifacts; a merged result stored as `review` or `plan-review`.
 
-### When You're Stuck
+### When You're Stuck (Alerts — LAT-210)
 
-Use `needs_human` when you need human decision, approval, or input **right now**. This is distinct from `blocked` (generic external dependency) — it creates a scannable queue. **`needs_human` means actionable NOW** — future checkpoints (quality gates, review gates, approval milestones) stay at `planned` or `backlog` until the preceding work is complete. The orchestrator flips them to `needs_human` at the moment they become actionable.
+Alerts are **orthogonal to status**. The card stays in its current lifecycle column; the alert is a "needs attention right now" decoration. Two alerts ship by default:
+
+- `needs_human` — you need a human decision, approval, or input. Highest urgency. The card surfaces in `lattice list --alerted` and is excluded from `lattice next`. The c11 sidebar gets a yellow pill, optional flash, optional OS notification.
+- `blocked` — work cannot proceed due to an external dependency. Same exclusion from `lattice next`, but no flash by default.
 
 ```
-lattice status <task> needs_human --actor agent:<your-id>
-lattice comment <task> "Need: <what you need, in one line>" --actor agent:<your-id>
+lattice raise <task> needs_human --short "Decide REST or GraphQL?" --actor agent:<id>
+lattice raise <task> blocked --short "CI on shared runner is down" --actor agent:<id>
+lattice clear <task> needs_human --answer "REST. Client simplicity wins." --actor human:<id>
 ```
 
-Use for: design decisions requiring human judgment, missing access/credentials, ambiguous requirements, approval gates. The comment is mandatory — explain what you need in seconds, not minutes. The human's queue should be scannable.
+The `--short` text is mandatory and shows on the card; `--long`, `--prompt`, and `--evidence-ref` are optional. Clearing a not-raised alert is a no-op success (idempotent). Use `lattice show <task>` to see active alerts, raised-by, raised-at, and the suggested clear command.
+
+Use for: design decisions requiring human judgment, missing access/credentials, ambiguous requirements, approval gates. The `--short` text is mandatory — explain what you need in seconds, not minutes.
 
 ### Actor Attribution
 
@@ -272,6 +291,8 @@ lattice create "<title>" --actor agent:<id>
 lattice status <task> <status> --actor agent:<id>
 lattice assign <task> <actor> --actor agent:<id>
 lattice comment <task> "<text>" --actor agent:<id>
+lattice raise <task> <alert-name> --short "<text>" --actor agent:<id>
+lattice clear <task> <alert-name> --actor human:<id>
 lattice link <task> <type> <target> --actor agent:<id>
 lattice branch-link <task> <branch> --actor agent:<id>
 lattice file-link <task> <path>... --actor agent:<id> [--reason "why"]
@@ -279,7 +300,7 @@ lattice file-unlink <task> <path> --actor agent:<id>
 lattice explain <path>                           # also supports directory/ and globs
 lattice next [--actor agent:<id>] [--claim]
 lattice show <task>
-lattice list
+lattice list [--alerted | --alert <name> | --no-alerts]
 ```
 
 **Useful flags:**

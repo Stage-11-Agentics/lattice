@@ -58,20 +58,26 @@ lattice next --actor agent:worker-1 --claim
 
 `lattice next` considers priority, dependencies, and blockers to suggest the best task.
 
-### 5. Handling Blocks
+### 5. Handling Blocks (Alerts — LAT-210)
+
+`needs_human` and `blocked` are alerts now, not statuses. The task stays in its current lifecycle column; the alert decorates it and excludes it from `lattice next`.
 
 When a worker is stuck:
 
 ```bash
-lattice status PROJ-2 blocked --actor agent:worker-1
-lattice comment PROJ-2 "Blocked: need database schema from PROJ-5" --actor agent:worker-1
+lattice raise PROJ-2 blocked --short "Need database schema from PROJ-5" --actor agent:worker-1
 ```
 
 When a worker needs a human decision:
 
 ```bash
-lattice status PROJ-2 needs_human --actor agent:worker-1
-lattice comment PROJ-2 "Need: which OAuth provider to use?" --actor agent:worker-1
+lattice raise PROJ-2 needs_human --short "Which OAuth provider to use?" --actor agent:worker-1
+```
+
+The orchestrator (or human) clears the alert when resolved:
+
+```bash
+lattice clear PROJ-2 needs_human --answer "Use Auth0" --actor human:atin
 ```
 
 ### 6. Event History

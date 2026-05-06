@@ -752,6 +752,35 @@ Additionally, `lattice advance N` processed multiple tasks in a single context w
 
 ---
 
+## 2026-05-06: needs_human and blocked become alerts (LAT-210)
+
+- **Context:** Today, a task `in_progress` that hits a question must move to `needs_human` status — which erases the "I'm mid-implementation" signal. The same problem applies to `blocked`. Both concepts are *modifiers* on a card, not lifecycle positions. Modeling them as alerts (orthogonal to status) preserves position, lets the dashboard visually highlight cards regardless of column, and composes cleanly with c11's `trigger-flash` / `set-status` / `notify` primitives.
+- **Decision:**
+  - Drop `needs_human` and `blocked` from default workflow `statuses`, `transitions`, `display_names`, `STATUS_DESCRIPTIONS`, and `_DEFAULT_STATUS_ORDER`.
+  - Reduce `workflow.universal_targets` to `["cancelled"]`.
+  - Introduce two new event types — `alert_raised`, `alert_cleared` — registered in `BUILTIN_EVENT_TYPES` (not `LIFECYCLE_EVENT_TYPES`) and materialized via `_register_mutation` handlers.
+  - Snapshot gains an `alerts: dict` field, listed in `PROTECTED_FIELDS` so `field_updated` cannot bypass the raise/clear contract. Snapshot `schema_version` stays at 1 (the new field is forward-compatible — defaults to `{}`); `config.schema_version` bumps **1 → 2** to mark the workflow contract change.
+  - Two new CLI verbs — `lattice raise <task> <alert-name>` and `lattice clear <task> <alert-name>`. Verb naming chosen over `flag/unflag` and a `lattice alert raise/clear` group: `raise`/`clear` reads naturally and the second positional argument disambiguates `clear`'s shell-builtin collision in practice.
+  - Mirror MCP tools (`lattice_raise_alert`, `lattice_clear_alert`).
+  - `lattice next` excludes any task with a non-empty `alerts` dict — strictly stronger than the old `blocked`-as-status rule.
+- **Locked semantics:**
+  - **Idempotent re-clear:** clearing a not-raised alert is a no-op success. No `alert_cleared` event is written. CLI returns `ok=true` with `data.cleared=false`.
+  - **Double-raise:** raising an already-raised alert writes a second `alert_raised` event (audit trail) and replaces the snapshot entry. `raised_at` reflects the latest raise. No implicit `alert_cleared` between them.
+  - **`evidence_ref` (singular)** lives only inside the alert payload; it does NOT touch the task-level `evidence_refs` array.
+  - **Multi-alert visuals:** the c11 sidebar shows one pill per active alert (no priority collapsing, since `set-status` is alert-name-keyed). The dashboard collapses to a single border/strip using sort priority (`needs_human > blocked`).
+  - **`workflow.alert_visuals` resolution:** per-key override from `workflow.alert_visuals.<name>` falls back to bridge defaults (`cmux_bridge.ALERT_VISUALS`) per-key — not total replacement.
+  - **Replay safety:** the snapshot mutation handler truncates oversize alert payload fields rather than raising, so a malformed historical event never breaks rebuild. The CLI rejects oversize payloads up-front via `validate_alert_payload`.
+- **v0 breaking change (accepted):** Sibling Lattice instances (`code/Aurum/.lattice/`, `code/EAIRQ_Demo/.lattice/`, `code/LatticeRemoteWorkspace/.lattice/`, `code/stage-11-company-board/.lattice/`, plus public consumers) retain `needs_human`/`blocked` in their `.lattice/config.json` until manually migrated. Per-instance migration recipe:
+  1. Edit `.lattice/config.json`:
+     - Remove `"needs_human"` and `"blocked"` from `workflow.statuses`, all `workflow.transitions[*]` lists, and `workflow.transitions` keys.
+     - Set `workflow.universal_targets = ["cancelled"]`.
+     - Add `workflow.alerts = ["needs_human", "blocked"]` and copy `workflow.alert_visuals` / `workflow.alert_descriptions` from the new default (`default_config()`).
+     - Bump `schema_version` to `2`.
+  2. For every active task at `status: needs_human` or `status: blocked`, manually transition it back to a real lifecycle status (commonly `in_planning` or the status it was in before being escalated) and `lattice raise` the equivalent alert. The CLI continues to read snapshots that contain the legacy status without crashing — `is_backward_status_transition` returns `False` when either status is missing from the rank dict.
+- **Consequence:** Every new `lattice init`-ed project gets the alerts mechanism by default. The boilerplate copied via `templates/claude_md_block.py`, the `lattice` skill (`SKILL.md`, `references/multi-agent-guide.md`), and project `CLAUDE.md` teach `lattice raise` / `lattice clear`. The dashboard renders alerted cards with a colored border + ALERT strip, and the c11 sidebar lights up the surface that raised the alert. The `lattice next` exclusion is strictly stronger than the old behavior — agents see scannable alerted-card queues rather than a "blocked" lane.
+
+---
+
 ## Note: This file is append-only
 
 `Decisions.md` is an append-only log. Entries are never edited or deleted after recording. Superseded decisions are noted inline with a reference to the superseding entry. Cross-cutting architectural decisions go here; task-scoped design decisions belong in the plan file (`.lattice/plans/<task_id>.md`).
