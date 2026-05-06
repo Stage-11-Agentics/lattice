@@ -17,13 +17,22 @@ def lattice_root(tmp_path: Path) -> Path:
 
 @pytest.fixture()
 def initialized_root(lattice_root: Path) -> Path:
-    """Return a temporary directory with .lattice/ already initialized."""
+    """Return a temporary directory with .lattice/ already initialized.
+
+    Auto-fire of code-review/plan-review on status transitions (LAT-211) is
+    *disabled* in the test fixture so that ``lattice status <id> review``
+    in tests does not actually fork a ``lattice code-review`` subprocess.
+    Tests that exercise the auto-fire path enable it explicitly.
+    """
     from lattice.core.config import default_config, serialize_config
     from lattice.storage.fs import LATTICE_DIR, atomic_write, ensure_lattice_dirs
 
     ensure_lattice_dirs(lattice_root)
     lattice_dir = lattice_root / LATTICE_DIR
-    atomic_write(lattice_dir / "config.json", serialize_config(default_config()))
+    cfg = default_config()
+    cfg["auto_code_review_on_transition"] = False
+    cfg["auto_plan_review_on_transition"] = False
+    atomic_write(lattice_dir / "config.json", serialize_config(cfg))
     (lattice_dir / "events" / "_lifecycle.jsonl").touch()
     return lattice_root
 

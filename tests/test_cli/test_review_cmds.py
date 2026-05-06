@@ -19,10 +19,18 @@ from lattice.storage.fs import LATTICE_DIR, ensure_lattice_dirs, atomic_write
 
 
 def _make_board(tmp_path: Path, config_overrides: dict | None = None) -> Path:
-    """Initialize a .lattice/ directory and return root."""
+    """Initialize a .lattice/ directory and return root.
+
+    Auto-fire of code-review/plan-review on status transitions (LAT-211) is
+    disabled by default so tests that just walk through statuses do not
+    actually fork a ``lattice code-review`` subprocess. Tests that exercise
+    the auto-fire path override the relevant key via ``config_overrides``.
+    """
     ensure_lattice_dirs(tmp_path)
     lattice_dir = tmp_path / LATTICE_DIR
     config = default_config()
+    config["auto_code_review_on_transition"] = False
+    config["auto_plan_review_on_transition"] = False
     if config_overrides:
         config.update(config_overrides)
     atomic_write(lattice_dir / "config.json", serialize_config(config))

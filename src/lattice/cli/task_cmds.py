@@ -554,13 +554,20 @@ def compute_next_steps(
     lattice_dir: object,  # Path
     *,
     display_id: str | None = None,
+    auto_review_result: dict | None = None,
 ) -> tuple[str | None, dict | None]:
     """Return (human_hint, structured_dict) for the given status transition.
 
     Both may be ``None`` when no hint applies.  *display_id* is the short ID
     (e.g. ``LAT-42``) used in human-readable hints; falls back to *task_id*.
+    *auto_review_result*, when present, is the dict returned by
+    :func:`lattice.cli.auto_review.auto_fire_review`; the hint shifts to
+    "auto-firing" when ``fired=True`` and appends a skip-reason note when
+    ``fired=False``.
     """
     from pathlib import Path
+
+    from lattice.core.auto_review import format_skip_reason
 
     lattice_dir = Path(lattice_dir)
     label = display_id or task_id
@@ -575,11 +582,33 @@ def compute_next_steps(
 
     if new_status == "planned":
         plan_review_mode = config.get("plan_review_mode", "single")
+        if auto_review_result and auto_review_result.get("fired"):
+            hint = (
+                f"Auto-firing plan-review (pid {auto_review_result['pid']}, "
+                f"plan_review_mode: {auto_review_result['mode']}). "
+                f"Tail: lattice review-status {label}."
+            )
+            return hint, {
+                "action": "plan_review_auto_fired",
+                "pid": auto_review_result["pid"],
+                "mode": auto_review_result["mode"],
+                "log_path": auto_review_result["log_path"],
+                "then": "in_progress",
+            }
         if plan_review_mode != "inline":
             hint = (
                 f"Next: run 'lattice plan-review {label}' "
                 f"(plan_review_mode: {plan_review_mode}) before moving to in_progress."
             )
+            if auto_review_result and not auto_review_result.get("fired"):
+                hint += (
+                    " ("
+                    + format_skip_reason(
+                        auto_review_result.get("reason", "unknown"),
+                        holder_pid=auto_review_result.get("holder_pid"),
+                    )
+                    + ")"
+                )
             return hint, {
                 "action": "plan_review",
                 "command": f"lattice plan-review {label}",
@@ -594,10 +623,32 @@ def compute_next_steps(
 
     if new_status == "review":
         review_mode = config.get("review_mode", "single")
+        if auto_review_result and auto_review_result.get("fired"):
+            hint = (
+                f"Auto-firing code-review (pid {auto_review_result['pid']}, "
+                f"review_mode: {auto_review_result['mode']}). "
+                f"Tail: lattice review-status {label}."
+            )
+            return hint, {
+                "action": "code_review_auto_fired",
+                "pid": auto_review_result["pid"],
+                "mode": auto_review_result["mode"],
+                "log_path": auto_review_result["log_path"],
+                "then": "done",
+            }
         hint = (
             f"Next: run 'lattice code-review {label}' "
             f"(review_mode: {review_mode}) before opening the PR."
         )
+        if auto_review_result and not auto_review_result.get("fired"):
+            hint += (
+                " ("
+                + format_skip_reason(
+                    auto_review_result.get("reason", "unknown"),
+                    holder_pid=auto_review_result.get("holder_pid"),
+                )
+                + ")"
+            )
         return hint, {
             "action": "code_review",
             "command": f"lattice code-review {label}",
@@ -680,11 +731,20 @@ def _append_plan_reset_section(
 @click.argument("task_id")
 @click.argument("new_status")
 @click.option("--force", is_flag=True, help="Force an invalid transition.")
+@click.option(
+    "--no-auto-review",
+    is_flag=True,
+    help=(
+        "Skip auto-firing code-review/plan-review on transitions to "
+        "review/planned (per-invocation opt-out)."
+    ),
+)
 @common_options
 def status_cmd(
     task_id: str,
     new_status: str,
     force: bool,
+    no_auto_review: bool,
     model: str | None,
     session: str | None,
     output_json: bool,
@@ -875,6 +935,68 @@ def status_cmd(
     if cmux_available():
         on_status_changed(updated_snapshot, current_status, new_status)
 
+    # Auto-fire review/plan-review on transitions to review/planned (LAT-211).
+    # Wrapped defensively: a spawn failure must NEVER block the status
+    # transition. The status_changed event is already durable above.
+    auto_review_result: dict | None = None
+    if new_status in ("review", "planned"):
+        try:
+            from lattice.cli.auto_review import auto_fire_review
+
+            auto_review_result = auto_fire_review(
+                lattice_dir,
+                task_id,
+                new_status,
+                status_event_id=event["id"],
+                config=config,
+                no_auto_review_flag=no_auto_review,
+            )
+        except Exception as exc:  # noqa: BLE001 — never fail the transition
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "auto-review spawn raised: %s",
+                exc,
+                exc_info=True,
+            )
+
+        # Emit the auto_review_spawned audit event when (and only when)
+        # we actually spawned. Skip reasons surface in CLI output instead.
+        if auto_review_result and auto_review_result.get("fired"):
+            try:
+                from lattice.core.auto_review import AUTO_REVIEW_ACTOR
+
+                auto_event = create_event(
+                    type="auto_review_spawned",
+                    task_id=task_id,
+                    actor=AUTO_REVIEW_ACTOR,
+                    data={
+                        "review_type": auto_review_result["review_type"],
+                        "mode": auto_review_result["mode"],
+                        "log_path": auto_review_result["log_path"],
+                        "spawned_at": auto_review_result["spawned_at"],
+                        # PIDs are short-lived debug aids; the durable signal is
+                        # ``log_path`` plus the eventual review artifact.
+                        "pid": auto_review_result["pid"],
+                        "trigger_status_event_id": event["id"],
+                    },
+                )
+                write_task_event(
+                    lattice_dir,
+                    task_id,
+                    [auto_event],
+                    updated_snapshot,
+                    config,
+                )
+            except Exception as exc:  # noqa: BLE001
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "auto_review_spawned event write failed: %s",
+                    exc,
+                    exc_info=True,
+                )
+
     display_id = updated_snapshot.get("short_id") or task_id
 
     # Compute next-step hints (LAT-197)
@@ -884,12 +1006,15 @@ def status_cmd(
         task_id,
         lattice_dir,
         display_id=display_id,
+        auto_review_result=auto_review_result,
     )
 
     # Build JSON data with optional next_steps
     json_data = dict(updated_snapshot)
     if next_steps_data is not None:
         json_data["next_steps"] = next_steps_data
+    if auto_review_result is not None:
+        json_data["auto_review"] = auto_review_result
 
     assign_msg = f"  (auto-assigned to {actor})" if auto_assigned else ""
     human_msg = f"Status: {current_status} -> {new_status} ({display_id}){assign_msg}"
