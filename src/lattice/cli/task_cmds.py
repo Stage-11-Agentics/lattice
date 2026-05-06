@@ -296,7 +296,12 @@ def update(
     on_behalf_of: str | None,
     provenance_reason: str | None,
 ) -> None:
-    """Update task fields.  Pass field=value pairs."""
+    """Update task fields.
+
+    Pass field=value pairs (e.g., title=, description=, priority=, urgency=,
+    complexity=, type=, tags=). Use 'lattice edit-description' for
+    description-only edits.
+    """
     is_json = output_json
 
     lattice_dir = require_root(is_json)
