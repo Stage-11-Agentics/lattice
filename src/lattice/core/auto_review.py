@@ -46,8 +46,15 @@ _STATUS_TO_MODE_KEY: dict[str, str] = {
     "planned": "plan_review_mode",
 }
 
-#: Default mode per gate.  Matches the existing CLI defaults so an unset
-#: config behaves identically before and after this ticket.
+#: Conservative fallback mode per gate when the config key is absent.
+#:
+#: Note: this DIFFERS from :func:`lattice.core.config.default_config`,
+#: which seeds ``review_mode = "single"`` and ``plan_review_mode = "triple"``.
+#: Real configs always have these keys, so the fallback is exercised only
+#: by sparse configs (mostly tests).  We deliberately fall back to
+#: ``inline`` for the planned gate so a key-less config skips auto-fire
+#: rather than silently triggering an expensive triple-agent spawn.  The
+#: ``review`` gate keeps ``single`` because that's the cheap, common path.
 _STATUS_TO_DEFAULT_MODE: dict[str, str] = {
     "review": "single",
     "planned": "inline",

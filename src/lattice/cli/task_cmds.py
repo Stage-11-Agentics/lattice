@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 
 import click
 
@@ -47,6 +48,8 @@ from lattice.core.ids import generate_task_id, validate_actor, validate_id
 from lattice.core.tasks import apply_event_to_snapshot, is_backward_status_transition
 from lattice.storage.readers import read_task_events
 from lattice.storage.short_ids import allocate_short_id
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -952,9 +955,7 @@ def status_cmd(
                 no_auto_review_flag=no_auto_review,
             )
         except Exception as exc:  # noqa: BLE001 — never fail the transition
-            import logging
-
-            logging.getLogger(__name__).warning(
+            logger.warning(
                 "auto-review spawn raised: %s",
                 exc,
                 exc_info=True,
@@ -989,9 +990,7 @@ def status_cmd(
                     config,
                 )
             except Exception as exc:  # noqa: BLE001
-                import logging
-
-                logging.getLogger(__name__).warning(
+                logger.warning(
                     "auto_review_spawned event write failed: %s",
                     exc,
                     exc_info=True,

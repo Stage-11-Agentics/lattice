@@ -28,7 +28,7 @@ from lattice.core.auto_review import (
     review_type_for_status,
     should_auto_fire,
 )
-from lattice.core.review import claim_review_state
+from lattice.core.review import claim_review_state, clear_review_state
 
 logger = logging.getLogger(__name__)
 
@@ -159,8 +159,6 @@ def auto_fire_review(
         # phantom record.  Best effort — failures here are silently
         # ignored because we're already on the failure path.
         try:
-            from lattice.core.review import clear_review_state
-
             clear_review_state(lattice_dir, task_id)
         except Exception:  # noqa: BLE001 — best effort cleanup
             logger.debug("clear_review_state failed during executable lookup miss", exc_info=True)
@@ -171,8 +169,6 @@ def auto_fire_review(
         log_path.parent.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         try:
-            from lattice.core.review import clear_review_state
-
             clear_review_state(lattice_dir, task_id)
         except Exception:  # noqa: BLE001
             logger.debug("clear_review_state failed during mkdir failure", exc_info=True)
@@ -205,11 +201,16 @@ def auto_fire_review(
         )
     except Exception as exc:  # noqa: BLE001 — return the failure cleanly
         try:
-            from lattice.core.review import clear_review_state
-
             clear_review_state(lattice_dir, task_id)
         except Exception:  # noqa: BLE001
             logger.debug("clear_review_state failed during Popen failure", exc_info=True)
+        # An empty header file may have been written before Popen raised;
+        # remove it so future debug spelunkers don't read it as "a review
+        # spawned and produced nothing."
+        try:
+            log_path.unlink(missing_ok=True)
+        except OSError:
+            logger.debug("log_path.unlink failed during Popen failure", exc_info=True)
         return {"fired": False, "reason": f"spawn_failed:{exc}"}
     finally:
         # The child holds its own dup of the log fd.  Close the parent's
