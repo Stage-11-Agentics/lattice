@@ -8,8 +8,9 @@ from lattice.core.events import get_actor_display
 PRIORITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 URGENCY_ORDER = {"immediate": 0, "high": 1, "normal": 2, "low": 3}
 
-# Statuses that are NOT eligible for next (terminal, waiting, or active)
-EXCLUDED_STATUSES = frozenset({"needs_human", "blocked", "done", "cancelled"})
+# Statuses that are NOT eligible for next (terminal, waiting, or active).
+# pr_open is waiting on external review/merge, so it is not pickable as next work.
+EXCLUDED_STATUSES = frozenset({"needs_human", "blocked", "done", "cancelled", "pr_open"})
 
 # Statuses indicating work already in progress (for resume-first logic)
 RESUME_STATUSES = frozenset({"in_progress", "in_planning"})

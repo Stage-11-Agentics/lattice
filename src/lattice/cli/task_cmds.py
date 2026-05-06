@@ -596,12 +596,23 @@ def compute_next_steps(
         review_mode = config.get("review_mode", "single")
         hint = (
             f"Next: run 'lattice code-review {label}' "
-            f"(review_mode: {review_mode}) before moving to done."
+            f"(review_mode: {review_mode}) before opening the PR."
         )
         return hint, {
             "action": "code_review",
             "command": f"lattice code-review {label}",
             "review_mode": review_mode,
+            "then": "pr_open",
+        }
+
+    if new_status == "pr_open":
+        hint = (
+            "Next: open the PR (or confirm it is open). "
+            "Move to done after merge, or back to in_progress if PR feedback "
+            "requires more changes."
+        )
+        return hint, {
+            "action": "await_pr_merge",
             "then": "done",
         }
 
@@ -765,7 +776,11 @@ def status_cmd(
             )
 
     # Review cycle limit: block rework transitions if cycle limit reached
-    if current_status == "review" and new_status in ("in_progress", "in_planning") and not force:
+    if (
+        current_status in ("review", "pr_open")
+        and new_status in ("in_progress", "in_planning")
+        and not force
+    ):
         events = read_task_events(lattice_dir, task_id)
         cycle_count = count_review_rework_cycles(events)
         cycle_limit = get_review_cycle_limit(config)

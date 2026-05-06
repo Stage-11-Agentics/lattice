@@ -651,7 +651,7 @@ class TestNextStepsHints:
         assert ns["action"] == "code_review"
         assert ns["review_mode"] == "single"
         assert "lattice code-review" in ns["command"]
-        assert ns["then"] == "done"
+        assert ns["then"] == "pr_open"
 
     def test_in_progress_human_hint(self, invoke, initialized_root, fill_plan) -> None:
         r = invoke("create", "Impl hint", "--actor", _ACTOR, "--json")
