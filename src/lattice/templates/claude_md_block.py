@@ -93,16 +93,16 @@ This is the **planning sub-agent's** job. Spawn a sub-agent whose sole purpose i
 
 **The test:** If you moved to `planned` and the plan file is still empty scaffold, you didn't plan. Every task gets a plan — even trivial tasks get a one-line plan. The CLI enforces this: transitioning to `in_progress` is blocked when the plan is still scaffold.
 
-**Plan review (default: trident).** After writing the plan, run `lattice plan-review <task>`. Check the project's mode:
+**Plan review (default: single).** After writing the plan, run `lattice plan-review <task>`. Check the project's mode:
 
 ```
-cat .lattice/config.json | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('plan_review_mode','triple'))"
+cat .lattice/config.json | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('plan_review_mode','single'))"
 ```
 
 | `plan_review_mode` value | What the planner does |
 |--------------------------|----------------------|
-| `triple` (default) | **Trident plan review** — spawns three agents (claude, codex, gemini) in parallel, merges their findings into one artifact |
-| `single` | Spawns one review agent |
+| `single` (default) | Spawns one review agent |
+| `triple` | **Trident plan review** — spawns three agents (claude, codex, gemini) in parallel, merges their findings into one artifact |
 | `inline` | Reviews the plan in-session (use when codex/gemini aren't available, or for small/throwaway projects) |
 
 When `plan_approval` is `human`, the CLI automatically moves the task to `needs_human` after `lattice plan-review` completes. Wait for human approval before proceeding to `in_progress`.
@@ -202,7 +202,7 @@ Three settings in `.lattice/config.json` control review behavior:
 | Setting | Values | Default | Meaning |
 |---------|--------|---------|---------|
 | `review_mode` | `inline`, `single`, `triple` | `single` | How code review is performed at the review gate |
-| `plan_review_mode` | `inline`, `single`, `triple` | `triple` | How plan review is performed after the plan is written |
+| `plan_review_mode` | `inline`, `single`, `triple` | `single` | How plan review is performed after the plan is written |
 | `plan_approval` | `auto`, `human` | `auto` | After plan-review: `auto` proceeds, `human` moves to `needs_human` for approval |
 
 **`inline`** — review happens in the same agent session (no subprocess spawned).

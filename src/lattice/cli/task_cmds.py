@@ -574,7 +574,7 @@ def compute_next_steps(
         }
 
     if new_status == "planned":
-        plan_review_mode = config.get("plan_review_mode", "inline")
+        plan_review_mode = config.get("plan_review_mode", "single")
         if plan_review_mode != "inline":
             hint = (
                 f"Next: run 'lattice plan-review {label}' "

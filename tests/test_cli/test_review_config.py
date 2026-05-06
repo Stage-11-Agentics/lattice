@@ -20,7 +20,7 @@ class TestConfigDefaults:
         from lattice.core.config import default_config
 
         config = default_config()
-        assert config["plan_review_mode"] == "triple"
+        assert config["plan_review_mode"] == "single"
 
     def test_default_plan_approval(self):
         from lattice.core.config import default_config
@@ -56,7 +56,7 @@ class TestBackwardCompatibility:
         reloaded = json.loads((lattice_dir / "config.json").read_text())
         # Callers should treat missing keys as defaults
         assert reloaded.get("review_mode", "single") == "single"
-        assert reloaded.get("plan_review_mode", "triple") == "triple"
+        assert reloaded.get("plan_review_mode", "single") == "single"
         assert reloaded.get("plan_approval", "auto") == "auto"
 
 
@@ -144,7 +144,7 @@ class TestInitFlags:
         assert result.exit_code == 0, result.output
         config = json.loads((tmp_path / ".lattice" / "config.json").read_text())
         assert config["review_mode"] == "single"
-        assert config["plan_review_mode"] == "triple"
+        assert config["plan_review_mode"] == "single"
         assert config["plan_approval"] == "auto"
 
     def test_init_combined_review_flags(self, cli_runner, tmp_path):
@@ -170,7 +170,7 @@ class TestInitFlags:
         config = json.loads((tmp_path / ".lattice" / "config.json").read_text())
         assert config["review_mode"] == "triple"
         assert config["plan_approval"] == "human"
-        assert config["plan_review_mode"] == "triple"  # default preserved
+        assert config["plan_review_mode"] == "single"  # default preserved
 
     def test_init_scaffolds_templates_dir(self, cli_runner, tmp_path):
         from lattice.cli.main import cli

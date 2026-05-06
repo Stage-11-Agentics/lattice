@@ -215,7 +215,7 @@ def plan_review(
 
     # Resolve mode: CLI flag > config > default
     if mode is None:
-        mode = config.get("plan_review_mode", "inline")
+        mode = config.get("plan_review_mode", "single")
 
     # Read plan content (required regardless of mode)
     plan_path = lattice_dir / "plans" / f"{task_id}.md"

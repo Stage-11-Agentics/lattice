@@ -224,7 +224,7 @@ def default_config(preset: str = "classic") -> LatticeConfig:
         "workflow": workflow,
         "workflow_preset": preset,
         "review_mode": "single",
-        "plan_review_mode": "triple",
+        "plan_review_mode": "single",
         "plan_approval": "auto",
         "review_timeout_seconds": 600,
         "done_display": "grouped",
