@@ -170,7 +170,11 @@ class TestPollSentinels:
             req.output_file.write_text("fast result", encoding="utf-8")
             sentinel_path(req.output_file).touch()
 
-        started = {"claude": time.monotonic(), "codex": time.monotonic(), "gemini": time.monotonic()}
+        started = {
+            "claude": time.monotonic(),
+            "codex": time.monotonic(),
+            "gemini": time.monotonic(),
+        }
         results = poll_sentinels(
             [fast_a, fast_b, slow],
             backend_name="test",

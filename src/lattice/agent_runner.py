@@ -226,7 +226,9 @@ def _run_merge_waiter_mode() -> int:
         return 124
 
     if pending:
-        print(f"[agent_runner] proceeding with partial inputs ({len(landed)}/{len(upstream_dirs)})")
+        print(
+            f"[agent_runner] proceeding with partial inputs ({len(landed)}/{len(upstream_dirs)})"
+        )
 
     # Build the merge inputs section from the upstream outputs.
     sections = []
@@ -237,7 +239,9 @@ def _run_merge_waiter_mode() -> int:
         if out.exists() and out.read_text(encoding="utf-8").strip():
             sections.append(f"## Review from {agent}\n\n{out.read_text(encoding='utf-8')}")
         elif err.exists():
-            sections.append(f"## Review from {agent}\n\n*(failed: {err.read_text(encoding='utf-8').strip()})*")
+            sections.append(
+                f"## Review from {agent}\n\n*(failed: {err.read_text(encoding='utf-8').strip()})*"
+            )
         else:
             sections.append(f"## Review from {agent}\n\n*(no sentinel landed)*")
     inputs_block = "\n\n---\n\n".join(sections)
