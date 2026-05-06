@@ -252,9 +252,14 @@ tr.heat-cooling td:first-child{border-left:3px solid #eab308}
 .status-implemented .board-col-header{background:#0dcaf0;color:var(--text-on-lane)}
 .status-in_review .board-col-header{background:#6f42c1;color:var(--text-on-lane)}
 .status-backlog .board-col-header{background:#adb5bd;color:var(--text-on-lane)}
-.status-blocked .board-col-header{background:#dc3545;color:var(--text-on-lane)}
-.status-needs_human .board-col-header{background:#f59e0b;color:#212529}
 .status-in_progress .board-col-header{background:#0d6efd;color:var(--text-on-lane)}
+
+/* LAT-210: alerts are orthogonal modifiers — render a colored card border. */
+.alert-needs_human{border:2px solid #FFD600 !important;box-shadow:0 0 6px rgba(255,214,0,.45)}
+.alert-blocked{border:2px solid #FFA500 !important;box-shadow:0 0 6px rgba(255,165,0,.35)}
+.alert-strip{display:block;font-size:.65rem;font-weight:700;letter-spacing:.08em;padding:1px 4px;margin-bottom:2px;border-radius:2px}
+.alert-strip-needs_human{background:#FFD600;color:#212529}
+.alert-strip-blocked{background:#FFA500;color:#212529}
 .status-review .board-col-header{background:#6f42c1;color:var(--text-on-lane)}
 
 /* List view */
@@ -4238,9 +4243,21 @@ function renderBoardCard(t) {
   var tier = heatEnabled ? getHeatTier(t.last_status_changed_at) : null;
   var ratio = heatEnabled ? getHeatBarRatio(t.last_status_changed_at) : 0;
 
-  var html = '<div class="card' + (heatCls ? " " + heatCls : "") + '" draggable="true" data-task-id="' + esc(t.id) + '" data-task-status="' + esc(t.status || "") + '"';
+  // LAT-210: surface alerts via a card-level border class + strip text.
+  var alertNames = t.alerts ? Object.keys(t.alerts) : [];
+  var primaryAlert = null;
+  if (alertNames.indexOf("needs_human") >= 0) primaryAlert = "needs_human";
+  else if (alertNames.length > 0) primaryAlert = alertNames[0];
+  var alertCls = primaryAlert ? " alert-" + primaryAlert : "";
+
+  var html = '<div class="card' + (heatCls ? " " + heatCls : "") + alertCls + '" draggable="true" data-task-id="' + esc(t.id) + '" data-task-status="' + esc(t.status || "") + '"';
   if (t.last_status_changed_at) html += ' data-heat-ts="' + esc(t.last_status_changed_at) + '"';
   html += ' ondragstart="window._boardDragStart(event)" ondragend="window._boardDragEnd(event)">';
+
+  if (primaryAlert) {
+    var alertLabel = primaryAlert.toUpperCase().replace(/_/g, " ");
+    html += '<span class="alert-strip alert-strip-' + primaryAlert + '" title="ALERT: ' + esc(alertLabel) + '">ALERT: ' + esc(alertLabel) + '</span>';
+  }
 
   // Heat bar: vertical bar on left that shrinks as heat cools (gradient: solid at bottom, fading to transparent)
   if (heatEnabled && tier && tier.color && ratio > 0) {

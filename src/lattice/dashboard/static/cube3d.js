@@ -40,8 +40,14 @@ function _cube3dCurrentView() { return (_L.getCurrentView ? _L.getCurrentView() 
 
 var CUBE3D_STATUS_COLORS = {
   backlog: '#6b7280', in_planning: '#a78bfa', planned: '#60a5fa',
-  in_progress: '#34d399', review: '#fbbf24', done: '#22d3ee',
-  blocked: '#f87171', needs_human: '#f59e0b', cancelled: '#374151'
+  in_progress: '#34d399', review: '#fbbf24', pr_open: '#06b6d4',
+  done: '#22d3ee', cancelled: '#374151'
+};
+
+// LAT-210: alert overlay colors (rendered as a card border).
+var CUBE3D_ALERT_COLORS = {
+  needs_human: '#FFD600',
+  blocked: '#FFA500'
 };
 
 var CUBE3D_EDGE_COLORS = {
@@ -875,10 +881,10 @@ function _cube3dShowCard(node) {
     + '<div class="cube3d-card-meta">'
     + (node.priority
       ? '<span class="cube3d-card-priority" style="background:'
-        + cube3dStatusColor(
-            node.priority === 'critical' ? 'blocked'
-            : node.priority === 'high' ? 'review'
-            : 'in_progress'
+        + (
+            node.priority === 'critical' ? '#f87171'
+            : node.priority === 'high' ? '#fbbf24'
+            : '#34d399'
           ) + '"></span>'
       : '')
     + (node.assigned_to

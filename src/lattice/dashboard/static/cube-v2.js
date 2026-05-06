@@ -43,8 +43,15 @@ function _cv2CloseDetailPanel() {
 
 var CV2_STATUS_COLORS = {
   backlog: '#6b7280', in_planning: '#a78bfa', planned: '#60a5fa',
-  in_progress: '#34d399', review: '#fbbf24', done: '#22d3ee',
-  blocked: '#f87171', needs_human: '#f59e0b', cancelled: '#374151'
+  in_progress: '#34d399', review: '#fbbf24', pr_open: '#06b6d4',
+  done: '#22d3ee', cancelled: '#374151'
+};
+
+// LAT-210: alerts are orthogonal modifiers; the dashboard renders an
+// alert border on top of the status color when a card is alerted.
+var CV2_ALERT_COLORS = {
+  needs_human: '#FFD600',
+  blocked: '#FFA500'
 };
 
 var CV2_EDGE_COLORS = {

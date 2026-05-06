@@ -1034,6 +1034,7 @@ class TestCompactSnapshot:
             "evidence_ref_count",
             "branch_link_count",
             "linked_file_count",
+            "alerts",  # LAT-210: alerts surface on board cards regardless of status.
         }
         assert set(compact.keys()) == expected_keys
 

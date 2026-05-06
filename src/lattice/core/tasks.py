@@ -133,6 +133,10 @@ def compact_snapshot(snapshot: dict) -> dict:
         "evidence_ref_count": len(snapshot.get("evidence_refs", [])),
         "branch_link_count": len(snapshot.get("branch_links", [])),
         "linked_file_count": len(snapshot.get("linked_files", [])),
+        # LAT-210: alerts surface on cards regardless of status — keep the
+        # full payload (small dict) in the compact view so the client can
+        # render alert visuals without a per-card detail fetch.
+        "alerts": snapshot.get("alerts") or {},
     }
     short_id = snapshot.get("short_id")
     if short_id is not None:

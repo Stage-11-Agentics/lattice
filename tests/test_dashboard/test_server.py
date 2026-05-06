@@ -136,6 +136,14 @@ class TestTasksEndpoint:
         task_ids = [t["id"] for t in body["data"]]
         assert archived_id not in task_ids
 
+    def test_tasks_compact_view_includes_alerts_field(self, dashboard_server):
+        """LAT-210: alert payloads must round-trip through the board-view JSON."""
+        base_url, _ld, _ids = dashboard_server
+        status, body = _get(base_url, "/api/tasks")
+        assert status == 200
+        for t in body["data"]:
+            assert "alerts" in t  # always present, even if empty
+
 
 class TestTaskDetailEndpoint:
     def test_get_task_detail(self, dashboard_server):
