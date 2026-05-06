@@ -39,6 +39,7 @@ BUILTIN_EVENT_TYPES: frozenset[str] = frozenset(
         "resource_heartbeat",
         "resource_expired",
         "resource_updated",
+        "auto_review_spawned",
     }
 )
 

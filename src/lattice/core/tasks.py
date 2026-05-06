@@ -209,6 +209,10 @@ _NOOP_EVENT_TYPES: frozenset[str] = frozenset(
         "git_event",
         "task_archived",
         "task_unarchived",
+        # Auto-fire (LAT-211): logged for the audit trail (which review
+        # was auto-spawned, when, by which transition) but does not
+        # mutate the task snapshot — the eventual review artifact does.
+        "auto_review_spawned",
     }
 )
 

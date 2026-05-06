@@ -148,6 +148,8 @@ class LatticeConfig(TypedDict, total=False):
     plan_review_mode: Literal["inline", "single", "triple"]
     plan_approval: Literal["auto", "human"]
     review_timeout_seconds: int
+    auto_code_review_on_transition: bool
+    auto_plan_review_on_transition: bool
     done_display: Literal["all", "recent", "grouped"]
     project_type: Literal["standard", "structure"]
 
@@ -247,6 +249,8 @@ def default_config(preset: str = "classic") -> LatticeConfig:
         "plan_review_mode": "single",
         "plan_approval": "auto",
         "review_timeout_seconds": 600,
+        "auto_code_review_on_transition": True,
+        "auto_plan_review_on_transition": True,
         "done_display": "grouped",
     }
 
