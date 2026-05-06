@@ -458,6 +458,86 @@ def update(
 
 
 # ---------------------------------------------------------------------------
+# lattice edit-description
+# ---------------------------------------------------------------------------
+
+
+@cli.command("edit-description")
+@click.argument("task_id")
+@click.argument("description")
+@common_options
+def edit_description(
+    task_id: str,
+    description: str,
+    model: str | None,
+    session: str | None,
+    output_json: bool,
+    quiet: bool,
+    triggered_by: str | None,
+    on_behalf_of: str | None,
+    provenance_reason: str | None,
+) -> None:
+    """Edit a task's description.
+
+    Sugar over `lattice update <task> description=<text>` — same event-sourced
+    semantics, but takes the description as a positional argument so it doesn't
+    need field=value escaping.
+    """
+    is_json = output_json
+
+    lattice_dir = require_root(is_json)
+    config = load_project_config(lattice_dir)
+    actor = require_actor(is_json)
+    if on_behalf_of is not None:
+        validate_actor_format_or_exit(on_behalf_of, is_json)
+
+    task_id = resolve_task_id(lattice_dir, task_id, is_json)
+
+    snapshot = read_snapshot_or_exit(lattice_dir, task_id, is_json)
+
+    old_value = snapshot.get("description")
+    new_value = description
+
+    if old_value == new_value:
+        if is_json:
+            click.echo(
+                json.dumps(
+                    {"ok": True, "data": {"message": "No changes"}}, sort_keys=True, indent=2
+                )
+                + "\n"
+            )
+        elif quiet:
+            click.echo("ok")
+        else:
+            click.echo("No changes")
+        return
+
+    event = create_event(
+        type="field_updated",
+        task_id=task_id,
+        actor=actor,
+        data={"field": "description", "from": old_value, "to": new_value},
+        ts=utc_now(),
+        model=model,
+        session=session,
+        triggered_by=triggered_by,
+        on_behalf_of=on_behalf_of,
+        reason=provenance_reason,
+    )
+
+    updated_snapshot = apply_event_to_snapshot(snapshot, event)
+    write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
+
+    output_result(
+        data=updated_snapshot,
+        human_message=f"Updated description on {task_id}",
+        quiet_value="ok",
+        is_json=is_json,
+        is_quiet=quiet,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Next-step hints after status transitions (LAT-197)
 # ---------------------------------------------------------------------------
 

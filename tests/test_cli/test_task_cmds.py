@@ -255,6 +255,93 @@ class TestUpdate:
 
 
 # ---------------------------------------------------------------------------
+# TestEditDescription
+# ---------------------------------------------------------------------------
+
+
+class TestEditDescription:
+    """Tests for `lattice edit-description`."""
+
+    def test_happy_path(self, create_task, invoke, initialized_root):
+        task = create_task("Edit desc happy", "--description", "old")
+        task_id = task["id"]
+        result = invoke("edit-description", task_id, "new", "--actor", "human:test")
+        assert result.exit_code == 0
+
+        snap_path = initialized_root / ".lattice" / "tasks" / f"{task_id}.json"
+        snap = json.loads(snap_path.read_text())
+        assert snap["description"] == "new"
+
+    def test_no_op(self, create_task, invoke):
+        task = create_task("Edit desc no-op", "--description", "same")
+        task_id = task["id"]
+        result = invoke("edit-description", task_id, "same", "--actor", "human:test")
+        assert result.exit_code == 0
+        assert "No changes" in result.output
+
+    def test_description_with_equals(self, create_task, invoke_json):
+        """Description containing '=' is stored verbatim — no field=value parsing."""
+        task = create_task("Edit desc equals", "--description", "old")
+        task_id = task["id"]
+        data, code = invoke_json("edit-description", task_id, "k=v", "--actor", "human:test")
+        assert code == 0
+        assert data["data"]["description"] == "k=v"
+
+    def test_description_with_embedded_quotes(self, create_task, invoke_json):
+        """Embedded quotes round-trip byte-clean through invoke()."""
+        task = create_task("Edit desc quotes", "--description", "old")
+        task_id = task["id"]
+        new_desc = 'She said "hello" and left.'
+        data, code = invoke_json("edit-description", task_id, new_desc, "--actor", "human:test")
+        assert code == 0
+        assert data["data"]["description"] == new_desc
+
+    def test_empty_description(self, create_task, invoke_json):
+        task = create_task("Edit desc empty", "--description", "old")
+        task_id = task["id"]
+        data, code = invoke_json("edit-description", task_id, "", "--actor", "human:test")
+        assert code == 0
+        assert data["data"]["description"] == ""
+
+    def test_nonexistent_task(self, invoke):
+        result = invoke(
+            "edit-description",
+            "task_99999999999999999999999999",
+            "anything",
+            "--actor",
+            "human:test",
+        )
+        assert result.exit_code != 0
+
+    def test_event_emission(self, create_task, invoke, initialized_root):
+        task = create_task("Edit desc event", "--description", "old")
+        task_id = task["id"]
+        result = invoke("edit-description", task_id, "new", "--actor", "human:test")
+        assert result.exit_code == 0
+
+        events_path = initialized_root / ".lattice" / "events" / f"{task_id}.jsonl"
+        lines = events_path.read_text().strip().split("\n")
+        all_events = [json.loads(line) for line in lines]
+        desc_events = [
+            e
+            for e in all_events
+            if e.get("type") == "field_updated" and e.get("data", {}).get("field") == "description"
+        ]
+        assert len(desc_events) == 1
+        assert desc_events[0]["data"]["from"] == "old"
+        assert desc_events[0]["data"]["to"] == "new"
+        assert desc_events[0]["actor"] == "human:test"
+
+    def test_json_envelope(self, create_task, invoke_json):
+        task = create_task("Edit desc json", "--description", "old")
+        task_id = task["id"]
+        data, code = invoke_json("edit-description", task_id, "new", "--actor", "human:test")
+        assert code == 0
+        assert data["ok"] is True
+        assert data["data"]["description"] == "new"
+
+
+# ---------------------------------------------------------------------------
 # TestStatus
 # ---------------------------------------------------------------------------
 
