@@ -752,6 +752,34 @@ Additionally, `lattice advance N` processed multiple tasks in a single context w
 
 ---
 
+## 45. Reviews fire automatically on status transitions (LAT-211)
+
+**Date:** 2026-05-06
+**Status:** Accepted
+
+**Context:** Review discipline depended on the orchestrator agent remembering to run `lattice code-review <task>` (or `lattice plan-review`) at the right moment. In practice agents skipped the step on rework loops, after multi-pane handoffs, or when an interrupted session resumed mid-cycle. The review gate became a convention rather than a structural property of the workflow.
+
+**Decision:** `lattice status <id> review` and `lattice status <id> planned` now automatically spawn a detached `lattice code-review` / `plan-review` subprocess in a new session. Two new config keys gate the behavior — `auto_code_review_on_transition` and `auto_plan_review_on_transition`, both default `true`. Per-call opt-out via `--no-auto-review` on `lattice status`.
+
+**Implementation notes:**
+- **Module split.** Pure gating (`should_auto_fire`, `format_skip_reason`, constants) lives in `core/auto_review.py`; the side-effecting bits (executable discovery, `Popen`, log file open, `review_state` claim) live in `cli/auto_review.py`. This honors the project's `core/` (no filesystem) vs `cli/` (wires Click + side effects) layer convention.
+- **Coordination via `review_state`.** The existing `core.review.review_state` primitive is the single source of truth for "is a review in flight?". Schema gains optional `started_by_pid` and `auto_fired` fields; existing readers ignore unknown fields, so the change is forward-compatible. Synchronous parent-side claim before `Popen` closes the original "lockfile race" down to microseconds. The audit-trail signal that "this review was auto-fired" lives in the `auto_review_spawned` event, not in `review_state` (transient coordination state).
+- **`agent_spawn` is the wrong abstraction.** `core.agent_spawn` (LAT-205) is the primitive for spawning AI agent CLIs (`claude`/`codex`/`gemini`); for spawning the `lattice` CLI itself as a detached background process the right primitive is direct `subprocess.Popen` with `start_new_session=True` (mirrors the dashboard launcher at `cli/main.py:983-994`). The spawned `lattice code-review` uses `agent_spawn` internally, so the ticket's intent (no new agent-spawning plumbing) is preserved transitively.
+- **`auto_review_spawned` event** registered in `BUILTIN_EVENT_TYPES` and `_NOOP_EVENT_TYPES` (it logs the audit trail; the eventual review artifact, not this event, mutates the snapshot). Emitted only when a spawn actually succeeded — skip reasons surface in CLI output / `--json` instead.
+- **Logs at `.lattice/.daemon/auto-{code,plan}-review-<task_id>.log`**, overwritten per spawn. Bounded disk usage; latest-only is sufficient for debugging.
+
+**Cost-of-ownership:** With `triple` review modes (the default for `plan_review_mode`), every transition into `review` or `planned` now spends three agent runs by default plus a merge run. Operators on cost-sensitive projects should disable per-project or use `--no-auto-review`. This is surfaced in `CLAUDE.md`, `templates/claude_md_block.py`, and `docs/user-guide.md` so it's the first thing operators see.
+
+**Consequences:**
+- New `.lattice/.daemon/` directory for per-task log files (created lazily on first spawn, never garbage-collected).
+- New built-in event `auto_review_spawned` (per-task; not lifecycle).
+- `review_state` schema gains `started_by_pid` and `auto_fired` fields (forward-compatible).
+- `lattice review-status <id>` now displays `auto_fired` and `started_by_pid` when present, covering manual and auto-fired reviews uniformly.
+- Manual `lattice code-review` / `plan-review` commands now claim `review_state` at entry — refusing with a friendly "review already in flight" message when a different live PID holds the slot.
+- Multi-machine semantics deferred to LAT-209 (cross-machine `review_state` coordination requires the LAT-209 sync layer to mediate).
+
+---
+
 ## Note: This file is append-only
 
 `Decisions.md` is an append-only log. Entries are never edited or deleted after recording. Superseded decisions are noted inline with a reference to the superseding entry. Cross-cutting architectural decisions go here; task-scoped design decisions belong in the plan file (`.lattice/plans/<task_id>.md`).

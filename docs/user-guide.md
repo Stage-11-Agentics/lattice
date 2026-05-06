@@ -202,6 +202,31 @@ this is. asynchronous collaboration. across species. and it works.
 
 ---
 
+## reviews fire themselves
+
+when an agent moves a task to `planned` or `review`, Lattice does not wait for someone to remember to run the review — it spawns the right review subprocess in the background, immediately and detached. by the time the agent reads the next instruction the review is already in flight.
+
+the rules are simple:
+
+- `planned` → spawns `lattice plan-review <task>` (default mode: `triple` — three agents in parallel + a merge)
+- `review` → spawns `lattice code-review <task>` (default mode: `single`)
+
+monitor any in-flight review with `lattice review-status <task>`. logs land at `.lattice/.daemon/auto-{plan,code}-review-<task>.log` (one file per task per gate, overwritten on each new spawn). every spawn appends an `auto_review_spawned` event to the task's event log so the audit trail stays complete.
+
+opt out for a single transition with `--no-auto-review`:
+
+```bash
+lattice status TASK review --actor agent:me --no-auto-review
+```
+
+opt out project-wide by setting `auto_code_review_on_transition: false` and/or `auto_plan_review_on_transition: false` in `.lattice/config.json`. both default to `true`.
+
+**cost-of-ownership note.** auto-fire on `triple` mode multiplies API spend: every transition into `review` (or `planned`, where `triple` is the default) spends three agent runs plus a merge run. for a project that cycles through review more than once per ticket, this can add up quickly. if cost matters, disable per-project or use `--no-auto-review` for surgical transitions.
+
+if the spawn fails (no `lattice` on PATH, OS kill the fork, etc.), the status transition still succeeds — auto-fire is enhancement, never gating. a warning is logged and the CLI prints a skip-reason note like `auto-review skipped (executable not found on PATH)`.
+
+---
+
 ## how it works under the hood
 
 you don't need to understand this to use Lattice. but knowing the shape of the machine helps you trust it. and trust. is everything.

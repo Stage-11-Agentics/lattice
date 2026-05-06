@@ -111,7 +111,7 @@ That's it. One command teaches the agent the full lifecycle. Here's what happens
 3. The agent does the work — writes code, runs tests, iterates
 4. The agent commits the changes
 5. The agent leaves a comment explaining what it did and why
-6. The agent moves the task to `review` (or `needs_human` if it hit a decision point)
+6. The agent moves the task to `review` — Lattice automatically spawns the review subprocess in the background; the agent does not need to remember to run `lattice code-review` itself. Tail with `lattice review-status <task>` or follow the artifact when it lands. (Or moves to `needs_human` if it hit a decision point.)
 7. The agent reports back to you with a summary
 
 ### Step 3: Come back to a sorted inbox

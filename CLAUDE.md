@@ -234,17 +234,15 @@ This is the **planning sub-agent's** job. Spawn a sub-agent whose sole purpose i
 
 **The test:** If you moved to `planned` and the plan file is still empty scaffold, you didn't plan. Every task gets a plan — even trivial tasks get a one-line plan. The CLI enforces this: transitioning to `in_progress` is blocked when the plan is still scaffold.
 
-**Plan review (default: single).** After writing the plan, run `lattice plan-review <task>`. Check the project's mode:
+**Plan review (default: single, fires automatically).** Moving the task to `planned` automatically spawns a detached `lattice plan-review <task>` in the background. The artifact lands when complete; tail progress with `lattice review-status <task>` or follow `.lattice/.daemon/auto-plan-review-<task>.log`. Disable per-call with `--no-auto-review` on `lattice status`, or project-wide with `auto_plan_review_on_transition: false` in `.lattice/config.json`. **If you opt into `plan_review_mode: triple`, every transition into `planned` spends three agent runs plus a merge by default — disable auto-fire or use `--no-auto-review` when cost matters.**
 
-```
-cat .lattice/config.json | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('plan_review_mode','single'))"
-```
+The mode still controls *how* the review runs:
 
 | `plan_review_mode` value | What the planner does |
 |--------------------------|----------------------|
 | `single` (default) | Spawns one review agent |
 | `triple` | **Trident plan review** — spawns three agents (claude, codex, gemini) in parallel, merges their findings into one artifact |
-| `inline` | Reviews the plan in-session (use when codex/gemini aren't available, or for small/throwaway projects) |
+| `inline` | Reviews the plan in-session (use when codex/gemini aren't available, or for small/throwaway projects). Auto-fire is a no-op for inline mode — there is no subprocess to spawn. |
 
 When `plan_approval` is `human`, the CLI automatically moves the task to `needs_human` after `lattice plan-review` completes. Wait for human approval before proceeding to `in_progress`.
 
@@ -266,6 +264,8 @@ Every finding must be explicitly triaged — no silent drops. If triage produces
 
 Moving to `review` is a commitment to actually review the work.
 
+**The review fires automatically by default.** When you transition the task to `review`, the CLI spawns a detached `lattice code-review <task>` in the background — the orchestrator does not need to remember to run it. Tail progress with `lattice review-status <task>` (covers both manual and auto-fired reviews) or follow `.lattice/.daemon/auto-code-review-<task>.log`. Disable per-call with `--no-auto-review` on `lattice status`, or project-wide with `auto_code_review_on_transition: false` in `.lattice/config.json`. **If `review_mode` is `triple`, every `→ review` transition (including rework cycles) spends three agent runs by default.**
+
 This is the **review sub-agent's** job. Spawn a sub-agent with fresh context — it did NOT write the code and comes in cold.
 
 **Step 1: Check review_mode.** Before reviewing, check the project config:
@@ -276,16 +276,16 @@ cat .lattice/config.json | python3 -c "import sys,json; d=json.load(sys.stdin); 
 
 | `review_mode` value | What the reviewer does |
 |---------------------|----------------------|
-| `inline` | Review the diff yourself in-session. Run `lattice code-review <task> --mode inline` to acknowledge. |
-| `single` (default) | Run `lattice code-review <task>` — spawns one review agent, stores artifact |
-| `triple` | Run `lattice code-review <task>` — spawns three agents + merge, stores artifacts |
+| `inline` | Review the diff yourself in-session. Run `lattice code-review <task> --mode inline` to acknowledge. (Auto-fire is a no-op for inline.) |
+| `single` (default) | Auto-fire on `→ review` spawns one review agent + stores artifact. Same end-state as `lattice code-review <task>` run manually. |
+| `triple` | Auto-fire spawns three agents + merge, stores artifacts. Same end-state as `lattice code-review <task>` run manually. |
 
 **Step 2: Perform the review.** The review sub-agent should:
 1. Read the plan file to understand what was supposed to be built.
 2. Read the git diff to see what was actually built.
 3. Run tests and linting to verify nothing is broken.
 4. Compare the implementation against the plan's acceptance criteria.
-5. Call `lattice code-review <task>` (or review inline if mode is `inline`).
+5. Use the artifact produced by the auto-fired review (or run `lattice code-review <task>` manually if you opted out / are inline).
 
 **When moving to `done`:** If the completion policy blocks you for a missing review artifact, do the review. Do not `--force` past it. `--force --reason` is for genuinely exceptional cases, not a convenience shortcut.
 
@@ -338,17 +338,30 @@ Max cycles:   3 review->rework transitions, then CLI blocks -> needs_human
 
 ### Review Config Reference
 
-Three settings in `.lattice/config.json` control review behavior:
+Five settings in `.lattice/config.json` control review behavior:
 
 | Setting | Values | Default | Meaning |
 |---------|--------|---------|---------|
 | `review_mode` | `inline`, `single`, `triple` | `single` | How code review is performed at the review gate |
 | `plan_review_mode` | `inline`, `single`, `triple` | `single` | How plan review is performed after the plan is written |
 | `plan_approval` | `auto`, `human` | `auto` | After plan-review: `auto` proceeds, `human` moves to `needs_human` for approval |
+| `auto_code_review_on_transition` | `true`, `false` | `true` | Auto-spawn `lattice code-review` when a task transitions to `review` |
+| `auto_plan_review_on_transition` | `true`, `false` | `true` | Auto-spawn `lattice plan-review` when a task transitions to `planned` |
 
 **`inline`** — review happens in the same agent session (no subprocess spawned).
 **`single`** — one review agent is spawned; result stored as a `review` or `plan-review` artifact.
 **`triple`** — three agents (claude, codex, gemini) run in parallel; individual results stored as `review-individual` artifacts; a merged result stored as `review` or `plan-review`.
+
+### Auto-fire Conventions (LAT-211)
+
+When a task transitions to `review` or `planned`, `lattice status` automatically spawns a detached `lattice code-review` / `plan-review` subprocess in a new session. The transition itself never blocks on the spawn — if discovery or `Popen` fails, the status change still lands and a warning is logged.
+
+- **Coordination** lives in `.lattice/review_state/<task_id>.json`. The schema gains optional `started_by_pid` (the PID currently responsible for the in-flight review) and `auto_fired` (true when the auto-fire path created the record). First-writer-wins; existing readers ignore unknown fields. The audit-trail signal that "this review was auto-fired" lives in the `auto_review_spawned` event, not in `review_state` (which is transient).
+- **Logs** land at `.lattice/.daemon/auto-{code,plan}-review-<task_id>.log`. One file per task per gate type; **overwritten on each new spawn**, so when a task cycles through `→ review` more than once, only the latest attempt is on disk. The header line records the spawn timestamp.
+- **Monitor** with `lattice review-status <task_id>` (covers both manual and auto-fired reviews) or by tailing the log file.
+- **Audit** via the `auto_review_spawned` event in the per-task event log. Includes `review_type`, `mode`, `log_path`, `spawned_at`, `pid` (debug aid only — short-lived), and `trigger_status_event_id`. The event is emitted only when a spawn actually succeeded; skip reasons (inline / disabled / opted-out / already in flight) surface in CLI output and `--json` instead.
+- **Per-call opt-out**: `lattice status <task> review --no-auto-review`. Useful when you want to step in manually for a specific transition without changing config.
+- **Project-wide opt-out**: set `auto_code_review_on_transition: false` and/or `auto_plan_review_on_transition: false` in `.lattice/config.json`. The status command falls back to today's hint-only output.
 
 ### When You're Stuck
 

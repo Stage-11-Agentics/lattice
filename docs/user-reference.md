@@ -209,6 +209,28 @@ High-stakes changes get multiple perspectives. Launch review agents from differe
 
 Three models surface issues no single model catches alone. The synthesis separates high-confidence findings (flagged by multiple reviewers) from observations that need your judgment.
 
+### Auto-fire on status transitions
+
+Transitioning a task to `review` or `planned` automatically spawns the matching review subprocess in the background:
+
+| Transition | What fires | Default mode |
+|------------|------------|--------------|
+| `→ review` | `lattice code-review <task>` (detached) | `review_mode` (default `single`) |
+| `→ planned` | `lattice plan-review <task>` (detached) | `plan_review_mode` (default `triple`) |
+
+Both default to enabled. Disable via:
+
+- `--no-auto-review` on `lattice status` (per-call opt-out).
+- `auto_code_review_on_transition: false` and/or `auto_plan_review_on_transition: false` in `.lattice/config.json` (project-wide).
+
+Coordination piggybacks on the existing `review_state/<task_id>.json` primitive — first-writer-wins. If a review is already in flight from a manual `lattice code-review` (or another auto-fire on a different machine), the second auto-fire is a no-op and reports `auto-review skipped (review already in flight, pid …)`.
+
+Logs land at `.lattice/.daemon/auto-{code,plan}-review-<task_id>.log` (overwritten per spawn). Every successful spawn appends an `auto_review_spawned` event to the task's event log with the review type, mode, log path, spawned-at timestamp, child PID (debug aid only), and the triggering `status_changed` event ID.
+
+Spawn failures (no `lattice` on PATH, OS forbids fork) never block the status transition — the change still lands and a warning is logged. Auto-fire is enhancement, never gating.
+
+**Cost-of-ownership.** With `triple` mode (the default for `plan_review_mode`), every transition into `planned` or `review` spends three agent runs plus a merge run. For projects where API spend matters, set the config keys to `false` or use `--no-auto-review` for surgical transitions.
+
 ### The taste-to-code pipeline
 
 Human taste compounds when captured structurally:
