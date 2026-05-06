@@ -11,6 +11,7 @@ from lattice.mcp.tools import (
     lattice_archive,
     lattice_assign,
     lattice_attach,
+    lattice_clear_alert,
     lattice_comment,
     lattice_config,
     lattice_create,
@@ -18,6 +19,7 @@ from lattice.mcp.tools import (
     lattice_event,
     lattice_link,
     lattice_list,
+    lattice_raise_alert,
     lattice_show,
     lattice_status,
     lattice_unarchive,
@@ -434,3 +436,54 @@ class TestAttach:
         )
         assert result["type"] == "reference"
         assert result["custom_fields"]["url"] == "https://example.com/doc.pdf"
+
+
+class TestRaiseAlert:
+    """LAT-210: lattice_raise_alert / lattice_clear_alert MCP tools."""
+
+    def test_raise_writes_alert(self, lattice_env: Path):
+        task = lattice_create(title="Alert me", actor="agent:claude")
+        result = lattice_raise_alert(
+            task_id=task["id"],
+            alert_name="needs_human",
+            short="REST or GraphQL?",
+            actor="agent:claude",
+        )
+        assert "needs_human" in result["alerts"]
+        assert result["alerts"]["needs_human"]["short"] == "REST or GraphQL?"
+
+    def test_clear_after_raise(self, lattice_env: Path):
+        task = lattice_create(title="Clear me", actor="agent:claude")
+        lattice_raise_alert(
+            task_id=task["id"],
+            alert_name="needs_human",
+            short="?",
+            actor="agent:claude",
+        )
+        result = lattice_clear_alert(
+            task_id=task["id"],
+            alert_name="needs_human",
+            actor="human:test",
+            answer="REST.",
+        )
+        assert result["cleared"] is True
+        assert "needs_human" not in result["alerts"]
+
+    def test_idempotent_clear_no_event(self, lattice_env: Path):
+        task = lattice_create(title="Re-clear", actor="agent:claude")
+        result = lattice_clear_alert(
+            task_id=task["id"],
+            alert_name="needs_human",
+            actor="human:test",
+        )
+        assert result["cleared"] is False
+
+    def test_raise_unknown_alert_rejected(self, lattice_env: Path):
+        task = lattice_create(title="x", actor="agent:claude")
+        with pytest.raises(ValueError, match="Unknown alert"):
+            lattice_raise_alert(
+                task_id=task["id"],
+                alert_name="madeup",
+                short="x",
+                actor="agent:claude",
+            )

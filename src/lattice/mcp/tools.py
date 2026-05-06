@@ -1367,3 +1367,149 @@ def lattice_doctor(
         if (lattice_dir / "archive" / "tasks").is_dir()
         else 0,
     }
+
+
+# ---------------------------------------------------------------------------
+# Alerts (LAT-210)
+# ---------------------------------------------------------------------------
+
+
+_TERMINAL_STATUSES_FOR_ALERTS: frozenset[str] = frozenset({"done", "cancelled"})
+
+
+def _is_archived_task(lattice_dir: Path, task_id: str) -> bool:
+    return (lattice_dir / "archive" / "tasks" / f"{task_id}.json").exists()
+
+
+@mcp.tool()
+def lattice_raise_alert(
+    task_id: Annotated[str, Field(description="Task ID (ULID or short ID)")],
+    alert_name: Annotated[
+        str, Field(description="Alert name from workflow.alerts (e.g. needs_human, blocked)")
+    ],
+    short: Annotated[
+        str, Field(description="Short summary (≤200 chars)")
+    ],
+    actor: Annotated[str, Field(description="Actor raising the alert")],
+    long: Annotated[
+        str | None, Field(description="Long-form detail (≤4096 chars)")
+    ] = None,
+    prompt: Annotated[
+        str | None, Field(description="Suggested clear command (≤256 chars)")
+    ] = None,
+    evidence_ref: Annotated[
+        str | None, Field(description="Linked artifact id (e.g. plan-review)")
+    ] = None,
+    lattice_root: Annotated[
+        str | None, Field(description="Path to project directory containing .lattice/")
+    ] = None,
+) -> dict:
+    """Raise an alert on a task (LAT-210). Alerts are orthogonal to status."""
+    from lattice.core.config import get_workflow_alerts, validate_alert_name
+    from lattice.core.events import validate_alert_payload
+
+    lattice_dir = _find_root(lattice_root)
+    config = _load_config(lattice_dir)
+    _validate_actor(actor)
+
+    if not validate_alert_name(config, alert_name):
+        valid = ", ".join(get_workflow_alerts(config)) or "(none configured)"
+        raise ValueError(f"Unknown alert: '{alert_name}'. Valid alerts: {valid}.")
+
+    task_id = _resolve_task_id(lattice_dir, task_id)
+
+    if _is_archived_task(lattice_dir, task_id):
+        raise ValueError(f"Cannot raise alert on archived task {task_id}.")
+
+    snapshot = _read_snapshot_or_error(lattice_dir, task_id)
+    if snapshot.get("status") in _TERMINAL_STATUSES_FOR_ALERTS:
+        raise ValueError(
+            f"Cannot raise alert on task in terminal status '{snapshot.get('status')}'."
+        )
+
+    event_data: dict = {"name": alert_name, "short": short}
+    if long is not None:
+        event_data["long"] = long
+    if prompt is not None:
+        event_data["prompt"] = prompt
+    if evidence_ref is not None:
+        event_data["evidence_ref"] = evidence_ref
+
+    ok, errors = validate_alert_payload(event_data)
+    if not ok:
+        raise ValueError("; ".join(errors))
+
+    event = create_event(
+        type="alert_raised",
+        task_id=task_id,
+        actor=actor,
+        data=event_data,
+    )
+    updated_snapshot = apply_event_to_snapshot(snapshot, event)
+    write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
+    return updated_snapshot
+
+
+@mcp.tool()
+def lattice_clear_alert(
+    task_id: Annotated[str, Field(description="Task ID (ULID or short ID)")],
+    alert_name: Annotated[
+        str, Field(description="Alert name to clear (must be in workflow.alerts)")
+    ],
+    actor: Annotated[str, Field(description="Actor clearing the alert")],
+    answer: Annotated[
+        str | None, Field(description="Recorded answer / justification")
+    ] = None,
+    note: Annotated[str | None, Field(description="Alternate framing of the clear")] = None,
+    lattice_root: Annotated[
+        str | None, Field(description="Path to project directory containing .lattice/")
+    ] = None,
+) -> dict:
+    """Clear an alert from a task. Idempotent: re-clear is a no-op success."""
+    from lattice.core.config import get_workflow_alerts, validate_alert_name
+
+    lattice_dir = _find_root(lattice_root)
+    config = _load_config(lattice_dir)
+    _validate_actor(actor)
+
+    if not validate_alert_name(config, alert_name):
+        valid = ", ".join(get_workflow_alerts(config)) or "(none configured)"
+        raise ValueError(f"Unknown alert: '{alert_name}'. Valid alerts: {valid}.")
+
+    task_id = _resolve_task_id(lattice_dir, task_id)
+
+    if _is_archived_task(lattice_dir, task_id):
+        raise ValueError(f"Cannot clear alert on archived task {task_id}.")
+
+    snapshot = _read_snapshot_or_error(lattice_dir, task_id)
+    alerts = snapshot.get("alerts") or {}
+
+    # Idempotent re-clear.
+    if alert_name not in alerts:
+        return {
+            "task_id": task_id,
+            "alert": alert_name,
+            "cleared": False,
+            "alerts": alerts,
+        }
+
+    event_data: dict = {"name": alert_name}
+    if answer is not None:
+        event_data["answer"] = answer
+    if note is not None:
+        event_data["note"] = note
+
+    event = create_event(
+        type="alert_cleared",
+        task_id=task_id,
+        actor=actor,
+        data=event_data,
+    )
+    updated_snapshot = apply_event_to_snapshot(snapshot, event)
+    write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
+    return {
+        "task_id": task_id,
+        "alert": alert_name,
+        "cleared": True,
+        "alerts": updated_snapshot.get("alerts") or {},
+    }

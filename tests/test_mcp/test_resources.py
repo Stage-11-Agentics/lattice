@@ -20,6 +20,7 @@ from lattice.mcp.tools import (
     lattice_archive,
     lattice_assign,
     lattice_create,
+    lattice_raise_alert,
     lattice_status,
 )
 
@@ -48,6 +49,18 @@ class TestResourceTaskDetail:
         task = lattice_create(title="Short ID", actor="human:test")
         result = json.loads(resource_task_detail(task["short_id"]))
         assert result["id"] == task["id"]
+
+    def test_alerts_field_round_trips_through_detail(self, lattice_env: Path):
+        """LAT-210: alerts must surface through the MCP task resource."""
+        task = lattice_create(title="Alerted", actor="agent:claude")
+        lattice_raise_alert(
+            task_id=task["id"],
+            alert_name="needs_human",
+            short="?",
+            actor="agent:claude",
+        )
+        result = json.loads(resource_task_detail(task["id"]))
+        assert "needs_human" in result.get("alerts", {})
 
     def test_archived(self, lattice_env: Path):
         task = lattice_create(title="Archived", actor="human:test")
