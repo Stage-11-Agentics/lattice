@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tempfile
 from datetime import datetime, timezone
@@ -22,14 +23,98 @@ from lattice.cli.helpers import (
 )
 from lattice.cli.main import cli
 from lattice.core.review import (
+    claim_review_state,
     cleanup_temp_files,
     read_review_state,
     run_merge_agent,
     run_single_review,
     run_triple_review,
     resolve_diff,
+    write_review_state,
 )
 from lattice.templates import load_review_template
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _claim_or_refuse(
+    lattice_dir: Path,
+    task_id: str,
+    *,
+    mode: str,
+    review_type: str,
+    triggered_by: str | None,
+    is_json: bool,
+) -> None:
+    """Claim ``review_state`` for this review subprocess, or exit with a clear error.
+
+    Implements the LAT-211 plan-review finding 3 ordering: read existing
+    state *before* calling :func:`claim_review_state`. If the existing
+    record names a parent that auto-fired this review (``auto_fired=True``
+    AND ``started_by_pid == os.getppid()``) and ``--triggered-by`` was
+    set, write a new record directly with ``auto_fired=True`` and our PID
+    — bypassing the live-other-PID refusal that would otherwise fire,
+    because the "other" PID is our spawning parent.
+
+    Otherwise call ``claim_review_state(..., auto_fired=False)``: the
+    standard stale-PID reclaim handles the typical case (parent exited
+    before child reached this point), and the live-other-PID refusal
+    handles real contention.
+
+    Logs the friendly "review already in flight" message and exits 1
+    (or returns the structured error for ``--json``) on contention.
+    """
+    existing = read_review_state(lattice_dir, task_id)
+    if (
+        triggered_by is not None
+        and isinstance(existing, dict)
+        and existing.get("auto_fired") is True
+        and isinstance(existing.get("started_by_pid"), int)
+        and existing["started_by_pid"] == os.getppid()
+    ):
+        adopted: dict[str, Any] = {
+            "task_id": task_id,
+            "mode": mode,
+            "review_type": review_type,
+            "started_at": _now_iso(),
+            "started_by_pid": os.getpid(),
+            "auto_fired": True,
+            "agents": [],
+        }
+        write_review_state(lattice_dir, adopted)
+        return
+
+    claimed, holder = claim_review_state(
+        lattice_dir,
+        task_id,
+        mode=mode,
+        review_type=review_type,
+        started_by_pid=os.getpid(),
+        auto_fired=False,
+    )
+    if claimed:
+        return
+
+    holder = holder or {}
+    holder_pid = holder.get("started_by_pid")
+    holder_started = holder.get("started_at")
+    holder_auto = holder.get("auto_fired")
+    holder_review_type = holder.get("review_type") or review_type
+    log_hint = ""
+    daemon_log = lattice_dir / ".daemon" / f"auto-{holder_review_type}-{task_id}.log"
+    if daemon_log.exists():
+        log_hint = f"\n  log: {daemon_log}"
+    msg = (
+        f"A review is already in flight for this task "
+        f"(pid {holder_pid}, started {holder_started}, "
+        f"auto_fired={holder_auto}).  "
+        f"Use 'lattice review-status {task_id}' to monitor, "
+        f"or wait for it to complete."
+        f"{log_hint}"
+    )
+    output_error(msg, "REVIEW_IN_FLIGHT", is_json)
 
 
 # ---------------------------------------------------------------------------
@@ -86,7 +171,29 @@ def code_review(
     if mode is None:
         mode = config.get("review_mode", "single")
 
+    # Inline-mode contention check: even though inline never claims, refuse
+    # if a non-inline review is in flight so the operator doesn't run two
+    # reviews in parallel by accident.
     if mode == "inline":
+        existing = read_review_state(lattice_dir, task_id)
+        if isinstance(existing, dict):
+            from lattice.core.review import _pid_alive
+
+            holder_pid = existing.get("started_by_pid")
+            if (
+                isinstance(holder_pid, int)
+                and holder_pid != os.getpid()
+                and _pid_alive(holder_pid)
+            ):
+                output_error(
+                    (
+                        "A review is already in flight for this task "
+                        f"(pid {holder_pid}, started {existing.get('started_at')}, "
+                        f"auto_fired={existing.get('auto_fired')})."
+                    ),
+                    "REVIEW_IN_FLIGHT",
+                    is_json,
+                )
         display_id = snapshot.get("short_id") or task_id
         msg = (
             f"[code-review] Mode is 'inline' — review is happening in-session.\n"
@@ -101,6 +208,17 @@ def code_review(
         return
 
     actor = require_actor(is_json)
+
+    # Claim the in-flight slot (or adopt the parent's claim when this is
+    # an auto-fired child invoked with --triggered-by).
+    _claim_or_refuse(
+        lattice_dir,
+        task_id,
+        mode=mode,
+        review_type="code-review",
+        triggered_by=triggered_by,
+        is_json=is_json,
+    )
 
     # Resolve diff
     success, diff_or_err = resolve_diff(lattice_dir, task_id, snapshot, base=base)
@@ -228,6 +346,25 @@ def plan_review(
     plan_content = plan_path.read_text(encoding="utf-8")
 
     if mode == "inline":
+        existing = read_review_state(lattice_dir, task_id)
+        if isinstance(existing, dict):
+            from lattice.core.review import _pid_alive
+
+            holder_pid = existing.get("started_by_pid")
+            if (
+                isinstance(holder_pid, int)
+                and holder_pid != os.getpid()
+                and _pid_alive(holder_pid)
+            ):
+                output_error(
+                    (
+                        "A review is already in flight for this task "
+                        f"(pid {holder_pid}, started {existing.get('started_at')}, "
+                        f"auto_fired={existing.get('auto_fired')})."
+                    ),
+                    "REVIEW_IN_FLIGHT",
+                    is_json,
+                )
         display_id = snapshot.get("short_id") or task_id
         msg = (
             f"[plan-review] Mode is 'inline' — review is happening in-session.\n"
@@ -242,6 +379,15 @@ def plan_review(
         return
 
     actor = require_actor(is_json)
+
+    _claim_or_refuse(
+        lattice_dir,
+        task_id,
+        mode=mode,
+        review_type="plan-review",
+        triggered_by=triggered_by,
+        is_json=is_json,
+    )
 
     # Load and fill plan review template
     template = load_review_template(lattice_dir, "plan-review")
@@ -349,6 +495,15 @@ def review_status(task_id: str, output_json: bool) -> None:
     click.echo(f"  review_type:  {state.get('review_type', '?')}")
     click.echo(f"  started_at:   {state.get('started_at', '?')}")
     click.echo(f"  elapsed:      {overall_elapsed}")
+    if "auto_fired" in state:
+        pid_part = (
+            f" (started_by_pid {state['started_by_pid']})"
+            if isinstance(state.get("started_by_pid"), int)
+            else ""
+        )
+        click.echo(f"  auto_fired:   {state['auto_fired']}{pid_part}")
+    elif isinstance(state.get("started_by_pid"), int):
+        click.echo(f"  started_by_pid: {state['started_by_pid']}")
     agents = state.get("agents", [])
     if agents:
         click.echo("  agents:")
