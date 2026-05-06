@@ -227,9 +227,12 @@ def _set_workspace_metadata(ws_ref: str, label: str) -> None:
     """Best-effort workspace-level metadata."""
     _bridge_run_cmux(
         "set-workspace-metadata",
-        "--workspace", ws_ref,
-        "--key", "lattice_label",
-        "--value", label,
+        "--workspace",
+        ws_ref,
+        "--key",
+        "lattice_label",
+        "--value",
+        label,
     )
 
 
@@ -263,8 +266,10 @@ def _initial_surface(ws_ref: str) -> str | None:
 def _new_pane(ws_ref: str, *, direction: str) -> _Slot | None:
     out = _cmux_capture(
         "new-pane",
-        "--workspace", ws_ref,
-        "--direction", direction,
+        "--workspace",
+        ws_ref,
+        "--direction",
+        direction,
     )
     if not out:
         return None
@@ -295,8 +300,10 @@ def _focus_by_surface(ws_ref: str, surface_ref: str) -> None:
 def _rename_tab(ws_ref: str, surface_ref: str, title: str) -> None:
     _bridge_run_cmux(
         "rename-tab",
-        "--workspace", ws_ref,
-        "--surface", surface_ref,
+        "--workspace",
+        ws_ref,
+        "--surface",
+        surface_ref,
         title,
     )
 
@@ -306,9 +313,12 @@ def _set_description(ws_ref: str, surface_ref: str, text: str) -> None:
     # `explicit` is the right choice for an external CLI driver.
     _bridge_run_cmux(
         "set-description",
-        "--workspace", ws_ref,
-        "--surface", surface_ref,
-        "--source", "explicit",
+        "--workspace",
+        ws_ref,
+        "--surface",
+        surface_ref,
+        "--source",
+        "explicit",
         text,
     )
 
@@ -327,9 +337,12 @@ def _set_metadata(
     payload = _json.dumps({"role": role, "task": task, "status": status})
     _bridge_run_cmux(
         "set-metadata",
-        "--workspace", ws_ref,
-        "--surface", surface_ref,
-        "--json", payload,
+        "--workspace",
+        ws_ref,
+        "--surface",
+        surface_ref,
+        "--json",
+        payload,
     )
 
 
@@ -355,15 +368,19 @@ def _send_runner(
 
     _bridge_run_cmux(
         "send",
-        "--workspace", ws_ref,
-        "--surface", surface_ref,
+        "--workspace",
+        ws_ref,
+        "--surface",
+        surface_ref,
         line,
     )
     # Two-call send: cmux send adds the text, send-key enter submits it.
     _bridge_run_cmux(
         "send-key",
-        "--workspace", ws_ref,
-        "--surface", surface_ref,
+        "--workspace",
+        ws_ref,
+        "--surface",
+        surface_ref,
         "enter",
     )
 

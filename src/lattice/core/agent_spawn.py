@@ -105,9 +105,7 @@ def _agent_cli_command(agent_type: str, prompt_file: str, output_file: str) -> s
     Mirrors the legacy ``core.review._build_agent_command`` shape so the
     behaviour of the headless backend matches today's ``spawn_agent``.
     """
-    instruction = (
-        f"Read {prompt_file} and follow the instructions. Write output to {output_file}"
-    )
+    instruction = f"Read {prompt_file} and follow the instructions. Write output to {output_file}"
     if agent_type == "claude":
         return f'env -u CLAUDECODE claude --dangerously-skip-permissions -p "{instruction}"'
     if agent_type == "codex":
@@ -295,9 +293,7 @@ def poll_sentinels(
     return results
 
 
-def _finalize_completed(
-    req: SpawnRequest, backend_name: str, duration: float
-) -> SpawnResult:
+def _finalize_completed(req: SpawnRequest, backend_name: str, duration: float) -> SpawnResult:
     """Build a SpawnResult from a request whose sentinel has landed."""
     err_path = req.output_file.with_suffix(req.output_file.suffix + ".err")
     if err_path.exists():
@@ -446,8 +442,7 @@ def run_concurrent(
                 on_progress("agent_finished", req.agent)
 
     threads = [
-        threading.Thread(target=_target, args=(i, r), daemon=True)
-        for i, r in enumerate(requests)
+        threading.Thread(target=_target, args=(i, r), daemon=True) for i, r in enumerate(requests)
     ]
     for t in threads:
         t.start()

@@ -288,7 +288,10 @@ class TestCodeReviewSingle:
 
         with (
             patch("lattice.cli.review_cmds.resolve_diff", return_value=(True, fake_diff)),
-            patch("lattice.cli.review_cmds.run_single_review", return_value=(True, "Review complete.", fake_review)),
+            patch(
+                "lattice.cli.review_cmds.run_single_review",
+                return_value=(True, "Review complete.", fake_review),
+            ),
         ):
             result = runner.invoke(
                 cli,
@@ -298,7 +301,9 @@ class TestCodeReviewSingle:
             )
         # Should not error (may warn if lattice attach subprocess fails in test env)
         # The key assertion: no unhandled exception and diff was attempted
-        assert result.exit_code == 0 or "Review stored" in result.output or "failed" in result.output
+        assert (
+            result.exit_code == 0 or "Review stored" in result.output or "failed" in result.output
+        )
 
     def test_single_mode_agent_failure_reports_error(self, tmp_path):
         root = _make_board(tmp_path, {"review_mode": "single"})
@@ -309,7 +314,9 @@ class TestCodeReviewSingle:
 
         with (
             patch("lattice.cli.review_cmds.resolve_diff", return_value=(True, fake_diff)),
-            patch("lattice.cli.review_cmds.run_single_review", return_value=(False, "timeout", None)),
+            patch(
+                "lattice.cli.review_cmds.run_single_review", return_value=(False, "timeout", None)
+            ),
         ):
             result = runner.invoke(
                 cli,
@@ -335,7 +342,9 @@ class TestPlanReviewSingle:
 
         fake_review = "### 1. Verdict\n**PASS**\n\nSolid plan."
 
-        with patch("lattice.cli.review_cmds.run_single_review", return_value=(True, "ok", fake_review)):
+        with patch(
+            "lattice.cli.review_cmds.run_single_review", return_value=(True, "ok", fake_review)
+        ):
             result = runner.invoke(
                 cli,
                 ["plan-review", task_id, "--mode", "single", "--actor", "agent:test"],
@@ -355,7 +364,9 @@ class TestPlanReviewSingle:
         fake_art_id = "art_fakeid123"
 
         with (
-            patch("lattice.cli.review_cmds.run_single_review", return_value=(True, "ok", fake_review)),
+            patch(
+                "lattice.cli.review_cmds.run_single_review", return_value=(True, "ok", fake_review)
+            ),
             patch(
                 "lattice.cli.review_cmds._attach_review_artifact",
                 return_value=fake_art_id,

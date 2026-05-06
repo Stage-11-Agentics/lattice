@@ -16,16 +16,12 @@ from lattice.core.agent_spawn import (
 from lattice.storage.agent_spawn import HeadlessBackend
 
 
-FAKE_AGENT_PATH = (
-    Path(__file__).resolve().parent.parent / "fixtures" / "fake_agent.py"
-)
+FAKE_AGENT_PATH = Path(__file__).resolve().parent.parent / "fixtures" / "fake_agent.py"
 
 
 def _patch_command(monkeypatch: pytest.MonkeyPatch, behavior: str | None = None) -> None:
     """Override _agent_cli_command to launch the fake agent for every type."""
-    fake_cmd_template = (
-        f"{sys.executable} {FAKE_AGENT_PATH}"
-    )
+    fake_cmd_template = f"{sys.executable} {FAKE_AGENT_PATH}"
     if behavior:
         fake_cmd_template = f"LATTICE_FAKE_BEHAVIOR={behavior} {fake_cmd_template}"
 
@@ -59,9 +55,7 @@ def _make_request(tmp_path: Path, agent: str, *, timeout: int = 10) -> SpawnRequ
 
 
 class TestHeadlessBackendEndToEnd:
-    def test_fake_agent_end_to_end(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_fake_agent_end_to_end(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """spawn_one against fake_agent writes output + sentinel + success."""
         _patch_command(monkeypatch, behavior="ok")
         req = _make_request(tmp_path, "claude")
@@ -93,9 +87,7 @@ class TestHeadlessBackendEndToEnd:
         assert "exited with code" in result.error or "exit" in result.error
         assert sentinel_path(req.output_file).exists()
 
-    def test_fake_agent_timeout(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_fake_agent_timeout(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _patch_command(monkeypatch, behavior="sleep:5")
         req = _make_request(tmp_path, "claude", timeout=1)
         result = spawn_one(req, workspace_label="test", backend=HeadlessBackend())

@@ -81,12 +81,14 @@ def test_agent_mode_writes_err_on_failure(
         "from lattice.agent_runner import main; sys.exit(main(['--mode','agent']))"
     )
     env = os.environ.copy()
-    env.update({
-        "LATTICE_AGENT_TYPE": "claude",
-        "LATTICE_AGENT_PROMPT": str(prompt),
-        "LATTICE_AGENT_OUTPUT": str(out),
-        "LATTICE_AGENT_TIMEOUT": "10",
-    })
+    env.update(
+        {
+            "LATTICE_AGENT_TYPE": "claude",
+            "LATTICE_AGENT_PROMPT": str(prompt),
+            "LATTICE_AGENT_OUTPUT": str(out),
+            "LATTICE_AGENT_TIMEOUT": "10",
+        }
+    )
     env.pop("CLAUDECODE", None)
     proc = subprocess.run(
         [sys.executable, "-c", runner_inline],
@@ -127,13 +129,15 @@ def test_stdout_streams_to_pane(tmp_path: Path) -> None:
     )
     env = os.environ.copy()
     env.pop("CLAUDECODE", None)
-    env.update({
-        "LATTICE_AGENT_TYPE": "claude",
-        "LATTICE_AGENT_PROMPT": str(prompt),
-        "LATTICE_AGENT_OUTPUT": str(out),
-        "LATTICE_AGENT_TIMEOUT": "10",
-        "LATTICE_AGENT_LABEL": "test :: stream",
-    })
+    env.update(
+        {
+            "LATTICE_AGENT_TYPE": "claude",
+            "LATTICE_AGENT_PROMPT": str(prompt),
+            "LATTICE_AGENT_OUTPUT": str(out),
+            "LATTICE_AGENT_TIMEOUT": "10",
+            "LATTICE_AGENT_LABEL": "test :: stream",
+        }
+    )
     proc = subprocess.run(
         [sys.executable, "-c", runner_inline],
         env=env,
@@ -185,13 +189,15 @@ def test_merge_waiter_assembles_inputs_and_invokes_merge(
     )
     env = os.environ.copy()
     env.pop("CLAUDECODE", None)
-    env.update({
-        "LATTICE_MERGE_UPSTREAM_DIRS": ":".join(upstream),
-        "LATTICE_MERGE_PROMPT": str(merge_prompt),
-        "LATTICE_AGENT_OUTPUT": str(merge_out),
-        "LATTICE_AGENT_TIMEOUT": "10",
-        "LATTICE_MERGE_AGENT": "claude",
-    })
+    env.update(
+        {
+            "LATTICE_MERGE_UPSTREAM_DIRS": ":".join(upstream),
+            "LATTICE_MERGE_PROMPT": str(merge_prompt),
+            "LATTICE_AGENT_OUTPUT": str(merge_out),
+            "LATTICE_AGENT_TIMEOUT": "10",
+            "LATTICE_MERGE_AGENT": "claude",
+        }
+    )
     proc = subprocess.run(
         [sys.executable, "-c", runner_inline],
         env=env,

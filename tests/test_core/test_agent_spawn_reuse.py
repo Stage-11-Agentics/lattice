@@ -25,9 +25,7 @@ from lattice.core.agent_spawn import (
 from lattice.storage.agent_spawn import HeadlessBackend
 
 
-FAKE_AGENT_PATH = (
-    Path(__file__).resolve().parent.parent / "fixtures" / "fake_agent.py"
-)
+FAKE_AGENT_PATH = Path(__file__).resolve().parent.parent / "fixtures" / "fake_agent.py"
 
 
 def test_spawn_one_callable_outside_review(
@@ -42,9 +40,7 @@ def test_spawn_one_callable_outside_review(
     output = sub / "summary.md"
 
     # Patch the agent CLI command to run the fake agent for any agent type.
-    fake_cmd_template = (
-        f"{sys.executable} {FAKE_AGENT_PATH}"
-    )
+    fake_cmd_template = f"{sys.executable} {FAKE_AGENT_PATH}"
 
     def _stub(agent_type: str, prompt_file: str, output_file: str) -> str:
         return (
