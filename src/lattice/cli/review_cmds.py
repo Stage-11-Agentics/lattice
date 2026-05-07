@@ -79,7 +79,9 @@ def code_review(
             f"Task: {display_id}. Review the diff and provide feedback directly."
         )
         if is_json:
-            click.echo(json.dumps({"ok": True, "data": {"mode": "inline", "task_id": task_id}}, indent=2))
+            click.echo(
+                json.dumps({"ok": True, "data": {"mode": "inline", "task_id": task_id}}, indent=2)
+            )
         else:
             click.echo(msg)
         return
@@ -200,7 +202,9 @@ def plan_review(
             f"Task: {display_id}. Review the plan and provide feedback directly."
         )
         if is_json:
-            click.echo(json.dumps({"ok": True, "data": {"mode": "inline", "task_id": task_id}}, indent=2))
+            click.echo(
+                json.dumps({"ok": True, "data": {"mode": "inline", "task_id": task_id}}, indent=2)
+            )
         else:
             click.echo(msg)
         return
@@ -281,9 +285,13 @@ def review_status(task_id: str, output_json: bool) -> None:
             click.echo(json.dumps({"ok": True, "data": data}, indent=2))
         else:
             if has_artifacts:
-                click.echo(f"No in-flight review for {task_id}. Review artifacts exist — review may have already completed.")
+                click.echo(
+                    f"No in-flight review for {task_id}. Review artifacts exist — review may have already completed."
+                )
             else:
-                click.echo(f"No in-flight review found for {task_id}. No review artifacts found either.")
+                click.echo(
+                    f"No in-flight review found for {task_id}. No review artifacts found either."
+                )
         return
 
     now = datetime.now(timezone.utc)
@@ -291,7 +299,9 @@ def review_status(task_id: str, output_json: bool) -> None:
     if is_json:
         # Enrich with elapsed times
         for agent in state.get("agents", []):
-            agent["elapsed"] = _compute_elapsed_str(agent.get("started_at"), agent.get("finished_at"), now)
+            agent["elapsed"] = _compute_elapsed_str(
+                agent.get("started_at"), agent.get("finished_at"), now
+            )
         state["elapsed"] = _compute_elapsed_str(state.get("started_at"), None, now)
         click.echo(json.dumps({"ok": True, "data": state}, indent=2))
         return
@@ -366,7 +376,9 @@ def _run_single_and_store(
 
     if art_id:
         if is_json:
-            click.echo(json.dumps({"ok": True, "data": {"artifact_id": art_id, "role": role}}, indent=2))
+            click.echo(
+                json.dumps({"ok": True, "data": {"artifact_id": art_id, "role": role}}, indent=2)
+            )
         elif quiet:
             click.echo(art_id)
         else:
@@ -448,7 +460,9 @@ def _run_triple_and_store(
         if merged_id:
             artifact_ids.append(merged_id)
             if is_json:
-                click.echo(json.dumps({"ok": True, "data": {"artifact_ids": artifact_ids}}, indent=2))
+                click.echo(
+                    json.dumps({"ok": True, "data": {"artifact_ids": artifact_ids}}, indent=2)
+                )
             elif quiet:
                 click.echo(merged_id)
             else:

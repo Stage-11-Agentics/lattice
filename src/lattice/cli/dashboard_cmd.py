@@ -48,7 +48,12 @@ def _find_free_port(host: str, near: int) -> int | None:
 
 @cli.command("dashboard")
 @click.option("--host", default="127.0.0.1", help="Host to bind to.")
-@click.option("--port", default=None, type=int, help="Port to bind to. Defaults to dashboard_port in config, or 8799.")
+@click.option(
+    "--port",
+    default=None,
+    type=int,
+    help="Port to bind to. Defaults to dashboard_port in config, or 8799.",
+)
 @click.option("--json", "output_json", is_flag=True, help="Output structured JSON.")
 def dashboard_cmd(host: str, port: int | None, output_json: bool) -> None:
     """Launch a read-only local web dashboard.
@@ -147,7 +152,12 @@ def dashboard_cmd(host: str, port: int | None, output_json: bool) -> None:
 
 
 @cli.command("restart")
-@click.option("--port", default=None, type=int, help="Port of the dashboard to restart. Defaults to dashboard_port in config, or 8799.")
+@click.option(
+    "--port",
+    default=None,
+    type=int,
+    help="Port of the dashboard to restart. Defaults to dashboard_port in config, or 8799.",
+)
 def restart_cmd(port: int | None) -> None:
     """Send a restart signal to a running Lattice dashboard.
 

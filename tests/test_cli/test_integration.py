@@ -122,16 +122,16 @@ class TestFullLifecycleWorkflow:
         expected_types = [
             "task_created",
             "assignment_changed",  # auto-assign on transition to in_planning
-            "status_changed",      # backlog -> in_planning
-            "status_changed",      # in_planning -> planned
-            "status_changed",      # planned -> in_progress (already assigned)
+            "status_changed",  # backlog -> in_planning
+            "status_changed",  # in_planning -> planned
+            "status_changed",  # planned -> in_progress (already assigned)
             "assignment_changed",  # explicit assign to agent:bot
             "comment_added",
             "relationship_added",
             "artifact_attached",
-            "status_changed",      # in_progress -> review
-            "comment_added",       # review evidence
-            "status_changed",      # review -> done
+            "status_changed",  # in_progress -> review
+            "comment_added",  # review evidence
+            "status_changed",  # review -> done
             "task_archived",
         ]
         assert event_types == expected_types
@@ -541,8 +541,8 @@ class TestShowAfterMultipleOperations:
         assert event_types == [
             "task_created",
             "assignment_changed",  # auto-assign on transition to in_planning
-            "status_changed",      # backlog -> in_planning
-            "status_changed",      # in_planning -> planned
+            "status_changed",  # backlog -> in_planning
+            "status_changed",  # in_planning -> planned
             "assignment_changed",  # explicit assign to agent:worker
             "comment_added",
             "field_updated",
@@ -580,7 +580,8 @@ class TestAutoAssignOnActiveTransition:
         # assignment_changed should come before the status_changed to in_planning
         assign_idx = event_types.index("assignment_changed")
         status_idx = [
-            i for i, e in enumerate(events)
+            i
+            for i, e in enumerate(events)
             if e["type"] == "status_changed" and e["data"]["to"] == "in_planning"
         ][0]
         assert assign_idx < status_idx

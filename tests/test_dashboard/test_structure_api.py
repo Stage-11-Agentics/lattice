@@ -114,9 +114,7 @@ class TestStructureApi:
         assert len(events) <= 3
         assert body["data"]["truncated"] is True
 
-    def test_structure_events_missing_file_returns_empty(
-        self, tmp_path: Path
-    ) -> None:
+    def test_structure_events_missing_file_returns_empty(self, tmp_path: Path) -> None:
         ld = _make_project(tmp_path, project_type="structure", with_fixtures=False)
         # structure.json exists? no. Write an empty structure.json so /api/structure
         # test isn't the one hitting this path — we're only exercising events here.

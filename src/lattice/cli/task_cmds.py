@@ -567,7 +567,11 @@ def compute_next_steps(
 
     if new_status == "in_planning":
         hint = f"Next: write the plan in plans/{task_id}.md, then move to planned."
-        return hint, {"action": "write_plan", "plan_path": f"plans/{task_id}.md", "then": "planned"}
+        return hint, {
+            "action": "write_plan",
+            "plan_path": f"plans/{task_id}.md",
+            "then": "planned",
+        }
 
     if new_status == "planned":
         plan_review_mode = config.get("plan_review_mode", "inline")

@@ -234,7 +234,9 @@ def _stream_with_poll(
 
         sleep_for = min(
             float(poll_interval),
-            float(timeout - (time.monotonic() - start_time)) if timeout > 0 else float(poll_interval),
+            float(timeout - (time.monotonic() - start_time))
+            if timeout > 0
+            else float(poll_interval),
         )
         if sleep_for <= 0:
             return

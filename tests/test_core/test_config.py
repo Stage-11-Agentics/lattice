@@ -447,9 +447,7 @@ class TestValidateCompletionPolicy:
     def test_default_done_policy_passes_with_review(self) -> None:
         """Default done policy is satisfied when review evidence exists."""
         config = default_config()
-        snap = _snap_with_evidence(
-            [{"id": "art_A", "role": "review", "source_type": "artifact"}]
-        )
+        snap = _snap_with_evidence([{"id": "art_A", "role": "review", "source_type": "artifact"}])
         ok, failures = validate_completion_policy(config, snap, "done")
         assert ok is True
         assert failures == []

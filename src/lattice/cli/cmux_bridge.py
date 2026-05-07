@@ -24,15 +24,15 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 STATUS_VISUALS: dict[str, dict[str, str]] = {
-    "backlog":     {"icon": "tray.full.fill",                    "color": "#888888"},
-    "in_planning": {"icon": "map.fill",                          "color": "#9B59B6"},
-    "planned":     {"icon": "checkmark.seal.fill",               "color": "#3498DB"},
-    "in_progress": {"icon": "play.fill",                         "color": "#E67E22"},
-    "review":      {"icon": "eye.fill",                          "color": "#FFD700"},
-    "done":        {"icon": "checkmark.circle.fill",             "color": "#2ECC71"},
-    "blocked":     {"icon": "exclamationmark.triangle.fill",     "color": "#E74C3C"},
-    "needs_human": {"icon": "person.fill.questionmark",          "color": "#E74C3C"},
-    "cancelled":   {"icon": "xmark.circle.fill",                 "color": "#95A5A6"},
+    "backlog": {"icon": "tray.full.fill", "color": "#888888"},
+    "in_planning": {"icon": "map.fill", "color": "#9B59B6"},
+    "planned": {"icon": "checkmark.seal.fill", "color": "#3498DB"},
+    "in_progress": {"icon": "play.fill", "color": "#E67E22"},
+    "review": {"icon": "eye.fill", "color": "#FFD700"},
+    "done": {"icon": "checkmark.circle.fill", "color": "#2ECC71"},
+    "blocked": {"icon": "exclamationmark.triangle.fill", "color": "#E74C3C"},
+    "needs_human": {"icon": "person.fill.questionmark", "color": "#E74C3C"},
+    "cancelled": {"icon": "xmark.circle.fill", "color": "#95A5A6"},
 }
 
 # Display labels used in tab titles for each status

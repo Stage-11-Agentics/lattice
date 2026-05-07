@@ -70,7 +70,8 @@ class TestInitFlags:
             cli,
             [
                 "init",
-                "--path", str(tmp_path),
+                "--path",
+                str(tmp_path),
                 "--actor",
                 "human:test",
                 "--project-code",
@@ -90,7 +91,8 @@ class TestInitFlags:
             cli,
             [
                 "init",
-                "--path", str(tmp_path),
+                "--path",
+                str(tmp_path),
                 "--actor",
                 "human:test",
                 "--project-code",
@@ -110,7 +112,8 @@ class TestInitFlags:
             cli,
             [
                 "init",
-                "--path", str(tmp_path),
+                "--path",
+                str(tmp_path),
                 "--actor",
                 "human:test",
                 "--project-code",
@@ -130,7 +133,8 @@ class TestInitFlags:
             cli,
             [
                 "init",
-                "--path", str(tmp_path),
+                "--path",
+                str(tmp_path),
                 "--actor",
                 "human:test",
                 "--project-code",
@@ -150,7 +154,8 @@ class TestInitFlags:
             cli,
             [
                 "init",
-                "--path", str(tmp_path),
+                "--path",
+                str(tmp_path),
                 "--actor",
                 "human:test",
                 "--project-code",
@@ -174,7 +179,8 @@ class TestInitFlags:
             cli,
             [
                 "init",
-                "--path", str(tmp_path),
+                "--path",
+                str(tmp_path),
                 "--actor",
                 "human:test",
                 "--project-code",
@@ -191,7 +197,8 @@ class TestInitFlags:
             cli,
             [
                 "init",
-                "--path", str(tmp_path),
+                "--path",
+                str(tmp_path),
                 "--actor",
                 "human:test",
                 "--project-code",

@@ -110,11 +110,15 @@ def record_agent_failure(lattice_dir: Path, agent_type: str, task_id: str) -> in
     state_dir = lattice_dir / REVIEW_STATE_DIR
     state_dir.mkdir(exist_ok=True)
     path = _failures_path(lattice_dir)
-    entry = json.dumps({
-        "agent": agent_type,
-        "task_id": task_id,
-        "timestamp": _now_iso(),
-    }, sort_keys=True, separators=(",", ":"))
+    entry = json.dumps(
+        {
+            "agent": agent_type,
+            "task_id": task_id,
+            "timestamp": _now_iso(),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     with open(path, "a", encoding="utf-8") as f:
         f.write(entry + "\n")
     return count_agent_failures(lattice_dir, agent_type)
@@ -155,8 +159,11 @@ def create_failure_diagnostic_task(
     try:
         result = subprocess.run(
             [
-                "lattice", "create", title,
-                "--actor", actor,
+                "lattice",
+                "create",
+                title,
+                "--actor",
+                actor,
                 "--quiet",
             ],
             capture_output=True,
@@ -171,8 +178,12 @@ def create_failure_diagnostic_task(
         # Move to needs_human
         subprocess.run(
             [
-                "lattice", "status", new_task_id, "needs_human",
-                "--actor", actor,
+                "lattice",
+                "status",
+                new_task_id,
+                "needs_human",
+                "--actor",
+                actor,
             ],
             capture_output=True,
             text=True,
@@ -477,15 +488,11 @@ def _build_agent_command(agent_type: str, prompt_file: str, output_file: str) ->
     read/write without hitting interactive permission prompts in non-attended
     contexts.
     """
-    instruction = (
-        f"Read {prompt_file} and follow the instructions. Write output to {output_file}"
-    )
+    instruction = f"Read {prompt_file} and follow the instructions. Write output to {output_file}"
     if agent_type == "claude":
         return f'env -u CLAUDECODE claude --dangerously-skip-permissions -p "{instruction}"'
     if agent_type == "codex":
-        return (
-            f'codex exec --full-auto --skip-git-repo-check "{instruction}"'
-        )
+        return f'codex exec --full-auto --skip-git-repo-check "{instruction}"'
     if agent_type == "gemini":
         return f'gemini -m gemini-3-pro-preview --yolo "{instruction}"'
     return None
@@ -515,7 +522,9 @@ def run_single_review(
         "mode": "single",
         "review_type": review_type,
         "started_at": started_at,
-        "agents": [{"name": "claude", "status": "running", "started_at": started_at, "artifact_id": None}],
+        "agents": [
+            {"name": "claude", "status": "running", "started_at": started_at, "artifact_id": None}
+        ],
     }
     write_review_state(lattice_dir, state)
 

@@ -44,16 +44,12 @@ def _resolve_to_relative(lattice_dir: Path, filepath: str) -> str:
         try:
             rel = str(path.resolve().relative_to(project_root.resolve()))
         except ValueError:
-            raise ValueError(
-                f"Path '{filepath}' is outside the project root."
-            ) from None
+            raise ValueError(f"Path '{filepath}' is outside the project root.") from None
     else:
         # Collapse ../  segments and check for traversal
         normalized = os.path.normpath(filepath)
         if normalized.startswith(".."):
-            raise ValueError(
-                f"Path '{filepath}' escapes the project root."
-            )
+            raise ValueError(f"Path '{filepath}' escapes the project root.")
         rel = normalized
 
     # Strip leading ./ if present
@@ -246,7 +242,10 @@ def file_unlink(
 
 
 def _get_decision_comments(
-    lattice_dir: Path, task_id: str, *, is_archived: bool = False,
+    lattice_dir: Path,
+    task_id: str,
+    *,
+    is_archived: bool = False,
 ) -> list[str]:
     """Return body texts of comments with role 'decision' for a task."""
     events = read_task_events(lattice_dir, task_id, is_archived=is_archived)
@@ -300,11 +299,13 @@ def _parse_decisions_md(lattice_dir: Path, filepath: str) -> list[dict]:
         for m in files_line_re.finditer(body):
             paths = [p.strip() for p in m.group(1).split(",")]
             if filepath in paths:
-                matches.append({
-                    "source": "Decisions.md",
-                    "heading": entry["heading"],
-                    "body": body.strip(),
-                })
+                matches.append(
+                    {
+                        "source": "Decisions.md",
+                        "heading": entry["heading"],
+                        "body": body.strip(),
+                    }
+                )
                 break
 
     return matches
@@ -356,7 +357,9 @@ def explain_cmd(
 
             # Collect decision-role comments from event log
             decision_comments = _get_decision_comments(
-                lattice_dir, task_id, is_archived=is_archived,
+                lattice_dir,
+                task_id,
+                is_archived=is_archived,
             )
             if decision_comments:
                 entry["decision_comments"] = decision_comments
@@ -364,10 +367,7 @@ def explain_cmd(
             # Include decision-role comments if verbose or JSON
             if verbose or is_json:
                 evidence_refs = snap.get("evidence_refs", [])
-                decision_refs = [
-                    r for r in evidence_refs
-                    if r.get("role") == "decision"
-                ]
+                decision_refs = [r for r in evidence_refs if r.get("role") == "decision"]
                 entry["decision_evidence"] = decision_refs
 
                 # Check for plan file
@@ -413,7 +413,7 @@ def explain_cmd(
             short_id = task.get("short_id") or task.get("task_id", "?")
             title = task.get("title", "?")
             status = task.get("status", "?")
-            click.echo(f"  {short_id}  \"{title}\"  [{status}]")
+            click.echo(f'  {short_id}  "{title}"  [{status}]')
 
             desc = task.get("description")
             if desc:

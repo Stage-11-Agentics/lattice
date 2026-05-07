@@ -96,9 +96,7 @@ class TestFailureTracking:
 class TestTempCleanup:
     def test_cleanup_removes_matching_files(self) -> None:
         # Create temp files matching the pattern
-        f1 = tempfile.NamedTemporaryFile(
-            prefix="lattice-review-", suffix=".md", delete=False
-        )
+        f1 = tempfile.NamedTemporaryFile(prefix="lattice-review-", suffix=".md", delete=False)
         f1.close()
         p1 = Path(f1.name)
         assert p1.exists()
@@ -140,6 +138,7 @@ class TestExtractActorStr:
 class TestConfigTimeout:
     def test_default_timeout_in_config(self) -> None:
         from lattice.core.config import default_config
+
         cfg = default_config()
         assert cfg["review_timeout_seconds"] == 600
 

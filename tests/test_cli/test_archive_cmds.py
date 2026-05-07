@@ -58,9 +58,7 @@ class TestArchive:
         ]
         assert len(archived_events) == 1
 
-    def test_archive_when_archive_dirs_missing(
-        self, create_task, invoke, initialized_root
-    ):
+    def test_archive_when_archive_dirs_missing(self, create_task, invoke, initialized_root):
         """Archive should self-heal when archive subdirs don't exist (older projects)."""
         import shutil
 

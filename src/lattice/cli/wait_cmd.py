@@ -124,9 +124,7 @@ def wait_cmd(
         return
 
     if not quiet and not is_json:
-        click.echo(
-            f"Waiting for {len(pending)}/{total} tasks to reach '{target_status}'..."
-        )
+        click.echo(f"Waiting for {len(pending)}/{total} tasks to reach '{target_status}'...")
         if done:
             done_names = ", ".join(short_id_map.get(t, t) for t in done)
             click.echo(f"  Already {target_status}: {done_names}")
@@ -151,9 +149,7 @@ def wait_cmd(
             done, pending = _check_tasks_status(lattice_dir, task_ids, target_status)
             if not quiet and not is_json:
                 done_names = ", ".join(short_id_map.get(t, t) for t in done)
-                click.echo(
-                    f"  Progress: {len(done)}/{total} ({done_names})"
-                )
+                click.echo(f"  Progress: {len(done)}/{total} ({done_names})")
             if not pending:
                 _emit_result(done, pending, target_status, short_id_map, is_json, quiet)
                 return
