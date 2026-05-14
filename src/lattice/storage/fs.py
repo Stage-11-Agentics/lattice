@@ -103,6 +103,10 @@ def find_root(start: Path | None = None) -> Path | None:
     the path or raises an error (no fallback to walk-up).
 
     Otherwise, walks up from start (defaults to cwd) looking for .lattice/.
+    Mirrors ``git rev-parse --show-toplevel``: when start is inside a git
+    linked worktree, the search jumps to the primary worktree first so the
+    canonical .lattice/ is found rather than any stale snapshot copied into
+    the worktree at creation time. This makes ``lattice`` worktree-transparent.
 
     Returns:
         Path to the directory containing .lattice/, or None if not found.
@@ -126,12 +130,55 @@ def find_root(start: Path | None = None) -> Path | None:
         return env_path
 
     current = (start or Path.cwd()).resolve()
+
+    primary = _git_primary_worktree(current)
+    if primary is not None:
+        current = primary
+
     while True:
         if (current / LATTICE_DIR).is_dir():
             return current
         parent = current.parent
         if parent == current:
             # Reached filesystem root
+            return None
+        current = parent
+
+
+def _git_primary_worktree(start: Path) -> Path | None:
+    """Return the primary worktree root if start is inside a git linked worktree.
+
+    A linked worktree is marked by a ``.git`` *file* (not directory) whose
+    contents are ``gitdir: <abspath>/.git/worktrees/<name>``. The primary
+    worktree's root is the parent of that primary ``.git`` directory.
+
+    Returns None when start is not inside any git tree, when the nearest git
+    marker is a real ``.git`` directory (i.e., already the primary worktree),
+    or when the worktree pointer can't be parsed. In those cases the caller
+    keeps its existing walk-up search from start.
+    """
+    current = start
+    while True:
+        git_path = current / ".git"
+        if git_path.is_dir():
+            return None
+        if git_path.is_file():
+            try:
+                content = git_path.read_text(encoding="utf-8").strip()
+            except OSError:
+                return None
+            prefix = "gitdir:"
+            if not content.startswith(prefix):
+                return None
+            gitdir = Path(content[len(prefix) :].strip())
+            # gitdir points at <primary>/.git/worktrees/<name>; primary root
+            # is two levels up from there.
+            primary_git = gitdir.parent.parent
+            if primary_git.name == ".git" and primary_git.is_dir():
+                return primary_git.parent
+            return None
+        parent = current.parent
+        if parent == current:
             return None
         current = parent
 
