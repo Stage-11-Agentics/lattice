@@ -1,10 +1,10 @@
-"""Claim/unclaim commands: bind a task to a cmux surface."""
+"""Claim/unclaim commands: bind a task to a c11 surface."""
 
 from __future__ import annotations
 
 import click
 
-from lattice.cli.cmux_bridge import cmux_available, get_surface, get_workspace, rename_tab
+from lattice.cli.c11_bridge import c11_available, get_surface, get_workspace, rename_tab
 from lattice.cli.helpers import (
     common_options,
     load_project_config,
@@ -27,7 +27,7 @@ from lattice.core.tasks import apply_event_to_snapshot
     "--surface",
     "surface_id",
     default=None,
-    help="cmux surface ref (e.g. surface:153). Defaults to CMUX_SURFACE_ID env var.",
+    help="c11 surface ref (e.g. surface:153). Defaults to C11_SURFACE_ID env var.",
 )
 @common_options
 def claim_cmd(
@@ -41,12 +41,12 @@ def claim_cmd(
     on_behalf_of: str | None,
     provenance_reason: str | None,
 ) -> None:
-    """Bind a task to a cmux surface.
+    """Bind a task to a c11 surface.
 
     Records a surface_bound event and stores the binding in the snapshot.
-    If inside cmux, renames the tab to the task's short code and title.
+    If inside c11, renames the tab to the task's short code and title.
 
-    The surface defaults to CMUX_SURFACE_ID from the environment, or can be
+    The surface defaults to C11_SURFACE_ID from the environment, or can be
     specified explicitly with --surface.
 
     Examples:
@@ -67,8 +67,8 @@ def claim_cmd(
     resolved_surface = surface_id or get_surface()
     if not resolved_surface:
         output_error(
-            "No surface specified. Provide --surface or run inside cmux "
-            "(CMUX_SURFACE_ID must be set).",
+            "No surface specified. Provide --surface or run inside c11 "
+            "(C11_SURFACE_ID must be set).",
             "MISSING_SURFACE",
             is_json,
         )
@@ -93,8 +93,8 @@ def claim_cmd(
     updated_snapshot = apply_event_to_snapshot(snapshot, event)
     write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
 
-    # Rename tab if inside cmux
-    if cmux_available():
+    # Rename tab if inside c11
+    if c11_available():
         short_id = updated_snapshot.get("short_id") or task_id
         title = updated_snapshot.get("title") or ""
         rename_tab(resolved_surface, f"{short_id}: {title}")
@@ -127,9 +127,9 @@ def unclaim_cmd(
     on_behalf_of: str | None,
     provenance_reason: str | None,
 ) -> None:
-    """Remove a task's cmux surface binding.
+    """Remove a task's c11 surface binding.
 
-    Records a surface_unbound event and clears cmux_surface / cmux_workspace
+    Records a surface_unbound event and clears c11_surface / c11_workspace
     from the snapshot.
 
     Examples:
@@ -144,7 +144,7 @@ def unclaim_cmd(
     task_id = resolve_task_id(lattice_dir, task_id, is_json)
     snapshot = read_snapshot_or_exit(lattice_dir, task_id, is_json)
 
-    old_surface = snapshot.get("cmux_surface")
+    old_surface = snapshot.get("c11_surface")
 
     event = create_event(
         type="surface_unbound",

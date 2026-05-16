@@ -22,7 +22,7 @@ Two modes selected by ``--mode {agent,merge-waiter}`` (default ``agent``).
 - Writes its own sentinel + err sidecar on exit.
 
 This wrapper is the single canonical invocation shape across backends so
-the cmux / terminal / headless paths differ only in *how* they launch it.
+the c11 / terminal / headless paths differ only in *how* they launch it.
 """
 
 from __future__ import annotations
@@ -82,7 +82,7 @@ def _run_agent_mode() -> int:
     out_path = Path(output_file)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    _maybe_set_cmux_metadata(label, status="running")
+    _maybe_set_c11_metadata(label, status="running")
 
     # Resolve the agent CLI command. Importing inside main keeps this
     # script importable even when lattice is partially built.
@@ -91,7 +91,7 @@ def _run_agent_mode() -> int:
     cmd = _agent_cli_command(agent_type, prompt_file, output_file)
     if cmd is None:
         _emit_failure(out_path, f"unknown agent type: {agent_type}", code=2)
-        _maybe_set_cmux_metadata(label, status="failed")
+        _maybe_set_c11_metadata(label, status="failed")
         return 2
 
     print(f"[agent_runner] type={agent_type} label={label} timeout={timeout_s}s")
@@ -100,11 +100,11 @@ def _run_agent_mode() -> int:
     env = os.environ.copy()
     env.pop("CLAUDECODE", None)
 
-    # Stream stdout/stderr live so the cmux/terminal pane hosting this
+    # Stream stdout/stderr live so the c11/terminal pane hosting this
     # wrapper shows output as the agent produces it, rather than dumping
     # a block after the subprocess exits. The old capture_output=True
     # path hid the agent entirely until completion, which nullified the
-    # visibility motivation of the cmux/terminal backends.
+    # visibility motivation of the c11/terminal backends.
     start = time.monotonic()
     try:
         proc = subprocess.Popen(
@@ -118,7 +118,7 @@ def _run_agent_mode() -> int:
         )
     except OSError as exc:
         _emit_failure(out_path, f"failed to spawn: {exc}", code=2)
-        _maybe_set_cmux_metadata(label, status="failed")
+        _maybe_set_c11_metadata(label, status="failed")
         return 2
 
     captured: list[str] = []
@@ -146,7 +146,7 @@ def _run_agent_mode() -> int:
             pass
         reader_t.join(timeout=1)
         _emit_failure(out_path, f"timed out after {timeout_s}s", code=124)
-        _maybe_set_cmux_metadata(label, status="failed")
+        _maybe_set_c11_metadata(label, status="failed")
         return 124
 
     # Drain any trailing buffered output before we print the finished marker.
@@ -159,7 +159,7 @@ def _run_agent_mode() -> int:
         combined = "".join(captured).strip().splitlines()
         first_line = combined[0] if combined else f"exit {rc}"
         _emit_failure(out_path, first_line, code=rc)
-        _maybe_set_cmux_metadata(label, status="failed")
+        _maybe_set_c11_metadata(label, status="failed")
         return rc
 
     # Make sure the output file has content. Fall back to captured stdout
@@ -170,11 +170,11 @@ def _run_agent_mode() -> int:
             out_path.write_text(captured_text + "\n", encoding="utf-8")
         else:
             _emit_failure(out_path, "no output produced", code=2)
-            _maybe_set_cmux_metadata(label, status="failed")
+            _maybe_set_c11_metadata(label, status="failed")
             return 2
 
     _write_sentinel(out_path)
-    _maybe_set_cmux_metadata(label, status="done")
+    _maybe_set_c11_metadata(label, status="done")
     return 0
 
 
@@ -203,7 +203,7 @@ def _run_merge_waiter_mode() -> int:
     out_path = Path(output_file)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    _maybe_set_cmux_metadata(label, status="waiting")
+    _maybe_set_c11_metadata(label, status="waiting")
 
     deadline = time.monotonic() + timeout_s
     pending = list(upstream_dirs)
@@ -222,7 +222,7 @@ def _run_merge_waiter_mode() -> int:
 
     if not landed:
         _emit_failure(out_path, "no upstream sentinels landed before timeout", code=124)
-        _maybe_set_cmux_metadata(label, status="failed")
+        _maybe_set_c11_metadata(label, status="failed")
         return 124
 
     if pending:
@@ -287,19 +287,19 @@ def _emit_failure(output_file: Path, message: str, *, code: int) -> None:
     sys.stderr.write(f"[agent_runner] FAILED ({code}): {message}\n")
 
 
-def _maybe_set_cmux_metadata(label: str, *, status: str) -> None:
-    """Best-effort surface metadata update — silent if cmux is unavailable.
+def _maybe_set_c11_metadata(label: str, *, status: str) -> None:
+    """Best-effort surface metadata update — silent if c11 is unavailable.
 
-    Called from inside cmux panes so the sidebar reflects per-pane state.
+    Called from inside c11 panes so the sidebar reflects per-pane state.
     """
-    if not os.environ.get("CMUX_WORKSPACE_ID"):
+    if not (os.environ.get("C11_WORKSPACE_ID") or os.environ.get("CMUX_WORKSPACE_ID")):
         return
-    surface = os.environ.get("CMUX_SURFACE_ID")
+    surface = os.environ.get("C11_SURFACE_ID") or os.environ.get("CMUX_SURFACE_ID")
     if not surface:
         return
     try:
         subprocess.run(
-            ["cmux", "set-metadata", "--surface", surface, "--key", "status", "--value", status],
+            ["c11", "set-metadata", "--surface", surface, "--key", "status", "--value", status],
             capture_output=True,
             timeout=2,
         )

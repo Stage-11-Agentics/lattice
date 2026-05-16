@@ -1,13 +1,13 @@
-"""Pinning tests for the cmux backend's ref parser.
+"""Pinning tests for the c11 backend's ref parser.
 
-The cmux CLI returns refs as "OK workspace:N" or "OK surface:N pane:M
+The c11 CLI returns refs as "OK workspace:N" or "OK surface:N pane:M
 workspace:K". The backend depends on stable parsing of those lines —
-exercises the parser directly without touching the cmux socket.
+exercises the parser directly without touching the c11 socket.
 """
 
 from __future__ import annotations
 
-from lattice.integrations.cmux import _parse_refs
+from lattice.integrations.c11 import _parse_refs
 
 
 class TestParseRefs:
@@ -23,8 +23,8 @@ class TestParseRefs:
         }
 
     def test_surface_first(self) -> None:
-        # `cmux list-pane-surfaces` returns "* surface:N  …  [selected]"
-        refs = _parse_refs("* surface:75  …/Stage11/code/cmux  [selected]")
+        # `c11 list-pane-surfaces` returns "* surface:N  …  [selected]"
+        refs = _parse_refs("* surface:75  …/Stage11/code/c11  [selected]")
         assert refs == {"surface": "surface:75"}
 
     def test_picks_first_per_kind(self) -> None:

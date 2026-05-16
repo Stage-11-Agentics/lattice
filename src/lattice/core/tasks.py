@@ -392,18 +392,18 @@ def _mut_comment_deleted(snap: dict, event: dict) -> None:
 @_register_mutation("surface_bound")
 def _mut_surface_bound(snap: dict, event: dict) -> None:
     data = event["data"]
-    snap["cmux_surface"] = data.get("surface")
+    snap["c11_surface"] = data.get("surface")
     workspace = data.get("workspace")
     if workspace is not None:
-        snap["cmux_workspace"] = workspace
+        snap["c11_workspace"] = workspace
     else:
-        snap.setdefault("cmux_workspace", None)
+        snap.setdefault("c11_workspace", None)
 
 
 @_register_mutation("surface_unbound")
 def _mut_surface_unbound(snap: dict, event: dict) -> None:
-    snap["cmux_surface"] = None
-    snap["cmux_workspace"] = None
+    snap["c11_surface"] = None
+    snap["c11_workspace"] = None
 
 
 def get_artifact_roles(snapshot: dict) -> dict[str, str | None]:

@@ -2,11 +2,11 @@
 
 Public contract: ``spawn_one`` and ``spawn_many`` accept ``SpawnRequest``
 records and return ``SpawnResult`` records, regardless of whether the agent
-ran via cmux panes, a Terminal window, or a headless ``subprocess.run``.
+ran via c11 panes, a Terminal window, or a headless ``subprocess.run``.
 
 Backend selection:
 - ``select_backend()`` inspects environment + platform and returns a
-  ``Backend`` instance from the chain ``cmux -> terminal -> headless``.
+  ``Backend`` instance from the chain ``c11 -> terminal -> headless``.
 - ``LATTICE_SPAWN_BACKEND`` / ``--backend`` force a specific backend; an
   explicit force does NOT fall through (raises ``BackendUnavailableError``).
 
@@ -125,7 +125,7 @@ def sentinel_path(output_file: Path) -> Path:
 # ---------------------------------------------------------------------------
 
 
-_VALID_BACKENDS = {"cmux", "terminal", "headless"}
+_VALID_BACKENDS = {"c11", "terminal", "headless"}
 
 
 def select_backend(
@@ -138,11 +138,11 @@ def select_backend(
 
     Selection chain:
     1. Forced/headless/CI/``LATTICE_SPAWN_BACKEND=headless`` -> ``HeadlessBackend``.
-    2. Forced ``cmux`` or auto-detected cmux -> ``CmuxBackend``.
+    2. Forced ``c11`` or auto-detected c11 -> ``C11Backend``.
     3. Forced ``terminal`` or auto-detected terminal -> ``TerminalBackend``.
     4. Otherwise -> ``HeadlessBackend``.
 
-    An explicit ``force`` (or ``LATTICE_SPAWN_BACKEND={cmux,terminal}``) raises
+    An explicit ``force`` (or ``LATTICE_SPAWN_BACKEND={c11,terminal}``) raises
     ``BackendUnavailableError`` rather than falling through, so operators
     detect misconfiguration instead of silently landing on a different backend.
     """
@@ -164,17 +164,17 @@ def select_backend(
             on_progress("backend_selected", f"headless ({reason})")
         return HeadlessBackend()
 
-    if effective_force == "cmux":
-        if not _cmux_available():
+    if effective_force == "c11":
+        if not _c11_available():
             raise BackendUnavailableError(
-                "LATTICE_SPAWN_BACKEND=cmux but cmux is not available "
-                "(no CMUX_SOCKET_PATH, missing cmux binary, or cmux identify failed)"
+                "LATTICE_SPAWN_BACKEND=c11 but c11 is not available "
+                "(no C11_SOCKET_PATH, missing c11 binary, or c11 identify failed)"
             )
-        from lattice.integrations.cmux import CmuxBackend
+        from lattice.integrations.c11 import C11Backend
 
         if on_progress:
-            on_progress("backend_selected", "cmux (forced)")
-        return CmuxBackend()
+            on_progress("backend_selected", "c11 (forced)")
+        return C11Backend()
 
     if effective_force == "terminal":
         if not _terminal_available():
@@ -187,13 +187,13 @@ def select_backend(
             on_progress("backend_selected", "terminal (forced)")
         return TerminalBackend()
 
-    # Auto-detect chain: cmux -> terminal -> headless.
-    if _cmux_available():
-        from lattice.integrations.cmux import CmuxBackend
+    # Auto-detect chain: c11 -> terminal -> headless.
+    if _c11_available():
+        from lattice.integrations.c11 import C11Backend
 
         if on_progress:
-            on_progress("backend_selected", "cmux (auto)")
-        return CmuxBackend()
+            on_progress("backend_selected", "c11 (auto)")
+        return C11Backend()
 
     if sys.stdout.isatty() and _terminal_available():
         from lattice.integrations.terminal import TerminalBackend
@@ -205,19 +205,24 @@ def select_backend(
     from lattice.storage.agent_spawn import HeadlessBackend
 
     if on_progress:
-        on_progress("backend_selected", "headless (auto, no cmux/terminal)")
+        on_progress("backend_selected", "headless (auto, no c11/terminal)")
     return HeadlessBackend()
 
 
-def _cmux_available() -> bool:
-    """Best-effort check that cmux is reachable in this environment."""
-    if not os.environ.get("CMUX_SOCKET_PATH"):
+def _c11_available() -> bool:
+    """Best-effort check that c11 is reachable in this environment.
+
+    Reads ``C11_SOCKET_PATH`` first, falling back to the legacy env var
+    set by the c11 binary for backward compatibility (see
+    ``lattice.cli.c11_bridge`` for the canonical compat-alias note).
+    """
+    if not (os.environ.get("C11_SOCKET_PATH") or os.environ.get("CMUX_SOCKET_PATH")):
         return False
-    if shutil.which("cmux") is None:
+    if shutil.which("c11") is None:
         return False
     try:
         result = subprocess.run(
-            ["cmux", "identify"],
+            ["c11", "identify"],
             capture_output=True,
             timeout=2,
         )
@@ -237,7 +242,7 @@ def _terminal_available() -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Polling helper used by detached backends (cmux / terminal)
+# Polling helper used by detached backends (c11 / terminal)
 # ---------------------------------------------------------------------------
 
 

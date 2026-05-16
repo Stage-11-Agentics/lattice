@@ -30,6 +30,9 @@ from lattice.core.agent_spawn import (
 def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Remove every env var the selector reads so tests start from a known floor."""
     for name in (
+        "C11_SOCKET_PATH",
+        "C11_WORKSPACE_ID",
+        "C11_SURFACE_ID",
         "CMUX_SOCKET_PATH",
         "CMUX_WORKSPACE_ID",
         "CMUX_SURFACE_ID",
@@ -102,7 +105,7 @@ class TestSelectBackend:
     def test_explicit_headless_kwarg_overrides_everything(
         self, clean_env: None, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("CMUX_SOCKET_PATH", "/tmp/cmux.sock")
+        monkeypatch.setenv("C11_SOCKET_PATH", "/tmp/c11.sock")
         backend = select_backend(headless=True)
         assert backend.name == "headless"
 
@@ -120,12 +123,12 @@ class TestSelectBackend:
         with pytest.raises(BackendUnavailableError):
             select_backend()
 
-    def test_force_cmux_unavailable_raises(
+    def test_force_c11_unavailable_raises(
         self, clean_env: None, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # CMUX_SOCKET_PATH unset → cmux unavailable → forced should raise.
+        # C11_SOCKET_PATH unset → c11 unavailable → forced should raise.
         with pytest.raises(BackendUnavailableError):
-            select_backend(force="cmux")
+            select_backend(force="c11")
 
     def test_force_terminal_unavailable_raises(
         self, clean_env: None, monkeypatch: pytest.MonkeyPatch
@@ -134,12 +137,12 @@ class TestSelectBackend:
         with pytest.raises(BackendUnavailableError):
             select_backend(force="terminal")
 
-    def test_no_tty_no_cmux_falls_back_to_headless(
+    def test_no_tty_no_c11_falls_back_to_headless(
         self,
         clean_env: None,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        # No CMUX_SOCKET_PATH, no TTY → headless.
+        # No C11_SOCKET_PATH, no TTY → headless.
         monkeypatch.setattr("sys.stdout.isatty", lambda: False)
         backend = select_backend()
         assert backend.name == "headless"

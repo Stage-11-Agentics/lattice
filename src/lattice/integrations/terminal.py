@@ -2,7 +2,7 @@
 
 Each agent runs in its own Terminal window (macOS) or terminal emulator
 window (Linux). The orchestrator polls per-agent ``.done`` sentinel files
-to learn when each one has finished — same contract as the cmux backend.
+to learn when each one has finished — same contract as the c11 backend.
 
 This backend is opt-in via ``select_backend`` auto-detection or
 ``LATTICE_SPAWN_BACKEND=terminal``. Driving Terminal.app via osascript

@@ -1,8 +1,8 @@
-"""cmux backend: spawn agents in a dedicated c11mux workspace.
+"""c11 backend: spawn agents in a dedicated c11 workspace.
 
 For each ``spawn_many`` call this backend:
 
-1. Creates a new workspace via ``cmux new-workspace`` and renames it to
+1. Creates a new workspace via ``c11 new-workspace`` and renames it to
    the workspace label (typically ``review:<short-id>``).
 2. Builds a 2x2 pane grid: top-left = first agent (default ``claude``),
    top-right = second (``codex``), bottom-left = third (``gemini``),
@@ -10,15 +10,16 @@ For each ``spawn_many`` call this backend:
    has three entries — the orchestrator drives the merge fan-in via the
    wrapper, not this backend).
 3. Renames each pane's tab to ``<workspace_label> :: <agent>`` per the
-   c11mux skill's lineage convention, sets a one-line description, and
+   c11 skill's lineage convention, sets a one-line description, and
    seeds surface metadata (``role``, ``task``, ``status``).
-4. Sends an ``agent_runner`` invocation to each pane via ``cmux send`` +
-   ``cmux send-key enter``.
+4. Sends an ``agent_runner`` invocation to each pane via ``c11 send`` +
+   ``c11 send-key enter``.
 5. Polls per-agent ``.done`` sentinel files to learn when each finishes —
    identical contract to the terminal/headless backends.
 
-Filename ``cmux.py`` matches the binary the module wraps; the product is
-``c11mux``.
+This module only ever invokes the ``c11`` binary; see
+``lattice.cli.c11_bridge`` for the canonical note on the OS-layer compat
+alias still set by the c11 binary for backward compatibility.
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ import time
 from collections.abc import Sequence
 from pathlib import Path
 
-from lattice.cli.cmux_bridge import _run_cmux as _bridge_run_cmux
+from lattice.cli.c11_bridge import _run_c11 as _bridge_run_c11
 from lattice.core.agent_spawn import (
     Backend,
     BackendUnavailableError,
@@ -48,10 +49,10 @@ logger = logging.getLogger(__name__)
 _REF_RE = re.compile(r"\b(workspace|pane|surface):(\d+)\b")
 
 
-class CmuxBackend(Backend):
-    """Spawn agents in a dedicated c11mux workspace + 2x2 pane grid."""
+class C11Backend(Backend):
+    """Spawn agents in a dedicated c11 workspace + 2x2 pane grid."""
 
-    name = "cmux"
+    name = "c11"
 
     def run(
         self,
@@ -66,7 +67,7 @@ class CmuxBackend(Backend):
         # 1. Create workspace.
         ws_ref = _new_workspace()
         if ws_ref is None:
-            raise BackendUnavailableError("cmux new-workspace failed")
+            raise BackendUnavailableError("c11 new-workspace failed")
         if on_progress:
             on_progress("workspace_created", f"{workspace_label} -> {ws_ref}")
 
@@ -81,7 +82,7 @@ class CmuxBackend(Backend):
             # caller's responsibility (BackendUnavailableError lets the
             # selector route to a different backend).
             raise BackendUnavailableError(
-                f"cmux backend created {len(slots)} panes but {len(requests)} requested"
+                f"c11 backend created {len(slots)} panes but {len(requests)} requested"
             )
 
         # 3. Wire each request to a slot, decorate the pane, send the runner.
@@ -135,7 +136,7 @@ def _build_pane_grid(ws_ref: str, *, slot_count: int) -> list[_Slot]:
     initial_surface = _initial_surface(ws_ref)
     if initial_surface is None:
         raise BackendUnavailableError(
-            "cmux backend: could not resolve initial pane/surface for new workspace"
+            "c11 backend: could not resolve initial pane/surface for new workspace"
         )
     slots.append(_Slot(pane_ref=None, surface_ref=initial_surface))
     if slot_count <= 1:
@@ -175,27 +176,27 @@ def _build_pane_grid(ws_ref: str, *, slot_count: int) -> list[_Slot]:
 
 
 # ---------------------------------------------------------------------------
-# cmux CLI helpers (parse refs out of `OK ...` output)
+# c11 CLI helpers (parse refs out of `OK ...` output)
 # ---------------------------------------------------------------------------
 
 
-def _cmux_capture(*args: str) -> str | None:
-    """Run cmux with ``args`` and return stdout text on success, else None."""
+def _c11_capture(*args: str) -> str | None:
+    """Run c11 with ``args`` and return stdout text on success, else None."""
     import subprocess
 
     try:
         result = subprocess.run(
-            ["cmux", *args],
+            ["c11", *args],
             capture_output=True,
             timeout=10,
             text=True,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        logger.warning("cmux capture failed: %s", exc)
+        logger.warning("c11 capture failed: %s", exc)
         return None
     if result.returncode != 0:
         logger.warning(
-            "cmux %s failed (exit %d): %s",
+            "c11 %s failed (exit %d): %s",
             " ".join(args),
             result.returncode,
             result.stderr.strip(),
@@ -205,7 +206,7 @@ def _cmux_capture(*args: str) -> str | None:
 
 
 def _parse_refs(text: str) -> dict[str, str]:
-    """Pull ``workspace:N`` / ``pane:N`` / ``surface:N`` refs from cmux output."""
+    """Pull ``workspace:N`` / ``pane:N`` / ``surface:N`` refs from c11 output."""
     refs: dict[str, str] = {}
     for kind, num in _REF_RE.findall(text or ""):
         refs.setdefault(kind, f"{kind}:{num}")
@@ -213,19 +214,19 @@ def _parse_refs(text: str) -> dict[str, str]:
 
 
 def _new_workspace() -> str | None:
-    out = _cmux_capture("new-workspace")
+    out = _c11_capture("new-workspace")
     if not out:
         return None
     return _parse_refs(out).get("workspace")
 
 
 def _rename_workspace(ws_ref: str, title: str) -> None:
-    _bridge_run_cmux("rename-workspace", "--workspace", ws_ref, title)
+    _bridge_run_c11("rename-workspace", "--workspace", ws_ref, title)
 
 
 def _set_workspace_metadata(ws_ref: str, label: str) -> None:
     """Best-effort workspace-level metadata."""
-    _bridge_run_cmux(
+    _bridge_run_c11(
         "set-workspace-metadata",
         "--workspace",
         ws_ref,
@@ -239,32 +240,32 @@ def _set_workspace_metadata(ws_ref: str, label: str) -> None:
 def _initial_surface(ws_ref: str) -> str | None:
     """Pull the surface ref of the workspace's initial (only) pane.
 
-    Primary path uses ``cmux list-pane-surfaces --workspace <ref>`` — the
-    dedicated command for enumerating surfaces. Verified against the c11mux
-    build shipping on 2026-04-19 (``cmux --help`` lists the command; manual
+    Primary path uses ``c11 list-pane-surfaces --workspace <ref>`` — the
+    dedicated command for enumerating surfaces. Verified against the c11
+    build shipping on 2026-04-19 (``c11 --help`` lists the command; manual
     validation during LAT-205 impl-cycle-1 confirmed it on workspace:14).
 
     If the primary command returns nothing (older builds or future CLI
-    churn), fall back to ``cmux tree --workspace <ref>``, whose text output
+    churn), fall back to ``c11 tree --workspace <ref>``, whose text output
     includes ``surface:<N>`` refs that the shared ``_parse_refs`` helper
     already pulls. The regex grabs the first surface it sees — fresh
     workspaces have exactly one pane with one surface, so this is
     deterministic for our use case.
     """
-    out = _cmux_capture("list-pane-surfaces", "--workspace", ws_ref)
+    out = _c11_capture("list-pane-surfaces", "--workspace", ws_ref)
     if out:
         surface = _parse_refs(out).get("surface")
         if surface:
             return surface
     # Fallback: tree output also contains surface refs.
-    tree_out = _cmux_capture("tree", "--workspace", ws_ref)
+    tree_out = _c11_capture("tree", "--workspace", ws_ref)
     if not tree_out:
         return None
     return _parse_refs(tree_out).get("surface")
 
 
 def _new_pane(ws_ref: str, *, direction: str) -> _Slot | None:
-    out = _cmux_capture(
+    out = _c11_capture(
         "new-pane",
         "--workspace",
         ws_ref,
@@ -281,24 +282,24 @@ def _new_pane(ws_ref: str, *, direction: str) -> _Slot | None:
 
 
 def _focus_pane(ws_ref: str, pane_ref: str) -> None:
-    _bridge_run_cmux("focus-pane", "--workspace", ws_ref, "--pane", pane_ref)
+    _bridge_run_c11("focus-pane", "--workspace", ws_ref, "--pane", pane_ref)
 
 
 def _focus_by_surface(ws_ref: str, surface_ref: str) -> None:
     """Best-effort surface focus — used when we never got a pane ref.
 
-    The cmux ``tab-action`` binary doesn't expose a ``focus`` action, so the
+    The c11 ``tab-action`` binary doesn't expose a ``focus`` action, so the
     fallback is the surface-focus subset that exists today: ``focus-pane`` is
     pane-scoped, but ``send-key`` against a surface raises focus side-effects
     in practice. If the caller has the pane ref, ``_focus_pane`` is preferred.
     """
-    # No safe surface-only focus command in current cmux CLI; the resolved
-    # cmux backend always passes pane refs, so this is a no-op fallback.
+    # No safe surface-only focus command in current c11 CLI; the resolved
+    # c11 backend always passes pane refs, so this is a no-op fallback.
     return
 
 
 def _rename_tab(ws_ref: str, surface_ref: str, title: str) -> None:
-    _bridge_run_cmux(
+    _bridge_run_c11(
         "rename-tab",
         "--workspace",
         ws_ref,
@@ -309,9 +310,9 @@ def _rename_tab(ws_ref: str, surface_ref: str, title: str) -> None:
 
 
 def _set_description(ws_ref: str, surface_ref: str, text: str) -> None:
-    # cmux only accepts --source values explicit|declare|osc|heuristic;
+    # c11 only accepts --source values explicit|declare|osc|heuristic;
     # `explicit` is the right choice for an external CLI driver.
-    _bridge_run_cmux(
+    _bridge_run_c11(
         "set-description",
         "--workspace",
         ws_ref,
@@ -335,7 +336,7 @@ def _set_metadata(
     import json as _json
 
     payload = _json.dumps({"role": role, "task": task, "status": status})
-    _bridge_run_cmux(
+    _bridge_run_c11(
         "set-metadata",
         "--workspace",
         ws_ref,
@@ -366,7 +367,7 @@ def _send_runner(
     cd = f"cd {shlex.quote(str(repo_root))}"
     line = f"{cd} && env {env_str} {python} -m lattice.agent_runner --mode agent"
 
-    _bridge_run_cmux(
+    _bridge_run_c11(
         "send",
         "--workspace",
         ws_ref,
@@ -374,8 +375,8 @@ def _send_runner(
         surface_ref,
         line,
     )
-    # Two-call send: cmux send adds the text, send-key enter submits it.
-    _bridge_run_cmux(
+    # Two-call send: c11 send adds the text, send-key enter submits it.
+    _bridge_run_c11(
         "send-key",
         "--workspace",
         ws_ref,

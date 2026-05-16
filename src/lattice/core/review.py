@@ -571,7 +571,7 @@ def spawn_agent(
     ``lattice.core.agent_spawn.spawn_one`` directly.
 
     Always uses the headless backend so existing call sites (which build
-    their own per-agent scratch dirs and don't expect a cmux/terminal pane)
+    their own per-agent scratch dirs and don't expect a c11/terminal pane)
     behave identically to the legacy implementation.
     """
     from lattice.storage.agent_spawn import HeadlessBackend

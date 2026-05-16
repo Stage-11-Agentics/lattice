@@ -1,14 +1,20 @@
-"""cmux integration bridge for Lattice.
+"""c11 integration bridge for Lattice.
 
-All cmux interaction lives here.  Every function is a no-op when not running
-inside cmux (detected via CMUX_WORKSPACE_ID env var).  All subprocess errors
-are logged as warnings — they never raise and never block Lattice operations.
+All c11 interaction lives here.  Every function is a no-op when not running
+inside c11 (detected via the C11_WORKSPACE_ID env var).  All subprocess
+errors are logged as warnings — they never raise and never block Lattice
+operations.
 
 Design principles:
-- Strictly optional: Lattice works identically without cmux.
-- Detection, not configuration: presence of CMUX_WORKSPACE_ID IS the config.
+- Strictly optional: Lattice works identically without c11.
+- Detection, not configuration: presence of C11_WORKSPACE_ID IS the config.
 - Graceful degradation: failures are warnings, not errors.
-- CLI layer only: core knows nothing about cmux.
+- CLI layer only: core knows nothing about c11.
+
+The c11 binary still accepts ``cmux`` as an OS-layer compat alias and sets
+both ``C11_*`` and ``CMUX_*`` env vars on every surface; this module is the
+single canonical place we acknowledge that fact, by reading both names with
+``C11_*`` taking precedence.
 """
 
 from __future__ import annotations
@@ -51,37 +57,37 @@ STATUS_LABELS: dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 
-def cmux_available() -> bool:
-    """Return True if we are running inside cmux."""
-    return bool(os.environ.get("CMUX_WORKSPACE_ID"))
+def c11_available() -> bool:
+    """Return True if we are running inside c11."""
+    return bool(os.environ.get("C11_WORKSPACE_ID") or os.environ.get("CMUX_WORKSPACE_ID"))
 
 
 def get_workspace() -> str | None:
-    """Return the current cmux workspace ref from the environment."""
-    return os.environ.get("CMUX_WORKSPACE_ID")
+    """Return the current c11 workspace ref from the environment."""
+    return os.environ.get("C11_WORKSPACE_ID") or os.environ.get("CMUX_WORKSPACE_ID")
 
 
 def get_surface() -> str | None:
-    """Return the current cmux surface ref from the environment."""
-    return os.environ.get("CMUX_SURFACE_ID")
+    """Return the current c11 surface ref from the environment."""
+    return os.environ.get("C11_SURFACE_ID") or os.environ.get("CMUX_SURFACE_ID")
 
 
 # ---------------------------------------------------------------------------
-# Low-level cmux CLI wrappers
+# Low-level c11 CLI wrappers
 # ---------------------------------------------------------------------------
 
 
-def _run_cmux(*args: str) -> bool:
-    """Run a cmux CLI command.  Returns True on success, False on failure."""
+def _run_c11(*args: str) -> bool:
+    """Run a c11 CLI command.  Returns True on success, False on failure."""
     try:
         result = subprocess.run(
-            ["cmux", *args],
+            ["c11", *args],
             capture_output=True,
             timeout=10,
         )
         if result.returncode != 0:
             logger.warning(
-                "cmux command failed (exit %d): cmux %s\nstderr: %s",
+                "c11 command failed (exit %d): c11 %s\nstderr: %s",
                 result.returncode,
                 " ".join(args),
                 result.stderr.decode(errors="replace"),
@@ -89,65 +95,65 @@ def _run_cmux(*args: str) -> bool:
             return False
         return True
     except FileNotFoundError:
-        logger.warning("cmux binary not found — cmux integration unavailable")
+        logger.warning("c11 binary not found — c11 integration unavailable")
         return False
     except subprocess.TimeoutExpired:
-        logger.warning("cmux command timed out: cmux %s", " ".join(args))
+        logger.warning("c11 command timed out: c11 %s", " ".join(args))
         return False
     except Exception as exc:  # noqa: BLE001
-        logger.warning("cmux command error: %s", exc)
+        logger.warning("c11 command error: %s", exc)
         return False
 
 
 def rename_tab(surface: str, title: str) -> bool:
-    """Rename a cmux surface tab.  Returns True on success."""
-    if not cmux_available():
+    """Rename a c11 surface tab.  Returns True on success."""
+    if not c11_available():
         return False
     workspace = get_workspace()
     args = ["rename-tab", "--surface", surface, title]
     if workspace:
         args = ["rename-tab", "--workspace", workspace, "--surface", surface, title]
-    return _run_cmux(*args)
+    return _run_c11(*args)
 
 
 def set_status(key: str, value: str, icon: str | None = None, color: str | None = None) -> bool:
-    """Update a cmux sidebar status entry.  Returns True on success."""
-    if not cmux_available():
+    """Update a c11 sidebar status entry.  Returns True on success."""
+    if not c11_available():
         return False
     args = ["set-status", key, value]
     if icon:
         args += ["--icon", icon]
     if color:
         args += ["--color", color]
-    return _run_cmux(*args)
+    return _run_c11(*args)
 
 
 def clear_status(key: str) -> bool:
-    """Remove a cmux sidebar status entry.  Returns True on success."""
-    if not cmux_available():
+    """Remove a c11 sidebar status entry.  Returns True on success."""
+    if not c11_available():
         return False
-    return _run_cmux("clear-status", key)
+    return _run_c11("clear-status", key)
 
 
 def trigger_flash(surface: str) -> bool:
-    """Flash a cmux surface.  Returns True on success."""
-    if not cmux_available():
+    """Flash a c11 surface.  Returns True on success."""
+    if not c11_available():
         return False
     workspace = get_workspace()
     args = ["trigger-flash", "--surface", surface]
     if workspace:
         args = ["trigger-flash", "--workspace", workspace, "--surface", surface]
-    return _run_cmux(*args)
+    return _run_c11(*args)
 
 
 def notify(title: str, body: str | None = None) -> bool:
-    """Send a cmux notification.  Returns True on success."""
-    if not cmux_available():
+    """Send a c11 notification.  Returns True on success."""
+    if not c11_available():
         return False
     args = ["notify", "--title", title]
     if body:
         args += ["--body", body]
-    return _run_cmux(*args)
+    return _run_c11(*args)
 
 
 # ---------------------------------------------------------------------------
@@ -156,18 +162,18 @@ def notify(title: str, body: str | None = None) -> bool:
 
 
 def on_status_changed(snapshot: dict, old_status: str, new_status: str) -> None:
-    """React to a task status transition inside cmux.
+    """React to a task status transition inside c11.
 
-    Reads ``cmux_surface`` and ``cmux_workspace`` from the snapshot.
+    Reads ``c11_surface`` and ``c11_workspace`` from the snapshot.
     Does nothing if the task has no surface binding.
 
     Called from task_cmds.py after write_task_event succeeds.  Must
     never raise — all errors are logged as warnings.
     """
-    if not cmux_available():
+    if not c11_available():
         return
 
-    surface = snapshot.get("cmux_surface")
+    surface = snapshot.get("c11_surface")
     if not surface:
         return  # task not bound to any surface
 

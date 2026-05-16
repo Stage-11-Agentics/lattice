@@ -108,7 +108,7 @@ def test_stdout_streams_to_pane(tmp_path: Path) -> None:
 
     Pre-fix, ``_run_agent_mode`` used ``subprocess.run(..., capture_output=True)``
     which buffered the entire subprocess output until exit, then wrote it
-    AFTER the ``[agent_runner] finished`` marker. That silenced the cmux /
+    AFTER the ``[agent_runner] finished`` marker. That silenced the c11 /
     terminal pane for the whole run — the visibility win that motivated
     LAT-205 was nullified.
 

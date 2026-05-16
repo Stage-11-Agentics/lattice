@@ -139,7 +139,7 @@ def _claim_or_refuse(
 )
 @click.option(
     "--backend",
-    type=click.Choice(["cmux", "terminal", "headless"]),
+    type=click.Choice(["c11", "terminal", "headless"]),
     default=None,
     help="Force a specific spawn backend. Raises if unavailable instead of falling through.",
 )
@@ -304,7 +304,7 @@ def code_review(
 )
 @click.option(
     "--backend",
-    type=click.Choice(["cmux", "terminal", "headless"]),
+    type=click.Choice(["c11", "terminal", "headless"]),
     default=None,
     help="Force a specific spawn backend. Raises if unavailable instead of falling through.",
 )

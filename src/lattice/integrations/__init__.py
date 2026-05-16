@@ -5,10 +5,10 @@ that drives an agent runner via something other than ``subprocess.run``:
 
 - ``terminal`` opens macOS Terminal.app / iTerm2 windows or
   ``gnome-terminal`` / ``xterm`` on Linux.
-- ``cmux`` opens a dedicated workspace and 2x2 pane grid inside the c11mux
+- ``c11`` opens a dedicated workspace and 2x2 pane grid inside the c11
   multiplexer.
 
 Backends are loaded lazily by ``lattice.core.agent_spawn.select_backend``
-so that the absence of cmux or a usable terminal launcher never breaks
+so that the absence of c11 or a usable terminal launcher never breaks
 import time.
 """
