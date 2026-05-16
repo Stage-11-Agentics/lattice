@@ -45,15 +45,35 @@ def _build_actor_dict(session_data: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def require_root(is_json: bool = False) -> Path:
-    """Find .lattice/ directory or exit with error."""
+def require_root(is_json: bool = False, *, prefer_worktree: bool = False) -> Path:
+    """Find .lattice/ directory or exit with error.
+
+    When *prefer_worktree* is True, prefer a worktree-local ``.lattice/`` if
+    one exists, falling back to the primary repo's ``.lattice/`` otherwise.
+    Used by ``branch-link``, ``branch-unlink``, and ``code-review`` so their
+    artifacts ride the feature branch in projects where ``.lattice/`` is
+    tracked.
+    """
+    from lattice.storage.fs import _detect_worktree
+
     try:
-        root = find_root()
+        root = find_root(prefer_worktree=prefer_worktree)
     except LatticeRootError as e:
         output_error(str(e), "NOT_INITIALIZED", is_json)
     if root is None:
+        # Enrich the error message when standing in a worktree without a
+        # primary .lattice/ — point the user at the primary path.
+        primary, worktree = _detect_worktree(Path.cwd().resolve())
+        if worktree is not None and primary is not None:
+            output_error(
+                f"Not a Lattice project. Detected a git worktree at {worktree}; "
+                f"parent repo's {LATTICE_DIR}/ not found at {primary} (or any of its parents). "
+                f"Run 'lattice init' from {primary} first.",
+                "NOT_INITIALIZED",
+                is_json,
+            )
         output_error(
-            "Not a Lattice project (no .lattice/ found). Run 'lattice init' first.",
+            f"Not a Lattice project (no {LATTICE_DIR}/ found). Run 'lattice init' first.",
             "NOT_INITIALIZED",
             is_json,
         )

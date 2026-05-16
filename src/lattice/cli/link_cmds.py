@@ -281,7 +281,10 @@ def branch_link(
     if repo is not None and not repo.strip():
         repo = None
 
-    lattice_dir = require_root(is_json)
+    # branch-link is one of the worktree-exception commands: its event must
+    # land on the same branch as the work, so prefer a worktree-local .lattice/
+    # when one exists. Falls back to the primary's .lattice/ otherwise.
+    lattice_dir = require_root(is_json, prefer_worktree=True)
     config = load_project_config(lattice_dir)
     actor = require_actor(is_json)
     if on_behalf_of is not None:
@@ -379,7 +382,9 @@ def branch_unlink(
     if repo is not None and not repo.strip():
         repo = None
 
-    lattice_dir = require_root(is_json)
+    # branch-unlink mirrors branch-link: must land on the same .lattice/ as
+    # the link it removes. Prefer worktree-local; fall back to primary.
+    lattice_dir = require_root(is_json, prefer_worktree=True)
     config = load_project_config(lattice_dir)
     actor = require_actor(is_json)
     if on_behalf_of is not None:
