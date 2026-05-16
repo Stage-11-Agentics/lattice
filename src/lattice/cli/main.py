@@ -14,7 +14,7 @@ from lattice.core.config import (
     validate_subproject_code,
 )
 from lattice.core.ids import generate_instance_id, generate_task_id, validate_actor
-from lattice.storage.fs import LATTICE_DIR, atomic_write, ensure_lattice_dirs
+from lattice.storage.fs import LATTICE_DIR, _detect_worktree, atomic_write, ensure_lattice_dirs
 from lattice.storage.short_ids import _default_index, allocate_short_id, save_id_index
 
 
@@ -458,9 +458,8 @@ def init(
 
     # Layer F: refuse to create a divergent .lattice/ when standing in a
     # linked git worktree whose primary repo already has one.
-    from lattice.storage.fs import _detect_worktree
-
-    primary, worktree = _detect_worktree(root.resolve())
+    # (Click's resolve_path=True on --path means root is already absolute.)
+    primary, worktree = _detect_worktree(root)
     if worktree is not None and primary is not None:
         primary_lattice = primary / LATTICE_DIR
         if primary_lattice.is_dir() and not force_init:

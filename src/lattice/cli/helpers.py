@@ -9,7 +9,7 @@ from typing import NoReturn
 import click
 
 from lattice.core.ids import is_short_id, validate_actor, validate_id
-from lattice.storage.fs import LATTICE_DIR, LatticeRootError, find_root
+from lattice.storage.fs import LATTICE_DIR, LatticeRootError, _detect_worktree, find_root
 from lattice.storage.operations import write_task_event  # noqa: F401 — re-exported
 from lattice.storage.short_ids import resolve_short_id as _resolve_short
 
@@ -54,8 +54,6 @@ def require_root(is_json: bool = False, *, prefer_worktree: bool = False) -> Pat
     artifacts ride the feature branch in projects where ``.lattice/`` is
     tracked.
     """
-    from lattice.storage.fs import _detect_worktree
-
     try:
         root = find_root(prefer_worktree=prefer_worktree)
     except LatticeRootError as e:
