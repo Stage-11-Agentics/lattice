@@ -307,3 +307,51 @@ class TestConfigTimeout:
 
     def test_default_agent_timeout_constant(self) -> None:
         assert DEFAULT_AGENT_TIMEOUT == 600
+
+
+# ---------------------------------------------------------------------------
+# Single-mode reviews must always be headless (LAT-218)
+# ---------------------------------------------------------------------------
+
+
+class TestSingleReviewBackend:
+    def test_single_review_is_always_headless(
+        self, lattice_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``run_single_review`` always passes a ``HeadlessBackend`` to ``spawn_one``.
+
+        Pre-LAT-218 the call site honored ``headless`` / ``backend_force``
+        params and could route to the c11 or terminal backend. Post-LAT-218
+        the params are gone and every call to ``run_single_review`` is
+        guaranteed headless — no surface, no window.
+        """
+        from lattice.core import review as review_mod
+        from lattice.core.agent_spawn import SpawnResult
+        from lattice.storage.agent_spawn import HeadlessBackend
+
+        captured: dict = {}
+
+        def _fake_spawn_one(request, **kwargs):
+            captured["kwargs"] = kwargs
+            return SpawnResult(
+                agent=request.agent,
+                success=True,
+                output_text="ok",
+                error="",
+                backend="headless",
+                duration_seconds=0.0,
+            )
+
+        monkeypatch.setattr(review_mod, "spawn_one", _fake_spawn_one)
+
+        success, _msg, _text = review_mod.run_single_review(
+            lattice_dir=lattice_dir,
+            task_id="t1",
+            review_type="code-review",
+            prompt_content="noop",
+            actor="agent:test",
+            timeout=5,
+        )
+
+        assert success is True
+        assert isinstance(captured["kwargs"].get("backend"), HeadlessBackend)

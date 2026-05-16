@@ -617,17 +617,16 @@ def run_single_review(
     prompt_content: str,
     actor: str | dict,
     timeout: int = DEFAULT_AGENT_TIMEOUT,
-    *,
-    headless: bool = False,
-    backend_force: str | None = None,
 ) -> tuple[bool, str, str | None]:
     """Run a single-agent review via ``agent_spawn.spawn_one``.
 
-    Returns ``(success, message, output_text_or_None)`` — unchanged from the
-    pre-LAT-205 contract. ``headless`` / ``backend_force`` are pass-through
-    overrides for the new spawn primitive; defaults preserve today's auto
-    selection behavior.
+    Always headless: single-mode reviews never claim a c11 surface or a
+    terminal window. The agent runs in a ``subprocess.run`` and the CLI
+    blocks until it finishes. Returns ``(success, message,
+    output_text_or_None)``.
     """
+    from lattice.storage.agent_spawn import HeadlessBackend
+
     started_at = _now_iso()
     # Preserve fields written by an earlier ``claim_review_state`` call (e.g.
     # by the CLI body — see module docstring). If no record exists or the
@@ -664,8 +663,7 @@ def run_single_review(
         result = spawn_one(
             request,
             workspace_label=f"{review_type}-{task_id}",
-            force=backend_force,
-            headless=headless,
+            backend=HeadlessBackend(),
         )
 
         finished_at = _now_iso()
@@ -692,15 +690,10 @@ def run_triple_review(
     prompt_content: str,
     actor: str | dict,
     timeout: int = DEFAULT_AGENT_TIMEOUT,
-    *,
-    headless: bool = False,
-    backend_force: str | None = None,
 ) -> tuple[bool, str, list[tuple[str, bool, str]]]:
     """Run a triple-agent review (Claude, Codex, Gemini) in parallel via ``spawn_many``.
 
-    Returns ``(overall_success, message, [(agent_name, success, text), ...])``
-    — unchanged from the pre-LAT-205 contract. ``headless`` / ``backend_force``
-    are pass-through overrides for the new spawn primitive.
+    Returns ``(overall_success, message, [(agent_name, success, text), ...])``.
     """
     agents = ["claude", "codex", "gemini"]
     overall_started = _now_iso()
@@ -741,8 +734,6 @@ def run_triple_review(
         spawn_results = spawn_many(
             requests,
             workspace_label=f"{review_type}-{task_id}",
-            force=backend_force,
-            headless=headless,
         )
 
         # Preserve legacy result ordering (claude, codex, gemini).
@@ -819,14 +810,10 @@ def run_merge_agent(
     task_id: str,
     reviews: list[tuple[str, bool, str]],
     review_type: str,
-    *,
-    headless: bool = False,
-    backend_force: str | None = None,
 ) -> tuple[bool, str]:
     """Run the Claude Opus merge agent via ``agent_spawn.spawn_one``.
 
-    Returns ``(success, merged_text_or_error)`` — unchanged contract.
-    ``headless`` / ``backend_force`` pass through to the spawn primitive.
+    Returns ``(success, merged_text_or_error)``.
     """
     prompt = build_merge_prompt(task_id, reviews, review_type)
 
@@ -850,8 +837,6 @@ def run_merge_agent(
         result = spawn_one(
             request,
             workspace_label=f"merge-{task_id}",
-            force=backend_force,
-            headless=headless,
         )
         if result.success:
             return True, result.output_text
