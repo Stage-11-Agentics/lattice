@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from lattice.storage.fs import LATTICE_DIR, LatticeRootError, find_root
+from lattice.storage.fs import LATTICE_DIR, LatticeRootError, _detect_worktree, find_root
 
 
 class TestFindRootWalkUp:
@@ -190,3 +190,187 @@ class TestFindRootWorktreeTransparent:
 
         result = find_root(start=worktree)
         assert result == worktree
+
+
+class TestFindRootPreferWorktree:
+    """find_root(prefer_worktree=True) prefers the worktree-local .lattice/
+    when one exists, and falls back to the primary's .lattice/ otherwise.
+    Used by branch-link, branch-unlink, code-review.
+    """
+
+    @staticmethod
+    def _build_primary(tmp_path: Path) -> Path:
+        primary = tmp_path / "primary"
+        primary.mkdir()
+        (primary / ".git").mkdir()
+        return primary
+
+    @staticmethod
+    def _build_linked_worktree(primary: Path, name: str, location: Path) -> Path:
+        worktree_meta = primary / ".git" / "worktrees" / name
+        worktree_meta.mkdir(parents=True)
+        location.mkdir(parents=True, exist_ok=True)
+        (location / ".git").write_text(f"gitdir: {worktree_meta}\n", encoding="utf-8")
+        return location
+
+    def test_prefers_worktree_lattice_when_present(self, tmp_path: Path) -> None:
+        """Tracked-.lattice/ project (e.g. c11): worktree has its own
+        .lattice/, prefer it over the primary's."""
+        primary = self._build_primary(tmp_path)
+        (primary / LATTICE_DIR).mkdir()
+
+        worktree = self._build_linked_worktree(primary, "wt1", tmp_path / "worktrees" / "wt1")
+        (worktree / LATTICE_DIR).mkdir()
+
+        result = find_root(start=worktree, prefer_worktree=True)
+        assert result == worktree
+
+    def test_falls_back_to_primary_when_worktree_has_no_lattice(self, tmp_path: Path) -> None:
+        """Gitignored-.lattice/ project (e.g. Lattice itself): worktree
+        starts empty, fall back to the primary's .lattice/."""
+        primary = self._build_primary(tmp_path)
+        (primary / LATTICE_DIR).mkdir()
+
+        worktree = self._build_linked_worktree(primary, "wt1", tmp_path / "worktrees" / "wt1")
+        # No .lattice/ in the worktree.
+
+        result = find_root(start=worktree, prefer_worktree=True)
+        assert result == primary
+
+    def test_falls_back_from_worktree_subdir(self, tmp_path: Path) -> None:
+        """Same as above, called from a nested subdir of the worktree."""
+        primary = self._build_primary(tmp_path)
+        (primary / LATTICE_DIR).mkdir()
+
+        worktree = self._build_linked_worktree(primary, "wt1", tmp_path / "worktrees" / "wt1")
+        deep = worktree / "src" / "deep"
+        deep.mkdir(parents=True)
+
+        result = find_root(start=deep, prefer_worktree=True)
+        assert result == primary
+
+    def test_worktree_subtree_search_does_not_escape_to_outer(self, tmp_path: Path) -> None:
+        """The prefer-worktree search is bounded to the worktree subtree.
+        A .lattice/ that lives *above* the worktree (in some unrelated outer
+        directory) must NOT be picked by the prefer step — that would route
+        writes into the wrong project. The fallback then takes over and
+        either finds the primary or returns None."""
+        outer = tmp_path / "outer"
+        outer.mkdir()
+        (outer / LATTICE_DIR).mkdir()  # decoy .lattice/ outside the worktree
+
+        primary = outer / "primary"
+        primary.mkdir()
+        (primary / ".git").mkdir()
+        # primary has NO .lattice/ of its own.
+
+        worktree = self._build_linked_worktree(primary, "wt1", tmp_path / "worktrees" / "wt1")
+        # worktree has NO .lattice/ of its own.
+
+        # The prefer step should not grab outer/.lattice/. The fallback
+        # walks up from primary; primary has no .lattice/, so it climbs to
+        # outer and finds the .lattice/ there — but that's the explicit
+        # auto-route behavior (LAT-216), not the prefer step.
+        result = find_root(start=worktree, prefer_worktree=True)
+        assert result == outer  # found via fallback auto-route, not prefer step
+
+    def test_env_var_still_wins(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """LATTICE_ROOT overrides everything, including prefer_worktree."""
+        primary = self._build_primary(tmp_path)
+        (primary / LATTICE_DIR).mkdir()
+
+        worktree = self._build_linked_worktree(primary, "wt1", tmp_path / "worktrees" / "wt1")
+        (worktree / LATTICE_DIR).mkdir()
+
+        env_target = tmp_path / "env_root"
+        env_target.mkdir()
+        (env_target / LATTICE_DIR).mkdir()
+        monkeypatch.setenv("LATTICE_ROOT", str(env_target))
+
+        result = find_root(start=worktree, prefer_worktree=True)
+        assert result == env_target
+
+    def test_non_worktree_unchanged(self, tmp_path: Path) -> None:
+        """When start isn't in a worktree, prefer_worktree=True is a no-op."""
+        (tmp_path / LATTICE_DIR).mkdir()
+        nested = tmp_path / "a" / "b"
+        nested.mkdir(parents=True)
+
+        result = find_root(start=nested, prefer_worktree=True)
+        assert result == tmp_path
+
+    def test_default_prefer_worktree_false_routes_to_primary(self, tmp_path: Path) -> None:
+        """Default prefer_worktree=False is the LAT-216 auto-route: even when
+        the worktree has its own (stale) .lattice/, jump to primary."""
+        primary = self._build_primary(tmp_path)
+        (primary / LATTICE_DIR).mkdir()
+
+        worktree = self._build_linked_worktree(primary, "wt1", tmp_path / "worktrees" / "wt1")
+        (worktree / LATTICE_DIR).mkdir()
+
+        result = find_root(start=worktree)  # default
+        assert result == primary
+
+        result_explicit = find_root(start=worktree, prefer_worktree=False)
+        assert result_explicit == primary
+
+
+class TestDetectWorktree:
+    """_detect_worktree(start) returns (primary, worktree) for linked worktrees,
+    (None, None) otherwise. Used by require_root for the sharpened error."""
+
+    @staticmethod
+    def _build_primary(tmp_path: Path) -> Path:
+        primary = tmp_path / "primary"
+        primary.mkdir()
+        (primary / ".git").mkdir()
+        return primary
+
+    @staticmethod
+    def _build_linked_worktree(primary: Path, name: str, location: Path) -> Path:
+        worktree_meta = primary / ".git" / "worktrees" / name
+        worktree_meta.mkdir(parents=True)
+        location.mkdir(parents=True, exist_ok=True)
+        (location / ".git").write_text(f"gitdir: {worktree_meta}\n", encoding="utf-8")
+        return location
+
+    def test_returns_both_paths_for_worktree(self, tmp_path: Path) -> None:
+        primary = self._build_primary(tmp_path)
+        worktree = self._build_linked_worktree(primary, "wt1", tmp_path / "worktrees" / "wt1")
+
+        result_primary, result_worktree = _detect_worktree(worktree)
+        assert result_primary == primary
+        assert result_worktree == worktree
+
+    def test_returns_both_paths_from_worktree_subdir(self, tmp_path: Path) -> None:
+        primary = self._build_primary(tmp_path)
+        worktree = self._build_linked_worktree(primary, "wt1", tmp_path / "worktrees" / "wt1")
+        sub = worktree / "src" / "deep"
+        sub.mkdir(parents=True)
+
+        result_primary, result_worktree = _detect_worktree(sub)
+        assert result_primary == primary
+        assert result_worktree == worktree
+
+    def test_returns_none_in_primary_worktree(self, tmp_path: Path) -> None:
+        primary = self._build_primary(tmp_path)
+        sub = primary / "src"
+        sub.mkdir()
+
+        result = _detect_worktree(sub)
+        assert result == (None, None)
+
+    def test_returns_none_outside_any_git_tree(self, tmp_path: Path) -> None:
+        nested = tmp_path / "a" / "b"
+        nested.mkdir(parents=True)
+
+        result = _detect_worktree(nested)
+        assert result == (None, None)
+
+    def test_returns_none_for_malformed_pointer(self, tmp_path: Path) -> None:
+        worktree = tmp_path / "worktrees" / "wt1"
+        worktree.mkdir(parents=True)
+        (worktree / ".git").write_text("garbage\n", encoding="utf-8")
+
+        result = _detect_worktree(worktree)
+        assert result == (None, None)
