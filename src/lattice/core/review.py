@@ -3,8 +3,15 @@
 The agent-spawning primitive lives in ``lattice.core.agent_spawn`` (with the
 ``HeadlessBackend`` in ``lattice.storage.agent_spawn`` and detached backends
 under ``lattice.integrations``). This module composes that primitive into
-the review-specific orchestration (single + triple + merge) and keeps the
-backward-compatible ``spawn_agent`` shim for any out-of-tree callers.
+the review-specific orchestration:
+
+- Single mode (``run_single_review``): one headless ``claude -p`` subprocess.
+- Triple mode (``run_triple_review``, LAT-218): one new c11 pane sibling to
+  the caller, running ``/trident-{code|plan}-review``. Fire-and-forget — the
+  pane owns trident, triage, and the task-status advance.
+
+The legacy ``spawn_agent`` shim is kept for any out-of-tree callers that
+still expect the pre-LAT-205 contract.
 """
 
 from __future__ import annotations
@@ -22,7 +29,6 @@ from typing import Any
 from lattice.core.agent_spawn import (
     SpawnRequest,
     SpawnResult,
-    spawn_many,
     spawn_one,
 )
 
@@ -683,166 +689,160 @@ def run_single_review(
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def build_trident_handoff_prompt(
+    task_short_id: str,
+    review_type: str,
+    *,
+    worktree: Path,
+    base_branch: str | None,
+) -> str:
+    """Build the prompt handed to the claude session running inside the c11 pane.
+
+    The pane's job: run ``/trident-{code|plan}-review``, read the resulting
+    artifact, triage findings, and advance the task. See the Review Verdict
+    Routing section in CLAUDE.md for the triage protocol.
+    """
+    review_short = "code" if review_type == "code-review" else "plan"
+    base_line = base_branch or "main"
+    return f"""# Triple {review_type} for {task_short_id}
+
+You're the agent running inside a c11 pane spawned by the LAT-218 review
+primitive. Your job: run the trident review, triage findings, advance the
+task. When you're done, exit cleanly.
+
+## Step 1 — Run trident
+
+Type at the claude prompt:
+
+    /trident-{review_short}-review {task_short_id}
+
+The trident skill will spawn several agents in parallel, merge their
+findings, and store an artifact attached to {task_short_id}. Wait for it
+to complete.
+
+## Step 2 — Read the result
+
+When trident reports done, find the merged artifact under
+`.lattice/artifacts/payload/<id>.md`. Read it — it gives a verdict (PASS,
+FAIL implementation-level, FAIL plan-level) and a list of findings.
+
+## Step 3 — Triage per Review Verdict Routing
+
+Per the Lattice skill section `## Review Verdict Routing`, every finding
+goes into one of three buckets:
+
+  - **Obvious** (missing AC, plan bugs, trivial fixes) → fix inline with
+    Edit/Write.
+  - **Evolutionary** (scope creep, "while we're at it") → skip with
+    `lattice comment {task_short_id} "Skipping [finding]: [reason]" \
+--actor agent:trident-pane-{task_short_id}`.
+  - **Complex** (real design questions) → move task to `needs_human` with
+    a comment.
+
+## Step 4 — Advance task
+
+| Outcome                            | Move task to                          |
+| ---------------------------------- | ------------------------------------- |
+| PASS, fixes done, PR exists        | pr_open                               |
+| PASS, no PR yet                    | open PR (`gh pr create`), then pr_open|
+| FAIL impl-level                    | in_progress (rework, then re-review)  |
+| FAIL plan-level                    | in_planning                           |
+| Complex finding(s)                 | needs_human                           |
+| 3-cycle safety valve tripped       | needs_human                           |
+
+Use `lattice status {task_short_id} <new_status> --actor agent:trident-pane-{task_short_id}`.
+
+## Identity
+
+- Actor: `agent:trident-pane-{task_short_id}`
+- Cwd: `{worktree}` (you share the delegator's worktree)
+- Base branch: `{base_line}`
+
+When you've advanced the task to its terminal state for this cycle, exit cleanly.
+"""
+
+
 def run_triple_review(
     lattice_dir: Path,
     task_id: str,
     review_type: str,
-    prompt_content: str,
     actor: str | dict,
-    timeout: int = DEFAULT_AGENT_TIMEOUT,
-) -> tuple[bool, str, list[tuple[str, bool, str]]]:
-    """Run a triple-agent review (Claude, Codex, Gemini) in parallel via ``spawn_many``.
+    *,
+    base: str | None = None,
+    short_id: str | None = None,
+    worktree: Path | None = None,
+) -> tuple[bool, str]:
+    """Spawn a c11 pane that runs /trident-{type}-review and applies fixes inline.
 
-    Returns ``(overall_success, message, [(agent_name, success, text), ...])``.
+    Fire-and-forget. The spawned pane owns the trident run, the artifact
+    storage, finding triage, and the task-status advance — this function
+    returns as soon as the pane is up.
+
+    Returns ``(True, message)`` after the pane has been spawned, or
+    ``(False, error_message)`` if anything prevented the spawn (most
+    commonly: not running inside c11).
     """
-    agents = ["claude", "codex", "gemini"]
-    overall_started = _now_iso()
+    from lattice.cli.c11_bridge import c11_available
+    from lattice.integrations.c11 import spawn_one_in_current_workspace
+
+    if not c11_available():
+        return (
+            False,
+            "triple mode requires c11 — run from inside a c11 surface, or use --mode single.",
+        )
+
+    display_id = short_id or task_id
+    wt = worktree if worktree is not None else lattice_dir.parent
+
+    prompt_text = build_trident_handoff_prompt(
+        display_id,
+        review_type,
+        worktree=wt,
+        base_branch=base,
+    )
+    tab_title = f"{display_id} :: trident {review_type}"
+    description = (
+        f"Trident {review_type} for {display_id}. The pane drives /trident-"
+        f"{'code' if review_type == 'code-review' else 'plan'}-review, triages findings, "
+        f"and advances task status. Sibling pane spawned by Lattice (LAT-218)."
+    )
+
+    ok, ref = spawn_one_in_current_workspace(
+        prompt_text,
+        tab_title=tab_title,
+        description=description,
+        cwd=wt,
+    )
+    if not ok:
+        return False, f"failed to spawn c11 pane: {ref}"
+
+    started_at = _now_iso()
     existing = read_review_state(lattice_dir, task_id) or {}
     state: dict[str, Any] = {
         "task_id": task_id,
-        "mode": "triple",
+        "mode": "triple_pane",
         "review_type": review_type,
-        "started_at": overall_started,
+        "started_at": started_at,
         "started_by_pid": existing.get("started_by_pid", os.getpid()),
         "auto_fired": existing.get("auto_fired", False),
+        "pane_ref": ref,
         "agents": [
-            {"name": a, "status": "running", "started_at": overall_started, "artifact_id": None}
-            for a in agents
+            {
+                "name": "trident-pane",
+                "status": "running",
+                "started_at": started_at,
+                "pane_ref": ref,
+            }
         ],
     }
     write_review_state(lattice_dir, state)
 
-    tmp = _make_prompt_dir(lattice_dir, prefix=f"{review_type}-")
-    try:
-        requests: list[SpawnRequest] = []
-        for agent in agents:
-            agent_dir = tmp / agent
-            agent_dir.mkdir()
-            prompt_file = agent_dir / "prompt.md"
-            output_file = agent_dir / "output.md"
-            prompt_file.write_text(prompt_content, encoding="utf-8")
-            requests.append(
-                SpawnRequest(
-                    agent=agent,
-                    prompt_file=prompt_file,
-                    output_file=output_file,
-                    label=f"{review_type} :: {agent}",
-                    timeout_seconds=timeout,
-                )
-            )
+    _ = _extract_actor_str(actor)  # touch for symmetry with single-mode
 
-        spawn_results = spawn_many(
-            requests,
-            workspace_label=f"{review_type}-{task_id}",
-        )
-
-        # Preserve legacy result ordering (claude, codex, gemini).
-        by_agent = {r.agent: r for r in spawn_results}
-        results: list[tuple[str, bool, str]] = []
-        finished_at = _now_iso()
-        for idx, agent in enumerate(agents):
-            r = by_agent.get(agent)
-            if r is None:
-                results.append((agent, False, "no result returned"))
-                state["agents"][idx]["status"] = "failed"
-            elif r.success:
-                results.append((agent, True, r.output_text))
-                state["agents"][idx]["status"] = "done"
-            else:
-                results.append((agent, False, r.error))
-                state["agents"][idx]["status"] = "failed"
-            state["agents"][idx]["finished_at"] = finished_at
-        write_review_state(lattice_dir, state)
-
-        actor_str = _extract_actor_str(actor)
-        for agent, success, _text in results:
-            if not success:
-                _handle_agent_failure(lattice_dir, agent, task_id, actor_str)
-
-        any_success = any(r[1] for r in results)
-        clear_review_state(lattice_dir, task_id)
-        return any_success, "Triple review complete.", results
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
-
-
-def build_merge_prompt(
-    task_id: str,
-    reviews: list[tuple[str, bool, str]],
-    review_type: str,
-) -> str:
-    """Build the merge prompt for the Opus consolidation agent."""
-    sections = []
-    for agent, success, text in reviews:
-        if success:
-            sections.append(f"## Review from {agent}\n\n{text}")
-        else:
-            sections.append(f"## Review from {agent}\n\n*(failed or timed out)*")
-
-    reviews_text = "\n\n---\n\n".join(sections)
-
-    return f"""# Merge Review: {task_id}
-
-You are consolidating three independent code reviews into one authoritative summary.
-Your job is to synthesize the findings, surface the most important issues, and produce
-a clear verdict. Do not simply concatenate — identify patterns, prioritize by severity,
-and resolve any contradictions between reviewers.
-
-## Individual Reviews
-
-{reviews_text}
-
-## Output Format
-
-Produce a merged review with these sections:
-1. **Verdict**: PASS / FAIL (implementation-level) / FAIL (plan-level)
-2. **Synthesis**: 3-5 sentences covering overall quality, patterns across reviews, key findings
-3. **Issues**: Consolidated list ordered by severity. For issues found by multiple reviewers, merge them.
-4. **Positive Observations**: What all or most reviewers praised.
-5. **Reviewer Agreement**: Brief note on where reviewers agreed and disagreed.
-
-Write the merged review to: {{output_path}}
-"""
-
-
-def run_merge_agent(
-    lattice_dir: Path,
-    task_id: str,
-    reviews: list[tuple[str, bool, str]],
-    review_type: str,
-) -> tuple[bool, str]:
-    """Run the Claude Opus merge agent via ``agent_spawn.spawn_one``.
-
-    Returns ``(success, merged_text_or_error)``.
-    """
-    prompt = build_merge_prompt(task_id, reviews, review_type)
-
-    tmp = _make_prompt_dir(lattice_dir, prefix="merge-")
-    try:
-        agent_dir = tmp / "merge"
-        agent_dir.mkdir()
-        prompt_file = agent_dir / "prompt.md"
-        output_file = agent_dir / "output.md"
-
-        filled = prompt.replace("{output_path}", str(output_file))
-        prompt_file.write_text(filled, encoding="utf-8")
-
-        request = SpawnRequest(
-            agent="claude",
-            prompt_file=prompt_file,
-            output_file=output_file,
-            label=f"{review_type} :: merge",
-            timeout_seconds=DEFAULT_AGENT_TIMEOUT,
-        )
-        result = spawn_one(
-            request,
-            workspace_label=f"merge-{task_id}",
-        )
-        if result.success:
-            return True, result.output_text
-        return False, _format_legacy_error("claude", result, DEFAULT_AGENT_TIMEOUT)
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+    return (
+        True,
+        f"Triple review running in {ref} — task status is the sync primitive.",
+    )
 
 
 # ---------------------------------------------------------------------------

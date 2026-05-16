@@ -396,64 +396,61 @@ class TestPlanReviewSingle:
 
 
 class TestCodeReviewTriple:
-    def test_triple_mode_stores_individual_and_merged(self, tmp_path):
+    def test_triple_mode_spawns_c11_pane_and_returns(self, tmp_path):
+        """Triple mode is fire-and-forget: ``run_triple_review`` is called once,
+        no artifacts are stored by the CLI (the pane owns them), and the CLI
+        exits 0 with a "running in pane:N" message."""
         root = _make_board(tmp_path, {"review_mode": "triple"})
         runner = CliRunner()
         task_id = _create_task(runner, root)
 
         fake_diff = "diff --git a/foo.py b/foo.py\n+print('hello')"
-        fake_reviews = [
-            ("claude", True, "PASS claude"),
-            ("codex", True, "PASS codex"),
-            ("gemini", False, "timeout"),
-        ]
-        fake_merged = "MERGED PASS"
 
         with (
             patch("lattice.cli.review_cmds.resolve_diff", return_value=(True, fake_diff)),
             patch(
                 "lattice.cli.review_cmds.run_triple_review",
-                return_value=(True, "done", fake_reviews),
-            ),
-            patch(
-                "lattice.cli.review_cmds.run_merge_agent",
-                return_value=(True, fake_merged),
-            ),
-            patch(
-                "lattice.cli.review_cmds._attach_review_artifact",
-                return_value="art_fake",
-            ) as mock_attach,
+                return_value=(
+                    True,
+                    "Triple review running in surface:99 — task status is the sync primitive.",
+                ),
+            ) as mock_run,
+            patch("lattice.cli.review_cmds._attach_review_artifact") as mock_attach,
         ):
-            runner.invoke(
+            result = runner.invoke(
                 cli,
                 ["code-review", task_id, "--mode", "triple", "--actor", "agent:test"],
                 env={"LATTICE_ROOT": str(root)},
                 catch_exceptions=False,
             )
 
-        # Two successful individual reviews + 1 merged
-        assert mock_attach.call_count == 3
-        roles_used = [call.kwargs.get("role") for call in mock_attach.call_args_list]
-        assert roles_used.count("review-individual") == 2
-        assert roles_used.count("review") == 1
+        assert result.exit_code == 0, result.output
+        assert "running in surface:99" in result.output
+        # CLI no longer stores artifacts in triple mode — the pane does.
+        assert mock_attach.call_count == 0
+        # run_triple_review is the fire-and-forget primitive.
+        assert mock_run.call_count == 1
+        kwargs = mock_run.call_args.kwargs
+        assert kwargs["review_type"] == "code-review"
+        assert kwargs["task_id"] == task_id
 
-    def test_triple_mode_all_fail_reports_error(self, tmp_path):
+    def test_triple_mode_outside_c11_errors(self, tmp_path):
+        """Triple mode outside c11 must fail cleanly with a non-zero exit and
+        release the in-flight claim so retries aren't blocked."""
         root = _make_board(tmp_path, {"review_mode": "triple"})
         runner = CliRunner()
         task_id = _create_task(runner, root)
 
         fake_diff = "diff --git a/foo.py b/foo.py\n+print('hello')"
-        fake_reviews = [
-            ("claude", False, "timeout"),
-            ("codex", False, "timeout"),
-            ("gemini", False, "timeout"),
-        ]
 
         with (
             patch("lattice.cli.review_cmds.resolve_diff", return_value=(True, fake_diff)),
             patch(
                 "lattice.cli.review_cmds.run_triple_review",
-                return_value=(False, "done", fake_reviews),
+                return_value=(
+                    False,
+                    "triple mode requires c11 — run from inside a c11 surface, or use --mode single.",
+                ),
             ),
         ):
             result = runner.invoke(
@@ -462,7 +459,8 @@ class TestCodeReviewTriple:
                 env={"LATTICE_ROOT": str(root)},
                 catch_exceptions=False,
             )
-        assert "All agents failed" in result.output or result.exit_code != 0
+        assert result.exit_code != 0
+        assert "triple mode requires c11" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -749,22 +747,6 @@ class TestSpawnAgent:
                 success, msg = spawn_agent("claude", prompt, output)
 
         assert success is False
-
-
-class TestBuildMergePrompt:
-    def test_includes_all_agents(self):
-        from lattice.core.review import build_merge_prompt
-
-        reviews = [
-            ("claude", True, "PASS claude"),
-            ("codex", False, "timeout"),
-            ("gemini", True, "PASS gemini"),
-        ]
-        prompt = build_merge_prompt("LAT-190", reviews, "code-review")
-        assert "claude" in prompt
-        assert "gemini" in prompt
-        assert "failed or timed out" in prompt
-        assert "LAT-190" in prompt
 
 
 class TestDiffResolution:

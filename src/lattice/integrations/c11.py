@@ -30,7 +30,7 @@ import re
 import shlex
 import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from lattice.cli.c11_bridge import _run_c11 as _bridge_run_c11
@@ -176,6 +176,88 @@ def _build_pane_grid(ws_ref: str, *, slot_count: int) -> list[_Slot]:
 
 
 # ---------------------------------------------------------------------------
+# Single-pane primitive (used by triple-mode reviews — LAT-218)
+# ---------------------------------------------------------------------------
+
+
+def spawn_one_in_current_workspace(
+    prompt_text: str,
+    *,
+    tab_title: str,
+    description: str,
+    cwd: Path,
+    on_progress: Callable[[str, str], None] | None = None,
+) -> tuple[bool, str]:
+    """Split a new pane in the caller's c11 workspace and start an interactive claude.
+
+    Distinct from :class:`C11Backend` (which creates its own workspace + grid).
+    This primitive stays *inside* the caller's workspace: the new pane is a
+    sibling of whichever surface invoked Lattice, so the user sees the work
+    appear right next to them.
+
+    Returns ``(True, surface_ref)`` on success, ``(False, error_message)`` on
+    failure. The returned ``surface_ref`` is the ``surface:N`` the caller can
+    surface in a "running in pane:N" message.
+
+    Sequence:
+
+    1. Resolve current workspace from ``C11_WORKSPACE_ID`` (fallback
+       ``CMUX_WORKSPACE_ID``). If unset → return failure with a clear message.
+    2. ``c11 new-pane --workspace <ws> --direction right --title <tab_title>``
+       → parse the new surface ref out of the response.
+    3. ``c11 set-description`` to ``description``.
+    4. Write the prompt to a scratch file under ``<cwd>/.lattice/tmp-prompts/``.
+    5. ``c11 send`` the bootstrap command (``cd <cwd> && claude
+       --dangerously-skip-permissions "Read /path/to/prompt.md and follow the
+       instructions."``) followed by ``c11 send-key enter`` to submit it.
+    6. Return ``(True, surface_ref)``.
+    """
+    ws_ref = os.environ.get("C11_WORKSPACE_ID") or os.environ.get("CMUX_WORKSPACE_ID")
+    if not ws_ref:
+        return False, "not inside c11 — set C11_WORKSPACE_ID or run from a c11 surface"
+
+    pane = _new_pane(ws_ref, direction="right", title=tab_title)
+    if pane is None:
+        return False, "c11 new-pane failed — check `c11 new-pane --help` and the c11 daemon"
+    surface_ref = pane.surface_ref
+    if on_progress:
+        on_progress("pane_created", surface_ref)
+
+    _set_description(ws_ref, surface_ref, description)
+
+    prompt_dir = cwd / ".lattice" / "tmp-prompts" / f"trident-{surface_ref.replace(':', '-')}"
+    prompt_dir.mkdir(parents=True, exist_ok=True)
+    prompt_path = prompt_dir / "prompt.md"
+    prompt_path.write_text(prompt_text, encoding="utf-8")
+
+    cd_cmd = f"cd {shlex.quote(str(cwd))}"
+    instruction = f"Read {shlex.quote(str(prompt_path))} and follow the instructions."
+    claude_cmd = f'claude --dangerously-skip-permissions "{instruction}"'
+    line = f"{cd_cmd} && {claude_cmd}"
+
+    _bridge_run_c11(
+        "send",
+        "--workspace",
+        ws_ref,
+        "--surface",
+        surface_ref,
+        line,
+    )
+    _bridge_run_c11(
+        "send-key",
+        "--workspace",
+        ws_ref,
+        "--surface",
+        surface_ref,
+        "enter",
+    )
+    if on_progress:
+        on_progress("agent_started", surface_ref)
+
+    return True, surface_ref
+
+
+# ---------------------------------------------------------------------------
 # c11 CLI helpers (parse refs out of `OK ...` output)
 # ---------------------------------------------------------------------------
 
@@ -264,14 +346,11 @@ def _initial_surface(ws_ref: str) -> str | None:
     return _parse_refs(tree_out).get("surface")
 
 
-def _new_pane(ws_ref: str, *, direction: str) -> _Slot | None:
-    out = _c11_capture(
-        "new-pane",
-        "--workspace",
-        ws_ref,
-        "--direction",
-        direction,
-    )
+def _new_pane(ws_ref: str, *, direction: str, title: str | None = None) -> _Slot | None:
+    args = ["new-pane", "--workspace", ws_ref, "--direction", direction]
+    if title is not None:
+        args.extend(["--title", title])
+    out = _c11_capture(*args)
     if not out:
         return None
     refs = _parse_refs(out)

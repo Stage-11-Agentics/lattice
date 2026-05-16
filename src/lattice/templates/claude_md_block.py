@@ -99,8 +99,8 @@ The mode controls *how* the review runs:
 
 | `plan_review_mode` value | What the planner does |
 |--------------------------|----------------------|
-| `single` (default) | Spawns one review agent |
-| `triple` | **Trident plan review** — spawns three agents (claude, codex, gemini) in parallel, merges their findings into one artifact |
+| `single` (default) | One headless `claude -p` subprocess runs the plan review. No c11 surface. |
+| `triple` | Splits one new pane in the caller's c11 workspace and runs `/trident-plan-review` there. The pane owns trident and the task advance. CLI returns immediately. Requires c11. |
 | `inline` | Reviews the plan in-session (use when codex/gemini aren't available, or for small/throwaway projects). Auto-fire is a no-op for inline. |
 
 When `plan_approval` is `human`, the CLI automatically moves the task to `needs_human` after `lattice plan-review` completes. Wait for human approval before proceeding to `in_progress`.
@@ -136,8 +136,8 @@ cat .lattice/config.json | python3 -c "import sys,json; d=json.load(sys.stdin); 
 | `review_mode` value | What the reviewer does |
 |---------------------|----------------------|
 | `inline` | Review the diff yourself in-session. Run `lattice code-review <task> --mode inline` to acknowledge. (Auto-fire is a no-op for inline.) |
-| `single` (default) | Auto-fire on `→ review` spawns one review agent + stores artifact. Manual fallback: `lattice code-review <task>`. |
-| `triple` | Auto-fire spawns three agents + merge, stores artifacts. Manual fallback: `lattice code-review <task>`. |
+| `single` (default) | One headless `claude -p` subprocess runs the review and stores the artifact. No c11 surface, no terminal window. Manual fallback: `lattice code-review <task>`. |
+| `triple` | Splits one new pane in the caller's c11 workspace and runs `/trident-code-review` there. The pane owns trident, finding triage, and the task-status advance. CLI returns immediately. Requires c11 — outside c11, the command exits non-zero with a clear error. Manual fallback: `lattice code-review <task> --mode triple`. |
 
 **Step 2: Perform the review.** The review sub-agent should:
 1. Read the plan file to understand what was supposed to be built.
@@ -208,8 +208,8 @@ Five settings in `.lattice/config.json` control review behavior:
 | `auto_plan_review_on_transition` | `true`, `false` | `true` | Auto-spawn `lattice plan-review` when a task transitions to `planned` |
 
 **`inline`** — review happens in the same agent session (no subprocess spawned).
-**`single`** — one review agent is spawned; result stored as a `review` or `plan-review` artifact.
-**`triple`** — three agents (claude, codex, gemini) run in parallel; individual results stored as `review-individual` artifacts; a merged result stored as `review` or `plan-review`.
+**`single`** — one headless review agent is spawned; result stored as a `review` or `plan-review` artifact. No c11 surface.
+**`triple`** — one new c11 pane sibling to the caller is spawned; the pane runs `/trident-{code|plan}-review`, which fans out to multiple agents, merges findings, stores the artifact, and advances the task. Requires c11 (the command errors cleanly otherwise).
 
 ### Auto-fire Conventions
 
