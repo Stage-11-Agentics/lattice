@@ -3805,19 +3805,20 @@ document.addEventListener("DOMContentLoaded", function() {
         settingsPanel.classList.remove("open");
         return;
       }
-      // Filter drawer: close if open (auto-saves on change, no edit guard needed)
-      var filterPanel = document.getElementById("filter-panel");
-      if (filterPanel && filterPanel.classList.contains("open")) {
-        closeFilterPanel();
-        return;
-      }
-      // Detail panel: close if open
+      // Detail panel (z-index 100) sits visually on top of the filter drawer
+      // (z-index 99), so Escape dismisses it first.
       if (_detailPanelTaskId) {
         var active = document.activeElement;
         var inPanel = document.getElementById("detail-panel");
         // Don't close if user is typing in an input/textarea inside the panel
         if (active && inPanel && inPanel.contains(active) && (active.tagName === "INPUT" || active.tagName === "TEXTAREA")) return;
         closeDetailPanel();
+        return;
+      }
+      // Filter drawer: close if open (auto-saves on change, no edit guard needed)
+      var filterPanel = document.getElementById("filter-panel");
+      if (filterPanel && filterPanel.classList.contains("open")) {
+        closeFilterPanel();
       }
     }
   });
@@ -4188,7 +4189,7 @@ function updateStaticVoiceStrings() {
   if (fgt) fgt.textContent = t("filter.group.filters");
   var fbtn = document.getElementById("filters-btn");
   if (fbtn) fbtn.title = t("filter.panel.title");
-  if (typeof updateFiltersBtnAffordance === "function") updateFiltersBtnAffordance();
+  updateFiltersBtnAffordance();
 }
 
 // --- Background image ---
@@ -6371,7 +6372,7 @@ async function renderStats() {
     app.querySelectorAll(".stats-tag-row").forEach(function(row) {
       row.addEventListener("click", function() {
         setTagFilter(row.getAttribute("data-tag"));
-        if (location.hash !== "#/board") location.hash = "#/board";
+        location.hash = "#/board";
       });
     });
   } catch(e) {
