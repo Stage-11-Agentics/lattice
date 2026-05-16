@@ -461,6 +461,11 @@ class TestCodeReviewTriple:
             )
         assert result.exit_code != 0
         assert "triple mode requires c11" in result.output
+        # Failed spawn must release the in-flight claim so retries aren't
+        # blocked by a phantom review_state record.
+        from lattice.core.review import read_review_state
+
+        assert read_review_state(root / LATTICE_DIR, task_id) is None
 
 
 # ---------------------------------------------------------------------------

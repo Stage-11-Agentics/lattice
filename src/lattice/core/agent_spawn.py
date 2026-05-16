@@ -210,13 +210,8 @@ def select_backend(
 
 
 def _c11_available() -> bool:
-    """Best-effort check that c11 is reachable in this environment.
-
-    Reads ``C11_SOCKET_PATH`` first, falling back to the legacy env var
-    set by the c11 binary for backward compatibility (see
-    ``lattice.cli.c11_bridge`` for the canonical compat-alias note).
-    """
-    if not (os.environ.get("C11_SOCKET_PATH") or os.environ.get("CMUX_SOCKET_PATH")):
+    """Best-effort check that c11 is reachable in this environment."""
+    if not os.environ.get("C11_SOCKET_PATH"):
         return False
     if shutil.which("c11") is None:
         return False

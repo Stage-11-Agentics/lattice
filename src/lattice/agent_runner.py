@@ -292,9 +292,9 @@ def _maybe_set_c11_metadata(label: str, *, status: str) -> None:
 
     Called from inside c11 panes so the sidebar reflects per-pane state.
     """
-    if not (os.environ.get("C11_WORKSPACE_ID") or os.environ.get("CMUX_WORKSPACE_ID")):
+    if not os.environ.get("C11_WORKSPACE_ID"):
         return
-    surface = os.environ.get("C11_SURFACE_ID") or os.environ.get("CMUX_SURFACE_ID")
+    surface = os.environ.get("C11_SURFACE_ID")
     if not surface:
         return
     try:

@@ -163,14 +163,10 @@ def code_review(
     if mode == "inline":
         existing = read_review_state(lattice_dir, task_id)
         if isinstance(existing, dict):
-            from lattice.core.review import _pid_alive
+            from lattice.core.review import pid_alive
 
             holder_pid = existing.get("started_by_pid")
-            if (
-                isinstance(holder_pid, int)
-                and holder_pid != os.getpid()
-                and _pid_alive(holder_pid)
-            ):
+            if isinstance(holder_pid, int) and holder_pid != os.getpid() and pid_alive(holder_pid):
                 output_error(
                     (
                         "A review is already in flight for this task "
@@ -314,14 +310,10 @@ def plan_review(
     if mode == "inline":
         existing = read_review_state(lattice_dir, task_id)
         if isinstance(existing, dict):
-            from lattice.core.review import _pid_alive
+            from lattice.core.review import pid_alive
 
             holder_pid = existing.get("started_by_pid")
-            if (
-                isinstance(holder_pid, int)
-                and holder_pid != os.getpid()
-                and _pid_alive(holder_pid)
-            ):
+            if isinstance(holder_pid, int) and holder_pid != os.getpid() and pid_alive(holder_pid):
                 output_error(
                     (
                         "A review is already in flight for this task "

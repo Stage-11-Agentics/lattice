@@ -13,7 +13,7 @@ from lattice.core.review import (
     DEFAULT_AGENT_TIMEOUT,
     FAILURE_THRESHOLD,
     _extract_actor_str,
-    _pid_alive,
+    pid_alive,
     claim_review_state,
     cleanup_temp_files,
     clear_review_state,
@@ -64,17 +64,17 @@ class TestReviewState:
 
 class TestPidAlive:
     def test_self_pid_is_alive(self) -> None:
-        assert _pid_alive(os.getpid()) is True
+        assert pid_alive(os.getpid()) is True
 
     def test_known_dead_pid_is_not_alive(self) -> None:
         # 2**31-1 is far above typical PID range; never live in practice.
-        assert _pid_alive(2**31 - 1) is False
+        assert pid_alive(2**31 - 1) is False
 
     def test_zero_pid_is_not_alive(self) -> None:
-        assert _pid_alive(0) is False
+        assert pid_alive(0) is False
 
     def test_negative_pid_is_not_alive(self) -> None:
-        assert _pid_alive(-1) is False
+        assert pid_alive(-1) is False
 
 
 # ---------------------------------------------------------------------------
@@ -416,8 +416,9 @@ class TestTripleReviewSpawn:
         # review_state marker landed.
         state = review_mod.read_review_state(lattice_dir, "task_01ABC")
         assert state is not None
-        assert state["mode"] == "triple_pane"
+        assert state["mode"] == "triple"
         assert state["pane_ref"] == "surface:42"
+        assert state["started_by_actor"] == "agent:test"
 
     def test_fire_and_forget_returns_quickly(
         self, lattice_dir: Path, monkeypatch: pytest.MonkeyPatch

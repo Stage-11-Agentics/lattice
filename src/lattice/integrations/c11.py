@@ -201,8 +201,8 @@ def spawn_one_in_current_workspace(
 
     Sequence:
 
-    1. Resolve current workspace from ``C11_WORKSPACE_ID`` (fallback
-       ``CMUX_WORKSPACE_ID``). If unset → return failure with a clear message.
+    1. Resolve current workspace from ``C11_WORKSPACE_ID``. If unset →
+       return failure with a clear message.
     2. ``c11 new-pane --workspace <ws> --direction right --title <tab_title>``
        → parse the new surface ref out of the response.
     3. ``c11 set-description`` to ``description``.
@@ -212,9 +212,9 @@ def spawn_one_in_current_workspace(
        instructions."``) followed by ``c11 send-key enter`` to submit it.
     6. Return ``(True, surface_ref)``.
     """
-    ws_ref = os.environ.get("C11_WORKSPACE_ID") or os.environ.get("CMUX_WORKSPACE_ID")
+    ws_ref = os.environ.get("C11_WORKSPACE_ID")
     if not ws_ref:
-        return False, "not inside c11 — set C11_WORKSPACE_ID or run from a c11 surface"
+        return False, "not inside c11 — run from a c11 surface (C11_WORKSPACE_ID unset)"
 
     pane = _new_pane(ws_ref, direction="right", title=tab_title)
     if pane is None:

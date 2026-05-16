@@ -11,10 +11,9 @@ Design principles:
 - Graceful degradation: failures are warnings, not errors.
 - CLI layer only: core knows nothing about c11.
 
-The c11 binary still accepts ``cmux`` as an OS-layer compat alias and sets
-both ``C11_*`` and ``CMUX_*`` env vars on every surface; this module is the
-single canonical place we acknowledge that fact, by reading both names with
-``C11_*`` taking precedence.
+The c11 binary still accepts ``cmux`` as an OS-layer compat alias, but it
+always sets ``C11_*`` env vars on every surface, so reading ``C11_*`` alone
+is sufficient — we never reach for the legacy ``CMUX_*`` names in our code.
 """
 
 from __future__ import annotations
@@ -59,17 +58,17 @@ STATUS_LABELS: dict[str, str] = {
 
 def c11_available() -> bool:
     """Return True if we are running inside c11."""
-    return bool(os.environ.get("C11_WORKSPACE_ID") or os.environ.get("CMUX_WORKSPACE_ID"))
+    return bool(os.environ.get("C11_WORKSPACE_ID"))
 
 
 def get_workspace() -> str | None:
     """Return the current c11 workspace ref from the environment."""
-    return os.environ.get("C11_WORKSPACE_ID") or os.environ.get("CMUX_WORKSPACE_ID")
+    return os.environ.get("C11_WORKSPACE_ID")
 
 
 def get_surface() -> str | None:
     """Return the current c11 surface ref from the environment."""
-    return os.environ.get("C11_SURFACE_ID") or os.environ.get("CMUX_SURFACE_ID")
+    return os.environ.get("C11_SURFACE_ID")
 
 
 # ---------------------------------------------------------------------------

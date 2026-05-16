@@ -161,7 +161,7 @@ def clear_review_state(lattice_dir: Path, task_id: str) -> None:
     path.unlink(missing_ok=True)
 
 
-def _pid_alive(pid: int) -> bool:
+def pid_alive(pid: int) -> bool:
     """Return True if ``pid`` refers to a live process on this machine.
 
     Uses ``os.kill(pid, 0)`` (signal 0) which performs the kernel's existence
@@ -211,7 +211,7 @@ def claim_review_state(
     existing = read_review_state(lattice_dir, task_id)
     if existing is not None:
         holder = existing.get("started_by_pid")
-        if isinstance(holder, int) and holder != started_by_pid and _pid_alive(holder):
+        if isinstance(holder, int) and holder != started_by_pid and pid_alive(holder):
             return False, existing
         # Otherwise: stale (no PID field, dead PID, or our own PID) — reclaim.
 
@@ -820,10 +820,11 @@ def run_triple_review(
     existing = read_review_state(lattice_dir, task_id) or {}
     state: dict[str, Any] = {
         "task_id": task_id,
-        "mode": "triple_pane",
+        "mode": "triple",
         "review_type": review_type,
         "started_at": started_at,
         "started_by_pid": existing.get("started_by_pid", os.getpid()),
+        "started_by_actor": _extract_actor_str(actor),
         "auto_fired": existing.get("auto_fired", False),
         "pane_ref": ref,
         "agents": [
@@ -836,8 +837,6 @@ def run_triple_review(
         ],
     }
     write_review_state(lattice_dir, state)
-
-    _ = _extract_actor_str(actor)  # touch for symmetry with single-mode
 
     return (
         True,
