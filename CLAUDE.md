@@ -222,14 +222,14 @@ Each sub-agent should use a distinct actor ID (e.g., `agent:claude-opus-4-planne
 
 **Prompt guidance for sub-agents building streaming/realtime features:** When writing implementation prompts for features involving event streams, fswatch, or background process coordination (e.g., `lattice watch`, `lattice wait`), explicitly tell the sub-agent to skip integration tests that require concurrent processes. Test parsing and filtering logic with unit tests. Trust the I/O core from existing proven commands. Agents will otherwise thrash on launching background processes, sleeping, and debugging timing issues in a single-agent sandbox — a known failure mode that wastes significant context.
 
-**Sub-agent polling cadence.** When waiting on a sub-agent you spawned in another tab/pane, schedule the next wake-up explicitly — don't rely on `ScheduleWakeup`'s default idle interval (1200s+, calibrated for operator-paced review/merge waits). Sub-agents are agent-paced and typically finish in 2–15 minutes; a 20-minute check-back leaves the operator staring at stale state.
+**Sub-agent polling cadence.** When waiting on a sub-agent you spawned in another tab/pane, schedule the next wake-up explicitly — don't rely on `ScheduleWakeup`'s default idle interval (1200s–1800s, calibrated for operator-paced review/merge waits). Sub-agents are agent-paced and typically finish in 2–15 minutes; a 20-minute check-back leaves the operator staring at stale state.
 
 | Role | `ScheduleWakeup` delay | Notes |
 |---|---|---|
 | Sub-agent / delegator | **180s** | Inside the 5-min prompt-cache window — cheap wake-ups, ≤3 min latency on completion |
 | Orchestrator | **270s** | Same cache window; orchestrator transitions are less frequent |
 
-**Don't pick 300s.** It's just past the 5-min cache TTL — pays the cache-miss without amortizing it into a long wait. Either stay ≤270s (cache-warm) or step up to ≥1200s (long-idle amortized).
+**Don't pick 300s.** It's just past the 5-min cache TTL — pays the cache-miss without amortizing it into a long wait. Either stay ≤270s (cache-warm) or step up to ≥1200s (one cache-miss amortized over a longer wait).
 
 **Pair short cadence with brief ticks.** Heartbeat ticks (no state change) get one sentence at most. State-change ticks (sub-agent finished, task transitioned, blocker hit) get as much detail as the situation demands. Short interval + silent-on-no-change keeps the transcript scannable while staying responsive to real events.
 
