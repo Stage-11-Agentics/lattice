@@ -1,8 +1,12 @@
 # Lattice runtime directory (prevent test artifacts in source repo)
 .lattice/
 
-# Claude Code runtime artifacts (locks, scheduled-task state, caches)
-.claude/
+# Claude Code runtime artifacts (locks, scheduled-task state, caches).
+# Pattern is `.claude/*` (single-level glob) rather than `.claude/` so that
+# negations below can re-include the tracked .claude/commands/ subtree —
+# git can't re-include from inside a fully-ignored directory.
+.claude/*
+!.claude/commands/
 
 # Python
 __pycache__/
