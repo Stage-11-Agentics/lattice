@@ -1,6 +1,9 @@
 # Lattice runtime directory (prevent test artifacts in source repo)
 .lattice/
 
+# Claude Code runtime artifacts (locks, scheduled-task state, caches)
+.claude/
+
 # Python
 __pycache__/
 *.py[cod]
