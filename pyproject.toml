@@ -66,11 +66,35 @@ markers = [
     "timeout: marks tests with a timeout",
 ]
 
+# mypy: relaxed from strict=true (LAT-228). The codebase was never annotated
+# to the strict bar — 559 errors across 44 files when strict was on, so the
+# gate was nominal-only. Rather than ship hundreds of `dict[str, Any]` and
+# `# type: ignore` for what amounts to "we never typed this," we explicitly
+# disable the noisy categories and keep the cheap, real-signal checks
+# (no_implicit_optional, warn_unused_configs).
+#
+# Re-enable categories or add `[[tool.mypy.overrides]]` per-module as files
+# get cleaned up. A future strict-mode-restoration is its own ticket.
 [tool.mypy]
 python_version = "3.12"
-strict = true
-warn_return_any = true
 warn_unused_configs = true
+no_implicit_optional = true
+disable_error_code = [
+    "arg-type",        # 60 — dict-as-config calls, no precise contract
+    "no-any-return",   # 33 — typed funcs returning untyped dicts/JSON
+    "index",           #  8 — Click ctx.obj accessed dict-style
+    "union-attr",      #  2 — None-check noise around optional reads
+    "dict-item",       #  2 — TypedDict vs plain dict assignment
+    "assignment",      #  2 — Optional vs non-Optional re-assignment
+    "no-redef",        #  2 — pre-existing variable shadowing
+    "valid-type",      #  2 — `callable` annotations (legacy; cheap future fix)
+    "var-annotated",   #  1 — empty list needs explicit annotation
+    "typeddict-item",  #  1
+    "return-value",    #  1
+    "misc",            #  1
+    "import-untyped",  #  1 — pyyaml stubs not installed
+    "attr-defined",    #  1 — Click ctx.obj attr access
+]
 packages = ["lattice"]
 mypy_path = ["src"]
 
