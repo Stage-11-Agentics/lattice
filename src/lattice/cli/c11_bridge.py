@@ -35,7 +35,7 @@ STATUS_VISUALS: dict[str, dict[str, str]] = {
     "in_progress": {"icon": "play.fill", "color": "#E67E22"},
     "review": {"icon": "eye.fill", "color": "#FFD700"},
     "in_validation": {"icon": "checkmark.shield.fill", "color": "#1ABC9C"},
-    "pr_open": {"icon": "arrow.triangle.pull", "color": "#3498DB"},
+    "pr_open": {"icon": "arrow.triangle.pull", "color": "#6C5CE7"},
     "done": {"icon": "checkmark.circle.fill", "color": "#2ECC71"},
     "blocked": {"icon": "exclamationmark.triangle.fill", "color": "#E74C3C"},
     # Retained for instances whose config still has the legacy status.
