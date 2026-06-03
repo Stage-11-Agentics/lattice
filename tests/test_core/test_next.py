@@ -159,6 +159,19 @@ class TestSelectNextExclusions:
         snaps = [_snap("task_ip", status="in_progress")]
         assert select_next(snaps) is None
 
+    def test_excludes_pr_open_even_in_custom_ready(self) -> None:
+        """pr_open waits on external review/merge — defensively excluded."""
+        snaps = [_snap("task_pr", status="pr_open")]
+        assert select_next(snaps, ready_statuses=frozenset({"pr_open"})) is None
+
+    def test_in_validation_eligible_with_custom_ready(self) -> None:
+        """in_validation is actionable agent work (run the e2e validation),
+        so unlike pr_open it is NOT in EXCLUDED_STATUSES (LAT-233)."""
+        snaps = [_snap("task_val", status="in_validation")]
+        result = select_next(snaps, ready_statuses=frozenset({"in_validation"}))
+        assert result is not None
+        assert result["id"] == "task_val"
+
 
 class TestSelectNextAssignment:
     """Assignment-based filtering."""

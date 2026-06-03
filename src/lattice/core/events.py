@@ -229,16 +229,17 @@ def get_actor_session(actor: str | dict) -> str | None:
 def count_review_rework_cycles(events: list[dict]) -> int:
     """Count the number of review-to-rework transitions in a task's event log.
 
-    Counts status_changed events where from in ("review", "pr_open") and
-    to in ("in_progress", "in_planning"). This is the number of times
-    a task has been sent back from local review or an open PR for rework.
+    Counts status_changed events where from in ("review", "in_validation",
+    "pr_open") and to in ("in_progress", "in_planning"). This is the number
+    of times a task has been sent back from local review, e2e validation,
+    or an open PR for rework.
     """
     count = 0
     for event in events:
         if event.get("type") != "status_changed":
             continue
         data = event.get("data", {})
-        if data.get("from") in ("review", "pr_open") and data.get("to") in (
+        if data.get("from") in ("review", "in_validation", "pr_open") and data.get("to") in (
             "in_progress",
             "in_planning",
         ):

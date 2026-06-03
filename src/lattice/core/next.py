@@ -10,6 +10,8 @@ URGENCY_ORDER = {"immediate": 0, "high": 1, "normal": 2, "low": 3}
 
 # Statuses that are NOT eligible for next (terminal, waiting, or active).
 # pr_open is waiting on external review/merge, so it is not pickable as next work.
+# in_validation is deliberately NOT excluded: like review, it is actionable
+# agent work (run the e2e validation), not a passive wait.
 EXCLUDED_STATUSES = frozenset({"blocked", "done", "cancelled", "pr_open"})
 
 # Statuses indicating work already in progress (for resume-first logic)

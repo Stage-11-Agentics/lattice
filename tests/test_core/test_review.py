@@ -454,9 +454,11 @@ class TestTripleReviewSpawn:
         )
         assert "/trident-plan-review LAT-42" in prompt
         assert "Review Verdict Routing" in prompt
-        # Routing table outcomes
-        for outcome in ("pr_open", "in_progress", "in_planning"):
+        # Routing table outcomes — PASS routes to in_validation (LAT-233);
+        # the PR opens only after validation evidence is recorded.
+        for outcome in ("in_validation", "in_progress", "in_planning"):
             assert outcome in prompt
-        # Complex findings route to the needs-human flag, not a status.
+        assert "| PASS, fixes done                   | in_validation" in prompt
+        # Complex findings route to the needs-human flag, not a status (LAT-232).
         assert "lattice needs-human LAT-42" in prompt
         assert "agent:trident-pane-LAT-42" in prompt

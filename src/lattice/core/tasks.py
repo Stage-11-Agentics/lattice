@@ -39,6 +39,7 @@ _DEFAULT_STATUS_ORDER: tuple[str, ...] = (
     "planned",
     "in_progress",
     "review",
+    "in_validation",
     "pr_open",
     "done",
     "blocked",

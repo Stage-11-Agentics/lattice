@@ -637,11 +637,11 @@ def compute_next_steps(
                 "pid": auto_review_result["pid"],
                 "mode": auto_review_result["mode"],
                 "log_path": auto_review_result["log_path"],
-                "then": "done",
+                "then": "in_validation",
             }
         hint = (
             f"Next: run 'lattice code-review {label}' "
-            f"(review_mode: {review_mode}) before opening the PR."
+            f"(review_mode: {review_mode}) before moving to in_validation."
         )
         if auto_review_result and not auto_review_result.get("fired"):
             hint += (
@@ -656,6 +656,22 @@ def compute_next_steps(
             "action": "code_review",
             "command": f"lattice code-review {label}",
             "review_mode": review_mode,
+            "then": "in_validation",
+        }
+
+    if new_status == "in_validation":
+        hint = (
+            "Next: validate end-to-end against a running system — browser "
+            "automation for web, simulator MCP for mobile, curl for APIs. "
+            "Exercise the actual flow this task touched, then record evidence: "
+            f"lattice attach {label} --role validation (or lattice comment "
+            f"{label} --role validation). On pass move to pr_open; on fail "
+            "route back to in_progress (impl-level) or in_planning (plan-level). "
+            "The bar: 'I saw it work,' not 'I think it should work.'"
+        )
+        return hint, {
+            "action": "validate_e2e",
+            "evidence": f"lattice attach {label} --role validation",
             "then": "pr_open",
         }
 
@@ -827,7 +843,7 @@ def status_cmd(
 
     # Review cycle limit: block rework transitions if cycle limit reached
     if (
-        current_status in ("review", "pr_open")
+        current_status in ("review", "in_validation", "pr_open")
         and new_status in ("in_progress", "in_planning")
         and not force
     ):

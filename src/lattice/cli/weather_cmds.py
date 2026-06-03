@@ -205,7 +205,7 @@ def _find_attention_needed(
             )
 
     # Unassigned in-progress tasks
-    in_progress_statuses = {"in_planning", "in_progress", "review"}
+    in_progress_statuses = {"in_planning", "in_progress", "review", "in_validation"}
     for snap in active:
         if snap.get("status") in in_progress_statuses and not snap.get("assigned_to"):
             items.append(
@@ -245,7 +245,7 @@ def _build_weather(lattice_dir: Path, config: dict) -> dict:
     recent_events = _load_recent_events(lattice_dir, hours=24.0)
 
     # In-progress count
-    in_progress_statuses = {"in_planning", "in_progress", "review"}
+    in_progress_statuses = {"in_planning", "in_progress", "review", "in_validation"}
     in_progress_count = sum(1 for snap in active if snap.get("status") in in_progress_statuses)
 
     # Recently completed

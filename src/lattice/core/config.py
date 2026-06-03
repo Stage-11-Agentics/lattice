@@ -10,6 +10,8 @@ from typing import Literal, TypedDict
 class WipLimits(TypedDict, total=False):
     in_progress: int
     review: int
+    in_validation: int
+    pr_open: int
 
 
 class CompletionPolicy(TypedDict, total=False):
@@ -92,6 +94,7 @@ WORKFLOW_PRESETS: dict[str, dict[str, str]] = {
             "planned": "ready to go",
             "in_progress": "on it",
             "review": "check my work",
+            "in_validation": "seeing it work",
             "pr_open": "PR up",
             "done": "shipped",
             "blocked": "stuck",
@@ -113,8 +116,16 @@ STATUS_DESCRIPTIONS: dict[str, str] = {
     "in_planning": "Design, dialogue, and scoping underway. No implementation code should be written yet.",
     "planned": "Plan is written and approved. Ready for implementation but work has not started.",
     "in_progress": "Implementation is actively underway. Code is being written, tested, or integrated.",
-    "review": "Local review is underway. A review sub-agent is examining the diff before a PR is opened.",
-    "pr_open": "PR is open and awaiting human review, CI, or merge. Local review artifact is recorded.",
+    "review": "Local review is underway. A review sub-agent is examining the diff before validation begins.",
+    "in_validation": (
+        "End-to-end validation is underway. The change is being exercised against a "
+        "running system — browser automation, simulator flows, curl — before the PR "
+        "opens. The bar: 'I saw it work,' not 'I think it should work.'"
+    ),
+    "pr_open": (
+        "PR is open and awaiting human review, CI, or merge. "
+        "Local review and validation artifacts are recorded."
+    ),
     "done": "Work is reviewed, merged, and shipped. No further action needed.",
     "blocked": "Work cannot proceed due to an external dependency or unresolved issue.",
     "cancelled": "Work has been abandoned. No further action will be taken.",
@@ -175,6 +186,7 @@ def default_config(preset: str = "classic") -> LatticeConfig:
             "planned",
             "in_progress",
             "review",
+            "in_validation",
             "pr_open",
             "done",
             "blocked",
@@ -186,10 +198,18 @@ def default_config(preset: str = "classic") -> LatticeConfig:
             "planned": ["in_progress", "review", "blocked", "cancelled"],
             "in_progress": ["review", "blocked", "cancelled"],
             "review": [
+                "in_validation",
                 "pr_open",
                 "done",
                 "in_progress",
                 "in_planning",
+                "cancelled",
+            ],
+            "in_validation": [
+                "pr_open",
+                "in_progress",
+                "in_planning",
+                "blocked",
                 "cancelled",
             ],
             "pr_open": [
@@ -200,18 +220,27 @@ def default_config(preset: str = "classic") -> LatticeConfig:
                 "cancelled",
             ],
             "done": [],
-            "blocked": ["in_planning", "planned", "in_progress", "pr_open", "cancelled"],
+            "blocked": [
+                "in_planning",
+                "planned",
+                "in_progress",
+                "in_validation",
+                "pr_open",
+                "cancelled",
+            ],
             "cancelled": [],
         },
         "universal_targets": ["cancelled"],
-        "roles": ["review", "plan-review", "review-individual"],
+        "roles": ["review", "plan-review", "review-individual", "validation"],
         "wip_limits": {
             "in_progress": 10,
             "review": 5,
+            "in_validation": 5,
             "pr_open": 10,
         },
         "completion_policies": {
             "done": {"require_roles": ["review"]},
+            "pr_open": {"require_roles": ["validation"]},
         },
     }
 

@@ -744,8 +744,9 @@ goes into one of three buckets:
 
 | Outcome                            | Move task to                          |
 | ---------------------------------- | ------------------------------------- |
-| PASS, fixes done, PR exists        | pr_open                               |
-| PASS, no PR yet                    | open PR (`gh pr create`), then pr_open|
+| PASS, fixes done                   | in_validation (run e2e validation,    |
+|                                    | record `--role validation` evidence,  |
+|                                    | then open the PR and move to pr_open) |
 | FAIL impl-level                    | in_progress (rework, then re-review)  |
 | FAIL plan-level                    | in_planning                           |
 | Complex finding(s)                 | keep status, set needs-human flag     |

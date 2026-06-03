@@ -651,7 +651,7 @@ class TestNextStepsHints:
         assert ns["action"] == "code_review"
         assert ns["review_mode"] == "single"
         assert "lattice code-review" in ns["command"]
-        assert ns["then"] == "pr_open"
+        assert ns["then"] == "in_validation"
 
     def test_in_progress_human_hint(self, invoke, initialized_root, fill_plan) -> None:
         r = invoke("create", "Impl hint", "--actor", _ACTOR, "--json")
@@ -741,3 +741,99 @@ class TestNextStepsHints:
         assert r.exit_code == 0
         data = json.loads(r.output)["data"]
         assert "next_steps" not in data
+
+
+# ---------------------------------------------------------------------------
+# Validation gate (LAT-233)
+# ---------------------------------------------------------------------------
+
+
+class TestValidationGate:
+    """in_validation swimlane: transitions, hints, evidence gating, rework."""
+
+    def _advance_to_review(self, invoke, fill_plan, title="Validation test") -> str:
+        r = invoke("create", title, "--actor", _ACTOR, "--json")
+        task_id = json.loads(r.output)["data"]["id"]
+        invoke("status", task_id, "in_planning", "--actor", _ACTOR)
+        fill_plan(task_id, title)
+        invoke("status", task_id, "planned", "--actor", _ACTOR)
+        invoke("status", task_id, "in_progress", "--actor", _ACTOR)
+        invoke("status", task_id, "review", "--actor", _ACTOR)
+        return task_id
+
+    def test_review_to_in_validation(self, invoke, initialized_root, fill_plan) -> None:
+        task_id = self._advance_to_review(invoke, fill_plan)
+        r = invoke("status", task_id, "in_validation", "--actor", _ACTOR, "--json")
+        assert r.exit_code == 0
+        assert json.loads(r.output)["ok"] is True
+
+    def test_in_validation_hint_carries_e2e_culture(
+        self, invoke, initialized_root, fill_plan
+    ) -> None:
+        task_id = self._advance_to_review(invoke, fill_plan)
+        r = invoke("status", task_id, "in_validation", "--actor", _ACTOR)
+        assert r.exit_code == 0
+        assert "I saw it work" in r.output
+        assert "--role validation" in r.output
+
+    def test_in_validation_json_next_steps(self, invoke, initialized_root, fill_plan) -> None:
+        task_id = self._advance_to_review(invoke, fill_plan)
+        r = invoke("status", task_id, "in_validation", "--actor", _ACTOR, "--json")
+        ns = json.loads(r.output)["data"]["next_steps"]
+        assert ns["action"] == "validate_e2e"
+        assert ns["then"] == "pr_open"
+        assert "--role validation" in ns["evidence"]
+
+    def test_pr_open_blocked_without_validation_evidence(
+        self, invoke, initialized_root, fill_plan
+    ) -> None:
+        task_id = self._advance_to_review(invoke, fill_plan)
+        invoke("status", task_id, "in_validation", "--actor", _ACTOR)
+        r = invoke("status", task_id, "pr_open", "--actor", _ACTOR, "--json")
+        assert r.exit_code != 0
+        parsed = json.loads(r.output)
+        assert parsed["ok"] is False
+        assert parsed["error"]["code"] == "COMPLETION_BLOCKED"
+        assert "validation" in parsed["error"]["message"]
+
+    def test_pr_open_passes_with_validation_evidence(
+        self, invoke, initialized_root, fill_plan
+    ) -> None:
+        task_id = self._advance_to_review(invoke, fill_plan)
+        invoke("status", task_id, "in_validation", "--actor", _ACTOR)
+        invoke(
+            "comment",
+            task_id,
+            "Validated: exercised the login flow in the browser, saw it work.",
+            "--role",
+            "validation",
+            "--actor",
+            _ACTOR,
+        )
+        r = invoke("status", task_id, "pr_open", "--actor", _ACTOR, "--json")
+        assert r.exit_code == 0
+        assert json.loads(r.output)["ok"] is True
+
+    def test_validation_failure_counts_toward_cycle_limit(
+        self, invoke, initialized_root, fill_plan
+    ) -> None:
+        """in_validation -> in_progress reworks trip the 3-cycle valve."""
+        task_id = self._advance_to_review(invoke, fill_plan)
+        for _ in range(3):
+            invoke("status", task_id, "in_validation", "--actor", _ACTOR)
+            r = invoke("status", task_id, "in_progress", "--actor", _ACTOR, "--json")
+            assert r.exit_code == 0, r.output
+            invoke("status", task_id, "review", "--actor", _ACTOR)
+        invoke("status", task_id, "in_validation", "--actor", _ACTOR)
+        r = invoke("status", task_id, "in_progress", "--actor", _ACTOR, "--json")
+        assert r.exit_code != 0
+        parsed = json.loads(r.output)
+        assert parsed["error"]["code"] == "REVIEW_CYCLE_LIMIT"
+
+    def test_in_validation_to_review_rejected(self, invoke, initialized_root, fill_plan) -> None:
+        """No backflow into review — rework re-enters via in_progress."""
+        task_id = self._advance_to_review(invoke, fill_plan)
+        invoke("status", task_id, "in_validation", "--actor", _ACTOR)
+        r = invoke("status", task_id, "review", "--actor", _ACTOR, "--json")
+        assert r.exit_code != 0
+        assert json.loads(r.output)["ok"] is False

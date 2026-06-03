@@ -45,7 +45,7 @@ lattice status <task> <status> --actor agent:<your-id>
 ```
 
 ```
-backlog → in_planning → planned → in_progress → review → done
+backlog → in_planning → planned → in_progress → review → in_validation → pr_open → done
                                        ↕
                                     blocked
 ```
@@ -57,7 +57,9 @@ Human attention is NOT a status: any task in any status can carry the orthogonal
 - `planned` — only after the plan file has real content.
 - `in_progress` — before you write the first line of code.
 - `review` — when implementation is complete, before review starts. Then actually review.
-- `done` — only after a review has been performed and recorded.
+- `in_validation` — after local review passes, before e2e validation starts. Then actually validate against a running system.
+- `pr_open` — when the PR is open. Requires recorded validation evidence (`--role validation`).
+- `done` — only after a review has been performed and recorded (and the PR merged, for PR work).
 - Spawning a sub-agent? Update status in the parent context first.
 
 ### Sub-Agent Execution Model
@@ -72,12 +74,14 @@ Each lifecycle stage gets its own sub-agent with fresh context. This is the defa
 |-------|---------------|-------|----------|
 | **Plan** | Explore codebase, write plan, move to `planned` | Task description | Plan file |
 | **Implement** | Read plan, build it, test, commit, move to `review` | Plan file | Committed code |
-| **Review** | Read diff cold, review against acceptance criteria, record findings | Git diff + plan | Review artifact (`--role review`), move to `done` |
+| **Review** | Read diff cold, review against acceptance criteria, record findings | Git diff + plan | Review artifact (`--role review`), move to `in_validation` on pass |
+| **Validate** | Exercise the change end-to-end against a running system | Running app + plan | Validation evidence (`--role validation`), move to `pr_open` on pass |
 
 **The parent orchestrator** (the main agent session) manages the lifecycle:
 1. Move the task to `in_planning` before spawning the planning sub-agent.
 2. After the planner finishes, move to `in_progress` and spawn the implementation sub-agent.
 3. After the implementer finishes, the review sub-agent runs independently.
+4. After review passes, move to `in_validation` and spawn the validation sub-agent to prove the change end-to-end before the PR opens.
 
 Each sub-agent should use a distinct actor ID (e.g., `agent:claude-opus-4-planner`, `agent:claude-opus-4-impl`, `agent:claude-opus-4-reviewer`) so the event log shows who did what.
 
@@ -181,7 +185,7 @@ Every finding must be explicitly routed. No finding may be silently dropped.
 
 When a review agent evaluates work, it produces one of three outcomes:
 
-1. **Pass (with optional minor fix):** The review agent uses vibes-based judgment. If the only issues are trivial (obvious typos, missing semicolons, etc.), fix them inline, record what was changed in the review comment, and move to `done`. No strict line-count threshold — the review agent decides.
+1. **Pass (with optional minor fix):** The review agent uses vibes-based judgment. If the only issues are trivial (obvious typos, missing semicolons, etc.), fix them inline, record what was changed in the review comment, and advance — `in_validation` on the PR path, `done` for non-PR work. No strict line-count threshold — the review agent decides.
 
 2. **Fail — implementation-level:** The plan was sound but the implementation has issues. The review agent explicitly states "implementation-level rework needed" in its comment. The orchestrator transitions the task `review -> in_progress`. Critical findings from the review are appended to the plan file under a new `## Review Cycle N Findings` section. A fresh sub-agent is encouraged (but not mandated) for the rework.
 
@@ -196,17 +200,31 @@ When a review agent evaluates work, it produces one of three outcomes:
 | Route to in_progress vs in_planning | Orchestrator | Follows review agent's recommendation |
 | Whether to spawn fresh sub-agent | Orchestrator | Encouraged by convention, not enforced |
 
-**3-cycle safety valve:** After 3 review-to-rework transitions (any combination of `review -> in_progress` and `review -> in_planning`), the CLI blocks the 4th attempt. The error message instructs the agent to set the `needs_human` flag with a reason explaining the situation. The limit is configurable via `review_cycle_limit` in the workflow config (default: 3). Override with `--force --reason` for genuinely exceptional cases.
+**3-cycle safety valve:** After 3 rework transitions (any combination of `review`/`in_validation`/`pr_open` -> `in_progress` or `in_planning`), the CLI blocks the 4th attempt. The error message instructs the agent to set the `needs_human` flag with a reason explaining the situation. The limit is configurable via `review_cycle_limit` in the workflow config (default: 3). Override with `--force --reason` for genuinely exceptional cases.
 
 **Allowed lifecycle paths:**
 
 ```
-Normal:       in_progress -> review -> done
-Minor fix:    in_progress -> review -> (fix inline) -> done
-1 impl rework: in_progress -> review -> in_progress -> review -> done
-1 plan rework: in_progress -> review -> in_planning -> planned -> in_progress -> review -> done
-Max cycles:   3 review->rework transitions, then CLI blocks -> flag needs-human
+Normal (PR):   in_progress -> review -> in_validation -> pr_open -> done
+Non-PR work:   in_progress -> review -> done
+Minor fix:     in_progress -> review -> (fix inline) -> in_validation -> pr_open -> done
+1 impl rework: in_progress -> review -> in_progress -> review -> in_validation -> ...
+1 e2e rework:  ... review -> in_validation -> in_progress -> review -> in_validation -> ...
+1 plan rework: in_progress -> review -> in_planning -> planned -> in_progress -> review -> ...
+Max cycles:    3 rework transitions, then CLI blocks -> flag needs-human
 ```
+
+### The Validation Gate
+
+Moving to `in_validation` is a commitment to **prove the change works end-to-end** — not to re-run unit tests. The bar: **"I saw it work," not "I think it should work."** A server returning 200 is not a user successfully logging in.
+
+The validating agent:
+1. **Runs the change against a real running system** — browser automation for web, iOS Simulator MCP / Mobile MCP for mobile, curl flows for APIs, the CLI itself for CLI tools.
+2. **Exercises the actual flow the ticket touched** — clicks the buttons, fills the forms, follows the redirects.
+3. **Records evidence:** `lattice attach <task> --role validation` (or `lattice comment <task> --role validation`) — what was run, what was observed, pass/fail.
+4. **Routes the outcome:** pass → `pr_open` (open the PR now). Fail → `in_progress` (implementation-level) or `in_planning` (plan-level), same routing as review rework; the 3-cycle safety valve applies.
+
+The CLI enforces the evidence: transitioning to `pr_open` is blocked until validation-role evidence is recorded. If e2e validation genuinely doesn't apply (docs-only change, pure refactor with no observable behavior), record a one-line N/A justification as the validation evidence — the decision must be explicit, never silent. Do not `--force` past the policy.
 
 ### Review Config Reference
 

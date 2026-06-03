@@ -51,6 +51,7 @@ class TestDefaultConfig:
             "planned",
             "in_progress",
             "review",
+            "in_validation",
             "pr_open",
             "done",
             "blocked",
@@ -67,6 +68,7 @@ class TestDefaultConfig:
             "planned",
             "in_progress",
             "review",
+            "in_validation",
             "pr_open",
             "done",
             "blocked",
@@ -89,12 +91,15 @@ class TestDefaultConfig:
     def test_wip_limits(self) -> None:
         config = default_config()
         wip = config["workflow"]["wip_limits"]
-        assert wip == {"in_progress": 10, "review": 5, "pr_open": 10}
+        assert wip == {"in_progress": 10, "review": 5, "in_validation": 5, "pr_open": 10}
 
     def test_has_completion_policies(self) -> None:
         config = default_config()
         policies = config["workflow"]["completion_policies"]
-        assert policies == {"done": {"require_roles": ["review"]}}
+        assert policies == {
+            "done": {"require_roles": ["review"]},
+            "pr_open": {"require_roles": ["validation"]},
+        }
 
     def test_has_descriptions(self) -> None:
         config = default_config()
@@ -248,7 +253,7 @@ class TestValidateTransition:
     def test_terminal_status_has_no_explicit_transitions(self) -> None:
         config = default_config()
         # done/cancelled have no explicit transitions, but universal targets
-        # (needs_human, cancelled) are still reachable
+        # (cancelled) are still reachable
         assert validate_transition(config, "done", "backlog") is False
         assert validate_transition(config, "cancelled", "backlog") is False
 
@@ -605,7 +610,12 @@ class TestGetConfiguredRoles:
     def test_default_config_includes_explicit_roles(self) -> None:
         """Default config defines workflow.roles with review roles."""
         config = default_config()
-        assert get_configured_roles(config) == {"review", "plan-review", "review-individual"}
+        assert get_configured_roles(config) == {
+            "review",
+            "plan-review",
+            "review-individual",
+            "validation",
+        }
 
     def test_no_roles_no_policies_returns_empty(self) -> None:
         """Config with neither workflow.roles nor completion policies → empty set."""
@@ -618,6 +628,7 @@ class TestGetConfiguredRoles:
         """workflow.roles alone (no completion policies) is sufficient."""
         config = default_config()
         config["workflow"]["roles"] = ["review", "qa"]
+        config["workflow"].pop("completion_policies", None)
         assert get_configured_roles(config) == {"review", "qa"}
 
     def test_explicit_roles_merged_with_policy_roles(self) -> None:
@@ -768,3 +779,77 @@ class TestProjectType:
         from lattice.core.config import get_project_type
 
         assert get_project_type({"project_type": "bogus"}) == "standard"
+
+
+# ---------------------------------------------------------------------------
+# Validation swimlane (LAT-233)
+# ---------------------------------------------------------------------------
+
+
+class TestValidationSwimlane:
+    """in_validation sits between review and pr_open (LAT-233)."""
+
+    def test_review_to_in_validation_allowed(self) -> None:
+        config = default_config()
+        assert validate_transition(config, "review", "in_validation") is True
+
+    def test_in_validation_to_pr_open_allowed(self) -> None:
+        config = default_config()
+        assert validate_transition(config, "in_validation", "pr_open") is True
+
+    def test_validation_failure_routes_to_rework(self) -> None:
+        config = default_config()
+        assert validate_transition(config, "in_validation", "in_progress") is True
+        assert validate_transition(config, "in_validation", "in_planning") is True
+
+    def test_in_validation_can_block(self) -> None:
+        config = default_config()
+        assert validate_transition(config, "in_validation", "blocked") is True
+
+    def test_review_to_pr_open_still_allowed(self) -> None:
+        """The validation *status* is skippable (evidence is gated separately)."""
+        config = default_config()
+        assert validate_transition(config, "review", "pr_open") is True
+
+    def test_review_to_done_still_allowed(self) -> None:
+        """Non-PR work keeps the direct review -> done path."""
+        config = default_config()
+        assert validate_transition(config, "review", "done") is True
+
+    def test_resume_targets_include_in_validation(self) -> None:
+        config = default_config()
+        assert validate_transition(config, "blocked", "in_validation") is True
+
+    def test_no_in_validation_to_review_backflow(self) -> None:
+        """Rework re-enters via in_progress so the review gate is not bypassed."""
+        config = default_config()
+        assert validate_transition(config, "in_validation", "review") is False
+
+    def test_validation_role_configured(self) -> None:
+        config = default_config()
+        assert "validation" in config["workflow"]["roles"]
+
+    def test_pr_open_policy_blocks_without_validation_evidence(self) -> None:
+        config = default_config()
+        snap = _snap_with_evidence([])
+        ok, failures = validate_completion_policy(config, snap, "pr_open")
+        assert ok is False
+        assert any("validation" in f for f in failures)
+
+    def test_pr_open_policy_passes_with_validation_evidence(self) -> None:
+        config = default_config()
+        snap = _snap_with_evidence(
+            [{"id": "art_V", "role": "validation", "source_type": "artifact"}]
+        )
+        ok, failures = validate_completion_policy(config, snap, "pr_open")
+        assert ok is True
+        assert failures == []
+
+    def test_in_validation_description_carries_the_bar(self) -> None:
+        config = default_config()
+        desc = config["workflow"]["descriptions"]["in_validation"]
+        assert "I saw it work" in desc
+
+    def test_opinionated_display_name(self) -> None:
+        config = default_config("opinionated")
+        assert config["workflow"]["display_names"]["in_validation"] == "seeing it work"

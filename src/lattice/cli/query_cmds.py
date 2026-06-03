@@ -549,7 +549,14 @@ def next_cmd(
                     "ALREADY_CLAIMED",
                     is_json,
                 )
-            if current_status in ("in_progress", "review", "done", "cancelled"):
+            if current_status in (
+                "in_progress",
+                "review",
+                "in_validation",
+                "pr_open",
+                "done",
+                "cancelled",
+            ):
                 if not _actors_match(current_assigned, resolved_actor):
                     output_error(
                         f"Task already in {current_status}.",
