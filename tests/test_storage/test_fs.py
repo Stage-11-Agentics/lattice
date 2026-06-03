@@ -8,7 +8,12 @@ from unittest.mock import patch
 
 import pytest
 
-from lattice.storage.fs import _fsync_directory, atomic_write, jsonl_append
+from lattice.storage.fs import (
+    _fsync_directory,
+    atomic_write,
+    ensure_lattice_dirs,
+    jsonl_append,
+)
 
 
 class TestAtomicWrite:
@@ -148,3 +153,28 @@ class TestFsyncDirectory:
         """_fsync_directory should silently ignore OSError (e.g. macOS)."""
         with patch("lattice.storage.fs.os.open", side_effect=OSError("not supported")):
             _fsync_directory(tmp_path)  # Should not raise
+
+
+class TestEnsureLatticeDirs:
+    """ensure_lattice_dirs() scaffolds the .lattice/ structure."""
+
+    def test_scaffolds_gitignore_for_ephemeral_runtime_state(self, tmp_path: Path) -> None:
+        """A .lattice/.gitignore is written ignoring ephemeral runtime dirs only."""
+        ensure_lattice_dirs(tmp_path)
+        gitignore = tmp_path / ".lattice" / ".gitignore"
+        assert gitignore.exists()
+        body = gitignore.read_text()
+        # Ephemeral runtime state is ignored.
+        for ignored in ("review_state/", "tmp-prompts/", ".daemon/", "locks/"):
+            assert ignored in body
+        # The durable board is NOT ignored — it is the audit log / shared state.
+        for tracked in ("tasks/", "events/", "plans/", "artifacts/"):
+            assert f"\n{tracked}" not in f"\n{body}"
+
+    def test_gitignore_is_idempotent(self, tmp_path: Path) -> None:
+        """A second call does not clobber an existing .gitignore."""
+        ensure_lattice_dirs(tmp_path)
+        gitignore = tmp_path / ".lattice" / ".gitignore"
+        gitignore.write_text("custom\n")
+        ensure_lattice_dirs(tmp_path)
+        assert gitignore.read_text() == "custom\n"

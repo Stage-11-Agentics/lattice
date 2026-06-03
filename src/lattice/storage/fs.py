@@ -95,6 +95,27 @@ def ensure_lattice_dirs(root: Path) -> None:
     if not lifecycle_log.exists():
         lifecycle_log.touch()
 
+    # Scaffold a self-contained .lattice/.gitignore. The board (tasks, events,
+    # plans, artifacts, ids.json, config.json) is deliberately tracked — it is
+    # the audit log and the cross-machine coordination state. These subdirs are
+    # pure ephemeral runtime state with no audit value; tracking them only
+    # causes per-worktree divergence and merge collisions. Idempotent so
+    # existing projects pick it up on the next lattice invocation.
+    gitignore = lattice / ".gitignore"
+    if not gitignore.exists():
+        atomic_write(
+            gitignore,
+            "# Ephemeral Lattice runtime state — not part of the durable board.\n"
+            "# The board (tasks/ events/ plans/ artifacts/ ids.json config.json)\n"
+            "# stays tracked: it is the audit log and cross-machine coordination\n"
+            "# state. The paths below are mutated constantly and must never\n"
+            "# diverge per-worktree or collide on merge.\n"
+            "review_state/\n"
+            "tmp-prompts/\n"
+            ".daemon/\n"
+            "locks/\n",
+        )
+
 
 def find_root(start: Path | None = None) -> Path | None:
     """Find the project root containing .lattice/.

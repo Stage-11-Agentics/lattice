@@ -34,9 +34,12 @@ All worktrees MUST share a single `.lattice/` directory via the `LATTICE_ROOT` e
 ## Working in a Worktree
 
 - All Lattice commands work normally as long as `LATTICE_ROOT` is set.
+- **Author plan/notes files into the primary checkout's `.lattice/`, not the worktree's copy.** The CLI's plan reads — including the `in_progress` scaffold gate — resolve against the root repo. A plan you `Write` to `<worktree>/.lattice/plans/<task_id>.md` is invisible to it, so the gate blocks with "plan is still scaffold". Write to `$REPO_ROOT/.lattice/plans/` (or write anywhere then copy it there).
 - Branch awareness checks still apply — verify your worktree is on the expected branch before commits and status transitions.
 - Commits happen on the worktree's branch, fully isolated from other worktrees and the primary checkout.
 - Push your branch regularly so other agents and CI can see your work.
+- **Never `git add` the `.lattice/` board from a worktree.** The board (`tasks/`, `events/`, `plans/`, `artifacts/`, `ids.json`, `config.json`) is owned and committed by the **primary checkout**. Your CLI writes already land there (root discovery redirects them), so the worktree's own checked-out copy is vestigial — committing it onto your branch creates a stale snapshot that collides with the primary's live state on merge. Only commit your actual code/doc deliverable. The one legitimate exception is a ticket whose *deliverable is itself a tracked `.lattice/` doc* (e.g. editing `.lattice/orchestration/*.md`); commit only that file, nothing else under `.lattice/`.
+- Ephemeral runtime state (`review_state/`, `tmp-prompts/`, `.daemon/`, `locks/`) is excluded by the scaffolded `.lattice/.gitignore`, so it can never be accidentally committed. The durable board stays tracked by design.
 
 ## Tearing Down a Worktree
 
@@ -77,9 +80,11 @@ LAT-219 added directory-walking auto-detection so most `lattice` calls route cor
 
 ### `lattice code-review` — empty-diff failure
 
-- **Symptom:** `lattice code-review <TICKET> --base <remote>/main` returns an empty diff or a vacuous artifact when run from a worktree, even with `LATTICE_ROOT=$PWD` set. The reviewer sees no changes and writes a useless review.
+- **Symptom:** `lattice code-review <TICKET> --base <remote>/main` returns an empty diff or a vacuous artifact when run from a worktree, even with `LATTICE_ROOT=$PWD` set. The reviewer sees no changes and writes a useless review. The auto-fired review (`review_mode: single`) can also just **die without attaching any artifact** — `review-status` keeps ticking, the spawned pid is dead, no `--role review` artifact exists.
+- **Also:** new files are invisible to the diff until committed. **Commit before transitioning to `review`** so the reviewer (and the diff) see the whole change.
 - **Why:** The diff-resolution path doesn't fully honor the worktree's HEAD; it falls back to the primary checkout's refs in some configurations.
 - **Cheap mitigation:** Always pass `--base <remote>/main` (NEVER bare `main` — they look identical but the local ref may be behind the remote). Set `export LATTICE_ROOT=$PWD` at session start.
+- **Fallback (small tickets):** review the committed diff yourself and complete with `lattice complete <TICKET> --review "<verdict + findings>"` — the review text satisfies the `done` policy without a CLI-spawned artifact.
 - **Fallback when cheap mitigation fails:** Spawn an own-reviewer sub-agent on the delegator's own pane that computes the diff itself (`git log <remote>/main..HEAD --stat` + per-file `git diff`), writes a custom artifact at `notes/.tmp/<TICKET>-codereview-custom.md`, and attaches it via `lattice attach <TICKET> --type note --role review --inline "<markdown>" --actor agent:<id>-reviewer`. The `--role review` attachment satisfies the `done` completion policy — the orchestrator can't tell the difference from a CLI-generated review. See the `lattice-orchestrator` skill's `references/orchestrator.md` `## Own-reviewer-tab fallback` section for the full pattern.
 - **Observed:** Every Wave 2 delegator on the EC v1.2.1 run hit this independently and converged on the fallback.
 
