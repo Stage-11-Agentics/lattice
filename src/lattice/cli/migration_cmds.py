@@ -182,3 +182,170 @@ def backfill_ids(
         )
     else:
         click.echo(f"Assigned {first_id} through {last_id} to {count} existing tasks.")
+
+
+# ---------------------------------------------------------------------------
+# lattice migrate — instance migrations
+# ---------------------------------------------------------------------------
+
+
+@cli.group("migrate")
+def migrate_group() -> None:
+    """Instance migrations (schema/workflow changes for existing .lattice dirs)."""
+
+
+@migrate_group.command("needs-human")
+@click.option("--dry-run", is_flag=True, help="Report what would change without writing.")
+@click.option("--json", "output_json", is_flag=True, help="Output structured JSON.")
+@click.option("--actor", default="agent:lattice-migration", help="Actor for migration events.")
+def migrate_needs_human(
+    dry_run: bool,
+    output_json: bool,
+    actor: str,
+) -> None:
+    """Convert the needs_human STATUS to the orthogonal flag.
+
+    For every task sitting in the needs_human status: set the needs_human
+    flag (reason: the task's latest comment, or a generic migration note)
+    and route the task back to the status it was in before entering
+    needs_human (fallback: backlog). Then strip needs_human from the
+    workflow config (statuses, transitions, universal_targets,
+    descriptions, display_names). Idempotent — re-running on a migrated
+    instance is a no-op.
+    """
+    from lattice.cli.helpers import write_task_event
+    from lattice.core.comments import materialize_comments
+
+    is_json = output_json
+    lattice_dir = require_root(is_json)
+    config = load_project_config(lattice_dir)
+
+    # ---- Phase 1: tasks sitting in the needs_human status -----------------
+    tasks_dir = lattice_dir / "tasks"
+    migrated: list[dict] = []
+    statuses_after = [
+        s for s in config.get("workflow", {}).get("statuses", []) if s != "needs_human"
+    ]
+
+    snap_files = sorted(tasks_dir.glob("*.json")) if tasks_dir.is_dir() else []
+    for snap_file in snap_files:
+        try:
+            snap = json.loads(snap_file.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        if snap.get("status") != "needs_human":
+            continue
+        task_id = snap["id"]
+
+        # Return status: the `from` of the latest transition INTO needs_human.
+        events_path = lattice_dir / "events" / f"{task_id}.jsonl"
+        events: list[dict] = []
+        if events_path.exists():
+            for line in events_path.read_text().splitlines():
+                stripped = line.strip()
+                if stripped:
+                    events.append(json.loads(stripped))
+        return_status = "backlog"
+        for ev in reversed(events):
+            if (
+                ev.get("type") == "status_changed"
+                and ev.get("data", {}).get("to") == "needs_human"
+            ):
+                candidate = ev.get("data", {}).get("from")
+                if isinstance(candidate, str) and candidate in statuses_after:
+                    return_status = candidate
+                break
+
+        # Flag reason: latest non-deleted comment, else a generic note.
+        reason = "Migrated from needs_human status"
+        comments = materialize_comments(events)
+        for c in reversed(comments):
+            if not c.get("deleted") and c.get("body"):
+                reason = c["body"]
+                break
+
+        migrated.append(
+            {
+                "task_id": task_id,
+                "short_id": snap.get("short_id"),
+                "return_status": return_status,
+                "reason": reason,
+            }
+        )
+
+        if dry_run:
+            continue
+
+        new_events: list[dict] = []
+        updated = snap
+        if not updated.get("needs_human"):
+            flag_event = create_event(
+                type="needs_human_flagged",
+                task_id=task_id,
+                actor=actor,
+                data={"reason": reason},
+                reason="LAT-232 migration: needs_human status converted to flag",
+            )
+            new_events.append(flag_event)
+            updated = apply_event_to_snapshot(updated, flag_event)
+        status_event = create_event(
+            type="status_changed",
+            task_id=task_id,
+            actor=actor,
+            data={"from": "needs_human", "to": return_status},
+            reason="LAT-232 migration: needs_human status converted to flag",
+        )
+        new_events.append(status_event)
+        updated = apply_event_to_snapshot(updated, status_event)
+        write_task_event(lattice_dir, task_id, new_events, updated, config)
+
+    # ---- Phase 2: strip needs_human from the workflow config ---------------
+    workflow = config.get("workflow", {})
+    config_changes: list[str] = []
+
+    if "needs_human" in workflow.get("statuses", []):
+        config_changes.append("statuses")
+    transitions = workflow.get("transitions", {})
+    if "needs_human" in transitions:
+        config_changes.append("transitions (source)")
+    if any("needs_human" in targets for targets in transitions.values()):
+        config_changes.append("transitions (targets)")
+    if "needs_human" in workflow.get("universal_targets", []):
+        config_changes.append("universal_targets")
+    if "needs_human" in workflow.get("descriptions", {}):
+        config_changes.append("descriptions")
+    if "needs_human" in workflow.get("display_names", {}):
+        config_changes.append("display_names")
+
+    if config_changes and not dry_run:
+        workflow["statuses"] = statuses_after
+        transitions.pop("needs_human", None)
+        workflow["transitions"] = {
+            source: [t for t in targets if t != "needs_human"]
+            for source, targets in transitions.items()
+        }
+        workflow["universal_targets"] = [
+            t for t in workflow.get("universal_targets", []) if t != "needs_human"
+        ]
+        workflow.get("descriptions", {}).pop("needs_human", None)
+        workflow.get("display_names", {}).pop("needs_human", None)
+        atomic_write(lattice_dir / "config.json", serialize_config(config))
+
+    # ---- Report -------------------------------------------------------------
+    data = {
+        "dry_run": dry_run,
+        "tasks_migrated": migrated,
+        "config_changes": config_changes,
+    }
+    if is_json:
+        click.echo(json.dumps({"ok": True, "data": data}, sort_keys=True, indent=2) + "\n")
+        return
+    prefix = "[dry-run] " if dry_run else ""
+    if not migrated and not config_changes:
+        click.echo(f"{prefix}Nothing to migrate — instance already uses the needs_human flag.")
+        return
+    for item in migrated:
+        label = item["short_id"] or item["task_id"]
+        click.echo(f"{prefix}{label}: flagged + routed needs_human -> {item['return_status']}")
+    if config_changes:
+        click.echo(f"{prefix}config.json: stripped needs_human from {', '.join(config_changes)}")
