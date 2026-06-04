@@ -26,7 +26,7 @@ lattice create "<title>" --actor agent:<your-id>
 
 When in doubt, create the task. A small task costs nothing. Lost visibility costs everything.
 
-**Recurring observations become tasks.** If you observe the same issue in 2+ consecutive sessions or advances (e.g., a failing test, a lint warning, a flaky behavior), create a task for it. Agents are disciplined about tracking assigned work but not discovered work — this convention closes that gap. Create discovered issues at `needs_human` if they need scoping, or `backlog` if they're well-understood.
+**Recurring observations become tasks.** If you observe the same issue in 2+ consecutive sessions or advances (e.g., a failing test, a lint warning, a flaky behavior), create a task for it. Agents are disciplined about tracking assigned work but not discovered work — this convention closes that gap. Create discovered issues at `backlog`; if they need human scoping, also flag them (`lattice needs-human <task> "Need: scoping"`).
 
 ### Descriptions Carry Context
 
@@ -46,9 +46,11 @@ lattice status <task> <status> --actor agent:<your-id>
 
 ```
 backlog → in_planning → planned → in_progress → review → done
-                                       ↕            ↕
-                                    blocked      needs_human
+                                       ↕
+                                    blocked
 ```
+
+Human attention is NOT a status: any task in any status can carry the orthogonal `needs_human` flag (`lattice needs-human <task> "<what you need>"`). The task keeps its swimlane while it waits — see "When You're Stuck" below.
 
 **Transition discipline:**
 - `in_planning` — before you open the first file to read. Then write the plan.
@@ -114,7 +116,7 @@ The mode controls *how* the review runs:
 | `triple` | Splits one new pane in the caller's c11 workspace and runs `/trident-plan-review` there. The pane owns trident and the task advance. CLI returns immediately. Requires c11. |
 | `inline` | Reviews the plan in-session (use when codex/gemini aren't available, or for small/throwaway projects). Auto-fire is a no-op for inline. |
 
-When `plan_approval` is `human`, the CLI automatically moves the task to `needs_human` after `lattice plan-review` completes. Wait for human approval before proceeding to `in_progress`.
+When `plan_approval` is `human`, the CLI automatically sets the `needs_human` flag after `lattice plan-review` completes — the task stays in `planned`. Wait for human approval (the human clears the flag) before proceeding to `in_progress`.
 
 ### Plan Review Triage
 
@@ -124,7 +126,7 @@ When the plan review returns (trident or otherwise), the orchestrator sorts ever
 |--------|--------------------|----------------|
 | **Obvious** | Missing acceptance criteria, contradictions, plan bugs, trivial clarifications, concrete omissions | Fix directly — amend the plan file, record a short `lattice comment` noting what was resolved. |
 | **Evolutionary** | Speculative additions, "while we're at it" scope creep, refactor suggestions not tied to the ticket's goal, nice-to-haves | Be skeptical. Default to skip. If worth tracking, create a new Lattice task (`lattice create ...`) and link it — do not fold into this ticket. Record a comment explaining why it was deferred. |
-| **Complex** | Genuine design decisions, ambiguity the agent can't resolve alone, trade-offs with real stakes, requirement questions | Bring to the human. Move to `needs_human` with a short comment stating the open question(s). |
+| **Complex** | Genuine design decisions, ambiguity the agent can't resolve alone, trade-offs with real stakes, requirement questions | Bring to the human. Flag it: `lattice needs-human <task> "<the open question(s)>"` — the task keeps its status. |
 
 Every finding must be explicitly triaged — no silent drops. If triage produces no complex questions, advance to `in_progress`. Otherwise, wait for the human answer, fold it into the plan, then advance.
 
@@ -194,7 +196,7 @@ When a review agent evaluates work, it produces one of three outcomes:
 | Route to in_progress vs in_planning | Orchestrator | Follows review agent's recommendation |
 | Whether to spawn fresh sub-agent | Orchestrator | Encouraged by convention, not enforced |
 
-**3-cycle safety valve:** After 3 review-to-rework transitions (any combination of `review -> in_progress` and `review -> in_planning`), the CLI blocks the 4th attempt. The error message instructs the agent to move the task to `needs_human` with a comment explaining the situation. The limit is configurable via `review_cycle_limit` in the workflow config (default: 3). Override with `--force --reason` for genuinely exceptional cases.
+**3-cycle safety valve:** After 3 review-to-rework transitions (any combination of `review -> in_progress` and `review -> in_planning`), the CLI blocks the 4th attempt. The error message instructs the agent to set the `needs_human` flag with a reason explaining the situation. The limit is configurable via `review_cycle_limit` in the workflow config (default: 3). Override with `--force --reason` for genuinely exceptional cases.
 
 **Allowed lifecycle paths:**
 
@@ -203,7 +205,7 @@ Normal:       in_progress -> review -> done
 Minor fix:    in_progress -> review -> (fix inline) -> done
 1 impl rework: in_progress -> review -> in_progress -> review -> done
 1 plan rework: in_progress -> review -> in_planning -> planned -> in_progress -> review -> done
-Max cycles:   3 review->rework transitions, then CLI blocks -> needs_human
+Max cycles:   3 review->rework transitions, then CLI blocks -> flag needs-human
 ```
 
 ### Review Config Reference
@@ -214,7 +216,7 @@ Five settings in `.lattice/config.json` control review behavior:
 |---------|--------|---------|---------|
 | `review_mode` | `inline`, `single`, `triple` | `single` | How code review is performed at the review gate |
 | `plan_review_mode` | `inline`, `single`, `triple` | `single` | How plan review is performed after the plan is written |
-| `plan_approval` | `auto`, `human` | `auto` | After plan-review: `auto` proceeds, `human` moves to `needs_human` for approval |
+| `plan_approval` | `auto`, `human` | `auto` | After plan-review: `auto` proceeds, `human` sets the `needs_human` flag (task stays `planned`) for approval |
 | `auto_code_review_on_transition` | `true`, `false` | `true` | Auto-spawn `lattice code-review` when a task transitions to `review` |
 | `auto_plan_review_on_transition` | `true`, `false` | `true` | Auto-spawn `lattice plan-review` when a task transitions to `planned` |
 
@@ -235,14 +237,14 @@ When a task transitions to `review` or `planned`, `lattice status` automatically
 
 ### When You're Stuck
 
-Use `needs_human` when you need human decision, approval, or input **right now**. This is distinct from `blocked` (generic external dependency) — it creates a scannable queue. **`needs_human` means actionable NOW** — future checkpoints (quality gates, review gates, approval milestones) stay at `planned` or `backlog` until the preceding work is complete. The orchestrator flips them to `needs_human` at the moment they become actionable.
+Set the `needs_human` flag when you need human decision, approval, or input **right now**. The flag is orthogonal to status: the task keeps its swimlane (it can be `in_progress` AND waiting on a human), and it is distinct from `blocked` (generic external dependency — a task can be both). **The flag means actionable NOW** — future checkpoints (quality gates, review gates, approval milestones) stay unflagged until the preceding work is complete. The orchestrator flags them at the moment they become actionable.
 
 ```
-lattice status <task> needs_human --actor agent:<your-id>
-lattice comment <task> "Need: <what you need, in one line>" --actor agent:<your-id>
+lattice needs-human <task> "Need: <what you need, in one line>" --actor agent:<your-id>
+lattice needs-human <task> --clear --note "<how it was resolved>" --actor <whoever-resolved>
 ```
 
-Use for: design decisions requiring human judgment, missing access/credentials, ambiguous requirements, approval gates. The comment is mandatory — explain what you need in seconds, not minutes. The human's queue should be scannable.
+Use for: design decisions requiring human judgment, missing access/credentials, ambiguous requirements, approval gates. The reason is required — explain what you need in seconds, not minutes. The human scans the queue with `lattice list --needs-human` and clears the flag when answered.
 
 ### Actor Attribution
 

@@ -45,7 +45,7 @@ These shape every decision downstream. If a section below seems to conflict with
 The human watches and interacts with exactly one pane: the delegator's. Everything else is internal machinery. This has real consequences:
 
 - **Sub-agents never message the human directly.** They write to the ticket, set their surface status, and stop. If they have a question or recommendation, it's a Lattice comment addressed to the delegator — not chat text addressed to the human.
-- **Only the delegator escalates.** `needs_human` status, operator decisions, pauses for clarification — all of these flow through the delegator. A Plan or Review sibling that discovers an ambiguity flags it to the delegator (via the ticket), and the delegator decides whether to resolve, spawn another sub-agent, or escalate to the human.
+- **Only the delegator escalates.** Needs-human flags, operator decisions, pauses for clarification — all of these flow through the delegator. A Plan or Review sibling that discovers an ambiguity flags it to the delegator (via the ticket), and the delegator decides whether to resolve, spawn another sub-agent, or escalate to the human.
 - **The delegator summarizes.** When the human checks in, they read the delegator pane and get a coherent picture of where the ticket is and what's next. The delegator owns that picture — it's not assembled from scraping 9 sibling tabs.
 - **The delegator is also the last-mile communicator.** When the PR is ready, when a decision is needed, when something has gone sideways — the delegator's most recent message is what the human sees.
 
@@ -90,9 +90,9 @@ git push
 (cd $REPO_ROOT && lattice complete $TICKET --review "..." --actor $ACTOR)
 ```
 
-**Why:** the dashboard, the board UI, the orchestrator's polling, sibling delegations, and any other agents reading the project's Lattice state all read from `$REPO_ROOT/.lattice/`. A status change written only to `$WT_DIR/.lattice/` is invisible to all of them — including the operator looking at their normal Lattice surfaces. The worktree may have its `.lattice/` deltas merged eventually (when the branch lands), but "eventually" is not "right now," and `needs_human` / `blocked` / `review` transitions need to be visible *right now*.
+**Why:** the dashboard, the board UI, the orchestrator's polling, sibling delegations, and any other agents reading the project's Lattice state all read from `$REPO_ROOT/.lattice/`. A status change written only to `$WT_DIR/.lattice/` is invisible to all of them — including the operator looking at their normal Lattice surfaces. The worktree may have its `.lattice/` deltas merged eventually (when the branch lands), but "eventually" is not "right now," and needs-human flags / `blocked` / `review` transitions need to be visible *right now*.
 
-Failure mode this prevents: delegator runs an audit, completes work, transitions ticket to `needs_human` in the worktree, then sits silent. Lattice dashboard, board, and orchestrator all still show `in_progress`. Operator has no way to know their input is needed. (Observed 2026-05-03 on C11-1; led to this principle.)
+Failure mode this prevents: delegator runs an audit, completes work, flags the ticket needs-human in the worktree, then sits silent. The flag lands only in the worktree's `.lattice/`; the Lattice dashboard, board, and orchestrator never see it. Operator has no way to know their input is needed. (Observed 2026-05-03 on C11-1; led to this principle.)
 
 **Reading is fine from either location.** `lattice show` in the worktree shows the worktree's view (which may be slightly behind the parent if the parent is being mutated by something else). When the orchestrator polls, it reads from `$REPO_ROOT` because that's where writes land — see *Active orchestrator watch* below.
 
@@ -291,7 +291,7 @@ You are the **primary human interface for this ticket**. The operator scrubs you
 
 ## Lattice writes go to the parent repo
 
-Lattice is the project's coordination surface. The dashboard, the board UI, the orchestrator, sibling delegations, and any other agents on the project all read from `{{REPO_ROOT}}/.lattice/`. **A `lattice status` or `lattice comment` from `{{WT_DIR}}` lands in the worktree's `.lattice/` and nowhere else** — invisible to every reader. That's a documented failure mode (the audit on C11-1 transitioned to `needs_human` in its worktree and the operator had no way to know).
+Lattice is the project's coordination surface. The dashboard, the board UI, the orchestrator, sibling delegations, and any other agents on the project all read from `{{REPO_ROOT}}/.lattice/`. **A `lattice status`, `lattice needs-human`, or `lattice comment` from `{{WT_DIR}}` lands in the worktree's `.lattice/` and nowhere else** — invisible to every reader. That's a documented failure mode (the audit on C11-1 raised the needs-human flag in its worktree and the operator had no way to know).
 
 Discipline:
 
@@ -379,7 +379,7 @@ Every phase below begins with a **status bump** as its first action. This is non
 
 ### 1. Plan
 - **Status bump (first action):** `(cd {{REPO_ROOT}} && lattice status {{TICKET}} in_planning --actor {{ACTOR}})`. Verify with `(cd {{REPO_ROOT}} && lattice show {{TICKET}} | grep "^Status:")`.
-- Spawn **Plan** sibling. Prompt it to: read the ticket, survey the relevant code area, write `{{REPO_ROOT}}/.lattice/notes/{{TASK_ULID}}.md` (or `.lattice/plans/...`), comment on the ticket when done. Plan notes are part of the Lattice trail and live in the parent repo's `.lattice/` so the dashboard and other agents can find them. Plan should **flag** operator decisions with a recommendation, not force `needs_human` unless the decision genuinely blocks progress.
+- Spawn **Plan** sibling. Prompt it to: read the ticket, survey the relevant code area, write `{{REPO_ROOT}}/.lattice/notes/{{TASK_ULID}}.md` (or `.lattice/plans/...`), comment on the ticket when done. Plan notes are part of the Lattice trail and live in the parent repo's `.lattice/` so the dashboard and other agents can find them. Plan should **flag** operator decisions with a recommendation, not raise needs-human unless the decision genuinely blocks progress.
 - Sanity-check the plan yourself. If the plan surfaced a decision, resolve it (pick the recommended option, or escalate to the human via Lattice comment on the ticket if the decision is genuinely theirs).
 - **Status bump on exit:** `(cd {{REPO_ROOT}} && lattice status {{TICKET}} planned --actor {{ACTOR}})`. Verify before continuing.
 
@@ -409,9 +409,9 @@ Every phase below begins with a **status bump** as its first action. This is non
   - **Focused rework**: spawn a **Fix** sibling with a tight prompt addressing the specific findings. Commits land on the same branch; no new review cycle required unless the fix itself is non-trivial.
   - **Structural rework**: `(cd {{REPO_ROOT}} && lattice status {{TICKET}} in_progress)`; spawn a new **Impl** sibling with the findings appended to the plan. A new review cycle follows.
   - **Plan-level rework**: `(cd {{REPO_ROOT}} && lattice status {{TICKET}} in_planning)`; spawn a new **Plan** sibling.
-  - **Genuine human decision**: `(cd {{REPO_ROOT}} && lattice status {{TICKET}} needs_human)`, post a comment via the parent repo, stop. The orchestrator surfaces this transition to the operator (see *Active orchestrator watch*); the operator finds out via the orchestrator chat AND the dashboard, both of which now see the transition because the write went to the parent.
+  - **Genuine human decision**: `(cd {{REPO_ROOT}} && lattice needs-human {{TICKET}} "<what you need>")`, stop. No status transition — the ticket keeps its current status and the needs-human flag is what surfaces it. The orchestrator surfaces the flag to the operator (see *Active orchestrator watch*); the operator finds out via the orchestrator chat AND the dashboard, both of which now see the flag because the write went to the parent.
 
-- **Max 3 rework cycles** before the delegator escalates to `needs_human` — pattern means something deeper is off.
+- **Max 3 rework cycles** before the delegator raises the needs-human flag — pattern means something deeper is off.
 
 ### 4. Validate
 - Before handoff, the delegator (or a dedicated **Validate** sibling) runs whatever validation the project's CLAUDE.md prescribes. This is typically: build the project in a way the operator can smoke-test (tagged local build, preview deploy, simulator run, headless browser check), confirm it comes up cleanly, post usage instructions on the ticket, and leave the validation artifact in a state the operator can poke at.
@@ -453,7 +453,7 @@ Post a one-line Lattice comment at every phase transition so the orchestrator ca
 
 ## Guardrails
 
-- **Don't steamroll human judgment.** Genuine decisions → `needs_human` + comment. The operator filed the ticket; open questions are real.
+- **Don't steamroll human judgment.** Genuine decisions → `lattice needs-human <ticket> "<the question>"`. The operator filed the ticket; open questions are real.
 - **Code in the worktree, Lattice in the parent.** All code edits, builds, and commits stay in `{{WT_DIR}}`. Every `lattice` write goes through `(cd {{REPO_ROOT}} && lattice ...)`. Don't write code into the parent repo's working tree; don't write Lattice state into the worktree's `.lattice/`. Two homes, two purposes.
 - **Prefer cohesive tickets.** Absorb follow-up work into the current PR when it fits. Create follow-up tickets reluctantly.
 - **Don't mix unrelated fixes into this ticket's commits.** Upstream-worthy fixes discovered along the way get their own commits and, if appropriate, their own tickets.
@@ -548,7 +548,7 @@ disown
 
 ## Active orchestrator watch (mandatory)
 
-After setup, the orchestrator must keep watching until the ticket reaches a terminal state (`done`, `cancelled`) or the operator says stop. **Watching means actively scheduling wake-ups, not assuming the operator will poll.** The skill's prior "passive reader" framing produced exactly the failure mode this section prevents: a delegator finished an audit and parked at `needs_human`, the orchestrator was offline for ~19 minutes, and the operator only learned the audit was done by asking. (Observed 2026-05-03 on C11-1.) Don't repeat it.
+After setup, the orchestrator must keep watching until the ticket reaches a terminal state (`done`, `cancelled`) or the operator says stop. **Watching means actively scheduling wake-ups, not assuming the operator will poll.** The skill's prior "passive reader" framing produced exactly the failure mode this section prevents: a delegator finished an audit and raised the needs-human flag, the orchestrator was offline for ~19 minutes, and the operator only learned the audit was done by asking. (Observed 2026-05-03 on C11-1.) Don't repeat it.
 
 ### Mechanism: `ScheduleWakeup`
 
@@ -581,7 +581,7 @@ Default to **1500s (25 min)** when in doubt. That's a sensible balance for phase
    ```
 3. **Compare against last-known state** stored at `/tmp/${TICKET_LOWER}-orch-state.json` (seeded in step 8 of setup). Diff against `last_status`, `last_comment_count`, and any new comments since `last_check_at`.
 4. **Decide: surface, or re-schedule silently.**
-   - **Surface to operator** when the ticket transitions to `review`, `needs_human`, `done`, `blocked`, OR a new Lattice comment lands that contains a recognizable signal phrase (`Audit complete`, `Plan complete`, `Impl complete`, `PR opened`, `Validation`, `BLOCKED`, `escalat`, `recommendation`). Read the new comment(s), summarize for the operator, surface immediately. Update the state file. Do **not** schedule another wake-up until the operator decides what's next — the next wake-up gets scheduled when work resumes.
+   - **Surface to operator** when the ticket transitions to `review`, `done`, or `blocked`, when the needs-human flag is raised, OR a new Lattice comment lands that contains a recognizable signal phrase (`Audit complete`, `Plan complete`, `Impl complete`, `PR opened`, `Validation`, `BLOCKED`, `escalat`, `recommendation`). Read the new comment(s), summarize for the operator, surface immediately. Update the state file. Do **not** schedule another wake-up until the operator decides what's next — the next wake-up gets scheduled when work resumes.
    - **Re-schedule silently** when nothing meaningful changed. Update the state file's `last_check_at`, call `ScheduleWakeup` with the appropriate cadence, return without operator-visible output.
 
 ### Surface format
@@ -596,7 +596,7 @@ Lead-in conventions by transition target:
 
 | Transition | Lead with | Tone |
 |------------|-----------|------|
-| `→ needs_human` | **🛑 NEEDS YOUR INPUT — `<TICKET>`** | Action required from operator. Don't bury it. |
+| needs-human flag raised | **🛑 NEEDS YOUR INPUT — `<TICKET>`** | Action required from operator. Don't bury it. |
 | `→ blocked` | **⛔ BLOCKED — `<TICKET>`** | External dependency; usually action required but possibly just informational. |
 | `→ review` | **✅ READY FOR REVIEW — `<TICKET>`** | PR up, validation done; operator's call to merge. |
 | `→ done` | **🎉 DONE — `<TICKET>`** | Final ceremony complete; informational. |
@@ -605,7 +605,7 @@ Lead-in conventions by transition target:
 Example:
 > **🛑 NEEDS YOUR INPUT — C11-1**
 >
-> Status `in_progress → needs_human`. Audit completed; auditor recommends file-a-followup-and-close.
+> Needs-human flag raised (still `in_progress`). Audit completed; auditor recommends file-a-followup-and-close.
 > Two operator decisions on the ticket: (1) what to do with 6 cosmetic stragglers, (2) how to interpret Criterion 3.
 > **On you.** The orchestrator will not re-schedule until you direct.
 
@@ -642,15 +642,15 @@ If the delegator's surface closes (e.g. the operator closes the pane), the PTY s
 - `lattice watch --task $TICKET` or `lattice wait $TICKET --status done --timeout 3600` from inside the orchestrator chat — these block a shell, but the orchestrator isn't a shell. They're for human operators in side terminals.
 - **Writing Lattice from the worktree.** A `lattice status` or `lattice comment` from `$WT_DIR` lands in the worktree's `.lattice/` and nowhere else — invisible to the dashboard, the board, the orchestrator, and the operator's normal workflow. The other half of the C11-1 failure. Every Lattice write goes through `(cd $REPO_ROOT && lattice ...)`.
 - Surfacing on every wake-up regardless of change — burns the operator's attention budget. Only surface on transitions or signal-phrase comments.
-- Surfacing without the action header — `→ needs_human` buried in a paragraph reads like progress, not "stop and decide." Lead with the emoji + uppercase header.
+- Surfacing without the action header — a needs-human flag buried in a paragraph reads like progress, not "stop and decide." Lead with the emoji + uppercase header.
 - Forgetting to re-schedule from a no-change wake-up — the loop dies after one tick.
 
 ## Teardown
 
 - **On `done` — default is leave-open for after-action review.** The delegator and its sibling surfaces stay live so the operator can scrub plan/impl/review transcripts for retrospectives, pattern extraction, or just satisfaction. The delegator may tear them down if explicitly instructed; otherwise leave them.
 - **Worktree cleanup is separate** from surface cleanup. Once the PR merges and the branch is deleted, `git worktree remove <dir>` is safe to run. The delegator should leave the worktree alive until the human confirms merge.
-- **On `needs_human`:** leave everything open so the operator can read it directly. Hand control back by posting a clear Lattice comment summarizing what decision is needed.
-- **On `blocked`:** same as `needs_human` but for external dependencies (CI, env, another ticket).
+- **On the needs-human flag:** leave everything open so the operator can read it directly. Hand control back by posting a clear Lattice comment summarizing what decision is needed.
+- **On `blocked`:** same as the needs-human flag but for external dependencies (CI, env, another ticket).
 
 ## Start now
 

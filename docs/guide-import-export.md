@@ -262,7 +262,9 @@ Labels that encode status -> Lattice status:
   No status label  -> open
   "in-progress"    -> in_progress
   "needs-review"   -> in_review
-  "blocked"        -> needs_human
+  "blocked"        -> blocked status, plus set the needs-human flag
+                      (lattice needs-human <id> "<reason>") so it lands
+                      in the human queue without losing its status
 
 Labels that encode priority -> Lattice priority:
   "priority:critical" -> critical
@@ -294,7 +296,7 @@ For a repo with 80 open issues, this takes a couple minutes. The agent will:
 3. Run `lattice create` for each, with the appropriate status and priority
 4. Write issue bodies to `.lattice/notes/<task_id>.md`
 5. Scan for cross-references in comments and create `depends_on` links
-6. Report: "Imported 80 issues. 45 open, 20 in progress, 10 in review, 5 needs_human."
+6. Report: "Imported 80 issues. 45 open, 20 in progress, 10 in review, 5 flagged needs-human."
 
 ### The field mapping reference
 

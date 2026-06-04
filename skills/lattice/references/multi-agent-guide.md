@@ -67,12 +67,19 @@ lattice status PROJ-2 blocked --actor agent:worker-1
 lattice comment PROJ-2 "Blocked: need database schema from PROJ-5" --actor agent:worker-1
 ```
 
-When a worker needs a human decision:
+When a worker needs a human decision, it flags the task. `needs-human` is orthogonal to status — the flag rides on top of whatever status the task is in, so the work stays exactly where it was (here, still `in_progress`):
 
 ```bash
-lattice status PROJ-2 needs_human --actor agent:worker-1
-lattice comment PROJ-2 "Need: which OAuth provider to use?" --actor agent:worker-1
+lattice needs-human PROJ-2 "Which OAuth provider to use?" --actor agent:worker-1
 ```
+
+The reason is required and replaces the old "leave a comment" convention. The orchestrator sees the flagged task via `lattice list --needs-human` (a queue spanning every status), resolves it, and clears the flag:
+
+```bash
+lattice needs-human PROJ-2 --clear --note "Decided: Google" --actor agent:worker-1
+```
+
+Use `blocked` (a status) for generic external dependencies; use the `needs-human` flag for "waiting on a human specifically." A task can be both blocked and flagged.
 
 ### 6. Event History
 

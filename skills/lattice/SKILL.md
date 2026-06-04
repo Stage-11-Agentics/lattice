@@ -145,8 +145,8 @@ lattice doctor     # Check data integrity
 
 ```
 backlog → in_planning → planned → in_progress → review → done
-                                       ↕            ↕
-                                    blocked      needs_human
+                                       ↕
+                                    blocked
 ```
 
 - `backlog` — work identified but not started
@@ -156,10 +156,21 @@ backlog → in_planning → planned → in_progress → review → done
 - `review` — implementation done, under review
 - `done` — complete
 - `blocked` — waiting on an external dependency
-- `needs_human` — requires human decision or input
 - `cancelled` — abandoned
 
 Transitions are enforced. Use `--force --reason "..."` to override when needed.
+
+### Needs-human flag
+
+`needs-human` is a flag, not a status — it rides orthogonally on whatever status a task is in. Set it when you need a human decision, approval, or input; the task keeps its current status.
+
+```bash
+lattice needs-human PROJ-1 "Which OAuth provider should we use?" --actor agent:openclaw
+lattice needs-human PROJ-1 --clear --note "Decided: Google" --actor agent:openclaw
+lattice list --needs-human          # scannable queue of flagged tasks across all statuses
+```
+
+A reason is required when setting the flag. Use `blocked` (a status) for generic external dependencies; use the `needs-human` flag for "waiting on a human specifically." A task can be both at once.
 
 ## Actor IDs
 
@@ -216,4 +227,4 @@ For detailed multi-agent patterns, read `{baseDir}/references/multi-agent-guide.
 - **Update status before starting work**, not after. If you're about to implement something, move it to `in_progress` first.
 - **Leave comments** explaining what you tried, what you chose, and what you left undone. The next agent has no hallway to find you in.
 - **Use `lattice next`** to find the highest-priority unblocked task.
-- **Use `needs_human`** when you need a human decision — it creates a clear queue.
+- **Use `lattice needs-human`** when you need a human decision — it flags the task (leaving its status intact) and creates a clear queue via `lattice list --needs-human`.

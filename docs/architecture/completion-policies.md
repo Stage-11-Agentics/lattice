@@ -33,7 +33,7 @@ Example:
 
 - Policies are evaluated on transition into `to_status`
 - Missing policy for a status means no policy gate
-- `universal_targets` (default: `needs_human`, `cancelled`) bypass policies
+- `universal_targets` (default: `cancelled`) bypass policies
 
 Role checks use `get_evidence_roles(snapshot)` from `core/tasks.py`, which reads
 `evidence_refs` (with legacy fallback support).

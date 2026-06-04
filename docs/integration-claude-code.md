@@ -111,7 +111,7 @@ That's it. One command teaches the agent the full lifecycle. Here's what happens
 3. The agent does the work — writes code, runs tests, iterates
 4. The agent commits the changes
 5. The agent leaves a comment explaining what it did and why
-6. The agent moves the task to `review` — Lattice automatically spawns the review subprocess in the background; the agent does not need to remember to run `lattice code-review` itself. Tail with `lattice review-status <task>` or follow the artifact when it lands. (Or moves to `needs_human` if it hit a decision point.)
+6. The agent moves the task to `review` — Lattice automatically spawns the review subprocess in the background; the agent does not need to remember to run `lattice code-review` itself. Tail with `lattice review-status <task>` or follow the artifact when it lands. (Or raises the `needs-human` flag if it hit a decision point — the task keeps its status, and the flag is what surfaces to you.)
 7. The agent reports back to you with a summary
 
 ### Step 3: Come back to a sorted inbox
@@ -119,11 +119,11 @@ That's it. One command teaches the agent the full lifecycle. Here's what happens
 Refresh your dashboard. The board tells the story:
 
 - **Review column** — work the agent completed, ready for your eyes
-- **Needs Human column** — decisions only you can make, each with a comment explaining what the agent needs ("Need: REST vs GraphQL for the public API")
+- **Needs-human queue** — tasks the agent flagged for a decision only you can make, each carrying the reason it gave ("REST vs GraphQL for the public API"). The flag is orthogonal to status, so these tasks still sit in whatever column they were in.
 - **In Progress column** — work currently underway
 - **Backlog column** — what's still waiting
 
-You review the completed work. You make the decisions the agent couldn't. You drag `needs_human` tasks back to In Progress after leaving your answer as a comment. Then you advance again.
+You review the completed work. You make the decisions the agent couldn't. For each flagged task you leave your answer and clear the needs-human flag (`lattice needs-human <task> --clear --note "..."`) — the task never left its column, so there's nothing to drag back. Then you advance again.
 
 ```
 /lattice
@@ -141,7 +141,7 @@ Three things:
 
 **Persistence.** Without Lattice, every Claude Code session starts blank. The agent doesn't know what happened yesterday. With Lattice, the task graph, event log, and notes survive across sessions. The agent reads the history and picks up where the last session stopped.
 
-**Coordination.** When the agent hits something above its pay grade — a design decision, missing credentials, ambiguous requirements — it moves the task to `needs_human` and explains what it needs. You see it in your dashboard queue. No Slack. No standup. The decision is in the event log, attributed and permanent.
+**Coordination.** When the agent hits something above its pay grade — a design decision, missing credentials, ambiguous requirements — it raises the `needs-human` flag with the reason it needs you. The task keeps its status; the flag is what surfaces it in your dashboard queue. No Slack. No standup. The decision is in the event log, attributed and permanent.
 
 **Accountability.** Every change is an immutable event. `agent:claude-cli` fixed the auth bug at 2:47pm. `human:alice` approved the schema change at 3:15pm. The record is permanent. When something breaks, you know exactly what happened, who decided it, and why.
 
@@ -149,7 +149,7 @@ Three things:
 
 ## The daily rhythm
 
-**Morning.** Open the dashboard. Scan the board. Handle the `needs_human` queue first — those are agents waiting on you. Make the decisions. Drag tasks back to active.
+**Morning.** Open the dashboard. Scan the board. Handle the needs-human queue first (`lattice list --needs-human`) — those are agents waiting on you. Make the decisions, leave your answer, and clear each flag.
 
 **Working.** Run `/lattice` when you want the agent to make progress. One advance = one task. Want more? "Do 3 advances" or "keep advancing until blocked." Control the pace.
 
@@ -206,7 +206,7 @@ The `--force` flag replaces the existing block with the latest template. Without
 The CLAUDE.md block is missing or positioned too low in the file. Run `lattice setup-claude --force`, then move the `## Lattice` section higher in CLAUDE.md. Instruction position affects compliance — put it in the first or second section.
 
 **Agent uses wrong status names** (like `in_implementation` or `in_review`).
-These are from old documentation. The real statuses are: `backlog`, `in_planning`, `planned`, `in_progress`, `review`, `done`, `blocked`, `needs_human`, `cancelled`. Update the block with `lattice setup-claude --force`.
+These are from old documentation. The real statuses are: `backlog`, `in_planning`, `planned`, `in_progress`, `review`, `pr_open`, `done`, `blocked`, `cancelled`. (`needs-human` is a flag, not a status — see `lattice list --needs-human`.) Update the block with `lattice setup-claude --force`.
 
 **`lattice next` returns nothing but there are tasks in the backlog.**
 The tasks may be assigned to a different actor, or all remaining tasks are in terminal/waiting states. Run `lattice list` to see the full picture.
@@ -224,7 +224,7 @@ The tasks may be assigned to a different actor, or all remaining tasks are in te
 | Open dashboard | `lattice dashboard` |
 | Create task | `lattice create "Title" --actor human:you` |
 | Advance (in Claude Code) | `/lattice` |
-| Check inbox | `lattice list --status review` / `lattice list --status needs_human` |
+| Check inbox | `lattice list --status review` / `lattice list --needs-human` |
 | Daily digest | `lattice weather` |
 
 ---
@@ -234,4 +234,4 @@ The tasks may be assigned to a different actor, or all remaining tasks are in te
 - [User Guide](user-guide.md) — the full picture: dashboard, daily rhythm, philosophy
 - [OpenClaw Integration](integration-openclaw.md) — using Lattice with OpenClaw agents
 - [MCP Server](integration-mcp.md) — structured tool calls for any MCP-compatible client
-- [needs_human and advance guide](needs-human-and-next-guide.md) — deep dive on coordination primitives
+- [needs-human and advance guide](needs-human-and-next-guide.md) — deep dive on coordination primitives

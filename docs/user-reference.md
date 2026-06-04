@@ -21,17 +21,47 @@ A quick bug fix can be a single task with no parent. A large feature can be a pa
 
 ```
 backlog --> in_planning --> planned --> in_progress --> review --> done
-                                           ↕            ↕
-                                        blocked      needs_human
+                                           ↕
+                                        blocked
 ```
 
 Plus `cancelled` (reachable from any status).
 
 Invalid transitions are rejected with an error listing valid options. Override with `--force --reason "..."`.
 
-**`needs_human`** is reachable from any active status. It signals that the task requires human judgment — a design decision, missing access, ambiguous requirements. Agents should always leave a comment explaining what they need.
+**`blocked`** is for external dependencies — waiting on a third-party API, a CI fix, another team's deliverable. It is a *status*: the work genuinely can't proceed until the external event happens.
 
-**`blocked`** is for external dependencies — waiting on a third-party API, a CI fix, another team's deliverable. Distinct from `needs_human` because it doesn't require a human *decision*, just a human *action* or an external event.
+**`needs-human`** is a **flag**, not a status — see [The needs-human flag](#the-needs-human-flag) below. It signals that a task requires human judgment (a design decision, missing access, ambiguous requirements) and rides orthogonally on top of whatever status the task is in. `blocked` and `needs-human` can coexist: a task can be `blocked` on an external event *and* flagged for a human decision at once.
+
+---
+
+## The needs-human flag
+
+`needs-human` is an orthogonal flag stored on the task snapshot, not a workflow status. The field is `null` when absent, or an object recording who raised it, why, and when:
+
+```json
+{
+  "needs_human": {
+    "flagged_by": "agent:claude-cli",
+    "reason": "Which OAuth provider should we support?",
+    "since": "2026-06-03T14:22:00Z"
+  }
+}
+```
+
+Because the flag is independent of status, a task can be `in_progress` and flagged, `blocked` and flagged, even `done` and flagged. Setting or clearing the flag never moves the task between statuses.
+
+```bash
+# Set — reason is REQUIRED. The task keeps its current status.
+lattice needs-human LAT-42 "Which OAuth provider should we support?" --actor agent:claude
+
+# Clear — optional --note records how it was resolved.
+lattice needs-human LAT-42 --clear --note "Decided: Google + GitHub" --actor human:atin
+```
+
+The required reason structurally enforces the scannable-queue convention. Setting the flag emits a `needs_human_flagged` event; clearing it emits `needs_human_cleared`. Both are fully attributed in the task event log, and both commands support `--json`.
+
+**The queue:** `lattice list --needs-human` lists every flagged task across all statuses, each with its reason. `lattice show` renders a prominent `NEEDS HUMAN (since ..., by ...): reason` line, and `lattice weather` keys its needs-human section off the flag. `lattice next` never suggests a flagged task in any status — a flagged task is waiting on a human, not on an agent.
 
 ---
 
@@ -72,7 +102,7 @@ Multi-lock operations (e.g., linking two tasks) acquire locks in deterministic (
 
 ### Event types
 
-Built-in: `task_created`, `status_changed`, `assigned`, `comment_added`, `field_updated`, `relationship_added`, `relationship_removed`, `artifact_attached`, `file_linked`, `file_unlinked`, `task_archived`, `task_unarchived`.
+Built-in: `task_created`, `status_changed`, `assigned`, `comment_added`, `field_updated`, `relationship_added`, `relationship_removed`, `artifact_attached`, `file_linked`, `file_unlinked`, `needs_human_flagged`, `needs_human_cleared`, `task_archived`, `task_unarchived`.
 
 Custom: any `x_`-prefixed type via `lattice event`. Useful for domain-specific events like deployments, test runs, or releases.
 
@@ -173,7 +203,7 @@ The pattern that turns a prioritized backlog into completed work — one task at
 
 1. **`lattice next --claim`** — atomically grab the top task and move it to `in_progress`
 2. **Work** — implement, test, iterate
-3. **Transition** — move to `review` (done), `needs_human` (stuck on a decision), or `blocked` (external dependency)
+3. **Hand off** — move to `review` (done) or `blocked` (external dependency), or raise the `needs-human` flag (stuck on a human decision; the task keeps its status)
 4. **Comment** — record what was done, what was chosen, what's left
 5. **Commit** — save the work
 6. **Report** — tell the user what happened
@@ -294,6 +324,8 @@ The CLI is Lattice's write interface — the primary way agents interact with th
 | `lattice init` | Create `.lattice/` in your project |
 | `lattice create <title>` | Create a task |
 | `lattice status <id> <status>` | Change task status |
+| `lattice needs-human <id> "<reason>"` | Flag a task for human attention (reason required); `--clear [--note ...]` to clear |
+| `lattice migrate needs-human` | Convert tasks in the legacy `needs_human` status to the flag (`--dry-run` to preview) |
 | `lattice assign <id> <actor>` | Assign a task |
 | `lattice comment <id> "<text>"` | Add a comment (`--role` optionally tags it for completion policies) |
 | `lattice update <id> field=value` | Update task fields |

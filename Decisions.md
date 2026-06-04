@@ -780,6 +780,24 @@ Additionally, `lattice advance N` processed multiple tasks in a single context w
 
 ---
 
+## 2026-06-03: `needs_human` becomes an orthogonal flag, not a status
+
+- **Decision:** Convert `needs_human` from a workflow status into an orthogonal flag on the task. **Supersedes** the 2026-02-16 decision "`needs_human` as first-class workflow status."
+- **Rationale:** Human-attention-needed is a cross-cutting *condition*, not a lifecycle stage. As a status it had three structural problems:
+  - **Lost swimlane information.** Moving a task to `needs_human` erased the column it came from — an `in_progress` task and a `planned` task waiting on a human both collapsed into one undifferentiated bucket. The board could no longer show where the work actually stood.
+  - **Routing burden.** Because the original status was overwritten, an agent (or human) had to *remember* where to route the task back to once the human answered. A flag carries no such burden: clearing it leaves the task exactly where it was.
+  - **Coexistence with `blocked`.** A task can be genuinely `blocked` on an external dependency *and* need a human decision at the same time. Two mutually-exclusive statuses couldn't express that; a status plus an orthogonal flag can.
+- **Flag shape:** the task snapshot gains an optional `needs_human` field — `null`/absent, or an object `{"flagged_by", "reason", "since"}`. The flag is orthogonal to status: a task can be `in_progress` and flagged, `blocked` and flagged, even `done` and flagged. Setting or clearing it never moves the task.
+- **CLI verb:** `lattice needs-human <task> "<reason>"` sets the flag; `lattice needs-human <task> --clear [--note "how resolved"]` clears it. Both support `--json`.
+- **Required reason:** the reason argument is mandatory when setting the flag. This structurally enforces the old "leave a comment explaining what you need" convention — the queue is always scannable because every flagged task carries its explanation in-band.
+- **Event types:** `needs_human_flagged` and `needs_human_cleared`, fully attributed, recorded in the per-task event log.
+- **Queue and surfaces:** `lattice list --needs-human` lists flagged tasks across all statuses with reasons (replacing `lattice list --status needs_human`). `lattice next` never suggests a flagged task in any status. `lattice show` renders a prominent `NEEDS HUMAN (since ..., by ...): reason` line. `lattice weather` keys its needs-human section off the flag.
+- **`plan_approval: human`** now *sets the flag* and leaves the task in `planned` (no status move). The review-cycle-limit safety valve likewise instructs the agent to set the flag and stop.
+- **`blocked` remains a status** for generic external dependencies. `needs-human` means "waiting on a human specifically," and the two can coexist.
+- **Removal + migration:** the `needs_human` status is removed from the default workflow presets (statuses, transitions, universal_targets). Existing instances keep working until they run the idempotent migration `lattice migrate needs-human [--dry-run]`, which flags every task sitting in the status (reason = latest comment, falling back to `"Migrated from needs_human status"`), routes each back to the status it held *before* entering `needs_human` (fallback `backlog`), then strips `needs_human` from the config.
+
+---
+
 ## Note: This file is append-only
 
 `Decisions.md` is an append-only log. Entries are never edited or deleted after recording. Superseded decisions are noted inline with a reference to the superseding entry. Cross-cutting architectural decisions go here; task-scoped design decisions belong in the plan file (`.lattice/plans/<task_id>.md`).

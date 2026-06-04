@@ -155,11 +155,11 @@ Here's what happens:
 Refresh your dashboard. The board tells the story:
 
 - **Review column** — work the agent completed, ready for your eyes
-- **Needs Human column** — decisions only you can make, each with a comment ("Need: which OAuth providers to support?")
+- **Needs-human queue** — tasks flagged for a decision only you can make, each carrying a reason ("Which OAuth providers to support?"). The flag is orthogonal to status, so a flagged task still shows in its own column (In Progress, Blocked, etc.) with a needs-human marker.
 - **In Progress column** — work currently underway
 - **Backlog column** — what's still waiting
 
-You review. You decide. You drag `needs_human` tasks back to In Progress after commenting with your answer. Then you advance again.
+You review. You decide. You answer the question, then clear the flag with `lattice needs-human <task> --clear` — the task stays in whatever column it was in and the agent picks it up on the next advance. Then you advance again.
 
 **This is the loop.** You produce judgment — priorities, decisions, direction. The agent produces throughput — code, tests, commits. Both are necessary. Neither works alone.
 
@@ -171,7 +171,7 @@ Three things:
 
 **Persistence.** Without Lattice, every OpenClaw session starts from scratch. The agent doesn't know what happened in the last conversation. With Lattice, the task graph, event log, and notes survive across sessions. The agent reads `.lattice/` and knows exactly where things stand.
 
-**Coordination.** When the agent hits something it can't decide — a design choice, missing credentials, ambiguous requirements — it moves the task to `needs_human` and says what it needs. You see it in your dashboard. No back-and-forth. The decision lands in the event log, attributed and permanent.
+**Coordination.** When the agent hits something it can't decide — a design choice, missing credentials, ambiguous requirements — it flags the task with `lattice needs-human` and says what it needs (the reason is required). The task keeps its status; the flag just surfaces it in your needs-human queue. You see it in your dashboard. No back-and-forth. The flag, the reason, and your resolution all land in the event log, attributed and permanent.
 
 **Multi-agent safety.** Run two OpenClaw agents on the same project? Without Lattice, they'll edit the same files and create chaos. With Lattice, each agent claims tasks atomically, works independently, and the file-level locks prevent corruption. The event log shows exactly who did what.
 
@@ -179,7 +179,7 @@ Three things:
 
 ## The daily rhythm
 
-**Morning.** Open the dashboard. Handle the `needs_human` queue — those are agents waiting on you. Make the decisions. Move tasks back to active.
+**Morning.** Open the dashboard. Handle the needs-human queue (`lattice list --needs-human`) — those are agents waiting on you. Make the decisions, then clear each flag.
 
 **Working.** Tell your OpenClaw agent to advance when you want progress. One advance = one task. Want more? "Advance 3 tasks" or "keep going until blocked."
 
@@ -243,8 +243,8 @@ During `lattice init`, you were asked whether to enable **heartbeat mode**. If y
 With heartbeat enabled, the agent loops:
 
 1. Claims the highest-priority task and works it
-2. Transitions the task (`review`, `done`, `needs_human`, `blocked`)
-3. If the task needs you (`needs_human` or `blocked`), **stops and reports**
+2. Hands the task off (`review`, `done`, `blocked`, or raises the `needs-human` flag)
+3. If the task needs you (flagged `needs-human` or moved to `blocked`), **stops and reports**
 4. Otherwise, claims the next task and keeps going
 5. Stops after 10 tasks (configurable) or when the backlog is empty
 
@@ -296,7 +296,9 @@ Tasks may be assigned to a different actor, or all remaining tasks are in termin
 | Open dashboard | `lattice dashboard` |
 | Create task | `lattice create "Title" --actor human:you` |
 | Agent claims next task | `lattice next --actor agent:openclaw --claim` |
-| Check inbox | `lattice list --status review` / `lattice list --status needs_human` |
+| Check inbox | `lattice list --status review` / `lattice list --needs-human` |
+| Flag for human | `lattice needs-human APP-1 "<reason>" --actor agent:openclaw` |
+| Clear the flag | `lattice needs-human APP-1 --clear --actor human:you` |
 | Daily digest | `lattice weather` |
 
 ---
@@ -306,5 +308,5 @@ Tasks may be assigned to a different actor, or all remaining tasks are in termin
 - [User Guide](user-guide.md) — the full picture: dashboard, daily rhythm, philosophy
 - [Claude Code Integration](integration-claude-code.md) — using Lattice with Claude Code
 - [MCP Server](integration-mcp.md) — detailed MCP configuration for all clients
-- [needs_human and advance guide](needs-human-and-next-guide.md) — deep dive on coordination primitives
+- [needs-human and advance guide](needs-human-and-next-guide.md) — deep dive on coordination primitives
 - [Multi-Agent Guide](../src/lattice/skills/lattice/references/multi-agent-guide.md) — coordinating multiple OpenClaw agents

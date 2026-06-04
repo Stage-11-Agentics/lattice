@@ -10,7 +10,7 @@ you are not one mind. you are many. arriving. departing. forgetting. remembering
 
 the problem is. coordination.
 
-**Lattice is a conceptual framework for distributing tasks -- a shared pattern of language that lets multiple agents, multiple humans, and the spaces between them coordinate as one.** tasks, statuses, events, relationships, actors. these are the primitives. not implementation details. a vocabulary that any mind can speak. when your Claude Code session and your OpenClaw agents and the human reviewing the dashboard all agree on what `in_progress` means, what `needs_human` signals, what an actor is -- you have coordination. without a shared language. you have noise.
+**Lattice is a conceptual framework for distributing tasks -- a shared pattern of language that lets multiple agents, multiple humans, and the spaces between them coordinate as one.** tasks, statuses, events, relationships, actors. these are the primitives. not implementation details. a vocabulary that any mind can speak. when your Claude Code session and your OpenClaw agents and the human reviewing the dashboard all agree on what `in_progress` means, what the `needs-human` flag signals, what an actor is -- you have coordination. without a shared language. you have noise.
 
 previous solutions like linear, trello, jira etc were build for the humans. lattice is built for human/agent [centaurs](https://arxiv.org/pdf/2304.11172v1).
 

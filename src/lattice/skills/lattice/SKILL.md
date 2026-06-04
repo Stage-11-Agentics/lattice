@@ -49,7 +49,7 @@ The `--review` text is your breadcrumb for every future agent and human who read
 | Outcome | Action |
 |---------|--------|
 | **Done** | `lattice complete <task_id> --review "..." --actor agent:claude-cli` |
-| **Need human input** | `lattice status <task_id> needs_human --actor agent:claude-cli` + comment explaining what you need |
+| **Need human input** | `lattice needs-human <task_id> "<what you need>" --actor agent:claude-cli` (the task keeps its status — the flag is orthogonal) |
 | **Blocked on dependency** | `lattice status <task_id> blocked --actor agent:claude-cli` + comment explaining the blocker |
 
 ## The Work In Between
@@ -92,6 +92,11 @@ lattice comment PROJ-1 "Found root cause" --actor agent:claude-cli
 # Link
 lattice link PROJ-1 blocks PROJ-2 --actor agent:claude-cli
 
+# Flag for human attention (orthogonal to status — task keeps its current status)
+lattice needs-human PROJ-1 "Which OAuth provider?" --actor agent:claude-cli
+lattice needs-human PROJ-1 --clear --note "Decided: use Google" --actor agent:claude-cli
+lattice list --needs-human          # scannable queue of flagged tasks, any status
+
 # Next task
 lattice next --actor agent:claude-cli --claim --json
 
@@ -123,11 +128,13 @@ Relationship types for `link`: `blocks`, `blocked_by`, `subtask_of`, `parent_of`
 
 ```
 backlog → in_planning → planned → in_progress → review → done
-                                       ↕            ↕
-                                    blocked      needs_human
+                                       ↕
+                                    blocked
 ```
 
 Transitions are enforced. Use `--force --reason "..."` to override when genuinely needed.
+
+**`needs-human` is a flag, not a status.** It rides orthogonally on top of whatever status a task is in — a task can be `in_progress` and flagged, `blocked` and flagged, even `done` and flagged. Set it with `lattice needs-human <task> "<reason>"` (reason required) and clear it with `lattice needs-human <task> --clear`. The flag never moves the task. `blocked` stays a status for generic external dependencies; `needs-human` means "waiting on a human specifically," and the two can coexist.
 
 ## Actor IDs
 
@@ -148,7 +155,7 @@ All commands support `--json` for structured output: `{"ok": true, "data": ...}`
 
 Check if enabled: look for `"heartbeat": {"enabled": true}` in `.lattice/config.json`.
 
-When enabled, keep advancing after each task: complete the current task → `lattice next --claim` → work the next one → repeat. Stop after `max_advances` (default 10), when the backlog is empty, or when a task hits `needs_human` or `blocked`.
+When enabled, keep advancing after each task: complete the current task → `lattice next --claim` → work the next one → repeat. Stop after `max_advances` (default 10), when the backlog is empty, or when a task is flagged `needs-human` or hits `blocked`.
 
 ## Rules
 
@@ -156,7 +163,7 @@ When enabled, keep advancing after each task: complete the current task → `lat
 2. **Close with `lattice complete`.** Never raw `lattice status ... done`.
 3. **One task at a time.** Finish or transition before claiming the next.
 4. **Don't force transitions.** If a transition fails, investigate why.
-5. **Don't cancel human tasks.** Use `needs_human` instead — let the human decide.
+5. **Don't cancel human tasks.** Flag them with `lattice needs-human` instead — let the human decide.
 6. **Comment liberally.** The next agent has no hallway to find you in.
 
 ## References

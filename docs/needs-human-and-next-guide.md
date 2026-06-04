@@ -1,72 +1,106 @@
-# User Guide: `needs_human`, `lattice next`, and Advance
+# User Guide: the `needs-human` flag, `lattice next`, and Advance
 
 This guide covers three features that work together to create a smooth human-agent coordination loop:
 
-1. **`needs_human` status** — Agents signal when they're blocked on you
+1. **The `needs-human` flag** — Agents signal when they're waiting on you
 2. **`lattice next`** — Deterministic task selection for agents
 3. **The advance pattern** — One unit of forward progress (driven by `/lattice`)
 
 ---
 
-## 1. The `needs_human` Status
+## 1. The `needs-human` Flag
 
 ### What it is
 
-A workflow status that means: "This task is waiting specifically for a human decision, approval, or input." It's distinct from `blocked` (generic external dependency) — `needs_human` creates an explicit queue of things waiting on *you*.
+`needs-human` is a flag that means: "This task is waiting specifically for a human decision, approval, or input." It is **orthogonal to status** — the flag rides on top of whatever status a task is in. A task can be `in_progress` and flagged, `blocked` and flagged, even `done` and flagged. The flag never moves the task.
+
+It's distinct from `blocked` (a status, for generic external dependencies). `needs-human` is "waiting on a human specifically," and the two can coexist: a task can be `blocked` on a third-party API *and* flagged for a human decision at the same time. The flag creates an explicit queue of things waiting on *you*, regardless of where each task sits in the workflow.
+
+The flag stores who raised it, why, and when:
+
+```json
+{
+  "needs_human": {
+    "flagged_by": "agent:claude-cli",
+    "reason": "Which OAuth provider should we support?",
+    "since": "2026-06-03T14:22:00Z"
+  }
+}
+```
+
+When the flag is absent, the field is `null` (or omitted entirely).
 
 ### When agents use it
 
-Agents move a task to `needs_human` when they hit a point requiring human judgment:
+Agents flag a task when they hit a point requiring human judgment:
 
 - Design decisions ("Should we use REST or GraphQL?")
 - Missing access or credentials
 - Ambiguous requirements that can't be resolved from context
 - Approval needed before proceeding (deploy, merge, etc.)
 
-When moving to `needs_human`, the agent is required to leave a comment explaining what they need. This keeps your queue scannable.
+### Setting and clearing the flag
+
+```bash
+# Flag a task — the reason is REQUIRED. The task keeps its current status.
+lattice needs-human LAT-42 "Which OAuth provider should we support?" --actor agent:claude-cli
+
+# Clear the flag once you've provided what was needed (--note is optional)
+lattice needs-human LAT-42 --clear --note "Decided: Google + GitHub" --actor human:atin
+```
+
+Requiring a reason structurally enforces what used to be a soft convention: the queue is always scannable because every flagged task carries an explanation. Setting the flag emits a `needs_human_flagged` event; clearing it emits `needs_human_cleared`. Both are fully attributed in the task event log. Both commands support `--json`.
 
 ### How to see what needs you
 
 ```bash
-# Weather report highlights needs_human items with [HUMAN] tag
+# Weather report highlights flagged items, keyed off the needs-human flag
 lattice weather
 
-# Filter the task list directly
-lattice list --status needs_human
+# The scannable queue: flagged tasks across ALL statuses, with reasons
+lattice list --needs-human
 
-# Dashboard shows needs_human in amber/orange (distinct from red blocked)
+# lattice show renders a prominent NEEDS HUMAN line on a flagged task
+lattice show LAT-42
+
+# Dashboard surfaces the flag distinctly from red blocked
 lattice dashboard
 ```
 
-### Unblocking a task
+`lattice list --needs-human` is the queue. Because the flag is orthogonal to status, this lists everything waiting on you whether it's in planning, in progress, blocked, or otherwise — something a single status column could never capture.
 
-After providing what the agent needed, move the task back to an active status:
+### Resolving a flagged task
+
+Provide what the agent needed, record the decision, then clear the flag. The task's status is untouched, so work resumes wherever it left off:
 
 ```bash
-# Resume planning
-lattice status LAT-42 in_planning --actor human:atin
 lattice comment LAT-42 "Decision: use REST. Rationale in notes." --actor human:atin
-
-# Or skip ahead to in_progress
-lattice status LAT-42 in_progress --actor human:atin
+lattice needs-human LAT-42 --clear --note "Use REST" --actor human:atin
 ```
 
-### Workflow transitions
+The agent picks the task back up on its next advance — there's no status to "move it back" from, because it never left its column.
 
+---
+
+## Migrating from the `needs_human` status
+
+Earlier Lattice modeled needs-human as a workflow *status* rather than a flag. Instances created under that model keep working until you run the migration, which is idempotent and safe to run twice:
+
+```bash
+# Preview what would change without writing anything
+lattice migrate needs-human --dry-run
+
+# Apply
+lattice migrate needs-human
 ```
-                    in_planning ──→ needs_human
-                    planned ──────→ needs_human
-                    in_progress ──→ needs_human
-                    review ───────→ needs_human
 
-needs_human ──→ in_planning
-needs_human ──→ planned
-needs_human ──→ in_progress
-needs_human ──→ review
-needs_human ──→ cancelled
-```
+The migration:
 
-`needs_human` is NOT reachable from `backlog` (work hasn't started) or `done`/`cancelled` (terminal).
+1. **Flags** every task currently sitting in the `needs_human` status. The reason is taken from the task's latest comment, falling back to `"Migrated from needs_human status"`.
+2. **Routes** each such task back to the status it was in *before* it entered `needs_human` (fallback: `backlog`).
+3. **Strips** `needs_human` from the project's workflow config (statuses, transitions, and universal targets).
+
+After migration, `lattice list --status needs_human` no longer applies — use `lattice list --needs-human` instead.
 
 ---
 
@@ -118,7 +152,7 @@ This is equivalent to running `lattice assign` + `lattice status` but atomic —
 
 1. **Resume first:** If `--actor` is specified, check for `in_progress` or `in_planning` tasks assigned to that actor. Return the highest-priority one. (Don't abandon work.)
 
-2. **Pick from ready pool:** Tasks in `backlog` or `planned` status, either unassigned or assigned to the requesting actor. Excludes `needs_human`, `blocked`, `done`, `cancelled`.
+2. **Pick from ready pool:** Tasks in `backlog` or `planned` status, either unassigned or assigned to the requesting actor. Excludes `blocked`, `done`, `cancelled` — and skips any task carrying the `needs-human` flag, in any status (a flagged task is waiting on a human, not on an agent).
 
 3. **Sort by:**
    - Priority: `critical` > `high` > `medium` > `low`
@@ -144,7 +178,7 @@ lattice next --status review --actor agent:reviewer --json
 If `lattice next` returns `null` / "No tasks available", it means:
 - The backlog is empty, OR
 - All remaining tasks are assigned to other agents, OR
-- All tasks are in excluded states (done, blocked, needs_human, cancelled)
+- All tasks are in excluded states (done, blocked, cancelled) or carry the `needs-human` flag
 
 Check `lattice list` to see what's actually in the system.
 
@@ -162,7 +196,7 @@ The advance is the core lifecycle pattern in Lattice. The agent claims the highe
 /lattice
 ```
 
-That's it. The `/lattice` skill teaches the agent the full lifecycle, including how to claim the next task and work it to completion (or to a transition point like `needs_human` or `blocked`).
+That's it. The `/lattice` skill teaches the agent the full lifecycle, including how to claim the next task and work it to completion (or to a hand-off point — flagging it `needs-human` or moving it to `blocked`).
 
 For multiple advances, just invoke it again or tell the agent "do 3 advances" or "keep advancing until blocked."
 
@@ -171,7 +205,7 @@ For multiple advances, just invoke it again or tell the agent "do 3 advances" or
 1. **Claim:** `lattice next --actor agent:claude-cli --claim --json`
 2. **Read:** Examine the task details and any notes/plans
 3. **Work:** Implement, test, iterate — full coding agent capabilities
-4. **Transition:** Move the task to `review`, `needs_human`, or `blocked` depending on outcome
+4. **Hand off:** Move the task to `review` or `blocked`, or raise the `needs-human` flag, depending on outcome
 5. **Comment:** Record what was done, what was chosen, what's left
 6. **Commit:** Commit changes
 7. **Report:** Tell you what happened — task, outcome, summary
@@ -184,7 +218,7 @@ For multiple advances, just invoke it again or tell the agent "do 3 advances" or
 
 ### What it won't do
 
-- Work on `needs_human` tasks (those are waiting on you)
+- Work on `needs-human`-flagged tasks (those are waiting on you), in any status
 - Force invalid status transitions
 - Push code (commits locally, you review and push)
 
@@ -194,7 +228,7 @@ After an advance, you'll typically:
 
 1. Read the agent's report to see what was done
 2. Check `lattice list --status review` for tasks awaiting your review
-3. Check `lattice list --status needs_human` for decisions only you can make
+3. Check `lattice list --needs-human` for decisions only you can make
 4. Run tests / review code
 5. Merge, push, or send tasks back for rework
 
@@ -208,12 +242,12 @@ lattice weather
 /lattice
 
 # Check what needs you
-lattice list --status needs_human
+lattice list --needs-human
 lattice list --status review
 
-# Address needs_human items
-lattice status LAT-15 in_progress --actor human:atin
+# Address flagged items: answer, then clear the flag (status is untouched)
 lattice comment LAT-15 "Approved: use the proposed schema" --actor human:atin
+lattice needs-human LAT-15 --clear --note "Approved schema" --actor human:atin
 
 # Advance again
 /lattice
@@ -233,7 +267,7 @@ The three features form a coordination loop:
    │  │ lattice next --claim │               │
    │  │ → work on task       │               │
    │  │ → review / done      │───────────┐   │
-   │  │ → needs_human        │──┐        │   │
+   │  │ → flag needs-human   │──┐        │   │
    │  │ → blocked            │  │        │   │
    │  └──────────────────────┘  │        │   │
    │           ↑                │        │   │
@@ -246,11 +280,11 @@ The three features form a coordination loop:
    │                                        │
    │  HUMAN                                 │
    │  ┌─────────────────────────┐           │
-   │  │ lattice weather         │           │
-   │  │ → sees [HUMAN] items    │           │
+   │  │ lattice list            │           │
+   │  │   --needs-human         │           │
    │  │ → makes decisions       │           │
-   │  │ → lattice status → back │───────┐   │
-   │  │   to active             │       │   │
+   │  │ → needs-human --clear   │───────┐   │
+   │  │   (status untouched)    │       │   │
    │  └─────────────────────────┘       │   │
    │                                    │   │
    └────────────────────────────────────│───┘
@@ -264,11 +298,11 @@ The three features form a coordination loop:
 The human's job is to:
 1. Define work (create tasks with clear titles and descriptions)
 2. Prioritize (set priority/urgency so `next` picks the right thing)
-3. Unblock (address `needs_human` items promptly)
+3. Unblock (address flagged items promptly, then `needs-human --clear`)
 4. Review (check `review` status tasks and approve or send back)
 
 The agent's job is to:
 1. Claim and work tasks (`lattice next --claim`)
-2. Signal when stuck (`needs_human` + comment)
+2. Signal when stuck (`lattice needs-human <task> "<reason>"`)
 3. Leave breadcrumbs (comments, notes)
-4. Complete or transition every task it touches
+4. Complete or hand off every task it touches

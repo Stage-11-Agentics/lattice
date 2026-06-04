@@ -186,15 +186,15 @@ the agents produce throughput. you produce judgment. that's the division of labo
 
 ---
 
-## `needs_human`. the async handoff.
+## `needs-human`. the async handoff.
 
 this is the coordination primitive that makes human-agent collaboration. practical.
 
-when an agent hits something above its pay grade — a design decision. missing credentials. ambiguous requirements — it moves the task to `needs_human` and leaves a comment.
+when an agent hits something above its pay grade — a design decision. missing credentials. ambiguous requirements — it flags the task with `needs-human` and a required reason.
 
-*"Need: REST vs GraphQL for the public API."*
+*"REST vs GraphQL for the public API."*
 
-the agent doesn't wait. it moves on to other work. you see the task in the Needs Human column whenever you're ready. you add your decision as a comment. drag the task back to In Progress. the next agent session picks it up with full context.
+the flag is orthogonal to status. the task keeps its column — the agent doesn't move it, it just raises a hand. the agent doesn't wait either. it moves on to other work. you see the flagged task whenever you're ready (`lattice list --needs-human`, a queue that spans every status). you add your answer and clear the flag. nothing to drag — the task never left its column. the next agent session picks it up with full context.
 
 no Slack. no standup. no re-explaining. the decision is in the event log. attributed and permanent.
 
@@ -251,10 +251,10 @@ attribution follows authorship of the *decision*. not who typed the command. the
 ### statuses
 
 ```
-backlog --> in_planning --> planned --> in_progress --> review --> done
+backlog --> in_planning --> planned --> in_progress --> review --> pr_open --> done
 ```
 
-plus `blocked`, `needs_human` (reachable from any active status), and `cancelled`.
+plus `blocked` and `cancelled`. `needs-human` is not a status — it's an orthogonal flag that rides on top of whatever status a task is in (`lattice list --needs-human`).
 
 each transition is. an event. a fact. a piece of the permanent record.
 
@@ -373,7 +373,7 @@ lattice setup-openclaw
 
 here is what a day with Lattice looks like. if you let it breathe.
 
-**morning.** open the dashboard. scan the board. what's in review? what's blocked? what needs you? handle the `needs_human` queue first. those are agents. waiting. politely. don't keep them waiting longer than you must.
+**morning.** open the dashboard. scan the board. what's in review? what's blocked? what needs you? handle the needs-human queue first (`lattice list --needs-human`). answer. clear the flag. those are agents. waiting. politely. don't keep them waiting longer than you must.
 
 **midday.** check activity feed. see what swept. read agent comments. approve or redirect. maybe create a few new tasks from what you learned this morning. priorities shift. let them.
 
