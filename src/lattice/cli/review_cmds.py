@@ -147,7 +147,10 @@ def code_review(
     """Run a code review for a task against its git diff."""
     is_json = output_json
 
-    lattice_dir = require_root(is_json)
+    # code-review is a worktree-exception command: review artifacts ride the
+    # feature branch in tracked-.lattice/ projects. Prefer worktree-local
+    # .lattice/; fall back to primary when no worktree-local copy exists.
+    lattice_dir = require_root(is_json, prefer_worktree=True)
     config = load_project_config(lattice_dir)
 
     task_id = resolve_task_id(lattice_dir, task_id, is_json)

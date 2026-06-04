@@ -2,74 +2,70 @@
 
 This guide covers creating, configuring, and tearing down git worktrees in projects that use Lattice for coordination.
 
-## The Critical Invariant
+## The CLI is worktree-transparent
 
-All worktrees MUST share a single `.lattice/` directory via the `LATTICE_ROOT` environment variable. Lattice is the real-time coordination state for all agents. If a worktree runs Lattice commands without `LATTICE_ROOT` pointing to the shared `.lattice/`, it creates divergent state — tasks, events, and plans invisible to every other agent. This is unrecoverable without manual intervention.
+Lattice's CLI auto-detects when it's running inside a git linked worktree and routes `.lattice/` reads and writes to the **primary repo's** `.lattice/` automatically. You no longer need to set `LATTICE_ROOT` or wrap calls in `(cd $REPO_ROOT && lattice ...)`. This is the same way `git` itself behaves — `git status` in a worktree just works, talking to the primary.
+
+Detection uses the `.git` *file* (gitdir pointer) that linked worktrees carry. Bare repos, submodules, and non-git directories are unaffected.
+
+### Two exceptions
+
+Two commands intentionally write to the **worktree's** `.lattice/` instead of the primary, because their output should ride the feature branch into the PR:
+
+- `lattice branch-link` (and `branch-unlink`) — records the `branch_linked` / `branch_unlinked` event on the same branch the link refers to.
+- `lattice code-review` — writes review artifacts under `.lattice/artifacts/` so they land in commit 1 / the PR.
+
+These commands fall back to the primary's `.lattice/` when the worktree has none (e.g., in projects where `.lattice/` is gitignored, like Lattice itself). So you get the right behavior in both tracked-`.lattice/` and gitignored-`.lattice/` projects without thinking about it.
+
+### Precedence
+
+`LATTICE_ROOT` (environment variable) > auto-detect > walk-up from cwd. Setting `LATTICE_ROOT` overrides everything else, including the worktree exceptions, and is still useful for unusual layouts.
 
 ## Creating a Worktree
 
-1. Identify the task (e.g., LAT-42) and determine a branch name:
-   ```bash
-   git worktree add ../worktree-LAT-42 -b feat/LAT-42-<slug>
-   ```
-   Use sibling directories (`../worktree-*`), not subdirectories of the primary checkout.
+```bash
+git worktree add ../worktree-LAT-42 -b feat/LAT-42-<slug>
+cd ../worktree-LAT-42
+lattice list                                              # auto-routes to primary
+lattice branch-link LAT-42 feat/LAT-42-<slug> \           # writes to worktree if .lattice/ tracked
+    --actor agent:<your-id>
+```
 
-2. Set `LATTICE_ROOT` to the primary checkout's `.lattice/` absolute path:
-   ```bash
-   export LATTICE_ROOT=$(cd /path/to/primary-checkout/.lattice && pwd)
-   ```
-
-3. Verify Lattice sees the shared state from within the worktree:
-   ```bash
-   cd ../worktree-LAT-42
-   lattice list
-   ```
-   You should see the same tasks as in the primary checkout. If you see an empty list or an error, `LATTICE_ROOT` is not set correctly.
-
-4. Link the branch in Lattice:
-   ```bash
-   lattice branch-link LAT-42 feat/LAT-42-<slug> --actor agent:<your-id>
-   ```
+Use sibling directories (`../worktree-*`), not subdirectories of the primary checkout.
 
 ## Working in a Worktree
 
-- All Lattice commands work normally as long as `LATTICE_ROOT` is set.
-- Branch awareness checks still apply — verify your worktree is on the expected branch before commits and status transitions.
+- All Lattice commands work without special setup. The CLI handles routing.
 - Commits happen on the worktree's branch, fully isolated from other worktrees and the primary checkout.
 - Push your branch regularly so other agents and CI can see your work.
 
 ## Tearing Down a Worktree
 
-1. Ensure all work is committed and pushed.
-2. Return to the primary checkout:
-   ```bash
-   cd /path/to/primary-checkout
-   ```
-3. Remove the worktree:
-   ```bash
-   git worktree remove ../worktree-LAT-42
-   ```
-4. If the branch was merged, clean it up:
-   ```bash
-   git branch -d feat/LAT-42-<slug>
-   ```
+```bash
+cd /path/to/primary-checkout
+git worktree remove ../worktree-LAT-42
+git branch -d feat/LAT-42-<slug>      # if merged
+```
 
 ## Do NOT
 
-- **Run `lattice init` in a worktree.** This creates a separate `.lattice/` directory and splits coordination state.
-- **Forget to set `LATTICE_ROOT`.** Lattice's root discovery walks up the directory tree. Without `LATTICE_ROOT`, it will either find nothing (error) or create a new root if someone runs `lattice init`.
+- **Run `lattice init` in a worktree** when the primary already has `.lattice/`. The CLI now refuses this explicitly — it would create a divergent worktree-local `.lattice/` that splits coordination state. If you genuinely need a separate Lattice instance per worktree (rare), pass `--force --reason "<why>"`.
 - **Create worktrees inside the primary checkout.** Use sibling directories (`../worktree-*`) to keep the filesystem clean.
 - **Leave stale worktrees.** They hold branch refs and can cause confusion. Clean up when work is merged.
 
-## Spawning Sub-Agents in Worktrees
+## Historical context: the old `LATTICE_ROOT` workflow
 
-When spawning sub-agents that will work in a worktree, ensure `LATTICE_ROOT` is set in their environment:
+Before the CLI gained worktree-transparency, this guide required users to:
 
 ```bash
-LATTICE_ROOT=/absolute/path/to/.lattice <agent-command>
+export LATTICE_ROOT=$(cd /path/to/primary-checkout/.lattice && pwd)
 ```
 
-Each sub-agent inherits the env var and operates against the shared Lattice state.
+That step is no longer necessary — the CLI does it for you. `LATTICE_ROOT` is still respected (and overrides auto-detection) for unusual layouts and for tests.
+
+## Spawning Sub-Agents in Worktrees
+
+Sub-agents run from within a worktree the same way you do — Lattice auto-routes for them too. Just `cd` into the worktree and start the agent; no `LATTICE_ROOT` plumbing required. If you do choose to set `LATTICE_ROOT` in the agent's environment for testing or special layouts, the agent honors it as usual.
 
 ## CLI worktree↔root bridge footguns (`code-review` and `plan-review`)
 
@@ -90,4 +86,4 @@ LAT-219 added directory-walking auto-detection so most `lattice` calls route cor
 - **Cheap mitigation:** Before `lattice plan-review`, verify `$REPO_ROOT/.lattice/plans/<task_id>.md` has the authored content via `wc -l`. If it's the 30-line scaffold but the worktree has the real plan, copy worktree→root: `cp <worktree>/.lattice/plans/<task_id>.md $REPO_ROOT/.lattice/plans/`.
 - **Observed:** EC v1.2.1 run, PSY-47 delegator. First plan-review pass returned vacuous FAIL; worked around by the copy. File a Lattice ticket if you hit this — it's an upstream defect that should follow LAT-219's fix to the same conclusion.
 
-Both bugs are upstream defects in Lattice, not workflow issues. Document a hit in your run's closeout audit and consider filing a Lattice ticket so the maintainer can apply the LAT-219 fix to the review path.
+Both bugs are upstream defects in Lattice, not workflow issues (tracked as LAT-214 / LAT-225). Document a hit in your run's closeout audit and consider filing a Lattice ticket so the maintainer can apply the LAT-219 fix to the review path.

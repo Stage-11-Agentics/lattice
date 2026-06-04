@@ -107,7 +107,7 @@ def ensure_lattice_dirs(root: Path) -> None:
         lifecycle_log.touch()
 
 
-def find_root(start: Path | None = None) -> Path | None:
+def find_root(start: Path | None = None, *, prefer_worktree: bool = False) -> Path | None:
     """Find the project root containing .lattice/.
 
     Checks LATTICE_ROOT env var first. If set, validates it and returns
@@ -118,6 +118,14 @@ def find_root(start: Path | None = None) -> Path | None:
     linked worktree, the search jumps to the primary worktree first so the
     canonical .lattice/ is found rather than any stale snapshot copied into
     the worktree at creation time. This makes ``lattice`` worktree-transparent.
+
+    When *prefer_worktree* is True (used by commands whose output rides the
+    feature branch — ``branch-link``, ``branch-unlink``, ``code-review``),
+    the search prefers a worktree-local ``.lattice/``. If the worktree has
+    none, it falls back to the auto-route to the primary. This keeps
+    tracked-``.lattice/`` projects (e.g. c11) writing artifacts into the
+    feature branch while gitignored-``.lattice/`` projects (e.g. Lattice
+    itself) still update canonical coordination state.
 
     Returns:
         Path to the directory containing .lattice/, or None if not found.
@@ -140,57 +148,77 @@ def find_root(start: Path | None = None) -> Path | None:
             )
         return env_path
 
-    current = (start or Path.cwd()).resolve()
+    start_resolved = (start or Path.cwd()).resolve()
+    primary, worktree = _detect_worktree(start_resolved)
 
-    primary = _git_primary_worktree(current)
-    if primary is not None:
-        current = primary
+    if prefer_worktree and worktree is not None:
+        # Try the worktree-local .lattice/ first; only consider the worktree
+        # subtree, since a hit higher up the filesystem would route to whatever
+        # ancestor happens to have a .lattice/ — not the worktree's own.
+        found = _walk_up_for_lattice(start_resolved, ceiling=worktree)
+        if found is not None:
+            return found
+        # Fall back to the auto-route below.
 
+    walk_start = primary if primary is not None else start_resolved
+    return _walk_up_for_lattice(walk_start)
+
+
+def _walk_up_for_lattice(start: Path, *, ceiling: Path | None = None) -> Path | None:
+    """Walk up from start looking for a .lattice/ directory.
+
+    When *ceiling* is provided, the search stops after checking *ceiling*
+    itself (used by ``prefer_worktree=True`` to restrict the worktree-local
+    search to the worktree subtree).
+    """
+    current = start
     while True:
         if (current / LATTICE_DIR).is_dir():
             return current
+        if ceiling is not None and current == ceiling:
+            return None
         parent = current.parent
         if parent == current:
-            # Reached filesystem root
             return None
         current = parent
 
 
-def _git_primary_worktree(start: Path) -> Path | None:
-    """Return the primary worktree root if start is inside a git linked worktree.
+def _detect_worktree(start: Path) -> tuple[Path | None, Path | None]:
+    """Detect whether *start* is inside a git linked worktree.
 
-    A linked worktree is marked by a ``.git`` *file* (not directory) whose
-    contents are ``gitdir: <abspath>/.git/worktrees/<name>``. The primary
-    worktree's root is the parent of that primary ``.git`` directory.
+    Returns ``(primary_root, worktree_root)`` when *start* is inside a linked
+    worktree, both resolved to absolute paths. Returns ``(None, None)`` when
+    *start* is not inside any git tree, when the nearest git marker is a real
+    ``.git`` directory (i.e. already the primary worktree), or when the
+    worktree pointer can't be parsed.
 
-    Returns None when start is not inside any git tree, when the nearest git
-    marker is a real ``.git`` directory (i.e., already the primary worktree),
-    or when the worktree pointer can't be parsed. In those cases the caller
-    keeps its existing walk-up search from start.
+    The worktree marker is a ``.git`` *file* (not directory) whose contents
+    are ``gitdir: <abspath>/.git/worktrees/<name>``. The primary worktree's
+    root is the parent of that primary ``.git`` directory.
     """
     current = start
     while True:
         git_path = current / ".git"
         if git_path.is_dir():
-            return None
+            return None, None
         if git_path.is_file():
             try:
                 content = git_path.read_text(encoding="utf-8").strip()
             except OSError:
-                return None
+                return None, None
             prefix = "gitdir:"
             if not content.startswith(prefix):
-                return None
+                return None, None
             gitdir = Path(content[len(prefix) :].strip())
             # gitdir points at <primary>/.git/worktrees/<name>; primary root
             # is two levels up from there.
             primary_git = gitdir.parent.parent
             if primary_git.name == ".git" and primary_git.is_dir():
-                return primary_git.parent
-            return None
+                return primary_git.parent, current
+            return None, None
         parent = current.parent
         if parent == current:
-            return None
+            return None, None
         current = parent
 
 

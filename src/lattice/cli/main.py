@@ -16,7 +16,7 @@ from lattice.core.config import (
     validate_subproject_code,
 )
 from lattice.core.ids import generate_instance_id, generate_task_id, validate_actor
-from lattice.storage.fs import LATTICE_DIR, atomic_write, ensure_lattice_dirs
+from lattice.storage.fs import LATTICE_DIR, _detect_worktree, atomic_write, ensure_lattice_dirs
 from lattice.storage.short_ids import _default_index, allocate_short_id, save_id_index
 
 
@@ -422,6 +422,20 @@ def _stdin_is_tty() -> bool:
     help="Project type. 'standard' is a normal Lattice project. 'structure' enables "
     "the Structure Overview tab for Cell 05 mission-control views.",
 )
+@click.option(
+    "--force",
+    "force_init",
+    is_flag=True,
+    default=False,
+    help="Bypass the worktree guard. Required (with --reason) when initializing "
+    "inside a git worktree whose primary repo already has a .lattice/.",
+)
+@click.option(
+    "--reason",
+    "force_reason",
+    default=None,
+    help="Reason for --force (recorded in stderr; required when --force is used).",
+)
 def init(
     target_path: str,
     actor: str | None,
@@ -442,6 +456,8 @@ def init(
     plan_approval: str | None,
     done_display: str | None,
     project_type: str | None,
+    force_init: bool,
+    force_reason: str | None,
 ) -> None:
     """Initialize a new Lattice project."""
     root = Path(target_path)
@@ -458,6 +474,30 @@ def init(
             f"Cannot initialize: '{LATTICE_DIR}' exists but is not a directory. "
             "Remove it and try again."
         )
+
+    # Layer F: refuse to create a divergent .lattice/ when standing in a
+    # linked git worktree whose primary repo already has one.
+    # (Click's resolve_path=True on --path means root is already absolute.)
+    primary, worktree = _detect_worktree(root)
+    if worktree is not None and primary is not None:
+        primary_lattice = primary / LATTICE_DIR
+        if primary_lattice.is_dir() and not force_init:
+            raise click.ClickException(
+                f"Detected a git worktree at {worktree}; primary repo already has "
+                f"{LATTICE_DIR}/ at {primary_lattice}. Refusing to create a "
+                f"divergent worktree-local {LATTICE_DIR}/. "
+                f"Run 'lattice' commands directly — they auto-route to the primary. "
+                f"If you really need a separate Lattice instance here, re-run with "
+                f'--force --reason "<why>".'
+            )
+        if force_init:
+            if not force_reason:
+                raise click.ClickException("--reason is required with --force.")
+            click.echo(
+                f"[init --force] Creating divergent worktree-local {LATTICE_DIR}/ "
+                f"at {root}. Reason: {force_reason}",
+                err=True,
+            )
 
     # Track whether essential values came from flags (not prompts).
     # Non-interactive mode triggers when BOTH are provided via flags,
