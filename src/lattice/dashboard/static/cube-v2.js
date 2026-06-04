@@ -47,6 +47,13 @@ var CV2_STATUS_COLORS = {
   blocked: '#f87171', needs_human: '#f59e0b', cancelled: '#374151'
 };
 
+/* needs_human is an orthogonal flag: when set, override status color with amber. */
+var CV2_NEEDS_HUMAN_COLOR = '#f59e0b';
+function _cv2NodeColor(node) {
+  if (node && node.needs_human) return CV2_NEEDS_HUMAN_COLOR;
+  return CV2_STATUS_COLORS[node && node.status] || '#6b7280';
+}
+
 var CV2_EDGE_COLORS = {
   blocks: '#ef4444', depends_on: '#f97316', subtask_of: '#3b82f6',
   related_to: '#6b7280', spawned_by: '#8b5cf6'
@@ -321,7 +328,7 @@ function _cv2InitSimulation(nodes, links) {
   _cv2.nodeTargetColors = [];
   _cv2.nodeCurrentColors = [];
   for (var i = 0; i < nodes.length; i++) {
-    var c = new THREE.Color(CV2_STATUS_COLORS[nodes[i].status] || '#6b7280');
+    var c = new THREE.Color(_cv2NodeColor(nodes[i]));
     _cv2.nodeTargetColors.push({ r: c.r, g: c.g, b: c.b });
     _cv2.nodeCurrentColors.push({ r: c.r, g: c.g, b: c.b });
   }
@@ -788,7 +795,7 @@ function _cv2UpdateHover(e) {
     var node = _cv2.nodeData[hit];
     _cv2.hoveredNode = node.id;
     var statusName = _cv2GetStatusDisplayName(node.status || 'backlog');
-    var statusColor = CV2_STATUS_COLORS[node.status] || '#6b7280';
+    var statusColor = _cv2NodeColor(node);
     var priorityLabel = (node.priority || 'medium');
     var typeLabel = (node.type || 'task');
     var snippet = node.description_snippet || '';
@@ -1189,7 +1196,7 @@ function updateCubeV2Data(data) {
   _cv2.nodeTargetColors = [];
   _cv2.nodeCurrentColors = _cv2.nodeCurrentColors || [];
   for (var i = 0; i < nodes.length; i++) {
-    var c = new THREE.Color(CV2_STATUS_COLORS[nodes[i].status] || '#6b7280');
+    var c = new THREE.Color(_cv2NodeColor(nodes[i]));
     _cv2.nodeTargetColors.push({ r: c.r, g: c.g, b: c.b });
     // Preserve current colors for smooth transition, or init if new
     if (!_cv2.nodeCurrentColors[i]) {

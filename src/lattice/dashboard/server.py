@@ -575,6 +575,7 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                     "priority": snap.get("priority"),
                     "type": snap.get("type"),
                     "assigned_to": snap.get("assigned_to"),
+                    "needs_human": snap.get("needs_human"),
                     "branch_links": snap.get("branch_links", []),
                     "created_at": snap.get("created_at"),
                     "updated_at": snap.get("updated_at"),

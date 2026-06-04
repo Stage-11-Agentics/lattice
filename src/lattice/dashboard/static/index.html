@@ -222,6 +222,9 @@ a:hover{text-decoration:underline}
 .active-badge{display:inline-flex;align-items:center;gap:0.25rem;padding:0.0625rem 0.4375rem;border-radius:10px;font-size:.7rem;font-weight:600;background:rgba(22,163,74,.15);color:var(--color-success);border:1px solid rgba(22,163,74,.3);white-space:nowrap}
 .active-badge .active-dot{width:0.375rem;height:0.375rem}
 
+/* needs_human flag (orthogonal to status) */
+.needs-human-badge{display:inline-flex;align-items:center;gap:0.25rem;padding:0.0625rem 0.4375rem;border-radius:10px;font-size:.7rem;font-weight:700;letter-spacing:.02em;text-transform:uppercase;background:rgba(245,158,11,.18);color:#f59e0b;border:1px solid rgba(245,158,11,.45);white-space:nowrap;cursor:help}
+
 /* Heat indicator (based on last_status_changed_at) */
 /* Board cards: heat bar is rendered inline via JS; these classes add positioning context */
 .card.heat-hot,.card.heat-warm,.card.heat-cooling{position:relative}
@@ -3458,6 +3461,19 @@ function _renderPanelContent(taskId, task, events) {
     html += ' <span class="archived-badge">ARCHIVED</span></div>';
   }
 
+  // needs_human flag (orthogonal to status)
+  if (task.needs_human) {
+    var nh = task.needs_human;
+    html += '<div style="margin:8px 0;padding:8px 10px;border-radius:6px;background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.4)">';
+    html += '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px"><span class="needs-human-badge">Needs Human</span></div>';
+    if (nh.reason) html += '<div style="font-size:.85rem;color:var(--text-primary)">' + esc(nh.reason) + '</div>';
+    var nhMeta = [];
+    if (nh.flagged_by) nhMeta.push('flagged by ' + esc(nh.flagged_by));
+    if (nh.since) nhMeta.push('since ' + esc(nh.since));
+    if (nhMeta.length) html += '<div style="font-size:.7rem;color:var(--text-muted);margin-top:3px">' + nhMeta.join(' · ') + '</div>';
+    html += '</div>';
+  }
+
   // Title (editable)
   if (!isArchived) {
     html += '<div class="dp-field"><dt>Title</dt><dd><span class="editable" id="dp-title-edit" title="Click to edit">' + esc(task.title || "Untitled") + '</span></dd></div>';
@@ -4413,6 +4429,10 @@ function renderBoardCard(t) {
   }
   html += '<div class="card-title">' + esc(t.title || "Untitled") + "</div>";
   html += '<div class="card-meta">';
+  if (t.needs_human) {
+    var nhReason = (t.needs_human && t.needs_human.reason) ? String(t.needs_human.reason) : "Needs human attention";
+    html += '<span class="needs-human-badge" title="' + esc(nhReason) + '">Needs Human</span>';
+  }
   if (t.priority) html += '<span class="badge pri-' + esc(t.priority) + '">' + esc(t.priority) + "</span>";
   if (t.type) html += '<span class="badge type-badge">' + esc(t.type) + "</span>";
   if (t.has_active_session) html += '<span class="active-badge"><span class="active-dot"></span>Active</span>';

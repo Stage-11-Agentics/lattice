@@ -363,6 +363,13 @@ function cube3dStatusColor(status) {
   return CUBE3D_STATUS_COLORS[status] || '#6b7280';
 }
 
+/* needs_human is an orthogonal flag: when set, override status color with amber. */
+var CUBE3D_NEEDS_HUMAN_COLOR = '#f59e0b';
+function cube3dNodeColor(node) {
+  if (node && node.needs_human) return CUBE3D_NEEDS_HUMAN_COLOR;
+  return cube3dStatusColor(node && node.status);
+}
+
 function cube3dHexToRgb(hex) {
   var result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
   return result ? {
@@ -499,7 +506,7 @@ function _cube3dCreateNodes(nodes) {
     dummy.updateMatrix();
     mesh.setMatrixAt(i, dummy.matrix);
 
-    var rgb = cube3dHexToRgb(cube3dStatusColor(node.status));
+    var rgb = cube3dHexToRgb(cube3dNodeColor(node));
     colors[i * 3]     = rgb.r;
     colors[i * 3 + 1] = rgb.g;
     colors[i * 3 + 2] = rgb.b;
@@ -862,7 +869,7 @@ function _cube3dShowTextSprite(node, showTitle) {
 }
 
 function _cube3dShowCard(node) {
-  var statusColor = cube3dStatusColor(node.status);
+  var statusColor = cube3dNodeColor(node);
   var el = document.createElement('div');
   el.className = 'cube3d-card';
   el.style.borderLeftColor = statusColor;
@@ -922,7 +929,7 @@ function _cube3dRenderWorkspacePanel(node, fullData) {
     _cube3d.workspacePanel = null;
   }
 
-  var statusColor = cube3dStatusColor(node.status);
+  var statusColor = cube3dNodeColor(node);
   var el = document.createElement('div');
   el.className = 'cube3d-workspace';
   el.style.borderLeftColor = statusColor;
@@ -1150,7 +1157,7 @@ function _cube3dApplySearch(query) {
   for (var j = 0; j < _cube3d.nodeData.length; j++) {
     var n = _cube3d.nodeData[j];
     if (_cube3d.searchMatches.has(j)) {
-      var rgb = cube3dHexToRgb(cube3dStatusColor(n.status));
+      var rgb = cube3dHexToRgb(cube3dNodeColor(n));
       arr[j * 3]     = rgb.r;
       arr[j * 3 + 1] = rgb.g;
       arr[j * 3 + 2] = rgb.b;
@@ -1195,7 +1202,7 @@ function _cube3dClearSearchHighlight() {
   var arr = colors.array;
   for (var i = 0; i < _cube3d.nodeData.length; i++) {
     var n = _cube3d.nodeData[i];
-    var rgb = cube3dHexToRgb(cube3dStatusColor(n.status));
+    var rgb = cube3dHexToRgb(cube3dNodeColor(n));
     arr[i * 3]     = rgb.r;
     arr[i * 3 + 1] = rgb.g;
     arr[i * 3 + 2] = rgb.b;
