@@ -302,6 +302,12 @@ def event_cmd(
     default=None,
     help="Filter by priority (critical, high, medium, low).",
 )
+@click.option(
+    "--needs-human",
+    "needs_human_filter",
+    is_flag=True,
+    help="Only tasks carrying the needs_human flag (any status).",
+)
 @click.option("--include-archived", is_flag=True, help="Include archived tasks.")
 @click.option("--compact", is_flag=True, help="Compact JSON output.")
 @click.option("--json", "output_json", is_flag=True, help="Output structured JSON.")
@@ -312,6 +318,7 @@ def list_cmd(
     tag: str | None,
     task_type: str | None,
     priority: str | None,
+    needs_human_filter: bool,
     include_archived: bool,
     compact: bool,
     output_json: bool,
@@ -374,6 +381,8 @@ def list_cmd(
             continue
         if priority is not None and snap.get("priority") != priority:
             continue
+        if needs_human_filter and not snap.get("needs_human"):
+            continue
         filtered.append(snap)
 
     # Sort by task ID (ULID = chronological order)
@@ -419,11 +428,16 @@ def list_cmd(
             t = snap.get("type", "?")
             title = snap.get("title", "?")
             assigned_to = snap.get("assigned_to") or "unassigned"
-            prefix = ">>> " if s == "needs_human" else ""
+            flag = snap.get("needs_human")
+            prefix = ">>> " if flag else ""
             archived_marker = " [A]" if snap.get("_archived") else ""
-            click.echo(
-                f'{prefix}{display_id}  {s_display}  {p}  {t}  "{title}"  {assigned_to}{archived_marker}'
+            line = (
+                f'{prefix}{display_id}  {s_display}  {p}  {t}  "{title}"  '
+                f"{assigned_to}{archived_marker}"
             )
+            if flag and isinstance(flag, dict) and flag.get("reason"):
+                line += f"  [needs human: {flag['reason']}]"
+            click.echo(line)
 
 
 # ---------------------------------------------------------------------------
@@ -1077,6 +1091,13 @@ def _print_compact_show(
     if valid_transitions:
         next_str = f"\n  Next: {' | '.join(valid_transitions)}"
     click.echo(f"Status: {status}  Priority: {priority}  Type: {task_type}")
+    flag = snapshot.get("needs_human")
+    if flag and isinstance(flag, dict):
+        flagged_by = get_actor_display(flag.get("flagged_by", "?"))
+        click.echo(
+            f"NEEDS HUMAN (since {flag.get('since', '?')}, by {flagged_by}): "
+            f"{flag.get('reason', '?')}"
+        )
     click.echo(f"Assigned: {assigned_to}{next_str}")
 
 
@@ -1117,6 +1138,13 @@ def _print_human_show(
     header = f"{short_id} ({task_id})" if short_id else task_id
     click.echo(f'{header}  "{title}"{archived_note}')
     click.echo(f"Status: {status_display}  Priority: {priority}  Type: {task_type}")
+    flag = snapshot.get("needs_human")
+    if flag and isinstance(flag, dict):
+        flagged_by = get_actor_display(flag.get("flagged_by", "?"))
+        click.echo(
+            f"NEEDS HUMAN (since {flag.get('since', '?')}, by {flagged_by}): "
+            f"{flag.get('reason', '?')}"
+        )
     if valid_transitions:
         display_transitions = [get_display_name(config or {}, t) for t in valid_transitions]
         click.echo(f"  Next: {' | '.join(display_transitions)}")

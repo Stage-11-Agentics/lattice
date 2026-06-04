@@ -283,7 +283,7 @@ def create_failure_diagnostic_task(
     failure_count: int,
     actor: str,
 ) -> str | None:
-    """Create a needs_human task for investigating persistent agent failures.
+    """Create a needs_human-flagged task for investigating persistent agent failures.
 
     Returns the created task ID, or None on failure.
     """
@@ -307,13 +307,13 @@ def create_failure_diagnostic_task(
         new_task_id = result.stdout.strip()
         if not new_task_id:
             return None
-        # Move to needs_human
+        # Flag for human attention (the task stays in backlog)
         subprocess.run(
             [
                 "lattice",
-                "status",
+                "needs-human",
                 new_task_id,
-                "needs_human",
+                f"{agent_type} review agent failed {failure_count} times — investigate",
                 "--actor",
                 actor,
             ],
@@ -736,8 +736,9 @@ goes into one of three buckets:
   - **Evolutionary** (scope creep, "while we're at it") → skip with
     `lattice comment {task_short_id} "Skipping [finding]: [reason]" \
 --actor agent:trident-pane-{task_short_id}`.
-  - **Complex** (real design questions) → move task to `needs_human` with
-    a comment.
+  - **Complex** (real design questions) → flag for a human:
+    `lattice needs-human {task_short_id} "<what you need>" \
+--actor agent:trident-pane-{task_short_id}` (task keeps its status).
 
 ## Step 4 — Advance task
 
@@ -747,10 +748,11 @@ goes into one of three buckets:
 | PASS, no PR yet                    | open PR (`gh pr create`), then pr_open|
 | FAIL impl-level                    | in_progress (rework, then re-review)  |
 | FAIL plan-level                    | in_planning                           |
-| Complex finding(s)                 | needs_human                           |
-| 3-cycle safety valve tripped       | needs_human                           |
+| Complex finding(s)                 | keep status, set needs-human flag     |
+| 3-cycle safety valve tripped       | keep status, set needs-human flag     |
 
-Use `lattice status {task_short_id} <new_status> --actor agent:trident-pane-{task_short_id}`.
+Use `lattice status {task_short_id} <new_status> --actor agent:trident-pane-{task_short_id}`,
+or `lattice needs-human {task_short_id} "<what you need>"` for the flag rows.
 
 ## Identity
 

@@ -36,8 +36,15 @@ STATUS_VISUALS: dict[str, dict[str, str]] = {
     "review": {"icon": "eye.fill", "color": "#FFD700"},
     "done": {"icon": "checkmark.circle.fill", "color": "#2ECC71"},
     "blocked": {"icon": "exclamationmark.triangle.fill", "color": "#E74C3C"},
+    # Retained for instances whose config still has the legacy status.
     "needs_human": {"icon": "person.fill.questionmark", "color": "#E74C3C"},
     "cancelled": {"icon": "xmark.circle.fill", "color": "#95A5A6"},
+}
+
+# Visuals for the orthogonal needs_human flag (overrides status visuals).
+NEEDS_HUMAN_VISUALS: dict[str, str] = {
+    "icon": "person.fill.questionmark",
+    "color": "#F59E0B",
 }
 
 # Display labels used in tab titles for each status
@@ -180,6 +187,11 @@ def on_status_changed(snapshot: dict, old_status: str, new_status: str) -> None:
     title = snapshot.get("title") or ""
     status_label = STATUS_LABELS.get(new_status, new_status)
     visuals = STATUS_VISUALS.get(new_status, {})
+    # The needs_human flag outranks status visuals — a flagged task is
+    # waiting on a human regardless of its swimlane.
+    if snapshot.get("needs_human"):
+        status_label = f"{status_label} · needs human"
+        visuals = NEEDS_HUMAN_VISUALS
 
     # Update tab title
     if new_status in ("done", "cancelled"):
@@ -198,6 +210,42 @@ def on_status_changed(snapshot: dict, old_status: str, new_status: str) -> None:
         )
         clear_status(short_id)
     else:
+        set_status(
+            short_id,
+            status_label,
+            icon=visuals.get("icon"),
+            color=visuals.get("color"),
+        )
+
+
+def on_needs_human_changed(snapshot: dict, flagged: bool) -> None:
+    """React to the needs_human flag being set or cleared inside c11.
+
+    Reads ``c11_surface`` from the snapshot; does nothing if the task has
+    no surface binding.  Called from flag_cmds.py after write_task_event
+    succeeds.  Must never raise — all errors are logged as warnings.
+    """
+    if not c11_available():
+        return
+
+    surface = snapshot.get("c11_surface")
+    if not surface:
+        return  # task not bound to any surface
+
+    short_id = snapshot.get("short_id") or snapshot.get("id", "")
+    status = snapshot.get("status", "")
+    status_label = STATUS_LABELS.get(status, status)
+
+    if flagged:
+        set_status(
+            short_id,
+            f"{status_label} · needs human",
+            icon=NEEDS_HUMAN_VISUALS["icon"],
+            color=NEEDS_HUMAN_VISUALS["color"],
+        )
+        trigger_flash(surface)
+    else:
+        visuals = STATUS_VISUALS.get(status, {})
         set_status(
             short_id,
             status_label,

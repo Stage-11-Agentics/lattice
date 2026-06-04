@@ -1480,6 +1480,7 @@ def plugins_cmd(as_json: bool) -> None:
 # ---------------------------------------------------------------------------
 from lattice.cli import migration_cmds as _migration_cmds  # noqa: E402, F401
 from lattice.cli import task_cmds as _task_cmds  # noqa: E402, F401
+from lattice.cli import flag_cmds as _flag_cmds  # noqa: E402, F401
 from lattice.cli import link_cmds as _link_cmds  # noqa: E402, F401
 from lattice.cli import artifact_cmds as _artifact_cmds  # noqa: E402, F401
 from lattice.cli import query_cmds as _query_cmds  # noqa: E402, F401

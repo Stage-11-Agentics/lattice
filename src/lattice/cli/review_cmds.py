@@ -376,13 +376,13 @@ def plan_review(
             timeout=timeout,
         )
         if art_id and plan_approval == "human":
-            _move_to_needs_human(lattice_dir, task_id, actor, is_json)
+            _flag_needs_human(lattice_dir, task_id, actor, is_json)
 
     elif mode == "triple":
-        # The pane drives triage and status transitions itself; the CLI
-        # does not move the task to needs_human here even when
-        # plan_approval == "human".  The pane sees the trident artifact
-        # first-hand and is the right place to decide.
+        # The pane drives triage and the flag itself; the CLI does not
+        # flag needs_human here even when plan_approval == "human".  The
+        # pane sees the trident artifact first-hand and is the right
+        # place to decide.
         _spawn_triple_pane(
             lattice_dir=lattice_dir,
             task_id=task_id,
@@ -683,24 +683,28 @@ def _read_project_context(lattice_dir: Path) -> str:
     return "(no project context found)"
 
 
-def _move_to_needs_human(
+def _flag_needs_human(
     lattice_dir: Path,
     task_id: str,
     actor: str | dict,
     is_json: bool,
 ) -> None:
-    """Move task to needs_human when plan_approval == 'human'."""
+    """Set the needs_human flag when plan_approval == 'human'.
+
+    The task keeps its current status (planned); the flag signals that a
+    human must approve the plan before work proceeds.
+    """
     actor_flag = _actor_flag(actor)
     if actor_flag is None:
-        click.echo("Cannot determine actor for status update.", err=True)
+        click.echo("Cannot determine actor for needs-human flag.", err=True)
         return
 
     result = subprocess.run(
         [
             "lattice",
-            "status",
+            "needs-human",
             task_id,
-            "needs_human",
+            "Plan-review complete — awaiting human plan approval",
             "--actor",
             actor_flag,
         ],
@@ -708,10 +712,10 @@ def _move_to_needs_human(
         text=True,
     )
     if result.returncode == 0:
-        click.echo("Task moved to needs_human (plan_approval=human).")
+        click.echo("needs_human flag set (plan_approval=human).")
     else:
         click.echo(
-            f"Note: Could not move to needs_human: {result.stderr.strip()}",
+            f"Note: Could not set needs_human flag: {result.stderr.strip()}",
             err=True,
         )
 

@@ -218,15 +218,17 @@ def _find_attention_needed(
                 }
             )
 
-    # Tasks waiting for human input
+    # Tasks waiting for human input (needs_human flag, any status)
     for snap in active:
-        if snap.get("status") == "needs_human":
+        flag = snap.get("needs_human")
+        if flag:
+            reason = flag.get("reason") if isinstance(flag, dict) else None
             items.append(
                 {
                     "type": "needs_human",
                     "id": snap.get("short_id") or snap.get("id", "?"),
                     "title": snap.get("title", "?"),
-                    "detail": "Waiting for human decision or input",
+                    "detail": reason or "Waiting for human decision or input",
                 }
             )
 

@@ -691,7 +691,13 @@ def _task_definitions(ts: dict[str, str]) -> list[dict]:
             "title": "Know who to wake at 3am",
             "type": "task",
             "priority": "critical",
-            "status": "needs_human",
+            "status": "in_planning",
+            "needs_human": (
+                "Which escalation model — A (simple rotation), B (tiered), "
+                "or C (follow-the-sun)? Drafts are in the comments.",
+                ts["fri_2pm"],
+                "agent:gregorovich",
+            ),
             "assigned_to": "human:kai",
             "ts": ts["fri_noon"],
             "description": (
@@ -704,7 +710,6 @@ def _task_definitions(ts: dict[str, str]) -> list[dict]:
             "tags": ["alerting", "on-call"],
             "status_history": [
                 ("in_planning", ts["fri_noon"], "agent:gregorovich"),
-                ("needs_human", ts["fri_2pm"], "agent:gregorovich"),
             ],
             "parent_idx": 2,
             "comments": [
@@ -989,7 +994,14 @@ def _task_definitions(ts: dict[str, str]) -> list[dict]:
             "title": "The question of trust",
             "type": "task",
             "priority": "critical",
-            "status": "needs_human",
+            "status": "in_planning",
+            "needs_human": (
+                "Authentication model decision: (A) mTLS + API keys, "
+                "(B) OAuth2/JWT everywhere, or (C) hybrid. "
+                "Recommendation in comments: Option A.",
+                ts["thu_11am"],
+                "agent:gregorovich",
+            ),
             "assigned_to": "human:kai",
             "ts": ts["thu_9am"],
             "description": (
@@ -1002,7 +1014,6 @@ def _task_definitions(ts: dict[str, str]) -> list[dict]:
             "tags": ["infrastructure", "security", "decision"],
             "status_history": [
                 ("in_planning", ts["thu_9am"], "agent:gregorovich"),
-                ("needs_human", ts["thu_11am"], "agent:gregorovich"),
             ],
             "comments": [
                 (
@@ -1030,7 +1041,13 @@ def _task_definitions(ts: dict[str, str]) -> list[dict]:
             "title": "When two truths disagree",
             "type": "task",
             "priority": "high",
-            "status": "needs_human",
+            "status": "in_planning",
+            "needs_human": (
+                "When StatsD and Prometheus disagree on the same metric, "
+                "which source wins? Need an operational policy.",
+                ts["fri_11am"],
+                "agent:meridian",
+            ),
             "assigned_to": "human:lena",
             "ts": ts["fri_9am"],
             "description": (
@@ -1043,7 +1060,6 @@ def _task_definitions(ts: dict[str, str]) -> list[dict]:
             "tags": ["monitoring", "operations", "decision"],
             "status_history": [
                 ("in_planning", ts["fri_9am"], "agent:meridian"),
-                ("needs_human", ts["fri_11am"], "agent:meridian"),
             ],
             "comments": [
                 (
@@ -1305,6 +1321,19 @@ def _seed_demo(target_dir: Path, quiet: bool = False) -> None:
             )
             snapshot = apply_event_to_snapshot(snapshot, assign_event)
             all_events.append(assign_event)
+
+        # Apply needs_human flag if present: (reason, ts, actor)
+        if tdef.get("needs_human"):
+            flag_reason, flag_ts, flag_actor = tdef["needs_human"]
+            flag_event = create_event(
+                type="needs_human_flagged",
+                task_id=task_id,
+                actor=flag_actor,
+                data={"reason": flag_reason},
+                ts=flag_ts,
+            )
+            snapshot = apply_event_to_snapshot(snapshot, flag_event)
+            all_events.append(flag_event)
 
         # Apply comments
         for comment_body, comment_ts, comment_actor in tdef.get("comments", []):

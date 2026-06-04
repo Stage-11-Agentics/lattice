@@ -670,30 +670,6 @@ def compute_next_steps(
             "then": "done",
         }
 
-    if new_status == "needs_human":
-        # Try to surface the latest comment as a reminder of what's needed.
-        try:
-            events = read_task_events(lattice_dir, task_id)
-            comments = materialize_comments(events)
-            # Find the latest non-deleted top-level comment.
-            latest = None
-            for c in reversed(comments):
-                if not c.get("deleted"):
-                    latest = c
-                    break
-            if latest:
-                body = latest.get("body", "")
-                truncated = (body[:200] + "...") if len(body) > 200 else body
-                hint = f"Waiting on human.  Latest comment: {truncated}"
-                return hint, {
-                    "action": "awaiting_human",
-                    "latest_comment": body,
-                }
-        except Exception:
-            pass
-        hint = "Waiting on human input."
-        return hint, {"action": "awaiting_human"}
-
     return None, None
 
 
@@ -778,6 +754,17 @@ def status_cmd(
 
     # Validate new_status is a known status
     if not validate_status(config, new_status):
+        if new_status == "needs_human":
+            # Only reached when needs_human is absent from this instance's
+            # config — instances that still carry the status validate above.
+            display_id = snapshot.get("short_id") or task_id
+            output_error(
+                "needs_human is a flag, not a status. Use: "
+                f'lattice needs-human {display_id} "<what you need>" '
+                "(the task keeps its current status).",
+                "VALIDATION_ERROR",
+                is_json,
+            )
         valid = ", ".join(config.get("workflow", {}).get("statuses", []))
         output_error(
             f"Invalid status: '{new_status}'. Valid statuses: {valid}.",
@@ -851,8 +838,8 @@ def status_cmd(
             msg = (
                 f"Review cycle limit reached ({cycle_count}/{cycle_limit}). "
                 f"This task has been sent back from review {cycle_count} time(s). "
-                "Move to needs_human with a comment explaining the situation "
-                "instead of cycling further. "
+                "Flag it for a human instead of cycling further: "
+                'lattice needs-human <task> "<what you need>". '
                 "Override with --force --reason."
             )
             output_error(msg, "REVIEW_CYCLE_LIMIT", is_json)
