@@ -115,7 +115,9 @@ STATUS_DESCRIPTIONS: dict[str, str] = {
     "backlog": "Task is captured but no work has started. No planning, no implementation.",
     "in_planning": "Design, dialogue, and scoping underway. No implementation code should be written yet.",
     "planned": "Plan is written and approved. Ready for implementation but work has not started.",
+    "todo": "Selected for work; not started.",
     "in_progress": "Implementation is actively underway. Code is being written, tested, or integrated.",
+    "in_review": "A human or agent is reviewing the change.",
     "review": "Local review is underway. A review sub-agent is examining the diff before validation begins.",
     "in_validation": (
         "End-to-end validation is underway. The change is being exercised against a "
@@ -139,6 +141,7 @@ class LatticeConfig(TypedDict, total=False):
     default_complexity: str
     task_types: list[str]
     workflow: Workflow
+    status_preset: str
     default_actor: str
     project_code: str
     subproject_code: str
@@ -163,35 +166,53 @@ class LatticeConfig(TypedDict, total=False):
     project_type: Literal["standard", "structure"]
 
 
-def default_config(preset: str = "classic") -> LatticeConfig:
-    """Return the default Lattice configuration.
+# ---------------------------------------------------------------------------
+# Status presets — which workflow statuses an instance uses
+# ---------------------------------------------------------------------------
+# Orthogonal to WORKFLOW_PRESETS (display-name personality): a status preset
+# decides WHICH statuses exist; the personality decides what they're called.
+# ``stage11`` is the full agentic flow (the default), ``linear`` the familiar
+# minimal board, ``custom`` an interview-composed subset of the stage11 spine.
 
-    The returned dict, when serialized with
-    ``json.dumps(data, sort_keys=True, indent=2) + "\\n"``,
-    produces the canonical default config.json.
+STATUS_PRESET_VALUES: tuple[str, ...] = ("stage11", "linear", "custom")
 
-    *preset* selects the workflow personality ("classic" or "opinionated").
-    The opinionated preset adds human-friendly display names for statuses
-    while keeping the same underlying slugs and transition graph.
+#: Role vocabulary shared by every status preset.  Roles without completion
+#: policies are inert, so even minimal presets keep the full list — attach
+#: ``--role`` works everywhere.
+_FULL_ROLES: list[str] = ["review", "plan-review", "review-individual", "validation"]
+
+#: Shipped WIP limit per in-flight status; presets include only the entries
+#: whose status exists.
+_WIP_DEFAULTS: dict[str, int] = {
+    "in_progress": 10,
+    "review": 5,
+    "in_validation": 5,
+    "pr_open": 10,
+}
+
+
+def stage11_workflow() -> dict:
+    """The full Stage 11 agentic workflow (the shipped default).
+
+    This is a hand-tuned literal — the transition graph carries deliberate
+    skip-forward edges (``backlog → planned``, ``planned → review``,
+    ``review → pr_open/done``, ``pr_open → review``) that no clean derivation
+    rule reproduces.  Do not re-express it through :func:`compose_workflow`.
     """
-    if preset not in WORKFLOW_PRESETS:
-        preset = "classic"
-
-    display_names = WORKFLOW_PRESETS[preset]["display_names"]
-
-    workflow: dict = {
-        "statuses": [
-            "backlog",
-            "in_planning",
-            "planned",
-            "in_progress",
-            "review",
-            "in_validation",
-            "pr_open",
-            "done",
-            "blocked",
-            "cancelled",
-        ],
+    statuses = [
+        "backlog",
+        "in_planning",
+        "planned",
+        "in_progress",
+        "review",
+        "in_validation",
+        "pr_open",
+        "done",
+        "blocked",
+        "cancelled",
+    ]
+    return {
+        "statuses": statuses,
         "transitions": {
             "backlog": ["in_planning", "planned", "cancelled"],
             "in_planning": ["planned", "cancelled"],
@@ -231,23 +252,153 @@ def default_config(preset: str = "classic") -> LatticeConfig:
             "cancelled": [],
         },
         "universal_targets": ["cancelled"],
-        "roles": ["review", "plan-review", "review-individual", "validation"],
-        "wip_limits": {
-            "in_progress": 10,
-            "review": 5,
-            "in_validation": 5,
-            "pr_open": 10,
-        },
+        "roles": list(_FULL_ROLES),
+        "wip_limits": dict(_WIP_DEFAULTS),
         "completion_policies": {
             "done": {"require_roles": ["review"]},
             "pr_open": {"require_roles": ["validation"]},
         },
+        "descriptions": {s: STATUS_DESCRIPTIONS[s] for s in statuses},
     }
 
-    if display_names:
-        workflow["display_names"] = display_names
 
-    workflow["descriptions"] = dict(STATUS_DESCRIPTIONS)
+def linear_workflow() -> dict:
+    """The familiar minimal board: backlog / todo / in progress / in review / done.
+
+    Machinery-light by design: the literal ``todo`` / ``in_review`` slugs mean
+    the slug-keyed agentic machinery (auto-fired reviews on ``review`` /
+    ``planned``, plan gating, rework-cycle counting) is naturally inert.  No
+    WIP limits, no completion policies.
+    """
+    statuses = ["backlog", "todo", "in_progress", "in_review", "done", "cancelled"]
+    return {
+        "statuses": statuses,
+        "transitions": {
+            "backlog": ["todo", "in_progress", "cancelled"],
+            "todo": ["in_progress", "cancelled"],
+            "in_progress": ["in_review", "todo", "cancelled"],
+            "in_review": ["done", "in_progress", "cancelled"],
+            "done": [],
+            "cancelled": [],
+        },
+        "universal_targets": ["cancelled"],
+        "roles": list(_FULL_ROLES),
+        "wip_limits": {},
+        "completion_policies": {},
+        "descriptions": {s: STATUS_DESCRIPTIONS[s] for s in statuses},
+    }
+
+
+def compose_workflow(
+    *,
+    include_review: bool,
+    include_validation: bool,
+    include_pr_open: bool,
+) -> dict:
+    """Compose a custom workflow from the Stage 11 spine with opt-in gates.
+
+    Used by the ``lattice init`` custom interview path only — the named
+    presets are literals (:func:`stage11_workflow`, :func:`linear_workflow`).
+    Forward edges target the immediate next present stage; rework and blocked
+    edges mirror the stage11 graph for the statuses that exist.
+
+    Policy rules: ``done`` requires ``review``-role evidence iff the review
+    stage exists; ``pr_open`` requires ``validation``-role evidence iff BOTH
+    ``pr_open`` and ``in_validation`` exist (declining the validation stage at
+    init time is human intent that this project has no validation ritual).
+    """
+    gates = []
+    if include_review:
+        gates.append("review")
+    if include_validation:
+        gates.append("in_validation")
+    if include_pr_open:
+        gates.append("pr_open")
+
+    chain = ["backlog", "in_planning", "planned", "in_progress", *gates, "done"]
+    statuses = [*chain, "blocked", "cancelled"]
+
+    # Forward chain: each non-terminal status targets the immediate next stage.
+    transitions: dict[str, list[str]] = {
+        status: [chain[i + 1]] for i, status in enumerate(chain[:-1])
+    }
+    transitions["done"] = []
+
+    # Rework edges mirroring stage11: gates route back to in_progress, and
+    # review/in_validation additionally to in_planning.
+    for gate in gates:
+        transitions[gate].append("in_progress")
+        if gate in ("review", "in_validation"):
+            transitions[gate].append("in_planning")
+
+    # Blocked edges mirroring stage11, restricted to present statuses.
+    for status in ("planned", "in_progress", "in_validation", "pr_open"):
+        if status in chain:
+            transitions[status].append("blocked")
+    transitions["blocked"] = [
+        s
+        for s in ("in_planning", "planned", "in_progress", "in_validation", "pr_open")
+        if s in chain
+    ]
+
+    # Cancelled closes out every non-terminal status (it is also a universal
+    # target; the explicit edges match the stage11 literal's style).
+    for status in [*chain[:-1], "blocked"]:
+        transitions[status].append("cancelled")
+    transitions["cancelled"] = []
+
+    completion_policies: dict[str, dict] = {}
+    if include_review:
+        completion_policies["done"] = {"require_roles": ["review"]}
+    if include_pr_open and include_validation:
+        completion_policies["pr_open"] = {"require_roles": ["validation"]}
+
+    return {
+        "statuses": statuses,
+        "transitions": transitions,
+        "universal_targets": ["cancelled"],
+        "roles": list(_FULL_ROLES),
+        "wip_limits": {s: v for s, v in _WIP_DEFAULTS.items() if s in statuses},
+        "completion_policies": completion_policies,
+        "descriptions": {s: STATUS_DESCRIPTIONS[s] for s in statuses},
+    }
+
+
+def default_config(preset: str = "classic", status_preset: str = "stage11") -> LatticeConfig:
+    """Return the default Lattice configuration.
+
+    The returned dict, when serialized with
+    ``json.dumps(data, sort_keys=True, indent=2) + "\\n"``,
+    produces the canonical default config.json.
+
+    *preset* selects the workflow personality ("classic" or "opinionated").
+    The opinionated preset adds human-friendly display names for statuses
+    while keeping the same underlying slugs and transition graph.
+
+    *status_preset* selects WHICH statuses the workflow uses ("stage11",
+    "linear", or "custom").  For "custom" the caller composes the workflow
+    itself via :func:`compose_workflow` and overrides ``config["workflow"]``
+    — this function only stamps the ``status_preset`` key and installs the
+    stage11 workflow as the base.
+    """
+    if preset not in WORKFLOW_PRESETS:
+        preset = "classic"
+    if status_preset not in STATUS_PRESET_VALUES:
+        status_preset = "stage11"
+
+    workflow = linear_workflow() if status_preset == "linear" else stage11_workflow()
+
+    # Personality display names apply only to statuses that exist in the set.
+    display_names = {
+        slug: name
+        for slug, name in WORKFLOW_PRESETS[preset]["display_names"].items()
+        if slug in workflow["statuses"]
+    }
+    if display_names:
+        # Keep key order consistent with prior serialization: display_names
+        # sits between completion_policies and descriptions semantically, but
+        # sort_keys=True serialization makes insertion order irrelevant.
+        workflow["display_names"] = display_names
 
     config: LatticeConfig = {
         "schema_version": 1,
@@ -261,6 +412,7 @@ def default_config(preset: str = "classic") -> LatticeConfig:
         ],
         "workflow": workflow,
         "workflow_preset": preset,
+        "status_preset": status_preset,
         "review_mode": "single",
         "plan_review_mode": "single",
         "plan_approval": "auto",

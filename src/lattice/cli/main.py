@@ -8,6 +8,8 @@ from pathlib import Path
 import click
 
 from lattice.core.config import (
+    WORKFLOW_PRESETS,
+    compose_workflow,
     default_config,
     serialize_config,
     validate_project_code,
@@ -298,6 +300,14 @@ def cli(ctx: click.Context) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _stdin_is_tty() -> bool:
+    """True when stdin is a real terminal (module-level so tests can patch)."""
+    try:
+        return sys.stdin.isatty()
+    except AttributeError:
+        return False
+
+
 @cli.command()
 @click.option(
     "--path",
@@ -347,6 +357,14 @@ def cli(ctx: click.Context) -> None:
     type=click.Choice(["classic", "opinionated"], case_sensitive=False),
     default=None,
     help="Workflow personality preset for status names.",
+)
+@click.option(
+    "--preset",
+    "status_preset",
+    type=click.Choice(["stage11", "linear"], case_sensitive=False),
+    default=None,
+    help="Workflow status preset: stage11 (the full agentic flow, default) or "
+    "linear (the familiar minimal board). Interactive init asks when omitted.",
 )
 @click.option(
     "--setup-claude/--no-setup-claude",
@@ -414,6 +432,7 @@ def init(
     instance_name: str | None,
     heartbeat: bool | None,
     workflow_preset: str | None,
+    status_preset: str | None,
     setup_claude: bool | None,
     setup_agents: bool | None,
     seed: bool | None,
@@ -446,6 +465,10 @@ def init(
     actor_from_flag = actor is not None
     project_code_from_flag = project_code is not None
     non_interactive = actor_from_flag and project_code_from_flag
+
+    # Custom status sets are composed in the interactive interview; when set,
+    # this overrides the named-preset workflow at config-creation time.
+    custom_workflow: dict | None = None
 
     # ── Interactive flow ──────────────────────────────────────────────
     if not non_interactive:
@@ -542,6 +565,57 @@ def init(
                     "starting with a letter (e.g. LAT, C11, AUT2)."
                 )
 
+        # ── Workflow statuses ──
+        # Asked only on a real TTY so piped/agent-driven init never hangs on
+        # the new question; any abort falls back to the stage11 default.
+        if status_preset is None:
+            if _stdin_is_tty():
+                click.echo("")
+                click.echo("how should work flow here?")
+                click.echo("")
+                click.echo("  1) stage 11 — the full agentic flow: planning gates, code review,")
+                click.echo(
+                    "     e2e validation, PR tracking. built for fleets of agents. (default)"
+                )
+                click.echo(
+                    "  2) linear — the familiar minimal board: backlog / todo / in progress /"
+                )
+                click.echo("     in review / done.")
+                click.echo("  3) custom — the stage 11 spine, choosing which gates you want.")
+                try:
+                    choice = click.prompt("Choice", default="1", show_default=False).strip()
+                except (click.Abort, EOFError):
+                    choice = "1"
+                if choice == "2":
+                    status_preset = "linear"
+                    click.echo("  → backlog / todo / in progress / in review / done")
+                elif choice == "3":
+                    status_preset = "custom"
+                    click.echo("")
+                    try:
+                        inc_review = click.confirm(
+                            "code review stage? (review — auto-fired review agents examine the diff)",
+                            default=True,
+                        )
+                        inc_validation = click.confirm(
+                            "e2e validation stage? (in_validation — prove it works against a running system)",
+                            default=True,
+                        )
+                        inc_pr_open = click.confirm(
+                            "PR stage? (pr_open — open PRs as their own swimlane)",
+                            default=True,
+                        )
+                    except (click.Abort, EOFError):
+                        inc_review = inc_validation = inc_pr_open = True
+                    custom_workflow = compose_workflow(
+                        include_review=inc_review,
+                        include_validation=inc_validation,
+                        include_pr_open=inc_pr_open,
+                    )
+                    click.echo("  → " + " / ".join(custom_workflow["statuses"]))
+                else:
+                    status_preset = "stage11"
+
     # ── Validate inputs (flag-provided values only) ───────────────────
     # Interactive prompts validate inline with retry loops above.
 
@@ -578,6 +652,11 @@ def init(
         heartbeat = False
     if workflow_preset is None:
         workflow_preset = "classic"
+    # Status preset: flag > interview answer > stage11 (non-interactive and
+    # no-TTY paths both land here).
+    if status_preset is None:
+        status_preset = "stage11"
+    status_preset = status_preset.lower()
 
     # ── Seed prompt (interactive only, when project_code is set) ──
     if not non_interactive and seed is None and project_code:
@@ -612,7 +691,17 @@ def init(
         ensure_lattice_dirs(root)
 
         # Write default config atomically
-        config: dict = dict(default_config(preset=workflow_preset))
+        config: dict = dict(default_config(preset=workflow_preset, status_preset=status_preset))
+        if custom_workflow is not None:
+            # Personality display names apply only to statuses that exist.
+            display_names = {
+                slug: name
+                for slug, name in WORKFLOW_PRESETS[workflow_preset]["display_names"].items()
+                if slug in custom_workflow["statuses"]
+            }
+            if display_names:
+                custom_workflow["display_names"] = display_names
+            config["workflow"] = custom_workflow
         # Always generate instance_id
         config["instance_id"] = generate_instance_id()
         if actor:
@@ -719,8 +808,8 @@ def init(
                 proceed = False
 
             if proceed:
-                _create_or_update_agents_md(root)
-                _offer_claude_md(root, auto_accept=True)
+                _create_or_update_agents_md(root, config)
+                _offer_claude_md(root, auto_accept=True, config=config)
                 agents_created = True
                 click.echo("")
 
@@ -737,22 +826,22 @@ def init(
                     _install_openclaw_skill(root)
 
         elif setup_agents:
-            _create_or_update_agents_md(root)
+            _create_or_update_agents_md(root, config)
             agents_created = True
         # else: --no-setup-agents
     else:
         # Non-interactive: auto-create unless explicitly declined
         if setup_agents is not False:
-            _create_or_update_agents_md(root)
+            _create_or_update_agents_md(root, config)
             agents_created = True
 
     # CLAUDE.md: create or update for non-interactive or explicit flag.
     # (Interactive path handles CLAUDE.md inline above.)
     if not agents_created or non_interactive:
         if setup_claude is True:
-            _offer_claude_md(root, auto_accept=True)
+            _offer_claude_md(root, auto_accept=True, config=config)
         elif setup_claude is not False and agents_created:
-            _offer_claude_md(root, auto_accept=True)
+            _offer_claude_md(root, auto_accept=True, config=config)
 
     # ── Dashboard auto-start (interactive + real TTY only) ───────────
 
@@ -796,6 +885,8 @@ def init(
         )
         click.echo("")
         click.echo(f"  {LATTICE_DIR}/          task state, events, plans, notes")
+        n_statuses = len(config["workflow"]["statuses"])
+        click.echo(f"  workflow         {status_preset} ({n_statuses} statuses)")
         if (root / "agents.md").exists():
             click.echo("  agents.md        agent integration instructions")
         if (root / "CLAUDE.md").exists():
@@ -859,6 +950,8 @@ def init(
             click.echo("Heartbeat: enabled (agents auto-advance, max 10 per session)")
         if workflow_preset and workflow_preset != "classic":
             click.echo(f"Workflow: {workflow_preset}")
+        n_statuses = len(config["workflow"]["statuses"])
+        click.echo(f"Workflow statuses: {status_preset} ({n_statuses} statuses)")
 
 
 # ---------------------------------------------------------------------------
@@ -866,9 +959,11 @@ def init(
 # ---------------------------------------------------------------------------
 
 
-def _create_or_update_agents_md(root: Path) -> None:
+def _create_or_update_agents_md(root: Path, config: dict | None = None) -> None:
     """Create or update agents.md with Lattice integration block."""
-    marker, composed_block = _compose_claude_md_blocks()
+    if config is None:
+        config = _load_instance_config(root)
+    marker, composed_block = _compose_claude_md_blocks(config)
     agents_md = root / "agents.md"
 
     try:
@@ -925,7 +1020,7 @@ def _silent_update_claude_md(root: Path) -> None:
     Does not create CLAUDE.md — only updates an existing one.
     Does not prompt — silently appends if the marker is not present.
     """
-    marker, composed_block = _compose_claude_md_blocks()
+    marker, composed_block = _compose_claude_md_blocks(_load_instance_config(root))
     claude_md = root / "CLAUDE.md"
 
     if not claude_md.exists():
@@ -1003,20 +1098,38 @@ def _start_dashboard_background(
 # ---------------------------------------------------------------------------
 
 
-def _compose_claude_md_blocks() -> tuple[str, str]:
+def _load_instance_config(root: Path) -> dict | None:
+    """Best-effort load of the instance config from *root*'s ``.lattice/``.
+
+    Returns ``None`` when the config is missing or unreadable — callers fall
+    back to the stage11 default template.
+    """
+    import json
+
+    try:
+        return json.loads((root / LATTICE_DIR / "config.json").read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+
+
+def _compose_claude_md_blocks(config: dict | None = None) -> tuple[str, str]:
     """Return (marker, composed_block) from base template + any plugin template blocks.
 
-    Plugin blocks with ``position: "after_base"`` are appended in discovery order.
+    The base block is rendered from *config* so it only describes statuses
+    that exist in the instance (stage11 default when ``None``).  Plugin
+    blocks with ``position: "after_base"`` are appended in discovery order.
     """
     from lattice.plugins import discover_template_blocks
-    from lattice.templates.claude_md_block import CLAUDE_MD_BLOCK, CLAUDE_MD_MARKER
+    from lattice.templates.claude_md_block import CLAUDE_MD_MARKER, render_claude_md_block
+
+    base_block = render_claude_md_block(config)
 
     plugin_blocks = discover_template_blocks()
     if not plugin_blocks:
-        return CLAUDE_MD_MARKER, CLAUDE_MD_BLOCK
+        return CLAUDE_MD_MARKER, base_block
 
     # Build composed block: base + plugin blocks appended
-    parts = [CLAUDE_MD_BLOCK.rstrip("\n")]
+    parts = [base_block.rstrip("\n")]
     for block in plugin_blocks:
         parts.append("")  # blank line separator
         parts.append(block["content"].rstrip("\n"))
@@ -1037,13 +1150,15 @@ def _collect_all_markers() -> list[str]:
     return markers
 
 
-def _offer_claude_md(root: Path, *, auto_accept: bool = False) -> None:
+def _offer_claude_md(root: Path, *, auto_accept: bool = False, config: dict | None = None) -> None:
     """Detect CLAUDE.md and offer to add Lattice integration block.
 
     When *auto_accept* is True (non-interactive init), automatically create or
     update CLAUDE.md without prompting.
     """
-    marker, composed_block = _compose_claude_md_blocks()
+    if config is None:
+        config = _load_instance_config(root)
+    marker, composed_block = _compose_claude_md_blocks(config)
 
     claude_md = root / "CLAUDE.md"
 
@@ -1186,7 +1301,7 @@ def set_subproject_code(code: str, force: bool) -> None:
 def setup_claude(target_path: str, force: bool) -> None:
     """Add or update Lattice agent integration in CLAUDE.md."""
     root = Path(target_path)
-    marker, composed_block = _compose_claude_md_blocks()
+    marker, composed_block = _compose_claude_md_blocks(_load_instance_config(root))
     claude_md = root / "CLAUDE.md"
 
     if claude_md.exists():
@@ -1415,9 +1530,10 @@ def setup_prompt(use_claude_md: bool) -> None:
     Use --claude-md to get the CLAUDE.md integration block instead.
     """
     if use_claude_md:
-        from lattice.templates.claude_md_block import CLAUDE_MD_BLOCK
+        from lattice.templates.claude_md_block import render_claude_md_block
 
-        click.echo(CLAUDE_MD_BLOCK.strip())
+        block = render_claude_md_block(_load_instance_config(Path(".").resolve()))
+        click.echo(block.strip())
     else:
         skill_src = Path(__file__).resolve().parent.parent / "skills" / "lattice"
         skill_file = skill_src / "SKILL.md"

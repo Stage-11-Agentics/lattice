@@ -1,102 +1,4 @@
-"""CLAUDE.md integration template for Lattice.
 
-This is the single source of truth for the Lattice agent integration block.
-Edit this file to update what `lattice init` and `lattice setup-claude` write.
-
-The block is rendered from the instance config so the agent guidance only
-describes statuses that actually exist (LAT-234): a linear-preset instance
-gets a minimal block with no planning/review/validation gate sections, a
-custom instance gets exactly the gate sections its statuses call for, and the
-stage11 default renders byte-identically to the historical static block
-(locked by a snapshot test).
-"""
-
-from __future__ import annotations
-
-#: Canonical forward ordering used to draw the lifecycle diagram.  Terminal /
-#: side statuses (blocked, cancelled) are not part of the forward chain.
-_CHAIN_ORDER = [
-    "backlog",
-    "in_planning",
-    "planned",
-    "todo",
-    "in_progress",
-    "review",
-    "in_review",
-    "in_validation",
-    "pr_open",
-    "done",
-]
-
-#: Transition-discipline bullet per status.  ``done`` and ``pr_open`` have
-#: context-dependent variants handled in the renderer.
-_DISCIPLINE_LINES = {
-    "in_planning": "- `in_planning` — before you open the first file to read. Then write the plan.",
-    "planned": "- `planned` — only after the plan file has real content.",
-    "todo": "- `todo` — when the task is selected for work.",
-    "in_progress": "- `in_progress` — before you write the first line of code.",
-    "review": "- `review` — when implementation is complete, before review starts. Then actually review.",
-    "in_review": "- `in_review` — when implementation is complete and the change is being reviewed.",
-    "in_validation": (
-        "- `in_validation` — after local review passes, before e2e validation starts. "
-        "Then actually validate against a running system."
-    ),
-}
-
-
-def _lifecycle_diagram(statuses: list[str]) -> str:
-    """Render the lifecycle diagram for the configured statuses.
-
-    The forward chain follows ``_CHAIN_ORDER``; when ``blocked`` exists it is
-    drawn beneath ``in_progress`` with a ``↕`` connector.
-    """
-    chain = [s for s in _CHAIN_ORDER if s in statuses]
-    line = " → ".join(chain)
-    if "blocked" not in statuses:
-        return line
-    anchor = "in_progress" if "in_progress" in chain else chain[len(chain) // 2]
-    center = line.index(anchor) + len(anchor) // 2
-    arrow = " " * center + "↕"
-    blocked = " " * (center - len("blocked") // 2) + "blocked"
-    return f"{line}\n{arrow}\n{blocked}"
-
-
-def render_claude_md_block(config: dict | None = None) -> str:
-    """Render the Lattice agent-integration block for *config*.
-
-    With no config (or no workflow section) the full stage11 default is
-    rendered.  Sections are included only when the statuses they describe
-    exist in the instance.
-    """
-    if config is None:
-        from lattice.core.config import default_config
-
-        config = dict(default_config())
-
-    workflow = config.get("workflow", {})
-    statuses = workflow.get("statuses", [])
-    if not statuses:
-        from lattice.core.config import stage11_workflow
-
-        workflow = stage11_workflow()
-        statuses = workflow["statuses"]
-    policies = workflow.get("completion_policies", {})
-
-    has_planning = "in_planning" in statuses
-    has_review = "review" in statuses
-    has_validation = "in_validation" in statuses
-    has_pr_open = "pr_open" in statuses
-    pr_open_gated = "validation" in policies.get("pr_open", {}).get("require_roles", [])
-
-    #: First present stage after ``review`` on the forward path.
-    next_after_review = next(
-        (s for s in ("in_validation", "pr_open", "done") if s in statuses), "done"
-    )
-
-    parts: list[str] = []
-
-    # ── Header + mandate (always) ────────────────────────────────────────
-    parts.append("""
 ## Lattice
 
 > **MANDATORY: This project has Lattice initialized (`.lattice/` exists). You MUST use Lattice to track all work. Creating tasks, updating statuses, and following the workflow below is not optional — it is a hard requirement. Failure to track work in Lattice is a coordination failure: other agents and humans cannot see, build on, or trust untracked work. If you are about to write code and no Lattice task exists for it, stop and create one first.**
@@ -118,11 +20,7 @@ lattice create "<title>" --actor agent:<your-id>
 When in doubt, create the task. A small task costs nothing. Lost visibility costs everything.
 
 **Recurring observations become tasks.** If you observe the same issue in 2+ consecutive sessions or advances (e.g., a failing test, a lint warning, a flaky behavior), create a task for it. Agents are disciplined about tracking assigned work but not discovered work — this convention closes that gap. Create discovered issues at `backlog`; if they need human scoping, also flag them (`lattice needs-human <task> "Need: scoping"`).
-""")
 
-    # ── Descriptions Carry Context ───────────────────────────────────────
-    if has_planning:
-        parts.append("""
 ### Descriptions Carry Context
 
 Descriptions tell *what* and *why*. Plan files tell *how*.
@@ -130,44 +28,7 @@ Descriptions tell *what* and *why*. Plan files tell *how*.
 - **Fully specified** (bug located, fix named, files identified): still go through `in_planning`, but the plan can be a single line (e.g., "Fix the typo on line 77"). Mark `complexity: low`.
 - **Clear goal, open implementation**: go through `in_planning`. The agent figures out the approach and writes a substantive plan.
 - **Decision context from conversations**: bake decisions and rationale into the description — without it, the next agent re-derives what was already decided.
-""")
-    else:
-        parts.append("""
-### Descriptions Carry Context
 
-Descriptions tell *what* and *why*.
-
-- **Fully specified** (bug located, fix named, files identified): mark `complexity: low` and get to it.
-- **Clear goal, open implementation**: the agent figures out the approach.
-- **Decision context from conversations**: bake decisions and rationale into the description — without it, the next agent re-derives what was already decided.
-""")
-
-    # ── Status Transitions (always; diagram + bullets generated) ────────
-    discipline: list[str] = []
-    for status in [s for s in _CHAIN_ORDER if s in statuses]:
-        if status == "backlog":
-            continue
-        if status == "pr_open":
-            line = "- `pr_open` — when the PR is open."
-            if pr_open_gated:
-                line += " Requires recorded validation evidence (`--role validation`)."
-            discipline.append(line)
-        elif status == "done":
-            if has_review:
-                discipline.append(
-                    "- `done` — only after a review has been performed and recorded "
-                    "(and the PR merged, for PR work)."
-                )
-            elif "in_review" in statuses:
-                discipline.append("- `done` — when review is complete and the work has shipped.")
-            else:
-                discipline.append("- `done` — when the work has shipped.")
-        else:
-            discipline.append(_DISCIPLINE_LINES[status])
-    discipline.append("- Spawning a sub-agent? Update status in the parent context first.")
-    discipline_block = "\n".join(discipline)
-
-    parts.append(f"""
 ### Status Transitions
 
 Every transition is an immutable, attributed event. **The cardinal rule: update status BEFORE you start the work, not after.** If the board says `backlog` but you're actively working, the board is lying and every mind reading it makes decisions on false information.
@@ -177,71 +38,43 @@ lattice status <task> <status> --actor agent:<your-id>
 ```
 
 ```
-{_lifecycle_diagram(statuses)}
+backlog → in_planning → planned → in_progress → review → in_validation → pr_open → done
+                                       ↕
+                                    blocked
 ```
 
 Human attention is NOT a status: any task in any status can carry the orthogonal `needs_human` flag (`lattice needs-human <task> "<what you need>"`). The task keeps its swimlane while it waits — see "When You're Stuck" below.
 
 **Transition discipline:**
-{discipline_block}
-""")
+- `in_planning` — before you open the first file to read. Then write the plan.
+- `planned` — only after the plan file has real content.
+- `in_progress` — before you write the first line of code.
+- `review` — when implementation is complete, before review starts. Then actually review.
+- `in_validation` — after local review passes, before e2e validation starts. Then actually validate against a running system.
+- `pr_open` — when the PR is open. Requires recorded validation evidence (`--role validation`).
+- `done` — only after a review has been performed and recorded (and the PR merged, for PR work).
+- Spawning a sub-agent? Update status in the parent context first.
 
-    # ── Sub-Agent Execution Model (planning workflows only) ─────────────
-    if has_planning:
-        impl_target = "review" if has_review else next_after_review
-        rows = [
-            "| Stage | Sub-agent does | Reads | Produces |",
-            "|-------|---------------|-------|----------|",
-            "| **Plan** | Explore codebase, write plan, move to `planned` | Task description | Plan file |",
-            f"| **Implement** | Read plan, build it, test, commit, move to `{impl_target}` | Plan file | Committed code |",
-        ]
-        if has_review:
-            rows.append(
-                "| **Review** | Read diff cold, review against acceptance criteria, record findings "
-                f"| Git diff + plan | Review artifact (`--role review`), move to `{next_after_review}` on pass |"
-            )
-        if has_validation:
-            rows.append(
-                "| **Validate** | Exercise the change end-to-end against a running system "
-                "| Running app + plan | Validation evidence (`--role validation`), "
-                f"move to `{'pr_open' if has_pr_open else 'done'}` on pass |"
-            )
-        table = "\n".join(rows)
-
-        subagents_label = (
-            "**The three sub-agents:**" if has_review and has_validation else "**The sub-agents:**"
-        )
-
-        steps = [
-            "1. Move the task to `in_planning` before spawning the planning sub-agent.",
-            "2. After the planner finishes, move to `in_progress` and spawn the implementation sub-agent.",
-        ]
-        if has_review:
-            steps.append(
-                "3. After the implementer finishes, the review sub-agent runs independently."
-            )
-        if has_validation:
-            lead = "After review passes," if has_review else "After the implementer finishes,"
-            tail = "before the PR opens" if has_pr_open else "before completion"
-            steps.append(
-                f"{len(steps) + 1}. {lead} move to `in_validation` and spawn the validation "
-                f"sub-agent to prove the change end-to-end {tail}."
-            )
-        steps_block = "\n".join(steps)
-
-        parts.append(f"""
 ### Sub-Agent Execution Model
 
 Each lifecycle stage gets its own sub-agent with fresh context. This is the default execution pattern — not a suggestion, not complexity-gated. Every task, every time.
 
 **Why this matters:** When a planning agent writes a plan and a separate implementation agent reads it, the plan *must* be clear and complete — there's no shared context to fall back on. This forces better plans. When a review agent reads the diff cold, it catches things the implementer's context-polluted mind would miss. The plan file and git diff are the handoff artifacts.
 
-{subagents_label}
+**The three sub-agents:**
 
-{table}
+| Stage | Sub-agent does | Reads | Produces |
+|-------|---------------|-------|----------|
+| **Plan** | Explore codebase, write plan, move to `planned` | Task description | Plan file |
+| **Implement** | Read plan, build it, test, commit, move to `review` | Plan file | Committed code |
+| **Review** | Read diff cold, review against acceptance criteria, record findings | Git diff + plan | Review artifact (`--role review`), move to `in_validation` on pass |
+| **Validate** | Exercise the change end-to-end against a running system | Running app + plan | Validation evidence (`--role validation`), move to `pr_open` on pass |
 
 **The parent orchestrator** (the main agent session) manages the lifecycle:
-{steps_block}
+1. Move the task to `in_planning` before spawning the planning sub-agent.
+2. After the planner finishes, move to `in_progress` and spawn the implementation sub-agent.
+3. After the implementer finishes, the review sub-agent runs independently.
+4. After review passes, move to `in_validation` and spawn the validation sub-agent to prove the change end-to-end before the PR opens.
 
 Each sub-agent should use a distinct actor ID (e.g., `agent:claude-opus-4-planner`, `agent:claude-opus-4-impl`, `agent:claude-opus-4-reviewer`) so the event log shows who did what.
 
@@ -257,11 +90,7 @@ Each sub-agent should use a distinct actor ID (e.g., `agent:claude-opus-4-planne
 **Don't pick 300s.** It's just past the 5-min cache TTL — pays the cache-miss without amortizing it into a long wait. Either stay ≤270s (cache-warm) or step up to ≥1200s (one cache-miss amortized over a longer wait).
 
 **Pair short cadence with brief ticks.** Heartbeat ticks (no state change) get one sentence at most. State-change ticks (sub-agent finished, task transitioned, blocker hit) get as much detail as the situation demands. Short interval + silent-on-no-change keeps the transcript scannable while staying responsive to real events.
-""")
 
-    # ── Planning Gate + Plan Review Triage (planning workflows only) ────
-    if has_planning:
-        parts.append("""
 ### The Planning Gate
 
 The plan file lives at `.lattice/plans/<task_id>.md` — scaffolded on creation, empty until you fill it.
@@ -299,11 +128,7 @@ When the plan review returns (trident or otherwise), the orchestrator sorts ever
 Every finding must be explicitly triaged — no silent drops. If triage produces no complex questions, advance to `in_progress`. Otherwise, wait for the human answer, fold it into the plan, then advance.
 
 **Why these three buckets:** Obvious findings improve the plan at zero cost — apply them. Evolutionary findings are often well-intentioned but scope-creep the ticket; the cost of folding them in compounds. Complex findings are where human judgment actually adds value — surface them, don't guess.
-""")
 
-    # ── Review Gate + Verdict Routing + Rework Loop (review status only) ─
-    if has_review:
-        parts.append("""
 ### The Review Gate
 
 Moving to `review` is a commitment to actually review the work.
@@ -348,52 +173,12 @@ When the orchestrator reads a completed review (from the review artifact or inli
 3. **Create new task** — Legitimate findings that are out of scope for the current ticket. Create a new Lattice task to track the work: `lattice create "<finding title>" --actor agent:<id>`. The insight is captured without blocking the current task.
 
 Every finding must be explicitly routed. No finding may be silently dropped.
-""")
 
-        # Rework loop — paths and cross-references depend on which gates exist.
-        if has_validation:
-            advance_phrase = "advance — `in_validation` on the PR path, `done` for non-PR work"
-        elif has_pr_open:
-            advance_phrase = "advance — `pr_open` on the PR path, `done` for non-PR work"
-        else:
-            advance_phrase = "move to `done`"
-
-        rework_origins = "/".join(
-            f"`{s}`" for s in ("review", "in_validation", "pr_open") if s in statuses
-        )
-
-        post_review = [s for s in ("in_validation", "pr_open") if s in statuses]
-        full_chain = " -> ".join(["in_progress", "review", *post_review, "done"])
-        minor_chain = " -> ".join(["in_progress", "review", "(fix inline)", *post_review, "done"])
-        impl_tail = f" -> {post_review[0]} -> ..." if post_review else " -> done"
-        path_lines = []
-        if has_pr_open:
-            path_lines.append(f"Normal (PR):   {full_chain}")
-            path_lines.append("Non-PR work:   in_progress -> review -> done")
-        else:
-            path_lines.append(f"Normal:        {full_chain}")
-        path_lines.append(f"Minor fix:     {minor_chain}")
-        path_lines.append(
-            f"1 impl rework: in_progress -> review -> in_progress -> review{impl_tail}"
-        )
-        if has_validation:
-            path_lines.append(
-                "1 e2e rework:  ... review -> in_validation -> in_progress -> review -> in_validation -> ..."
-            )
-        path_lines.append(
-            "1 plan rework: in_progress -> review -> in_planning -> planned -> in_progress -> review -> ..."
-        )
-        path_lines.append(
-            "Max cycles:    3 rework transitions, then CLI blocks -> flag needs-human"
-        )
-        paths_block = "\n".join(path_lines)
-
-        parts.append(f"""
 ### Review Rework Loop
 
 When a review agent evaluates work, it produces one of three outcomes:
 
-1. **Pass (with optional minor fix):** The review agent uses vibes-based judgment. If the only issues are trivial (obvious typos, missing semicolons, etc.), fix them inline, record what was changed in the review comment, and {advance_phrase}. No strict line-count threshold — the review agent decides.
+1. **Pass (with optional minor fix):** The review agent uses vibes-based judgment. If the only issues are trivial (obvious typos, missing semicolons, etc.), fix them inline, record what was changed in the review comment, and advance — `in_validation` on the PR path, `done` for non-PR work. No strict line-count threshold — the review agent decides.
 
 2. **Fail — implementation-level:** The plan was sound but the implementation has issues. The review agent explicitly states "implementation-level rework needed" in its comment. The orchestrator transitions the task `review -> in_progress`. Critical findings from the review are appended to the plan file under a new `## Review Cycle N Findings` section. A fresh sub-agent is encouraged (but not mandated) for the rework.
 
@@ -408,30 +193,20 @@ When a review agent evaluates work, it produces one of three outcomes:
 | Route to in_progress vs in_planning | Orchestrator | Follows review agent's recommendation |
 | Whether to spawn fresh sub-agent | Orchestrator | Encouraged by convention, not enforced |
 
-**3-cycle safety valve:** After 3 rework transitions (any combination of {rework_origins} -> `in_progress` or `in_planning`), the CLI blocks the 4th attempt. The error message instructs the agent to set the `needs_human` flag with a reason explaining the situation. The limit is configurable via `review_cycle_limit` in the workflow config (default: 3). Override with `--force --reason` for genuinely exceptional cases.
+**3-cycle safety valve:** After 3 rework transitions (any combination of `review`/`in_validation`/`pr_open` -> `in_progress` or `in_planning`), the CLI blocks the 4th attempt. The error message instructs the agent to set the `needs_human` flag with a reason explaining the situation. The limit is configurable via `review_cycle_limit` in the workflow config (default: 3). Override with `--force --reason` for genuinely exceptional cases.
 
 **Allowed lifecycle paths:**
 
 ```
-{paths_block}
+Normal (PR):   in_progress -> review -> in_validation -> pr_open -> done
+Non-PR work:   in_progress -> review -> done
+Minor fix:     in_progress -> review -> (fix inline) -> in_validation -> pr_open -> done
+1 impl rework: in_progress -> review -> in_progress -> review -> in_validation -> ...
+1 e2e rework:  ... review -> in_validation -> in_progress -> review -> in_validation -> ...
+1 plan rework: in_progress -> review -> in_planning -> planned -> in_progress -> review -> ...
+Max cycles:    3 rework transitions, then CLI blocks -> flag needs-human
 ```
-""")
 
-    # ── Validation Gate (in_validation status only) ─────────────────────
-    if has_validation:
-        pass_route = "pass → `pr_open` (open the PR now)" if has_pr_open else "pass → `done`"
-        rework_ref = ", same routing as review rework" if has_review else ""
-        if pr_open_gated:
-            enforcement = (
-                "The CLI enforces the evidence: transitioning to `pr_open` is blocked until "
-                "validation-role evidence is recorded."
-            )
-        else:
-            enforcement = (
-                "Record the evidence even though no CLI gate enforces it here — the ritual "
-                "is the point."
-            )
-        parts.append(f"""
 ### The Validation Gate
 
 Moving to `in_validation` is a commitment to **prove the change works end-to-end** — not to re-run unit tests. The bar: **"I saw it work," not "I think it should work."** A server returning 200 is not a user successfully logging in.
@@ -440,78 +215,37 @@ The validating agent:
 1. **Runs the change against a real running system** — browser automation for web, iOS Simulator MCP / Mobile MCP for mobile, curl flows for APIs, the CLI itself for CLI tools.
 2. **Exercises the actual flow the ticket touched** — clicks the buttons, fills the forms, follows the redirects.
 3. **Records evidence:** `lattice attach <task> --role validation` (or `lattice comment <task> --role validation`) — what was run, what was observed, pass/fail.
-4. **Routes the outcome:** {pass_route}. Fail → `in_progress` (implementation-level) or `in_planning` (plan-level){rework_ref}; the 3-cycle safety valve applies.
+4. **Routes the outcome:** pass → `pr_open` (open the PR now). Fail → `in_progress` (implementation-level) or `in_planning` (plan-level), same routing as review rework; the 3-cycle safety valve applies.
 
-{enforcement} If e2e validation genuinely doesn't apply (docs-only change, pure refactor with no observable behavior), record a one-line N/A justification as the validation evidence — the decision must be explicit, never silent. Do not `--force` past the policy.
-""")
+The CLI enforces the evidence: transitioning to `pr_open` is blocked until validation-role evidence is recorded. If e2e validation genuinely doesn't apply (docs-only change, pure refactor with no observable behavior), record a one-line N/A justification as the validation evidence — the decision must be explicit, never silent. Do not `--force` past the policy.
 
-    # ── Review Config Reference + Auto-fire (any review machinery) ──────
-    if has_review or has_planning:
-        setting_rows = []
-        if has_review:
-            setting_rows.append(
-                "| `review_mode` | `inline`, `single`, `triple` | `single` "
-                "| How code review is performed at the review gate |"
-            )
-        if has_planning:
-            setting_rows.append(
-                "| `plan_review_mode` | `inline`, `single`, `triple` | `single` "
-                "| How plan review is performed after the plan is written |"
-            )
-            setting_rows.append(
-                "| `plan_approval` | `auto`, `human` | `auto` "
-                "| After plan-review: `auto` proceeds, `human` sets the `needs_human` flag "
-                "(task stays `planned`) for approval |"
-            )
-        if has_review:
-            setting_rows.append(
-                "| `auto_code_review_on_transition` | `true`, `false` | `true` "
-                "| Auto-spawn `lattice code-review` when a task transitions to `review` |"
-            )
-        if has_planning:
-            setting_rows.append(
-                "| `auto_plan_review_on_transition` | `true`, `false` | `true` "
-                "| Auto-spawn `lattice plan-review` when a task transitions to `planned` |"
-            )
-        count_word = {1: "One", 2: "Two", 3: "Three", 4: "Four", 5: "Five"}[len(setting_rows)]
-        plural = "settings" if len(setting_rows) > 1 else "setting"
-        settings_table = "\n".join(setting_rows)
-
-        gate_statuses = " or ".join(f"`{s}`" for s in ("review", "planned") if s in statuses)
-        if has_review and has_planning:
-            gate_commands = "`lattice code-review` / `plan-review`"
-        elif has_review:
-            gate_commands = "`lattice code-review`"
-        else:
-            gate_commands = "`lattice plan-review`"
-
-        parts.append(f"""
 ### Review Config Reference
 
-{count_word} {plural} in `.lattice/config.json` control review behavior:
+Five settings in `.lattice/config.json` control review behavior:
 
 | Setting | Values | Default | Meaning |
 |---------|--------|---------|---------|
-{settings_table}
+| `review_mode` | `inline`, `single`, `triple` | `single` | How code review is performed at the review gate |
+| `plan_review_mode` | `inline`, `single`, `triple` | `single` | How plan review is performed after the plan is written |
+| `plan_approval` | `auto`, `human` | `auto` | After plan-review: `auto` proceeds, `human` sets the `needs_human` flag (task stays `planned`) for approval |
+| `auto_code_review_on_transition` | `true`, `false` | `true` | Auto-spawn `lattice code-review` when a task transitions to `review` |
+| `auto_plan_review_on_transition` | `true`, `false` | `true` | Auto-spawn `lattice plan-review` when a task transitions to `planned` |
 
 **`inline`** — review happens in the same agent session (no subprocess spawned).
 **`single`** — one headless review agent is spawned; result stored as a `review` or `plan-review` artifact. No c11 surface.
-**`triple`** — one new c11 pane sibling to the caller is spawned; the pane runs `/trident-{{code|plan}}-review`, which fans out to multiple agents, merges findings, stores the artifact, and advances the task. Requires c11 (the command errors cleanly otherwise).
+**`triple`** — one new c11 pane sibling to the caller is spawned; the pane runs `/trident-{code|plan}-review`, which fans out to multiple agents, merges findings, stores the artifact, and advances the task. Requires c11 (the command errors cleanly otherwise).
 
 ### Auto-fire Conventions
 
-When a task transitions to {gate_statuses}, `lattice status` automatically spawns a detached {gate_commands} subprocess. The transition itself never blocks on the spawn.
+When a task transitions to `review` or `planned`, `lattice status` automatically spawns a detached `lattice code-review` / `plan-review` subprocess. The transition itself never blocks on the spawn.
 
 - **Coordination** lives in `.lattice/review_state/<task_id>.json` (extended with `started_by_pid` and `auto_fired` fields). First-writer-wins.
-- **Logs** at `.lattice/.daemon/auto-{{code,plan}}-review-<task_id>.log`, overwritten per spawn. Header records the spawn timestamp.
+- **Logs** at `.lattice/.daemon/auto-{code,plan}-review-<task_id>.log`, overwritten per spawn. Header records the spawn timestamp.
 - **Monitor** with `lattice review-status <task_id>` (covers both manual and auto-fired reviews).
 - **Audit** via the `auto_review_spawned` event in the per-task event log.
 - **Per-call opt-out**: `--no-auto-review` on `lattice status`.
 - **Project-wide opt-out**: `auto_code_review_on_transition: false` and/or `auto_plan_review_on_transition: false`.
-""")
 
-    # ── Always-on closing sections ───────────────────────────────────────
-    parts.append("""
 ### When You're Stuck
 
 Set the `needs_human` flag when you need human decision, approval, or input **right now**. The flag is orthogonal to status: the task keeps its swimlane (it can be `in_progress` AND waiting on a human), and it is distinct from `blocked` (generic external dependency — a task can be both). **The flag means actionable NOW** — future checkpoints (quality gates, review gates, approval milestones) stay unflagged until the preceding work is complete. The orchestrator flags them at the moment they become actionable.
@@ -592,14 +326,3 @@ lattice list
 - `lattice link <task> subtask_of|depends_on|blocks <target>` — task relationships
 
 For the full CLI reference, see the `/lattice` skill.
-""")
-
-    return "".join(parts)
-
-
-#: The stage11-default block.  Kept as a module constant for callers that
-#: have no instance config (and as the historical import surface).
-CLAUDE_MD_BLOCK = render_claude_md_block()
-
-# Marker comment used to detect if the block was already added
-CLAUDE_MD_MARKER = "## Lattice"

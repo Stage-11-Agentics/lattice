@@ -456,17 +456,22 @@ def check_plan_gate(
     task_id: str,
     target_status: str,
     is_json: bool,
+    config: dict,
     *,
     force: bool = False,
     reason: str | None = None,
 ) -> None:
     """Block transition to in_progress if the plan file is still scaffold.
 
-    Does nothing if *target_status* is not ``in_progress`` or if *force* is True
-    (with a reason).  Calls ``output_error`` (which raises SystemExit) when the
-    gate fires.
+    Does nothing if *target_status* is not ``in_progress``, if the workflow
+    has no planning swimlane (no ``in_planning`` status — e.g. the linear
+    status preset, which has no plan ritual), or if *force* is True (with a
+    reason).  Calls ``output_error`` (which raises SystemExit) when the gate
+    fires.
     """
     if target_status != "in_progress":
+        return
+    if "in_planning" not in config.get("workflow", {}).get("statuses", []):
         return
     if force:
         if not reason:

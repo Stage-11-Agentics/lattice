@@ -523,7 +523,7 @@ def next_cmd(
     # --claim: atomically assign + move to in_progress with valid transitions
     if claim:
         # Planning gate: block if plan is still scaffold
-        check_plan_gate(lattice_dir, task_id, "in_progress", is_json)
+        check_plan_gate(lattice_dir, task_id, "in_progress", is_json, config)
 
         locks_dir = lattice_dir / "locks"
         lock_keys = sorted([f"events_{task_id}", f"tasks_{task_id}"])

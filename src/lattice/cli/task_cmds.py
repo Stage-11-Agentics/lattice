@@ -883,6 +883,7 @@ def status_cmd(
         task_id,
         new_status,
         is_json,
+        config,
         force=force,
         reason=provenance_reason,
     )
