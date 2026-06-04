@@ -713,6 +713,12 @@ def _flag_needs_human(
     )
     if result.returncode == 0:
         click.echo("needs_human flag set (plan_approval=human).")
+    elif (
+        "FLAG_ALREADY_SET" in result.stderr or "already has the needs_human flag" in result.stderr
+    ):
+        # Benign: human attention is already requested (e.g. plan-level
+        # rework re-fired the review while the earlier flag still stands).
+        click.echo("needs_human flag already set (plan_approval=human).")
     else:
         click.echo(
             f"Note: Could not set needs_human flag: {result.stderr.strip()}",

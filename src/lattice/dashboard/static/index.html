@@ -3468,7 +3468,8 @@ function _renderPanelContent(taskId, task, events) {
     html += '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px"><span class="needs-human-badge">Needs Human</span></div>';
     if (nh.reason) html += '<div style="font-size:.85rem;color:var(--text-primary)">' + esc(nh.reason) + '</div>';
     var nhMeta = [];
-    if (nh.flagged_by) nhMeta.push('flagged by ' + esc(nh.flagged_by));
+    var nhActor = (nh.flagged_by && typeof nh.flagged_by === 'object') ? (nh.flagged_by.name || nh.flagged_by.id || '') : nh.flagged_by;
+    if (nhActor) nhMeta.push('flagged by ' + esc(nhActor));
     if (nh.since) nhMeta.push('since ' + esc(nh.since));
     if (nhMeta.length) html += '<div style="font-size:.7rem;color:var(--text-muted);margin-top:3px">' + nhMeta.join(' · ') + '</div>';
     html += '</div>';
