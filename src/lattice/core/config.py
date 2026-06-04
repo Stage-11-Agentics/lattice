@@ -95,7 +95,6 @@ WORKFLOW_PRESETS: dict[str, dict[str, str]] = {
             "pr_open": "PR up",
             "done": "shipped",
             "blocked": "stuck",
-            "needs_human": "ask flesh",
             "cancelled": "never mind",
         },
     },
@@ -118,7 +117,6 @@ STATUS_DESCRIPTIONS: dict[str, str] = {
     "pr_open": "PR is open and awaiting human review, CI, or merge. Local review artifact is recorded.",
     "done": "Work is reviewed, merged, and shipped. No further action needed.",
     "blocked": "Work cannot proceed due to an external dependency or unresolved issue.",
-    "needs_human": "A human decision, approval, or input is required before work can continue.",
     "cancelled": "Work has been abandoned. No further action will be taken.",
 }
 
@@ -180,20 +178,18 @@ def default_config(preset: str = "classic") -> LatticeConfig:
             "pr_open",
             "done",
             "blocked",
-            "needs_human",
             "cancelled",
         ],
         "transitions": {
             "backlog": ["in_planning", "planned", "cancelled"],
-            "in_planning": ["planned", "needs_human", "cancelled"],
-            "planned": ["in_progress", "review", "blocked", "needs_human", "cancelled"],
-            "in_progress": ["review", "blocked", "needs_human", "cancelled"],
+            "in_planning": ["planned", "cancelled"],
+            "planned": ["in_progress", "review", "blocked", "cancelled"],
+            "in_progress": ["review", "blocked", "cancelled"],
             "review": [
                 "pr_open",
                 "done",
                 "in_progress",
                 "in_planning",
-                "needs_human",
                 "cancelled",
             ],
             "pr_open": [
@@ -201,22 +197,13 @@ def default_config(preset: str = "classic") -> LatticeConfig:
                 "in_progress",
                 "review",
                 "blocked",
-                "needs_human",
                 "cancelled",
             ],
             "done": [],
             "blocked": ["in_planning", "planned", "in_progress", "pr_open", "cancelled"],
-            "needs_human": [
-                "in_planning",
-                "planned",
-                "in_progress",
-                "review",
-                "pr_open",
-                "cancelled",
-            ],
             "cancelled": [],
         },
-        "universal_targets": ["needs_human", "cancelled"],
+        "universal_targets": ["cancelled"],
         "roles": ["review", "plan-review", "review-individual"],
         "wip_limits": {
             "in_progress": 10,
@@ -369,7 +356,7 @@ def validate_transition(
     A transition is allowed if *to_status* appears in the explicit transition
     list for *from_status*, **or** if *to_status* is listed in
     ``workflow.universal_targets``.  Universal targets are statuses reachable
-    from any other status (e.g. ``needs_human``, ``cancelled``).
+    from any other status (e.g. ``cancelled``).
     """
     workflow = config.get("workflow", {})
     universal = workflow.get("universal_targets", [])
@@ -429,7 +416,7 @@ def validate_completion_policy(
     Returns ``(True, [])`` if no policy exists or all requirements are met.
     Returns ``(False, [reason, ...])`` if one or more requirements are not met.
 
-    Universal targets (``needs_human``, ``cancelled``) bypass all policies —
+    Universal targets (``cancelled``) bypass all policies —
     they are escape hatches.
     """
     from lattice.core.tasks import get_evidence_roles

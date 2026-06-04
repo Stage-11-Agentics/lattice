@@ -40,6 +40,8 @@ BUILTIN_EVENT_TYPES: frozenset[str] = frozenset(
         "resource_expired",
         "resource_updated",
         "auto_review_spawned",
+        "needs_human_flagged",
+        "needs_human_cleared",
     }
 )
 

@@ -10,7 +10,7 @@ URGENCY_ORDER = {"immediate": 0, "high": 1, "normal": 2, "low": 3}
 
 # Statuses that are NOT eligible for next (terminal, waiting, or active).
 # pr_open is waiting on external review/merge, so it is not pickable as next work.
-EXCLUDED_STATUSES = frozenset({"needs_human", "blocked", "done", "cancelled", "pr_open"})
+EXCLUDED_STATUSES = frozenset({"blocked", "done", "cancelled", "pr_open"})
 
 # Statuses indicating work already in progress (for resume-first logic)
 RESUME_STATUSES = frozenset({"in_progress", "in_planning"})
@@ -44,8 +44,9 @@ def select_next(
     1. **Resume first:** If *actor* is specified, check for in_progress/in_planning
        tasks assigned to that actor. Return the highest-priority one.
     2. **Pick from ready pool:** Tasks in *ready_statuses* (default: backlog, planned)
-       that are unassigned OR assigned to the requesting actor. Excludes needs_human,
-       blocked, done, cancelled.
+       that are unassigned OR assigned to the requesting actor. Excludes blocked,
+       done, cancelled, and any task carrying the needs_human flag (it is
+       waiting on a human, regardless of status).
     3. **Sort by:** priority (critical > high > medium > low) → urgency
        (immediate > high > normal > low) → ULID / id (oldest first).
     4. **Return** top result or None.
@@ -61,6 +62,8 @@ def select_next(
         for snap in snapshots:
             status = snap.get("status", "")
             assigned = snap.get("assigned_to")
+            if snap.get("needs_human"):
+                continue  # flagged: waiting on a human, never suggest it
             if status in RESUME_STATUSES and _actors_match(assigned, actor):
                 resume_candidates.append(snap)
         if resume_candidates:
@@ -77,6 +80,8 @@ def select_next(
         # terminal/waiting states, still exclude them.
         if status in EXCLUDED_STATUSES:
             continue
+        if snap.get("needs_human"):
+            continue  # flagged: waiting on a human, never suggest it
         assigned = snap.get("assigned_to")
         if assigned is not None and actor is not None and not _actors_match(assigned, actor):
             continue  # assigned to someone else
@@ -111,6 +116,8 @@ def select_all_ready(
             continue
         if status in EXCLUDED_STATUSES:
             continue
+        if snap.get("needs_human"):
+            continue  # flagged: waiting on a human, never suggest it
         candidates.append(snap)
 
     candidates.sort(key=sort_key)

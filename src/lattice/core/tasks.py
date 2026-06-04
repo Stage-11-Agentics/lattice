@@ -28,6 +28,7 @@ PROTECTED_FIELDS: frozenset[str] = frozenset(
         "comment_count",
         "reopened_count",
         "custom_fields",
+        "needs_human",
     }
 )
 
@@ -41,7 +42,6 @@ _DEFAULT_STATUS_ORDER: tuple[str, ...] = (
     "pr_open",
     "done",
     "blocked",
-    "needs_human",
     "cancelled",
 )
 _DEFAULT_STATUS_RANK: dict[str, int] = {
@@ -130,6 +130,7 @@ def compact_snapshot(snapshot: dict) -> dict:
         "last_status_changed_at": snapshot.get("last_status_changed_at"),
         "comment_count": snapshot.get("comment_count", 0),
         "reopened_count": snapshot.get("reopened_count", 0),
+        "needs_human": snapshot.get("needs_human"),
         "relationships_out_count": len(snapshot.get("relationships_out", [])),
         "evidence_ref_count": len(snapshot.get("evidence_refs", [])),
         "branch_link_count": len(snapshot.get("branch_links", [])),
@@ -233,6 +234,20 @@ def _mut_status_changed(snap: dict, event: dict) -> None:
     elif snap.get("done_at") is not None:
         # Transitioning away from done (reopened task) — clear done_at
         snap["done_at"] = None
+
+
+@_register_mutation("needs_human_flagged")
+def _mut_needs_human_flagged(snap: dict, event: dict) -> None:
+    snap["needs_human"] = {
+        "flagged_by": event["actor"],
+        "reason": event["data"]["reason"],
+        "since": event["ts"],
+    }
+
+
+@_register_mutation("needs_human_cleared")
+def _mut_needs_human_cleared(snap: dict, event: dict) -> None:
+    snap["needs_human"] = None
 
 
 @_register_mutation("assignment_changed")
