@@ -54,7 +54,6 @@ class TestDefaultConfig:
             "pr_open",
             "done",
             "blocked",
-            "needs_human",
             "cancelled",
         ]
         assert config["workflow"]["statuses"] == expected
@@ -71,7 +70,6 @@ class TestDefaultConfig:
             "pr_open",
             "done",
             "blocked",
-            "needs_human",
             "cancelled",
         }
         assert set(transitions.keys()) == expected_keys
@@ -85,8 +83,8 @@ class TestDefaultConfig:
     def test_has_universal_targets(self) -> None:
         config = default_config()
         assert "universal_targets" in config["workflow"]
-        assert "needs_human" in config["workflow"]["universal_targets"]
-        assert "cancelled" in config["workflow"]["universal_targets"]
+        assert config["workflow"]["universal_targets"] == ["cancelled"]
+        assert "needs_human" not in config["workflow"]["universal_targets"]
 
     def test_wip_limits(self) -> None:
         config = default_config()
@@ -283,13 +281,14 @@ class TestValidateTransition:
                     f"Universal target {target!r} should be reachable from {from_s!r}"
                 )
 
-    def test_universal_target_backlog_to_needs_human(self) -> None:
+    def test_universal_target_backlog_to_cancelled(self) -> None:
         config = default_config()
-        assert validate_transition(config, "backlog", "needs_human") is True
+        assert validate_transition(config, "backlog", "cancelled") is True
 
-    def test_universal_target_done_to_needs_human(self) -> None:
+    def test_needs_human_not_a_default_status(self) -> None:
         config = default_config()
-        assert validate_transition(config, "done", "needs_human") is True
+        assert validate_transition(config, "backlog", "needs_human") is False
+        assert validate_transition(config, "in_progress", "needs_human") is False
 
     def test_universal_target_done_to_cancelled(self) -> None:
         config = default_config()
@@ -554,12 +553,14 @@ class TestValidateCompletionPolicy:
         assert ok is True
 
     def test_universal_target_bypasses_policy(self) -> None:
+        """Any status listed in universal_targets bypasses its policy."""
         config = default_config()
+        config["workflow"]["universal_targets"] = ["cancelled", "parked"]
         config["workflow"]["completion_policies"] = {
-            "needs_human": {"require_roles": ["review"]},
+            "parked": {"require_roles": ["review"]},
         }
         snap = _snap_with_evidence([])
-        ok, failures = validate_completion_policy(config, snap, "needs_human")
+        ok, failures = validate_completion_policy(config, snap, "parked")
         assert ok is True
 
     def test_cancelled_bypasses_policy(self) -> None:

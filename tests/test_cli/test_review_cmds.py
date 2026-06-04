@@ -362,7 +362,7 @@ class TestPlanReviewSingle:
         # Should not crash
         assert result.exit_code == 0 or "failed" in result.output
 
-    def test_plan_approval_human_moves_status(self, tmp_path):
+    def test_plan_approval_human_sets_flag(self, tmp_path):
         root = _make_board(tmp_path, {"plan_review_mode": "single", "plan_approval": "human"})
         runner = CliRunner()
         task_id = _create_task(runner, root)
@@ -379,7 +379,7 @@ class TestPlanReviewSingle:
                 "lattice.cli.review_cmds._attach_review_artifact",
                 return_value=fake_art_id,
             ),
-            patch("lattice.cli.review_cmds._move_to_needs_human") as mock_move,
+            patch("lattice.cli.review_cmds._flag_needs_human") as mock_move,
         ):
             runner.invoke(
                 cli,

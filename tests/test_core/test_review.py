@@ -412,7 +412,7 @@ class TestTripleReviewSpawn:
         # Pane prompt contains the trident slash command + routing table.
         assert "/trident-code-review LAT-218" in captured["prompt"]
         assert "pr_open" in captured["prompt"]
-        assert "needs_human" in captured["prompt"]
+        assert "lattice needs-human LAT-218" in captured["prompt"]
         # review_state marker landed.
         state = review_mod.read_review_state(lattice_dir, "task_01ABC")
         assert state is not None
@@ -455,6 +455,8 @@ class TestTripleReviewSpawn:
         assert "/trident-plan-review LAT-42" in prompt
         assert "Review Verdict Routing" in prompt
         # Routing table outcomes
-        for outcome in ("pr_open", "in_progress", "in_planning", "needs_human"):
+        for outcome in ("pr_open", "in_progress", "in_planning"):
             assert outcome in prompt
+        # Complex findings route to the needs-human flag, not a status.
+        assert "lattice needs-human LAT-42" in prompt
         assert "agent:trident-pane-LAT-42" in prompt

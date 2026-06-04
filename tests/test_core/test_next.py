@@ -134,9 +134,25 @@ class TestSelectNextExclusions:
         snaps = [_snap("task_block", status="blocked")]
         assert select_next(snaps) is None
 
-    def test_excludes_needs_human(self) -> None:
-        snaps = [_snap("task_human", status="needs_human")]
-        assert select_next(snaps) is None
+    def test_excludes_needs_human_flagged(self) -> None:
+        """A flagged task is never suggested, even in a ready status."""
+        snap = _snap("task_human", status="backlog")
+        snap["needs_human"] = {
+            "flagged_by": "agent:x",
+            "reason": "decision needed",
+            "since": "2026-06-03T00:00:00Z",
+        }
+        assert select_next([snap]) is None
+
+    def test_excludes_needs_human_flagged_resume(self) -> None:
+        """A flagged in_progress task is not offered for resume."""
+        snap = _snap("task_resume", status="in_progress", assigned_to="agent:me")
+        snap["needs_human"] = {
+            "flagged_by": "agent:me",
+            "reason": "awaiting approval",
+            "since": "2026-06-03T00:00:00Z",
+        }
+        assert select_next([snap], actor="agent:me") is None
 
     def test_excludes_in_progress_without_actor(self) -> None:
         """in_progress is not in ready_statuses by default."""
@@ -309,11 +325,14 @@ class TestSelectAllReady:
     def test_empty_returns_empty(self) -> None:
         assert select_all_ready([]) == []
 
-    def test_needs_human_excluded(self) -> None:
-        snaps = [
-            _snap("task_nh", status="needs_human"),
-            _snap("task_bl", status="backlog"),
-        ]
+    def test_needs_human_flag_excluded(self) -> None:
+        flagged = _snap("task_nh", status="backlog")
+        flagged["needs_human"] = {
+            "flagged_by": "agent:x",
+            "reason": "decision needed",
+            "since": "2026-06-03T00:00:00Z",
+        }
+        snaps = [flagged, _snap("task_bl", status="backlog")]
         result = select_all_ready(snaps)
         assert len(result) == 1
         assert result[0]["id"] == "task_bl"
@@ -387,13 +406,12 @@ class TestComputeClaimTransitions:
         """Verify against the actual default workflow transitions."""
         transitions = {
             "backlog": ["in_planning", "planned", "cancelled"],
-            "in_planning": ["planned", "needs_human", "cancelled"],
-            "planned": ["in_progress", "review", "blocked", "needs_human", "cancelled"],
-            "in_progress": ["review", "blocked", "needs_human", "cancelled"],
-            "review": ["done", "in_progress", "needs_human", "cancelled"],
+            "in_planning": ["planned", "cancelled"],
+            "planned": ["in_progress", "review", "blocked", "cancelled"],
+            "in_progress": ["review", "blocked", "cancelled"],
+            "review": ["done", "in_progress", "cancelled"],
             "done": [],
             "blocked": ["in_planning", "planned", "in_progress", "cancelled"],
-            "needs_human": ["in_planning", "planned", "in_progress", "review", "cancelled"],
             "cancelled": [],
         }
         # backlog -> planned -> in_progress (2 hops)

@@ -78,14 +78,14 @@ class TestMCPCompletionPolicy:
             lattice_env,
             {
                 "done": {"require_roles": ["review"]},
-                "needs_human": {"require_roles": ["review"]},
+                "cancelled": {"require_roles": ["review"]},
             },
         )
         task_id = _create_task_at_review(lattice_env)
 
-        # needs_human is a universal target — should bypass policy
-        snapshot = lattice_status(task_id=task_id, new_status="needs_human", actor=_ACTOR)
-        assert snapshot["status"] == "needs_human"
+        # cancelled is a universal target — should bypass policy
+        snapshot = lattice_status(task_id=task_id, new_status="cancelled", actor=_ACTOR)
+        assert snapshot["status"] == "cancelled"
 
     def test_no_policy_no_gating(self, lattice_env: Path) -> None:
         """Without completion_policies, transitions work normally."""

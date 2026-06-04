@@ -1030,6 +1030,7 @@ class TestCompactSnapshot:
             "last_status_changed_at",
             "comment_count",
             "reopened_count",
+            "needs_human",
             "relationships_out_count",
             "evidence_ref_count",
             "branch_link_count",
