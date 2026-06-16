@@ -4,7 +4,7 @@ This guide covers creating, configuring, and tearing down git worktrees in proje
 
 ## The Critical Invariant
 
-All worktrees MUST share a single `.lattice/` directory via the `LATTICE_ROOT` environment variable. Lattice is the real-time coordination state for all agents. If a worktree runs Lattice commands without `LATTICE_ROOT` pointing to the shared `.lattice/`, it creates divergent state — tasks, events, and plans invisible to every other agent. This is unrecoverable without manual intervention.
+All worktrees MUST share a single `.lattice/` directory via the `LATTICE_ROOT` environment variable. `LATTICE_ROOT` points at the primary checkout's **root directory** — the directory that *contains* `.lattice/`, never the `.lattice/` directory itself (the CLI rejects a path ending in `.lattice/` with `LATTICE_ROOT points to a directory with no .lattice/ inside`). Lattice is the real-time coordination state for all agents. If a worktree runs Lattice commands without `LATTICE_ROOT` set to the shared root, it creates divergent state — tasks, events, and plans invisible to every other agent, and a lagging short-ID counter that later reissues in-use IDs. This is unrecoverable without manual intervention.
 
 ## Creating a Worktree
 
@@ -14,9 +14,9 @@ All worktrees MUST share a single `.lattice/` directory via the `LATTICE_ROOT` e
    ```
    Use sibling directories (`../worktree-*`), not subdirectories of the primary checkout.
 
-2. Set `LATTICE_ROOT` to the primary checkout's `.lattice/` absolute path:
+2. Set `LATTICE_ROOT` to the primary checkout's **root** absolute path (the directory containing `.lattice/`, not `.lattice/` itself):
    ```bash
-   export LATTICE_ROOT=$(cd /path/to/primary-checkout/.lattice && pwd)
+   export LATTICE_ROOT=$(cd /path/to/primary-checkout && pwd)
    ```
 
 3. Verify Lattice sees the shared state from within the worktree:
