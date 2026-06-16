@@ -23,6 +23,8 @@ from lattice.cli.helpers import (
 )
 from lattice.cli.main import cli
 from lattice.core.review import (
+    DEFAULT_MAX_DIFF_LINES,
+    cap_diff,
     claim_review_state,
     cleanup_temp_files,
     clear_review_state,
@@ -214,6 +216,17 @@ def code_review(
             "Diff is empty — no changes detected. Use --base <ref> if the diff range is wrong.",
             "EMPTY_DIFF",
             is_json,
+        )
+
+    # Cap a pathologically large diff before it bloats the prompt. Defense in
+    # depth: a too-wide resolution range shouldn't blow up review cost.
+    max_diff_lines = config.get("review_max_diff_lines", DEFAULT_MAX_DIFF_LINES)
+    diff_content, diff_capped, diff_lines = cap_diff(diff_content, max_diff_lines)
+    if diff_capped and not quiet:
+        click.echo(
+            f"Note: diff has {diff_lines} lines — truncated to {max_diff_lines} "
+            f"for review (configurable via review_max_diff_lines).",
+            err=True,
         )
 
     # Load and fill review template

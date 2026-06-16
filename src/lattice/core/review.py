@@ -40,6 +40,13 @@ from lattice.core.agent_spawn import (
 DEFAULT_AGENT_TIMEOUT = 600  # 10 minutes
 FAILURE_THRESHOLD = 2  # auto-create diagnostic task after this many failures
 
+#: Default ceiling on diff lines embedded in a review prompt. Generous on
+#: purpose — a real large change still gets a full review; this only guards
+#: against a pathologically large diff (e.g. a resolution fallback that sweeps
+#: in unrelated merged work) ballooning the prompt and cost. Configurable via
+#: ``review_max_diff_lines``.
+DEFAULT_MAX_DIFF_LINES = 5000
+
 REVIEW_STATE_DIR = "review_state"
 TMP_PROMPTS_DIR = "tmp-prompts"
 FAILURES_FILE = "failures.jsonl"
@@ -237,20 +244,33 @@ def _failures_path(lattice_dir: Path) -> Path:
     return lattice_dir / REVIEW_STATE_DIR / FAILURES_FILE
 
 
-def record_agent_failure(lattice_dir: Path, agent_type: str, task_id: str) -> int:
-    """Record that an agent failed a review. Returns the total failure count for this agent."""
+def record_agent_failure(
+    lattice_dir: Path,
+    agent_type: str,
+    task_id: str,
+    *,
+    detail: dict | None = None,
+) -> int:
+    """Record that an agent failed a review. Returns the total failure count.
+
+    ``detail`` carries diagnostic fields captured from the failed run — the
+    error message, returncode, duration, the resolved command, prompt size,
+    and a tail of the agent's stderr/stdout. Without this the record is just
+    ``{agent, task_id, timestamp}``, which is why six identical timeouts were
+    never diagnosable. Unknown/None detail values are dropped so the line
+    stays compact. ``agent``/``task_id``/``timestamp`` are always present and
+    win over any same-named detail key.
+    """
     state_dir = lattice_dir / REVIEW_STATE_DIR
     state_dir.mkdir(exist_ok=True)
     path = _failures_path(lattice_dir)
-    entry = json.dumps(
-        {
-            "agent": agent_type,
-            "task_id": task_id,
-            "timestamp": _now_iso(),
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    )
+    record: dict[str, Any] = {}
+    if detail:
+        record.update({k: v for k, v in detail.items() if v not in (None, "")})
+    record["agent"] = agent_type
+    record["task_id"] = task_id
+    record["timestamp"] = _now_iso()
+    entry = json.dumps(record, sort_keys=True, separators=(",", ":"))
     with open(path, "a", encoding="utf-8") as f:
         f.write(entry + "\n")
     return count_agent_failures(lattice_dir, agent_type)
@@ -277,6 +297,43 @@ def count_agent_failures(lattice_dir: Path, agent_type: str) -> int:
     return count
 
 
+#: Stable title prefix for auto-filed diagnostic tasks. Dedup keys on this so
+#: one root cause yields one open ticket instead of a new one per failure.
+DIAGNOSTIC_TITLE_PREFIX = "Investigate"
+_DIAGNOSTIC_TITLE_SUFFIX = "review failures"
+
+
+def _open_diagnostic_task_exists(lattice_dir: Path, agent_type: str) -> bool:
+    """Return True if an unresolved diagnostic task for ``agent_type`` already exists.
+
+    Scans the needs-human queue (every diagnostic task is filed flagged) for a
+    title matching ``Investigate <agent> review failures``. Best-effort: any
+    error means "assume none" so a transient failure never *suppresses* a real
+    escalation — at worst it files one extra ticket, which is the safe default.
+    """
+    try:
+        result = subprocess.run(
+            ["lattice", "list", "--needs-human", "--json"],
+            capture_output=True,
+            text=True,
+            cwd=str(lattice_dir.parent),
+        )
+        if result.returncode != 0:
+            return False
+        payload = json.loads(result.stdout or "{}")
+    except (OSError, json.JSONDecodeError):
+        return False
+    data = payload.get("data", payload)
+    tasks = data.get("tasks", data) if isinstance(data, dict) else data
+    if not isinstance(tasks, list):
+        return False
+    needle = f"{DIAGNOSTIC_TITLE_PREFIX} {agent_type} {_DIAGNOSTIC_TITLE_SUFFIX}"
+    for task in tasks:
+        if isinstance(task, dict) and str(task.get("title", "")).startswith(needle):
+            return True
+    return False
+
+
 def create_failure_diagnostic_task(
     lattice_dir: Path,
     agent_type: str,
@@ -285,9 +342,16 @@ def create_failure_diagnostic_task(
 ) -> str | None:
     """Create a needs_human-flagged task for investigating persistent agent failures.
 
-    Returns the created task ID, or None on failure.
+    Returns the created task ID, or None on failure (or when a diagnostic task
+    for this agent is already open — dedup, so one root cause doesn't escalate
+    into a ladder of near-identical tickets).
     """
-    title = f"Investigate {agent_type} review failures — failed {failure_count} times"
+    if _open_diagnostic_task_exists(lattice_dir, agent_type):
+        return None
+    title = (
+        f"{DIAGNOSTIC_TITLE_PREFIX} {agent_type} {_DIAGNOSTIC_TITLE_SUFFIX} "
+        f"— failed {failure_count} times"
+    )
     try:
         result = subprocess.run(
             [
@@ -331,12 +395,14 @@ def _handle_agent_failure(
     agent_type: str,
     task_id: str,
     actor: str,
+    *,
+    detail: dict | None = None,
 ) -> str | None:
     """Record failure and create diagnostic task if threshold exceeded.
 
     Returns the diagnostic task ID if one was created.
     """
-    count = record_agent_failure(lattice_dir, agent_type, task_id)
+    count = record_agent_failure(lattice_dir, agent_type, task_id, detail=detail)
     if count >= FAILURE_THRESHOLD:
         return create_failure_diagnostic_task(lattice_dir, agent_type, count, actor)
     return None
@@ -452,6 +518,34 @@ def resolve_diff(
         "Could not resolve diff automatically. "
         "Use --base <ref> to specify the base commit or branch."
     )
+
+
+def cap_diff(diff: str, max_lines: int = DEFAULT_MAX_DIFF_LINES) -> tuple[str, bool, int]:
+    """Cap a diff to ``max_lines``, truncating with a visible marker if over.
+
+    Returns ``(possibly_truncated_diff, was_capped, original_line_count)``.
+
+    A non-positive ``max_lines`` disables the cap (returns the diff unchanged).
+    When truncated, a clear marker is appended so the review agent — and any
+    human reading the artifact — knows the diff was cut and by how much, rather
+    than silently reviewing a partial change.
+    """
+    if max_lines <= 0:
+        lines = diff.count("\n") + (1 if diff and not diff.endswith("\n") else 0)
+        return diff, False, lines
+    lines = diff.splitlines()
+    original = len(lines)
+    if original <= max_lines:
+        return diff, False, original
+    kept = "\n".join(lines[:max_lines])
+    omitted = original - max_lines
+    marker = (
+        f"\n\n[diff truncated by Lattice: showing first {max_lines} of {original} "
+        f"lines; {omitted} lines omitted. Review the most significant changes above; "
+        f"if the change is genuinely this large, narrow the diff with --base or raise "
+        f"review_max_diff_lines.]\n"
+    )
+    return kept + marker, True, original
 
 
 def _find_git_root(lattice_dir: Path) -> Path | None:
@@ -679,9 +773,19 @@ def run_single_review(
 
         if not result.success:
             actor_str = _extract_actor_str(actor)
-            _handle_agent_failure(lattice_dir, "claude", task_id, actor_str)
+            message = _format_legacy_error("claude", result, timeout)
+            detail = {
+                "error": result.error or message,
+                "review_type": review_type,
+                "returncode": result.returncode,
+                "duration_seconds": round(result.duration_seconds, 1),
+                "command": result.command,
+                "prompt_chars": len(prompt_content),
+                "stderr_tail": result.stderr_tail,
+            }
+            _handle_agent_failure(lattice_dir, "claude", task_id, actor_str, detail=detail)
             clear_review_state(lattice_dir, task_id)
-            return False, _format_legacy_error("claude", result, timeout), None
+            return False, message, None
 
         clear_review_state(lattice_dir, task_id)
         return True, "Review complete.", result.output_text

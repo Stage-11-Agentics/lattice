@@ -59,7 +59,13 @@ class SpawnRequest:
 
 @dataclass(frozen=True)
 class SpawnResult:
-    """Result of a single agent spawn."""
+    """Result of a single agent spawn.
+
+    ``returncode``, ``stderr_tail`` and ``command`` are diagnostic extras
+    populated by the headless backend so a failure (notably a timeout) can be
+    recorded with enough detail to diagnose it later. They default to
+    empty/None so older callers and other backends remain unaffected.
+    """
 
     agent: str
     success: bool
@@ -67,6 +73,9 @@ class SpawnResult:
     error: str
     backend: str
     duration_seconds: float
+    returncode: int | None = None
+    stderr_tail: str = ""
+    command: str = ""
 
 
 class BackendUnavailableError(RuntimeError):
