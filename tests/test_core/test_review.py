@@ -9,15 +9,19 @@ from pathlib import Path
 
 import pytest
 
+from lattice.core import review as review_mod
 from lattice.core.review import (
     DEFAULT_AGENT_TIMEOUT,
+    DEFAULT_MAX_DIFF_LINES,
     FAILURE_THRESHOLD,
     _extract_actor_str,
     pid_alive,
+    cap_diff,
     claim_review_state,
     cleanup_temp_files,
     clear_review_state,
     count_agent_failures,
+    create_failure_diagnostic_task,
     read_review_state,
     record_agent_failure,
     write_review_state,
@@ -249,6 +253,124 @@ class TestFailureTracking:
         assert entry["agent"] == "claude"
         assert entry["task_id"] == "t1"
         assert "timestamp" in entry
+
+    def test_record_failure_with_detail_persists_diagnostics(self, lattice_dir: Path) -> None:
+        record_agent_failure(
+            lattice_dir,
+            "claude",
+            "t1",
+            detail={
+                "error": "timed out after 600s",
+                "review_type": "code-review",
+                "returncode": None,
+                "duration_seconds": 600.1,
+                "command": "env -u CLAUDECODE claude ...",
+                "prompt_chars": 21591,
+                "stderr_tail": "",
+            },
+        )
+        entry = json.loads((lattice_dir / "review_state" / "failures.jsonl").read_text().strip())
+        # Core fields always present and authoritative.
+        assert entry["agent"] == "claude"
+        assert entry["task_id"] == "t1"
+        assert "timestamp" in entry
+        # Diagnostic detail carried through.
+        assert entry["error"] == "timed out after 600s"
+        assert entry["review_type"] == "code-review"
+        assert entry["duration_seconds"] == 600.1
+        assert entry["command"].startswith("env -u CLAUDECODE")
+        assert entry["prompt_chars"] == 21591
+        # None/empty detail values are dropped to keep the line compact.
+        assert "returncode" not in entry
+        assert "stderr_tail" not in entry
+
+    def test_core_fields_win_over_detail(self, lattice_dir: Path) -> None:
+        record_agent_failure(
+            lattice_dir, "claude", "real", detail={"agent": "spoof", "task_id": "spoof"}
+        )
+        entry = json.loads((lattice_dir / "review_state" / "failures.jsonl").read_text().strip())
+        assert entry["agent"] == "claude"
+        assert entry["task_id"] == "real"
+
+
+class TestDiffCap:
+    def test_under_cap_unchanged(self) -> None:
+        diff = "\n".join(f"line {i}" for i in range(10))
+        capped, was_capped, original = cap_diff(diff, max_lines=100)
+        assert capped == diff
+        assert was_capped is False
+        assert original == 10
+
+    def test_over_cap_truncated_with_marker(self) -> None:
+        diff = "\n".join(f"line {i}" for i in range(500))
+        capped, was_capped, original = cap_diff(diff, max_lines=100)
+        assert was_capped is True
+        assert original == 500
+        assert "diff truncated by Lattice" in capped
+        assert "showing first 100 of 500" in capped
+        # Only the first 100 source lines survive (plus the marker block).
+        assert "line 99" in capped
+        assert "line 100\n" not in capped
+
+    def test_zero_disables_cap(self) -> None:
+        diff = "\n".join(f"line {i}" for i in range(500))
+        capped, was_capped, original = cap_diff(diff, max_lines=0)
+        assert capped == diff
+        assert was_capped is False
+        assert original == 500
+
+    def test_default_constant_is_generous(self) -> None:
+        # A real large change still gets fully reviewed; the cap only guards
+        # against pathological diffs.
+        assert DEFAULT_MAX_DIFF_LINES >= 2000
+
+
+class TestEscalationDedup:
+    """create_failure_diagnostic_task must not file a duplicate when one is open."""
+
+    def test_skips_when_open_diagnostic_exists(
+        self, lattice_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        existing = {
+            "data": {
+                "tasks": [
+                    {"title": "Investigate claude review failures — failed 3 times"},
+                ]
+            }
+        }
+
+        def fake_run(cmd, *args, **kwargs):  # noqa: ANN001
+            import subprocess
+
+            # The dedup probe lists the needs-human queue.
+            assert cmd[:3] == ["lattice", "list", "--needs-human"]
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(existing), "")
+
+        monkeypatch.setattr(review_mod.subprocess, "run", fake_run)
+        result = create_failure_diagnostic_task(lattice_dir, "claude", 4, "agent:x")
+        assert result is None  # deduped — no new ticket
+
+    def test_creates_when_no_open_diagnostic(
+        self, lattice_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, *args, **kwargs):  # noqa: ANN001
+            import subprocess
+
+            calls.append(cmd)
+            if cmd[:2] == ["lattice", "list"]:
+                return subprocess.CompletedProcess(cmd, 0, json.dumps({"data": {"tasks": []}}), "")
+            if cmd[:2] == ["lattice", "create"]:
+                return subprocess.CompletedProcess(cmd, 0, "LAT-999\n", "")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(review_mod.subprocess, "run", fake_run)
+        result = create_failure_diagnostic_task(lattice_dir, "claude", 2, "agent:x")
+        assert result == "LAT-999"
+        # The created title carries the stable dedup-able prefix.
+        create_call = next(c for c in calls if c[:2] == ["lattice", "create"])
+        assert create_call[2].startswith("Investigate claude review failures")
 
 
 # ---------------------------------------------------------------------------

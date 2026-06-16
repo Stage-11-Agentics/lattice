@@ -194,6 +194,7 @@ def auto_fire_review(
         proc = subprocess.Popen(
             cmd,
             cwd=str(lattice_dir.parent),
+            stdin=subprocess.DEVNULL,
             stdout=log_fh,
             stderr=subprocess.STDOUT,
             start_new_session=True,

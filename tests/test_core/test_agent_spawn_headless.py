@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -105,3 +107,71 @@ class TestHeadlessBackendEndToEnd:
         assert all(r.success for r in results), [r.error for r in results]
         for req in reqs:
             assert sentinel_path(req.output_file).exists()
+
+    def test_timeout_records_command_for_diagnostics(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A timed-out spawn carries the resolved command on the result.
+
+        This is the diagnostic the failure record needs — the timeout path
+        previously discarded everything but a bare 'timed out' string.
+        """
+        _patch_command(monkeypatch, behavior="sleep:5")
+        req = _make_request(tmp_path, "claude", timeout=1)
+        result = spawn_one(req, workspace_label="test", backend=HeadlessBackend())
+        assert not result.success
+        assert result.command and "fake_agent" in result.command
+
+    def test_failure_records_returncode_and_stderr_tail(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_command(monkeypatch, behavior="fail")
+        req = _make_request(tmp_path, "claude")
+        result = spawn_one(req, workspace_label="test", backend=HeadlessBackend())
+        assert not result.success
+        assert result.returncode == 1
+        assert "simulated failure" in result.stderr_tail
+
+    def test_timeout_kills_whole_process_group(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """On timeout, a child spawned by the agent is killed too (no orphan).
+
+        Reproduces the real shape: the shell wrapper backgrounds a child (like
+        ``claude`` under ``env``) that would otherwise survive a kill aimed
+        only at the shell. With start_new_session + killpg the whole group dies.
+        """
+        pidfile = tmp_path / "child.pid"
+
+        def _stub(agent_type: str, prompt_file: str, output_file: str) -> str:
+            child = (
+                f"python3 -c 'import os,time;"
+                f'open("{pidfile}","w").write(str(os.getpid()));'
+                f"time.sleep(30)' &"
+            )
+            return f"{child} python3 -c 'import time; time.sleep(30)'"
+
+        monkeypatch.setattr("lattice.core.agent_spawn._agent_cli_command", _stub)
+        monkeypatch.setattr("lattice.storage.agent_spawn._agent_cli_command", _stub)
+
+        req = _make_request(tmp_path, "claude", timeout=2)
+        result = spawn_one(req, workspace_label="test", backend=HeadlessBackend())
+        assert not result.success
+        assert "timed out" in result.error
+
+        assert pidfile.exists(), "child never started"
+        child_pid = int(pidfile.read_text().strip())
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and _pid_alive(child_pid):
+            time.sleep(0.1)
+        assert not _pid_alive(child_pid), f"orphan child {child_pid} survived the timeout"
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True

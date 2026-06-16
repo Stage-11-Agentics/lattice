@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import signal
 import subprocess
 import time
 from collections.abc import Sequence
@@ -27,6 +28,11 @@ from lattice.core.agent_spawn import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: How many trailing characters of an agent's stderr/stdout we keep on the
+#: ``SpawnResult`` for diagnostics. Enough to capture the tail of a hang or a
+#: crash without bloating the failure record.
+_TAIL_CHARS = 4000
 
 
 class HeadlessBackend(Backend):
@@ -54,38 +60,67 @@ class HeadlessBackend(Backend):
             env[k] = v
 
         start = time.monotonic()
+        # stdin=DEVNULL: a headless, non-interactive agent must never inherit
+        # the parent's stdin. An inherited, never-EOF stdin (a pipe/pty held
+        # open by a detached parent chain) is the classic cause of an agent
+        # hanging for its entire timeout regardless of workload.
+        #
+        # start_new_session=True puts the shell in its own process group so a
+        # timeout can kill the WHOLE tree. With shell=True, subprocess.run's
+        # own kill-on-timeout reaches only the `sh`; the `claude` (and its
+        # children) underneath survive as orphans that keep consuming API
+        # quota and ~/.claude locks. We manage Popen + killpg ourselves to
+        # avoid that leak.
         try:
-            result = subprocess.run(
+            proc = subprocess.Popen(
                 cmd,
                 shell=True,
                 env=env,
-                capture_output=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=req.timeout_seconds,
-            )
-        except subprocess.TimeoutExpired:
-            duration = time.monotonic() - start
-            self._write_sentinel(req, success=False, error="timed out")
-            return _failure_result(
-                req,
-                f"timed out after {req.timeout_seconds}s",
-                duration=duration,
+                start_new_session=True,
             )
         except OSError as exc:
             duration = time.monotonic() - start
             self._write_sentinel(req, success=False, error=str(exc))
-            return _failure_result(req, f"failed to spawn: {exc}", duration=duration)
+            return _failure_result(req, f"failed to spawn: {exc}", duration=duration, command=cmd)
 
-        duration = time.monotonic() - start
-
-        if result.returncode != 0:
-            stderr = (result.stderr or "").strip()
-            self._write_sentinel(req, success=False, error=stderr or f"exit {result.returncode}")
+        try:
+            stdout, stderr = proc.communicate(timeout=req.timeout_seconds)
+        except subprocess.TimeoutExpired as exc:
+            duration = time.monotonic() - start
+            stdout, stderr = self._kill_group_and_drain(proc, exc)
+            tail = _tail(stderr) or _tail(stdout)
+            err = f"timed out after {req.timeout_seconds}s"
+            self._write_sentinel(req, success=False, error=tail or err)
             return _failure_result(
                 req,
-                f"exited with code {result.returncode}. {stderr}",
+                err,
                 duration=duration,
+                returncode=None,
+                stderr_tail=tail,
+                command=cmd,
             )
+
+        duration = time.monotonic() - start
+        returncode = proc.returncode
+
+        if returncode != 0:
+            stderr_clean = (stderr or "").strip()
+            tail = _tail(stderr_clean) or _tail((stdout or "").strip())
+            self._write_sentinel(req, success=False, error=tail or f"exit {returncode}")
+            return _failure_result(
+                req,
+                f"exited with code {returncode}. {stderr_clean}",
+                duration=duration,
+                returncode=returncode,
+                stderr_tail=tail,
+                command=cmd,
+            )
+
+        result = subprocess.CompletedProcess(cmd, returncode, stdout, stderr)
 
         # Ensure output file is populated (may fall back to stdout).
         output_text = ""
@@ -114,7 +149,35 @@ class HeadlessBackend(Backend):
             error="",
             backend=self.name,
             duration_seconds=duration,
+            returncode=returncode,
+            command=cmd,
         )
+
+    def _kill_group_and_drain(
+        self, proc: subprocess.Popen, exc: subprocess.TimeoutExpired
+    ) -> tuple[str, str]:
+        """Kill the timed-out process group and return its partial output.
+
+        ``proc`` was launched with ``start_new_session=True`` so it leads its
+        own process group; ``os.killpg`` reaps the shell and every descendant
+        (the agent and any tools it spawned), preventing orphan leaks. After
+        the group dies the pipes close and a final ``communicate()`` drains
+        whatever the agent wrote before the wall — the diagnostic that the
+        previous ``subprocess.run`` path discarded.
+        """
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            proc.kill()  # group gone or unreachable — fall back to leader kill
+        try:
+            stdout, stderr = proc.communicate(timeout=10)
+        except (subprocess.TimeoutExpired, ValueError):
+            stdout, stderr = "", ""
+        # Prefer freshly drained output; fall back to whatever the timeout
+        # exception already captured.
+        stdout = stdout or _as_text(exc.stdout)
+        stderr = stderr or _as_text(exc.stderr)
+        return stdout, stderr
 
     def _write_sentinel(self, req: SpawnRequest, *, success: bool, error: str = "") -> None:
         """Write the ``.done`` sentinel (and optional ``.err`` sidecar)."""
@@ -128,7 +191,15 @@ class HeadlessBackend(Backend):
             logger.exception("Failed to write sentinel for %s", req.agent)
 
 
-def _failure_result(req: SpawnRequest, error: str, *, duration: float) -> SpawnResult:
+def _failure_result(
+    req: SpawnRequest,
+    error: str,
+    *,
+    duration: float,
+    returncode: int | None = None,
+    stderr_tail: str = "",
+    command: str = "",
+) -> SpawnResult:
     return SpawnResult(
         agent=req.agent,
         success=False,
@@ -136,4 +207,24 @@ def _failure_result(req: SpawnRequest, error: str, *, duration: float) -> SpawnR
         error=error,
         backend="headless",
         duration_seconds=duration,
+        returncode=returncode,
+        stderr_tail=stderr_tail,
+        command=command,
     )
+
+
+def _tail(text: str | None) -> str:
+    """Return the trailing ``_TAIL_CHARS`` of ``text`` (stripped), or ""."""
+    if not text:
+        return ""
+    text = text.strip()
+    return text[-_TAIL_CHARS:]
+
+
+def _as_text(value: object) -> str:
+    """Coerce a TimeoutExpired.stdout/.stderr (str | bytes | None) to str."""
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
