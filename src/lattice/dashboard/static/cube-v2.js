@@ -224,7 +224,6 @@ var _cv2 = {
   // Selection chain (transitive, both directions)
   chainUp: null,          // Set of prerequisite ids of the selected node
   chainDown: null,        // Set of dependent ids of the selected node
-  _depchainEl: null,      // bottom dependency-rail element
   _edgeBaseColors: null,  // Float32Array snapshot for selection edge dimming
   // Color animation
   nodeTargetColors: [],   // target RGB per node
@@ -1039,7 +1038,6 @@ function _cv2SelectNode(instanceId) {
   _cv2.chainDown = _cv2ReachSet(node.id, _cv2.blockDown || {});
 
   _cv2ApplyEdgeHighlight();
-  _cv2RenderDepChain(node);
 
   // Open detail panel
   _cv2OpenDetailPanel(node.id);
@@ -1050,72 +1048,7 @@ function _cv2DeselectNode() {
   _cv2.chainUp = null;
   _cv2.chainDown = null;
   _cv2ApplyEdgeHighlight();
-  _cv2HideDepChain();
   _cv2CloseDetailPanel();
-}
-
-/* --------------------------------------------------------------------------
- * 11b. Dependency Rail (bottom)
- * ----------------------------------------------------------------------- */
-
-function _cv2HideDepChain() {
-  if (_cv2._depchainEl) _cv2._depchainEl.classList.add('cv2-depchain-hidden');
-}
-
-/* Render the selected node's chain along the bottom:
- *   Depends on  [prereqs, root→near] →  [SELECTED]  → Unlocks  [dependents] */
-function _cv2RenderDepChain(node) {
-  var el = _cv2._depchainEl;
-  if (!el) return;
-
-  var byId = {}, idxById = {};
-  for (var i = 0; i < _cv2.nodeData.length; i++) {
-    byId[_cv2.nodeData[i].id] = _cv2.nodeData[i];
-    idxById[_cv2.nodeData[i].id] = i;
-  }
-  var depthOf = function(id) { return _cv2.nodeDepths[id] || 0; };
-  var byDepth = function(a, b) { return depthOf(a) - depthOf(b); };
-
-  var ups = Array.from(_cv2.chainUp || []).filter(function(id) { return byId[id]; }).sort(byDepth);
-  var downs = Array.from(_cv2.chainDown || []).filter(function(id) { return byId[id]; }).sort(byDepth);
-
-  function chip(id, cls) {
-    var n = byId[id];
-    if (!n) return '';
-    return '<button class="cv2-dep-chip ' + (cls || '') + '" data-idx="' + idxById[id] + '" title="' + _cv2Esc(n.title || '') + '">'
-      + '<span class="cv2-dep-dot" style="background:' + _cv2NodeColor(n) + '"></span>'
-      + _cv2Esc(n.short_id || '') + '</button>';
-  }
-
-  var html = '';
-  if (ups.length) {
-    html += '<span class="cv2-dep-label">Depends on</span>';
-    for (var i = 0; i < ups.length; i++) html += chip(ups[i], 'cv2-dep-up');
-    html += '<span class="cv2-dep-arrow">&rarr;</span>';
-  }
-  html += chip(node.id, 'cv2-dep-self');
-  if (downs.length) {
-    html += '<span class="cv2-dep-arrow">&rarr;</span><span class="cv2-dep-label">Unlocks</span>';
-    for (var j = 0; j < downs.length; j++) html += chip(downs[j], 'cv2-dep-down');
-  }
-  if (!ups.length && !downs.length) {
-    html += '<span class="cv2-dep-empty">no blocking dependencies</span>';
-  }
-
-  el.innerHTML = html;
-  el.classList.remove('cv2-depchain-hidden');
-
-  var chips = el.querySelectorAll('.cv2-dep-chip');
-  for (var c = 0; c < chips.length; c++) {
-    chips[c].addEventListener('click', function(ev) {
-      ev.stopPropagation();
-      var idx = parseInt(this.getAttribute('data-idx'), 10);
-      if (isNaN(idx)) return;
-      _cv2SelectNode(idx);
-      var nn = _cv2.nodeData[idx];
-      if (nn) _cv2SmoothPanTo(nn.x || 0, nn.y || 0);
-    });
-  }
 }
 
 /* --------------------------------------------------------------------------
@@ -1268,13 +1201,6 @@ function _cv2CreateHUD() {
   container.appendChild(labelContainer);
   _cv2._labelContainer = labelContainer;
   _cv2._labelEls = [];
-
-  // --- Dependency rail (bottom; populated on selection) ---
-  var depchain = document.createElement('div');
-  depchain.className = 'cv2-depchain cv2-depchain-hidden';
-  depchain.id = 'cv2-depchain';
-  container.appendChild(depchain);
-  _cv2._depchainEl = depchain;
 }
 
 function _cv2CreateLabels(nodes) {
@@ -1586,7 +1512,6 @@ function updateCubeV2Data(data) {
       _cv2.chainUp = _cv2ReachSet(_cv2.selectedNode, _cv2.blockUp);
       _cv2.chainDown = _cv2ReachSet(_cv2.selectedNode, _cv2.blockDown);
       _cv2ApplyEdgeHighlight();
-      _cv2RenderDepChain(newNodes[selIdx]);
     } else {
       _cv2DeselectNode();
     }
@@ -1656,7 +1581,6 @@ function cleanupCubeV2() {
   _cv2.blockDown = {};
   _cv2.chainUp = null;
   _cv2.chainDown = null;
-  _cv2._depchainEl = null;
   _cv2._edgeBaseColors = null;
   _cv2.edgeLines = null;
   _cv2.edgeTubes = [];
