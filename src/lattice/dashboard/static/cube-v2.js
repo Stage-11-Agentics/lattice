@@ -41,17 +41,124 @@ function _cv2CloseDetailPanel() {
  * 1. Constants
  * ----------------------------------------------------------------------- */
 
+/* Status palette — ordered along the lifecycle so hue tracks progress.
+   No two statuses share a gray (backlog vs cancelled was the old collision),
+   done reads green ("complete"), in_progress reads as active cyan, and the
+   previously-missing in_validation / pr_open get their own hues instead of
+   falling through to default gray. */
 var CV2_STATUS_COLORS = {
-  backlog: '#6b7280', in_planning: '#a78bfa', planned: '#60a5fa',
-  in_progress: '#34d399', review: '#fbbf24', done: '#22d3ee',
-  blocked: '#f87171', needs_human: '#f59e0b', cancelled: '#374151'
+  backlog: '#64748b',        // slate — captured, not started
+  in_planning: '#818cf8',    // indigo
+  planned: '#3b82f6',        // blue — ready to implement
+  in_progress: '#22d3ee',    // bright cyan — active, pops
+  review: '#fbbf24',         // amber
+  in_validation: '#2dd4bf',  // teal
+  pr_open: '#c084fc',        // violet — awaiting merge
+  done: '#22c55e',           // green — complete
+  blocked: '#ef4444',        // red
+  needs_human: '#f59e0b',    // orange (also the orthogonal-flag override)
+  cancelled: '#3f3f46'       // dark desaturated — dead (also rendered smaller/dimmer)
 };
 
 /* needs_human is an orthogonal flag: when set, override status color with amber. */
 var CV2_NEEDS_HUMAN_COLOR = '#f59e0b';
 function _cv2NodeColor(node) {
   if (node && node.needs_human) return CV2_NEEDS_HUMAN_COLOR;
-  return CV2_STATUS_COLORS[node && node.status] || '#6b7280';
+  return CV2_STATUS_COLORS[node && node.status] || '#64748b';
+}
+
+/* Gold "ready now" halo (Stage 11 accent). A node earns it only when it is
+   genuinely actionable: unstarted AND every blocking prerequisite is done. */
+var CV2_READY_COLOR = '#f5c518';
+
+/* Visual hierarchy: finished/dead work recedes so live + ready work pops.
+   { scale, bright } multipliers applied as a baseline (selection dimming
+   multiplies on top of this). Statuses not listed render at full weight. */
+var CV2_DEEMPHASIS = {
+  done: { scale: 0.82, bright: 0.82 },
+  cancelled: { scale: 0.64, bright: 0.55 }
+};
+
+/* Readiness classification sets. */
+var CV2_UNSTARTED = { backlog: 1, in_planning: 1, planned: 1 };
+var CV2_COMPLETE = { done: 1, cancelled: 1 };
+
+/* Blocking adjacency: which tasks must complete before a given task can start.
+   Only depends_on and blocks carry "must-finish-first" meaning; subtask_of /
+   related_to / spawned_by do not. Returns { upstream, downstream } id->ids maps
+   where upstream[id] = prerequisites of id, downstream[id] = things id unblocks. */
+function _cv2BuildBlockingAdjacency(nodes, links) {
+  var nodeIds = new Set();
+  for (var i = 0; i < nodes.length; i++) nodeIds.add(nodes[i].id);
+  var upstream = {}, downstream = {};
+  for (var i = 0; i < nodes.length; i++) { upstream[nodes[i].id] = []; downstream[nodes[i].id] = []; }
+  for (var i = 0; i < links.length; i++) {
+    var link = links[i];
+    var src = typeof link.source === 'object' ? link.source.id : link.source;
+    var tgt = typeof link.target === 'object' ? link.target.id : link.target;
+    if (!nodeIds.has(src) || !nodeIds.has(tgt)) continue;
+    if (link.type === 'depends_on') {
+      // src depends on tgt → tgt is a prerequisite of src
+      upstream[src].push(tgt); downstream[tgt].push(src);
+    } else if (link.type === 'blocks') {
+      // src blocks tgt → src is a prerequisite of tgt
+      upstream[tgt].push(src); downstream[src].push(tgt);
+    }
+  }
+  return { upstream: upstream, downstream: downstream };
+}
+
+/* The set of ids genuinely startable now: unstarted, not flagged for a human,
+   and every blocking prerequisite already done/cancelled. */
+function _cv2ComputeReady(nodes, blockUp) {
+  var statusById = {};
+  for (var i = 0; i < nodes.length; i++) statusById[nodes[i].id] = nodes[i].status;
+  var ready = new Set();
+  for (var i = 0; i < nodes.length; i++) {
+    var n = nodes[i];
+    if (!CV2_UNSTARTED[n.status]) continue;
+    if (n.needs_human) continue; // already blocked on a human decision
+    var ups = blockUp[n.id] || [];
+    var clear = true;
+    for (var j = 0; j < ups.length; j++) {
+      if (!CV2_COMPLETE[statusById[ups[j]]]) { clear = false; break; }
+    }
+    if (clear) ready.add(n.id);
+  }
+  return ready;
+}
+
+/* Transitive closure from startId following an adjacency map (excludes startId). */
+function _cv2ReachSet(startId, adj) {
+  var seen = new Set();
+  var stack = [startId];
+  while (stack.length) {
+    var id = stack.pop();
+    var nbrs = adj[id] || [];
+    for (var k = 0; k < nbrs.length; k++) {
+      if (!seen.has(nbrs[k])) { seen.add(nbrs[k]); stack.push(nbrs[k]); }
+    }
+  }
+  return seen;
+}
+
+/* True when the node SET or link SET differs — i.e. a task/relationship was
+   added or removed. A pure status/metadata edit returns false, which is what
+   keeps the layout from reflowing on unrelated updates. */
+function _cv2TopologyChanged(oldNodes, oldLinks, newNodes, newLinks) {
+  if (oldNodes.length !== newNodes.length || oldLinks.length !== newLinks.length) return true;
+  var seen = {};
+  for (var i = 0; i < oldNodes.length; i++) seen[oldNodes[i].id] = 1;
+  for (var i = 0; i < newNodes.length; i++) { if (!seen[newNodes[i].id]) return true; }
+  var lkey = function(l) {
+    var s = typeof l.source === 'object' ? l.source.id : l.source;
+    var t = typeof l.target === 'object' ? l.target.id : l.target;
+    return s + '|' + t + '|' + l.type;
+  };
+  var lseen = {};
+  for (var i = 0; i < oldLinks.length; i++) lseen[lkey(oldLinks[i])] = 1;
+  for (var i = 0; i < newLinks.length; i++) { if (!lseen[lkey(newLinks[i])]) return true; }
+  return false;
 }
 
 var CV2_EDGE_COLORS = {
@@ -111,6 +218,16 @@ var _cv2 = {
   searchMatches: new Set(),
   // Topology
   nodeDepths: {},
+  // Blocking graph (depends_on + blocks) — drives readiness + chain highlight
+  blockUp: {},
+  blockDown: {},
+  readySet: null,
+  readyHalo: null,        // InstancedMesh: gold "ready now" glow behind nodes
+  // Selection chain (transitive, both directions)
+  chainUp: null,          // Set of prerequisite ids of the selected node
+  chainDown: null,        // Set of dependent ids of the selected node
+  _depchainEl: null,      // bottom dependency-rail element
+  _edgeBaseColors: null,  // Float32Array snapshot for selection edge dimming
   // Color animation
   nodeTargetColors: [],   // target RGB per node
   nodeCurrentColors: [],  // current (animating) RGB per node
@@ -324,6 +441,12 @@ function _cv2InitSimulation(nodes, links) {
   _cv2.nodeData = nodes;
   _cv2.linkData = links;
 
+  // Blocking graph + readiness (independent of layout)
+  var adj = _cv2BuildBlockingAdjacency(nodes, links);
+  _cv2.blockUp = adj.upstream;
+  _cv2.blockDown = adj.downstream;
+  _cv2.readySet = _cv2ComputeReady(nodes, _cv2.blockUp);
+
   // Initialize color arrays
   _cv2.nodeTargetColors = [];
   _cv2.nodeCurrentColors = [];
@@ -372,6 +495,40 @@ function _cv2CreateNodes(nodes) {
   _cv2.scene.add(mesh);
 }
 
+/* Gold additive glow rendered behind "ready now" nodes. One instance per node;
+ * the animation loop scales non-ready instances to zero so only actionable
+ * tasks show the halo. */
+function _cv2CreateReadyHalos(nodes) {
+  if (_cv2.readyHalo) {
+    _cv2.scene.remove(_cv2.readyHalo);
+    _cv2.readyHalo.geometry.dispose();
+    _cv2.readyHalo.material.dispose();
+    _cv2.readyHalo = null;
+  }
+  var count = nodes.length;
+  if (count === 0) return;
+
+  var geo = new THREE.SphereGeometry(CV2_NODE_BASE_RADIUS, 16, 12);
+  var mat = new THREE.MeshBasicMaterial({
+    color: new THREE.Color(CV2_READY_COLOR),
+    transparent: true,
+    opacity: 0.24,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false
+  });
+  var mesh = new THREE.InstancedMesh(geo, mat, count);
+  mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  mesh.renderOrder = -1; // behind the opaque node spheres
+
+  // Start hidden (scale 0); the animation loop reveals ready nodes.
+  var m = new THREE.Matrix4();
+  m.makeScale(0, 0, 0);
+  for (var i = 0; i < count; i++) mesh.setMatrixAt(i, m);
+
+  _cv2.readyHalo = mesh;
+  _cv2.scene.add(mesh);
+}
+
 /* --------------------------------------------------------------------------
  * 7. Edge Rendering (Lines + Tubes + Flow Particles)
  * ----------------------------------------------------------------------- */
@@ -408,6 +565,11 @@ function _cv2CreateEdges(links, nodes) {
     var lineMat = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.6 });
     _cv2.edgeLines = new THREE.LineSegments(lineGeo, lineMat);
     _cv2.scene.add(_cv2.edgeLines);
+    // Snapshot base colors so selection highlighting can dim off-chain edges
+    // and restore them on deselect without recomputing the palette.
+    _cv2._edgeBaseColors = new Float32Array(lineColors);
+  } else {
+    _cv2._edgeBaseColors = null;
   }
 
   // --- Flow particles ---
@@ -446,6 +608,37 @@ function _cv2CreateEdges(links, nodes) {
 
   // Store validated links for animation
   _cv2._validLinks = validLinks;
+
+  // If a selection survived a data refresh, re-apply its edge highlight.
+  if (_cv2.selectedNode) _cv2ApplyEdgeHighlight();
+}
+
+/* Modulate edge colors for the current selection: edges fully inside the
+ * selected node's chain brighten, everything else dims hard. With no
+ * selection, restore the snapshot base colors. */
+function _cv2ApplyEdgeHighlight() {
+  if (!_cv2.edgeLines || !_cv2._edgeBaseColors || !_cv2._validLinks) return;
+  var attr = _cv2.edgeLines.geometry.attributes.color;
+  var arr = attr.array;
+  var base = _cv2._edgeBaseColors;
+  var sel = _cv2.selectedNode;
+  function onChain(id) {
+    return id === sel
+      || (_cv2.chainUp && _cv2.chainUp.has(id))
+      || (_cv2.chainDown && _cv2.chainDown.has(id));
+  }
+  for (var i = 0; i < _cv2._validLinks.length; i++) {
+    var vl = _cv2._validLinks[i];
+    var m = 1.0;
+    if (sel) m = (onChain(vl.source.id) && onChain(vl.target.id)) ? 1.35 : 0.10;
+    var o = i * 6;
+    for (var k = 0; k < 6; k++) {
+      if (o + k >= base.length || o + k >= arr.length) break;
+      var v = base[o + k] * m;
+      arr[o + k] = v > 1 ? 1 : v;
+    }
+  }
+  attr.needsUpdate = true;
 }
 
 /* --------------------------------------------------------------------------
@@ -468,33 +661,40 @@ function _cv2Animate() {
   // --- Update node positions and colors ---
   var tmpMatrix = new THREE.Matrix4();
   var colorAttr = _cv2.instancedMesh.instanceColor;
-  var dimming = _cv2.searchActive || _cv2.selectedNode;
+  var haloMatrix = _cv2.readyHalo ? new THREE.Matrix4() : null;
+  var sel = _cv2.selectedNode;
 
   for (var i = 0; i < count; i++) {
     var node = nodes[i];
-    var scale = CV2_PRIORITY_SCALE[node.priority] || 1.0;
+
+    // Baseline de-emphasis: finished/dead work recedes so live work pops.
+    var de = CV2_DEEMPHASIS[node.status];
+    var emphScale = de ? de.scale : 1.0;
+    var emphBright = de ? de.bright : 1.0;
+
+    var scale = (CV2_PRIORITY_SCALE[node.priority] || 1.0) * emphScale;
     var x = node.x || 0;
     var y = node.y || 0;
 
-    // Search/selection dimming
+    // Focus brightness: search match → selection chain → default.
     var bright = 1.0;
+    var onChain = true; // for halo gating below
     if (_cv2.searchActive && !_cv2.searchMatches.has(node.id)) {
-      bright = 0.15;
+      bright = 0.12;
       scale *= 0.5;
-    } else if (_cv2.selectedNode && _cv2.selectedNode !== node.id) {
-      // Check if connected to selected node
-      var connected = false;
-      if (_cv2._validLinks) {
-        for (var j = 0; j < _cv2._validLinks.length; j++) {
-          var vl = _cv2._validLinks[j];
-          if ((vl.source.id === _cv2.selectedNode && vl.target.id === node.id) ||
-              (vl.target.id === _cv2.selectedNode && vl.source.id === node.id)) {
-            connected = true;
-            break;
-          }
-        }
+      onChain = false;
+    } else if (sel) {
+      if (node.id === sel) {
+        bright = 1.0;
+        scale *= 1.25; // selected node grows
+      } else if (_cv2.chainUp && _cv2.chainUp.has(node.id)) {
+        bright = 1.0;   // prerequisites — strongest (what you asked about)
+      } else if (_cv2.chainDown && _cv2.chainDown.has(node.id)) {
+        bright = 0.82;  // dependents — present but secondary
+      } else {
+        bright = 0.12;  // off-chain — dim hard
+        onChain = false;
       }
-      if (!connected) bright = 0.3;
     }
 
     // Animate colors toward target
@@ -504,17 +704,31 @@ function _cv2Animate() {
       cc.r += (tc.r - cc.r) * 0.08;
       cc.g += (tc.g - cc.g) * 0.08;
       cc.b += (tc.b - cc.b) * 0.08;
-      colorAttr.setXYZ(i, cc.r * bright, cc.g * bright, cc.b * bright);
+      var fb = bright * emphBright;
+      colorAttr.setXYZ(i, cc.r * fb, cc.g * fb, cc.b * fb);
     }
 
     // Position (2.5D — nodes live on Z=0 plane)
     tmpMatrix.makeScale(scale, scale, scale);
     tmpMatrix.setPosition(x, y, 0);
     _cv2.instancedMesh.setMatrixAt(i, tmpMatrix);
+
+    // Ready halo: visible only for genuinely-ready nodes that aren't dimmed out.
+    if (haloMatrix) {
+      var hs = 0;
+      if (_cv2.readySet && _cv2.readySet.has(node.id) && onChain) {
+        var pulse = 1.7 + 0.16 * Math.sin(_cv2._frameCount * 0.06 + i);
+        hs = scale * pulse;
+      }
+      haloMatrix.makeScale(hs, hs, hs);
+      haloMatrix.setPosition(x, y, 0);
+      _cv2.readyHalo.setMatrixAt(i, haloMatrix);
+    }
   }
 
   _cv2.instancedMesh.instanceMatrix.needsUpdate = true;
   colorAttr.needsUpdate = true;
+  if (_cv2.readyHalo) _cv2.readyHalo.instanceMatrix.needsUpdate = true;
 
   // --- Update edge positions ---
   if (_cv2.edgeLines && _cv2._validLinks) {
@@ -830,13 +1044,88 @@ function _cv2SelectNode(instanceId) {
   var node = _cv2.nodeData[instanceId];
   _cv2.selectedNode = node.id;
 
+  // Transitive chain through the selected node, both directions.
+  _cv2.chainUp = _cv2ReachSet(node.id, _cv2.blockUp || {});
+  _cv2.chainDown = _cv2ReachSet(node.id, _cv2.blockDown || {});
+
+  _cv2ApplyEdgeHighlight();
+  _cv2RenderDepChain(node);
+
   // Open detail panel
   _cv2OpenDetailPanel(node.id);
 }
 
 function _cv2DeselectNode() {
   _cv2.selectedNode = null;
+  _cv2.chainUp = null;
+  _cv2.chainDown = null;
+  _cv2ApplyEdgeHighlight();
+  _cv2HideDepChain();
   _cv2CloseDetailPanel();
+}
+
+/* --------------------------------------------------------------------------
+ * 11b. Dependency Rail (bottom)
+ * ----------------------------------------------------------------------- */
+
+function _cv2HideDepChain() {
+  if (_cv2._depchainEl) _cv2._depchainEl.classList.add('cv2-depchain-hidden');
+}
+
+/* Render the selected node's chain along the bottom:
+ *   Depends on  [prereqs, root→near] →  [SELECTED]  → Unlocks  [dependents] */
+function _cv2RenderDepChain(node) {
+  var el = _cv2._depchainEl;
+  if (!el) return;
+
+  var byId = {}, idxById = {};
+  for (var i = 0; i < _cv2.nodeData.length; i++) {
+    byId[_cv2.nodeData[i].id] = _cv2.nodeData[i];
+    idxById[_cv2.nodeData[i].id] = i;
+  }
+  var depthOf = function(id) { return _cv2.nodeDepths[id] || 0; };
+  var byDepth = function(a, b) { return depthOf(a) - depthOf(b); };
+
+  var ups = Array.from(_cv2.chainUp || []).filter(function(id) { return byId[id]; }).sort(byDepth);
+  var downs = Array.from(_cv2.chainDown || []).filter(function(id) { return byId[id]; }).sort(byDepth);
+
+  function chip(id, cls) {
+    var n = byId[id];
+    if (!n) return '';
+    return '<button class="cv2-dep-chip ' + (cls || '') + '" data-idx="' + idxById[id] + '" title="' + _cv2Esc(n.title || '') + '">'
+      + '<span class="cv2-dep-dot" style="background:' + _cv2NodeColor(n) + '"></span>'
+      + _cv2Esc(n.short_id || '') + '</button>';
+  }
+
+  var html = '';
+  if (ups.length) {
+    html += '<span class="cv2-dep-label">Depends on</span>';
+    for (var i = 0; i < ups.length; i++) html += chip(ups[i], 'cv2-dep-up');
+    html += '<span class="cv2-dep-arrow">&rarr;</span>';
+  }
+  html += chip(node.id, 'cv2-dep-self');
+  if (downs.length) {
+    html += '<span class="cv2-dep-arrow">&rarr;</span><span class="cv2-dep-label">Unlocks</span>';
+    for (var j = 0; j < downs.length; j++) html += chip(downs[j], 'cv2-dep-down');
+  }
+  if (!ups.length && !downs.length) {
+    html += '<span class="cv2-dep-empty">no blocking dependencies</span>';
+  }
+
+  el.innerHTML = html;
+  el.classList.remove('cv2-depchain-hidden');
+
+  var chips = el.querySelectorAll('.cv2-dep-chip');
+  for (var c = 0; c < chips.length; c++) {
+    chips[c].addEventListener('click', function(ev) {
+      ev.stopPropagation();
+      var idx = parseInt(this.getAttribute('data-idx'), 10);
+      if (isNaN(idx)) return;
+      _cv2SelectNode(idx);
+      var nn = _cv2.nodeData[idx];
+      if (nn) _cv2SmoothPanTo(nn.x || 0, nn.y || 0);
+    });
+  }
 }
 
 /* --------------------------------------------------------------------------
@@ -924,6 +1213,9 @@ function _cv2CreateHUD() {
       + '<span class="cv2-legend-dot" style="background:' + CV2_STATUS_COLORS[s] + '"></span>'
       + '<span>' + _cv2GetStatusDisplayName(s) + '</span></div>';
   }
+  legendHTML += '<div class="cv2-legend-item cv2-legend-ready">'
+    + '<span class="cv2-legend-ring"></span>'
+    + '<span>ready now</span></div>';
   legendHTML += '<div class="cv2-legend-divider"></div>';
   legendHTML += '<div class="cv2-legend-title">Edges</div>';
   var edgeTypes = Object.keys(CV2_EDGE_COLORS);
@@ -980,6 +1272,13 @@ function _cv2CreateHUD() {
   container.appendChild(labelContainer);
   _cv2._labelContainer = labelContainer;
   _cv2._labelEls = [];
+
+  // --- Dependency rail (bottom; populated on selection) ---
+  var depchain = document.createElement('div');
+  depchain.className = 'cv2-depchain cv2-depchain-hidden';
+  depchain.id = 'cv2-depchain';
+  container.appendChild(depchain);
+  _cv2._depchainEl = depchain;
 }
 
 function _cv2CreateLabels(nodes) {
@@ -1023,23 +1322,17 @@ function _cv2UpdateLabels() {
     el.style.left = sx + 'px';
     el.style.top = (sy + offsetY) + 'px';
 
-    // Dim if search/selection active and not matching
+    // Dim if search/selection active and not on the chain
     if (_cv2.searchActive && !_cv2.searchMatches.has(node.id)) {
-      el.style.opacity = '0.1';
-    } else if (_cv2.selectedNode && _cv2.selectedNode !== node.id) {
-      // Check connectivity
-      var connected = false;
-      if (_cv2._validLinks) {
-        for (var j = 0; j < _cv2._validLinks.length; j++) {
-          var vl = _cv2._validLinks[j];
-          if ((vl.source.id === _cv2.selectedNode && vl.target.id === node.id) ||
-              (vl.target.id === _cv2.selectedNode && vl.source.id === node.id)) {
-            connected = true;
-            break;
-          }
-        }
+      el.style.opacity = '0.08';
+    } else if (_cv2.selectedNode) {
+      if (node.id === _cv2.selectedNode
+          || (_cv2.chainUp && _cv2.chainUp.has(node.id))
+          || (_cv2.chainDown && _cv2.chainDown.has(node.id))) {
+        el.style.opacity = '1';
+      } else {
+        el.style.opacity = '0.12';
       }
-      el.style.opacity = connected ? '1' : '0.2';
     } else {
       el.style.opacity = '0.9';
     }
@@ -1144,17 +1437,20 @@ async function renderCubeV2() {
   _cv2InitScene();
   _cv2InitSimulation(nodes, links);
 
-  // Pre-settle the simulation so the layout is stable before first render.
-  // Running ticks synchronously avoids the jarring snap as nodes find positions.
+  // Pre-settle the simulation synchronously, then FREEZE it. The layout is a
+  // deterministic function of topology; leaving the sim running caused constant
+  // micro-drift. After this the render loop just reads frozen node.x/y, and only
+  // an add/remove (handled in updateCubeV2Data) ever re-settles.
   if (_cv2.simulation) {
     _cv2.simulation.alpha(1);
     for (var tick = 0; tick < 200; tick++) {
       _cv2.simulation.tick();
     }
-    _cv2.simulation.alpha(0.05); // let it run with low residual energy for fine-tuning
+    _cv2.simulation.stop();
   }
 
   _cv2CreateNodes(nodes);
+  _cv2CreateReadyHalos(nodes);
   _cv2CreateEdges(links, nodes);
   _cv2CreateHUD();
   _cv2CreateLabels(nodes);
@@ -1168,48 +1464,114 @@ async function renderCubeV2() {
 }
 
 function updateCubeV2Data(data) {
-  if (!_cv2.scene) return;
-  if (!data) return;
+  if (!_cv2.scene || !data) return;
   if (_cv2.currentRevision && data.revision === _cv2.currentRevision) return;
-  _cv2.currentRevision = (data.revision) || null;
+  _cv2.currentRevision = data.revision || null;
 
-  var nodes = (data.nodes) || [];
-  var links = (data.links) || [];
+  var newNodes = data.nodes || [];
+  var newLinks = data.links || [];
 
-  // Recompute depths
-  var depths = _cv2ComputeDepths(nodes, links);
+  // Snapshot previous settled positions and animating colors, keyed by id so
+  // they survive even if node ordering shifts (an add/remove reindexes).
+  var prevPos = {}, prevColor = {};
+  for (var i = 0; i < _cv2.nodeData.length; i++) {
+    var on = _cv2.nodeData[i];
+    prevPos[on.id] = { x: on.x, y: on.y };
+    if (_cv2.nodeCurrentColors[i]) prevColor[on.id] = _cv2.nodeCurrentColors[i];
+  }
+
+  // The pivotal check: did a task or relationship get added/removed? A pure
+  // status/metadata edit (which still bumps the revision) returns false, and
+  // below that means the layout is left completely untouched.
+  var topo = _cv2TopologyChanged(_cv2.nodeData, _cv2.linkData, newNodes, newLinks);
+
+  // Depths are a deterministic function of topology; recompute so any genuinely
+  // new node can be seeded in its column.
+  var depths = _cv2ComputeDepths(newNodes, newLinks);
   _cv2.nodeDepths = depths;
 
-  // Update simulation
-  if (_cv2.simulation) {
-    _cv2.simulation.nodes(nodes);
-    _cv2.simulation.force('x', d3.forceX(function(d) {
-      return (depths[d.id] || 0) * CV2_COLUMN_SPACING;
-    }).strength(0.95));
-    _cv2.simulation.alpha(0.3).restart();
-  }
-
-  _cv2.nodeData = nodes;
-  _cv2.linkData = links;
-
-  // Update color targets
-  _cv2.nodeTargetColors = [];
-  _cv2.nodeCurrentColors = _cv2.nodeCurrentColors || [];
-  for (var i = 0; i < nodes.length; i++) {
-    var c = new THREE.Color(_cv2NodeColor(nodes[i]));
-    _cv2.nodeTargetColors.push({ r: c.r, g: c.g, b: c.b });
-    // Preserve current colors for smooth transition, or init if new
-    if (!_cv2.nodeCurrentColors[i]) {
-      _cv2.nodeCurrentColors.push({ r: c.r, g: c.g, b: c.b });
+  // Carry settled positions onto the new node objects; seed only brand-new ones.
+  for (var i = 0; i < newNodes.length; i++) {
+    var p = prevPos[newNodes[i].id];
+    if (p) {
+      newNodes[i].x = p.x; newNodes[i].y = p.y;
+      newNodes[i].vx = 0; newNodes[i].vy = 0;
+    } else {
+      newNodes[i].x = (depths[newNodes[i].id] || 0) * CV2_COLUMN_SPACING;
+      newNodes[i].y = (Math.random() - 0.5) * 300;
     }
   }
-  // Trim if fewer nodes
-  _cv2.nodeCurrentColors.length = nodes.length;
 
-  // Recreate instanced mesh
-  _cv2CreateNodes(nodes);
+  // Blocking graph + readiness for the refreshed data.
+  var adj = _cv2BuildBlockingAdjacency(newNodes, newLinks);
+  _cv2.blockUp = adj.upstream;
+  _cv2.blockDown = adj.downstream;
+  _cv2.readySet = _cv2ComputeReady(newNodes, _cv2.blockUp);
 
-  // Recreate edges
+  _cv2.nodeData = newNodes;
+  _cv2.linkData = newLinks;
+
+  // Color targets, keyed by id so the cross-fade survives reordering.
+  _cv2.nodeTargetColors = [];
+  _cv2.nodeCurrentColors = [];
+  for (var i = 0; i < newNodes.length; i++) {
+    var c = new THREE.Color(_cv2NodeColor(newNodes[i]));
+    _cv2.nodeTargetColors.push({ r: c.r, g: c.g, b: c.b });
+    var pc = prevColor[newNodes[i].id];
+    _cv2.nodeCurrentColors.push(pc ? { r: pc.r, g: pc.g, b: pc.b } : { r: c.r, g: c.g, b: c.b });
+  }
+
+  if (_cv2.simulation) {
+    if (topo) {
+      // Added/removed task or edge: re-settle ONCE, synchronously, starting from
+      // the carried positions, so only the changed region relaxes. Then re-freeze.
+      var idset = new Set();
+      for (var i = 0; i < newNodes.length; i++) idset.add(newNodes[i].id);
+      var simLinks = [];
+      for (var i = 0; i < newLinks.length; i++) {
+        var l = newLinks[i];
+        var s = typeof l.source === 'object' ? l.source.id : l.source;
+        var t = typeof l.target === 'object' ? l.target.id : l.target;
+        if (idset.has(s) && idset.has(t)) simLinks.push({ source: s, target: t, type: l.type });
+      }
+      // Pin every node that already existed to its settled spot; only brand-new
+      // nodes stay free to find a slot. This keeps an add/remove from reshuffling
+      // the whole board — existing tasks hold position, the new one slots in.
+      for (var i = 0; i < newNodes.length; i++) {
+        if (prevPos[newNodes[i].id]) {
+          newNodes[i].fx = newNodes[i].x;
+          newNodes[i].fy = newNodes[i].y;
+        } else {
+          newNodes[i].fx = null;
+          newNodes[i].fy = null;
+        }
+      }
+      _cv2.simulation.nodes(newNodes);
+      _cv2.simulation.force('x', d3.forceX(function(d) {
+        return (depths[d.id] || 0) * CV2_COLUMN_SPACING;
+      }).strength(0.95));
+      _cv2.simulation.force('link', d3.forceLink(simLinks).id(function(d) { return d.id; }).distance(80).strength(0.12));
+      _cv2.simulation.alpha(0.3);
+      for (var k = 0; k < 120; k++) _cv2.simulation.tick();
+      _cv2.simulation.stop();
+      // Release pins so a later re-settle (or manual interaction) isn't locked.
+      for (var i = 0; i < newNodes.length; i++) {
+        newNodes[i].fx = null;
+        newNodes[i].fy = null;
+      }
+    } else {
+      // Pure status/metadata edit: positions are unchanged, so do NOT reheat.
+      // Point the sim at the new objects and leave it frozen — nothing moves.
+      _cv2.simulation.nodes(newNodes);
+      _cv2.simulation.stop();
+    }
+  }
+
+  // Rebuild render objects (positions already final).
+  _cv2CreateNodes(newNodes);
+  _cv2CreateReadyHalos(newNodes);
+  _cv2CreateLabels(newNodes);
+
   if (_cv2.edgeLines) {
     _cv2.scene.remove(_cv2.edgeLines);
     _cv2.edgeLines.geometry.dispose();
@@ -1222,7 +1584,23 @@ function updateCubeV2Data(data) {
     _cv2.flowPoints.material.dispose();
     _cv2.flowPoints = null;
   }
-  _cv2CreateEdges(links, nodes);
+  _cv2CreateEdges(newLinks, newNodes);
+
+  // Keep a live selection coherent across the refresh.
+  if (_cv2.selectedNode) {
+    var selIdx = -1;
+    for (var i = 0; i < newNodes.length; i++) {
+      if (newNodes[i].id === _cv2.selectedNode) { selIdx = i; break; }
+    }
+    if (selIdx >= 0) {
+      _cv2.chainUp = _cv2ReachSet(_cv2.selectedNode, _cv2.blockUp);
+      _cv2.chainDown = _cv2ReachSet(_cv2.selectedNode, _cv2.blockDown);
+      _cv2ApplyEdgeHighlight();
+      _cv2RenderDepChain(newNodes[selIdx]);
+    } else {
+      _cv2DeselectNode();
+    }
+  }
 }
 
 function cleanupCubeV2() {
@@ -1282,6 +1660,14 @@ function cleanupCubeV2() {
   _cv2.scene = null;
   _cv2.camera = null;
   _cv2.instancedMesh = null;
+  _cv2.readyHalo = null;
+  _cv2.readySet = null;
+  _cv2.blockUp = {};
+  _cv2.blockDown = {};
+  _cv2.chainUp = null;
+  _cv2.chainDown = null;
+  _cv2._depchainEl = null;
+  _cv2._edgeBaseColors = null;
   _cv2.edgeLines = null;
   _cv2.edgeTubes = [];
   _cv2.flowPoints = null;
