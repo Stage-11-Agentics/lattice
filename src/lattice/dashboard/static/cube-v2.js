@@ -1193,6 +1193,12 @@ function _cv2CreateHUD() {
   var container = document.getElementById('cv2-container');
   if (!container) return;
 
+  // --- Canvas title (subtle gray label on the dark background) ---
+  var title = document.createElement('div');
+  title.className = 'cv2-title';
+  title.textContent = 'Directed Acyclic Graph of Tasks';
+  container.appendChild(title);
+
   // --- Status color legend ---
   var legend = document.createElement('div');
   legend.className = 'cv2-legend';
@@ -1377,13 +1383,13 @@ async function renderCubeV2() {
 
   var app = document.getElementById('app');
   app.innerHTML = '<div id="cv2-container"><div class="cv2-empty">'
-    + '<div class="spinner"></div><p>Loading Cube v2...</p></div></div>';
+    + '<div class="spinner"></div><p>Loading DAG...</p></div></div>';
 
   // Check for Three.js
   if (typeof THREE === 'undefined') {
     app.innerHTML = '<div id="cv2-container"><div class="cv2-empty">'
       + '<div class="cv2-empty-title">3D library unavailable</div>'
-      + '<div class="cv2-empty-msg">Cube v2 requires Three.js. Check your network connection.</div>'
+      + '<div class="cv2-empty-msg">DAG view requires Three.js. Check your network connection.</div>'
       + '<button class="cv2-empty-retry" onclick="location.reload()">Retry</button>'
       + '</div></div>';
     return;

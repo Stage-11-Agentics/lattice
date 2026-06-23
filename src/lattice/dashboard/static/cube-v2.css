@@ -21,6 +21,25 @@
 }
 
 /* ---------------------------------------------------------------------------
+   Canvas title (subtle gray label, top-left)
+   --------------------------------------------------------------------------- */
+
+.cv2-title {
+  position: absolute;
+  top: 14px;
+  left: 16px;
+  z-index: 15;
+  pointer-events: none;
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.4px;
+  color: #6b7280;            /* muted gray on the void background */
+  opacity: 0.75;
+  user-select: none;
+}
+
+/* ---------------------------------------------------------------------------
    Color Legend (bottom-left)
    --------------------------------------------------------------------------- */
 
