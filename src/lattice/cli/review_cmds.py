@@ -28,6 +28,7 @@ from lattice.core.review import (
     claim_review_state,
     cleanup_temp_files,
     clear_review_state,
+    last_failure_for_task,
     read_review_state,
     run_single_review,
     run_triple_review,
@@ -413,6 +414,33 @@ def plan_review(
 # ---------------------------------------------------------------------------
 
 
+def _echo_review_failure(
+    task_id: str,
+    *,
+    error: str | None,
+    returncode: Any = None,
+    duration: Any = None,
+    stderr_tail: str | None = None,
+    when: str | None = None,
+    source: str | None = None,
+) -> None:
+    """Print a clear, diagnosable FAILED report for a review."""
+    header = f"Review FAILED for {task_id}"
+    if when:
+        header += f" (at {when})"
+    click.echo(header)
+    if source:
+        click.echo(f"  source:       {source}")
+    click.echo(f"  error:        {error or '(none recorded)'}")
+    if returncode is not None:
+        click.echo(f"  returncode:   {returncode}")
+    if duration is not None:
+        click.echo(f"  duration:     {duration}s")
+    if stderr_tail:
+        click.echo(f"  stderr tail:  {stderr_tail}")
+    click.echo(f"  Re-run with:  lattice code-review {task_id}")
+
+
 @cli.command("review-status")
 @click.argument("task_id")
 @click.option("--json", "output_json", is_flag=True, help="Output structured JSON.")
@@ -425,22 +453,56 @@ def review_status(task_id: str, output_json: bool) -> None:
 
     state = read_review_state(lattice_dir, task_id)
     if state is None:
-        # Check if review artifacts exist (review already completed)
+        # No in-flight record. Distinguish: a completed review (artifact exists),
+        # a *failed* review whose state was cleared by an older path (surface it
+        # from failures.jsonl), or genuinely nothing ever ran.
         has_artifacts = _check_review_artifacts(lattice_dir, task_id)
+        failure = None if has_artifacts else last_failure_for_task(lattice_dir, task_id)
         if is_json:
             data: dict[str, Any] = {"task_id": task_id, "status": "none"}
             if has_artifacts:
                 data["note"] = "Review artifacts exist — review may have already completed."
+            elif failure:
+                data["status"] = "failed"
+                data["last_failure"] = failure
             click.echo(json.dumps({"ok": True, "data": data}, indent=2))
         else:
             if has_artifacts:
                 click.echo(
                     f"No in-flight review for {task_id}. Review artifacts exist — review may have already completed."
                 )
+            elif failure:
+                _echo_review_failure(
+                    task_id,
+                    error=failure.get("error"),
+                    returncode=failure.get("returncode"),
+                    duration=failure.get("duration_seconds"),
+                    stderr_tail=failure.get("stderr_tail"),
+                    when=failure.get("timestamp"),
+                    source="failures.jsonl",
+                )
             else:
                 click.echo(
                     f"No in-flight review found for {task_id}. No review artifacts found either."
                 )
+        return
+
+    # A durable 'failed' record (LAT-243): a review ran and failed. Surface it
+    # loudly instead of falling through to the generic in-flight render.
+    if state.get("status") == "failed":
+        if is_json:
+            click.echo(json.dumps({"ok": True, "data": state}, indent=2))
+        else:
+            detail = state.get("detail") or {}
+            _echo_review_failure(
+                task_id,
+                error=state.get("error"),
+                returncode=detail.get("returncode"),
+                duration=detail.get("duration_seconds"),
+                stderr_tail=detail.get("stderr_tail"),
+                when=state.get("finished_at"),
+                source="in-flight review record",
+            )
         return
 
     now = datetime.now(timezone.utc)

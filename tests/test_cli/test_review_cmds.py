@@ -154,6 +154,79 @@ class TestReviewStatus:
         assert data["data"]["mode"] == "single"
         assert data["data"]["agents"][0]["name"] == "claude"
 
+    def test_shows_failed_review_state(self, tmp_path):
+        """LAT-243: a durable 'failed' review_state surfaces loudly, not as 'no review'."""
+        root = _make_board(tmp_path)
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+
+        from lattice.core.review import write_review_state
+
+        lattice_dir = root / LATTICE_DIR
+        write_review_state(
+            lattice_dir,
+            {
+                "task_id": task_id,
+                "mode": "single",
+                "review_type": "code-review",
+                "status": "failed",
+                "started_at": "2026-06-23T00:00:00Z",
+                "finished_at": "2026-06-23T00:05:00Z",
+                "error": "produced no output",
+                "detail": {"returncode": 1, "duration_seconds": 300.0, "stderr_tail": "boom"},
+                "agents": [{"name": "claude", "status": "failed", "artifact_id": None}],
+            },
+        )
+
+        result = runner.invoke(
+            cli,
+            ["review-status", task_id],
+            env={"LATTICE_ROOT": str(root)},
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0
+        assert "FAILED" in result.output
+        assert "produced no output" in result.output
+        # Must NOT masquerade as "nothing ran".
+        assert "No in-flight review found" not in result.output
+
+    def test_falls_back_to_failures_jsonl(self, tmp_path):
+        """LAT-243: with no review_state, a recorded failure still surfaces (not 'no review')."""
+        root = _make_board(tmp_path)
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+
+        from lattice.core.review import record_agent_failure
+
+        lattice_dir = root / LATTICE_DIR
+        record_agent_failure(
+            lattice_dir,
+            "claude",
+            task_id,
+            detail={"error": "exited with code 1", "returncode": 1, "duration_seconds": 312.0},
+        )
+
+        result = runner.invoke(
+            cli,
+            ["review-status", task_id],
+            env={"LATTICE_ROOT": str(root)},
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0
+        assert "FAILED" in result.output
+        assert "exited with code 1" in result.output
+
+        # JSON surfaces the failure too.
+        result_json = runner.invoke(
+            cli,
+            ["review-status", task_id, "--json"],
+            env={"LATTICE_ROOT": str(root)},
+            catch_exceptions=False,
+        )
+        data = json.loads(result_json.output)
+        assert data["data"]["status"] == "failed"
+        assert data["data"]["last_failure"]["task_id"] == task_id
+
 
 # ---------------------------------------------------------------------------
 # Tests: code-review inline mode

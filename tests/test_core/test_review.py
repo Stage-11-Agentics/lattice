@@ -479,6 +479,132 @@ class TestSingleReviewBackend:
         assert isinstance(captured["kwargs"].get("backend"), HeadlessBackend)
 
 
+class TestSingleReviewFailureObservability:
+    """LAT-243: a failed single-mode review must leave a durable, observable record
+    instead of clearing state and vanishing into "no review found"."""
+
+    @staticmethod
+    def _fail_spawn(*, error="produced no output", returncode=1, duration=300.0, stderr="boom"):
+        from lattice.core.agent_spawn import SpawnResult
+
+        def _fake(request, **kwargs):
+            return SpawnResult(
+                agent=request.agent,
+                success=False,
+                output_text="",
+                error=error,
+                backend="headless",
+                duration_seconds=duration,
+                returncode=returncode,
+                stderr_tail=stderr,
+            )
+
+        return _fake
+
+    def test_failure_leaves_durable_failed_state(self, lattice_dir, monkeypatch):
+        from lattice.core import review as review_mod
+
+        monkeypatch.setattr(review_mod, "spawn_one", self._fail_spawn())
+        # Isolate state behavior from the failures.jsonl / diagnostic-task plumbing.
+        monkeypatch.setattr(review_mod, "_handle_agent_failure", lambda *a, **k: 1)
+
+        success, _msg, text = review_mod.run_single_review(
+            lattice_dir=lattice_dir,
+            task_id="t1",
+            review_type="code-review",
+            prompt_content="noop",
+            actor="agent:test",
+            timeout=5,
+        )
+
+        assert success is False
+        assert text is None
+        state = review_mod.read_review_state(lattice_dir, "t1")
+        assert state is not None, "a failed review must NOT clear review_state"
+        assert state["status"] == "failed"
+        assert state["agents"][0]["status"] == "failed"
+        assert "finished_at" in state
+        assert state["detail"]["returncode"] == 1
+
+    def test_success_still_clears_state(self, lattice_dir, monkeypatch):
+        from lattice.core import review as review_mod
+        from lattice.core.agent_spawn import SpawnResult
+
+        def _ok(request, **kwargs):
+            return SpawnResult(
+                agent=request.agent,
+                success=True,
+                output_text="LGTM",
+                error="",
+                backend="headless",
+                duration_seconds=1.0,
+            )
+
+        monkeypatch.setattr(review_mod, "spawn_one", _ok)
+
+        success, _msg, text = review_mod.run_single_review(
+            lattice_dir=lattice_dir,
+            task_id="t2",
+            review_type="code-review",
+            prompt_content="noop",
+            actor="agent:test",
+            timeout=5,
+        )
+
+        assert success is True
+        assert text == "LGTM"
+        assert review_mod.read_review_state(lattice_dir, "t2") is None
+
+    def test_failed_state_does_not_block_next_claim(self, lattice_dir, monkeypatch):
+        from lattice.core import review as review_mod
+
+        monkeypatch.setattr(review_mod, "spawn_one", self._fail_spawn())
+        monkeypatch.setattr(review_mod, "_handle_agent_failure", lambda *a, **k: 1)
+
+        review_mod.run_single_review(
+            lattice_dir=lattice_dir,
+            task_id="t3",
+            review_type="code-review",
+            prompt_content="noop",
+            actor="agent:test",
+            timeout=5,
+        )
+        assert review_mod.read_review_state(lattice_dir, "t3")["status"] == "failed"
+
+        # In production the `lattice code-review` subprocess that wrote this
+        # record has exited by now, so its started_by_pid is dead. Simulate that
+        # (the test runs in-process, so the writer pid is still us) and confirm
+        # the next review can reclaim the slot.
+        monkeypatch.setattr(review_mod, "pid_alive", lambda pid: False)
+        ok, _existing = review_mod.claim_review_state(
+            lattice_dir,
+            "t3",
+            mode="single",
+            review_type="code-review",
+            started_by_pid=12_345,
+            auto_fired=True,
+        )
+        assert ok is True
+
+    def test_last_failure_for_task(self, lattice_dir):
+        from lattice.core import review as review_mod
+
+        assert review_mod.last_failure_for_task(lattice_dir, "tX") is None
+        review_mod.record_agent_failure(
+            lattice_dir, "claude", "tX", detail={"error": "first", "returncode": 1}
+        )
+        review_mod.record_agent_failure(
+            lattice_dir, "claude", "tX", detail={"error": "second", "returncode": 2}
+        )
+        review_mod.record_agent_failure(
+            lattice_dir, "claude", "other", detail={"error": "unrelated"}
+        )
+        latest = review_mod.last_failure_for_task(lattice_dir, "tX")
+        assert latest is not None
+        assert latest["error"] == "second"  # most recent match wins
+        assert latest["task_id"] == "tX"
+
+
 # ---------------------------------------------------------------------------
 # Triple-mode reviews (LAT-218) — fire-and-forget c11 pane spawn
 # ---------------------------------------------------------------------------
