@@ -402,7 +402,7 @@ Link feature branches to tasks: `lattice branch-link <task> <branch-name> --acto
 
 ### Commit Messages
 
-Every commit an agent makes while working on a Lattice task must be prefixed with the task's short ID. Form: `<SHORT-ID>: <conventional-commit-message>` — e.g., `TYB-11: docs(lattice): add commit message convention`. This stitches the git history to the Lattice event log: a future reader scanning `git log` can map any commit straight back to the task, plan, and review that produced it. If a commit spans multiple tasks, prefix with the primary one and reference the others in the body.
+Every commit an agent makes while working on a Lattice task must be prefixed with the task's short ID. Form: `<SHORT-ID>: <conventional-commit-message>` — e.g., `LAT-11: docs(lattice): add commit message convention`. This stitches the git history to the Lattice event log: a future reader scanning `git log` can map any commit straight back to the task, plan, and review that produced it. If a commit spans multiple tasks, prefix with the primary one and reference the others in the body.
 
 ### Leave Breadcrumbs
 

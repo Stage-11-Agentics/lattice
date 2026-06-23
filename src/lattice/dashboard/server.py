@@ -91,6 +91,8 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
 
             if path == "/":
                 self._serve_static("index.html", "text/html")
+            elif path == "/favicon.ico":
+                self._serve_static("favicon.ico", "image/png")
             elif path == "/stats-demo":
                 self._serve_notes_file("stats-demo/demo.html", "text/html")
             elif path.startswith("/api/"):
