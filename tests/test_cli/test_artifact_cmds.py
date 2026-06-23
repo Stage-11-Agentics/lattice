@@ -87,9 +87,7 @@ class TestAttachFile:
         assert payload_path.exists()
         assert payload_path.read_text() == "col1,col2\na,b\n"
 
-    def test_payload_dir_missing_is_recreated(
-        self, invoke, initialized_root, tmp_path
-    ) -> None:
+    def test_payload_dir_missing_is_recreated(self, invoke, initialized_root, tmp_path) -> None:
         """Regression (LAT-239): payload/ is scaffolded at init but empty dirs
         aren't git-tracked, so cloned installs may lack it. Attach must
         recreate it rather than crash with FileNotFoundError."""
