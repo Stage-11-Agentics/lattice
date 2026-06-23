@@ -297,6 +297,33 @@ def count_agent_failures(lattice_dir: Path, agent_type: str) -> int:
     return count
 
 
+def last_failure_for_task(lattice_dir: Path, task_id: str) -> dict | None:
+    """Return the most recent ``failures.jsonl`` entry for ``task_id``, or None.
+
+    Lets ``review-status`` surface a failed review even when the ``review_state``
+    record is gone — e.g. a failure recorded by an older code path that cleared
+    state, or a record overwritten by a later attempt. The file is append-only
+    and chronological, so the last matching line is the most recent failure.
+    """
+    path = _failures_path(lattice_dir)
+    if not path.exists():
+        return None
+    latest: dict | None = None
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if entry.get("task_id") == task_id:
+                latest = entry
+    except OSError:
+        return None
+    return latest
+
+
 #: Stable title prefix for auto-filed diagnostic tasks. Dedup keys on this so
 #: one root cause yields one open ticket instead of a new one per failure.
 DIAGNOSTIC_TITLE_PREFIX = "Investigate"
@@ -784,7 +811,21 @@ def run_single_review(
                 "stderr_tail": result.stderr_tail,
             }
             _handle_agent_failure(lattice_dir, "claude", task_id, actor_str, detail=detail)
-            clear_review_state(lattice_dir, task_id)
+            # Leave a durable, observable record instead of clearing it: a failed
+            # review must surface in `review-status`, not vanish into "no review
+            # found". We intentionally store NO review artifact — a failed review
+            # must not satisfy the `done` completion gate. A lingering failed
+            # record never blocks the next review: its started_by_pid is the dead
+            # child, so claim_review_state reclaims the slot (dead-PID → stale).
+            state["status"] = "failed"
+            state["error"] = result.error or message
+            state["finished_at"] = finished_at
+            state["detail"] = {
+                "returncode": result.returncode,
+                "duration_seconds": round(result.duration_seconds, 1),
+                "stderr_tail": result.stderr_tail,
+            }
+            write_review_state(lattice_dir, state)
             return False, message, None
 
         clear_review_state(lattice_dir, task_id)
