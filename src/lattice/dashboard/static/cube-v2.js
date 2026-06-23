@@ -1,5 +1,5 @@
 /* ============================================================================
- * cube-v2.js — Lattice Cube v2: DAG-Driven 2.5D Task Visualization
+ * cube-v2.js — Lattice DAG view: flat 2D directed-acyclic task graph
  *
  * Layout: X = topological depth in the DAG, Y = force-directed spread
  * Rendering: flat 2D — orthographic top-down (no tilt/perspective)
@@ -715,7 +715,7 @@ function _cv2Animate() {
       colorAttr.setXYZ(i, cc.r * fb, cc.g * fb, cc.b * fb);
     }
 
-    // Position (2.5D — nodes live on Z=0 plane)
+    // Position (flat 2D — nodes live on the Z=0 plane)
     tmpMatrix.makeScale(scale, scale, scale);
     tmpMatrix.setPosition(x, y, 0);
     _cv2.instancedMesh.setMatrixAt(i, tmpMatrix);
@@ -815,7 +815,6 @@ function _cv2SetupControls() {
       startY: e.clientY,
       startTargetX: _cv2.camTarget.x,
       startTargetY: _cv2.camTarget.y,
-      shift: e.shiftKey,
       moved: false
     };
   };
