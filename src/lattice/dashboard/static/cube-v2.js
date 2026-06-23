@@ -2,9 +2,9 @@
  * cube-v2.js — Lattice Cube v2: DAG-Driven 2.5D Task Visualization
  *
  * Layout: X = topological depth in the DAG, Y = force-directed spread
- * Rendering: 2.5D — 2D layout with isometric perspective
+ * Rendering: flat 2D — orthographic top-down (no tilt/perspective)
  * Color: Node color = task status (animated transitions)
- * Camera: Map-style navigation (pan/zoom/tilt, no orbit)
+ * Camera: Map-style navigation (pan/zoom, no tilt/orbit)
  *
  * Dependencies (global):
  *   THREE  — Three.js from CDN
@@ -175,16 +175,15 @@ var CV2_TUBE_DISTANCE_THRESHOLD = 150;
 var CV2_TUBE_RADIUS = 0.8;
 var CV2_TUBE_SEGMENTS = 8;
 
-/* Camera defaults */
-var CV2_CAM_DEFAULT_TILT = 30 * Math.PI / 180; // 30 degrees from horizontal
-var CV2_CAM_MIN_TILT = 15 * Math.PI / 180;
-var CV2_CAM_MAX_TILT = 60 * Math.PI / 180;
-var CV2_CAM_DEFAULT_DISTANCE = 400;
-var CV2_CAM_MIN_DISTANCE = 100;
-var CV2_CAM_MAX_DISTANCE = 1500;
+/* Camera (flat 2D, orthographic top-down). viewHalfH is the half-height of the
+   visible world in node-layout units; zoom scales it. No tilt — the graph reads
+   as a flat map (X = DAG depth, Y = spread). */
+var CV2_VIEW_DEFAULT_HALF_H = 240;
+var CV2_VIEW_MIN_HALF_H = 40;
+var CV2_VIEW_MAX_HALF_H = 1400;
+var CV2_CAM_Z = 1000;        // camera height on +Z; ortho size is Z-independent
 var CV2_PAN_SPEED = 0.8;
 var CV2_ZOOM_SPEED = 0.05;
-var CV2_TILT_SPEED = 0.005;
 
 /* --------------------------------------------------------------------------
  * 2. Module State
@@ -204,10 +203,9 @@ var _cv2 = {
   edgeLines: null,
   edgeTubes: [],
   flowPoints: null,
-  // Camera state
-  camTarget: null,   // THREE.Vector3 — point we're looking at
-  camDistance: CV2_CAM_DEFAULT_DISTANCE,
-  camTilt: CV2_CAM_DEFAULT_TILT,
+  // Camera state (orthographic 2D)
+  camTarget: null,   // THREE.Vector3 — center of view on the Z=0 plane
+  viewHalfH: CV2_VIEW_DEFAULT_HALF_H,  // half the visible world-height; zoom adjusts
   // Interaction state
   raycaster: null,
   mouse: null,
@@ -349,16 +347,15 @@ function _cv2InitScene() {
   var w = container.clientWidth;
   var h = container.clientHeight;
 
-  // Scene
+  // Scene (no fog — it was a depth cue, meaningless in flat 2D)
   _cv2.scene = new THREE.Scene();
   _cv2.scene.background = new THREE.Color(0x0a0a0a);
-  _cv2.scene.fog = new THREE.Fog(0x0a0a0a, 1500, 3000);
 
-  // Camera
-  _cv2.camera = new THREE.PerspectiveCamera(50, w / h, 1, 8000);
+  // Camera — orthographic, looking straight down +Z at the Z=0 plane (flat 2D)
+  _cv2.camera = new THREE.OrthographicCamera(-w / 2, w / 2, h / 2, -h / 2, 0.1, 5000);
   _cv2.camTarget = new THREE.Vector3(0, 0, 0);
-  _cv2.camDistance = CV2_CAM_DEFAULT_DISTANCE;
-  _cv2.camTilt = CV2_CAM_DEFAULT_TILT;
+  _cv2.viewHalfH = CV2_VIEW_DEFAULT_HALF_H;
+  _cv2UpdateCameraProjection();
   _cv2UpdateCameraPosition();
 
   // Lighting
@@ -380,17 +377,27 @@ function _cv2InitScene() {
   _cv2.mouse = new THREE.Vector2();
 }
 
+/* Recompute the orthographic frustum from viewHalfH and the container aspect.
+ * Call on init, zoom, resize, and fit. */
+function _cv2UpdateCameraProjection() {
+  if (!_cv2.camera) return;
+  var c = document.getElementById('cv2-container');
+  var aspect = c && c.clientHeight ? (c.clientWidth / c.clientHeight) : 1.8;
+  var halfH = _cv2.viewHalfH;
+  var halfW = halfH * aspect;
+  _cv2.camera.left = -halfW;
+  _cv2.camera.right = halfW;
+  _cv2.camera.top = halfH;
+  _cv2.camera.bottom = -halfH;
+  _cv2.camera.updateProjectionMatrix();
+}
+
 function _cv2UpdateCameraPosition() {
   if (!_cv2.camera || !_cv2.camTarget) return;
-  // Camera looks at camTarget from above-behind at camTilt angle
-  var d = _cv2.camDistance;
-  var tilt = _cv2.camTilt;
-  _cv2.camera.position.set(
-    _cv2.camTarget.x,
-    _cv2.camTarget.y + d * Math.sin(tilt),
-    _cv2.camTarget.z + d * Math.cos(tilt)
-  );
-  _cv2.camera.lookAt(_cv2.camTarget);
+  // Straight-down orthographic view: camera directly over the target on +Z.
+  _cv2.camera.position.set(_cv2.camTarget.x, _cv2.camTarget.y, CV2_CAM_Z);
+  _cv2.camera.up.set(0, 1, 0);
+  _cv2.camera.lookAt(_cv2.camTarget.x, _cv2.camTarget.y, 0);
 }
 
 /* --------------------------------------------------------------------------
@@ -770,7 +777,7 @@ function _cv2Animate() {
 
   // --- WASD panning ---
   var panDelta = new THREE.Vector3();
-  var panAmount = CV2_PAN_SPEED * _cv2.camDistance * 0.005;
+  var panAmount = CV2_PAN_SPEED * _cv2.viewHalfH * 0.012;
   if (_cv2._keysDown.has('w') || _cv2._keysDown.has('arrowup')) panDelta.y += panAmount;
   if (_cv2._keysDown.has('s') || _cv2._keysDown.has('arrowdown')) panDelta.y -= panAmount;
   if (_cv2._keysDown.has('a') || _cv2._keysDown.has('arrowleft')) panDelta.x -= panAmount;
@@ -824,17 +831,12 @@ function _cv2SetupControls() {
       var dy = e.clientY - _cv2._dragState.startY;
       if (Math.abs(dx) > 3 || Math.abs(dy) > 3) _cv2._dragState.moved = true;
 
-      if (_cv2._dragState.shift) {
-        // Shift+drag = tilt
-        _cv2.camTilt = Math.max(CV2_CAM_MIN_TILT,
-          Math.min(CV2_CAM_MAX_TILT, _cv2.camTilt + dy * CV2_TILT_SPEED));
-        _cv2._dragState.startY = e.clientY; // continuous tilt
-      } else {
-        // Normal drag = pan
-        var scale = _cv2.camDistance * 0.003;
-        _cv2.camTarget.x = _cv2._dragState.startTargetX - dx * scale;
-        _cv2.camTarget.y = _cv2._dragState.startTargetY + dy * scale;
-      }
+      // Drag = pan. World units per pixel = (2 * viewHalfH) / canvas height,
+      // so dragging tracks the cursor 1:1 regardless of zoom.
+      var rectH = canvas.getBoundingClientRect().height || 1;
+      var perPx = (_cv2.viewHalfH * 2) / rectH;
+      _cv2.camTarget.x = _cv2._dragState.startTargetX - dx * perPx;
+      _cv2.camTarget.y = _cv2._dragState.startTargetY + dy * perPx;
       _cv2UpdateCameraPosition();
     } else {
       // Hover detection (throttled)
@@ -856,16 +858,16 @@ function _cv2SetupControls() {
     _cv2._dragState = null;
   };
 
-  // --- Scroll for zoom ---
+  // --- Scroll for zoom (orthographic: scale the visible world height) ---
   _cv2._wheelHandler = function(e) {
     e.preventDefault();
     var zoomFactor = 1 + (e.deltaY > 0 ? CV2_ZOOM_SPEED : -CV2_ZOOM_SPEED);
-    _cv2.camDistance = Math.max(CV2_CAM_MIN_DISTANCE,
-      Math.min(CV2_CAM_MAX_DISTANCE, _cv2.camDistance * zoomFactor));
-    _cv2UpdateCameraPosition();
+    _cv2.viewHalfH = Math.max(CV2_VIEW_MIN_HALF_H,
+      Math.min(CV2_VIEW_MAX_HALF_H, _cv2.viewHalfH * zoomFactor));
+    _cv2UpdateCameraProjection();
   };
 
-  // --- WASD + QE for pan/tilt ---
+  // --- WASD for pan ---
   _cv2._keyDownHandler = function(e) {
     var key = e.key.toLowerCase();
 
@@ -884,16 +886,6 @@ function _cv2SetupControls() {
         _cv2DeselectNode();
       }
       return;
-    }
-
-    // Tilt
-    if (key === 'q') {
-      _cv2.camTilt = Math.max(CV2_CAM_MIN_TILT, _cv2.camTilt - 0.02);
-      _cv2UpdateCameraPosition();
-    }
-    if (key === 'e') {
-      _cv2.camTilt = Math.min(CV2_CAM_MAX_TILT, _cv2.camTilt + 0.02);
-      _cv2UpdateCameraPosition();
     }
 
     // WASD (tracked for continuous movement in animation loop)
@@ -939,8 +931,7 @@ function _cv2SetupControls() {
     var c = document.getElementById('cv2-container');
     if (!c || !_cv2.renderer || !_cv2.camera) return;
     var w = c.clientWidth, h = c.clientHeight;
-    _cv2.camera.aspect = w / h;
-    _cv2.camera.updateProjectionMatrix();
+    _cv2UpdateCameraProjection(); // recompute ortho frustum for the new aspect
     _cv2.renderer.setSize(w, h);
   };
 
@@ -1232,8 +1223,8 @@ function _cv2CreateHUD() {
   var hint = document.createElement('div');
   hint.className = 'cv2-controls-hint';
   hint.id = 'cv2-controls-hint';
-  hint.innerHTML = '<kbd>Drag</kbd> Pan &nbsp; <kbd>Scroll</kbd> Zoom &nbsp; <kbd>Shift+Drag</kbd> Tilt<br>'
-    + '<kbd>WASD</kbd> Navigate &nbsp; <kbd>Q</kbd><kbd>E</kbd> Tilt<br>'
+  hint.innerHTML = '<kbd>Drag</kbd> Pan &nbsp; <kbd>Scroll</kbd> Zoom<br>'
+    + '<kbd>WASD</kbd> Navigate &nbsp; <kbd>Click</kbd> Trace chain<br>'
     + '<kbd>/</kbd> Search &nbsp; <kbd>Esc</kbd> Clear';
   container.appendChild(hint);
 
@@ -1359,26 +1350,20 @@ function _cv2FitCameraToGraph() {
 
   var cx = (minX + maxX) / 2;
   var cy = (minY + maxY) / 2;
-  var extentX = (maxX - minX) / 2 + 30; // padding
-  var extentY = (maxY - minY) / 2 + 30;
+  var extentX = (maxX - minX) / 2 + 40; // padding
+  var extentY = (maxY - minY) / 2 + 40;
 
-  // Use the larger extent (accounting for aspect ratio)
   var container = document.getElementById('cv2-container');
-  var aspect = container ? (container.clientWidth / container.clientHeight) : 1.8;
-  var fovRad = (_cv2.camera.fov / 2) * Math.PI / 180;
+  var aspect = container && container.clientHeight ? (container.clientWidth / container.clientHeight) : 1.8;
 
-  // Distance needed to fit Y extent
-  var distForY = extentY / Math.tan(fovRad);
-  // Distance needed to fit X extent (accounting for aspect)
-  var distForX = extentX / (Math.tan(fovRad) * aspect);
-  // Use whichever is larger, with some breathing room
-  var fitDist = Math.max(distForY, distForX) * 1.15;
-
-  // Clamp
-  fitDist = Math.max(CV2_CAM_MIN_DISTANCE, Math.min(CV2_CAM_MAX_DISTANCE, fitDist));
+  // Half-height that fits both extents. The frustum width = viewHalfH * aspect,
+  // so the X extent must be divided by aspect before comparing.
+  var needHalfH = Math.max(extentY, extentX / aspect) * 1.1;
+  needHalfH = Math.max(CV2_VIEW_MIN_HALF_H, Math.min(CV2_VIEW_MAX_HALF_H, needHalfH));
 
   _cv2.camTarget.set(cx, cy, 0);
-  _cv2.camDistance = fitDist;
+  _cv2.viewHalfH = needHalfH;
+  _cv2UpdateCameraProjection();
   _cv2UpdateCameraPosition();
 }
 
