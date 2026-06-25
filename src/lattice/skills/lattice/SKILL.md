@@ -46,6 +46,8 @@ The `--review` text is your breadcrumb for every future agent and human who read
 
 **Do not use raw `lattice status ... done` to finish work.** The `complete` command exists because completion requires evidence — a review comment and artifact. Skipping this ceremony leaves the task without an audit trail.
 
+`complete` moves `review → done` directly. The `in_validation` and `pr_open` gates in the status workflow below apply only when you drive `status` transitions manually (e.g. when a change needs e2e validation or an open PR before it lands).
+
 | Outcome | Action |
 |---------|--------|
 | **Done** | `lattice complete <task_id> --review "..." --actor agent:claude-cli` |
@@ -72,10 +74,11 @@ lattice create "Title" --actor agent:claude-cli --priority high --type bug
 lattice list                           # All active tasks
 lattice list --status in_progress      # Filter by status
 lattice list --assigned agent:claude-cli
+lattice list --type bug --priority high  # Filter by type / priority
 
 # Show
 lattice show PROJ-1                    # Summary
-lattice show PROJ-1 --events           # Full event history
+lattice show PROJ-1 --full             # Full event history
 
 # Status transitions
 lattice status PROJ-1 in_progress --actor agent:claude-cli
@@ -116,13 +119,15 @@ lattice doctor     # Data integrity check
 lattice archive PROJ-1 --actor agent:claude-cli
 ```
 
-Options for `create`: `--priority` (critical/high/medium/low/none), `--type` (task/bug/chore), `--description "..."`, `--assign agent:claude-cli`
+Options for `create`: `--priority` (critical/high/medium/low), `--type` (task/bug/chore), `--description "..."`, `--assigned-to agent:claude-cli`
 
-**No `epic` or `spike` types — just items of work with a dependency graph.** Lattice intentionally rejects umbrella/exploratory ticket types. Express multi-phase or umbrella work as a plain `task` with `subtask_of` links from its children. Express exploratory/investigation work as a plain `task` whose deliverable is a concrete artifact (plan doc, prototype, decision). The subtask + dependency graph (`subtask_of`, `blocks`, `depends_on`) gives you epic-shape and spike-shape without dedicated types. Every ticket is a chunk of work with a real output, not a bucket or a question.
+**No `epic` or `spike` types — just items of work with a dependency graph.** Lattice intentionally rejects umbrella/exploratory ticket types. Express multi-phase work as a single ticket with sections in the description, or as sibling tickets connected by `blocks`/`depends_on` edges. Express exploratory/investigation work as a plain `task` whose deliverable is a concrete artifact (plan doc, prototype, decision). The dependency graph (`blocks`, `depends_on`, `subtask_of`) gives you epic-shape and spike-shape without dedicated types. Every ticket is a chunk of work with a real output, not a bucket or a question.
+
+**Anti-pattern: container tickets.** If a ticket has no concrete deliverable of its own — if its "done" criterion is "all subtasks done" — it is a container, not work, and it breaks Lattice's metaphor. Restructure: collapse the umbrella into one ticket with the work areas as sections in the description (still parallelizable: spell out which sections are independent), or keep sibling tickets with `blocks`/`depends_on` edges and drop the empty parent. `subtask_of` is reserved for genuine decomposition of a larger work item that itself has a deliverable — not for grouping related tickets under a header. When in doubt, ask: "What ships when this ticket is done, separate from its children?" If the answer is "nothing," delete the ticket and consolidate.
 
 **Task description depth:** Match description detail to task ambiguity. Bug fixes and chores can be one-liners ("Add regex validation to frequency names"). Features and integration tasks should include: (1) what it does, (2) acceptance criteria, (3) architectural context, (4) what the user/operator experiences when done.
 
-Relationship types for `link`: `blocks`, `blocked_by`, `subtask_of`, `parent_of`, `depends_on`, `depended_on_by`, `related_to`
+Relationship types for `link`: `blocks`, `depends_on`, `subtask_of`, `related_to`, `spawned_by`, `duplicate_of`, `supersedes`
 
 ## Status Workflow
 
@@ -145,6 +150,8 @@ Every command requires `--actor`. Format: `prefix:identifier`
 - `agent:claude-cli` — default for your own actions
 - `agent:worker-1`, `agent:worker-2` — multi-agent setups
 - `human:username` — when acting on behalf of a human
+
+`--actor` is accepted on every command and is shown throughout this guide. A `--name` flag (session identity) is also accepted and is becoming the preferred form; either works.
 
 ## Task IDs
 
