@@ -408,7 +408,6 @@ def default_config(preset: str = "classic", status_preset: str = "stage11") -> L
         "task_types": [
             "task",
             "bug",
-            "spike",
             "chore",
         ],
         "workflow": workflow,
