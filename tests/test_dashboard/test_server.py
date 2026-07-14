@@ -976,6 +976,65 @@ class TestPostDashboardConfig:
         assert cfg["dashboard"]["lane_colors"]["backlog"] == "#ff0000"
         assert cfg["dashboard"]["lane_colors"]["done"] == "#00ff00"
 
+    def test_set_lane_sort(self, dashboard_server):
+        """POST /api/config/dashboard should set per-lane sort modes."""
+        base_url, ld, _ids = dashboard_server
+
+        lane_sort = {
+            "backlog": "priority",
+            "review": "status_age_desc",
+        }
+        status, body = _post(
+            base_url,
+            "/api/config/dashboard",
+            {
+                "lane_sort": lane_sort,
+            },
+        )
+        assert status == 200
+        assert body["ok"] is True
+        assert body["data"]["lane_sort"] == lane_sort
+
+        # Verify config on disk
+        cfg = json.loads((ld / "config.json").read_text())
+        assert cfg["dashboard"]["lane_sort"]["backlog"] == "priority"
+        assert cfg["dashboard"]["lane_sort"]["review"] == "status_age_desc"
+
+    def test_set_lane_sort_rejects_non_object(self, dashboard_server):
+        """lane_sort must be an object."""
+        base_url, _ld, _ids = dashboard_server
+
+        status, body = _post(base_url, "/api/config/dashboard", {"lane_sort": "priority"})
+        assert status == 400
+        assert body["ok"] is False
+        assert body["error"]["code"] == "VALIDATION_ERROR"
+
+    def test_set_lane_sort_rejects_non_string_values(self, dashboard_server):
+        """lane_sort values must be strings."""
+        base_url, _ld, _ids = dashboard_server
+
+        status, body = _post(base_url, "/api/config/dashboard", {"lane_sort": {"backlog": 3}})
+        assert status == 400
+        assert body["ok"] is False
+        assert body["error"]["code"] == "VALIDATION_ERROR"
+
+    def test_lane_sort_and_done_display_persist_together(self, dashboard_server):
+        """The done lane writes both keys — they must not clobber each other."""
+        base_url, ld, _ids = dashboard_server
+
+        status, body = _post(
+            base_url,
+            "/api/config/dashboard",
+            {
+                "lane_sort": {"done": "group:day"},
+                "done_display": "grouped",
+            },
+        )
+        assert status == 200
+        cfg = json.loads((ld / "config.json").read_text())
+        assert cfg["dashboard"]["lane_sort"]["done"] == "group:day"
+        assert cfg["dashboard"]["done_display"] == "grouped"
+
     def test_set_both_settings(self, dashboard_server):
         """Setting background_image and lane_colors in one request."""
         base_url, _ld, _ids = dashboard_server
