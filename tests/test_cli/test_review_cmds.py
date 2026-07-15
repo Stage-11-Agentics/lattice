@@ -832,20 +832,17 @@ class TestDiffResolution:
         from lattice.core.review import resolve_diff
 
         # Mock subprocess to return a fake diff
-        with patch(
-            "lattice.core.review._git_diff",
-            return_value="some diff content",
+        with (
+            patch("lattice.core.review._git_diff", return_value="some diff content"),
+            patch("lattice.core.review._find_git_root", return_value=tmp_path),
+            patch("lattice.core.review._ref_exists", return_value=True),
         ):
-            with patch(
-                "lattice.core.review._find_git_root",
-                return_value=tmp_path,
-            ):
-                success, diff = resolve_diff(
-                    tmp_path / ".lattice",
-                    "task_01ABC",
-                    {},
-                    base="main",
-                )
+            success, diff = resolve_diff(
+                tmp_path / ".lattice",
+                "task_01ABC",
+                {},
+                base="main",
+            )
         assert success is True
         assert diff == "some diff content"
 

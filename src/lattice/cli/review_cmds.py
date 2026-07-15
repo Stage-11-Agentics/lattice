@@ -134,11 +134,26 @@ def _claim_or_refuse(
     help="Review mode (overrides config). One of: inline, single, triple.",
 )
 @click.option("--base", default=None, help="Base git ref for diff (branch or commit).")
+@click.option(
+    "--head",
+    default=None,
+    help="Head git ref for diff (branch or commit). Defaults to the task's linked branch, "
+    "then HEAD. Use this when the code under review is on a branch this checkout isn't on.",
+)
+@click.option(
+    "--worktree",
+    default=None,
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help="Directory to run git from (a checkout/worktree that can resolve the head ref). "
+    "Defaults to the repo containing .lattice/.",
+)
 @common_options
 def code_review(
     task_id: str,
     mode: str | None,
     base: str | None,
+    head: str | None,
+    worktree: Path | None,
     model: str | None,
     session: str | None,
     output_json: bool,
@@ -206,7 +221,9 @@ def code_review(
     )
 
     # Resolve diff
-    success, diff_or_err = resolve_diff(lattice_dir, task_id, snapshot, base=base)
+    success, diff_or_err = resolve_diff(
+        lattice_dir, task_id, snapshot, base=base, head=head, worktree=worktree
+    )
     if not success:
         output_error(diff_or_err, "DIFF_RESOLUTION_FAILED", is_json)
 
