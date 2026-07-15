@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -710,3 +711,149 @@ class TestTripleReviewSpawn:
         # Complex findings route to the needs-human flag, not a status (LAT-232).
         assert "lattice needs-human LAT-42" in prompt
         assert "agent:trident-pane-LAT-42" in prompt
+
+
+# ---------------------------------------------------------------------------
+# resolve_diff against a real git worktree (LAT-253 / ACE-317)
+#
+# These use real git so they bite: they reproduce the worktree-per-ticket model
+# where .lattice/ lives in the main checkout (HEAD == main) while the ticket's
+# code lives on a feature branch in a *sibling* worktree. A resolution that
+# anchors on the ambient HEAD sees an empty diff; a ref-based one sees the real
+# branch changes. On pre-fix code, the --base path accepted that empty diff as
+# success — a PASS on zero lines.
+# ---------------------------------------------------------------------------
+
+
+def _git(cwd: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+
+
+@pytest.fixture
+def worktree_repo(tmp_path: Path):
+    """A main checkout (on ``main``) plus a sibling worktree on a feature branch.
+
+    Returns ``(main_checkout, lattice_dir, feature_branch)``. The ticket's change
+    lives only on the feature branch — ``main``'s tree does not contain it.
+    """
+    main = tmp_path / "main"
+    main.mkdir()
+    _git(main, "init", "-b", "main")
+    _git(main, "config", "user.email", "t@t.com")
+    _git(main, "config", "user.name", "Tester")
+    (main / "file.txt").write_text("base\n")
+    _git(main, "add", "-A")
+    _git(main, "commit", "-m", "init")
+
+    feature = "feat/ACE-317-thing"
+    wt = tmp_path / "wt-feature"
+    _git(main, "worktree", "add", "-b", feature, str(wt), "main")
+    (wt / "file.txt").write_text("base\nticket change\n")
+    _git(wt, "add", "-A")
+    _git(wt, "commit", "-m", "ACE-317: the ticket change")
+
+    lattice_dir = main / ".lattice"
+    lattice_dir.mkdir()
+    # Sanity: HEAD-anchored diff from the main checkout sees nothing.
+    assert _git(main, "diff", "main...HEAD") == ""
+    return main, lattice_dir, feature
+
+
+class TestResolveDiffWorktree:
+    def test_linked_branch_resolves_nonempty_from_main_checkout(self, worktree_repo):
+        """The load-bearing case: branch-linked worktree ticket, reviewed from
+        the main checkout whose HEAD is main. Must see the real diff."""
+        main, lattice_dir, feature = worktree_repo
+        snapshot = {"branch_links": [{"branch": feature}], "short_id": "ACE-317"}
+        success, diff = review_mod.resolve_diff(lattice_dir, "task_01", snapshot)
+        assert success is True
+        assert "ticket change" in diff
+
+    def test_explicit_base_main_does_not_return_empty(self, worktree_repo):
+        """Pre-fix trap: ``--base main`` diffed ``main...HEAD`` (empty) and
+        accepted it. Now it must resolve the linked branch's real diff."""
+        main, lattice_dir, feature = worktree_repo
+        snapshot = {"branch_links": [{"branch": feature}], "short_id": "ACE-317"}
+        success, diff = review_mod.resolve_diff(lattice_dir, "task_01", snapshot, base="main")
+        assert success is True
+        assert diff.strip() != ""
+        assert "ticket change" in diff
+
+    def test_no_branch_link_resolves_via_all_history(self, worktree_repo):
+        """No branch-link: the short-id history scan must find the commit on the
+        unmerged feature branch via ``git log --all`` (not reachable from HEAD)."""
+        main, lattice_dir, feature = worktree_repo
+        snapshot = {"short_id": "ACE-317"}  # no branch_links
+        success, diff = review_mod.resolve_diff(lattice_dir, "task_01", snapshot)
+        assert success is True
+        assert "ticket change" in diff
+
+    def test_explicit_head_ref(self, worktree_repo):
+        """An explicit --head names the branch under review directly."""
+        main, lattice_dir, feature = worktree_repo
+        success, diff = review_mod.resolve_diff(lattice_dir, "task_01", {}, head=feature)
+        assert success is True
+        assert "ticket change" in diff
+
+    def test_no_changes_errors_never_passes_empty(self, tmp_path):
+        """A repo with a branch identical to main resolves to an empty diff and
+        must ERROR — never a silent empty success."""
+        main = tmp_path / "main"
+        main.mkdir()
+        _git(main, "init", "-b", "main")
+        _git(main, "config", "user.email", "t@t.com")
+        _git(main, "config", "user.name", "Tester")
+        (main / "f.txt").write_text("x\n")
+        _git(main, "add", "-A")
+        _git(main, "commit", "-m", "init")
+        _git(main, "branch", "feat/empty")  # identical to main
+        lattice_dir = main / ".lattice"
+        lattice_dir.mkdir()
+        snapshot = {"branch_links": [{"branch": "feat/empty"}], "short_id": "NOPE-1"}
+        success, msg = review_mod.resolve_diff(lattice_dir, "task_01", snapshot)
+        assert success is False
+        assert "empty" in msg.lower()
+
+    def test_bad_base_ref_named_clearly(self, worktree_repo):
+        main, lattice_dir, feature = worktree_repo
+        success, msg = review_mod.resolve_diff(lattice_dir, "task_01", {}, base="no-such-ref")
+        assert success is False
+        assert "no-such-ref" in msg
+
+    def test_non_worktree_head_on_feature_branch(self, tmp_path):
+        """Non-worktree case: the feature branch is checked out in the main
+        checkout itself (HEAD == feature). Must still resolve."""
+        main = tmp_path / "main"
+        main.mkdir()
+        _git(main, "init", "-b", "main")
+        _git(main, "config", "user.email", "t@t.com")
+        _git(main, "config", "user.name", "Tester")
+        (main / "f.txt").write_text("base\n")
+        _git(main, "add", "-A")
+        _git(main, "commit", "-m", "init")
+        _git(main, "checkout", "-b", "feat/inline")
+        (main / "f.txt").write_text("base\nmore\n")
+        _git(main, "add", "-A")
+        _git(main, "commit", "-m", "LAT-9: inline change")
+        lattice_dir = main / ".lattice"
+        lattice_dir.mkdir()
+        snapshot = {"branch_links": [{"branch": "feat/inline"}], "short_id": "LAT-9"}
+        success, diff = review_mod.resolve_diff(lattice_dir, "task_01", snapshot)
+        assert success is True
+        assert "more" in diff
+
+    def test_worktree_param_overrides_root(self, worktree_repo):
+        """--worktree points resolution at a specific checkout."""
+        main, lattice_dir, feature = worktree_repo
+        wt = main.parent / "wt-feature"
+        # From the worktree checkout, HEAD is the feature branch, so even the
+        # HEAD candidate resolves.
+        success, diff = review_mod.resolve_diff(lattice_dir, "task_01", {}, worktree=wt)
+        assert success is True
+        assert "ticket change" in diff

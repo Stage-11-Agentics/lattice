@@ -490,60 +490,94 @@ def resolve_diff(
     task_id: str,
     snapshot: dict,
     base: str | None = None,
+    head: str | None = None,
+    worktree: Path | None = None,
 ) -> tuple[bool, str]:
     """Resolve the git diff for a task.
 
     Returns (success, diff_or_error_message).
 
-    Resolution chain:
-    1. --base provided → git diff <base>...HEAD
-    2. Branch-link exists → git diff <base_branch>...HEAD
-    3. Scan git log for task short ID in commit messages → diff that range
-    4. Commits by assigned actor since task moved to in_progress → diff
-    5. Error suggesting --base
+    The review must see the *branch's* changes even when it runs from a
+    checkout whose ``HEAD`` is not the branch under review — the common case
+    in a worktree-per-ticket model, where ``.lattice/`` lives in the main
+    checkout (``HEAD`` == ``main``) while the ticket's code lives on a feature
+    branch in a separate worktree. Because worktrees share the object store,
+    a ref-based three-dot diff ``<base>...<branch>`` resolves the real changes
+    from any checkout. HEAD-anchored resolution does not — it would diff
+    ``main`` against itself and see nothing.
+
+    Resolution is therefore driven by an explicit *head ref* rather than the
+    ambient ``HEAD``:
+
+    1. Head ref = ``--head`` > last linked branch (if it resolves) > ``HEAD``.
+       For each candidate, diff ``<base>...<head>`` (three-dot, merge-base
+       semantics). ``base`` = ``--base`` when given, else the repo's base
+       branch (``main``/``master``).
+    2. Fallback: scan ``git log --all`` for the task short ID in commit
+       messages → diff that range (finds commits on any branch/worktree, not
+       just those reachable from ``HEAD``).
+    3. Fallback: commits by the assigned actor since the task entered
+       ``in_progress`` (also ``--all``).
+
+    An **empty** diff is never accepted as success — a git command that
+    succeeds but produces no output means that candidate resolved to nothing,
+    so resolution continues to the next candidate. Only a non-empty diff
+    short-circuits. If every candidate is empty or unresolvable, this returns
+    a clear error so the caller refuses to emit a PASS on zero lines.
     """
-    repo_root = _find_git_root(lattice_dir)
+    repo_root = worktree if worktree is not None else _find_git_root(lattice_dir)
     if repo_root is None:
         return False, "Not inside a git repository."
 
-    # Step 0: explicit --base
-    if base is not None:
-        diff = _git_diff(repo_root, f"{base}...HEAD")
-        if diff is not None:
-            return True, diff
-        return False, f"git diff {base}...HEAD failed. Check that '{base}' is a valid ref."
+    # An explicit --base that doesn't resolve is a caller error worth naming
+    # precisely, rather than burying it in the generic exhausted-all-paths error.
+    if base is not None and not _ref_exists(repo_root, base):
+        return False, f"Base ref '{base}' does not resolve in {repo_root}. Check the ref name."
 
-    # Step 1: branch-link
-    branch_links = snapshot.get("branch_links", [])
-    if branch_links:
-        branch = branch_links[-1]["branch"]
-        # Try to find merge-base with main/master
-        base_branch = _find_base_branch(repo_root)
-        diff = _git_diff(repo_root, f"{base_branch}...{branch}")
-        if diff is not None:
+    base_ref = base if base is not None else _find_base_branch(repo_root)
+
+    # Step 1: ref-based three-dot diff against a resolved head ref.
+    tried: list[str] = []
+    linked = _linked_branch(snapshot)
+    head_candidates: list[str] = []
+    if head:
+        head_candidates.append(head)
+    if linked and _ref_exists(repo_root, linked):
+        head_candidates.append(linked)
+    head_candidates.append("HEAD")
+
+    for candidate in head_candidates:
+        ref = f"{base_ref}...{candidate}"
+        tried.append(ref)
+        diff = _git_diff(repo_root, ref)
+        if diff:  # non-empty only; "" and None both fall through
             return True, diff
 
-    # Step 2: task short ID in git log
+    # Step 2: task short ID in git log (across all refs).
     short_id = _get_short_id(snapshot)
     if short_id:
         commit_range = _find_commits_by_message(repo_root, short_id)
         if commit_range:
             diff = _git_diff(repo_root, commit_range)
-            if diff is not None:
+            if diff:
                 return True, diff
 
-    # Step 3: commits by assigned actor since in_progress
+    # Step 3: commits by assigned actor since in_progress (across all refs).
     assigned_to = snapshot.get("assigned_to")
     in_progress_time = _find_status_change_time(snapshot, "in_progress")
     if assigned_to and in_progress_time:
         actor_name = _extract_actor_name(assigned_to)
         diff = _git_diff_by_author(repo_root, actor_name, since=in_progress_time)
-        if diff is not None:
+        if diff:
             return True, diff
 
+    tried_desc = ", ".join(tried) if tried else "(none)"
     return False, (
-        "Could not resolve diff automatically. "
-        "Use --base <ref> to specify the base commit or branch."
+        "Could not resolve a non-empty diff for this task "
+        f"(tried: {tried_desc}). If the code under review lives on a branch or "
+        "worktree that this checkout's HEAD isn't on, pass --base/--head to name "
+        "the range explicitly, or --worktree <path> to diff from that checkout. "
+        "Refusing to review an empty diff."
     )
 
 
@@ -591,15 +625,38 @@ def _find_git_root(lattice_dir: Path) -> Path | None:
 def _find_base_branch(repo_root: Path) -> str:
     """Return the likely base branch (main or master)."""
     for branch in ("main", "master"):
-        result = subprocess.run(
-            ["git", "rev-parse", "--verify", branch],
-            cwd=str(repo_root),
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
+        if _ref_exists(repo_root, branch):
             return branch
     return "main"
+
+
+def _ref_exists(repo_root: Path, ref: str) -> bool:
+    """Return True if ``ref`` resolves to a commit in ``repo_root``.
+
+    Uses ``rev-parse --verify <ref>^{commit}`` so a branch name, tag, or SHA
+    all validate, while a path or bogus string does not. Worktrees share the
+    object store, so a feature branch checked out in a *sibling* worktree still
+    resolves from the main checkout — which is exactly what lets a ref-based
+    diff see the branch's changes from any checkout.
+    """
+    result = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0
+
+
+def _linked_branch(snapshot: dict) -> str | None:
+    """Return the most recently linked branch for a task, or None."""
+    branch_links = snapshot.get("branch_links") or []
+    if not branch_links:
+        return None
+    last = branch_links[-1]
+    if isinstance(last, dict):
+        return last.get("branch")
+    return last if isinstance(last, str) else None
 
 
 def _git_diff(repo_root: Path, ref: str) -> str | None:
@@ -618,9 +675,15 @@ def _git_diff(repo_root: Path, ref: str) -> str | None:
 
 
 def _find_commits_by_message(repo_root: Path, short_id: str) -> str | None:
-    """Find git commit range where messages contain short_id."""
+    """Find a git commit range where messages contain short_id.
+
+    Searches ``--all`` refs (not just commits reachable from ``HEAD``) so a
+    ticket whose commits live on an unmerged feature branch — in this checkout
+    or a sibling worktree — is still found. Returns a three-dot range from the
+    oldest matching commit's parent to the newest match.
+    """
     result = subprocess.run(
-        ["git", "log", "--oneline", f"--grep={short_id}", "--format=%H"],
+        ["git", "log", "--all", "--grep", short_id, "--format=%H"],
         cwd=str(repo_root),
         capture_output=True,
         text=True,
@@ -630,17 +693,24 @@ def _find_commits_by_message(repo_root: Path, short_id: str) -> str | None:
     commits = result.stdout.strip().splitlines()
     if not commits:
         return None
-    # Diff from the oldest matching commit's parent to HEAD
+    # Newest match is first (git log is reverse-chronological); oldest is last.
+    newest = commits[0]
     oldest = commits[-1]
-    return f"{oldest}^...HEAD"
+    return f"{oldest}^...{newest}"
 
 
 def _git_diff_by_author(repo_root: Path, author: str, since: str) -> str | None:
-    """Get diff of commits by author since a given ISO timestamp."""
+    """Get diff of commits by author since a given ISO timestamp.
+
+    Searches ``--all`` refs so unmerged feature-branch/worktree commits count,
+    and diffs the resolved commit range directly (parent of the oldest match to
+    the newest match) instead of anchoring on the ambient ``HEAD``.
+    """
     result = subprocess.run(
         [
             "git",
             "log",
+            "--all",
             "--format=%H",
             f"--author={author}",
             f"--since={since}",
@@ -654,8 +724,9 @@ def _git_diff_by_author(repo_root: Path, author: str, since: str) -> str | None:
     commits = result.stdout.strip().splitlines()
     if not commits:
         return None
+    newest = commits[0]
     oldest = commits[-1]
-    return _git_diff(repo_root, f"{oldest}^...HEAD")
+    return _git_diff(repo_root, f"{oldest}^...{newest}")
 
 
 def _get_short_id(snapshot: dict) -> str | None:
