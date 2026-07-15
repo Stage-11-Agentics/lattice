@@ -529,10 +529,13 @@ def resolve_diff(
     if repo_root is None:
         return False, "Not inside a git repository."
 
-    # An explicit --base that doesn't resolve is a caller error worth naming
-    # precisely, rather than burying it in the generic exhausted-all-paths error.
+    # An explicit --base/--head that doesn't resolve is a caller error worth
+    # naming precisely, rather than burying it in the generic exhausted-all-paths
+    # error (or, for head, silently falling through to HEAD and the fallbacks).
     if base is not None and not _ref_exists(repo_root, base):
         return False, f"Base ref '{base}' does not resolve in {repo_root}. Check the ref name."
+    if head is not None and not _ref_exists(repo_root, head):
+        return False, f"Head ref '{head}' does not resolve in {repo_root}. Check the ref name."
 
     base_ref = base if base is not None else _find_base_branch(repo_root)
 

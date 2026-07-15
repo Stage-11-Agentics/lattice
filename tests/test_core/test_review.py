@@ -826,6 +826,14 @@ class TestResolveDiffWorktree:
         assert success is False
         assert "no-such-ref" in msg
 
+    def test_bad_head_ref_named_clearly(self, worktree_repo):
+        """An explicit --head that doesn't resolve is named precisely, mirroring
+        --base — a typo'd head shouldn't silently fall through to HEAD."""
+        main, lattice_dir, feature = worktree_repo
+        success, msg = review_mod.resolve_diff(lattice_dir, "task_01", {}, head="no-such-head")
+        assert success is False
+        assert "no-such-head" in msg
+
     def test_non_worktree_head_on_feature_branch(self, tmp_path):
         """Non-worktree case: the feature branch is checked out in the main
         checkout itself (HEAD == feature). Must still resolve."""
