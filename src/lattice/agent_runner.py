@@ -86,7 +86,7 @@ def _run_agent_mode() -> int:
 
     # Resolve the agent CLI command. Importing inside main keeps this
     # script importable even when lattice is partially built.
-    from lattice.core.agent_spawn import _agent_cli_command
+    from lattice.core.agent_spawn import _agent_cli_command, scrub_host_session_env
 
     cmd = _agent_cli_command(agent_type, prompt_file, output_file)
     if cmd is None:
@@ -97,8 +97,11 @@ def _run_agent_mode() -> int:
     print(f"[agent_runner] type={agent_type} label={label} timeout={timeout_s}s")
     print(f"[agent_runner] cmd: {cmd}")
 
+    # Strip the firing session's identity (CLAUDECODE + c11/cmux vars) so the
+    # spawned agent can't rename the host tab or think it's nested. See
+    # lattice.core.agent_spawn.scrub_host_session_env.
     env = os.environ.copy()
-    env.pop("CLAUDECODE", None)
+    scrub_host_session_env(env)
 
     # Stream stdout/stderr live so the c11/terminal pane hosting this
     # wrapper shows output as the agent produces it, rather than dumping

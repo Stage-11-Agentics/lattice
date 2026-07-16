@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from lattice.core.agent_spawn import (
+    HOST_SESSION_ENV_VARS,
     Backend,
     BackendUnavailableError,
     ProgressCallback,
@@ -16,6 +17,7 @@ from lattice.core.agent_spawn import (
     SpawnResult,
     _agent_cli_command,
     poll_sentinels,
+    scrub_host_session_env,
     select_backend,
     sentinel_path,
 )
@@ -84,6 +86,60 @@ class TestAgentCliCommand:
 
     def test_unknown_returns_none(self) -> None:
         assert _agent_cli_command("mystery", "/p", "/o") is None
+
+    def test_claude_command_unsets_host_session_vars(self) -> None:
+        """The claude command's `env -u` prefix strips every host-session var.
+
+        Belt-and-suspenders alongside the env scrub: a claude child must never
+        inherit CLAUDECODE or the firing surface's c11/cmux identity.
+        """
+        cmd = _agent_cli_command("claude", "/p", "/o")
+        assert cmd is not None
+        # Prefix precedes the claude binary.
+        assert cmd.index("env -u") < cmd.index("claude ")
+        for var in HOST_SESSION_ENV_VARS:
+            assert f"-u {var}" in cmd, f"{var} not unset in claude command"
+
+
+# ---------------------------------------------------------------------------
+# scrub_host_session_env
+# ---------------------------------------------------------------------------
+
+
+class TestScrubHostSessionEnv:
+    def test_strips_every_host_session_var(self) -> None:
+        env = {var: "leaked" for var in HOST_SESSION_ENV_VARS}
+        env["PATH"] = "/usr/bin"
+        env["HOME"] = "/home/x"
+        scrub_host_session_env(env)
+        for var in HOST_SESSION_ENV_VARS:
+            assert var not in env, f"{var} survived the scrub"
+        # Unrelated vars are preserved.
+        assert env["PATH"] == "/usr/bin"
+        assert env["HOME"] == "/home/x"
+
+    def test_claudecode_still_stripped(self) -> None:
+        """Regression: preserve the exact pre-existing CLAUDECODE behavior."""
+        env = {"CLAUDECODE": "1", "KEEP": "yes"}
+        scrub_host_session_env(env)
+        assert "CLAUDECODE" not in env
+        assert env["KEEP"] == "yes"
+
+    def test_noop_when_vars_absent(self) -> None:
+        env = {"PATH": "/usr/bin"}
+        scrub_host_session_env(env)  # must not raise
+        assert env == {"PATH": "/usr/bin"}
+
+    def test_legacy_cmux_vars_included(self) -> None:
+        """The legacy CMUX_* aliases the c11 binary still sets are covered."""
+        for legacy in (
+            "CMUX_SURFACE_ID",
+            "CMUX_TAB_ID",
+            "CMUX_WORKSPACE_ID",
+            "CMUX_SHELL_INTEGRATION",
+            "CMUX_SOCKET_PATH",
+        ):
+            assert legacy in HOST_SESSION_ENV_VARS
 
 
 # ---------------------------------------------------------------------------
