@@ -175,6 +175,17 @@ test("sortLaneItems: status_age_desc = timestamp-ascending on last_status_change
   assert.deepStrictEqual(idsOf(sortLaneItems(items, "status_age_desc")), ["a", "b", "c"]);
 });
 
+test("sortLaneItems: updated_desc — newest updated_at first", () => {
+  // Pins the comparator to the real field name: a typo'd field would pass silently
+  // via the id fallback, so ids are chosen to disagree with the expected order.
+  const items = [
+    { id: "a", updated_at: "2026-01-01" },
+    { id: "b", updated_at: "2026-01-03" },
+    { id: "c", updated_at: "2026-01-02" },
+  ];
+  assert.deepStrictEqual(idsOf(sortLaneItems(items, "updated_desc")), ["b", "c", "a"]);
+});
+
 // --- tie-break stability & no mutation ---------------------------------------------
 
 test("sortLaneItems: equal sort keys break on id, deterministic", () => {

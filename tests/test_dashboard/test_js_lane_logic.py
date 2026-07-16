@@ -45,6 +45,13 @@ MOVED_IDENTIFIERS = [
 ]
 
 
+def _definition_pattern(name: str) -> str:
+    """Match any JS definition form — a `let`/`const` reintroduction inside the IIFE
+    would shadow the global just like `var` or a function declaration."""
+    escaped = re.escape(name)
+    return rf"function\s+{escaped}\s*\(|(?:var|let|const)\s+{escaped}\s*="
+
+
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
 def test_js_lane_logic_node_tests_pass() -> None:
     """Run the node:test suite for lane-logic.js and require it green.
@@ -58,7 +65,7 @@ def test_js_lane_logic_node_tests_pass() -> None:
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=10,
         check=False,
     )
     assert result.returncode == 0, (
@@ -85,7 +92,7 @@ def test_lane_logic_script_tag_present_and_no_inline_shadowing() -> None:
     )
 
     for name in MOVED_IDENTIFIERS:
-        pattern = re.compile(rf"function\s+{re.escape(name)}\s*\(|var\s+{re.escape(name)}\s*=")
+        pattern = re.compile(_definition_pattern(name))
         assert not pattern.search(html), (
             f"'{name}' is still defined inline in index.html — it must live only in "
             f"lane-logic.js, or the browser global is shadowed and the node tests test "
@@ -97,5 +104,5 @@ def test_lane_logic_js_defines_moved_identifiers() -> None:
     """Sanity: the moved identifiers actually live in lane-logic.js now."""
     js = LANE_LOGIC_JS.read_text()
     for name in MOVED_IDENTIFIERS:
-        pattern = re.compile(rf"function\s+{re.escape(name)}\s*\(|var\s+{re.escape(name)}\s*=")
+        pattern = re.compile(_definition_pattern(name))
         assert pattern.search(js), f"'{name}' is not defined in lane-logic.js"
