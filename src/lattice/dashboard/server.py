@@ -964,6 +964,7 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                 "font_size",
                 "heat_map_enabled",
                 "lane_colors",
+                "lane_sort",
                 "max_items_per_column",
                 "theme",
                 "voice",
@@ -991,6 +992,20 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                             _err(
                                 "VALIDATION_ERROR", "lane_colors keys and values must be strings"
                             ),
+                        )
+                        return
+
+            # Validate lane_sort if present
+            if "lane_sort" in body:
+                ls = body["lane_sort"]
+                if not isinstance(ls, dict):
+                    self._send_json(400, _err("VALIDATION_ERROR", "'lane_sort' must be an object"))
+                    return
+                for k, v in ls.items():
+                    if not isinstance(k, str) or not isinstance(v, str):
+                        self._send_json(
+                            400,
+                            _err("VALIDATION_ERROR", "lane_sort keys and values must be strings"),
                         )
                         return
 
@@ -1116,6 +1131,9 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
 
                     if "lane_colors" in body:
                         dashboard["lane_colors"] = body["lane_colors"]
+
+                    if "lane_sort" in body:
+                        dashboard["lane_sort"] = body["lane_sort"]
 
                     if "theme" in body:
                         theme = body["theme"]

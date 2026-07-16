@@ -186,6 +186,11 @@ a:hover{text-decoration:underline}
 .board-col-header .count{font-weight:400;color:var(--text-on-lane-muted);font-size:.75rem;flex-shrink:0;margin-left:0.25rem}
 .board-col-header .lane-color-btn{position:absolute;right:0.25rem;top:0.25rem;width:1.25rem;height:1.25rem;border:2px solid var(--lane-btn-border);border-radius:50%;cursor:pointer;padding:0;background:transparent;opacity:0;transition:opacity .2s}
 .board-col-header:hover .lane-color-btn{opacity:1}
+.board-col-toolbar{padding:0.25rem 0.375rem;border-bottom:1px solid var(--border);display:flex}
+.lane-sort{width:100%;background:transparent;color:var(--text-muted);border:1px solid transparent;border-radius:var(--radius-sm);font-family:inherit;font-size:.7rem;padding:0.125rem 0.25rem;cursor:pointer;transition:background .15s,color .15s,border-color .15s}
+.lane-sort:hover{background:var(--surface-hover);color:var(--text-secondary);border-color:var(--border)}
+.lane-sort:focus{outline:none;background:var(--surface-raised);color:var(--text-primary);border-color:var(--accent)}
+.lane-sort option,.lane-sort optgroup{background:var(--surface);color:var(--text-primary)}
 .board-col-body{padding:0.5rem}
 .board-col.empty-col .board-col-header{padding:0.5rem 0.5rem;font-size:.75rem;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;justify-content:flex-start}
 .board-col.empty-col .board-col-header .count{display:none}
@@ -4062,6 +4067,198 @@ function getLaneColor(status) {
   return themeDefaults[status] || "#6c757d";
 }
 
+// --- Per-lane organization (sort + group) ---
+// Each lane carries its own mode, stored as dashboard.lane_sort[status]. An absent
+// entry means DEFAULT_LANE_SORT, which reproduces the board's original ULID ordering.
+var DEFAULT_LANE_SORT = "created_asc";
+
+var LANE_SORT_MODES = [
+  {value: "created_asc",     label: "Oldest first",      group: "Sort"},
+  {value: "created_desc",    label: "Newest first",      group: "Sort"},
+  {value: "priority",        label: "Priority",          group: "Sort"},
+  {value: "urgency",         label: "Urgency",           group: "Sort"},
+  {value: "updated_desc",    label: "Recently updated",  group: "Sort"},
+  {value: "status_age_desc", label: "Time in status",    group: "Sort"},
+  {value: "complexity_asc",  label: "Quick wins",        group: "Sort"},
+  {value: "group:assignee",  label: "Assignee",          group: "Group"},
+  {value: "group:tag",       label: "Tag",               group: "Group"}
+];
+
+// Done-lane-only modes, kept in sync with the legacy done_display setting.
+var DONE_LANE_MODES = [
+  {value: "group:day", label: "Day completed", group: "Group"},
+  {value: "recent",    label: "Recent 24h",    group: "Group"}
+];
+
+var PRIORITY_RANK   = {critical: 0, high: 1, medium: 2, low: 3};
+var URGENCY_RANK    = {immediate: 0, high: 1, normal: 2, low: 3};
+var COMPLEXITY_RANK = {low: 0, medium: 1, high: 2};
+
+// done_display is the pre-existing setting for the done lane. Map it onto lane modes
+// so an existing config keeps rendering exactly as it did before this feature.
+var DONE_DISPLAY_TO_MODE = {grouped: "group:day", recent: "recent", all: "created_asc"};
+var MODE_TO_DONE_DISPLAY = {"group:day": "grouped", recent: "recent"};
+
+function laneModesFor(status) {
+  return status === "done" ? LANE_SORT_MODES.concat(DONE_LANE_MODES) : LANE_SORT_MODES;
+}
+
+// The server validates lane_sort as a str→str map but does not police the values (a
+// hand-edited config.json can hold anything). Everything downstream indexes lookup
+// tables with this string, so it gets checked against the lane's own mode list here —
+// the single point where a mode enters the app.
+function isValidLaneMode(status, mode) {
+  return laneModesFor(status).some(function(m) { return m.value === mode; });
+}
+
+function getLaneSort(status) {
+  var dc = getDashboardConfig();
+  var mode = dc.lane_sort && dc.lane_sort[status];
+  if (mode && isValidLaneMode(status, mode)) return mode;
+  if (status === "done") {
+    var legacy = dc.done_display || (config && config.done_display) || "grouped";
+    var derived = Object.prototype.hasOwnProperty.call(DONE_DISPLAY_TO_MODE, legacy)
+      ? DONE_DISPLAY_TO_MODE[legacy]
+      : null;
+    return derived && isValidLaneMode(status, derived) ? derived : DEFAULT_LANE_SORT;
+  }
+  return DEFAULT_LANE_SORT;
+}
+
+async function setLaneSort(status, mode) {
+  var dc = getDashboardConfig();
+  var laneSort = {};
+  if (dc.lane_sort) {
+    Object.keys(dc.lane_sort).forEach(function(k) { laneSort[k] = dc.lane_sort[k]; });
+  }
+  laneSort[status] = mode;
+
+  var payload = {lane_sort: laneSort};
+  // Mirror the done lane onto done_display so the Settings panel select stays truthful.
+  if (status === "done") payload.done_display = MODE_TO_DONE_DISPLAY[mode] || "all";
+
+  try {
+    // The server returns the merged dashboard config — adopt it wholesale.
+    var updated = await apiPost("/api/config/dashboard", payload);
+    if (config) config.dashboard = updated;
+  } catch (e) {
+    showToast(e.message || "Failed to save lane order", "error");
+    // Fall through to re-render anyway: the <select> is rebuilt from config, so this
+    // snaps it back to the value that actually persisted.
+  }
+  // The Settings panel's done-display select is only ever written here. Without this the
+  // panel would keep showing a stale mode until a full page reload — the config poll
+  // won't repair it, because we just adopted the server's config as our own.
+  loadDoneDisplaySettings();
+  if (currentView === "board") renderBoard();
+}
+
+// Rank-based comparator over an enum field; unset values sort last.
+function _byRank(field, ranks) {
+  return function(a, b) {
+    var ra = ranks[a[field]], rb = ranks[b[field]];
+    if (ra == null) ra = 99;
+    if (rb == null) rb = 99;
+    return ra - rb;
+  };
+}
+
+// Timestamp comparator. If either side is missing the field, compare both by id instead
+// — ULIDs are monotonic in creation time, but they are not lexicographically comparable
+// with ISO timestamps, so the fallback has to apply to both operands or neither.
+function _byTime(field, dir) {
+  return function(a, b) {
+    var va = a[field], vb = b[field];
+    if (!va || !vb) {
+      va = a.id || "";
+      vb = b.id || "";
+    }
+    if (va === vb) return 0;
+    return (va < vb ? -1 : 1) * dir;
+  };
+}
+
+var LANE_COMPARATORS = {
+  created_asc:  _byTime("created_at", 1),
+  created_desc: _byTime("created_at", -1),
+  updated_desc: _byTime("updated_at", -1),
+  // Oldest transition = longest sitting in this lane, so age-descending is timestamp-ascending.
+  status_age_desc: _byTime("last_status_changed_at", 1),
+  priority:     _byRank("priority", PRIORITY_RANK),
+  urgency:      _byRank("urgency", URGENCY_RANK),
+  complexity_asc: _byRank("complexity", COMPLEXITY_RANK)
+};
+
+// Pure: returns a new sorted array. Ties always break on id, so renders are stable.
+function sortLaneItems(items, mode) {
+  // hasOwnProperty, not a truthiness check: LANE_COMPARATORS["constructor"] would
+  // otherwise hand back an inherited function and silently sort nothing.
+  var cmp = Object.prototype.hasOwnProperty.call(LANE_COMPARATORS, mode)
+    ? LANE_COMPARATORS[mode]
+    : LANE_COMPARATORS[DEFAULT_LANE_SORT];
+  return items.slice().sort(function(a, b) {
+    return cmp(a, b) || ((a.id || "") < (b.id || "") ? -1 : (a.id || "") > (b.id || "") ? 1 : 0);
+  });
+}
+
+// Pure: returns [{label, items}] sections. A card belongs to exactly one section — cards
+// are never duplicated, so the lane's header count stays honest. Multi-tag cards group
+// under their alphabetically-first tag.
+function groupLaneItems(items, mode) {
+  var key, emptyLabel;
+  if (mode === "group:assignee") {
+    key = function(t) { return t.assigned_to || ""; };
+    emptyLabel = "Unassigned";
+  } else {
+    key = function(t) {
+      var tags = (t.tags || []).slice().sort();
+      return tags.length ? tags[0] : "";
+    };
+    emptyLabel = "Untagged";
+  }
+
+  // Object.create(null): tags and actor ids are free-form strings, so a task tagged
+  // "constructor" or "__proto__" would otherwise hit an inherited property, skip the
+  // array init, and throw inside renderBoard() — blanking the entire board, not just
+  // this lane.
+  var buckets = Object.create(null);
+  items.forEach(function(t) {
+    var k = key(t);
+    if (!buckets[k]) buckets[k] = [];
+    buckets[k].push(t);
+  });
+
+  // Named sections alphabetically; the empty bucket always sinks to the bottom.
+  var names = Object.keys(buckets).filter(function(k) { return k !== ""; }).sort();
+  if (buckets[""]) names.push("");
+
+  return names.map(function(k) {
+    return {
+      label: k === "" ? emptyLabel : k,
+      items: sortLaneItems(buckets[k], DEFAULT_LANE_SORT)
+    };
+  });
+}
+
+function renderLaneSortSelect(status) {
+  var current = getLaneSort(status);
+  var modes = laneModesFor(status);
+  var html = '<select class="lane-sort" data-status="' + esc(status) + '"'
+    + ' title="How cards in this lane are organized"'
+    + ' onclick="event.stopPropagation()" onmousedown="event.stopPropagation()">';
+  ["Sort", "Group"].forEach(function(groupName) {
+    var inGroup = modes.filter(function(m) { return m.group === groupName; });
+    if (!inGroup.length) return;
+    html += '<optgroup label="' + groupName + '">';
+    inGroup.forEach(function(m) {
+      var sel = m.value === current ? ' selected' : '';
+      html += '<option value="' + esc(m.value) + '"' + sel + '>' + esc(m.label) + '</option>';
+    });
+    html += '</optgroup>';
+  });
+  return html + '</select>';
+}
+
 function getBackgroundImage() {
   var dc = getDashboardConfig();
   return dc.background_image || "";
@@ -4517,12 +4714,18 @@ function renderBoard() {
     html += '<span>' + esc(getStatusDisplayName(status)) + '</span>';
     html += '<span class="count">' + items.length + '</span>';
     html += '</div>';
+    // Empty lanes collapse to a 120px stub — nothing to organize, so no control.
+    var laneMode = getLaneSort(status);
+    if (items.length > 0) {
+      html += '<div class="board-col-toolbar">' + renderLaneSortSelect(status) + '</div>';
+    }
     var maxItems = getMaxItemsPerColumn();
     html += '<div class="board-col-body"' + (maxItems > 0 ? ' style="max-height:' + (maxItems * 5) + 'rem;overflow-y:auto"' : '') + '>';
-    if (status === "done" && items.length > 0) {
-      // Done column display mode
+    var isDoneGrouping = laneMode === "group:day" || laneMode === "recent";
+    if (status === "done" && items.length > 0 && isDoneGrouping) {
+      // Done column display mode (day-bucketed or last-24h) — the pre-existing rendering.
       var dc = getDashboardConfig();
-      var doneMode = dc.done_display || (config && config.done_display) || "grouped";
+      var doneMode = laneMode === "recent" ? "recent" : "grouped";
       var dayStartHour = (dc.day_start_hour != null) ? dc.day_start_hour : 6;
 
       // Helper: get the "logical day" string for a timestamp, shifted by dayStartHour
@@ -4539,10 +4742,7 @@ function renderBoard() {
       logicalYesterday.setDate(logicalYesterday.getDate() - 1);
       var yesterdayStr = logicalYesterday.toISOString().slice(0, 10);
 
-      if (doneMode === "all") {
-        // Flat list, no grouping
-        items.forEach(function(t) { html += renderBoardCard(t); });
-      } else if (doneMode === "recent") {
+      if (doneMode === "recent") {
         // Only items done in last 24 hours
         var cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
         var recentItems = [];
@@ -4601,8 +4801,15 @@ function renderBoard() {
           html += '<div style="color:var(--text-muted);font-size:.8rem;padding:8px;text-align:center">' + esc(t("empty.lane")) + '</div>';
         }
       }
+    } else if (laneMode.indexOf("group:") === 0 && items.length > 0) {
+      // Grouped by assignee or tag — section headers, cards never duplicated.
+      groupLaneItems(items, laneMode).forEach(function(section) {
+        html += '<div class="board-sub-header">' + esc(section.label)
+          + ' <span class="count">' + section.items.length + '</span></div>';
+        section.items.forEach(function(t) { html += renderBoardCard(t); });
+      });
     } else {
-      items.forEach(function(t) { html += renderBoardCard(t); });
+      sortLaneItems(items, laneMode).forEach(function(t) { html += renderBoardCard(t); });
       if (items.length === 0) html += '<div style="color:var(--text-muted);font-size:.8rem;padding:8px;text-align:center">' + esc(t("empty.lane")) + '</div>';
     }
     html += "</div></div>";
@@ -4612,6 +4819,13 @@ function renderBoard() {
   html += "</div>"; // close .board-wrapper
 
   app.innerHTML = html;
+
+  // Per-lane organization dropdown → persist and re-render just this lane's ordering
+  app.querySelectorAll("select.lane-sort").forEach(function(sel) {
+    sel.addEventListener("change", function() {
+      setLaneSort(sel.getAttribute("data-status"), sel.value);
+    });
+  });
 
   // Tag badge → set tag filter (stop propagation so the card click doesn't open detail)
   app.querySelectorAll(".tag-badge").forEach(function(el) {
@@ -6736,16 +6950,10 @@ document.getElementById("heat-map-info-btn").addEventListener("click", function(
   overlay.addEventListener("click", closePopup);
 });
 
-// Done display mode selector
+// Done display mode selector — writes through setLaneSort so this control and the done
+// lane's own dropdown can never disagree about how the lane is organized.
 document.getElementById("done-display-select").addEventListener("change", async function() {
-  var mode = this.value;
-  try {
-    var result = await apiPost("/api/config/dashboard", {done_display: mode});
-    if (config) config.dashboard = result;
-    if (currentView === "board") renderBoard();
-  } catch(e) {
-    showToast(e.message, "error");
-  }
+  await setLaneSort("done", DONE_DISPLAY_TO_MODE[this.value] || DEFAULT_LANE_SORT);
 });
 
 // Max items per column slider
