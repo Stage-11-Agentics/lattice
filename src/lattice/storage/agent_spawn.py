@@ -24,6 +24,7 @@ from lattice.core.agent_spawn import (
     SpawnResult,
     _agent_cli_command,
     run_concurrent,
+    scrub_host_session_env,
     sentinel_path,
 )
 
@@ -54,8 +55,10 @@ class HeadlessBackend(Backend):
         if cmd is None:
             return _failure_result(req, f"Unknown agent type: {req.agent}", duration=0.0)
 
+        # Strip the firing session's identity (CLAUDECODE + c11/cmux vars) so
+        # the headless agent can't rename the host tab or think it's nested.
         env = os.environ.copy()
-        env.pop("CLAUDECODE", None)
+        scrub_host_session_env(env)
         for k, v in req.extra_env.items():
             env[k] = v
 
