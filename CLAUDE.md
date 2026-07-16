@@ -109,6 +109,8 @@ json.dumps(event, sort_keys=True, separators=(",", ":")) + "\n"
 - CLI commands → integration tests (invoke Click, check `.lattice/` state).
 - Core modules → unit tests (pure logic, no filesystem).
 - Storage → tests with real temp directories (`tmp_path` fixture).
+- Dashboard pure JS → `tests/js/` (node:test, zero deps), run automatically through pytest via the bridge test in `tests/test_dashboard/test_js_lane_logic.py` (skipped only when node is absent).
+- New dashboard pure logic goes in a testable static file (e.g. `static/lane-logic.js`), not the inline `index.html` IIFE.
 
 ## Where Things Live
 
