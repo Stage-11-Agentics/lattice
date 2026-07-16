@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import os
+import shlex
 import sys
 import time
 from pathlib import Path
 
 import pytest
-
-import shlex
 
 from lattice.core.agent_spawn import (
     HOST_SESSION_ENV_VARS,
@@ -111,45 +110,6 @@ class TestHeadlessBackendEndToEnd:
         for req in reqs:
             assert sentinel_path(req.output_file).exists()
 
-
-class TestHeadlessBackendScrubsHostSessionEnv:
-    """Regression (LAT-255): a headless agent spawned from inside a c11 surface
-    must NOT inherit that surface's identity. If it did, c11's session-start
-    injection would make the headless reviewer rename the operator's own tab.
-    """
-
-    def _dump_env_command(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Patch the CLI builder to a stub that dumps the CHILD's view of every
-        host-session var into the output file (``VAR=[<value>]`` per line)."""
-
-        def _stub(agent_type: str, prompt_file: str, output_file: str) -> str:
-            body = "".join(f'echo "{v}=[${v}]"; ' for v in HOST_SESSION_ENV_VARS)
-            return f"sh -c {shlex.quote(body)} > {shlex.quote(output_file)}"
-
-        monkeypatch.setattr("lattice.core.agent_spawn._agent_cli_command", _stub)
-        monkeypatch.setattr("lattice.storage.agent_spawn._agent_cli_command", _stub)
-
-    def test_child_does_not_inherit_host_session_vars(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # Pollute the parent env as if we were firing from inside a c11 surface.
-        for var in HOST_SESSION_ENV_VARS:
-            monkeypatch.setenv(var, f"parent-{var}")
-        self._dump_env_command(monkeypatch)
-
-        req = _make_request(tmp_path, "claude")
-        result = spawn_one(req, workspace_label="test", backend=HeadlessBackend())
-
-        assert result.success, result.error
-        dumped = req.output_file.read_text(encoding="utf-8")
-        # Every host-session var must read empty in the child. Pre-fix (only
-        # CLAUDECODE popped) the C11_*/CMUX_* lines would show ``parent-<VAR>``.
-        for var in HOST_SESSION_ENV_VARS:
-            assert f"{var}=[]" in dumped, f"child inherited {var}: {dumped!r}"
-            assert f"parent-{var}" not in dumped, f"{var} leaked into child: {dumped!r}"
-
     def test_timeout_records_command_for_diagnostics(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -217,3 +177,40 @@ def _pid_alive(pid: int) -> bool:
         return False
     except PermissionError:
         return True
+
+
+class TestHeadlessBackendScrubsHostSessionEnv:
+    """Regression (LAT-255): a headless agent spawned from inside a c11 surface
+    must NOT inherit that surface's identity. If it did, c11's session-start
+    injection would make the headless reviewer rename the operator's own tab.
+    """
+
+    def _dump_env_command(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Patch the CLI builder to a stub that dumps the CHILD's view of every
+        host-session var into the output file (``VAR=[<value>]`` per line)."""
+
+        def _stub(agent_type: str, prompt_file: str, output_file: str) -> str:
+            body = "".join(f'echo "{v}=[${v}]"; ' for v in HOST_SESSION_ENV_VARS)
+            return f"sh -c {shlex.quote(body)} > {shlex.quote(output_file)}"
+
+        monkeypatch.setattr("lattice.core.agent_spawn._agent_cli_command", _stub)
+        monkeypatch.setattr("lattice.storage.agent_spawn._agent_cli_command", _stub)
+
+    def test_child_does_not_inherit_host_session_vars(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Pollute the parent env as if we were firing from inside a c11 surface.
+        for var in HOST_SESSION_ENV_VARS:
+            monkeypatch.setenv(var, f"parent-{var}")
+        self._dump_env_command(monkeypatch)
+
+        req = _make_request(tmp_path, "claude")
+        result = spawn_one(req, workspace_label="test", backend=HeadlessBackend())
+
+        assert result.success, result.error
+        dumped = req.output_file.read_text(encoding="utf-8")
+        # Every host-session var must read empty in the child. Pre-fix (only
+        # CLAUDECODE popped) the C11_*/CMUX_* lines would show ``parent-<VAR>``.
+        for var in HOST_SESSION_ENV_VARS:
+            assert f"{var}=[]" in dumped, f"child inherited {var}: {dumped!r}"
+            assert f"parent-{var}" not in dumped, f"{var} leaked into child: {dumped!r}"
