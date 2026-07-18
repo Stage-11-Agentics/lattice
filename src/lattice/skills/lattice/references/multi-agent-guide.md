@@ -11,20 +11,24 @@ Lattice is file-based and local. All state lives in `.lattice/` inside the proje
 ### 1. Initialize Lattice (once per project)
 
 ```bash
-lattice init --project-code PROJ
+lattice init --project-code PROJ --actor agent:orchestrator
 ```
+
+(`init` runs the interactive setup interview unless **both** `--project-code` and `--actor` are supplied.)
 
 ### 2. Orchestrator Creates Tasks
 
-The orchestrator agent creates and assigns work:
+The orchestrator agent creates and assigns work. Each ticket must have a real deliverable of its own — see the "container ticket" anti-pattern in the main skill. Express umbrella work as sibling tickets connected by `depends_on`, not an empty parent with `subtask_of` children.
 
 ```bash
-lattice create "Implement user auth" --actor agent:orchestrator --priority high
-lattice create "Build login endpoint" --actor agent:orchestrator --assign agent:worker-1
-lattice create "Build signup endpoint" --actor agent:orchestrator --assign agent:worker-2
-lattice link PROJ-2 subtask_of PROJ-1 --actor agent:orchestrator
-lattice link PROJ-3 subtask_of PROJ-1 --actor agent:orchestrator
+lattice create "Add session-token validation middleware" --actor agent:orchestrator --priority high --assigned-to agent:worker-1
+lattice create "Add login endpoint (uses session middleware)" --actor agent:orchestrator --assigned-to agent:worker-2
+lattice create "Add signup endpoint (uses session middleware)" --actor agent:orchestrator --assigned-to agent:worker-3
+lattice link PROJ-2 depends_on PROJ-1 --actor agent:orchestrator
+lattice link PROJ-3 depends_on PROJ-1 --actor agent:orchestrator
 ```
+
+Each of PROJ-1, PROJ-2, PROJ-3 ships a concrete change on its own; the dependency edges just sequence them. If the auth work fit in a single ticket, prefer that — three "areas" can live as sections in one description with a "parallel-execution map" up top.
 
 ### 3. Workers Claim and Execute
 
@@ -40,7 +44,7 @@ lattice status PROJ-2 in_progress --actor agent:worker-1
 # Leave progress notes
 lattice comment PROJ-2 "Auth middleware implemented, writing tests" --actor agent:worker-1
 
-# Complete
+# Hand off to review (the reviewer/orchestrator closes with `lattice complete`)
 lattice status PROJ-2 review --actor agent:worker-1
 ```
 
@@ -73,7 +77,7 @@ When a worker needs a human decision, it flags the task. `needs-human` is orthog
 lattice needs-human PROJ-2 "Which OAuth provider to use?" --actor agent:worker-1
 ```
 
-The reason is required and replaces the old "leave a comment" convention. The orchestrator sees the flagged task via `lattice list --needs-human` (a queue spanning every status), resolves it, and clears the flag:
+The reason is required. The orchestrator sees the flagged task via `lattice list --needs-human` (a queue spanning every status), resolves it, and clears the flag:
 
 ```bash
 lattice needs-human PROJ-2 --clear --note "Decided: Google" --actor agent:worker-1
@@ -86,7 +90,7 @@ Use `blocked` (a status) for generic external dependencies; use the `needs-human
 Every action is recorded as an immutable event:
 
 ```bash
-lattice show PROJ-2 --events
+lattice show PROJ-2 --full
 ```
 
 This provides a full audit trail: who changed what, when, and why.

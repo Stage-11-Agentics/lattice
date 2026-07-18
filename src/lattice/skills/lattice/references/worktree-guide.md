@@ -69,30 +69,27 @@ All worktrees MUST share a single `.lattice/` directory via the `LATTICE_ROOT` e
 When spawning sub-agents that will work in a worktree, ensure `LATTICE_ROOT` is set in their environment:
 
 ```bash
-LATTICE_ROOT=/absolute/path/to/.lattice <agent-command>
+LATTICE_ROOT=/absolute/path/to/primary-checkout <agent-command>
 ```
 
-Each sub-agent inherits the env var and operates against the shared Lattice state.
+`LATTICE_ROOT` is the primary checkout's **root** (the directory containing `.lattice/`), never `.lattice/` itself. Each sub-agent inherits the env var and operates against the shared Lattice state.
 
-## CLI worktree↔root bridge footguns (`code-review` and `plan-review`)
+## Reviewing from a worktree (`code-review` / `plan-review`)
 
-LAT-219 added directory-walking auto-detection so most `lattice` calls route correctly from a worktree (read/write tasks, comments, events, plan files all land in the root repo's `.lattice/`). **Two commands still have known worktree↔root bridge bugs even with `LATTICE_ROOT` set.**
+Most `lattice` calls auto-detect the root repo and route correctly from a worktree (tasks, comments, events, and plan-file writes all land in the root repo's `.lattice/`). Two review paths need extra care when run from a worktree.
 
-### `lattice code-review` — empty-diff failure
+### `lattice code-review` — make sure the diff is real
 
-- **Symptom:** `lattice code-review <TICKET> --base <remote>/main` returns an empty diff or a vacuous artifact when run from a worktree, even with `LATTICE_ROOT=$PWD` set. The reviewer sees no changes and writes a useless review. The auto-fired review (`review_mode: single`) can also just **die without attaching any artifact** — `review-status` keeps ticking, the spawned pid is dead, no `--role review` artifact exists.
-- **Also:** new files are invisible to the diff until committed. **Commit before transitioning to `review`** so the reviewer (and the diff) see the whole change.
-- **Why:** The diff-resolution path doesn't fully honor the worktree's HEAD; it falls back to the primary checkout's refs in some configurations.
-- **Cheap mitigation:** Always pass `--base <remote>/main` (NEVER bare `main` — they look identical but the local ref may be behind the remote). Set `export LATTICE_ROOT=$PWD` at session start.
-- **Fallback (small tickets):** review the committed diff yourself and complete with `lattice complete <TICKET> --review "<verdict + findings>"` — the review text satisfies the `done` policy without a CLI-spawned artifact.
-- **Fallback when cheap mitigation fails:** Spawn an own-reviewer sub-agent on the delegator's own pane that computes the diff itself (`git log <remote>/main..HEAD --stat` + per-file `git diff`), writes a custom artifact at `notes/.tmp/<TICKET>-codereview-custom.md`, and attaches it via `lattice attach <TICKET> --type note --role review --inline "<markdown>" --actor agent:<id>-reviewer`. The `--role review` attachment satisfies the `done` completion policy — the orchestrator can't tell the difference from a CLI-generated review. See the `lattice-orchestrator` skill's `references/orchestrator.md` `## Own-reviewer-tab fallback` section for the full pattern.
-- **Observed:** Every Wave 2 delegator on the EC v1.2.1 run hit this independently and converged on the fallback.
+The diff a worktree review sees can be empty or partial if it resolves against the wrong refs, which yields a vacuous review. Defend against it:
 
-### `lattice plan-review` — wrong-file silent read
+- **Commit before transitioning to `review`.** New/uncommitted files are invisible to the diff — commit so the reviewer sees the whole change.
+- **Always pass `--base <remote>/main`** (e.g. `origin/main`), never bare `main` — they look identical but the local ref may lag the remote, producing a stale or empty diff. Set `export LATTICE_ROOT=<primary-checkout>` at session start.
+- If the auto-review fails outright, `lattice review-status <TICKET>` reports it as `FAILED` (with no `review`-role artifact, so the `done` gate stays blocked). Re-run, or use a fallback below.
+- **Fallback (small tickets):** review the committed diff yourself and close with `lattice complete <TICKET> --review "<verdict + findings>"` — the review text satisfies the `done` policy without a CLI-spawned artifact.
+- **Fallback (richer):** spawn an own-reviewer sub-agent that computes the diff itself (`git log <remote>/main..HEAD --stat` + per-file `git diff`), writes an artifact, and attaches it with `lattice attach <TICKET> --type note --role review --inline "<markdown>" --actor agent:<id>-reviewer`. The `--role review` attachment satisfies the `done` policy. See the `lattice-orchestrator` skill's `references/orchestrator.md` (`## Own-reviewer-tab fallback`).
 
-- **Symptom:** `lattice plan-review <TICKET> --headless` silently reads the empty 30-line plan scaffold (from `.lattice/plans/<task_id>.md` in the wrong location) instead of the authored plan, and reports a vacuous FAIL with no findings against the actual plan content.
-- **Why:** LAT-219 routes plan-file *writes* to the root repo but the plan-review *read path* doesn't always resolve to the same location, depending on how the plan was authored (lattice CLI vs direct file write).
-- **Cheap mitigation:** Before `lattice plan-review`, verify `$REPO_ROOT/.lattice/plans/<task_id>.md` has the authored content via `wc -l`. If it's the 30-line scaffold but the worktree has the real plan, copy worktree→root: `cp <worktree>/.lattice/plans/<task_id>.md $REPO_ROOT/.lattice/plans/`.
-- **Observed:** EC v1.2.1 run, PSY-47 delegator. First plan-review pass returned vacuous FAIL; worked around by the copy. File a Lattice ticket if you hit this — it's an upstream defect that should follow LAT-219's fix to the same conclusion.
+### `lattice plan-review` — confirm it reads the authored plan
 
-Both bugs are upstream defects in Lattice, not workflow issues. Document a hit in your run's closeout audit and consider filing a Lattice ticket so the maintainer can apply the LAT-219 fix to the review path.
+A worktree plan-review can read the empty plan scaffold instead of the authored plan (depending on where the plan was written) and return a vacuous FAIL. Before running it, verify the root holds the real plan:
+
+- `wc -l $REPO_ROOT/.lattice/plans/<task_id>.md` — if it's still the short scaffold but the worktree has the authored plan, copy it across: `cp <worktree>/.lattice/plans/<task_id>.md $REPO_ROOT/.lattice/plans/`.

@@ -41,7 +41,7 @@ class TestDefaultConfig:
 
     def test_has_task_types(self) -> None:
         config = default_config()
-        assert config["task_types"] == ["task", "bug", "spike", "chore"]
+        assert config["task_types"] == ["task", "bug", "chore"]
 
     def test_workflow_statuses(self) -> None:
         config = default_config()
