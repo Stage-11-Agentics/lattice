@@ -69,10 +69,10 @@ All worktrees MUST share a single `.lattice/` directory via the `LATTICE_ROOT` e
 When spawning sub-agents that will work in a worktree, ensure `LATTICE_ROOT` is set in their environment:
 
 ```bash
-LATTICE_ROOT=/absolute/path/to/.lattice <agent-command>
+LATTICE_ROOT=/absolute/path/to/primary-checkout <agent-command>
 ```
 
-Each sub-agent inherits the env var and operates against the shared Lattice state.
+This must be the primary checkout root containing `.lattice/`, never the `.lattice/` directory itself. Each sub-agent inherits the env var and operates against the shared Lattice state.
 
 ## CLI worktree↔root bridge footguns (`code-review` and `plan-review`)
 
@@ -80,10 +80,10 @@ LAT-219 added directory-walking auto-detection so most `lattice` calls route cor
 
 ### `lattice code-review` — empty-diff failure
 
-- **Symptom:** `lattice code-review <TICKET> --base <remote>/main` returns an empty diff or a vacuous artifact when run from a worktree, even with `LATTICE_ROOT=$PWD` set. The reviewer sees no changes and writes a useless review. The auto-fired review (`review_mode: single`) can also just **die without attaching any artifact** — `review-status` keeps ticking, the spawned pid is dead, no `--role review` artifact exists.
+- **Symptom:** `lattice code-review <TICKET> --base <remote>/main` returns an empty diff or a vacuous artifact when run from a worktree, even with `LATTICE_ROOT=/absolute/path/to/primary-checkout` set. The reviewer sees no changes and writes a useless review. The auto-fired review (`review_mode: single`) can also just **die without attaching any artifact** — `review-status` keeps ticking, the spawned pid is dead, no `--role review` artifact exists.
 - **Also:** new files are invisible to the diff until committed. **Commit before transitioning to `review`** so the reviewer (and the diff) see the whole change.
 - **Why:** The diff-resolution path doesn't fully honor the worktree's HEAD; it falls back to the primary checkout's refs in some configurations.
-- **Cheap mitigation:** Always pass `--base <remote>/main` (NEVER bare `main` — they look identical but the local ref may be behind the remote). Set `export LATTICE_ROOT=$PWD` at session start.
+- **Cheap mitigation:** Always pass `--base <remote>/main` (NEVER bare `main` — they look identical but the local ref may be behind the remote). Set `export LATTICE_ROOT=/absolute/path/to/primary-checkout` at session start. A feature-worktree `$PWD` is not a safe substitute; the value must still be the primary root containing `.lattice/`.
 - **Fallback (small tickets):** review the committed diff yourself and complete with `lattice complete <TICKET> --review "<verdict + findings>"` — the review text satisfies the `done` policy without a CLI-spawned artifact.
 - **Fallback when cheap mitigation fails:** Spawn an own-reviewer sub-agent on the delegator's own pane that computes the diff itself (`git log <remote>/main..HEAD --stat` + per-file `git diff`), writes a custom artifact at `notes/.tmp/<TICKET>-codereview-custom.md`, and attaches it via `lattice attach <TICKET> --type note --role review --inline "<markdown>" --actor agent:<id>-reviewer`. The `--role review` attachment satisfies the `done` completion policy — the orchestrator can't tell the difference from a CLI-generated review. See the `lattice-orchestrator` skill's `references/orchestrator.md` `## Own-reviewer-tab fallback` section for the full pattern.
 - **Observed:** Every Wave 2 delegator on the EC v1.2.1 run hit this independently and converged on the fallback.
