@@ -17,6 +17,7 @@ from lattice.core.agent_spawn import (
     spawn_many,
     spawn_one,
 )
+from lattice.core.auto_review import classify_transient_review_failure
 from lattice.storage.agent_spawn import HeadlessBackend
 
 
@@ -133,6 +134,18 @@ class TestHeadlessBackendEndToEnd:
         assert not result.success
         assert result.returncode == 1
         assert "simulated failure" in result.stderr_tail
+
+    def test_stdout_only_failure_tail_reaches_transient_classifier(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_command(monkeypatch, behavior="stdout-limit")
+        req = _make_request(tmp_path, "claude")
+        result = spawn_one(req, workspace_label="test", backend=HeadlessBackend())
+        assert not result.success
+        assert "session limit" in result.stderr_tail
+        assert (
+            classify_transient_review_failure(result.error, result.stderr_tail) == "session_limit"
+        )
 
     def test_timeout_kills_whole_process_group(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

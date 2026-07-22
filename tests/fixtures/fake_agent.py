@@ -7,6 +7,7 @@ env var for failure-mode coverage:
 - unset / "ok"      → write output, exit 0
 - "stdout"          → write nothing to file, print to stdout, exit 0
 - "fail"            → exit 1 with stderr message
+- "stdout-limit"    → exit 1 with a session-limit message on stdout only
 - "sleep:<n>"       → sleep <n> seconds before writing (timeout coverage)
 - "noop"            → exit 0 without writing anything
 """
@@ -43,6 +44,10 @@ def main() -> int:
 
     if behavior == "fail":
         sys.stderr.write("fake_agent: simulated failure\n")
+        return 1
+
+    if behavior == "stdout-limit":
+        sys.stdout.write("You've hit your session limit · resets 4am (America/New_York)\n")
         return 1
 
     if behavior == "noop":

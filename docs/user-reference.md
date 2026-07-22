@@ -257,6 +257,8 @@ Coordination piggybacks on the existing `review_state/<task_id>.json` primitive 
 
 Logs land at `.lattice/.daemon/auto-{code,plan}-review-<task_id>.log` (overwritten per spawn). Every successful spawn appends an `auto_review_spawned` event to the task's event log with the review type, mode, log path, spawned-at timestamp, child PID (debug aid only), and the triggering `status_changed` event ID.
 
+Auto-fired **single-mode** reviews retry classified transient infrastructure failures (session/usage limits, rate limits/HTTP 429, explicit network transport errors, and API/HTTP 500/502/503/504 responses) at most twice, with 2s and 5s delays. Manual reviews and non-transient failures are not retried. Exhaustion persists `review_state.status: "infrastructure_error"`, records attempt history in `review_state` and `failures.jsonl`, and appends exactly one `auto_review_errored` event. `lattice review-status <task>` displays the category, attempt counts, final diagnostics, and the review-type-specific re-fire command. This execution error is distinct from a completed review artifact whose verdict is FAIL.
+
 Spawn failures (no `lattice` on PATH, OS forbids fork) never block the status transition — the change still lands and a warning is logged. Auto-fire is enhancement, never gating.
 
 **Cost-of-ownership.** With `triple` mode (the default for `plan_review_mode`), every transition into `planned` or `review` spends three agent runs plus a merge run. For projects where API spend matters, set the config keys to `false` or use `--no-auto-review` for surgical transitions.

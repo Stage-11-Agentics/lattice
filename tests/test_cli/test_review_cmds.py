@@ -227,6 +227,95 @@ class TestReviewStatus:
         assert data["data"]["status"] == "failed"
         assert data["data"]["last_failure"]["task_id"] == task_id
 
+    def test_infrastructure_error_state_is_distinct_and_plan_refire_is_correct(self, tmp_path):
+        from lattice.core.review import write_review_state
+
+        root = _make_board(tmp_path)
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+        state = {
+            "task_id": task_id,
+            "mode": "single",
+            "review_type": "plan-review",
+            "status": "infrastructure_error",
+            "error_kind": "session_limit",
+            "error": "exited with code 1",
+            "started_at": "2026-07-22T04:00:00Z",
+            "finished_at": "2026-07-22T04:00:07Z",
+            "attempt_count": 3,
+            "retry_count": 2,
+            "detail": {
+                "returncode": 1,
+                "duration_seconds": 0.4,
+                "stderr_tail": "You've hit your session limit",
+            },
+            "agents": [],
+        }
+        write_review_state(root / LATTICE_DIR, state)
+
+        human = runner.invoke(
+            cli,
+            ["review-status", task_id],
+            env={"LATTICE_ROOT": str(root)},
+            catch_exceptions=False,
+        )
+        assert human.exit_code == 0
+        assert "Review INFRASTRUCTURE ERROR" in human.output
+        assert "session_limit" in human.output
+        assert "attempts:     3" in human.output
+        assert f"lattice plan-review {task_id}" in human.output
+
+        structured = runner.invoke(
+            cli,
+            ["review-status", task_id, "--json"],
+            env={"LATTICE_ROOT": str(root)},
+            catch_exceptions=False,
+        )
+        data = json.loads(structured.output)["data"]
+        assert data["status"] == "infrastructure_error"
+        assert data["error_kind"] == "session_limit"
+        assert data["attempt_count"] == 3
+
+    def test_infrastructure_error_falls_back_to_failure_history(self, tmp_path):
+        root = _make_board(tmp_path)
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+        failure = {
+            "agent": "claude",
+            "task_id": task_id,
+            "timestamp": "2026-07-22T04:00:07Z",
+            "failure_kind": "infrastructure_error",
+            "error_kind": "network",
+            "error": "connection reset by peer",
+            "review_type": "code-review",
+            "attempt_count": 1,
+            "retry_count": 0,
+            "returncode": 1,
+        }
+        failures_path = root / LATTICE_DIR / "review_state" / "failures.jsonl"
+        failures_path.parent.mkdir(exist_ok=True)
+        failures_path.write_text(json.dumps(failure) + "\n", encoding="utf-8")
+
+        human = runner.invoke(
+            cli,
+            ["review-status", task_id],
+            env={"LATTICE_ROOT": str(root)},
+            catch_exceptions=False,
+        )
+        assert "Review INFRASTRUCTURE ERROR" in human.output
+        assert "source:       failures.jsonl" in human.output
+        assert f"lattice code-review {task_id}" in human.output
+
+        structured = runner.invoke(
+            cli,
+            ["review-status", task_id, "--json"],
+            env={"LATTICE_ROOT": str(root)},
+            catch_exceptions=False,
+        )
+        data = json.loads(structured.output)["data"]
+        assert data["status"] == "infrastructure_error"
+        assert data["last_failure"]["error_kind"] == "network"
+
 
 # ---------------------------------------------------------------------------
 # Tests: code-review inline mode
@@ -461,6 +550,121 @@ class TestPlanReviewSingle:
                 catch_exceptions=False,
             )
         mock_move.assert_called_once()
+
+    def test_auto_fired_transient_exhaustion_writes_one_audit_event(self, tmp_path):
+        from lattice.core.agent_spawn import SpawnResult
+
+        root = _make_board(tmp_path, {"plan_review_mode": "single"})
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+        _write_plan(root, task_id, "## Plan\nImplement the fix.")
+
+        def _failure(request, **kwargs):
+            return SpawnResult(
+                agent=request.agent,
+                success=False,
+                output_text="",
+                error="exited with code 1",
+                backend="headless",
+                duration_seconds=0.4,
+                returncode=1,
+                stderr_tail="You've hit your session limit · resets 4am (America/New_York)",
+            )
+
+        with (
+            patch("lattice.core.review.spawn_one", side_effect=_failure) as spawn,
+            patch("lattice.core.review.time.sleep") as sleep,
+            patch("lattice.cli.review_cmds._attach_review_artifact") as attach,
+        ):
+            result = runner.invoke(
+                cli,
+                [
+                    "plan-review",
+                    task_id,
+                    "--mode",
+                    "single",
+                    "--actor",
+                    "agent:lattice-auto-review",
+                    "--triggered-by",
+                    "ev_status_123",
+                ],
+                env={"LATTICE_ROOT": str(root)},
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0, result.output
+        assert spawn.call_count == 3
+        assert [call.args[0] for call in sleep.call_args_list] == [2, 5]
+        attach.assert_not_called()
+
+        events = [
+            json.loads(line)
+            for line in (root / LATTICE_DIR / "events" / f"{task_id}.jsonl")
+            .read_text()
+            .splitlines()
+        ]
+        errored = [event for event in events if event["type"] == "auto_review_errored"]
+        assert len(errored) == 1
+        event = errored[0]
+        assert event["actor"] == "agent:lattice-auto-review"
+        assert event["data"]["review_type"] == "plan-review"
+        assert event["data"]["error_kind"] == "session_limit"
+        assert event["data"]["attempt_count"] == 3
+        assert event["data"]["retry_count"] == 2
+        assert event["data"]["trigger_status_event_id"] == "ev_status_123"
+        assert event["provenance"]["triggered_by"] == "ev_status_123"
+        assert not [event for event in events if event["type"] == "artifact_attached"]
+
+        snapshot = json.loads((root / LATTICE_DIR / "tasks" / f"{task_id}.json").read_text())
+        assert snapshot["status"] == "backlog"
+        assert snapshot["last_event_id"] == event["id"]
+
+    def test_non_terminal_paths_do_not_write_auto_review_error_event(self, tmp_path):
+        root = _make_board(tmp_path, {"plan_review_mode": "single"})
+        runner = CliRunner()
+
+        cases = [
+            ("recovered", True, "### 1. Verdict\nPASS", "ev_status_recovered"),
+            ("generic", False, None, "ev_status_generic"),
+            ("manual", False, None, None),
+        ]
+        for title, success, output, triggered_by in cases:
+            task_id = _create_task(runner, root, title)
+            _write_plan(root, task_id, "## Plan\nImplement.")
+            argv = [
+                "plan-review",
+                task_id,
+                "--mode",
+                "single",
+                "--actor",
+                "agent:test",
+            ]
+            if triggered_by:
+                argv.extend(["--triggered-by", triggered_by])
+            with (
+                patch(
+                    "lattice.cli.review_cmds.run_single_review",
+                    return_value=(success, "done" if success else "failed", output),
+                ),
+                patch(
+                    "lattice.cli.review_cmds._attach_review_artifact",
+                    return_value="art_fake" if success else None,
+                ),
+            ):
+                result = runner.invoke(
+                    cli,
+                    argv,
+                    env={"LATTICE_ROOT": str(root)},
+                    catch_exceptions=False,
+                )
+            assert result.exit_code == 0, result.output
+            events = [
+                json.loads(line)
+                for line in (root / LATTICE_DIR / "events" / f"{task_id}.jsonl")
+                .read_text()
+                .splitlines()
+            ]
+            assert not [event for event in events if event["type"] == "auto_review_errored"]
 
 
 # ---------------------------------------------------------------------------

@@ -213,6 +213,8 @@ the rules are simple:
 
 monitor any in-flight review with `lattice review-status <task>`. logs land at `.lattice/.daemon/auto-{plan,code}-review-<task>.log` (one file per task per gate, overwritten on each new spawn). every spawn appends an `auto_review_spawned` event to the task's event log so the audit trail stays complete.
 
+auto-fired single-mode reviews retry explicit session-limit, rate-limit/429, network, and API/HTTP 5xx failures twice, after 2 and 5 seconds. if all attempts fail, `review-status` reports `Review INFRASTRUCTURE ERROR` with the category, diagnostics, and the exact `lattice plan-review` or `lattice code-review` command to re-fire. the terminal `infrastructure_error` state and one `auto_review_errored` event make the failed execution visible without confusing it with a completed review's PASS/FAIL verdict. manual and non-transient failures are never automatically retried.
+
 opt out for a single transition with `--no-auto-review`:
 
 ```bash
