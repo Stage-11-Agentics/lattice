@@ -751,6 +751,44 @@ class TestSingleReviewFailureObservability:
         assert state["attempt_count"] == 1
         assert state["retry_count"] == 0
 
+    def test_terminal_infrastructure_state_survives_failure_bookkeeping_error(
+        self, lattice_dir, monkeypatch
+    ):
+        monkeypatch.setattr(
+            review_mod,
+            "spawn_one",
+            self._fail_spawn(
+                error="exited with code 1",
+                returncode=1,
+                duration=0.4,
+                stderr="You've hit your session limit; resets tomorrow",
+            ),
+        )
+
+        def _bookkeeping_failure(*args, **kwargs):
+            raise OSError("failures.jsonl is read-only")
+
+        monkeypatch.setattr(review_mod, "_handle_agent_failure", _bookkeeping_failure)
+
+        success, message, text = review_mod.run_single_review(
+            lattice_dir=lattice_dir,
+            task_id="bookkeeping-error",
+            review_type="code-review",
+            prompt_content="review me",
+            actor="agent:test",
+        )
+
+        assert success is False
+        assert text is None
+        assert "failure bookkeeping also failed" in message
+        assert "failures.jsonl is read-only" in message
+        state = review_mod.read_review_state(lattice_dir, "bookkeeping-error")
+        assert state["status"] == "infrastructure_error"
+        assert state["error_kind"] == "session_limit"
+        assert state["error"] == "exited with code 1"
+        assert state["attempt_count"] == 1
+        assert state["retry_count"] == 0
+
     def test_retry_stops_on_later_non_transient_failure(self, lattice_dir, monkeypatch):
         from lattice.core.agent_spawn import SpawnResult
 

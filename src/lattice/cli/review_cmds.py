@@ -16,7 +16,6 @@ from lattice.cli.helpers import (
     common_options,
     load_project_config,
     output_error,
-    read_snapshot,
     read_snapshot_or_exit,
     require_actor,
     require_root,
@@ -38,8 +37,8 @@ from lattice.core.review import (
     resolve_diff,
     write_review_state,
 )
-from lattice.core.tasks import apply_event_to_snapshot
-from lattice.storage.operations import write_task_event
+from lattice.storage.operations import write_task_event_from_latest
+from lattice.storage.readers import read_task_events
 from lattice.templates import load_review_template
 
 
@@ -513,26 +512,30 @@ def review_status(task_id: str, output_json: bool) -> None:
         # No in-flight record. Distinguish: a completed review (artifact exists),
         # a *failed* review whose state was cleared by an older path (surface it
         # from failures.jsonl), or genuinely nothing ever ran.
-        has_artifacts = _check_review_artifacts(lattice_dir, task_id)
-        failure = None if has_artifacts else last_failure_for_task(lattice_dir, task_id)
+        has_artifacts, latest_artifact_at = _review_artifact_history(lattice_dir, task_id)
+        failure = last_failure_for_task(lattice_dir, task_id)
+        raw_failure_at = failure.get("timestamp") if failure else None
+        failure_at = _parse_review_timestamp(raw_failure_at)
+        failure_is_latest = bool(failure) and (
+            not has_artifacts
+            or latest_artifact_at is None
+            or failure_at is None
+            or failure_at >= latest_artifact_at
+        )
         if is_json:
             data: dict[str, Any] = {"task_id": task_id, "status": "none"}
-            if has_artifacts:
-                data["note"] = "Review artifacts exist — review may have already completed."
-            elif failure:
+            if failure_is_latest:
                 data["status"] = (
                     "infrastructure_error"
                     if failure.get("failure_kind") == "infrastructure_error"
                     else "failed"
                 )
                 data["last_failure"] = failure
+            elif has_artifacts:
+                data["note"] = "Review artifacts exist — review may have already completed."
             click.echo(json.dumps({"ok": True, "data": data}, indent=2))
         else:
-            if has_artifacts:
-                click.echo(
-                    f"No in-flight review for {task_id}. Review artifacts exist — review may have already completed."
-                )
-            elif failure:
+            if failure_is_latest:
                 if failure.get("failure_kind") == "infrastructure_error":
                     _echo_review_infrastructure_error(task_id, failure, source="failures.jsonl")
                 else:
@@ -546,6 +549,10 @@ def review_status(task_id: str, output_json: bool) -> None:
                         source="failures.jsonl",
                         review_type=failure.get("review_type"),
                     )
+            elif has_artifacts:
+                click.echo(
+                    f"No in-flight review for {task_id}. Review artifacts exist — review may have already completed."
+                )
             else:
                 click.echo(
                     f"No in-flight review found for {task_id}. No review artifacts found either."
@@ -729,15 +736,10 @@ def _write_auto_review_errored_event(
         triggered_by=triggered_by,
         reason="auto-fired review exhausted transient infrastructure retries",
     )
-    snapshot = read_snapshot(lattice_dir, task_id)
-    if snapshot is None:
-        raise RuntimeError(f"Task {task_id} disappeared before audit event write")
-    updated = apply_event_to_snapshot(snapshot, event)
-    write_task_event(
+    write_task_event_from_latest(
         lattice_dir,
         task_id,
         [event],
-        updated,
         load_project_config(lattice_dir),
     )
 
@@ -964,19 +966,51 @@ def _compute_elapsed_str(
     return f"{seconds}s"
 
 
-def _check_review_artifacts(lattice_dir: Path, task_id: str) -> bool:
-    """Check if any review artifacts exist for a task."""
+def _parse_review_timestamp(value: Any) -> datetime | None:
+    """Parse the RFC3339 variants found in events and review failure rows."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
+
+def _review_artifact_history(lattice_dir: Path, task_id: str) -> tuple[bool, datetime | None]:
+    """Return whether review artifacts exist and the latest known timestamp."""
+    found = False
+    latest_at: datetime | None = None
+
+    # Artifact attachment events are the canonical ordering signal for current
+    # boards. Read them before the legacy per-task metadata directory below.
+    for event in read_task_events(lattice_dir, task_id):
+        role = (event.get("data") or {}).get("role", "")
+        if event.get("type") == "artifact_attached" and isinstance(role, str) and "review" in role:
+            found = True
+            timestamp = _parse_review_timestamp(event.get("ts"))
+            if timestamp is not None and (latest_at is None or timestamp > latest_at):
+                latest_at = timestamp
+
     artifacts_dir = lattice_dir / "artifacts" / task_id
     if not artifacts_dir.exists():
-        return False
-    # Check for any files with review-related roles
-    for f in artifacts_dir.iterdir():
-        if f.suffix == ".json":
+        return found, latest_at
+    for path in artifacts_dir.iterdir():
+        if path.suffix == ".json":
             try:
-                meta = json.loads(f.read_text(encoding="utf-8"))
+                meta = json.loads(path.read_text(encoding="utf-8"))
                 role = meta.get("role", "")
-                if "review" in role:
-                    return True
+                if isinstance(role, str) and "review" in role:
+                    found = True
+                    timestamp = _parse_review_timestamp(meta.get("created_at"))
+                    if timestamp is not None and (latest_at is None or timestamp > latest_at):
+                        latest_at = timestamp
             except (json.JSONDecodeError, OSError):
                 continue
-    return False
+    return found, latest_at
+
+
+def _check_review_artifacts(lattice_dir: Path, task_id: str) -> bool:
+    """Check if any review artifacts exist for a task."""
+    found, _latest_at = _review_artifact_history(lattice_dir, task_id)
+    return found

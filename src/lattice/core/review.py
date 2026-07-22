@@ -959,11 +959,12 @@ def run_single_review(
                     "error_kind": error_kind,
                 }
             )
-        _handle_agent_failure(lattice_dir, "claude", task_id, actor_str, detail=detail)
 
         # Leave a durable, observable record instead of clearing it. No review
         # artifact is written on this path, and a later dead-PID claim can
-        # reclaim either terminal status.
+        # reclaim either terminal status. Persist the primary outcome before
+        # fallible failure-history/diagnostic bookkeeping so a secondary I/O
+        # failure cannot turn the review back into an ambiguous dead-PID record.
         state["status"] = "infrastructure_error" if infrastructure_error else "failed"
         state["error"] = result.error or message
         state["finished_at"] = finished_at
@@ -977,6 +978,11 @@ def run_single_review(
         if infrastructure_error:
             state["error_kind"] = error_kind
         write_review_state(lattice_dir, state)
+
+        try:
+            _handle_agent_failure(lattice_dir, "claude", task_id, actor_str, detail=detail)
+        except Exception as exc:  # noqa: BLE001 — preserve and report the primary outcome
+            message = f"{message}; failure bookkeeping also failed: {exc}"
         return False, message, None
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

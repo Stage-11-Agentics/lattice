@@ -42,9 +42,21 @@ _TRANSIENT_PATTERNS: tuple[tuple[str, tuple[re.Pattern[str], ...]], ...] = (
     (
         SESSION_LIMIT,
         (
-            re.compile(r"\bsession\s+(?:or\s+usage\s+)?limit\b"),
-            re.compile(r"\busage\s+limit\b"),
-            re.compile(r"\byou(?:'|’)ve\s+hit\s+your\s+[^.]*\blimit\b"),
+            re.compile(
+                r"\b(?:session|usage)\s+limit\s+(?:has\s+been\s+)?"
+                r"(?:reached|exceeded|exhausted)\b"
+            ),
+            re.compile(
+                r"\b(?:reached|exceeded|exhausted)\s+(?:the\s+|your\s+)?"
+                r"(?:session|usage)\s+limit\b"
+            ),
+            re.compile(r"\byou(?:'|’)ve\s+hit\s+your\s+(?:session|usage)\s+limit\b"),
+            re.compile(r"\b(?:session|usage)\s+limit\b[^.]{0,120}\breset(?:s|ting)?\b"),
+            re.compile(r"\b(?:provider|api|account)\s+(?:session|usage|quota)\s+limit\b"),
+            re.compile(
+                r"\b(?:provider|api|account)(?:\s+usage)?\s+quota\s+"
+                r"(?:reached|exceeded|exhausted)\b"
+            ),
         ),
     ),
     (

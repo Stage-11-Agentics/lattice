@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -53,6 +55,20 @@ def _create_task(runner: CliRunner, root: Path, title: str = "Test task") -> str
 def _write_plan(root: Path, task_id: str, content: str) -> None:
     plan_path = root / LATTICE_DIR / "plans" / f"{task_id}.md"
     plan_path.write_text(content, encoding="utf-8")
+
+
+def _seed_review_artifact(
+    root: Path,
+    task_id: str,
+    *,
+    created_at: str = "2026-07-22T03:00:00Z",
+) -> None:
+    artifacts_dir = root / LATTICE_DIR / "artifacts" / task_id
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    (artifacts_dir / "historical-review.json").write_text(
+        json.dumps({"role": "review", "created_at": created_at}) + "\n",
+        encoding="utf-8",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -233,6 +249,7 @@ class TestReviewStatus:
         root = _make_board(tmp_path)
         runner = CliRunner()
         task_id = _create_task(runner, root)
+        _seed_review_artifact(root, task_id)
         state = {
             "task_id": task_id,
             "mode": "single",
@@ -280,6 +297,7 @@ class TestReviewStatus:
         root = _make_board(tmp_path)
         runner = CliRunner()
         task_id = _create_task(runner, root)
+        _seed_review_artifact(root, task_id)
         failure = {
             "agent": "claude",
             "task_id": task_id,
@@ -315,6 +333,45 @@ class TestReviewStatus:
         data = json.loads(structured.output)["data"]
         assert data["status"] == "infrastructure_error"
         assert data["last_failure"]["error_kind"] == "network"
+
+    def test_newer_review_artifact_takes_precedence_over_old_failure(self, tmp_path):
+        root = _make_board(tmp_path)
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+        _seed_review_artifact(root, task_id, created_at="2026-07-22T05:00:00Z")
+        failure = {
+            "agent": "claude",
+            "task_id": task_id,
+            "timestamp": "2026-07-22T04:00:00Z",
+            "failure_kind": "infrastructure_error",
+            "error_kind": "network",
+            "error": "connection reset by peer",
+            "review_type": "code-review",
+            "attempt_count": 1,
+            "retry_count": 0,
+        }
+        failures_path = root / LATTICE_DIR / "review_state" / "failures.jsonl"
+        failures_path.parent.mkdir(exist_ok=True)
+        failures_path.write_text(json.dumps(failure) + "\n", encoding="utf-8")
+
+        human = runner.invoke(
+            cli,
+            ["review-status", task_id],
+            env={"LATTICE_ROOT": str(root)},
+            catch_exceptions=False,
+        )
+        assert "Review artifacts exist" in human.output
+        assert "INFRASTRUCTURE ERROR" not in human.output
+
+        structured = runner.invoke(
+            cli,
+            ["review-status", task_id, "--json"],
+            env={"LATTICE_ROOT": str(root)},
+            catch_exceptions=False,
+        )
+        data = json.loads(structured.output)["data"]
+        assert data["status"] == "none"
+        assert "Review artifacts exist" in data["note"]
 
 
 # ---------------------------------------------------------------------------
@@ -618,6 +675,139 @@ class TestPlanReviewSingle:
         snapshot = json.loads((root / LATTICE_DIR / "tasks" / f"{task_id}.json").read_text())
         assert snapshot["status"] == "backlog"
         assert snapshot["last_event_id"] == event["id"]
+
+    def test_failure_bookkeeping_error_keeps_infrastructure_status_observable(self, tmp_path):
+        from lattice.core.agent_spawn import SpawnResult
+
+        root = _make_board(tmp_path, {"plan_review_mode": "single"})
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+        _write_plan(root, task_id, "## Plan\nImplement the fix.")
+
+        failure = SpawnResult(
+            agent="claude",
+            success=False,
+            output_text="",
+            error="exited with code 1",
+            backend="headless",
+            duration_seconds=0.4,
+            returncode=1,
+            stderr_tail="You've hit your session limit; resets tomorrow",
+        )
+        with (
+            patch("lattice.core.review.spawn_one", return_value=failure),
+            patch(
+                "lattice.core.review._handle_agent_failure",
+                side_effect=OSError("failures.jsonl is read-only"),
+            ),
+        ):
+            result = runner.invoke(
+                cli,
+                ["plan-review", task_id, "--mode", "single", "--actor", "agent:test"],
+                env={"LATTICE_ROOT": str(root)},
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "failure bookkeeping also failed" in result.output
+        assert "failures.jsonl is read-only" in result.output
+
+        status = runner.invoke(
+            cli,
+            ["review-status", task_id],
+            env={"LATTICE_ROOT": str(root)},
+            catch_exceptions=False,
+        )
+        assert status.exit_code == 0
+        assert "Review INFRASTRUCTURE ERROR" in status.output
+        assert "session_limit" in status.output
+        assert f"lattice plan-review {task_id}" in status.output
+
+    def test_auto_review_error_audit_applies_to_latest_locked_snapshot(self, tmp_path):
+        from lattice.cli.review_cmds import _write_auto_review_errored_event
+        from lattice.core.events import create_event, serialize_event
+        from lattice.core.tasks import apply_event_to_snapshot, serialize_snapshot
+        from lattice.storage.fs import atomic_write, jsonl_append
+        from lattice.storage.locks import multi_lock as real_multi_lock
+
+        root = _make_board(tmp_path)
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+        lattice_dir = root / LATTICE_DIR
+        lock_keys = [f"events_{task_id}", f"tasks_{task_id}"]
+        audit_waiting = threading.Event()
+
+        @contextmanager
+        def _signaled_multi_lock(locks_dir, keys, timeout=10):
+            audit_waiting.set()
+            with real_multi_lock(locks_dir, keys, timeout=timeout):
+                yield
+
+        state = {
+            "task_id": task_id,
+            "mode": "single",
+            "review_type": "code-review",
+            "status": "infrastructure_error",
+            "error_kind": "network",
+            "error": "connection reset by peer",
+            "started_at": "2026-07-22T04:00:00Z",
+            "finished_at": "2026-07-22T04:00:07Z",
+            "attempt_count": 3,
+            "retry_count": 2,
+            "detail": {"returncode": 1, "stderr_tail": "connection reset by peer"},
+        }
+        errors = []
+
+        def _audit_writer():
+            try:
+                _write_auto_review_errored_event(
+                    lattice_dir=lattice_dir,
+                    task_id=task_id,
+                    state=state,
+                    triggered_by="ev_status_123",
+                )
+            except Exception as exc:  # pragma: no cover - asserted below
+                errors.append(exc)
+
+        with (
+            patch("lattice.storage.operations.multi_lock", _signaled_multi_lock),
+            real_multi_lock(lattice_dir / "locks", lock_keys),
+        ):
+            writer = threading.Thread(target=_audit_writer)
+            writer.start()
+            assert audit_waiting.wait(timeout=2)
+
+            snapshot_path = lattice_dir / "tasks" / f"{task_id}.json"
+            snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+            comment = create_event(
+                type="comment_added",
+                task_id=task_id,
+                actor="agent:concurrent",
+                data={"body": "Concurrent mutation survives audit write."},
+            )
+            updated = apply_event_to_snapshot(snapshot, comment)
+            jsonl_append(
+                lattice_dir / "events" / f"{task_id}.jsonl",
+                serialize_event(comment),
+            )
+            atomic_write(snapshot_path, serialize_snapshot(updated))
+
+        writer.join(timeout=2)
+        assert not writer.is_alive()
+        assert errors == []
+
+        live = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        assert live["comment_count"] == 1
+        events = [
+            json.loads(line)
+            for line in (lattice_dir / "events" / f"{task_id}.jsonl").read_text().splitlines()
+        ]
+        rebuilt = None
+        for event in events:
+            rebuilt = apply_event_to_snapshot(rebuilt, event)
+        assert rebuilt == live
+        assert events[-2]["id"] == comment["id"]
+        assert events[-1]["type"] == "auto_review_errored"
 
     def test_non_terminal_paths_do_not_write_auto_review_error_event(self, tmp_path):
         root = _make_board(tmp_path, {"plan_review_mode": "single"})
