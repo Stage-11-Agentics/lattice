@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import contextlib
+import json
 from collections.abc import Generator
 from pathlib import Path
 
 from lattice.core.events import LIFECYCLE_EVENT_TYPES, serialize_event
-from lattice.core.tasks import serialize_snapshot
+from lattice.core.tasks import apply_event_to_snapshot, serialize_snapshot
 from lattice.storage.fs import atomic_write, jsonl_append
 from lattice.storage.hooks import execute_hooks
 from lattice.storage.locks import lattice_lock, multi_lock
@@ -127,6 +128,56 @@ def write_task_event(
     if config:
         for event in events:
             execute_hooks(config, lattice_dir, task_id, event)
+
+
+def write_task_event_from_latest(
+    lattice_dir: Path,
+    task_id: str,
+    events: list[dict],
+    config: dict | None = None,
+) -> dict:
+    """Apply events to the latest task snapshot while holding the write locks.
+
+    Use this path when the caller cannot safely materialize a snapshot before
+    lock acquisition (for example, a detached audit writer racing normal task
+    mutations). The operation reads the current snapshot, applies each event,
+    appends the authoritative event log first, and then atomically writes the
+    resulting snapshot under the same deterministic lock set.
+
+    Returns the materialized snapshot written to disk.
+    """
+    locks_dir = lattice_dir / "locks"
+    lifecycle_events = [event for event in events if event["type"] in LIFECYCLE_EVENT_TYPES]
+    lock_keys = [f"events_{task_id}", f"tasks_{task_id}"]
+    if lifecycle_events:
+        lock_keys.append("events__lifecycle")
+
+    with multi_lock(locks_dir, lock_keys):
+        snapshot_path = lattice_dir / "tasks" / f"{task_id}.json"
+        try:
+            snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Task snapshot not found: {task_id}") from None
+
+        for event in events:
+            snapshot = apply_event_to_snapshot(snapshot, event)
+
+        event_path = lattice_dir / "events" / f"{task_id}.jsonl"
+        for event in events:
+            jsonl_append(event_path, serialize_event(event))
+
+        if lifecycle_events:
+            lifecycle_path = lattice_dir / "events" / "_lifecycle.jsonl"
+            for event in lifecycle_events:
+                jsonl_append(lifecycle_path, serialize_event(event))
+
+        atomic_write(snapshot_path, serialize_snapshot(snapshot))
+
+    if config:
+        for event in events:
+            execute_hooks(config, lattice_dir, task_id, event)
+
+    return snapshot
 
 
 @contextlib.contextmanager

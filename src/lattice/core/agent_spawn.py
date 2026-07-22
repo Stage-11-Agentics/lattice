@@ -27,7 +27,7 @@ import threading
 import time
 import uuid
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, MutableMapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -38,6 +38,54 @@ SENTINEL_SUFFIX = ".done"
 DEFAULT_POLL_INTERVAL_S = 0.5
 
 ProgressCallback = Callable[[str, str], None]
+
+
+# ---------------------------------------------------------------------------
+# Host-session environment hygiene
+# ---------------------------------------------------------------------------
+
+#: Environment variables that must NOT leak from the firing session into a
+#: headless agent we spawn. ``CLAUDECODE`` makes a child ``claude`` think it is
+#: nested inside another Claude Code session. The ``C11_*`` / ``CMUX_*``
+#: identity vars are worse: a c11/cmux surface injects a session-start
+#: instruction telling a fresh Claude to rename "its" tab as its first action —
+#: so a child that inherited the PARENT surface's identity renames the parent's
+#: tab (a headless reviewer clobbering the operator's orchestrator tab). We
+#: strip all of them at every leaf headless spawn so the child is a clean,
+#: identity-less process. ``CLAUDECODE`` stays first to preserve the exact
+#: behavior the code already had.
+HOST_SESSION_ENV_VARS: tuple[str, ...] = (
+    "CLAUDECODE",
+    "C11_SURFACE_ID",
+    "C11_TAB_ID",
+    "C11_WORKSPACE_ID",
+    "C11_SHELL_INTEGRATION",
+    "C11_SOCKET_PATH",
+    "CMUX_SURFACE_ID",
+    "CMUX_TAB_ID",
+    "CMUX_WORKSPACE_ID",
+    "CMUX_SHELL_INTEGRATION",
+    "CMUX_SOCKET_PATH",
+)
+
+
+def scrub_host_session_env(env: MutableMapping[str, str]) -> None:
+    """Remove host-session identity vars from ``env`` in place.
+
+    Call this on the env of any headless ``claude`` / ``codex`` / ``gemini``
+    spawn so the child does not inherit the firing session's c11/cmux identity
+    (which would make it rename the parent's tab) or ``CLAUDECODE`` (false
+    nesting). Idempotent; missing vars are ignored. Mutates the mapping the
+    caller passes to ``subprocess`` — never touches the live ``os.environ``.
+    """
+    for var in HOST_SESSION_ENV_VARS:
+        env.pop(var, None)
+
+
+#: ``env -u`` flags that strip :data:`HOST_SESSION_ENV_VARS`, for use as a
+#: belt-and-suspenders prefix on a shell command whose env we cannot otherwise
+#: guarantee is scrubbed. Built from the same list so it can never drift.
+_HOST_SESSION_ENV_UNSET = " ".join(f"-u {name}" for name in HOST_SESSION_ENV_VARS)
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +164,10 @@ def _agent_cli_command(agent_type: str, prompt_file: str, output_file: str) -> s
     """
     instruction = f"Read {prompt_file} and follow the instructions. Write output to {output_file}"
     if agent_type == "claude":
-        return f'env -u CLAUDECODE claude --dangerously-skip-permissions -p "{instruction}"'
+        return (
+            f"env {_HOST_SESSION_ENV_UNSET} "
+            f'claude --dangerously-skip-permissions -p "{instruction}"'
+        )
     if agent_type == "codex":
         return f'codex exec --full-auto --skip-git-repo-check "{instruction}"'
     if agent_type == "gemini":

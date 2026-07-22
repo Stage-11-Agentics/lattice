@@ -51,6 +51,7 @@ class TestBuiltinEventTypes:
             "resource_expired",
             "resource_updated",
             "auto_review_spawned",
+            "auto_review_errored",
             "needs_human_flagged",
             "needs_human_cleared",
         }
@@ -63,11 +64,12 @@ class TestBuiltinEventTypes:
         assert isinstance(BUILTIN_EVENT_TYPES, frozenset)
 
     def test_count(self) -> None:
-        assert len(BUILTIN_EVENT_TYPES) == 29
+        assert len(BUILTIN_EVENT_TYPES) == 30
 
     def test_auto_review_spawned_is_not_lifecycle(self) -> None:
         # ``auto_review_spawned`` is a per-task event, not a lifecycle one.
         assert "auto_review_spawned" not in LIFECYCLE_EVENT_TYPES
+        assert "auto_review_errored" not in LIFECYCLE_EVENT_TYPES
 
 
 # ---------------------------------------------------------------------------

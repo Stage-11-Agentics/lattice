@@ -22,6 +22,8 @@ from lattice.cli.helpers import (
     resolve_task_id,
 )
 from lattice.cli.main import cli
+from lattice.core.auto_review import AUTO_REVIEW_ACTOR
+from lattice.core.events import create_event
 from lattice.core.review import (
     DEFAULT_MAX_DIFF_LINES,
     cap_diff,
@@ -35,6 +37,8 @@ from lattice.core.review import (
     resolve_diff,
     write_review_state,
 )
+from lattice.storage.operations import write_task_event_from_latest
+from lattice.storage.readers import read_task_events
 from lattice.templates import load_review_template
 
 
@@ -275,6 +279,7 @@ def code_review(
             model=model,
             session=session,
             timeout=timeout,
+            triggered_by=triggered_by,
         )
 
     elif mode == "triple":
@@ -405,6 +410,7 @@ def plan_review(
             model=model,
             session=session,
             timeout=timeout,
+            triggered_by=triggered_by,
         )
         if art_id and plan_approval == "human":
             _flag_needs_human(lattice_dir, task_id, actor, is_json)
@@ -440,6 +446,7 @@ def _echo_review_failure(
     stderr_tail: str | None = None,
     when: str | None = None,
     source: str | None = None,
+    review_type: str | None = None,
 ) -> None:
     """Print a clear, diagnosable FAILED report for a review."""
     header = f"Review FAILED for {task_id}"
@@ -455,7 +462,39 @@ def _echo_review_failure(
         click.echo(f"  duration:     {duration}s")
     if stderr_tail:
         click.echo(f"  stderr tail:  {stderr_tail}")
-    click.echo(f"  Re-run with:  lattice code-review {task_id}")
+    click.echo(f"  Re-run with:  {_review_refire_command(task_id, review_type)}")
+
+
+def _review_refire_command(task_id: str, review_type: str | None) -> str:
+    command = "plan-review" if review_type == "plan-review" else "code-review"
+    return f"lattice {command} {task_id}"
+
+
+def _echo_review_infrastructure_error(
+    task_id: str,
+    record: dict[str, Any],
+    *,
+    source: str,
+) -> None:
+    """Print a distinct terminal infrastructure-error report."""
+    detail = record.get("detail") or record
+    when = record.get("finished_at") or record.get("timestamp")
+    header = f"Review INFRASTRUCTURE ERROR for {task_id}"
+    if when:
+        header += f" (at {when})"
+    click.echo(header)
+    click.echo(f"  source:       {source}")
+    click.echo(f"  category:     {record.get('error_kind') or '(unknown)'}")
+    click.echo(f"  error:        {record.get('error') or '(none recorded)'}")
+    click.echo(f"  attempts:     {record.get('attempt_count', '?')}")
+    click.echo(f"  retries:      {record.get('retry_count', '?')}")
+    if detail.get("returncode") is not None:
+        click.echo(f"  returncode:   {detail['returncode']}")
+    if detail.get("duration_seconds") is not None:
+        click.echo(f"  duration:     {detail['duration_seconds']}s")
+    if detail.get("stderr_tail"):
+        click.echo(f"  stderr tail:  {detail['stderr_tail']}")
+    click.echo(f"  Re-run with:  {_review_refire_command(task_id, record.get('review_type'))}")
 
 
 @cli.command("review-status")
@@ -473,35 +512,58 @@ def review_status(task_id: str, output_json: bool) -> None:
         # No in-flight record. Distinguish: a completed review (artifact exists),
         # a *failed* review whose state was cleared by an older path (surface it
         # from failures.jsonl), or genuinely nothing ever ran.
-        has_artifacts = _check_review_artifacts(lattice_dir, task_id)
-        failure = None if has_artifacts else last_failure_for_task(lattice_dir, task_id)
+        has_artifacts, latest_artifact_at = _review_artifact_history(lattice_dir, task_id)
+        failure = last_failure_for_task(lattice_dir, task_id)
+        raw_failure_at = failure.get("timestamp") if failure else None
+        failure_at = _parse_review_timestamp(raw_failure_at)
+        failure_is_latest = bool(failure) and (
+            not has_artifacts
+            or latest_artifact_at is None
+            or failure_at is None
+            or failure_at >= latest_artifact_at
+        )
         if is_json:
             data: dict[str, Any] = {"task_id": task_id, "status": "none"}
-            if has_artifacts:
-                data["note"] = "Review artifacts exist — review may have already completed."
-            elif failure:
-                data["status"] = "failed"
+            if failure_is_latest:
+                data["status"] = (
+                    "infrastructure_error"
+                    if failure.get("failure_kind") == "infrastructure_error"
+                    else "failed"
+                )
                 data["last_failure"] = failure
+            elif has_artifacts:
+                data["note"] = "Review artifacts exist — review may have already completed."
             click.echo(json.dumps({"ok": True, "data": data}, indent=2))
         else:
-            if has_artifacts:
+            if failure_is_latest:
+                if failure.get("failure_kind") == "infrastructure_error":
+                    _echo_review_infrastructure_error(task_id, failure, source="failures.jsonl")
+                else:
+                    _echo_review_failure(
+                        task_id,
+                        error=failure.get("error"),
+                        returncode=failure.get("returncode"),
+                        duration=failure.get("duration_seconds"),
+                        stderr_tail=failure.get("stderr_tail"),
+                        when=failure.get("timestamp"),
+                        source="failures.jsonl",
+                        review_type=failure.get("review_type"),
+                    )
+            elif has_artifacts:
                 click.echo(
                     f"No in-flight review for {task_id}. Review artifacts exist — review may have already completed."
-                )
-            elif failure:
-                _echo_review_failure(
-                    task_id,
-                    error=failure.get("error"),
-                    returncode=failure.get("returncode"),
-                    duration=failure.get("duration_seconds"),
-                    stderr_tail=failure.get("stderr_tail"),
-                    when=failure.get("timestamp"),
-                    source="failures.jsonl",
                 )
             else:
                 click.echo(
                     f"No in-flight review found for {task_id}. No review artifacts found either."
                 )
+        return
+
+    if state.get("status") == "infrastructure_error":
+        if is_json:
+            click.echo(json.dumps({"ok": True, "data": state}, indent=2))
+        else:
+            _echo_review_infrastructure_error(task_id, state, source="in-flight review record")
         return
 
     # A durable 'failed' record (LAT-243): a review ran and failed. Surface it
@@ -519,6 +581,7 @@ def review_status(task_id: str, output_json: bool) -> None:
                 stderr_tail=detail.get("stderr_tail"),
                 when=state.get("finished_at"),
                 source="in-flight review record",
+                review_type=state.get("review_type"),
             )
         return
 
@@ -580,6 +643,7 @@ def _run_single_and_store(
     model: str | None,
     session: str | None,
     timeout: int = 600,
+    triggered_by: str | None = None,
 ) -> str | None:
     """Run single-agent review, store artifact, print result. Returns artifact ID or None."""
     click.echo(f"Running {review_type} (single mode)...")
@@ -591,10 +655,25 @@ def _run_single_and_store(
         prompt_content=prompt,
         actor=actor,
         timeout=timeout,
+        auto_retry=triggered_by is not None,
     )
 
     if not success:
         click.echo(f"Review failed: {message}", err=True)
+        state = read_review_state(lattice_dir, task_id)
+        if triggered_by is not None and state and state.get("status") == "infrastructure_error":
+            try:
+                _write_auto_review_errored_event(
+                    lattice_dir=lattice_dir,
+                    task_id=task_id,
+                    state=state,
+                    triggered_by=triggered_by,
+                )
+            except Exception as exc:  # noqa: BLE001 — state is already durable
+                click.echo(
+                    f"Note: could not record auto_review_errored audit event: {exc}",
+                    err=True,
+                )
         cleanup_temp_files(task_id)
         return None
 
@@ -622,6 +701,47 @@ def _run_single_and_store(
             click.echo(f"Review stored as artifact {art_id} (role={role}).")
 
     return art_id
+
+
+def _write_auto_review_errored_event(
+    *,
+    lattice_dir: Path,
+    task_id: str,
+    state: dict[str, Any],
+    triggered_by: str,
+) -> None:
+    """Append the terminal audit event for an auto-fired infrastructure error."""
+    detail = state.get("detail") or {}
+    data: dict[str, Any] = {
+        "review_type": state.get("review_type"),
+        "mode": state.get("mode"),
+        "error_kind": state.get("error_kind"),
+        "error": state.get("error"),
+        "attempt_count": state.get("attempt_count"),
+        "retry_count": state.get("retry_count"),
+        "started_at": state.get("started_at"),
+        "finished_at": state.get("finished_at"),
+        "trigger_status_event_id": triggered_by,
+    }
+    if detail.get("returncode") is not None:
+        data["returncode"] = detail["returncode"]
+    if detail.get("stderr_tail"):
+        data["stderr_tail"] = detail["stderr_tail"]
+
+    event = create_event(
+        type="auto_review_errored",
+        task_id=task_id,
+        actor=AUTO_REVIEW_ACTOR,
+        data=data,
+        triggered_by=triggered_by,
+        reason="auto-fired review exhausted transient infrastructure retries",
+    )
+    write_task_event_from_latest(
+        lattice_dir,
+        task_id,
+        [event],
+        load_project_config(lattice_dir),
+    )
 
 
 def _spawn_triple_pane(
@@ -846,19 +966,51 @@ def _compute_elapsed_str(
     return f"{seconds}s"
 
 
-def _check_review_artifacts(lattice_dir: Path, task_id: str) -> bool:
-    """Check if any review artifacts exist for a task."""
+def _parse_review_timestamp(value: Any) -> datetime | None:
+    """Parse the RFC3339 variants found in events and review failure rows."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
+
+def _review_artifact_history(lattice_dir: Path, task_id: str) -> tuple[bool, datetime | None]:
+    """Return whether review artifacts exist and the latest known timestamp."""
+    found = False
+    latest_at: datetime | None = None
+
+    # Artifact attachment events are the canonical ordering signal for current
+    # boards. Read them before the legacy per-task metadata directory below.
+    for event in read_task_events(lattice_dir, task_id):
+        role = (event.get("data") or {}).get("role", "")
+        if event.get("type") == "artifact_attached" and isinstance(role, str) and "review" in role:
+            found = True
+            timestamp = _parse_review_timestamp(event.get("ts"))
+            if timestamp is not None and (latest_at is None or timestamp > latest_at):
+                latest_at = timestamp
+
     artifacts_dir = lattice_dir / "artifacts" / task_id
     if not artifacts_dir.exists():
-        return False
-    # Check for any files with review-related roles
-    for f in artifacts_dir.iterdir():
-        if f.suffix == ".json":
+        return found, latest_at
+    for path in artifacts_dir.iterdir():
+        if path.suffix == ".json":
             try:
-                meta = json.loads(f.read_text(encoding="utf-8"))
+                meta = json.loads(path.read_text(encoding="utf-8"))
                 role = meta.get("role", "")
-                if "review" in role:
-                    return True
+                if isinstance(role, str) and "review" in role:
+                    found = True
+                    timestamp = _parse_review_timestamp(meta.get("created_at"))
+                    if timestamp is not None and (latest_at is None or timestamp > latest_at):
+                        latest_at = timestamp
             except (json.JSONDecodeError, OSError):
                 continue
-    return False
+    return found, latest_at
+
+
+def _check_review_artifacts(lattice_dir: Path, task_id: str) -> bool:
+    """Check if any review artifacts exist for a task."""
+    found, _latest_at = _review_artifact_history(lattice_dir, task_id)
+    return found

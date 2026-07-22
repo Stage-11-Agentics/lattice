@@ -605,6 +605,245 @@ class TestSingleReviewFailureObservability:
         assert latest["error"] == "second"  # most recent match wins
         assert latest["task_id"] == "tX"
 
+    def test_auto_fired_transient_retries_then_succeeds(self, lattice_dir, monkeypatch):
+        from lattice.core.agent_spawn import SpawnResult
+
+        results = iter(
+            [
+                SpawnResult(
+                    agent="claude",
+                    success=False,
+                    output_text="",
+                    error="exited with code 1",
+                    backend="headless",
+                    duration_seconds=0.2,
+                    returncode=1,
+                    stderr_tail="HTTP 503 Service Unavailable",
+                ),
+                SpawnResult(
+                    agent="claude",
+                    success=False,
+                    output_text="",
+                    error="connection reset by peer",
+                    backend="headless",
+                    duration_seconds=0.3,
+                    returncode=1,
+                ),
+                SpawnResult(
+                    agent="claude",
+                    success=True,
+                    output_text="### 1. Verdict\nPASS",
+                    error="",
+                    backend="headless",
+                    duration_seconds=0.4,
+                ),
+            ]
+        )
+        prompt_paths = []
+
+        def _spawn(request, **kwargs):
+            prompt_paths.append(request.prompt_file)
+            return next(results)
+
+        sleeps = []
+
+        def _sleep(delay):
+            sleeps.append(delay)
+            state = review_mod.read_review_state(lattice_dir, "retry-success")
+            assert state["agents"][0]["status"] == "retrying"
+
+        monkeypatch.setattr(review_mod, "spawn_one", _spawn)
+        monkeypatch.setattr(review_mod.time, "sleep", _sleep)
+        monkeypatch.setattr(
+            review_mod,
+            "_handle_agent_failure",
+            lambda *args, **kwargs: pytest.fail(
+                "recovered retries must not record persistent failure"
+            ),
+        )
+
+        success, message, text = review_mod.run_single_review(
+            lattice_dir=lattice_dir,
+            task_id="retry-success",
+            review_type="code-review",
+            prompt_content="review me",
+            actor="agent:test",
+            timeout=5,
+            auto_retry=True,
+        )
+
+        assert success is True
+        assert message == "Review complete."
+        assert text == "### 1. Verdict\nPASS"
+        assert sleeps == [2, 5]
+        assert len(prompt_paths) == 3
+        assert len({str(path.parent.parent) for path in prompt_paths}) == 3
+        assert review_mod.read_review_state(lattice_dir, "retry-success") is None
+        assert not (lattice_dir / "review_state" / "failures.jsonl").exists()
+
+    def test_auto_fired_transient_exhaustion_is_distinct(self, lattice_dir, monkeypatch):
+        calls = 0
+
+        def _spawn(request, **kwargs):
+            nonlocal calls
+            calls += 1
+            return self._fail_spawn(
+                error="exited with code 1",
+                returncode=1,
+                duration=0.4,
+                stderr="You've hit your session limit · resets 4am (America/New_York)",
+            )(request, **kwargs)
+
+        sleeps = []
+        monkeypatch.setattr(review_mod, "spawn_one", _spawn)
+        monkeypatch.setattr(review_mod.time, "sleep", sleeps.append)
+
+        success, _message, text = review_mod.run_single_review(
+            lattice_dir=lattice_dir,
+            task_id="retry-exhausted",
+            review_type="plan-review",
+            prompt_content="review me",
+            actor="agent:test",
+            timeout=5,
+            auto_retry=True,
+        )
+
+        assert success is False
+        assert text is None
+        assert calls == 3
+        assert sleeps == [2, 5]
+        state = review_mod.read_review_state(lattice_dir, "retry-exhausted")
+        assert state["status"] == "infrastructure_error"
+        assert state["error_kind"] == "session_limit"
+        assert state["attempt_count"] == 3
+        assert state["retry_count"] == 2
+        assert [row["attempt"] for row in state["attempts"]] == [1, 2, 3]
+        assert all(row["status"] == "infrastructure_error" for row in state["attempts"])
+        failure = json.loads((lattice_dir / "review_state" / "failures.jsonl").read_text().strip())
+        assert failure["failure_kind"] == "infrastructure_error"
+        assert failure["error_kind"] == "session_limit"
+        assert failure["attempt_count"] == 3
+        assert failure["retry_count"] == 2
+
+    def test_manual_transient_is_classified_without_retry(self, lattice_dir, monkeypatch):
+        calls = 0
+
+        def _spawn(request, **kwargs):
+            nonlocal calls
+            calls += 1
+            return self._fail_spawn(error="HTTP 429", stderr="too many requests")(
+                request, **kwargs
+            )
+
+        monkeypatch.setattr(review_mod, "spawn_one", _spawn)
+
+        review_mod.run_single_review(
+            lattice_dir=lattice_dir,
+            task_id="manual-transient",
+            review_type="code-review",
+            prompt_content="review me",
+            actor="agent:test",
+        )
+
+        state = review_mod.read_review_state(lattice_dir, "manual-transient")
+        assert calls == 1
+        assert state["status"] == "infrastructure_error"
+        assert state["attempt_count"] == 1
+        assert state["retry_count"] == 0
+
+    def test_terminal_infrastructure_state_survives_failure_bookkeeping_error(
+        self, lattice_dir, monkeypatch
+    ):
+        monkeypatch.setattr(
+            review_mod,
+            "spawn_one",
+            self._fail_spawn(
+                error="exited with code 1",
+                returncode=1,
+                duration=0.4,
+                stderr="You've hit your session limit; resets tomorrow",
+            ),
+        )
+
+        def _bookkeeping_failure(*args, **kwargs):
+            raise OSError("failures.jsonl is read-only")
+
+        monkeypatch.setattr(review_mod, "_handle_agent_failure", _bookkeeping_failure)
+
+        success, message, text = review_mod.run_single_review(
+            lattice_dir=lattice_dir,
+            task_id="bookkeeping-error",
+            review_type="code-review",
+            prompt_content="review me",
+            actor="agent:test",
+        )
+
+        assert success is False
+        assert text is None
+        assert "failure bookkeeping also failed" in message
+        assert "failures.jsonl is read-only" in message
+        state = review_mod.read_review_state(lattice_dir, "bookkeeping-error")
+        assert state["status"] == "infrastructure_error"
+        assert state["error_kind"] == "session_limit"
+        assert state["error"] == "exited with code 1"
+        assert state["attempt_count"] == 1
+        assert state["retry_count"] == 0
+
+    def test_retry_stops_on_later_non_transient_failure(self, lattice_dir, monkeypatch):
+        from lattice.core.agent_spawn import SpawnResult
+
+        results = iter(
+            [
+                SpawnResult(
+                    agent="claude",
+                    success=False,
+                    output_text="",
+                    error="API 500",
+                    backend="headless",
+                    duration_seconds=0.1,
+                    returncode=1,
+                    stderr_tail="internal server error",
+                ),
+                SpawnResult(
+                    agent="claude",
+                    success=False,
+                    output_text="",
+                    error="authentication failed",
+                    backend="headless",
+                    duration_seconds=0.1,
+                    returncode=1,
+                    stderr_tail="invalid API key",
+                ),
+            ]
+        )
+        calls = 0
+
+        def _spawn(request, **kwargs):
+            nonlocal calls
+            calls += 1
+            return next(results)
+
+        sleeps = []
+        monkeypatch.setattr(review_mod, "spawn_one", _spawn)
+        monkeypatch.setattr(review_mod.time, "sleep", sleeps.append)
+
+        review_mod.run_single_review(
+            lattice_dir=lattice_dir,
+            task_id="mixed-failure",
+            review_type="code-review",
+            prompt_content="review me",
+            actor="agent:test",
+            auto_retry=True,
+        )
+
+        state = review_mod.read_review_state(lattice_dir, "mixed-failure")
+        assert calls == 2
+        assert sleeps == [2]
+        assert state["status"] == "failed"
+        assert state["attempt_count"] == 2
+        failure = json.loads((lattice_dir / "review_state" / "failures.jsonl").read_text().strip())
+        assert "failure_kind" not in failure
+
 
 # ---------------------------------------------------------------------------
 # Triple-mode reviews (LAT-218) — fire-and-forget c11 pane spawn

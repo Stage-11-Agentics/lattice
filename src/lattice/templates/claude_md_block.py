@@ -505,7 +505,8 @@ When a task transitions to {gate_statuses}, `lattice status` automatically spawn
 - **Coordination** lives in `.lattice/review_state/<task_id>.json` (extended with `started_by_pid` and `auto_fired` fields). First-writer-wins.
 - **Logs** at `.lattice/.daemon/auto-{{code,plan}}-review-<task_id>.log`, overwritten per spawn. Header records the spawn timestamp.
 - **Monitor** with `lattice review-status <task_id>` (covers both manual and auto-fired reviews).
-- **Audit** via the `auto_review_spawned` event in the per-task event log.
+- **Transient failures** in auto-fired single mode retry twice (after 2s and 5s). Exhaustion persists `infrastructure_error`; `review-status` shows diagnostics and the correct `lattice {{plan,code}}-review <task_id>` re-fire command. Manual and non-transient failures do not auto-retry.
+- **Audit** via `auto_review_spawned` when the child launches and one `auto_review_errored` event when transient retries are exhausted. Infrastructure errors never create review artifacts or count as PASS/FAIL verdicts.
 - **Per-call opt-out**: `--no-auto-review` on `lattice status`.
 - **Project-wide opt-out**: `auto_code_review_on_transition: false` and/or `auto_plan_review_on_transition: false`.
 """)

@@ -6,7 +6,9 @@ import pytest
 
 from lattice.core.auto_review import (
     AUTO_REVIEW_ACTOR,
+    AUTO_REVIEW_RETRY_DELAYS,
     DAEMON_DIR_NAME,
+    classify_transient_review_failure,
     format_skip_reason,
     resolve_mode,
     review_type_for_status,
@@ -22,6 +24,53 @@ from lattice.core.auto_review import (
 def test_constants_have_expected_values() -> None:
     assert DAEMON_DIR_NAME == ".daemon"
     assert AUTO_REVIEW_ACTOR == "agent:lattice-auto-review"
+    assert AUTO_REVIEW_RETRY_DELAYS == (2, 5)
+
+
+@pytest.mark.parametrize(
+    ("error", "stderr_tail", "expected"),
+    [
+        (
+            "exited with code 1",
+            "You've hit your session limit · resets 4am (America/New_York)",
+            "session_limit",
+        ),
+        ("usage limit reached; resets tomorrow", "", "session_limit"),
+        ("HTTP 429", "too many requests", "rate_limit"),
+        ("request was rate-limited", "", "rate_limit"),
+        ("connection reset by peer", "", "network"),
+        ("network error", "", "network"),
+        ("ECONNREFUSED", "", "network"),
+        ("spawn failed", "Temporary failure in name resolution", "network"),
+        ("API 503", "", "service_unavailable"),
+        ("provider overloaded", "", "service_unavailable"),
+        # HeadlessBackend uses stdout as stderr_tail when stderr is empty.
+        ("exited with code 1", "HTTP 502 Bad Gateway", "service_unavailable"),
+    ],
+)
+def test_classify_transient_review_failure(error: str, stderr_tail: str, expected: str) -> None:
+    assert classify_transient_review_failure(error, stderr_tail) == expected
+
+
+@pytest.mark.parametrize(
+    ("error", "stderr_tail"),
+    [
+        ("exited with code 1", "arbitrary agent crash"),
+        ("timed out after 600s", ""),
+        ("produced no output", ""),
+        ("authentication failed", "invalid API key"),
+        ("configuration error", "model not found"),
+        ("configuration error", "invalid session limit setting"),
+        ("validation failed", "usage limit must be a positive integer"),
+        ("agent exited", "You've hit your context limit"),
+        ("review failed", "The diff contains 500 lines of ordinary prose"),
+        ("", "PASS: networking code handles service responses"),
+    ],
+)
+def test_classify_transient_review_failure_rejects_nearby_non_transient_text(
+    error: str, stderr_tail: str
+) -> None:
+    assert classify_transient_review_failure(error, stderr_tail) is None
 
 
 # ---------------------------------------------------------------------------

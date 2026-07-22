@@ -22,6 +22,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,10 @@ from lattice.core.agent_spawn import (
     SpawnRequest,
     SpawnResult,
     spawn_one,
+)
+from lattice.core.auto_review import (
+    AUTO_REVIEW_RETRY_DELAYS,
+    classify_transient_review_failure,
 )
 
 
@@ -818,6 +823,7 @@ def run_single_review(
     prompt_content: str,
     actor: str | dict,
     timeout: int = DEFAULT_AGENT_TIMEOUT,
+    auto_retry: bool = False,
 ) -> tuple[bool, str, str | None]:
     """Run a single-agent review via ``agent_spawn.spawn_one``.
 
@@ -843,67 +849,141 @@ def run_single_review(
         "agents": [
             {"name": "claude", "status": "running", "started_at": started_at, "artifact_id": None}
         ],
+        "attempts": [],
     }
     write_review_state(lattice_dir, state)
 
     tmp = _make_prompt_dir(lattice_dir, prefix="review-")
-    agent_dir = tmp / "claude"
-    agent_dir.mkdir()
-    prompt_file = agent_dir / "prompt.md"
-    output_file = agent_dir / "output.md"
-    prompt_file.write_text(prompt_content, encoding="utf-8")
 
     try:
-        request = SpawnRequest(
-            agent="claude",
-            prompt_file=prompt_file,
-            output_file=output_file,
-            label=f"{review_type} :: claude",
-            timeout_seconds=timeout,
-        )
-        result = spawn_one(
-            request,
-            workspace_label=f"{review_type}-{task_id}",
-            backend=HeadlessBackend(),
-        )
+        max_attempts = 1 + (len(AUTO_REVIEW_RETRY_DELAYS) if auto_retry else 0)
+        result: SpawnResult | None = None
+        error_kind: str | None = None
+        finished_at = started_at
 
-        finished_at = _now_iso()
-        state["agents"][0]["status"] = "done" if result.success else "failed"
-        state["agents"][0]["finished_at"] = finished_at
+        for attempt_number in range(1, max_attempts + 1):
+            attempt_started_at = _now_iso()
+            state["agents"][0].update(
+                {
+                    "status": "running",
+                    "started_at": attempt_started_at,
+                    "finished_at": None,
+                }
+            )
+            write_review_state(lattice_dir, state)
+
+            # Per-attempt paths prevent a sentinel or output from a failed
+            # attempt satisfying a later retry.
+            agent_dir = tmp / f"attempt-{attempt_number}" / "claude"
+            agent_dir.mkdir(parents=True)
+            prompt_file = agent_dir / "prompt.md"
+            output_file = agent_dir / "output.md"
+            prompt_file.write_text(prompt_content, encoding="utf-8")
+
+            request = SpawnRequest(
+                agent="claude",
+                prompt_file=prompt_file,
+                output_file=output_file,
+                label=f"{review_type} :: claude (attempt {attempt_number})",
+                timeout_seconds=timeout,
+            )
+            result = spawn_one(
+                request,
+                workspace_label=f"{review_type}-{task_id}",
+                backend=HeadlessBackend(),
+            )
+
+            finished_at = _now_iso()
+            error_kind = (
+                None
+                if result.success
+                else classify_transient_review_failure(result.error, result.stderr_tail)
+            )
+            attempt: dict[str, Any] = {
+                "attempt": attempt_number,
+                "started_at": attempt_started_at,
+                "finished_at": finished_at,
+                "status": (
+                    "succeeded"
+                    if result.success
+                    else "infrastructure_error"
+                    if error_kind
+                    else "failed"
+                ),
+                "returncode": result.returncode,
+                "duration_seconds": round(result.duration_seconds, 1),
+                "stderr_tail": result.stderr_tail,
+            }
+            if error_kind:
+                attempt["error_kind"] = error_kind
+            state["attempts"].append(attempt)
+            state["attempt_count"] = attempt_number
+            state["retry_count"] = attempt_number - 1
+            state["agents"][0]["finished_at"] = finished_at
+
+            if result.success:
+                state["agents"][0]["status"] = "done"
+                write_review_state(lattice_dir, state)
+                clear_review_state(lattice_dir, task_id)
+                return True, "Review complete.", result.output_text
+
+            can_retry = error_kind is not None and attempt_number < max_attempts
+            if not can_retry:
+                state["agents"][0]["status"] = "failed"
+                write_review_state(lattice_dir, state)
+                break
+
+            state["agents"][0]["status"] = "retrying"
+            write_review_state(lattice_dir, state)
+            time.sleep(AUTO_REVIEW_RETRY_DELAYS[attempt_number - 1])
+
+        assert result is not None
+        actor_str = _extract_actor_str(actor)
+        message = _format_legacy_error("claude", result, timeout)
+        infrastructure_error = error_kind is not None
+        detail = {
+            "error": result.error or message,
+            "review_type": review_type,
+            "returncode": result.returncode,
+            "duration_seconds": round(result.duration_seconds, 1),
+            "command": result.command,
+            "prompt_chars": len(prompt_content),
+            "stderr_tail": result.stderr_tail,
+            "attempt_count": len(state["attempts"]),
+            "retry_count": len(state["attempts"]) - 1,
+        }
+        if infrastructure_error:
+            detail.update(
+                {
+                    "failure_kind": "infrastructure_error",
+                    "error_kind": error_kind,
+                }
+            )
+
+        # Leave a durable, observable record instead of clearing it. No review
+        # artifact is written on this path, and a later dead-PID claim can
+        # reclaim either terminal status. Persist the primary outcome before
+        # fallible failure-history/diagnostic bookkeeping so a secondary I/O
+        # failure cannot turn the review back into an ambiguous dead-PID record.
+        state["status"] = "infrastructure_error" if infrastructure_error else "failed"
+        state["error"] = result.error or message
+        state["finished_at"] = finished_at
+        state["attempt_count"] = len(state["attempts"])
+        state["retry_count"] = len(state["attempts"]) - 1
+        state["detail"] = {
+            "returncode": result.returncode,
+            "duration_seconds": round(result.duration_seconds, 1),
+            "stderr_tail": result.stderr_tail,
+        }
+        if infrastructure_error:
+            state["error_kind"] = error_kind
         write_review_state(lattice_dir, state)
 
-        if not result.success:
-            actor_str = _extract_actor_str(actor)
-            message = _format_legacy_error("claude", result, timeout)
-            detail = {
-                "error": result.error or message,
-                "review_type": review_type,
-                "returncode": result.returncode,
-                "duration_seconds": round(result.duration_seconds, 1),
-                "command": result.command,
-                "prompt_chars": len(prompt_content),
-                "stderr_tail": result.stderr_tail,
-            }
+        try:
             _handle_agent_failure(lattice_dir, "claude", task_id, actor_str, detail=detail)
-            # Leave a durable, observable record instead of clearing it: a failed
-            # review must surface in `review-status`, not vanish into "no review
-            # found". We intentionally store NO review artifact — a failed review
-            # must not satisfy the `done` completion gate. A lingering failed
-            # record never blocks the next review: its started_by_pid is the dead
-            # child, so claim_review_state reclaims the slot (dead-PID → stale).
-            state["status"] = "failed"
-            state["error"] = result.error or message
-            state["finished_at"] = finished_at
-            state["detail"] = {
-                "returncode": result.returncode,
-                "duration_seconds": round(result.duration_seconds, 1),
-                "stderr_tail": result.stderr_tail,
-            }
-            write_review_state(lattice_dir, state)
-            return False, message, None
-
-        clear_review_state(lattice_dir, task_id)
-        return True, "Review complete.", result.output_text
+        except Exception as exc:  # noqa: BLE001 — preserve and report the primary outcome
+            message = f"{message}; failure bookkeeping also failed: {exc}"
+        return False, message, None
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

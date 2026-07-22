@@ -10,6 +10,8 @@ the side effects.
 
 from __future__ import annotations
 
+import re
+
 
 # ---------------------------------------------------------------------------
 # Constants shared between the gating helper and the spawn helper
@@ -24,6 +26,94 @@ DAEMON_DIR_NAME = ".daemon"
 #: ``auto_review_spawned`` event.  Distinguishes auto-fired runs from manual
 #: ones in the audit trail.
 AUTO_REVIEW_ACTOR = "agent:lattice-auto-review"
+
+#: Short, bounded retry schedule for transient failures in auto-fired
+#: single-mode reviews.  The initial attempt is immediate; these are the two
+#: delays before attempts two and three.
+AUTO_REVIEW_RETRY_DELAYS: tuple[int, ...] = (2, 5)
+
+#: Stable failure categories persisted in review state and task events.
+SESSION_LIMIT = "session_limit"
+RATE_LIMIT = "rate_limit"
+NETWORK = "network"
+SERVICE_UNAVAILABLE = "service_unavailable"
+
+_TRANSIENT_PATTERNS: tuple[tuple[str, tuple[re.Pattern[str], ...]], ...] = (
+    (
+        SESSION_LIMIT,
+        (
+            re.compile(
+                r"\b(?:session|usage)\s+limit\s+(?:has\s+been\s+)?"
+                r"(?:reached|exceeded|exhausted)\b"
+            ),
+            re.compile(
+                r"\b(?:reached|exceeded|exhausted)\s+(?:the\s+|your\s+)?"
+                r"(?:session|usage)\s+limit\b"
+            ),
+            re.compile(r"\byou(?:'|’)ve\s+hit\s+your\s+(?:session|usage)\s+limit\b"),
+            re.compile(r"\b(?:session|usage)\s+limit\b[^.]{0,120}\breset(?:s|ting)?\b"),
+            re.compile(r"\b(?:provider|api|account)\s+(?:session|usage|quota)\s+limit\b"),
+            re.compile(
+                r"\b(?:provider|api|account)(?:\s+usage)?\s+quota\s+"
+                r"(?:reached|exceeded|exhausted)\b"
+            ),
+        ),
+    ),
+    (
+        RATE_LIMIT,
+        (
+            re.compile(r"\brate[ -]?limit(?:ed|ing)?\b"),
+            re.compile(r"\btoo\s+many\s+requests\b"),
+            re.compile(r"\b(?:http|api|status(?:\s+code)?)\s*[:=]?\s*429\b"),
+        ),
+    ),
+    (
+        NETWORK,
+        (
+            re.compile(r"\bconnection\s+(?:reset|refused|closed|aborted)\b"),
+            re.compile(r"\bconnection\s+timed\s+out\b"),
+            re.compile(r"\bnetwork\s+(?:error|failure)\b"),
+            re.compile(r"\b(?:network|host)\s+(?:is\s+)?unreachable\b"),
+            re.compile(r"\b(?:dns|name)\s+(?:lookup|resolution)\s+(?:failed|failure|error)\b"),
+            re.compile(r"\btemporary\s+failure\s+in\s+name\s+resolution\b"),
+            re.compile(r"\b(?:tls|ssl|socket)\s+(?:error|failure|closed|timeout)\b"),
+            re.compile(r"\b(?:econnreset|econnrefused|enotfound)\b"),
+        ),
+    ),
+    (
+        SERVICE_UNAVAILABLE,
+        (
+            re.compile(r"\boverloaded\b"),
+            re.compile(r"\binternal\s+server\s+error\b"),
+            re.compile(r"\bbad\s+gateway\b"),
+            re.compile(r"\bservice\s+unavailable\b"),
+            re.compile(r"\bgateway\s+timeout\b"),
+            re.compile(r"\b(?:http|api|status(?:\s+code)?)\s*[:=]?\s*(?:500|502|503|504)\b"),
+        ),
+    ),
+)
+
+
+def classify_transient_review_failure(
+    error: str | None,
+    stderr_tail: str | None,
+) -> str | None:
+    """Classify explicit transient review-infrastructure evidence.
+
+    Only the failed spawn's error and bounded stderr tail are considered.
+    ``HeadlessBackend`` already uses stdout as the tail fallback when stderr is
+    empty, so stdout-only provider errors arrive through ``stderr_tail`` too.
+    Return codes alone and generic timeouts are deliberately not classified.
+    """
+    evidence = " ".join(part for part in (error, stderr_tail) if part)
+    normalized = " ".join(evidence.casefold().split())
+    if not normalized:
+        return None
+    for category, patterns in _TRANSIENT_PATTERNS:
+        if any(pattern.search(normalized) for pattern in patterns):
+            return category
+    return None
+
 
 #: Status slugs that gate auto-fire behavior.  Mapping from status to the
 #: review subcommand we'd spawn.
