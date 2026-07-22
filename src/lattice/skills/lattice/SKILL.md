@@ -34,6 +34,15 @@ If there's no existing task, create one:
 lattice create "Fix the login bug" --actor agent:claude-cli --priority high
 ```
 
+### One Review Owner Per Gate Cycle
+
+Use the reviewer auto-fired by the `→ planned`/`→ review` transition or one manually spawned fresh-context reviewer, never both. For a manual owner, put `--no-auto-review` on that status transition before spawning the reviewer:
+
+```bash
+lattice status <task> planned --no-auto-review --actor agent:<id>
+lattice status <task> review --no-auto-review --actor agent:<id>
+```
+
 ### Closing Ritual
 
 **`lattice complete` is THE way to finish work.** It performs the full completion ceremony in one command: posts a review comment, attaches a review artifact, transitions through review to done.
