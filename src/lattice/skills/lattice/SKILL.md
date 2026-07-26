@@ -24,9 +24,14 @@ lattice status <task_id> in_planning --actor agent:claude-cli
 # ... write the plan to .lattice/plans/<task_id>.md ...
 lattice status <task_id> planned --actor agent:claude-cli
 lattice status <task_id> in_progress --actor agent:claude-cli
+
+# 3. Working on a branch or worktree? Link it — BEFORE you reach review.
+lattice branch-link <task_id> <branch> --actor agent:claude-cli
 ```
 
 `lattice next --claim` atomically assigns the highest-priority ready task to you and moves it to `in_progress`. If you already have a task in progress, it returns that one (resume-first logic).
+
+**Link the branch, or review reads the wrong code.** `code-review` resolves its diff from the task's linked branch, then falls back to the HEAD of the checkout holding `.lattice/`. Under one-worktree-per-task that fallback is a *sibling's* branch, so the reviewer silently reviews someone else's diff — this has happened, and the review came back FAIL on an unrelated ticket. `lattice branch-link` is the fix; `code-review --head`/`--worktree` override at review time.
 
 If there's no existing task, create one:
 
