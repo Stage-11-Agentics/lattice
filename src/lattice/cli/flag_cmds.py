@@ -12,6 +12,7 @@ from lattice.cli.helpers import (
     read_snapshot_or_exit,
     require_actor,
     require_root,
+    resolve_body,
     resolve_task_id,
     validate_actor_format_or_exit,
     write_task_event,
@@ -19,6 +20,12 @@ from lattice.cli.helpers import (
 from lattice.cli.main import cli
 from lattice.core.events import create_event, get_actor_display
 from lattice.core.tasks import apply_event_to_snapshot
+
+_REASON_REQUIRED = (
+    "REASON is required when setting the needs_human flag. "
+    "Say exactly what you need from the human, in one line "
+    "(as an argument, or via --file)."
+)
 
 
 def _notify_c11(snapshot: dict, *, flagged: bool) -> None:
@@ -32,12 +39,20 @@ def _notify_c11(snapshot: dict, *, flagged: bool) -> None:
 @cli.command("needs-human")
 @click.argument("task_id")
 @click.argument("reason", required=False)
+@click.option(
+    "--file",
+    "file_path",
+    default=None,
+    type=click.Path(exists=True),
+    help="Read the reason from a file (safe for long prose — no shell interpolation).",
+)
 @click.option("--clear", "clear_flag", is_flag=True, help="Clear the needs_human flag.")
 @click.option("--note", default=None, help="Resolution note recorded when clearing.")
 @common_options
 def needs_human_cmd(
     task_id: str,
     reason: str | None,
+    file_path: str | None,
     clear_flag: bool,
     note: str | None,
     model: str | None,
@@ -57,6 +72,7 @@ def needs_human_cmd(
 
     \b
         lattice needs-human LAT-42 "Need: which OAuth provider?" --actor agent:claude
+        lattice needs-human LAT-42 --file reason.md --actor agent:claude
         lattice needs-human LAT-42 --clear --note "chose google" --actor human:atin
     """
     is_json = output_json
@@ -73,9 +89,9 @@ def needs_human_cmd(
     display_id = snapshot.get("short_id") or task_id
 
     if clear_flag:
-        if reason is not None:
+        if reason is not None or file_path is not None:
             output_error(
-                "REASON is only for setting the flag. To clear, use "
+                "REASON / --file is only for setting the flag. To clear, use "
                 "--clear (optionally with --note).",
                 "VALIDATION_ERROR",
                 is_json,
@@ -116,13 +132,16 @@ def needs_human_cmd(
             "VALIDATION_ERROR",
             is_json,
         )
-    if not reason or not reason.strip():
-        output_error(
-            "REASON is required when setting the needs_human flag. "
-            "Say exactly what you need from the human, in one line.",
-            "VALIDATION_ERROR",
-            is_json,
-        )
+    reason = resolve_body(
+        reason,
+        file_path,
+        is_json,
+        what="the reason",
+        arg_label="REASON",
+        missing_message=_REASON_REQUIRED,
+    ).strip()
+    if not reason:
+        output_error(_REASON_REQUIRED, "VALIDATION_ERROR", is_json)
     if current:
         flagged_by = get_actor_display(current.get("flagged_by"))
         output_error(

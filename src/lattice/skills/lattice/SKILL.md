@@ -49,9 +49,12 @@ lattice status <task> review --no-auto-review --actor agent:<id>
 
 ```bash
 lattice complete <task_id> --review "What was done. Key decisions. Test results. What remains." --actor agent:claude-cli
+lattice complete <task_id> --review-file review.md --actor agent:claude-cli   # multi-paragraph review
 ```
 
 The `--review` text is your breadcrumb for every future agent and human who reads this task. Be specific: files changed, approach taken, edge cases considered, anything left undone.
+
+**Long prose goes in a file, not in quotes.** `--review-file` on `complete`; `--file` on `comment`, `comment-edit`, and `needs-human`. Inside a double-quoted shell argument, backticks and `$(...)` are command substitution — that has silently eaten a clause from one comment and spliced 15 KB of pytest output into another. A file is read byte-for-byte.
 
 **Do not use raw `lattice status ... done` to finish work.** The `complete` command exists because completion requires evidence — a review comment and artifact. Skipping this ceremony leaves the task without an audit trail.
 
@@ -95,8 +98,9 @@ lattice complete PROJ-1 --review "Review text" --actor agent:claude-cli
 # Assign
 lattice assign PROJ-1 agent:claude-cli --actor agent:claude-cli
 
-# Comment
+# Comment (--file for anything long — a quoted arg runs backticks/$() as shell)
 lattice comment PROJ-1 "Found root cause" --actor agent:claude-cli
+lattice comment PROJ-1 --file findings.md --actor agent:claude-cli
 
 # Link
 lattice link PROJ-1 blocks PROJ-2 --actor agent:claude-cli
