@@ -15,6 +15,7 @@ from lattice.cli.helpers import (
     output_result,
     read_snapshot_or_exit,
     require_root,
+    resolve_body,
     resolve_task_id,
     require_actor,
     validate_actor_format_or_exit,
@@ -1142,7 +1143,7 @@ def assign(
     "file_path",
     default=None,
     type=click.Path(exists=True),
-    help="Read comment body from a file.",
+    help="Read comment body from a file (safe for long prose — no shell interpolation).",
 )
 @click.option("--reply-to", default=None, help="Event ID of the comment to reply to.")
 @click.option(
@@ -1168,23 +1169,13 @@ def comment(
     """Add a comment to a task."""
     is_json = output_json
 
-    # Resolve body from text or --file (mutually exclusive, one required)
-    if text is not None and file_path is not None:
-        output_error(
-            "Provide either TEXT or --file, not both.",
-            "VALIDATION_ERROR",
-            is_json,
-        )
-    if text is None and file_path is None:
-        output_error(
-            "Provide comment text as an argument or via --file.",
-            "VALIDATION_ERROR",
-            is_json,
-        )
-    if file_path is not None:
-        from pathlib import Path
-
-        text = Path(file_path).read_text(encoding="utf-8")
+    text = resolve_body(
+        text,
+        file_path,
+        is_json,
+        what="comment text",
+        arg_label="TEXT",
+    )
 
     lattice_dir = require_root(is_json)
     config = load_project_config(lattice_dir)
@@ -1258,13 +1249,21 @@ def comment(
 @cli.command("comment-edit")
 @click.argument("task_id")
 @click.argument("comment_id")
-@click.argument("new_text")
+@click.argument("new_text", required=False, default=None)
+@click.option(
+    "--file",
+    "file_path",
+    default=None,
+    type=click.Path(exists=True),
+    help="Read the new comment body from a file (safe for long prose — no shell interpolation).",
+)
 @click.option("--role", default=None, help="Set or change the comment's role (e.g. review).")
 @common_options
 def comment_edit(
     task_id: str,
     comment_id: str,
-    new_text: str,
+    new_text: str | None,
+    file_path: str | None,
     role: str | None,
     model: str | None,
     session: str | None,
@@ -1276,6 +1275,14 @@ def comment_edit(
 ) -> None:
     """Edit an existing comment on a task."""
     is_json = output_json
+
+    new_text = resolve_body(
+        new_text,
+        file_path,
+        is_json,
+        what="the new comment text",
+        arg_label="NEW_TEXT",
+    )
 
     lattice_dir = require_root(is_json)
     config = load_project_config(lattice_dir)
@@ -1597,11 +1604,19 @@ def _flatten_comments(comments: list[dict]) -> list[dict]:
 
 @cli.command("complete")
 @click.argument("task_id")
-@click.option("--review", "review_text", required=True, help="Review findings text.")
+@click.option("--review", "review_text", default=None, help="Review findings text.")
+@click.option(
+    "--review-file",
+    "review_file",
+    default=None,
+    type=click.Path(exists=True),
+    help="Read review findings from a file (safe for long prose — no shell interpolation).",
+)
 @common_options
 def complete_cmd(
     task_id: str,
-    review_text: str,
+    review_text: str | None,
+    review_file: str | None,
     model: str | None,
     session: str | None,
     output_json: bool,
@@ -1611,6 +1626,9 @@ def complete_cmd(
     provenance_reason: str | None,
 ) -> None:
     """Complete a task with review-to-done ceremony in one command.
+
+    Give the review findings with --review, or --review-file for long prose
+    (a file body is read byte-for-byte, never shell-interpolated).
 
     Emits 4 discrete events (3 if already in review):
     comment_added (role=review), status_changed -> review,
@@ -1632,6 +1650,15 @@ def complete_cmd(
     from lattice.storage.fs import atomic_write, ensure_artifact_dirs
 
     is_json = output_json
+
+    review_text = resolve_body(
+        review_text,
+        review_file,
+        is_json,
+        what="review findings",
+        arg_label="--review",
+        file_label="--review-file",
+    )
 
     lattice_dir = require_root(is_json)
     config = load_project_config(lattice_dir)

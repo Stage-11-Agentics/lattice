@@ -112,6 +112,48 @@ def output_result(
 
 
 # ---------------------------------------------------------------------------
+# Prose bodies: inline argument or --file
+# ---------------------------------------------------------------------------
+
+
+def resolve_body(
+    text: str | None,
+    file_path: str | None,
+    is_json: bool,
+    *,
+    what: str,
+    arg_label: str,
+    file_label: str = "--file",
+    missing_message: str | None = None,
+) -> str:
+    """Resolve a prose body from an inline argument or a file.
+
+    Exactly one of *text* / *file_path* must be given; both or neither exits
+    through ``output_error(..., "VALIDATION_ERROR", ...)``.
+
+    The file path exists so a long body never has to survive a shell: inside a
+    double-quoted argument, backticks and ``$(...)`` are command substitution.
+    That has silently eaten a clause from one comment and spliced 15 KB of
+    pytest output into another (LAT-263). Reading from a file is byte-exact.
+    """
+    if text is not None and file_path is not None:
+        output_error(
+            f"Provide either {arg_label} or {file_label}, not both.",
+            "VALIDATION_ERROR",
+            is_json,
+        )
+    if text is None and file_path is None:
+        output_error(
+            missing_message or f"Provide {what} as {arg_label} or via {file_label}.",
+            "VALIDATION_ERROR",
+            is_json,
+        )
+    if file_path is not None:
+        return Path(file_path).read_text(encoding="utf-8")
+    return text  # type: ignore[return-value]
+
+
+# ---------------------------------------------------------------------------
 # Task ID resolution (short ID -> ULID)
 # ---------------------------------------------------------------------------
 

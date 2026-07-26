@@ -24,9 +24,14 @@ lattice status <task_id> in_planning --actor agent:claude-cli
 # ... write the plan to .lattice/plans/<task_id>.md ...
 lattice status <task_id> planned --actor agent:claude-cli
 lattice status <task_id> in_progress --actor agent:claude-cli
+
+# 3. Working on a branch or worktree? Link it — BEFORE you reach review.
+lattice branch-link <task_id> <branch> --actor agent:claude-cli
 ```
 
 `lattice next --claim` atomically assigns the highest-priority ready task to you and moves it to `in_progress`. If you already have a task in progress, it returns that one (resume-first logic).
+
+**Link the branch, or review reads the wrong code.** `code-review` resolves its diff from the task's linked branch, then falls back to the HEAD of the checkout holding `.lattice/`. Under one-worktree-per-task that fallback is a *sibling's* branch, so the reviewer silently reviews someone else's diff — this has happened, and the review came back FAIL on an unrelated ticket. `lattice branch-link` is the fix; `code-review --head`/`--worktree` override at review time.
 
 If there's no existing task, create one:
 
@@ -49,9 +54,12 @@ lattice status <task> review --no-auto-review --actor agent:<id>
 
 ```bash
 lattice complete <task_id> --review "What was done. Key decisions. Test results. What remains." --actor agent:claude-cli
+lattice complete <task_id> --review-file review.md --actor agent:claude-cli   # multi-paragraph review
 ```
 
 The `--review` text is your breadcrumb for every future agent and human who reads this task. Be specific: files changed, approach taken, edge cases considered, anything left undone.
+
+**Long prose goes in a file, not in quotes.** `--review-file` on `complete`; `--file` on `comment`, `comment-edit`, and `needs-human`. Inside a double-quoted shell argument, backticks and `$(...)` are command substitution — that has silently eaten a clause from one comment and spliced 15 KB of pytest output into another. A file is read byte-for-byte.
 
 **Do not use raw `lattice status ... done` to finish work.** The `complete` command exists because completion requires evidence — a review comment and artifact. Skipping this ceremony leaves the task without an audit trail.
 
@@ -95,8 +103,9 @@ lattice complete PROJ-1 --review "Review text" --actor agent:claude-cli
 # Assign
 lattice assign PROJ-1 agent:claude-cli --actor agent:claude-cli
 
-# Comment
+# Comment (--file for anything long — a quoted arg runs backticks/$() as shell)
 lattice comment PROJ-1 "Found root cause" --actor agent:claude-cli
+lattice comment PROJ-1 --file findings.md --actor agent:claude-cli
 
 # Link
 lattice link PROJ-1 blocks PROJ-2 --actor agent:claude-cli

@@ -219,11 +219,16 @@ class TestCompleteValidation:
         assert parsed["error"]["code"] == "INVALID_TRANSITION"
 
     def test_fails_without_review_flag(self, invoke, initialized_root, fill_plan) -> None:
+        # --review is no longer required at the Click level (--review-file can
+        # satisfy it, LAT-263); the shared helper enforces exactly-one instead.
         task_id = _create_and_advance_to(invoke, fill_plan, "in_progress")
 
-        r = invoke("complete", task_id, "--actor", _ACTOR)
+        r = invoke("complete", task_id, "--actor", _ACTOR, "--json")
         assert r.exit_code != 0
-        assert "Missing option '--review'" in r.output
+        parsed = json.loads(r.output)
+        assert parsed["error"]["code"] == "VALIDATION_ERROR"
+        assert "--review" in parsed["error"]["message"]
+        assert "--review-file" in parsed["error"]["message"]
 
     def test_empty_review_text_fails(self, invoke, initialized_root, fill_plan) -> None:
         task_id = _create_and_advance_to(invoke, fill_plan, "in_progress")
