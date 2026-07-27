@@ -21,7 +21,7 @@ from lattice.cli.helpers import (
     require_root,
     resolve_task_id,
     validate_actor_format_or_exit,
-    write_task_event,
+    mutate_task_events,
 )
 from lattice.cli.main import cli
 from lattice.core.comments import materialize_comments
@@ -40,7 +40,7 @@ from lattice.core.tasks import (
     compact_snapshot,
     is_backward_status_transition,
 )
-from lattice.storage.locks import multi_lock
+from lattice.storage.operations import TaskMutationDecision, mutate_task
 from lattice.storage.readers import read_task_events
 
 
@@ -218,7 +218,7 @@ def event_cmd(
             )
 
     # Validate task exists
-    snapshot = read_snapshot_or_exit(lattice_dir, task_id, is_json)
+    read_snapshot_or_exit(lattice_dir, task_id, is_json)
 
     # Validate --id if provided
     if ev_id is not None:
@@ -271,12 +271,10 @@ def event_cmd(
         on_behalf_of=on_behalf_of,
         reason=provenance_reason,
     )
-    updated_snapshot = apply_event_to_snapshot(snapshot, event)
-
     # Write (event-first, then snapshot, under lock)
-    # Custom events do NOT go to _lifecycle.jsonl — write_task_event handles
+    # Custom events do NOT go to _lifecycle.jsonl — the mutation path handles
     # this automatically since the type is x_* (not in LIFECYCLE_EVENT_TYPES).
-    write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
+    mutate_task_events(lattice_dir, task_id, [event], config)
 
     output_result(
         data=event,
@@ -525,15 +523,9 @@ def next_cmd(
         # Planning gate: block if plan is still scaffold
         check_plan_gate(lattice_dir, task_id, "in_progress", is_json, config)
 
-        locks_dir = lattice_dir / "locks"
-        lock_keys = sorted([f"events_{task_id}", f"tasks_{task_id}"])
-
-        with multi_lock(locks_dir, lock_keys):
-            # Re-read snapshot under lock to prevent TOCTOU race
-            snapshot = read_snapshot(lattice_dir, task_id)
-            if snapshot is None:
-                output_error(f"Task {task_id} not found.", "NOT_FOUND", is_json)
-
+        def decide(context):  # noqa: ANN001, ANN202
+            snapshot = context.snapshot
+            assert snapshot is not None
             # Concurrent claim guard: reject if another agent claimed
             # this task between our select_next() and lock acquisition.
             from lattice.core.next import _actors_match
@@ -601,28 +593,9 @@ def next_cmd(
                     snapshot = apply_event_to_snapshot(snapshot, status_event)
                     prev_status = next_status
 
-            if events:
-                # Write directly under the already-held lock (bypass write_task_event
-                # which would try to acquire its own locks)
-                from lattice.core.events import serialize_event
-                from lattice.core.tasks import serialize_snapshot
-                from lattice.storage.fs import atomic_write, jsonl_append
+            return TaskMutationDecision(events=events)
 
-                event_path = lattice_dir / "events" / f"{task_id}.jsonl"
-                for event in events:
-                    jsonl_append(event_path, serialize_event(event))
-
-                snapshot_path = lattice_dir / "tasks" / f"{task_id}.json"
-                atomic_write(snapshot_path, serialize_snapshot(snapshot))
-
-            selected = snapshot
-
-        # Fire hooks after lock release
-        if events and config:
-            from lattice.storage.hooks import execute_hooks
-
-            for event in events:
-                execute_hooks(config, lattice_dir, task_id, event)
+        selected = mutate_task(lattice_dir, task_id, decide, config).snapshot
 
     display_id = selected.get("short_id") or task_id
     result_data = selected

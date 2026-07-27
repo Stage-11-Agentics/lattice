@@ -19,9 +19,9 @@ from lattice.cli.helpers import (
     resolve_task_id,
     require_actor,
     validate_actor_format_or_exit,
-    write_task_event,
+    mutate_task_events,
 )
-from lattice.storage.operations import scaffold_plan
+from lattice.storage.operations import TaskMutationDecision, mutate_task, scaffold_plan
 from lattice.cli.main import cli
 from lattice.core.comments import (
     materialize_comments,
@@ -48,7 +48,6 @@ from lattice.core.events import count_review_rework_cycles, create_event, utc_no
 from lattice.core.ids import generate_task_id, validate_actor, validate_id
 from lattice.core.tasks import apply_event_to_snapshot, is_backward_status_transition
 from lattice.storage.readers import read_task_events
-from lattice.storage.short_ids import allocate_short_id
 
 logger = logging.getLogger(__name__)
 
@@ -164,87 +163,80 @@ def create(
     if task_id is not None:
         if not validate_id(task_id, "task"):
             output_error(f"Invalid task ID format: '{task_id}'.", "INVALID_ID", is_json)
-        # Idempotency check
-        existing_path = lattice_dir / "tasks" / f"{task_id}.json"
-        if existing_path.exists():
-            existing = json.loads(existing_path.read_text())
-            new_data = {
-                "title": title,
-                "type": task_type,
-                "priority": priority,
-                "urgency": urgency,
-                "complexity": complexity,
-                "status": status,
-                "description": description,
-                "tags": tag_list,
-                "assigned_to": assigned_to,
-            }
-            existing_data = {field: existing.get(field) for field in _CREATE_COMPARE_FIELDS}
-            # Normalize: snapshot stores tags as list, default is None
-            if existing_data.get("tags") is None:
-                existing_data["tags"] = []
-            if new_data == existing_data:
-                output_result(
-                    data=existing,
-                    human_message=f"Task {task_id} already exists (idempotent).",
-                    quiet_value=task_id,
-                    is_json=is_json,
-                    is_quiet=quiet,
-                )
-                return
-            else:
-                output_error(
-                    f"Conflict: task {task_id} exists with different data.",
-                    "CONFLICT",
-                    is_json,
-                )
     else:
         task_id = generate_task_id()
 
-    # Allocate short ID if project code is configured
     project_code = config.get("project_code")
     subproject_code = config.get("subproject_code")
-    short_id: str | None = None
-    if project_code:
-        prefix = f"{project_code}-{subproject_code}" if subproject_code else project_code
-        short_id, _idx = allocate_short_id(lattice_dir, prefix, task_ulid=task_id)
+    prefix = (
+        f"{project_code}-{subproject_code}" if project_code and subproject_code else project_code
+    )
 
-    # Build event data
-    event_data: dict = {
+    requested_data: dict = {
         "title": title,
         "status": status,
         "type": task_type,
         "priority": priority,
     }
     if urgency is not None:
-        event_data["urgency"] = urgency
+        requested_data["urgency"] = urgency
     if complexity is not None:
-        event_data["complexity"] = complexity
+        requested_data["complexity"] = complexity
     if description is not None:
-        event_data["description"] = description
+        requested_data["description"] = description
     if tag_list:
-        event_data["tags"] = tag_list
+        requested_data["tags"] = tag_list
     if assigned_to is not None:
-        event_data["assigned_to"] = assigned_to
-    if short_id is not None:
-        event_data["short_id"] = short_id
+        requested_data["assigned_to"] = assigned_to
 
-    # Build event and snapshot
-    event = create_event(
-        type="task_created",
-        task_id=task_id,
-        actor=actor,
-        data=event_data,
-        model=model,
-        session=session,
-        triggered_by=triggered_by,
-        on_behalf_of=on_behalf_of,
-        reason=provenance_reason,
-    )
-    snapshot = apply_event_to_snapshot(None, event)
+    def decide_create(context):  # noqa: ANN001, ANN202
+        if context.snapshot is not None:
+            created_data = context.events[0]["data"]
+            existing = {
+                field: created_data.get(field)
+                for field in _CREATE_COMPARE_FIELDS
+            }
+            new = {field: requested_data.get(field) for field in _CREATE_COMPARE_FIELDS}
+            existing["tags"] = existing.get("tags") or []
+            new["tags"] = new.get("tags") or []
+            if existing != new:
+                raise ValueError(f"Conflict: task {task_id} exists with different data.")
+            return TaskMutationDecision(
+                value=created_data.get("short_id"), idempotent=True
+            )
 
-    # Write (event-first, then snapshot, under lock)
-    write_task_event(lattice_dir, task_id, [event], snapshot, config)
+        event_data = dict(requested_data)
+        if context.reserved_short_id is not None:
+            event_data["short_id"] = context.reserved_short_id
+        event = create_event(
+            type="task_created",
+            task_id=task_id,
+            actor=actor,
+            data=event_data,
+            model=model,
+            session=session,
+            triggered_by=triggered_by,
+            on_behalf_of=on_behalf_of,
+            reason=provenance_reason,
+        )
+        return TaskMutationDecision(
+            events=[event], value=context.reserved_short_id
+        )
+
+    try:
+        result = mutate_task(
+            lattice_dir,
+            task_id,
+            decide_create,
+            config,
+            source="absent",
+            may_emit_lifecycle=True,
+            project_prefix=prefix,
+        )
+    except ValueError as exc:
+        output_error(str(exc), "CONFLICT", is_json)
+    snapshot = result.snapshot
+    short_id = snapshot.get("short_id")
 
     # Scaffold plan file (notes are created lazily, not on task creation)
     scaffold_plan(lattice_dir, task_id, title, short_id, description)
@@ -254,7 +246,9 @@ def create(
     output_result(
         data=snapshot,
         human_message=(
-            f'Created task {display_id} ({task_id}) "{title}"\n'
+            f"Task {display_id} already exists (idempotent)."
+            if result.idempotent
+            else f'Created task {display_id} ({task_id}) "{title}"\n'
             f"  status: {status}  priority: {priority}  type: {task_type}"
             if short_id
             else f'Created task {task_id} "{title}"\n'
@@ -454,7 +448,7 @@ def update(
         updated_snapshot = apply_event_to_snapshot(updated_snapshot, event)
 
     # Write all events + updated snapshot
-    write_task_event(lattice_dir, task_id, events, updated_snapshot, config)
+    updated_snapshot = mutate_task_events(lattice_dir, task_id, events, config).snapshot
 
     field_names = [e["data"]["field"] for e in events]
     output_result(
@@ -535,7 +529,7 @@ def edit_description(
     )
 
     updated_snapshot = apply_event_to_snapshot(snapshot, event)
-    write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
+    updated_snapshot = mutate_task_events(lattice_dir, task_id, [event], config).snapshot
 
     output_result(
         data=updated_snapshot,
@@ -933,7 +927,7 @@ def status_cmd(
     )
     events.append(event)
     updated_snapshot = apply_event_to_snapshot(snapshot, event)
-    write_task_event(lattice_dir, task_id, events, updated_snapshot, config)
+    updated_snapshot = mutate_task_events(lattice_dir, task_id, events, config).snapshot
     if is_backward_transition:
         _append_plan_reset_section(lattice_dir, task_id, actor, event.get("ts"))
 
@@ -987,13 +981,12 @@ def status_cmd(
                         "trigger_status_event_id": event["id"],
                     },
                 )
-                write_task_event(
+                updated_snapshot = mutate_task_events(
                     lattice_dir,
                     task_id,
                     [auto_event],
-                    updated_snapshot,
                     config,
-                )
+                ).snapshot
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "auto_review_spawned event write failed: %s",
@@ -1117,7 +1110,7 @@ def assign(
         reason=provenance_reason,
     )
     updated_snapshot = apply_event_to_snapshot(snapshot, event)
-    write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
+    updated_snapshot = mutate_task_events(lattice_dir, task_id, [event], config).snapshot
 
     from_label = current_assigned or "unassigned"
     to_label = target_actor or "unassigned"
@@ -1229,7 +1222,7 @@ def comment(
         reason=provenance_reason,
     )
     updated_snapshot = apply_event_to_snapshot(snapshot, event)
-    write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
+    updated_snapshot = mutate_task_events(lattice_dir, task_id, [event], config).snapshot
 
     msg = f"Reply added to {task_id}" if reply_to else f"Comment added to {task_id}"
     output_result(
@@ -1338,7 +1331,7 @@ def comment_edit(
         reason=provenance_reason,
     )
     updated_snapshot = apply_event_to_snapshot(snapshot, event)
-    write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
+    updated_snapshot = mutate_task_events(lattice_dir, task_id, [event], config).snapshot
 
     output_result(
         data=updated_snapshot,
@@ -1400,7 +1393,7 @@ def comment_delete(
         reason=provenance_reason,
     )
     updated_snapshot = apply_event_to_snapshot(snapshot, event)
-    write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
+    updated_snapshot = mutate_task_events(lattice_dir, task_id, [event], config).snapshot
 
     output_result(
         data=updated_snapshot,
@@ -1487,7 +1480,7 @@ def react(
         reason=provenance_reason,
     )
     updated_snapshot = apply_event_to_snapshot(snapshot, event)
-    write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
+    updated_snapshot = mutate_task_events(lattice_dir, task_id, [event], config).snapshot
 
     output_result(
         data=updated_snapshot,
@@ -1577,7 +1570,7 @@ def unreact(
         reason=provenance_reason,
     )
     updated_snapshot = apply_event_to_snapshot(snapshot, event)
-    write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
+    updated_snapshot = mutate_task_events(lattice_dir, task_id, [event], config).snapshot
 
     output_result(
         data=updated_snapshot,
@@ -1831,7 +1824,7 @@ def complete_cmd(
     atomic_write(meta_path, serialize_artifact(metadata))
 
     # --- Write all events + snapshot atomically ---
-    write_task_event(lattice_dir, task_id, events, snapshot, config)
+    snapshot = mutate_task_events(lattice_dir, task_id, events, config).snapshot
 
     display_id = snapshot.get("short_id") or task_id
     event_count = len(events)

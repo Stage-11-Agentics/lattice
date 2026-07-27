@@ -15,7 +15,7 @@ from lattice.cli.helpers import (
     resolve_body,
     resolve_task_id,
     validate_actor_format_or_exit,
-    write_task_event,
+    mutate_task_events,
 )
 from lattice.cli.main import cli
 from lattice.core.events import create_event, get_actor_display
@@ -114,7 +114,7 @@ def needs_human_cmd(
             reason=provenance_reason,
         )
         updated = apply_event_to_snapshot(snapshot, event)
-        write_task_event(lattice_dir, task_id, [event], updated, config)
+        updated = mutate_task_events(lattice_dir, task_id, [event], config).snapshot
         _notify_c11(updated, flagged=False)
         note_msg = f"  Note: {note}" if note else ""
         output_result(
@@ -164,7 +164,7 @@ def needs_human_cmd(
         reason=provenance_reason,
     )
     updated = apply_event_to_snapshot(snapshot, event)
-    write_task_event(lattice_dir, task_id, [event], updated, config)
+    updated = mutate_task_events(lattice_dir, task_id, [event], config).snapshot
     _notify_c11(updated, flagged=True)
     output_result(
         data=updated,

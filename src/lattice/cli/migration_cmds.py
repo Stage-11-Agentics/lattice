@@ -15,9 +15,8 @@ from lattice.cli.helpers import (
 from lattice.cli.main import cli
 from lattice.core.config import serialize_config, validate_project_code
 from lattice.core.events import create_event
-from lattice.core.tasks import apply_event_to_snapshot, serialize_snapshot
-from lattice.storage.fs import atomic_write, jsonl_append
-from lattice.storage.locks import multi_lock
+from lattice.core.tasks import apply_event_to_snapshot
+from lattice.storage.fs import atomic_write
 from lattice.storage.short_ids import load_id_index, register_short_id, save_id_index
 
 
@@ -126,9 +125,6 @@ def backfill_ids(
         next_seqs[prefix] = seq + 1
         index["next_seqs"] = next_seqs
 
-        # Emit task_short_id_assigned event
-        from lattice.core.events import serialize_event
-
         event = create_event(
             type="task_short_id_assigned",
             task_id=task_ulid,
@@ -136,22 +132,15 @@ def backfill_ids(
             data={"short_id": short_id},
         )
 
-        # Apply to snapshot
-        updated_snap = apply_event_to_snapshot(snap, event)
+        from lattice.storage.operations import mutate_task_events
 
-        # Determine paths
-        if is_archived:
-            event_path = lattice_dir / "archive" / "events" / f"{task_ulid}.jsonl"
-            snap_path = lattice_dir / "archive" / "tasks" / f"{task_ulid}.json"
-        else:
-            event_path = lattice_dir / "events" / f"{task_ulid}.jsonl"
-            snap_path = lattice_dir / "tasks" / f"{task_ulid}.json"
-
-        # Write event and snapshot under lock
-        locks_dir = lattice_dir / "locks"
-        with multi_lock(locks_dir, sorted([f"events_{task_ulid}", f"tasks_{task_ulid}"])):
-            jsonl_append(event_path, serialize_event(event))
-            atomic_write(snap_path, serialize_snapshot(updated_snap))
+        mutate_task_events(
+            lattice_dir,
+            task_ulid,
+            [event],
+            config,
+            source="archived" if is_archived else "active",
+        )
 
         # Register in index
         register_short_id(index, short_id, task_ulid)
@@ -213,7 +202,7 @@ def migrate_needs_human(
     descriptions, display_names). Idempotent — re-running on a migrated
     instance is a no-op.
     """
-    from lattice.cli.helpers import write_task_event
+    from lattice.cli.helpers import mutate_task_events
     from lattice.core.comments import materialize_comments
 
     is_json = output_json
@@ -297,7 +286,7 @@ def migrate_needs_human(
         )
         new_events.append(status_event)
         updated = apply_event_to_snapshot(updated, status_event)
-        write_task_event(lattice_dir, task_id, new_events, updated, config)
+        mutate_task_events(lattice_dir, task_id, new_events, config)
 
     # ---- Phase 2: strip needs_human from the workflow config ---------------
     workflow = config.get("workflow", {})

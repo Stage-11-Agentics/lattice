@@ -8,13 +8,14 @@ from pathlib import Path
 import click
 
 from lattice.cli.main import cli
+from lattice.cli.helpers import mutate_task_events
 from lattice.core.config import default_config, serialize_config
 from lattice.core.events import create_event
 from lattice.core.ids import generate_instance_id, generate_task_id
 from lattice.core.tasks import apply_event_to_snapshot
 from lattice.storage.fs import LATTICE_DIR, atomic_write, ensure_lattice_dirs
-from lattice.storage.operations import scaffold_plan, write_task_event
-from lattice.storage.short_ids import _default_index, allocate_short_id, save_id_index
+from lattice.storage.operations import TaskMutationDecision, mutate_task, scaffold_plan
+from lattice.storage.short_ids import _default_index, save_id_index
 
 
 # ---------------------------------------------------------------------------
@@ -1246,10 +1247,6 @@ def _seed_demo(target_dir: Path, quiet: bool = False) -> None:
         task_id = generate_task_id()
         task_ids.append(task_id)
 
-        # Allocate short ID
-        sid, _ = allocate_short_id(lattice_dir, "LGHT", task_ulid=task_id)
-        short_ids.append(sid)
-
         # Build creation event with initial status = "backlog"
         initial_status = "backlog"
         event_data: dict = {
@@ -1257,7 +1254,6 @@ def _seed_demo(target_dir: Path, quiet: bool = False) -> None:
             "status": initial_status,
             "type": tdef["type"],
             "priority": tdef["priority"],
-            "short_id": sid,
         }
         if tdef.get("description"):
             event_data["description"] = tdef["description"]
@@ -1360,7 +1356,23 @@ def _seed_demo(target_dir: Path, quiet: bool = False) -> None:
             all_events.append(branch_event)
 
         # Write all events + snapshot
-        write_task_event(lattice_dir, task_id, all_events, snapshot, config)
+        def decide(context):  # noqa: ANN001, ANN202
+            committed_events = [dict(event) for event in all_events]
+            committed_events[0]["data"] = dict(all_events[0]["data"])
+            committed_events[0]["data"]["short_id"] = context.reserved_short_id
+            return TaskMutationDecision(events=committed_events)
+
+        snapshot = mutate_task(
+            lattice_dir,
+            task_id,
+            decide,
+            config,
+            source="absent",
+            may_emit_lifecycle=True,
+            project_prefix="LGHT",
+        ).snapshot
+        sid = snapshot["short_id"]
+        short_ids.append(sid)
 
         # Scaffold plan
         plan_content = tdef.get("plan_content")
@@ -1441,8 +1453,7 @@ def _add_relationship(
         data={"type": rel_type, "target_task_id": target_id},
         ts=ts,
     )
-    updated = apply_event_to_snapshot(snapshot, event)
-    write_task_event(lattice_dir, source_id, [event], updated, config)
+    mutate_task_events(lattice_dir, source_id, [event], config)
 
 
 # ---------------------------------------------------------------------------

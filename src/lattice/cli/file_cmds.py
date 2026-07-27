@@ -19,7 +19,7 @@ from lattice.cli.helpers import (
     require_root,
     resolve_task_id,
     validate_actor_format_or_exit,
-    write_task_event,
+    mutate_task_events,
 )
 from lattice.cli.main import cli
 from lattice.core.events import create_event
@@ -144,7 +144,7 @@ def file_link(
     updated_snapshot = apply_event_to_snapshot(snapshot, event)
 
     # Write (event-first, then snapshot, under lock)
-    write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
+    updated_snapshot = mutate_task_events(lattice_dir, task_id, [event], config).snapshot
 
     # Output
     paths_display = ", ".join(new_paths)
@@ -223,7 +223,7 @@ def file_unlink(
     updated_snapshot = apply_event_to_snapshot(snapshot, event)
 
     # Write (event-first, then snapshot, under lock)
-    write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
+    updated_snapshot = mutate_task_events(lattice_dir, task_id, [event], config).snapshot
 
     # Output
     paths_display = ", ".join(to_remove)

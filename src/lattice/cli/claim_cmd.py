@@ -14,7 +14,7 @@ from lattice.cli.helpers import (
     require_actor,
     require_root,
     resolve_task_id,
-    write_task_event,
+    mutate_task_events,
 )
 from lattice.cli.main import cli
 from lattice.core.events import create_event
@@ -91,7 +91,7 @@ def claim_cmd(
         reason=provenance_reason,
     )
     updated_snapshot = apply_event_to_snapshot(snapshot, event)
-    write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
+    updated_snapshot = mutate_task_events(lattice_dir, task_id, [event], config).snapshot
 
     # Rename tab if inside c11
     if c11_available():
@@ -158,7 +158,7 @@ def unclaim_cmd(
         reason=provenance_reason,
     )
     updated_snapshot = apply_event_to_snapshot(snapshot, event)
-    write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
+    updated_snapshot = mutate_task_events(lattice_dir, task_id, [event], config).snapshot
 
     display_id = updated_snapshot.get("short_id") or task_id
     output_result(

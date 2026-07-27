@@ -10,7 +10,7 @@ import click
 
 from lattice.core.ids import is_short_id, validate_actor, validate_id
 from lattice.storage.fs import LATTICE_DIR, LatticeRootError, find_root
-from lattice.storage.operations import write_task_event  # noqa: F401 — re-exported
+from lattice.storage.operations import mutate_task_events  # noqa: F401 - CLI re-export
 from lattice.storage.short_ids import resolve_short_id as _resolve_short
 
 

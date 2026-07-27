@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import platform
-import shutil
 import subprocess
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -30,19 +29,21 @@ from lattice.core.config import (
     validate_task_type,
     validate_transition,
 )
-from lattice.core.events import create_event, serialize_event, utc_now
+from lattice.core.events import create_event, utc_now
 from lattice.core.ids import generate_task_id, validate_actor, validate_id
 from lattice.core.tasks import (
     apply_event_to_snapshot,
     compact_snapshot,
-    serialize_snapshot,
 )
-from lattice.storage.fs import atomic_write, jsonl_append
+from lattice.storage.fs import atomic_write
 from lattice.storage.locks import multi_lock
-from lattice.storage.hooks import execute_hooks
-from lattice.storage.operations import scaffold_plan, write_task_event
+from lattice.storage.operations import (
+    TaskMutationDecision,
+    mutate_task,
+    mutate_task_events,
+    scaffold_plan,
+)
 from lattice.storage.readers import read_task_events
-from lattice.storage.short_ids import allocate_short_id
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -942,7 +943,7 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
             updated_snapshot = apply_event_to_snapshot(snapshot, event)
 
             try:
-                write_task_event(ld, task_id, [event], updated_snapshot, config)
+                updated_snapshot = mutate_task_events(ld, task_id, [event], config).snapshot
             except Exception as exc:
                 self._send_json(500, _err("WRITE_ERROR", f"Failed to update status: {exc}"))
                 return
@@ -1292,13 +1293,13 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
             # Generate ID
             task_id = generate_task_id()
 
-            # Allocate short ID if project code is configured
             project_code = config.get("project_code")
             subproject_code = config.get("subproject_code")
-            short_id: str | None = None
-            if project_code:
-                prefix = f"{project_code}-{subproject_code}" if subproject_code else project_code
-                short_id, _ = allocate_short_id(ld, prefix, task_ulid=task_id)
+            prefix = (
+                f"{project_code}-{subproject_code}"
+                if project_code and subproject_code
+                else project_code
+            )
 
             # Build event data
             event_data: dict = {
@@ -1315,25 +1316,34 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                 event_data["tags"] = tags
             if assigned_to is not None:
                 event_data["assigned_to"] = assigned_to
-            if short_id is not None:
-                event_data["short_id"] = short_id
-
-            event = create_event(
-                type="task_created",
-                task_id=task_id,
-                actor=actor,
-                data=event_data,
-            )
-            snapshot = apply_event_to_snapshot(None, event)
-
             try:
-                write_task_event(ld, task_id, [event], snapshot, config)
+                def decide(context):  # noqa: ANN001, ANN202
+                    data = dict(event_data)
+                    if context.reserved_short_id is not None:
+                        data["short_id"] = context.reserved_short_id
+                    event = create_event(
+                        type="task_created",
+                        task_id=task_id,
+                        actor=actor,
+                        data=data,
+                    )
+                    return TaskMutationDecision(events=[event])
+
+                snapshot = mutate_task(
+                    ld,
+                    task_id,
+                    decide,
+                    config,
+                    source="absent",
+                    may_emit_lifecycle=True,
+                    project_prefix=prefix,
+                ).snapshot
             except Exception as exc:
                 self._send_json(500, _err("WRITE_ERROR", f"Failed to create task: {exc}"))
                 return
 
             # Scaffold plan file (plans are scaffolded on create; notes are lazy)
-            scaffold_plan(ld, task_id, title, short_id, description)
+            scaffold_plan(ld, task_id, title, snapshot.get("short_id"), description)
 
             self._send_json(201, _ok(snapshot))
 
@@ -1394,7 +1404,7 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
             updated_snapshot = apply_event_to_snapshot(snapshot, event)
 
             try:
-                write_task_event(ld, task_id, [event], updated_snapshot, config)
+                updated_snapshot = mutate_task_events(ld, task_id, [event], config).snapshot
             except Exception as exc:
                 self._send_json(500, _err("WRITE_ERROR", f"Failed to assign task: {exc}"))
                 return
@@ -1464,7 +1474,7 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
             updated_snapshot = apply_event_to_snapshot(snapshot, event)
 
             try:
-                write_task_event(ld, task_id, [event], updated_snapshot, config)
+                updated_snapshot = mutate_task_events(ld, task_id, [event], config).snapshot
             except Exception as exc:
                 self._send_json(500, _err("WRITE_ERROR", f"Failed to add comment: {exc}"))
                 return
@@ -1607,7 +1617,7 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                 updated_snapshot = apply_event_to_snapshot(updated_snapshot, event)
 
             try:
-                write_task_event(ld, task_id, events, updated_snapshot, config)
+                updated_snapshot = mutate_task_events(ld, task_id, events, config).snapshot
             except Exception as exc:
                 self._send_json(500, _err("WRITE_ERROR", f"Failed to update task: {exc}"))
                 return
@@ -1642,81 +1652,35 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                 self._send_json(500, _err("READ_ERROR", f"Failed to read config: {exc}"))
                 return
 
-            # Check if already archived
-            archive_check = ld / "archive" / "tasks" / f"{task_id}.json"
-            if archive_check.is_file():
-                self._send_json(400, _err("CONFLICT", f"Task {task_id} is already archived"))
-                return
-
-            event = None  # will be set inside the lock
             try:
-                locks_dir = ld / "locks"
-                lock_keys = sorted([f"events_{task_id}", f"tasks_{task_id}", "events__lifecycle"])
-
-                with multi_lock(locks_dir, lock_keys):
-                    snapshot = _read_snapshot(ld, task_id)
-                    if snapshot is None:
-                        self._send_json(404, _err("NOT_FOUND", f"Task {task_id} not found"))
-                        return
-
+                def decide(context):  # noqa: ANN001, ANN202
+                    if context.location == "archived":
+                        existing = next(
+                            event
+                            for event in reversed(context.events)
+                            if event["type"] == "task_archived"
+                        )
+                        return TaskMutationDecision(value=existing, idempotent=True)
                     event = create_event(
                         type="task_archived",
                         task_id=task_id,
                         actor=actor,
                         data={},
                     )
-                    updated_snapshot = apply_event_to_snapshot(snapshot, event)
+                    return TaskMutationDecision(events=[event], value=event)
 
-                    # 1. Append event to per-task log
-                    event_path = ld / "events" / f"{task_id}.jsonl"
-                    jsonl_append(event_path, serialize_event(event))
-
-                    # 2. Append to lifecycle log
-                    lifecycle_path = ld / "events" / "_lifecycle.jsonl"
-                    jsonl_append(lifecycle_path, serialize_event(event))
-
-                    # 3. Write snapshot to archive
-                    atomic_write(
-                        ld / "archive" / "tasks" / f"{task_id}.json",
-                        serialize_snapshot(updated_snapshot),
-                    )
-
-                    # 4. Remove active snapshot
-                    snapshot_path = ld / "tasks" / f"{task_id}.json"
-                    if snapshot_path.exists():
-                        snapshot_path.unlink()
-
-                    # 5. Move event log to archive
-                    if event_path.exists():
-                        shutil.move(
-                            str(event_path),
-                            str(ld / "archive" / "events" / f"{task_id}.jsonl"),
-                        )
-
-                    # 6. Move notes if they exist
-                    notes_path = ld / "notes" / f"{task_id}.md"
-                    if notes_path.exists():
-                        shutil.move(
-                            str(notes_path),
-                            str(ld / "archive" / "notes" / f"{task_id}.md"),
-                        )
-
-                    # 7. Move plans if they exist
-                    plans_path = ld / "plans" / f"{task_id}.md"
-                    if plans_path.exists():
-                        (ld / "archive" / "plans").mkdir(parents=True, exist_ok=True)
-                        shutil.move(
-                            str(plans_path),
-                            str(ld / "archive" / "plans" / f"{task_id}.md"),
-                        )
-
+                mutate_task(
+                    ld,
+                    task_id,
+                    decide,
+                    config,
+                    source="either",
+                    destination="archived",
+                    may_emit_lifecycle=True,
+                )
             except Exception as exc:
                 self._send_json(500, _err("WRITE_ERROR", f"Failed to archive task: {exc}"))
                 return
-
-            # Fire hooks after locks released
-            if event is not None:
-                execute_hooks(config, ld, task_id, event)
 
             self._send_json(200, _ok({"message": f"Task {task_id} archived"}))
 
@@ -1787,7 +1751,7 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
             updated_snapshot = apply_event_to_snapshot(snapshot, event)
 
             try:
-                write_task_event(ld, task_id, [event], updated_snapshot, config)
+                updated_snapshot = mutate_task_events(ld, task_id, [event], config).snapshot
             except Exception as exc:
                 self._send_json(500, _err("WRITE_ERROR", f"Failed to edit comment: {exc}"))
                 return
@@ -1850,7 +1814,7 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
             updated_snapshot = apply_event_to_snapshot(snapshot, event)
 
             try:
-                write_task_event(ld, task_id, [event], updated_snapshot, config)
+                updated_snapshot = mutate_task_events(ld, task_id, [event], config).snapshot
             except Exception as exc:
                 self._send_json(500, _err("WRITE_ERROR", f"Failed to delete comment: {exc}"))
                 return
@@ -1943,7 +1907,7 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
             updated_snapshot = apply_event_to_snapshot(snapshot, event)
 
             try:
-                write_task_event(ld, task_id, [event], updated_snapshot, config)
+                updated_snapshot = mutate_task_events(ld, task_id, [event], config).snapshot
             except Exception as exc:
                 self._send_json(500, _err("WRITE_ERROR", f"Failed to add reaction: {exc}"))
                 return
@@ -2044,7 +2008,7 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
             updated_snapshot = apply_event_to_snapshot(snapshot, event)
 
             try:
-                write_task_event(ld, task_id, [event], updated_snapshot, config)
+                updated_snapshot = mutate_task_events(ld, task_id, [event], config).snapshot
             except Exception as exc:
                 self._send_json(500, _err("WRITE_ERROR", f"Failed to remove reaction: {exc}"))
                 return

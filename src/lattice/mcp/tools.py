@@ -34,7 +34,6 @@ from lattice.core.events import (
     BUILTIN_EVENT_TYPES,
     create_event,
     get_actor_display,
-    serialize_event,
     validate_custom_event_type,
 )
 from lattice.core.ids import (
@@ -45,19 +44,21 @@ from lattice.core.ids import (
     validate_id,
 )
 from lattice.core.relationships import RELATIONSHIP_TYPES, validate_relationship_type
-from lattice.core.tasks import apply_event_to_snapshot, serialize_snapshot
+from lattice.core.tasks import apply_event_to_snapshot
 from lattice.mcp.server import mcp
 from lattice.storage.fs import (
     atomic_write,
     ensure_artifact_dirs,
     find_root,
-    jsonl_append,
 )
-from lattice.storage.hooks import execute_hooks
-from lattice.storage.locks import multi_lock
-from lattice.storage.operations import scaffold_plan, write_task_event
+from lattice.storage.operations import (
+    TaskMutationDecision,
+    mutate_task,
+    mutate_task_events,
+    scaffold_plan,
+)
 from lattice.storage.readers import read_task_events
-from lattice.storage.short_ids import allocate_short_id, resolve_short_id
+from lattice.storage.short_ids import resolve_short_id
 
 logger = logging.getLogger(__name__)
 
@@ -187,67 +188,67 @@ def lattice_create(
     if task_id is not None:
         if not validate_id(task_id, "task"):
             raise ValueError(f"Invalid task ID format: '{task_id}'.")
-        # Idempotency check with payload comparison (matches CLI behavior)
-        existing_path = lattice_dir / "tasks" / f"{task_id}.json"
-        if existing_path.exists():
-            existing = json.loads(existing_path.read_text())
-            _compare_fields = (
-                "title",
-                "type",
-                "priority",
-                "status",
-                "description",
-                "tags",
-                "assigned_to",
-            )
-            new_data = {
-                "title": title,
-                "type": task_type,
-                "priority": priority,
-                "status": status,
-                "description": description,
-                "tags": tag_list,
-                "assigned_to": assigned_to,
-            }
-            existing_data = {f: existing.get(f) for f in _compare_fields}
-            if existing_data.get("tags") is None:
-                existing_data["tags"] = []
-            if new_data == existing_data:
-                return existing
-            raise ValueError(f"Conflict: task {task_id} exists with different data.")
     else:
         task_id = generate_task_id()
 
-    # Allocate short ID if project code is configured
     project_code = config.get("project_code")
     subproject_code = config.get("subproject_code")
-    short_id: str | None = None
-    if project_code:
-        prefix = f"{project_code}-{subproject_code}" if subproject_code else project_code
-        short_id, _idx = allocate_short_id(lattice_dir, prefix, task_ulid=task_id)
+    prefix = (
+        f"{project_code}-{subproject_code}" if project_code and subproject_code else project_code
+    )
 
-    # Build event data
-    event_data: dict = {
+    requested_data: dict = {
         "title": title,
         "status": status,
         "type": task_type,
         "priority": priority,
     }
     if description is not None:
-        event_data["description"] = description
+        requested_data["description"] = description
     if tag_list:
-        event_data["tags"] = tag_list
+        requested_data["tags"] = tag_list
     if assigned_to is not None:
-        event_data["assigned_to"] = assigned_to
-    if short_id is not None:
-        event_data["short_id"] = short_id
+        requested_data["assigned_to"] = assigned_to
 
-    # Build event and snapshot
-    event = create_event(type="task_created", task_id=task_id, actor=actor, data=event_data)
-    snapshot = apply_event_to_snapshot(None, event)
+    compare_fields = (
+        "title",
+        "type",
+        "priority",
+        "status",
+        "description",
+        "tags",
+        "assigned_to",
+    )
 
-    # Write (event-first, then snapshot, under lock)
-    write_task_event(lattice_dir, task_id, [event], snapshot, config)
+    def decide(context):  # noqa: ANN001, ANN202
+        if context.snapshot is not None:
+            existing_data = {
+                name: context.events[0]["data"].get(name) for name in compare_fields
+            }
+            new_data = {name: requested_data.get(name) for name in compare_fields}
+            existing_data["tags"] = existing_data.get("tags") or []
+            new_data["tags"] = new_data.get("tags") or []
+            if existing_data != new_data:
+                raise ValueError(f"Conflict: task {task_id} exists with different data.")
+            return TaskMutationDecision(idempotent=True)
+        event_data = dict(requested_data)
+        if context.reserved_short_id is not None:
+            event_data["short_id"] = context.reserved_short_id
+        event = create_event(
+            type="task_created", task_id=task_id, actor=actor, data=event_data
+        )
+        return TaskMutationDecision(events=[event])
+
+    snapshot = mutate_task(
+        lattice_dir,
+        task_id,
+        decide,
+        config,
+        source="absent",
+        may_emit_lifecycle=True,
+        project_prefix=prefix,
+    ).snapshot
+    short_id = snapshot.get("short_id")
 
     # Scaffold plan file
     scaffold_plan(lattice_dir, task_id, title, short_id, description)
@@ -359,8 +360,7 @@ def lattice_update(
     for event in events:
         updated_snapshot = apply_event_to_snapshot(updated_snapshot, event)
 
-    write_task_event(lattice_dir, task_id, events, updated_snapshot, config)
-    return updated_snapshot
+    return mutate_task_events(lattice_dir, task_id, events, config).snapshot
 
 
 @mcp.tool()
@@ -416,9 +416,7 @@ def lattice_status(
         event_data["reason"] = reason
 
     event = create_event(type="status_changed", task_id=task_id, actor=actor, data=event_data)
-    updated_snapshot = apply_event_to_snapshot(snapshot, event)
-    write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
-    return updated_snapshot
+    return mutate_task_events(lattice_dir, task_id, [event], config).snapshot
 
 
 @mcp.tool()
@@ -448,9 +446,7 @@ def lattice_assign(
         actor=actor,
         data={"from": current_assigned, "to": assignee},
     )
-    updated_snapshot = apply_event_to_snapshot(snapshot, event)
-    write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
-    return updated_snapshot
+    return mutate_task_events(lattice_dir, task_id, [event], config).snapshot
 
 
 @mcp.tool()
@@ -475,8 +471,6 @@ def lattice_comment(
     config = _load_config(lattice_dir)
     _validate_actor(actor)
     task_id = _resolve_task_id(lattice_dir, task_id)
-    snapshot = _read_snapshot_or_error(lattice_dir, task_id)
-
     text = validate_comment_body(text)
 
     # Validate role against configured completion policy roles
@@ -496,9 +490,7 @@ def lattice_comment(
         event_data["role"] = role
 
     event = create_event(type="comment_added", task_id=task_id, actor=actor, data=event_data)
-    updated_snapshot = apply_event_to_snapshot(snapshot, event)
-    write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
-    return updated_snapshot
+    return mutate_task_events(lattice_dir, task_id, [event], config).snapshot
 
 
 @mcp.tool()
@@ -553,9 +545,7 @@ def lattice_link(
     event = create_event(
         type="relationship_added", task_id=source_id, actor=actor, data=event_data
     )
-    updated_snapshot = apply_event_to_snapshot(snapshot, event)
-    write_task_event(lattice_dir, source_id, [event], updated_snapshot, config)
-    return updated_snapshot
+    return mutate_task_events(lattice_dir, source_id, [event], config).snapshot
 
 
 @mcp.tool()
@@ -596,9 +586,7 @@ def lattice_unlink(
     event = create_event(
         type="relationship_removed", task_id=source_id, actor=actor, data=event_data
     )
-    updated_snapshot = apply_event_to_snapshot(snapshot, event)
-    write_task_event(lattice_dir, source_id, [event], updated_snapshot, config)
-    return updated_snapshot
+    return mutate_task_events(lattice_dir, source_id, [event], config).snapshot
 
 
 @mcp.tool()
@@ -620,8 +608,6 @@ def lattice_attach(
     config = _load_config(lattice_dir)
     _validate_actor(actor)
     task_id = _resolve_task_id(lattice_dir, task_id)
-    snapshot = _read_snapshot_or_error(lattice_dir, task_id)
-
     is_url = source.startswith("http://") or source.startswith("https://")
 
     if art_type is None:
@@ -679,9 +665,7 @@ def lattice_attach(
     meta_path = lattice_dir / "artifacts" / "meta" / f"{art_id}.json"
     atomic_write(meta_path, serialize_artifact(metadata))
 
-    # Apply event and write
-    updated_snapshot = apply_event_to_snapshot(snapshot, event)
-    write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
+    mutate_task_events(lattice_dir, task_id, [event], config)
     return metadata
 
 
@@ -698,61 +682,34 @@ def lattice_archive(
     config = _load_config(lattice_dir)
     _validate_actor(actor)
     task_id = _resolve_task_id(lattice_dir, task_id)
+    if (
+        (lattice_dir / "archive" / "events" / f"{task_id}.jsonl").exists()
+        and (lattice_dir / "archive" / "tasks" / f"{task_id}.json").exists()
+        and not (lattice_dir / "events" / f"{task_id}.jsonl").exists()
+        and not (lattice_dir / "tasks" / f"{task_id}.json").exists()
+    ):
+        raise ValueError(f"Task {task_id} is already archived.")
 
-    snapshot = _read_snapshot(lattice_dir, task_id)
-    if snapshot is None:
-        archive_path = lattice_dir / "archive" / "tasks" / f"{task_id}.json"
-        if archive_path.exists():
-            raise ValueError(f"Task {task_id} is already archived.")
-        raise ValueError(f"Task {task_id} not found.")
-
-    event = create_event(type="task_archived", task_id=task_id, actor=actor, data={})
-    updated_snapshot = apply_event_to_snapshot(snapshot, event)
-
-    locks_dir = lattice_dir / "locks"
-    lock_keys = sorted([f"events_{task_id}", f"tasks_{task_id}", "events__lifecycle"])
-
-    with multi_lock(locks_dir, lock_keys):
-        event_path = lattice_dir / "events" / f"{task_id}.jsonl"
-        jsonl_append(event_path, serialize_event(event))
-
-        lifecycle_path = lattice_dir / "events" / "_lifecycle.jsonl"
-        jsonl_append(lifecycle_path, serialize_event(event))
-
-        atomic_write(
-            lattice_dir / "archive" / "tasks" / f"{task_id}.json",
-            serialize_snapshot(updated_snapshot),
-        )
-
-        snapshot_path = lattice_dir / "tasks" / f"{task_id}.json"
-        if snapshot_path.exists():
-            snapshot_path.unlink()
-
-        shutil.move(
-            str(event_path),
-            str(lattice_dir / "archive" / "events" / f"{task_id}.jsonl"),
-        )
-
-        notes_path = lattice_dir / "notes" / f"{task_id}.md"
-        if notes_path.exists():
-            shutil.move(
-                str(notes_path),
-                str(lattice_dir / "archive" / "notes" / f"{task_id}.md"),
+    def decide(context):  # noqa: ANN001, ANN202
+        if context.location == "archived":
+            existing = next(
+                event
+                for event in reversed(context.events)
+                if event["type"] == "task_archived"
             )
+            return TaskMutationDecision(value=existing, idempotent=True)
+        event = create_event(type="task_archived", task_id=task_id, actor=actor, data={})
+        return TaskMutationDecision(events=[event], value=event)
 
-        plan_path = lattice_dir / "plans" / f"{task_id}.md"
-        if plan_path.exists():
-            archive_plans_dir = lattice_dir / "archive" / "plans"
-            archive_plans_dir.mkdir(parents=True, exist_ok=True)
-            shutil.move(
-                str(plan_path),
-                str(archive_plans_dir / f"{task_id}.md"),
-            )
-
-    # Fire hooks after locks released
-    execute_hooks(config, lattice_dir, task_id, event)
-
-    return event
+    return mutate_task(
+        lattice_dir,
+        task_id,
+        decide,
+        config,
+        source="either",
+        destination="archived",
+        may_emit_lifecycle=True,
+    ).callback_value
 
 
 @mcp.tool()
@@ -768,61 +725,37 @@ def lattice_unarchive(
     config = _load_config(lattice_dir)
     _validate_actor(actor)
     task_id = _resolve_task_id(lattice_dir, task_id)
-
-    active_path = lattice_dir / "tasks" / f"{task_id}.json"
-    if active_path.exists():
+    if (
+        (lattice_dir / "events" / f"{task_id}.jsonl").exists()
+        and (lattice_dir / "tasks" / f"{task_id}.json").exists()
+        and not (lattice_dir / "archive" / "events" / f"{task_id}.jsonl").exists()
+        and not (lattice_dir / "archive" / "tasks" / f"{task_id}.json").exists()
+    ):
         raise ValueError(f"Task {task_id} is already active.")
 
-    archive_snapshot_path = lattice_dir / "archive" / "tasks" / f"{task_id}.json"
-    if not archive_snapshot_path.exists():
-        raise ValueError(f"Task {task_id} not found in archive.")
-
-    snapshot = json.loads(archive_snapshot_path.read_text())
-    event = create_event(type="task_unarchived", task_id=task_id, actor=actor, data={})
-    updated_snapshot = apply_event_to_snapshot(snapshot, event)
-
-    locks_dir = lattice_dir / "locks"
-    lock_keys = sorted([f"events_{task_id}", f"tasks_{task_id}", "events__lifecycle"])
-
-    with multi_lock(locks_dir, lock_keys):
-        archive_event_path = lattice_dir / "archive" / "events" / f"{task_id}.jsonl"
-        jsonl_append(archive_event_path, serialize_event(event))
-
-        lifecycle_path = lattice_dir / "events" / "_lifecycle.jsonl"
-        jsonl_append(lifecycle_path, serialize_event(event))
-
-        shutil.move(
-            str(archive_event_path),
-            str(lattice_dir / "events" / f"{task_id}.jsonl"),
-        )
-
-        atomic_write(
-            lattice_dir / "tasks" / f"{task_id}.json",
-            serialize_snapshot(updated_snapshot),
-        )
-
-        archive_snapshot_path.unlink()
-
-        archive_notes_path = lattice_dir / "archive" / "notes" / f"{task_id}.md"
-        if archive_notes_path.exists():
-            shutil.move(
-                str(archive_notes_path),
-                str(lattice_dir / "notes" / f"{task_id}.md"),
+    def decide(context):  # noqa: ANN001, ANN202
+        if context.location == "active":
+            existing = next(
+                (
+                    event
+                    for event in reversed(context.events)
+                    if event["type"] == "task_unarchived"
+                ),
+                context.events[0],
             )
+            return TaskMutationDecision(value=existing, idempotent=True)
+        event = create_event(type="task_unarchived", task_id=task_id, actor=actor, data={})
+        return TaskMutationDecision(events=[event], value=event)
 
-        archive_plan_path = lattice_dir / "archive" / "plans" / f"{task_id}.md"
-        if archive_plan_path.exists():
-            plans_dir = lattice_dir / "plans"
-            plans_dir.mkdir(parents=True, exist_ok=True)
-            shutil.move(
-                str(archive_plan_path),
-                str(plans_dir / f"{task_id}.md"),
-            )
-
-    # Fire hooks after locks released
-    execute_hooks(config, lattice_dir, task_id, event)
-
-    return event
+    return mutate_task(
+        lattice_dir,
+        task_id,
+        decide,
+        config,
+        source="either",
+        destination="active",
+        may_emit_lifecycle=True,
+    ).callback_value
 
 
 def _validate_branch_name(branch: str) -> None:
@@ -860,20 +793,15 @@ def lattice_branch_link(
     config = _load_config(lattice_dir)
     _validate_actor(actor)
     task_id = _resolve_task_id(lattice_dir, task_id)
+    _read_snapshot_or_error(lattice_dir, task_id)
 
     event_data: dict = {"branch": branch}
     if repo is not None:
         event_data["repo"] = repo
 
-    event = create_event(type="branch_linked", task_id=task_id, actor=actor, data=event_data)
-
-    # Acquire lock, then read snapshot + check + write atomically
-    locks_dir = lattice_dir / "locks"
-    lock_keys = sorted([f"events_{task_id}", f"tasks_{task_id}"])
-
-    with multi_lock(locks_dir, lock_keys):
-        snapshot = _read_snapshot_or_error(lattice_dir, task_id)
-
+    def decide(context):  # noqa: ANN001, ANN202
+        snapshot = context.snapshot
+        assert snapshot is not None
         # Reject duplicates: same (branch, repo) pair
         for bl in snapshot.get("branch_links", []):
             if bl["branch"] == branch and bl.get("repo") == repo:
@@ -882,20 +810,10 @@ def lattice_branch_link(
                     f"Duplicate: branch '{branch}'{repo_display} already linked to {task_id}."
                 )
 
-        updated_snapshot = apply_event_to_snapshot(snapshot, event)
+        event = create_event(type="branch_linked", task_id=task_id, actor=actor, data=event_data)
+        return TaskMutationDecision(events=[event])
 
-        # Event-first write
-        event_path = lattice_dir / "events" / f"{task_id}.jsonl"
-        jsonl_append(event_path, serialize_event(event))
-
-        snapshot_path = lattice_dir / "tasks" / f"{task_id}.json"
-        atomic_write(snapshot_path, serialize_snapshot(updated_snapshot))
-
-    # Fire hooks after locks released
-    if config:
-        execute_hooks(config, lattice_dir, task_id, event)
-
-    return updated_snapshot
+    return mutate_task(lattice_dir, task_id, decide, config).snapshot
 
 
 @mcp.tool()
@@ -919,20 +837,15 @@ def lattice_branch_unlink(
     config = _load_config(lattice_dir)
     _validate_actor(actor)
     task_id = _resolve_task_id(lattice_dir, task_id)
+    _read_snapshot_or_error(lattice_dir, task_id)
 
     event_data: dict = {"branch": branch}
     if repo is not None:
         event_data["repo"] = repo
 
-    event = create_event(type="branch_unlinked", task_id=task_id, actor=actor, data=event_data)
-
-    # Acquire lock, then read snapshot + check + write atomically
-    locks_dir = lattice_dir / "locks"
-    lock_keys = sorted([f"events_{task_id}", f"tasks_{task_id}"])
-
-    with multi_lock(locks_dir, lock_keys):
-        snapshot = _read_snapshot_or_error(lattice_dir, task_id)
-
+    def decide(context):  # noqa: ANN001, ANN202
+        snapshot = context.snapshot
+        assert snapshot is not None
         # Check the branch link exists
         found = False
         for bl in snapshot.get("branch_links", []):
@@ -944,20 +857,10 @@ def lattice_branch_unlink(
             repo_display = f" (repo: {repo})" if repo else ""
             raise ValueError(f"No branch link '{branch}'{repo_display} on {task_id}.")
 
-        updated_snapshot = apply_event_to_snapshot(snapshot, event)
+        event = create_event(type="branch_unlinked", task_id=task_id, actor=actor, data=event_data)
+        return TaskMutationDecision(events=[event])
 
-        # Event-first write
-        event_path = lattice_dir / "events" / f"{task_id}.jsonl"
-        jsonl_append(event_path, serialize_event(event))
-
-        snapshot_path = lattice_dir / "tasks" / f"{task_id}.json"
-        atomic_write(snapshot_path, serialize_snapshot(updated_snapshot))
-
-    # Fire hooks after locks released
-    if config:
-        execute_hooks(config, lattice_dir, task_id, event)
-
-    return updated_snapshot
+    return mutate_task(lattice_dir, task_id, decide, config).snapshot
 
 
 @mcp.tool()
@@ -986,11 +889,8 @@ def lattice_event(
         )
 
     event_data = data if data is not None else {}
-    snapshot = _read_snapshot_or_error(lattice_dir, task_id)
-
     event = create_event(type=event_type, task_id=task_id, actor=actor, data=event_data)
-    updated_snapshot = apply_event_to_snapshot(snapshot, event)
-    write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
+    mutate_task_events(lattice_dir, task_id, [event], config)
     return event
 
 
@@ -1009,8 +909,6 @@ def lattice_comment_edit(
     config = _load_config(lattice_dir)
     _validate_actor(actor)
     task_id = _resolve_task_id(lattice_dir, task_id)
-    snapshot = _read_snapshot_or_error(lattice_dir, task_id)
-
     new_text = validate_comment_body(new_text)
 
     events = read_task_events(lattice_dir, task_id)
@@ -1022,9 +920,7 @@ def lattice_comment_edit(
         actor=actor,
         data={"comment_id": comment_id, "body": new_text, "previous_body": previous_body},
     )
-    updated_snapshot = apply_event_to_snapshot(snapshot, event)
-    write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
-    return updated_snapshot
+    return mutate_task_events(lattice_dir, task_id, [event], config).snapshot
 
 
 @mcp.tool()
@@ -1041,8 +937,6 @@ def lattice_comment_delete(
     config = _load_config(lattice_dir)
     _validate_actor(actor)
     task_id = _resolve_task_id(lattice_dir, task_id)
-    snapshot = _read_snapshot_or_error(lattice_dir, task_id)
-
     events = read_task_events(lattice_dir, task_id)
     validate_comment_for_delete(events, comment_id)
 
@@ -1052,9 +946,7 @@ def lattice_comment_delete(
         actor=actor,
         data={"comment_id": comment_id},
     )
-    updated_snapshot = apply_event_to_snapshot(snapshot, event)
-    write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
-    return updated_snapshot
+    return mutate_task_events(lattice_dir, task_id, [event], config).snapshot
 
 
 @mcp.tool()
@@ -1106,9 +998,7 @@ def lattice_react(
         actor=actor,
         data={"comment_id": comment_id, "emoji": emoji},
     )
-    updated_snapshot = apply_event_to_snapshot(snapshot, event)
-    write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
-    return updated_snapshot
+    return mutate_task_events(lattice_dir, task_id, [event], config).snapshot
 
 
 @mcp.tool()
@@ -1128,8 +1018,6 @@ def lattice_unreact(
     config = _load_config(lattice_dir)
     _validate_actor(actor)
     task_id = _resolve_task_id(lattice_dir, task_id)
-    snapshot = _read_snapshot_or_error(lattice_dir, task_id)
-
     if not validate_emoji(emoji):
         raise ValueError(
             f"Invalid emoji: '{emoji}'. Must be 1-50 alphanumeric, underscore, or hyphen characters."
@@ -1165,9 +1053,7 @@ def lattice_unreact(
         actor=actor,
         data={"comment_id": comment_id, "emoji": emoji},
     )
-    updated_snapshot = apply_event_to_snapshot(snapshot, event)
-    write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
-    return updated_snapshot
+    return mutate_task_events(lattice_dir, task_id, [event], config).snapshot
 
 
 # ---------------------------------------------------------------------------

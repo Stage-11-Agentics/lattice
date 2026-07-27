@@ -19,7 +19,7 @@ from lattice.cli.helpers import (
     require_root,
     resolve_task_id,
     validate_actor_format_or_exit,
-    write_task_event,
+    mutate_task_events,
 )
 from lattice.cli.main import cli
 from lattice.core.artifacts import (
@@ -275,7 +275,7 @@ def attach(
         snapshot = apply_event_to_snapshot(snapshot, event)
 
         # Write event and snapshot
-        write_task_event(lattice_dir, task_id, [event], snapshot, config)
+        snapshot = mutate_task_events(lattice_dir, task_id, [event], config).snapshot
 
         # Output
         output_result(
