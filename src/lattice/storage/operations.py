@@ -693,7 +693,11 @@ def mutate_task(
         idempotent = decision.idempotent
 
         working = authority.snapshot if authority is not None else None
-        seen_ids = {event["id"] for event in context.events}
+        validation_events = list(context.events)
+        seen_ids = {event["id"] for event in validation_events}
+        current_location: TaskLocation = authority.location if authority is not None else "active"
+        logical_location = current_location
+        requested_location = destination or current_location
         for event in decision.events:
             if event.get("task_id") != task_id:
                 raise ValueError("mutation event task_id does not match target task")
@@ -703,19 +707,19 @@ def mutate_task(
                 raise ValueError("lifecycle event requires may_emit_lifecycle=True")
             if working is None and event.get("type") != "task_created":
                 raise ValueError("first task event must be task_created")
+            _validate_semantic_event(validation_events, event, logical_location)
             working = apply_event_to_snapshot(working, event)
+            validation_events.append(event)
             seen_ids.add(event["id"])
+            if event["type"] == "task_archived":
+                logical_location = "archived"
+                requested_location = "archived"
+            elif event["type"] == "task_unarchived":
+                logical_location = "active"
+                requested_location = "active"
 
         if working is None:
             raise ValueError("mutation produced no task snapshot")
-
-        current_location: TaskLocation = authority.location if authority is not None else "active"
-        requested_location = destination or current_location
-        for event in decision.events:
-            if event["type"] == "task_archived":
-                requested_location = "archived"
-            elif event["type"] == "task_unarchived":
-                requested_location = "active"
 
         event_path = (
             _location_paths(lattice_dir, task_id, current_location)["event"]

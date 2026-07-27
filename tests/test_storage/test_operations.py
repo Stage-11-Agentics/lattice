@@ -52,6 +52,23 @@ def _create_task(ld: Path, task_id: str) -> None:
     mutate_task_events(ld, task_id, [event], source="absent", may_emit_lifecycle=True)
 
 
+def _task_durable_bytes(ld: Path, task_id: str) -> dict[str, bytes | None]:
+    """Capture every per-task placement file plus the shared lifecycle log."""
+    paths = [ld / "events" / "_lifecycle.jsonl"]
+    for prefix in (ld, ld / "archive"):
+        paths.extend(
+            [
+                prefix / "events" / f"{task_id}.jsonl",
+                prefix / "tasks" / f"{task_id}.json",
+                prefix / "plans" / f"{task_id}.md",
+                prefix / "notes" / f"{task_id}.md",
+            ]
+        )
+    return {
+        str(path.relative_to(ld)): path.read_bytes() if path.exists() else None for path in paths
+    }
+
+
 class TestMutateTask:
     """Verify the canonical event-authoritative mutation function."""
 
@@ -549,6 +566,179 @@ class TestMutateTask:
         event_path.write_bytes(event_path.read_bytes() + serialize_event(duplicate).encode())
         with pytest.raises(AuthoritativeLogError, match="already deleted"):
             read_task_authority(ld, task_id)
+
+    @pytest.mark.parametrize(
+        ("scenario", "message"),
+        [
+            ("duplicate_delete", "already deleted"),
+            ("duplicate_archive", "must alternate from active"),
+            ("duplicate_unarchive", "must alternate from archived"),
+            ("edit_after_delete", "Cannot edit deleted"),
+            ("reaction_after_delete", "Cannot react to deleted"),
+            ("duplicate_reaction_remove", "no matching actor reaction"),
+            ("multi_delete_then_edit", "Cannot edit deleted"),
+            ("multi_archive_twice", "must alternate from active"),
+        ],
+    )
+    def test_semantically_invalid_proposals_reject_before_any_durable_write(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        scenario: str,
+        message: str,
+    ) -> None:
+        """Canonical writes cannot append histories that strict replay rejects."""
+        ld = _setup_lattice(tmp_path)
+        task_id = f"task_01REJECT{scenario.upper():0<18}"[:31]
+        _create_task(ld, task_id)
+        (ld / "plans" / f"{task_id}.md").write_bytes(b"# exact plan\n")
+        (ld / "notes" / f"{task_id}.md").write_bytes(b"# exact notes\n")
+
+        comment = create_event("comment_added", task_id, "human:test", {"body": "one shot"})
+        delete = create_event(
+            "comment_deleted",
+            task_id,
+            "human:test",
+            {"comment_id": comment["id"]},
+        )
+        reaction = create_event(
+            "reaction_added",
+            task_id,
+            "human:test",
+            {"comment_id": comment["id"], "emoji": "eyes"},
+        )
+        remove_reaction = create_event(
+            "reaction_removed",
+            task_id,
+            "human:test",
+            {"comment_id": comment["id"], "emoji": "eyes"},
+        )
+        source = "active"
+        destination = None
+        may_emit_lifecycle = False
+
+        if scenario in {
+            "duplicate_delete",
+            "edit_after_delete",
+            "reaction_after_delete",
+        }:
+            mutate_task_events(ld, task_id, [comment, delete])
+        elif scenario == "duplicate_reaction_remove":
+            mutate_task_events(ld, task_id, [comment, reaction, remove_reaction])
+        elif scenario == "multi_delete_then_edit":
+            mutate_task_events(ld, task_id, [comment])
+        elif scenario == "duplicate_archive":
+            mutate_task_events(
+                ld,
+                task_id,
+                [create_event("task_archived", task_id, "human:test", {})],
+                source="either",
+                destination="archived",
+                may_emit_lifecycle=True,
+            )
+        elif scenario == "duplicate_unarchive":
+            mutate_task_events(
+                ld,
+                task_id,
+                [create_event("task_archived", task_id, "human:test", {})],
+                source="either",
+                destination="archived",
+                may_emit_lifecycle=True,
+            )
+            mutate_task_events(
+                ld,
+                task_id,
+                [create_event("task_unarchived", task_id, "human:test", {})],
+                source="either",
+                destination="active",
+                may_emit_lifecycle=True,
+            )
+
+        if scenario == "duplicate_delete":
+            proposed = [
+                create_event(
+                    "comment_deleted",
+                    task_id,
+                    "human:test",
+                    {"comment_id": comment["id"]},
+                )
+            ]
+        elif scenario in {"duplicate_archive", "multi_archive_twice"}:
+            proposed = [
+                create_event("task_archived", task_id, "human:test", {}),
+                *(
+                    [create_event("task_archived", task_id, "human:test", {})]
+                    if scenario == "multi_archive_twice"
+                    else []
+                ),
+            ]
+            source = "either"
+            destination = "archived"
+            may_emit_lifecycle = True
+        elif scenario == "duplicate_unarchive":
+            proposed = [create_event("task_unarchived", task_id, "human:test", {})]
+            source = "either"
+            destination = "active"
+            may_emit_lifecycle = True
+        elif scenario == "edit_after_delete":
+            proposed = [
+                create_event(
+                    "comment_edited",
+                    task_id,
+                    "human:test",
+                    {"comment_id": comment["id"], "body": "too late"},
+                )
+            ]
+        elif scenario == "reaction_after_delete":
+            proposed = [
+                create_event(
+                    "reaction_added",
+                    task_id,
+                    "human:test",
+                    {"comment_id": comment["id"], "emoji": "eyes"},
+                )
+            ]
+        elif scenario == "duplicate_reaction_remove":
+            proposed = [
+                create_event(
+                    "reaction_removed",
+                    task_id,
+                    "human:test",
+                    {"comment_id": comment["id"], "emoji": "eyes"},
+                )
+            ]
+        else:
+            proposed = [
+                delete,
+                create_event(
+                    "comment_edited",
+                    task_id,
+                    "human:test",
+                    {"comment_id": comment["id"], "body": "too late"},
+                ),
+            ]
+
+        before = _task_durable_bytes(ld, task_id)
+        observed: list[str] = []
+        monkeypatch.setattr(
+            "lattice.storage.operations.execute_hooks",
+            lambda _config, _ld, _task_id, event: observed.append(event["id"]),
+        )
+
+        with pytest.raises(ValueError, match=message):
+            mutate_task_events(
+                ld,
+                task_id,
+                proposed,
+                {"hooks": {"post_event": "must not run"}},
+                source=source,
+                destination=destination,
+                may_emit_lifecycle=may_emit_lifecycle,
+            )
+
+        assert _task_durable_bytes(ld, task_id) == before
+        assert observed == []
+        assert read_task_authority(ld, task_id) is not None
 
     @pytest.mark.parametrize("direction", ["archive", "unarchive"])
     @pytest.mark.parametrize(
