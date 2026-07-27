@@ -478,15 +478,11 @@ def mutate_task(
 
         preexisting_snapshot_drift = False
         if authority is not None:
-            snapshot_path = _location_paths(
-                lattice_dir, task_id, authority.location
-            )["snapshot"]
+            snapshot_path = _location_paths(lattice_dir, task_id, authority.location)["snapshot"]
             try:
-                preexisting_snapshot_drift = (
-                    not snapshot_path.exists()
-                    or snapshot_path.read_text(encoding="utf-8")
-                    != serialize_snapshot(authority.snapshot)
-                )
+                preexisting_snapshot_drift = not snapshot_path.exists() or snapshot_path.read_text(
+                    encoding="utf-8"
+                ) != serialize_snapshot(authority.snapshot)
             except OSError:
                 preexisting_snapshot_drift = True
 

@@ -147,6 +147,7 @@ def _seed_example_tasks(lattice_dir: Path, config: dict) -> None:
         },
     )
     parent_snapshot = apply_event_to_snapshot(None, parent_ev)
+
     def parent_decision(context):  # noqa: ANN001, ANN202
         event = dict(parent_ev)
         event["data"] = dict(parent_ev["data"])

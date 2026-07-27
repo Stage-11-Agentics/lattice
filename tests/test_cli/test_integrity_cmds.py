@@ -132,9 +132,7 @@ class TestDoctor:
         assert "cannot be materialized" in rebuild_result.output
         assert snap_path.read_bytes() == original_snapshot
 
-    def test_event_only_snapshot_is_replay_repairable(
-        self, create_task, invoke, initialized_root
-    ):
+    def test_event_only_snapshot_is_replay_repairable(self, create_task, invoke, initialized_root):
         task_id = create_task("Missing snapshot")["id"]
         snap_path = initialized_root / ".lattice" / "tasks" / f"{task_id}.json"
         expected = snap_path.read_bytes()
@@ -321,15 +319,11 @@ class TestDoctor:
         assert "authoritative" in result.output.lower()
         assert "lifecycle" in result.output.lower() or "Lifecycle" in result.output
 
-    def test_doctor_detects_mismatched_lifecycle_copy(
-        self, create_task, invoke, initialized_root
-    ):
+    def test_doctor_detects_mismatched_lifecycle_copy(self, create_task, invoke, initialized_root):
         task = create_task("Lifecycle mismatch")
         lifecycle_path = initialized_root / ".lattice" / "events" / "_lifecycle.jsonl"
         events = [
-            json.loads(line)
-            for line in lifecycle_path.read_text().splitlines()
-            if line.strip()
+            json.loads(line) for line in lifecycle_path.read_text().splitlines() if line.strip()
         ]
         event = next(item for item in events if item["task_id"] == task["id"])
         event["data"]["title"] = "Mismatched derived copy"

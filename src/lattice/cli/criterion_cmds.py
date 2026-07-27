@@ -85,23 +85,17 @@ def criterion_add(
             validate_criterion_id(criterion_id)
         except ValueError as exc:
             output_error(str(exc), "VALIDATION_ERROR", is_json)
-    lattice_dir, config, actor, task_id = _mutation_context(
-        is_json, task_id, on_behalf_of
-    )
+    lattice_dir, config, actor, task_id = _mutation_context(is_json, task_id, on_behalf_of)
 
     def decide(context):  # noqa: ANN001, ANN202
         snapshot = context.snapshot
         assert snapshot is not None
-        chosen_id = criterion_id or allocate_criterion_id(
-            snapshot.get("acceptance_criteria", [])
-        )
+        chosen_id = criterion_id or allocate_criterion_id(snapshot.get("acceptance_criteria", []))
         existing = find_criterion(snapshot, chosen_id)
         if existing is not None:
             initial_outcome = existing["revisions"][0]["outcome"]
             if criterion_id is not None and initial_outcome == outcome:
-                return TaskMutationDecision(
-                    value=copy.deepcopy(existing), idempotent=True
-                )
+                return TaskMutationDecision(value=copy.deepcopy(existing), idempotent=True)
             raise ValueError(
                 f"Acceptance criterion {chosen_id} already exists with different initial prose."
             )
@@ -146,7 +140,9 @@ def criterion_add(
 @click.argument("task_id")
 @click.argument("criterion_id")
 @click.argument("outcome", required=False)
-@click.option("--file", "file_path", type=click.Path(exists=True), help="Read outcome from a file.")
+@click.option(
+    "--file", "file_path", type=click.Path(exists=True), help="Read outcome from a file."
+)
 @common_options
 def criterion_edit(
     task_id: str,
@@ -176,9 +172,7 @@ def criterion_edit(
         )
     except ValueError as exc:
         output_error(str(exc), "VALIDATION_ERROR", is_json)
-    lattice_dir, config, actor, task_id = _mutation_context(
-        is_json, task_id, on_behalf_of
-    )
+    lattice_dir, config, actor, task_id = _mutation_context(is_json, task_id, on_behalf_of)
 
     def decide(context):  # noqa: ANN001, ANN202
         snapshot = context.snapshot
@@ -189,9 +183,7 @@ def criterion_edit(
         if criterion["retired"]:
             raise ValueError(f"Acceptance criterion {criterion_id} is retired.")
         if criterion["outcome"] == outcome:
-            return TaskMutationDecision(
-                value=copy.deepcopy(criterion), idempotent=True
-            )
+            return TaskMutationDecision(value=copy.deepcopy(criterion), idempotent=True)
         event = create_event(
             type="acceptance_criterion_edited",
             task_id=task_id,
@@ -249,9 +241,7 @@ def criterion_retire(
         validate_criterion_id(criterion_id)
     except ValueError as exc:
         output_error(str(exc), "VALIDATION_ERROR", is_json)
-    lattice_dir, config, actor, task_id = _mutation_context(
-        is_json, task_id, on_behalf_of
-    )
+    lattice_dir, config, actor, task_id = _mutation_context(is_json, task_id, on_behalf_of)
 
     def decide(context):  # noqa: ANN001, ANN202
         snapshot = context.snapshot
@@ -322,7 +312,10 @@ def criterion_list(
     if is_json:
         click.echo(
             json.dumps(
-                {"ok": True, "data": {"task_id": task_id, "archived": archived, "criteria": criteria}},
+                {
+                    "ok": True,
+                    "data": {"task_id": task_id, "archived": archived, "criteria": criteria},
+                },
                 sort_keys=True,
                 indent=2,
             )

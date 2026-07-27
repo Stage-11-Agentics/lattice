@@ -109,9 +109,7 @@ class TestMutateTask:
                 "type": "task",
             },
         )
-        mutate_task_events(
-            ld, task_id, [create_ev], source="absent", may_emit_lifecycle=True
-        )
+        mutate_task_events(ld, task_id, [create_ev], source="absent", may_emit_lifecycle=True)
 
         lifecycle_before = (ld / "events" / "_lifecycle.jsonl").read_text()
 
@@ -142,9 +140,7 @@ class TestMutateTask:
                 "type": "task",
             },
         )
-        mutate_task_events(
-            ld, task_id, [create_ev], source="absent", may_emit_lifecycle=True
-        )
+        mutate_task_events(ld, task_id, [create_ev], source="absent", may_emit_lifecycle=True)
 
         # Two field updates in one call
         ev1 = create_event(
@@ -239,9 +235,7 @@ class TestMutateTask:
         result = mutate_task(
             ld,
             task_id,
-            lambda context: TaskMutationDecision(
-                value=context.reserved_short_id, idempotent=True
-            ),
+            lambda context: TaskMutationDecision(value=context.reserved_short_id, idempotent=True),
             source="absent",
             may_emit_lifecycle=True,
             project_prefix="LAT",
@@ -256,9 +250,7 @@ class TestMutateTask:
 
     def test_concurrent_project_creates_allocate_distinct_ids(self, tmp_path: Path) -> None:
         ld = _setup_lattice(tmp_path)
-        task_ids = [
-            f"task_01H{index:023d}" for index in range(1, 9)
-        ]
+        task_ids = [f"task_01H{index:023d}" for index in range(1, 9)]
 
         def create(task_id: str) -> str:
             def decide(context):  # noqa: ANN001, ANN202

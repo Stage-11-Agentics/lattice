@@ -193,18 +193,13 @@ def create(
     def decide_create(context):  # noqa: ANN001, ANN202
         if context.snapshot is not None:
             created_data = context.events[0]["data"]
-            existing = {
-                field: created_data.get(field)
-                for field in _CREATE_COMPARE_FIELDS
-            }
+            existing = {field: created_data.get(field) for field in _CREATE_COMPARE_FIELDS}
             new = {field: requested_data.get(field) for field in _CREATE_COMPARE_FIELDS}
             existing["tags"] = existing.get("tags") or []
             new["tags"] = new.get("tags") or []
             if existing != new:
                 raise ValueError(f"Conflict: task {task_id} exists with different data.")
-            return TaskMutationDecision(
-                value=created_data.get("short_id"), idempotent=True
-            )
+            return TaskMutationDecision(value=created_data.get("short_id"), idempotent=True)
 
         event_data = dict(requested_data)
         if context.reserved_short_id is not None:
@@ -220,9 +215,7 @@ def create(
             on_behalf_of=on_behalf_of,
             reason=provenance_reason,
         )
-        return TaskMutationDecision(
-            events=[event], value=context.reserved_short_id
-        )
+        return TaskMutationDecision(events=[event], value=context.reserved_short_id)
 
     try:
         result = mutate_task(

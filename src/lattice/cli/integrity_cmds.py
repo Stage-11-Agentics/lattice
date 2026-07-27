@@ -238,9 +238,7 @@ def _inspect_task_authority_unlocked(
                 {
                     "level": "warning",
                     "check": "placement_drift",
-                    "message": (
-                        f"Task {task_id} has {relation} duplicate event logs. {repair}"
-                    ),
+                    "message": (f"Task {task_id} has {relation} duplicate event logs. {repair}"),
                     "task_id": task_id,
                 }
             )
@@ -354,15 +352,9 @@ def inspect_task_authority(
 ) -> tuple[dict[str, ResolvedTaskAuthority], list[dict]]:
     """Inspect all candidate bytes under one stable, deterministic lock set."""
     task_ids = sorted(_collect_task_ids(lattice_dir))
-    lock_keys = [
-        key
-        for task_id in task_ids
-        for key in (f"events_{task_id}", f"tasks_{task_id}")
-    ]
+    lock_keys = [key for task_id in task_ids for key in (f"events_{task_id}", f"tasks_{task_id}")]
     with multi_lock(lattice_dir / "locks", lock_keys):
-        return _inspect_task_authority_unlocked(
-            lattice_dir, skip_task_ids=skip_task_ids
-        )
+        return _inspect_task_authority_unlocked(lattice_dir, skip_task_ids=skip_task_ids)
 
 
 # ---------------------------------------------------------------------------
@@ -483,16 +475,12 @@ def doctor(fix: bool, output_json: bool) -> None:
 
     # A corrupt cache is replay-repairable when strict authority succeeds.
     for finding in findings:
-        if (
-            finding["check"] == "json_parse"
-            and finding.get("task_id") in authorities
-        ):
+        if finding["check"] == "json_parse" and finding.get("task_id") in authorities:
             finding["level"] = "warning"
             finding["message"] += " (snapshot cache is rebuildable from valid authority)"
 
     drift_ok = not any(
-        finding["check"] in {"snapshot_drift", "placement_drift"}
-        for finding in findings
+        finding["check"] in {"snapshot_drift", "placement_drift"} for finding in findings
     )
 
     # -----------------------------------------------------------------
@@ -1106,11 +1094,7 @@ def _rebuild_id_index(lattice_dir: Path) -> None:
     task_ids = sorted(_collect_task_ids(lattice_dir))
     lock_keys = [
         "ids_json",
-        *(
-            key
-            for task_id in task_ids
-            for key in (f"events_{task_id}", f"tasks_{task_id}")
-        ),
+        *(key for task_id in task_ids for key in (f"events_{task_id}", f"tasks_{task_id}")),
     ]
 
     with multi_lock(lattice_dir / "locks", lock_keys):
@@ -1128,8 +1112,7 @@ def _rebuild_id_index(lattice_dir: Path) -> None:
                 existing = id_map.get(short_id)
                 if existing is not None and existing != task_id:
                     raise AuthoritativeLogError(
-                        f"duplicate authoritative short ID {short_id}: "
-                        f"{existing} and {task_id}"
+                        f"duplicate authoritative short ID {short_id}: {existing} and {task_id}"
                     )
                 id_map[short_id] = task_id
                 prefix, num = parse_short_id(short_id)
@@ -1227,8 +1210,7 @@ def rebuild(task_id: str | None, rebuild_all: bool, output_json: bool) -> None:
 
         if failures:
             output_error(
-                "Rebuild refused malformed or divergent authority: "
-                + "; ".join(failures),
+                "Rebuild refused malformed or divergent authority: " + "; ".join(failures),
                 "REBUILD_ERROR",
                 is_json,
             )
@@ -1287,10 +1269,9 @@ def rebuild(task_id: str | None, rebuild_all: bool, output_json: bool) -> None:
         try:
             _rebuild_task(lattice_dir, task_id)
         except AuthoritativeLogError as exc:
-            if (
-                "no authoritative event log exists" in str(exc)
-                and "for existing snapshot" not in str(exc)
-            ):
+            if "no authoritative event log exists" in str(
+                exc
+            ) and "for existing snapshot" not in str(exc):
                 output_error(
                     f"No event log found for {task_id}.",
                     "NOT_FOUND",

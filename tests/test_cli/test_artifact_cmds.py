@@ -234,13 +234,9 @@ class TestAttachFile:
         )
         assert result.exit_code == 0, result.output
         lattice_dir = initialized_root / LATTICE_DIR
-        snapshot = json.loads(
-            (lattice_dir / "tasks" / f"{task_id}.json").read_text()
-        )
+        snapshot = json.loads((lattice_dir / "tasks" / f"{task_id}.json").read_text())
         artifact_ref = next(
-            ref
-            for ref in snapshot["evidence_refs"]
-            if ref["source_type"] == "artifact"
+            ref for ref in snapshot["evidence_refs"] if ref["source_type"] == "artifact"
         )
         assert artifact_ref["role"] is None
         assert artifact_ref["criterion_ids"] == ["AC-1"]

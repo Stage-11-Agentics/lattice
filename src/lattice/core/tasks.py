@@ -145,14 +145,10 @@ def compact_snapshot(snapshot: dict) -> dict:
         "branch_link_count": len(snapshot.get("branch_links", [])),
         "linked_file_count": len(snapshot.get("linked_files", [])),
         "acceptance_criteria_count": sum(
-            1
-            for criterion in snapshot.get("acceptance_criteria", [])
-            if not criterion["retired"]
+            1 for criterion in snapshot.get("acceptance_criteria", []) if not criterion["retired"]
         ),
         "retired_acceptance_criteria_count": sum(
-            1
-            for criterion in snapshot.get("acceptance_criteria", [])
-            if criterion["retired"]
+            1 for criterion in snapshot.get("acceptance_criteria", []) if criterion["retired"]
         ),
     }
     short_id = snapshot.get("short_id")
@@ -396,9 +392,7 @@ def _mut_acceptance_criterion_edited(snap: dict, event: dict) -> None:
         raise ValueError("Acceptance-criterion edit from_outcome does not match authority.")
     expected_revision = criterion["revision"] + 1
     if data.get("revision") != expected_revision:
-        raise ValueError(
-            f"Acceptance-criterion edit revision must be {expected_revision}."
-        )
+        raise ValueError(f"Acceptance-criterion edit revision must be {expected_revision}.")
     if outcome == criterion["outcome"]:
         raise ValueError("Acceptance-criterion edit event cannot be a no-op.")
     criterion["outcome"] = outcome
@@ -515,9 +509,7 @@ def _mut_comment_edited(snap: dict, event: dict) -> None:
     )
     if existing is None:
         if new_role is not None:
-            evidence_refs.append(
-                {"id": comment_id, "role": new_role, "source_type": "comment"}
-            )
+            evidence_refs.append({"id": comment_id, "role": new_role, "source_type": "comment"})
         return
     existing["role"] = new_role
     if new_role is None and not existing.get("criterion_ids"):
@@ -558,9 +550,7 @@ def get_artifact_evidence_refs(snapshot: dict) -> list[dict]:
     evidence_refs = snapshot.get("evidence_refs")
     if evidence_refs is not None:
         return [
-            copy.deepcopy(ref)
-            for ref in evidence_refs
-            if ref.get("source_type") == "artifact"
+            copy.deepcopy(ref) for ref in evidence_refs if ref.get("source_type") == "artifact"
         ]
     records: list[dict] = []
     for ref in snapshot.get("artifact_refs", []):
@@ -578,11 +568,7 @@ def get_comment_evidence_refs(snapshot: dict) -> list[dict]:
     """Return copied full comment evidence records with legacy fallback."""
     evidence_refs = snapshot.get("evidence_refs")
     if evidence_refs is not None:
-        return [
-            copy.deepcopy(ref)
-            for ref in evidence_refs
-            if ref.get("source_type") == "comment"
-        ]
+        return [copy.deepcopy(ref) for ref in evidence_refs if ref.get("source_type") == "comment"]
     records: list[dict] = []
     for ref in snapshot.get("comment_role_refs", []):
         record = copy.deepcopy(ref)

@@ -230,9 +230,7 @@ def lattice_create(
 
     def decide(context):  # noqa: ANN001, ANN202
         if context.snapshot is not None:
-            existing_data = {
-                name: context.events[0]["data"].get(name) for name in compare_fields
-            }
+            existing_data = {name: context.events[0]["data"].get(name) for name in compare_fields}
             new_data = {name: requested_data.get(name) for name in compare_fields}
             existing_data["tags"] = existing_data.get("tags") or []
             new_data["tags"] = new_data.get("tags") or []
@@ -242,9 +240,7 @@ def lattice_create(
         event_data = dict(requested_data)
         if context.reserved_short_id is not None:
             event_data["short_id"] = context.reserved_short_id
-        event = create_event(
-            type="task_created", task_id=task_id, actor=actor, data=event_data
-        )
+        event = create_event(type="task_created", task_id=task_id, actor=actor, data=event_data)
         return TaskMutationDecision(events=[event])
 
     snapshot = mutate_task(
@@ -288,9 +284,7 @@ def lattice_criterion_add(
     def decide(context):  # noqa: ANN001, ANN202
         snapshot = context.snapshot
         assert snapshot is not None
-        chosen_id = criterion_id or allocate_criterion_id(
-            snapshot.get("acceptance_criteria", [])
-        )
+        chosen_id = criterion_id or allocate_criterion_id(snapshot.get("acceptance_criteria", []))
         existing = find_criterion(snapshot, chosen_id)
         if existing is not None:
             if criterion_id is not None and existing["revisions"][0]["outcome"] == outcome:
@@ -670,9 +664,7 @@ def lattice_comment(
             event_data["role"] = role
         if normalized_ids:
             event_data["criterion_ids"] = normalized_ids
-        event = create_event(
-            type="comment_added", task_id=task_id, actor=actor, data=event_data
-        )
+        event = create_event(type="comment_added", task_id=task_id, actor=actor, data=event_data)
         return TaskMutationDecision(events=[event])
 
     return mutate_task(lattice_dir, task_id, decide, config).snapshot
@@ -849,8 +841,7 @@ def lattice_attach(
 
     if existing_metadata is not None:
         conflict = (
-            existing_metadata.get("type") != art_type
-            or existing_metadata.get("title") != title
+            existing_metadata.get("type") != art_type or existing_metadata.get("title") != title
         )
         if is_url:
             conflict = conflict or (
@@ -859,8 +850,7 @@ def lattice_attach(
         else:
             expected_payload = f"{art_id}{Path(source).suffix}"
             conflict = conflict or (
-                (existing_metadata.get("payload") or {}).get("file")
-                != expected_payload
+                (existing_metadata.get("payload") or {}).get("file") != expected_payload
             )
         if conflict:
             raise ValueError(f"Conflict: artifact {art_id} exists with different data.")
@@ -955,9 +945,7 @@ def lattice_archive(
     def decide(context):  # noqa: ANN001, ANN202
         if context.location == "archived":
             existing = next(
-                event
-                for event in reversed(context.events)
-                if event["type"] == "task_archived"
+                event for event in reversed(context.events) if event["type"] == "task_archived"
             )
             return TaskMutationDecision(value=existing, idempotent=True)
         event = create_event(type="task_archived", task_id=task_id, actor=actor, data={})

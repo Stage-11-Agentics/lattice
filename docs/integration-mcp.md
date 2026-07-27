@@ -87,6 +87,23 @@ Create a new task.
 
 Returns the task snapshot.
 
+#### `lattice_criterion_add`
+
+Add an optional task-local acceptance criterion. Parameters are `task_id`,
+`outcome`, `actor`, optional explicit `criterion_id`, and optional
+`lattice_root`. Automatic IDs use the next exact `AC-N` value.
+
+#### `lattice_criterion_edit`
+
+Revise an active criterion while preserving immutable history. Parameters are
+`task_id`, `criterion_id`, `outcome`, `actor`, and optional `lattice_root`.
+A normalized no-op is idempotent.
+
+#### `lattice_criterion_retire`
+
+Retire an active criterion without deleting its history. Parameters are
+`task_id`, `criterion_id`, `actor`, and optional `lattice_root`.
+
 #### `lattice_update`
 
 Update task fields.
@@ -135,6 +152,7 @@ Add a comment to a task.
 | `task_id` | string | yes | Task ID |
 | `text` | string | yes | Comment text |
 | `actor` | string | yes | Actor ID |
+| `criterion_ids` | list[string] | no | Existing task-local criteria to link |
 | `lattice_root` | string | no | Project directory path |
 
 #### `lattice_link`
@@ -176,6 +194,9 @@ Attach a file or URL to a task as an artifact.
 | `title` | string | no | Artifact title |
 | `art_type` | string | no | Artifact type (`file`, `reference`, `conversation`, `prompt`, `log`) |
 | `summary` | string | no | Short summary |
+| `role` | string | no | Optional evidence role |
+| `criterion_ids` | list[string] | no | Existing task-local criteria to link |
+| `artifact_id` | string | no | Caller-supplied ID for idempotent retry |
 | `lattice_root` | string | no | Project directory path |
 
 #### `lattice_archive`
@@ -213,6 +234,12 @@ Record a custom event on a task. The event type must start with `x_`.
 ### Read tools
 
 These tools are read-only and do not require an `actor` parameter.
+
+#### `lattice_criteria`
+
+List criteria for an active or archived task. Parameters are `task_id`,
+`include_retired` (default false), `include_history` (default false), and
+optional `lattice_root`. The result includes an `archived` marker.
 
 #### `lattice_list`
 
@@ -258,6 +285,12 @@ Check Lattice data integrity.
 
 Returns a diagnostic report with issue counts, severity levels, and task/archive counts.
 
+Criterion mutations reject archived tasks. `lattice_show` and
+`lattice://tasks/{task_id}` expose the full criterion materialized view for
+active or archived tasks. `criterion_ids` on comments and artifacts are
+task-local traceability links only: they do not imply pass/fail, satisfaction,
+or a completion-policy result.
+
 ## Available MCP resources
 
 Resources are auto-surfaced read-only data. Agents can access these without making explicit tool calls.
@@ -300,7 +333,13 @@ An agent using Lattice through MCP might execute this sequence of tool calls:
 3. lattice_comment(task_id="LAT-15", text="Root cause: redirect URL not URL-encoded", actor="agent:claude-opus-4")
    -> returns updated snapshot
 
-4. lattice_status(task_id="LAT-15", new_status="review", actor="agent:claude-opus-4")
+4. lattice_criterion_add(task_id="LAT-15", outcome="Login returns to the requested page", actor="agent:claude-opus-4")
+   -> returns criterion AC-1 and updated snapshot
+
+5. lattice_comment(task_id="LAT-15", text="Observed the redirect in the running app", criterion_ids=["AC-1"], actor="agent:claude-opus-4")
+   -> returns updated snapshot with a traceability link
+
+6. lattice_status(task_id="LAT-15", new_status="review", actor="agent:claude-opus-4")
    -> returns updated snapshot
 ```
 

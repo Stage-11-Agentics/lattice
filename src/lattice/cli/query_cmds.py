@@ -38,6 +38,7 @@ from lattice.core.stats import load_all_snapshots
 from lattice.core.tasks import (
     apply_event_to_snapshot,
     compact_snapshot,
+    get_artifact_evidence_refs,
     is_backward_status_transition,
 )
 from lattice.storage.operations import TaskMutationDecision, mutate_task
@@ -433,6 +434,16 @@ def list_cmd(
                 f'{prefix}{display_id}  {s_display}  {p}  {t}  "{title}"  '
                 f"{assigned_to}{archived_marker}"
             )
+            active_criteria = sum(
+                1
+                for criterion in snap.get("acceptance_criteria", [])
+                if not criterion.get("retired")
+            )
+            retired_criteria = sum(
+                1 for criterion in snap.get("acceptance_criteria", []) if criterion.get("retired")
+            )
+            if active_criteria or retired_criteria:
+                line += f"  [criteria: {active_criteria} active, {retired_criteria} retired]"
             if flag and isinstance(flag, dict) and flag.get("reason"):
                 line += f"  [needs human: {flag['reason']}]"
             click.echo(line)
@@ -1017,10 +1028,11 @@ def _read_artifact_info(lattice_dir: Path, snapshot: dict) -> list[dict]:
     to legacy ``artifact_refs`` for old snapshots.
     """
     artifacts: list[dict] = []
-    refs = _get_artifact_evidence_refs(snapshot)
-    for art_id, role in refs:
+    refs = get_artifact_evidence_refs(snapshot)
+    for ref in refs:
+        art_id = ref["id"]
         meta_path = lattice_dir / "artifacts" / "meta" / f"{art_id}.json"
-        info: dict = {"id": art_id, "role": role}
+        info: dict = dict(ref)
         if meta_path.exists():
             try:
                 meta = json.loads(meta_path.read_text())
@@ -1030,25 +1042,6 @@ def _read_artifact_info(lattice_dir: Path, snapshot: dict) -> list[dict]:
                 pass
         artifacts.append(info)
     return artifacts
-
-
-def _get_artifact_evidence_refs(snapshot: dict) -> list[tuple[str, str | None]]:
-    """Extract (artifact_id, role) pairs from evidence_refs or legacy artifact_refs."""
-    evidence_refs = snapshot.get("evidence_refs")
-    if evidence_refs is not None:
-        return [
-            (ref["id"], ref.get("role"))
-            for ref in evidence_refs
-            if ref.get("source_type") == "artifact"
-        ]
-    # Legacy fallback
-    result = []
-    for ref in snapshot.get("artifact_refs", []):
-        if isinstance(ref, dict):
-            result.append((ref["id"], ref.get("role")))
-        else:
-            result.append((ref, None))
-    return result
 
 
 def _print_compact_show(
@@ -1079,6 +1072,14 @@ def _print_compact_show(
             f"{flag.get('reason', '?')}"
         )
     click.echo(f"Assigned: {assigned_to}{next_str}")
+    active_criteria = sum(
+        1 for criterion in snapshot.get("acceptance_criteria", []) if not criterion.get("retired")
+    )
+    retired_criteria = sum(
+        1 for criterion in snapshot.get("acceptance_criteria", []) if criterion.get("retired")
+    )
+    if active_criteria or retired_criteria:
+        click.echo(f"Criteria: {active_criteria} active, {retired_criteria} retired")
 
 
 def _print_human_show(
@@ -1166,6 +1167,32 @@ def _print_human_show(
             else:
                 click.echo(f"  {source_id} --[{rel_type}]--> this")
 
+    criteria = snapshot.get("acceptance_criteria", [])
+    if criteria:
+        evidence_counts: dict[str, int] = {}
+        for ref in snapshot.get("evidence_refs", []):
+            for criterion_id in ref.get("criterion_ids", []):
+                evidence_counts[criterion_id] = evidence_counts.get(criterion_id, 0) + 1
+        click.echo("")
+        click.echo("Acceptance criteria:")
+        for criterion in criteria:
+            criterion_id = criterion.get("id", "?")
+            retired = " [retired]" if criterion.get("retired") else ""
+            revision = criterion.get("revision", "?")
+            evidence_count = evidence_counts.get(criterion_id, 0)
+            click.echo(
+                f"  {criterion_id}{retired} (rev {revision}, "
+                f"evidence: {evidence_count}) {criterion.get('outcome', '')}"
+            )
+            if full:
+                for history in criterion.get("revisions", []):
+                    click.echo(
+                        f"    rev {history.get('revision', '?')} "
+                        f"{history.get('changed_at', '?')} "
+                        f"by {get_actor_display(history.get('changed_by', '?'))}: "
+                        f"{history.get('outcome', '')}"
+                    )
+
     if artifact_info:
         click.echo("")
         click.echo("Artifacts:")
@@ -1174,11 +1201,14 @@ def _print_human_show(
             art_title = art.get("title")
             art_type = art.get("type")
             art_role = art.get("role")
+            criterion_ids = art.get("criterion_ids", [])
             parts: list[str] = []
             if art_type:
                 parts.append(art_type)
             if art_role:
                 parts.append(f"role: {art_role}")
+            if criterion_ids:
+                parts.append(f"criteria: {', '.join(criterion_ids)}")
             suffix = f" ({', '.join(parts)})" if parts else ""
             if art_title:
                 click.echo(f'  {art_id} "{art_title}"{suffix}')
@@ -1290,7 +1320,9 @@ def _event_summary(event: dict, full: bool) -> str:
             body = body[:57] + "..."
         role = data.get("role")
         role_tag = f" [role: {role}]" if role else ""
-        return f'"{body}"{role_tag}'
+        criteria = data.get("criterion_ids", [])
+        criteria_tag = f" [criteria: {', '.join(criteria)}]" if criteria else ""
+        return f'"{body}"{role_tag}{criteria_tag}'
     elif etype == "comment_edited":
         cid = data.get("comment_id", "?")
         return f"edited comment {cid[:20]}..."
@@ -1310,7 +1342,19 @@ def _event_summary(event: dict, full: bool) -> str:
     elif etype == "relationship_removed":
         return f"{data.get('type', '?')} -x- {data.get('target_task_id', '?')}"
     elif etype == "artifact_attached":
-        return f"artifact {data.get('artifact_id', '?')}"
+        role = f" [role: {data['role']}]" if data.get("role") else ""
+        criteria = data.get("criterion_ids", [])
+        links = f" [criteria: {', '.join(criteria)}]" if criteria else ""
+        return f"artifact {data.get('artifact_id', '?')}{role}{links}"
+    elif etype == "acceptance_criterion_added":
+        return f"{data.get('criterion_id', '?')} rev 1: {data.get('outcome', '')}"
+    elif etype == "acceptance_criterion_edited":
+        return (
+            f"{data.get('criterion_id', '?')} rev {data.get('revision', '?')}: "
+            f"{data.get('outcome', '')}"
+        )
+    elif etype == "acceptance_criterion_retired":
+        return f"{data.get('criterion_id', '?')} retired"
     elif etype == "branch_linked":
         repo = data.get("repo")
         branch = data.get("branch", "?")

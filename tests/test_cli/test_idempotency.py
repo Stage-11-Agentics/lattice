@@ -280,9 +280,7 @@ class TestAttachIdempotency:
             "--json",
         )
         assert invoke(*args).exit_code == 0
-        event_path = (
-            initialized_root / ".lattice" / "events" / f"{task_id}.jsonl"
-        )
+        event_path = initialized_root / ".lattice" / "events" / f"{task_id}.jsonl"
         event_count = len(event_path.read_text().splitlines())
         retry = invoke(*args)
         assert retry.exit_code == 0, retry.output
@@ -323,14 +321,10 @@ class TestAttachIdempotency:
             "--json",
         )
         assert first.exit_code == 0
-        event_path = (
-            initialized_root / ".lattice" / "events" / f"{task_id}.jsonl"
-        )
+        event_path = initialized_root / ".lattice" / "events" / f"{task_id}.jsonl"
         events = event_path.read_text().splitlines()
         event_path.write_text("\n".join(events[:-1]) + "\n")
-        snapshot_path = (
-            initialized_root / ".lattice" / "tasks" / f"{task_id}.json"
-        )
+        snapshot_path = initialized_root / ".lattice" / "tasks" / f"{task_id}.json"
         snapshot = json.loads(snapshot_path.read_text())
         snapshot["evidence_refs"] = []
         snapshot["last_event_id"] = json.loads(events[-2])["id"]

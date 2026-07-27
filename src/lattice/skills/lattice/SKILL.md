@@ -138,7 +138,7 @@ Options for `create`: `--priority` (critical/high/medium/low/none), `--type` (ta
 
 **No `epic` or `spike` types — just items of work with a dependency graph.** Lattice intentionally rejects umbrella/exploratory ticket types. Express multi-phase or umbrella work as a plain `task` with `subtask_of` links from its children. Express exploratory/investigation work as a plain `task` whose deliverable is a concrete artifact (plan doc, prototype, decision). The subtask + dependency graph (`subtask_of`, `blocks`, `depends_on`) gives you epic-shape and spike-shape without dedicated types. Every ticket is a chunk of work with a real output, not a bucket or a question.
 
-**Task description depth:** Match description detail to task ambiguity. Bug fixes and chores can be one-liners ("Add regex validation to frequency names"). Features and integration tasks should include: (1) what it does, (2) acceptance criteria, (3) architectural context, (4) what the user/operator experiences when done.
+**Task description depth:** Match description detail to task ambiguity. Bug fixes and chores can be one-liners ("Add regex validation to frequency names"). Features and integration tasks should include: (1) what it does, (2) acceptance criteria, (3) architectural context, (4) what the user/operator experiences when done. Structured task-local criterion records are optional; add them when stable IDs and evidence traceability help, not as a universal task or workflow requirement.
 
 Relationship types for `link`: `blocks`, `blocked_by`, `subtask_of`, `parent_of`, `depends_on`, `depended_on_by`, `related_to`
 
@@ -155,6 +155,8 @@ Transitions are enforced. Use `--force --reason "..."` to override when genuinel
 **`needs-human` is a flag, not a status.** It rides orthogonally on top of whatever status a task is in — a task can be `in_progress` and flagged, `blocked` and flagged, even `done` and flagged. Set it with `lattice needs-human <task> "<reason>"` (reason required) and clear it with `lattice needs-human <task> --clear`. The flag never moves the task. `blocked` stays a status for generic external dependencies; `needs-human` means "waiting on a human specifically," and the two can coexist.
 
 **`in_validation` is the e2e gate.** After local review passes, prove the change works against a running system — browser automation for web, simulator MCP for mobile, curl flows for APIs. Exercise the actual flow the ticket touched, then record evidence with `lattice attach <task> --role validation` (or `lattice comment <task> --role validation`). Transitioning to `pr_open` is blocked until validation evidence is recorded; if e2e genuinely doesn't apply, record a one-line N/A justification instead — explicit, never silent. Validation failure routes back to `in_progress` (impl-level) or `in_planning` (plan-level), and counts toward the 3-cycle rework valve. The bar: **"I saw it work," not "I think it should work."**
+
+`--criterion` on a comment or artifact records a traceability link only. It does not prove that criterion passed or was satisfied; state the observed result in the evidence itself and follow the configured role-based validation policy.
 
 ## Actor IDs
 

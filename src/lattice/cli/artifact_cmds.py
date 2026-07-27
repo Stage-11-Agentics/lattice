@@ -137,9 +137,7 @@ def attach(
         mutate_task(lattice_dir, task_id, validate_target, config)
     except AuthoritativeLogError as exc:
         message = str(exc)
-        if "no authoritative event log exists" in message or message.endswith(
-            " is archived."
-        ):
+        if "no authoritative event log exists" in message or message.endswith(" is archived."):
             output_error(f"Task {task_id} not found.", "NOT_FOUND", is_json)
         output_error(message, "VALIDATION_ERROR", is_json)
     except ValueError as exc:

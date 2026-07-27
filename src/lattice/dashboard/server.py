@@ -34,6 +34,7 @@ from lattice.core.ids import generate_task_id, validate_actor, validate_id
 from lattice.core.tasks import (
     apply_event_to_snapshot,
     compact_snapshot,
+    get_artifact_evidence_refs,
 )
 from lattice.storage.fs import atomic_write
 from lattice.storage.locks import multi_lock
@@ -1317,6 +1318,7 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
             if assigned_to is not None:
                 event_data["assigned_to"] = assigned_to
             try:
+
                 def decide(context):  # noqa: ANN001, ANN202
                     data = dict(event_data)
                     if context.reserved_short_id is not None:
@@ -1653,6 +1655,7 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                 return
 
             try:
+
                 def decide(context):  # noqa: ANN001, ANN202
                     if context.location == "archived":
                         existing = next(
@@ -2277,10 +2280,11 @@ def _read_snapshot_archive(ld: Path, task_id: str) -> dict | None:
 def _read_artifact_info(ld: Path, snapshot: dict) -> list[dict]:
     artifacts: list[dict] = []
     # Read from evidence_refs (new) with fallback to artifact_refs (legacy)
-    refs = _get_artifact_evidence_refs(snapshot)
-    for art_id, role in refs:
+    refs = get_artifact_evidence_refs(snapshot)
+    for ref in refs:
+        art_id = ref["id"]
         meta_path = ld / "artifacts" / "meta" / f"{art_id}.json"
-        info: dict = {"id": art_id, "role": role}
+        info: dict = dict(ref)
         if meta_path.is_file():
             try:
                 meta = json.loads(meta_path.read_text())
@@ -2290,25 +2294,6 @@ def _read_artifact_info(ld: Path, snapshot: dict) -> list[dict]:
                 pass
         artifacts.append(info)
     return artifacts
-
-
-def _get_artifact_evidence_refs(snapshot: dict) -> list[tuple[str, str | None]]:
-    """Extract (artifact_id, role) pairs from evidence_refs or legacy artifact_refs."""
-    evidence_refs = snapshot.get("evidence_refs")
-    if evidence_refs is not None:
-        return [
-            (ref["id"], ref.get("role"))
-            for ref in evidence_refs
-            if ref.get("source_type") == "artifact"
-        ]
-    # Legacy fallback
-    result = []
-    for ref in snapshot.get("artifact_refs", []):
-        if isinstance(ref, dict):
-            result.append((ref["id"], ref.get("role")))
-        else:
-            result.append((ref, None))
-    return result
 
 
 # ---------------------------------------------------------------------------

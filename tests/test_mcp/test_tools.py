@@ -207,11 +207,7 @@ class TestComment:
             actor="human:test",
             criterion_ids=["AC-1", "AC-1"],
         )
-        ref = next(
-            item
-            for item in result["evidence_refs"]
-            if item["source_type"] == "comment"
-        )
+        ref = next(item for item in result["evidence_refs"] if item["source_type"] == "comment")
         assert ref["role"] is None
         assert ref["criterion_ids"] == ["AC-1"]
 
@@ -558,9 +554,7 @@ class TestAttach:
             actor="human:test",
             artifact_id=art_id,
         )
-        second_snapshot = json.loads(
-            (lattice_dir / "tasks" / f"{second['id']}.json").read_text()
-        )
+        second_snapshot = json.loads((lattice_dir / "tasks" / f"{second['id']}.json").read_text())
         assert second_snapshot["evidence_refs"][0]["id"] == art_id
 
     def test_archived_task_rejects_before_artifact_files_are_created(

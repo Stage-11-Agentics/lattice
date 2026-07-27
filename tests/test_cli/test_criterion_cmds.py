@@ -43,17 +43,13 @@ def test_auto_add_edit_retire_and_history(create_task, invoke) -> None:
     assert edit.exit_code == 0, edit.output
     assert json.loads(edit.output)["data"]["criterion"]["revision"] == 2
 
-    retire = invoke(
-        "criterion", "retire", task_id, "AC-1", "--actor", "human:test", "--json"
-    )
+    retire = invoke("criterion", "retire", task_id, "AC-1", "--actor", "human:test", "--json")
     assert retire.exit_code == 0, retire.output
     assert json.loads(retire.output)["data"]["criterion"]["retired"] is True
 
     default_list = invoke("criterion", "list", task_id, "--json")
     assert json.loads(default_list.output)["data"]["criteria"] == []
-    history = invoke(
-        "criterion", "list", task_id, "--include-retired", "--history", "--json"
-    )
+    history = invoke("criterion", "list", task_id, "--include-retired", "--history", "--json")
     criterion = json.loads(history.output)["data"]["criteria"][0]
     assert [revision["revision"] for revision in criterion["revisions"]] == [1, 2]
 

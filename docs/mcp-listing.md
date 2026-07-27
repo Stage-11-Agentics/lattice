@@ -19,35 +19,47 @@ Key properties:
 - **Event-sourced**: Append-only event logs are the source of truth. Snapshots are derived and rebuildable.
 - **Agent-native**: Every operation requires actor attribution (`agent:claude`, `human:atin`). Idempotent retries via caller-supplied IDs. Structured JSON responses.
 - **Zero infrastructure**: No database, no cloud service, no authentication. Works anywhere the filesystem works.
-- **Full CRUD + relationships**: Create, update, assign, comment, link (7 relationship types), attach files/URLs, archive/unarchive.
+- **Task-local criteria and evidence**: Optional revisioned criteria with stable
+  IDs, retirement history, and neutral comment/artifact traceability links.
+- **Full task lifecycle + relationships**: Create, update, assign, comment, link
+  (7 relationship types), attach files/URLs, archive/unarchive.
 - **Configurable workflows**: Custom statuses, transitions, WIP limits, task types, and priority levels via `config.json`.
 
 ---
 
-## MCP Tools (17 total)
+## MCP Tools (26 total)
 
-### Write Operations (13 tools)
+### Write Operations (20 tools)
 
 | Tool | Description |
 |------|-------------|
 | `lattice_create` | Create a new task with title, type, priority, status, description, tags, and assignee. Returns the task snapshot. Supports caller-supplied IDs for idempotent retries. |
+| `lattice_criterion_add` | Add an optional task-local acceptance criterion with an automatic or explicit stable ID. |
+| `lattice_criterion_edit` | Revise an active criterion while preserving immutable outcome history. |
+| `lattice_criterion_retire` | Retire a criterion without deleting its history. |
 | `lattice_update` | Update task fields (title, description, priority, urgency, type, tags, custom fields via dot notation). Returns the updated snapshot. |
 | `lattice_status` | Change a task's workflow status with transition validation. Supports forced transitions with a reason. Returns the updated snapshot. |
 | `lattice_assign` | Assign a task to an actor (human or agent). Returns the updated snapshot. |
-| `lattice_comment` | Add a comment to a task. Returns the updated snapshot. |
+| `lattice_comment` | Add a comment, optionally linked to task-local criteria. Returns the updated snapshot. |
 | `lattice_link` | Create a typed relationship between two tasks (blocks, depends_on, subtask_of, related_to, spawned_by, duplicate_of, supersedes). Deduplication enforced. |
 | `lattice_unlink` | Remove a relationship between two tasks. |
-| `lattice_attach` | Attach a file or URL to a task as an artifact. Supports file, reference, conversation, prompt, and log artifact types with optional title and summary. |
+| `lattice_attach` | Attach a file or URL with optional evidence role and task-local criterion links. Supports caller-supplied artifact IDs for retry. |
 | `lattice_archive` | Archive a completed task (moves snapshot, events, and notes to archive directory). |
 | `lattice_unarchive` | Restore an archived task to active status. |
-| `lattice_file_link` | Link file(s) to a task to record decision provenance. Paths are normalized to project-relative form. Optional `reason` annotation explains why the file is linked. |
-| `lattice_file_unlink` | Remove file link(s) from a task. |
+| `lattice_branch_link` | Link a branch to a task. |
+| `lattice_branch_unlink` | Remove a branch link from a task. |
 | `lattice_event` | Record a custom event on a task. Event type must start with `x_` (extension namespace). Accepts arbitrary data payloads. |
+| `lattice_comment_edit` | Edit a comment body or evidence role while preserving criterion links. |
+| `lattice_comment_delete` | Delete a comment from the current materialized view. |
+| `lattice_react` | Add a reaction to a comment. |
+| `lattice_unreact` | Remove a reaction from a comment. |
 
-### Read Operations (4 tools)
+### Read Operations (6 tools)
 
 | Tool | Description |
 |------|-------------|
+| `lattice_criteria` | List criteria for an active or archived task, optionally including retired records and revision history. |
+| `lattice_comments` | Read materialized current/deleted task comments and reactions. |
 | `lattice_list` | List active tasks with optional filters: status, assignee, tag, task type, priority. Returns list of task snapshots. |
 | `lattice_show` | Show detailed task information including full event history. Automatically finds archived tasks. |
 | `lattice_config` | Read the project configuration (workflow statuses, transitions, task types, defaults). |
@@ -73,11 +85,13 @@ Key properties:
 
 - **Transport**: stdio (standard input/output)
 - **Protocol**: MCP (Model Context Protocol) via FastMCP
-- **Tools**: 17 (13 write, 4 read)
+- **Tools**: 26 (20 write, 6 read)
 - **Resources**: 7 URI patterns
 - **ID resolution**: All tools accept both ULIDs (`task_01HQ...`) and human-friendly short IDs (`LAT-42`)
 - **Actor attribution**: Required on all write operations (`prefix:identifier` format)
 - **Idempotent writes**: Caller-supplied IDs prevent duplicate task creation on retry
+- **Acceptance criteria**: Optional task-local stable IDs, immutable revisions,
+  retirement, archived reads, and evidence traceability without inferred verdicts
 - **Workflow validation**: Status transitions are validated against configurable workflow rules
 - **Relationship types**: blocks, depends_on, subtask_of, related_to, spawned_by, duplicate_of, supersedes
 - **Artifact types**: file, reference, conversation, prompt, log
@@ -173,7 +187,7 @@ Any MCP client that supports stdio transport can connect:
 
 https://github.com/Stage-11-Agentics/lattice
 
-Gives AI agents persistent shared state for coordinating work across sessions. 17 MCP tools for full task lifecycle management (create, update, assign, comment, link, attach, archive). 7 resource URIs for reading task state. Event-sourced with immutable audit trail and actor attribution. Zero infrastructure -- no database, no server, just files.
+Gives AI agents persistent shared state for coordinating work across sessions. 26 MCP tools for task lifecycle management, optional acceptance criteria, evidence, comments, and relationships. 7 resource URIs for reading task state. Event-sourced with immutable audit trail and actor attribution. Zero infrastructure -- no database, no server, just files.
 
 Install: `pip install lattice-tracker[mcp]`
 Run: `lattice-mcp`
@@ -191,7 +205,7 @@ Categories: Project Management, Developer Tools, AI Agent Coordination
 |-------|-------|
 | Name | `@Stage-11-Agentics/lattice` |
 | Display name | Lattice |
-| Description | File-based, agent-native task tracker with event-sourced core. 17 MCP tools for task lifecycle management, relationships, artifacts, and workflow automation. Zero infrastructure -- just files. |
+| Description | File-based, agent-native task tracker with event-sourced core. 26 MCP tools for task lifecycle management, acceptance criteria, relationships, artifacts, and workflow automation. Zero infrastructure -- just files. |
 | Repository | https://github.com/Stage-11-Agentics/lattice |
 | Transport | stdio |
 | Install command | `pip install lattice-tracker[mcp]` |
@@ -207,7 +221,7 @@ Categories: Project Management, Developer Tools, AI Agent Coordination
 |-------|-------|
 | Name | Lattice |
 | Repository | https://github.com/Stage-11-Agentics/lattice |
-| Description | Agent-native task tracker with event-sourced core. Exposes 17 MCP tools and 7 resources for full task lifecycle management -- create, update, assign, comment, link, attach, archive. File-based with zero infrastructure. |
+| Description | Agent-native task tracker with event-sourced core. Exposes 26 MCP tools and 7 resources for task lifecycle management, optional acceptance criteria, evidence, and relationships. File-based with zero infrastructure. |
 | Category | Project Management / Developer Tools |
 | Language | Python |
 | Scope | Local |
@@ -223,7 +237,7 @@ Categories: Project Management, Developer Tools, AI Agent Coordination
 |-------|-------|
 | Name | Lattice |
 | Repository | https://github.com/Stage-11-Agentics/lattice |
-| Description | File-based, agent-native task tracker. 17 MCP tools for creating, updating, assigning, commenting, linking, and archiving tasks. Event-sourced with immutable audit trail and actor attribution. No database or server required. |
+| Description | File-based, agent-native task tracker. 26 MCP tools for task lifecycle management, optional acceptance criteria, evidence, and relationships. Event-sourced with immutable audit trail and actor attribution. No database or server required. |
 | Category | Project Management |
 
 ### awesome-mcp-servers (GitHub)
@@ -233,7 +247,7 @@ Categories: Project Management, Developer Tools, AI Agent Coordination
 **Draft entry (for the "Project Management" or "Developer Tools" category):**
 
 ```markdown
-- [Lattice](https://github.com/Stage-11-Agentics/lattice) 🐍 🏠 🍎 🪟 🐧 - File-based, agent-native task tracker with event-sourced core. 17 tools for full task lifecycle management with actor attribution, relationship graphs, and configurable workflows.
+- [Lattice](https://github.com/Stage-11-Agentics/lattice) 🐍 🏠 🍎 🪟 🐧 - File-based, agent-native task tracker with event-sourced core. 26 tools for task lifecycle management, optional acceptance criteria, evidence, actor attribution, relationship graphs, and configurable workflows.
 ```
 
 Legend: 🐍 = Python, 🏠 = Local, 🍎 = macOS, 🪟 = Windows, 🐧 = Linux

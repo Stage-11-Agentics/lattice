@@ -40,6 +40,12 @@ Key read endpoints:
 
 These are used by the frontend for board, graph, activity, and git overlays.
 
+Full task responses preserve complete evidence-reference objects, including
+nullable roles and optional criterion IDs. Task details render active and
+retired criteria, current revisions and histories, linked-evidence counts and
+badges, plus criterion event summaries in activity. The dashboard never infers
+or renders criterion satisfaction/pass state.
+
 ## Write APIs
 
 Representative mutation endpoints:
@@ -51,7 +57,8 @@ Representative mutation endpoints:
 - open notes/plans in editor helpers
 
 Dashboard write handlers mirror CLI logic: validate inputs, create events,
-materialize updated snapshots, persist through storage operations.
+and persist through the canonical storage callback mutation path. Criteria
+remain read-only in the dashboard; use CLI or MCP to mutate them.
 
 ## Safety and Validation
 

@@ -1081,3 +1081,79 @@ class TestShow:
         assert result.exit_code == 0
         assert "Review evidence:" in result.output
         assert "review:" in result.output
+
+
+class TestShowAcceptanceCriteria:
+    def test_human_full_compact_and_list_outputs(self, invoke, create_task) -> None:
+        task_id = create_task("Visible criteria")["id"]
+        assert (
+            invoke(
+                "criterion",
+                "add",
+                task_id,
+                "Playback resumes.",
+                "--actor",
+                "human:test",
+            ).exit_code
+            == 0
+        )
+        invoke(
+            "criterion",
+            "edit",
+            task_id,
+            "AC-1",
+            "Playback resumes without restart.",
+            "--actor",
+            "human:test",
+        )
+        invoke(
+            "comment",
+            task_id,
+            "Observed.",
+            "--criterion",
+            "AC-1",
+            "--actor",
+            "human:test",
+        )
+
+        shown = invoke("show", task_id)
+        assert shown.exit_code == 0
+        assert "Acceptance criteria:" in shown.output
+        assert "AC-1 (rev 2, evidence: 1)" in shown.output
+        assert "Playback resumes without restart." in shown.output
+
+        full = invoke("show", task_id, "--full")
+        assert "rev 1" in full.output
+        assert "rev 2" in full.output
+        assert '"criterion_ids": ["AC-1"]' in full.output
+
+        compact = invoke("show", task_id, "--compact")
+        assert "Criteria: 1 active, 0 retired" in compact.output
+        listed = invoke("list")
+        assert "[criteria: 1 active, 0 retired]" in listed.output
+
+    def test_json_artifact_info_preserves_full_evidence_ref(self, invoke, create_task) -> None:
+        task_id = create_task("Artifact criteria output")["id"]
+        invoke(
+            "criterion",
+            "add",
+            task_id,
+            "Artifact exists.",
+            "--actor",
+            "human:test",
+        )
+        attached = invoke(
+            "attach",
+            task_id,
+            "https://example.com/evidence",
+            "--criterion",
+            "AC-1",
+            "--actor",
+            "human:test",
+            "--json",
+        )
+        assert attached.exit_code == 0
+        shown = invoke("show", task_id, "--json")
+        artifact = json.loads(shown.output)["data"]["artifact_info"][0]
+        assert artifact["role"] is None
+        assert artifact["criterion_ids"] == ["AC-1"]

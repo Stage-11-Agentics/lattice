@@ -3184,6 +3184,49 @@ function cleanupWeb() {
 
 // --- Web Detail Pane ---
 
+function evidenceLinkBadges(data) {
+  data = data || {};
+  var html = "";
+  if (data.role) {
+    html += ' <span class="badge badge-stat">role: ' + esc(data.role) + '</span>';
+  }
+  (data.criterion_ids || []).forEach(function(id) {
+    html += ' <span class="badge badge-stat">criterion: ' + esc(id) + '</span>';
+  });
+  return html;
+}
+
+function renderAcceptanceCriteria(task, sectionClass) {
+  var criteria = task.acceptance_criteria || [];
+  if (!criteria.length) return "";
+  var evidence = task.evidence_refs || [];
+  var html = '<div class="' + esc(sectionClass) + '"><h3>Acceptance criteria</h3>';
+  criteria.forEach(function(criterion) {
+    var linked = evidence.filter(function(ref) {
+      return (ref.criterion_ids || []).indexOf(criterion.id) !== -1;
+    }).length;
+    html += '<div style="padding:7px 0;border-bottom:1px solid var(--border-subtle,#333)">';
+    html += '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">';
+    html += '<strong style="font-family:var(--font-mono)">' + esc(criterion.id) + '</strong>';
+    html += '<span class="badge badge-stat">rev ' + esc(String(criterion.revision || 1)) + '</span>';
+    if (criterion.retired) html += '<span class="badge archived-badge">retired</span>';
+    html += '<span class="badge badge-stat">' + linked + ' linked evidence</span>';
+    html += '</div><div style="margin-top:3px">' + esc(criterion.outcome || "") + '</div>';
+    if (criterion.revisions && criterion.revisions.length > 1) {
+      html += '<details style="margin-top:4px"><summary>Revision history</summary>';
+      criterion.revisions.forEach(function(revision) {
+        html += '<div style="font-size:.75rem;color:var(--text-muted);margin-top:3px">';
+        html += 'rev ' + esc(String(revision.revision)) + ' · ' + esc(revision.changed_at || "") + ' · ' + esc(revision.changed_by || "");
+        html += '<div>' + esc(revision.outcome || "") + '</div></div>';
+      });
+      html += '</details>';
+    }
+    html += '</div>';
+  });
+  html += '</div>';
+  return html;
+}
+
 function openWebDetailPane(taskId) {
   var pane = document.getElementById("web-detail-pane");
   var overlay = document.getElementById("web-detail-overlay");
@@ -3239,6 +3282,8 @@ function openWebDetailPane(taskId) {
       html += '</div>';
     }
 
+    html += renderAcceptanceCriteria(task, "pane-section");
+
     // Tags
     if (task.tags && task.tags.length) {
       html += '<div class="pane-section"><h3>Tags</h3>';
@@ -3262,7 +3307,7 @@ function openWebDetailPane(taskId) {
       comments.forEach(function(ev) {
         html += '<div class="pane-comment">';
         html += '<div class="pane-comment-meta">' + esc(ev.actor || "") + ' \u00b7 ' + esc(ev.ts || "") + '</div>';
-        html += '<div>' + esc((ev.data && ev.data.body) || "") + '</div>';
+        html += '<div>' + esc((ev.data && ev.data.body) || "") + evidenceLinkBadges(ev.data) + '</div>';
         html += '</div>';
       });
       html += '</div>';
@@ -3527,6 +3572,8 @@ function _renderPanelContent(taskId, task, events) {
   }
   html += '</div>';
 
+  html += renderAcceptanceCriteria(task, "dp-section");
+
   // Plan & Notes — always show Plan, show Notes only if file exists
   html += '<div class="dp-section"><h3>' + esc(t("section.plans")) + ' & ' + esc(t("section.notes")) + '</h3>';
   html += '<div style="display:flex;gap:8px;flex-wrap:wrap">';
@@ -3549,7 +3596,7 @@ function _renderPanelContent(taskId, task, events) {
     comments.forEach(function(ev) {
       html += '<div class="dp-comment">';
       html += '<div class="dp-comment-meta">' + esc(ev.actor || "") + ' \u00b7 ' + esc(ev.ts || "") + '</div>';
-      html += '<div>' + esc((ev.data && ev.data.body) || "") + '</div>';
+      html += '<div>' + esc((ev.data && ev.data.body) || "") + evidenceLinkBadges(ev.data) + '</div>';
       html += '</div>';
     });
   }
@@ -5149,6 +5196,8 @@ async function renderDetail(taskId) {
       html += '</dl></div>';
     }
 
+    html += renderAcceptanceCriteria(task, "detail-section");
+
     // Relationships
     if (task.relationships_out && task.relationships_out.length) {
       html += '<div class="detail-section"><h3>' + esc(t("section.relationships")) + '</h3><ul class="rel-list">';
@@ -5167,6 +5216,7 @@ async function renderDetail(taskId) {
         html += '<li>' + esc(a.id);
         if (a.title) html += ' "' + esc(a.title) + '"';
         if (a.type) html += ' (' + esc(a.type) + ')';
+        html += evidenceLinkBadges(a);
         html += '</li>';
       });
       html += '</ul></div>';
@@ -5202,7 +5252,7 @@ async function renderDetail(taskId) {
       comments.forEach(function(ev) {
         html += '<div class="comment-item">';
         html += '<div class="comment-meta">' + esc(ev.actor || "") + ' &middot; ' + esc(ev.ts || "") + '</div>';
-        html += '<div class="comment-body">' + esc((ev.data && ev.data.body) || "") + '</div>';
+        html += '<div class="comment-body">' + esc((ev.data && ev.data.body) || "") + evidenceLinkBadges(ev.data) + '</div>';
         html += '</div>';
       });
       html += '</div>';
@@ -5564,13 +5614,16 @@ function eventSummary(ev) {
     case "comment_added": {
       var body = d.body || "";
       if (body.length > 80) body = body.slice(0,77) + "\u2026";
-      return '\u201c' + esc(body) + '\u201d';
+      return '\u201c' + esc(body) + '\u201d' + evidenceLinkBadges(d);
     }
     case "comment_edited": return "edited comment";
     case "comment_deleted": return "deleted comment";
     case "relationship_added": return esc(d.type||"") + " \u2192 " + esc(d.target_task_id ? d.target_task_id.slice(0,12) : "");
     case "relationship_removed": return esc(d.type||"") + " \u00d7 " + esc(d.target_task_id ? d.target_task_id.slice(0,12) : "");
-    case "artifact_attached": return "attached " + esc(d.artifact_id ? d.artifact_id.slice(0,12) : "");
+    case "artifact_attached": return "attached " + esc(d.artifact_id ? d.artifact_id.slice(0,12) : "") + evidenceLinkBadges(d);
+    case "acceptance_criterion_added": return esc(d.criterion_id || "") + " added: " + esc(d.outcome || "");
+    case "acceptance_criterion_edited": return esc(d.criterion_id || "") + " revised to rev " + esc(String(d.revision || ""));
+    case "acceptance_criterion_retired": return esc(d.criterion_id || "") + " retired";
     case "task_archived": return "archived";
     case "task_unarchived": return "restored from archive";
     case "task_short_id_assigned": return esc(d.short_id || "");
@@ -5595,6 +5648,8 @@ var EVENT_TYPE_LABELS = {
   field_updated: "Updated", comment_added: "Comment", comment_edited: "Edited",
   comment_deleted: "Deleted", relationship_added: "Linked", relationship_removed: "Unlinked",
   artifact_attached: "Artifact", task_archived: "Archived", task_unarchived: "Restored",
+  acceptance_criterion_added: "Criterion", acceptance_criterion_edited: "Criterion revised",
+  acceptance_criterion_retired: "Criterion retired",
   task_short_id_assigned: "Short ID", reaction_added: "Reaction", reaction_removed: "Unreacted",
   git_event: "Git", branch_linked: "Branch", branch_unlinked: "Unbranch",
   resource_added: "Resource", resource_removed: "Removed", resource_updated: "Resource",
@@ -5606,6 +5661,9 @@ var EVENT_TYPE_COLORS = {
   comment_added: "var(--color-warning,#f59e0b)", comment_edited: "var(--color-warning,#f59e0b)",
   comment_deleted: "var(--color-error,#ef4444)", relationship_added: "var(--accent-secondary,#8b5cf6)",
   relationship_removed: "var(--accent-secondary,#8b5cf6)", artifact_attached: "var(--color-info,#6366f1)",
+  acceptance_criterion_added: "var(--color-success,#22c55e)",
+  acceptance_criterion_edited: "var(--color-info,#6366f1)",
+  acceptance_criterion_retired: "var(--text-muted,#999)",
   task_archived: "var(--text-muted,#999)", task_unarchived: "var(--color-success,#22c55e)",
   branch_linked: "var(--color-info,#6366f1)", branch_unlinked: "var(--text-muted,#999)"
 };

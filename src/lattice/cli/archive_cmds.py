@@ -63,9 +63,7 @@ def _archive_one(
     def decide(context):  # noqa: ANN001, ANN202
         if context.location == "archived":
             event = next(
-                event
-                for event in reversed(context.events)
-                if event["type"] == "task_archived"
+                event for event in reversed(context.events) if event["type"] == "task_archived"
             )
             return TaskMutationDecision(value=event, idempotent=True)
         event = create_event(

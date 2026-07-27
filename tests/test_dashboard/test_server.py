@@ -7,7 +7,9 @@ from urllib.request import Request, urlopen
 
 import pytest
 
-from lattice.core.ids import generate_task_id
+from lattice.core.events import create_event, serialize_event
+from lattice.core.ids import generate_artifact_id, generate_task_id
+from lattice.core.tasks import apply_event_to_snapshot, serialize_snapshot
 
 
 def _get(base_url: str, path: str) -> tuple[int, dict | str]:
@@ -95,6 +97,9 @@ class TestRootEndpoint:
         status, body = _get(base_url, "/")
         assert status == 200
         assert "<html" in body
+        assert "renderAcceptanceCriteria" in body
+        assert "linked evidence" in body
+        assert "acceptance_criterion_retired" in body
 
 
 class TestConfigEndpoint:
@@ -169,6 +174,79 @@ class TestTaskDetailEndpoint:
         assert len(arts) == 1
         assert arts[0]["title"] == "dep-report.txt"
         assert arts[0]["type"] == "text/plain"
+
+    def test_task_detail_preserves_criteria_history_and_full_evidence_refs(self, dashboard_server):
+        base_url, lattice_dir, ids = dashboard_server
+        task_id = ids["in_progress"]
+        snapshot_path = lattice_dir / "tasks" / f"{task_id}.json"
+        event_path = lattice_dir / "events" / f"{task_id}.jsonl"
+        snapshot = json.loads(snapshot_path.read_text())
+        artifact_id = generate_artifact_id()
+        events = [
+            create_event(
+                "acceptance_criterion_added",
+                task_id,
+                "human:test",
+                {
+                    "criterion_id": "AC-1",
+                    "outcome": "Dependencies update.",
+                    "revision": 1,
+                },
+                ts="2025-01-10T12:20:00Z",
+            ),
+            create_event(
+                "acceptance_criterion_edited",
+                task_id,
+                "human:test",
+                {
+                    "criterion_id": "AC-1",
+                    "from_outcome": "Dependencies update.",
+                    "outcome": "Dependencies update without regressions.",
+                    "revision": 2,
+                },
+                ts="2025-01-10T12:21:00Z",
+            ),
+            create_event(
+                "comment_added",
+                task_id,
+                "human:test",
+                {"body": "Observed.", "criterion_ids": ["AC-1"]},
+                ts="2025-01-10T12:22:00Z",
+            ),
+            create_event(
+                "artifact_attached",
+                task_id,
+                "human:test",
+                {"artifact_id": artifact_id, "criterion_ids": ["AC-1"]},
+                ts="2025-01-10T12:23:00Z",
+            ),
+        ]
+        with event_path.open("a", encoding="utf-8") as handle:
+            for event in events:
+                snapshot = apply_event_to_snapshot(snapshot, event)
+                handle.write(serialize_event(event))
+        snapshot_path.write_text(serialize_snapshot(snapshot))
+        (lattice_dir / "artifacts" / "meta" / f"{artifact_id}.json").write_text(
+            json.dumps(
+                {"id": artifact_id, "title": "criteria.txt", "type": "file"},
+                sort_keys=True,
+                indent=2,
+            )
+            + "\n"
+        )
+
+        status, body = _get(base_url, f"/api/tasks/{task_id}")
+        assert status == 200
+        criterion = body["data"]["acceptance_criteria"][0]
+        assert criterion["revision"] == 2
+        assert len(criterion["revisions"]) == 2
+        artifact = next(item for item in body["data"]["artifacts"] if item["id"] == artifact_id)
+        assert artifact["role"] is None
+        assert artifact["criterion_ids"] == ["AC-1"]
+
+        status, comments = _get(base_url, f"/api/tasks/{task_id}/comments")
+        linked_comment = next(item for item in comments["data"] if item["body"] == "Observed.")
+        assert linked_comment["criterion_ids"] == ["AC-1"]
 
     def test_archived_task_fallthrough(self, dashboard_server):
         base_url, _ld, ids = dashboard_server

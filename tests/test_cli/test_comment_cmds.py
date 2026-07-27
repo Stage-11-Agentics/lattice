@@ -415,9 +415,7 @@ class TestCommentCriterionLinks:
         assert result.exit_code == 0, result.output
         snapshot = json.loads(result.output)["data"]
         comment_ref = next(
-            ref
-            for ref in snapshot["evidence_refs"]
-            if ref["source_type"] == "comment"
+            ref for ref in snapshot["evidence_refs"] if ref["source_type"] == "comment"
         )
         assert comment_ref["role"] is None
         assert comment_ref["criterion_ids"] == ["AC-1"]
