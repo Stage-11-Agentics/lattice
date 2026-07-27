@@ -14,12 +14,10 @@ from lattice.cli.helpers import (
     load_project_config,
     output_error,
     output_result,
-    read_snapshot_or_exit,
     require_actor,
     require_root,
     resolve_task_id,
     validate_actor_format_or_exit,
-    mutate_task_events,
 )
 from lattice.cli.main import cli
 from lattice.core.artifacts import (
@@ -27,10 +25,15 @@ from lattice.core.artifacts import (
     create_artifact_metadata,
     serialize_artifact,
 )
+from lattice.core.acceptance_criteria import normalize_criterion_ids
 from lattice.core.events import create_event
 from lattice.core.ids import generate_artifact_id, validate_id
-from lattice.core.tasks import apply_event_to_snapshot
 from lattice.storage.fs import atomic_write, ensure_artifact_dirs
+from lattice.storage.operations import (
+    AuthoritativeLogError,
+    TaskMutationDecision,
+    mutate_task,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -47,6 +50,12 @@ from lattice.storage.fs import atomic_write, ensure_artifact_dirs
 @click.option("--sensitive", is_flag=True, help="Mark artifact as sensitive.")
 @click.option("--role", default=None, help="Role of artifact on the task.")
 @click.option(
+    "--criterion",
+    "criterion_ids",
+    multiple=True,
+    help="Link this artifact evidence to a task-local acceptance criterion (repeatable).",
+)
+@click.option(
     "--inline", "inline_text", default=None, help="Inline text content (instead of file/URL)."
 )
 @click.option("--id", "art_id", default=None, help="Caller-supplied artifact ID.")
@@ -59,6 +68,7 @@ def attach(
     summary: str | None,
     sensitive: bool,
     role: str | None,
+    criterion_ids: tuple[str, ...],
     inline_text: str | None,
     art_id: str | None,
     model: str | None,
@@ -113,8 +123,27 @@ def attach(
 
     task_id = resolve_task_id(lattice_dir, task_id, is_json)
 
-    # Validate task exists
-    snapshot = read_snapshot_or_exit(lattice_dir, task_id, is_json)
+    # Reject missing/archived tasks and malformed criterion links from strict
+    # replay before creating globally shared metadata or payload files. The
+    # same validation runs again in the attachment mutation after metadata is
+    # durable, closing the retry race without trusting the snapshot cache.
+    def validate_target(context):  # noqa: ANN001, ANN202
+        authoritative_snapshot = context.snapshot
+        assert authoritative_snapshot is not None
+        normalize_criterion_ids(criterion_ids, snapshot=authoritative_snapshot)
+        return TaskMutationDecision(idempotent=True)
+
+    try:
+        mutate_task(lattice_dir, task_id, validate_target, config)
+    except AuthoritativeLogError as exc:
+        message = str(exc)
+        if "no authoritative event log exists" in message or message.endswith(
+            " is archived."
+        ):
+            output_error(f"Task {task_id} not found.", "NOT_FOUND", is_json)
+        output_error(message, "VALIDATION_ERROR", is_json)
+    except ValueError as exc:
+        output_error(str(exc), "VALIDATION_ERROR", is_json)
 
     # Handle inline text: write to a temp file and treat as file source
     _inline_tmp_path: Path | None = None
@@ -185,6 +214,7 @@ def attach(
         # Idempotency check: if --id provided and metadata already exists
         # (must happen BEFORE file copy to avoid orphaned payloads on conflict)
         meta_path = lattice_dir / "artifacts" / "meta" / f"{art_id}.json"
+        existing_metadata: dict | None = None
         if meta_path.exists():
             existing = json.loads(meta_path.read_text())
             conflict = False
@@ -208,22 +238,16 @@ def attach(
                     is_json,
                 )
             else:
-                # Idempotent success — no file copy needed
-                output_result(
-                    data=existing,
-                    human_message=f"Artifact {art_id} already exists (idempotent).",
-                    quiet_value=art_id,
-                    is_json=is_json,
-                    is_quiet=quiet,
-                )
-                return
+                existing_metadata = existing
 
         # Prepare metadata kwargs
         content_type: str | None = None
         size_bytes: int | None = None
         custom_fields: dict | None = None
 
-        if is_url:
+        if existing_metadata is not None:
+            pass
+        elif is_url:
             custom_fields = {"url": source}
         else:
             # File source: copy payload now (after idempotency check passed)
@@ -238,26 +262,17 @@ def attach(
         event_data: dict = {"artifact_id": art_id}
         if role is not None:
             event_data["role"] = role
-
-        event = create_event(
-            type="artifact_attached",
-            task_id=task_id,
-            actor=actor,
-            data=event_data,
-            model=model,
-            session=session,
-            triggered_by=triggered_by,
-            on_behalf_of=on_behalf_of,
-            reason=provenance_reason,
+        event_for_metadata = create_event(
+            type="artifact_attached", task_id=task_id, actor=actor, data=event_data
         )
 
         # Build artifact metadata (use event ts for consistency)
-        metadata = create_artifact_metadata(
+        metadata = existing_metadata or create_artifact_metadata(
             art_id,
             art_type,
             title,
             created_by=actor,
-            created_at=event["ts"],
+            created_at=event_for_metadata["ts"],
             summary=summary,
             model=model,
             tags=None,
@@ -269,20 +284,58 @@ def attach(
         )
 
         # Write artifact metadata atomically
-        atomic_write(meta_path, serialize_artifact(metadata))
+        if existing_metadata is None:
+            atomic_write(meta_path, serialize_artifact(metadata))
 
-        # Apply event to snapshot
-        snapshot = apply_event_to_snapshot(snapshot, event)
+        def decide(context):  # noqa: ANN001, ANN202
+            authoritative_snapshot = context.snapshot
+            assert authoritative_snapshot is not None
+            normalized_ids = normalize_criterion_ids(
+                criterion_ids, snapshot=authoritative_snapshot
+            )
+            requested_key = (role, normalized_ids)
+            for existing_event in context.events:
+                if existing_event.get("type") != "artifact_attached":
+                    continue
+                data = existing_event.get("data", {})
+                if data.get("artifact_id") != art_id:
+                    continue
+                existing_key = (data.get("role"), data.get("criterion_ids", []))
+                if existing_key != requested_key:
+                    raise ValueError(
+                        f"Artifact {art_id} is already attached to {task_id} "
+                        "with different role or criterion links."
+                    )
+                return TaskMutationDecision(idempotent=True)
+            attachment_data: dict = {"artifact_id": art_id}
+            if role is not None:
+                attachment_data["role"] = role
+            if normalized_ids:
+                attachment_data["criterion_ids"] = normalized_ids
+            event = create_event(
+                type="artifact_attached",
+                task_id=task_id,
+                actor=actor,
+                data=attachment_data,
+                model=model,
+                session=session,
+                triggered_by=triggered_by,
+                on_behalf_of=on_behalf_of,
+                reason=provenance_reason,
+            )
+            return TaskMutationDecision(events=[event])
 
-        # Write event and snapshot
-        snapshot = mutate_task_events(lattice_dir, task_id, [event], config).snapshot
-
+        try:
+            result = mutate_task(lattice_dir, task_id, decide, config)
+        except ValueError as exc:
+            output_error(str(exc), "CONFLICT", is_json)
         # Output
         output_result(
             data=metadata,
             human_message=(
                 f'Attached artifact {art_id} "{title}" to task {task_id}\n'
                 f"  type: {art_type}  sensitive: {sensitive}"
+                + ("  (idempotent task attachment)" if result.idempotent else "")
             ),
             quiet_value=art_id,
             is_json=is_json,

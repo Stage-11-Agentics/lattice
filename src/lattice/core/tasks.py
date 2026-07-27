@@ -8,6 +8,7 @@ import sys
 
 from lattice.core.acceptance_criteria import (
     find_criterion,
+    normalize_criterion_ids,
     normalize_outcome,
     validate_criterion_id,
 )
@@ -324,14 +325,24 @@ def _mut_artifact_attached(snap: dict, event: dict) -> None:
     data = event["data"]
     art_id = data["artifact_id"]
     role = data.get("role")
+    criterion_ids = normalize_criterion_ids(data.get("criterion_ids"), snapshot=snap)
     refs = snap.setdefault("evidence_refs", [])
     # Deduplicate by artifact ID
     for ref in refs:
         if ref.get("source_type") == "artifact":
             existing_id = ref["id"] if isinstance(ref, dict) else ref
             if existing_id == art_id:
+                existing_key = (ref.get("role"), ref.get("criterion_ids", []))
+                requested_key = (role, criterion_ids)
+                if existing_key != requested_key:
+                    raise ValueError(
+                        f"Artifact {art_id} is already attached with different task-local linkage."
+                    )
                 return
-    refs.append({"id": art_id, "role": role, "source_type": "artifact"})
+    record: dict = {"id": art_id, "role": role, "source_type": "artifact"}
+    if criterion_ids:
+        record["criterion_ids"] = criterion_ids
+    refs.append(record)
 
 
 @_register_mutation("acceptance_criterion_added")
@@ -475,10 +486,15 @@ def _mut_file_unlinked(snap: dict, event: dict) -> None:
 @_register_mutation("comment_added")
 def _mut_comment_added(snap: dict, event: dict) -> None:
     snap["comment_count"] = snap.get("comment_count", 0) + 1
-    role = event.get("data", {}).get("role")
-    if role is not None:
+    data = event.get("data", {})
+    role = data.get("role")
+    criterion_ids = normalize_criterion_ids(data.get("criterion_ids"), snapshot=snap)
+    if role is not None or criterion_ids:
         evidence_refs = snap.setdefault("evidence_refs", [])
-        evidence_refs.append({"id": event["id"], "role": role, "source_type": "comment"})
+        record: dict = {"id": event["id"], "role": role, "source_type": "comment"}
+        if criterion_ids:
+            record["criterion_ids"] = criterion_ids
+        evidence_refs.append(record)
 
 
 @_register_mutation("comment_edited")
@@ -489,17 +505,23 @@ def _mut_comment_edited(snap: dict, event: dict) -> None:
         return  # body-only edit — no evidence_refs changes
     new_role = data["role"]
     evidence_refs = snap.setdefault("evidence_refs", [])
-    # Remove old evidence_ref for this comment (if any)
-    snap["evidence_refs"] = [
-        er
-        for er in evidence_refs
-        if not (er.get("source_type") == "comment" and er.get("id") == comment_id)
-    ]
-    # Add new evidence_ref if role is set
-    if new_role is not None:
-        snap["evidence_refs"].append(
-            {"id": comment_id, "role": new_role, "source_type": "comment"}
-        )
+    existing = next(
+        (
+            er
+            for er in evidence_refs
+            if er.get("source_type") == "comment" and er.get("id") == comment_id
+        ),
+        None,
+    )
+    if existing is None:
+        if new_role is not None:
+            evidence_refs.append(
+                {"id": comment_id, "role": new_role, "source_type": "comment"}
+            )
+        return
+    existing["role"] = new_role
+    if new_role is None and not existing.get("criterion_ids"):
+        evidence_refs.remove(existing)
 
 
 @_register_mutation("comment_deleted")
@@ -531,6 +553,45 @@ def _mut_surface_unbound(snap: dict, event: dict) -> None:
     snap["c11_workspace"] = None
 
 
+def get_artifact_evidence_refs(snapshot: dict) -> list[dict]:
+    """Return copied full artifact evidence records with legacy fallback."""
+    evidence_refs = snapshot.get("evidence_refs")
+    if evidence_refs is not None:
+        return [
+            copy.deepcopy(ref)
+            for ref in evidence_refs
+            if ref.get("source_type") == "artifact"
+        ]
+    records: list[dict] = []
+    for ref in snapshot.get("artifact_refs", []):
+        if isinstance(ref, dict):
+            record = copy.deepcopy(ref)
+            record.setdefault("source_type", "artifact")
+            record.setdefault("role", None)
+        else:
+            record = {"id": ref, "role": None, "source_type": "artifact"}
+        records.append(record)
+    return records
+
+
+def get_comment_evidence_refs(snapshot: dict) -> list[dict]:
+    """Return copied full comment evidence records with legacy fallback."""
+    evidence_refs = snapshot.get("evidence_refs")
+    if evidence_refs is not None:
+        return [
+            copy.deepcopy(ref)
+            for ref in evidence_refs
+            if ref.get("source_type") == "comment"
+        ]
+    records: list[dict] = []
+    for ref in snapshot.get("comment_role_refs", []):
+        record = copy.deepcopy(ref)
+        record.setdefault("source_type", "comment")
+        record.setdefault("role", None)
+        records.append(record)
+    return records
+
+
 def get_artifact_roles(snapshot: dict) -> dict[str, str | None]:
     """Return ``{artifact_id: role}`` from a snapshot's evidence refs.
 
@@ -538,20 +599,7 @@ def get_artifact_roles(snapshot: dict) -> dict[str, str | None]:
     to the legacy ``artifact_refs`` field for old snapshots that haven't been
     rebuilt yet.  Handles bare string IDs (old format) and enriched dicts.
     """
-    result: dict[str, str | None] = {}
-    # New unified field
-    for ref in snapshot.get("evidence_refs", []):
-        if ref.get("source_type") == "artifact":
-            result[ref["id"]] = ref.get("role")
-    if result or "evidence_refs" in snapshot:
-        return result
-    # Legacy fallback
-    for ref in snapshot.get("artifact_refs", []):
-        if isinstance(ref, dict):
-            result[ref["id"]] = ref.get("role")
-        else:
-            result[ref] = None
-    return result
+    return {ref["id"]: ref.get("role") for ref in get_artifact_evidence_refs(snapshot)}
 
 
 def get_comment_role_refs(snapshot: dict) -> dict[str, str | None]:
@@ -560,17 +608,7 @@ def get_comment_role_refs(snapshot: dict) -> dict[str, str | None]:
     Reads from ``evidence_refs`` (source_type=="comment") first.  Falls back
     to the legacy ``comment_role_refs`` field for old snapshots.
     """
-    result: dict[str, str | None] = {}
-    # New unified field
-    for ref in snapshot.get("evidence_refs", []):
-        if ref.get("source_type") == "comment":
-            result[ref["id"]] = ref.get("role")
-    if result or "evidence_refs" in snapshot:
-        return result
-    # Legacy fallback
-    for ref in snapshot.get("comment_role_refs", []):
-        result[ref["id"]] = ref.get("role")
-    return result
+    return {ref["id"]: ref.get("role") for ref in get_comment_evidence_refs(snapshot)}
 
 
 def get_evidence_roles(snapshot: dict) -> set[str]:

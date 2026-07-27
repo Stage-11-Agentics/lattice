@@ -26,12 +26,15 @@ def _comment_event(
     actor: str = "human:atin",
     parent_id: str | None = None,
     role: str | None = None,
+    criterion_ids: list[str] | None = None,
 ) -> dict:
     data: dict = {"body": body}
     if parent_id is not None:
         data["parent_id"] = parent_id
     if role is not None:
         data["role"] = role
+    if criterion_ids is not None:
+        data["criterion_ids"] = criterion_ids
     return {
         "id": event_id,
         "type": "comment_added",
@@ -169,6 +172,17 @@ class TestMaterializeComments:
         result = materialize_comments(events)
         assert result[0]["deleted"] is True
         assert result[0]["deleted_by"] == "human:atin"
+
+    def test_criterion_links_survive_edit_and_delete_materialization(self) -> None:
+        events = [
+            _comment_event("ev_1", "original", criterion_ids=["AC-1"]),
+            _edit_event("ev_1", "edited", "original", role="review"),
+            _delete_event("ev_1"),
+        ]
+        result = materialize_comments(events)
+        assert result[0]["criterion_ids"] == ["AC-1"]
+        assert result[0]["role"] == "review"
+        assert result[0]["deleted"] is True
 
     def test_reaction_added(self) -> None:
         events = [

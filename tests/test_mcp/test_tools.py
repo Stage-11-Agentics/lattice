@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from lattice.core.ids import generate_artifact_id
 from lattice.mcp.tools import (
     lattice_archive,
     lattice_assign,
@@ -14,6 +15,10 @@ from lattice.mcp.tools import (
     lattice_comment,
     lattice_config,
     lattice_create,
+    lattice_criteria,
+    lattice_criterion_add,
+    lattice_criterion_edit,
+    lattice_criterion_retire,
     lattice_doctor,
     lattice_event,
     lattice_link,
@@ -188,6 +193,73 @@ class TestComment:
         last_event = json.loads(lines[-1])
         assert last_event["type"] == "comment_added"
         assert last_event["data"]["body"] == "Hello world"
+
+    def test_comment_links_criterion_without_role(self, lattice_env: Path):
+        task = lattice_create(title="Criterion comment", actor="human:test")
+        lattice_criterion_add(
+            task_id=task["id"],
+            outcome="Observable.",
+            actor="human:test",
+        )
+        result = lattice_comment(
+            task_id=task["id"],
+            text="Observed.",
+            actor="human:test",
+            criterion_ids=["AC-1", "AC-1"],
+        )
+        ref = next(
+            item
+            for item in result["evidence_refs"]
+            if item["source_type"] == "comment"
+        )
+        assert ref["role"] is None
+        assert ref["criterion_ids"] == ["AC-1"]
+
+
+class TestAcceptanceCriteria:
+    def test_lifecycle_and_archived_read(self, lattice_env: Path):
+        task = lattice_create(title="MCP criteria", actor="human:test")
+        added = lattice_criterion_add(
+            task_id=task["id"],
+            criterion_id="custom",
+            outcome="First outcome.",
+            actor="human:test",
+        )
+        assert added["criterion"]["id"] == "custom"
+        edited = lattice_criterion_edit(
+            task_id=task["id"],
+            criterion_id="custom",
+            outcome="Second outcome.",
+            actor="human:test",
+        )
+        assert edited["criterion"]["revision"] == 2
+        retired = lattice_criterion_retire(
+            task_id=task["id"],
+            criterion_id="custom",
+            actor="human:test",
+        )
+        assert retired["criterion"]["retired"] is True
+        assert lattice_criteria(task_id=task["id"])["criteria"] == []
+        history = lattice_criteria(
+            task_id=task["id"],
+            include_retired=True,
+            include_history=True,
+        )
+        assert len(history["criteria"][0]["revisions"]) == 2
+        lattice_archive(task_id=task["id"], actor="human:test")
+        archived = lattice_criteria(task_id=task["id"], include_retired=True)
+        assert archived["archived"] is True
+        assert archived["criteria"][0]["id"] == "custom"
+
+    def test_unknown_criterion_evidence_is_rejected(self, lattice_env: Path):
+        task = lattice_create(title="Unknown criterion", actor="human:test")
+        with pytest.raises(ValueError, match="not found"):
+            lattice_comment(
+                task_id=task["id"],
+                text="Observed.",
+                actor="human:test",
+                criterion_ids=["AC-404"],
+            )
 
 
 class TestLink:
@@ -434,3 +506,73 @@ class TestAttach:
         )
         assert result["type"] == "reference"
         assert result["custom_fields"]["url"] == "https://example.com/doc.pdf"
+
+    def test_attachment_linkage_retry_and_conflict(
+        self, lattice_env: Path, lattice_dir: Path, tmp_path: Path
+    ):
+        task = lattice_create(title="MCP artifact evidence", actor="human:test")
+        lattice_criterion_add(
+            task_id=task["id"],
+            outcome="Observable.",
+            actor="human:test",
+        )
+        source = tmp_path / "evidence.txt"
+        source.write_text("observed")
+        art_id = generate_artifact_id()
+        kwargs = {
+            "task_id": task["id"],
+            "source": str(source),
+            "actor": "human:test",
+            "artifact_id": art_id,
+            "criterion_ids": ["AC-1"],
+        }
+        lattice_attach(**kwargs)
+        event_path = lattice_dir / "events" / f"{task['id']}.jsonl"
+        event_count = len(event_path.read_text().splitlines())
+        lattice_attach(**kwargs)
+        assert len(event_path.read_text().splitlines()) == event_count
+        with pytest.raises(ValueError, match="different task-local linkage"):
+            lattice_attach(**kwargs, role="review")
+
+    def test_same_artifact_can_link_to_a_second_task(
+        self, lattice_env: Path, lattice_dir: Path, tmp_path: Path
+    ):
+        first = lattice_create(title="First", actor="human:test")
+        second = lattice_create(title="Second", actor="human:test")
+        source = tmp_path / "shared.txt"
+        source.write_text("shared")
+        art_id = generate_artifact_id()
+        lattice_attach(
+            task_id=first["id"],
+            source=str(source),
+            actor="human:test",
+            artifact_id=art_id,
+        )
+        lattice_attach(
+            task_id=second["id"],
+            source=str(source),
+            actor="human:test",
+            artifact_id=art_id,
+        )
+        second_snapshot = json.loads(
+            (lattice_dir / "tasks" / f"{second['id']}.json").read_text()
+        )
+        assert second_snapshot["evidence_refs"][0]["id"] == art_id
+
+    def test_archived_task_rejects_before_artifact_files_are_created(
+        self, lattice_env: Path, lattice_dir: Path, tmp_path: Path
+    ):
+        task = lattice_create(title="Archived attachment", actor="human:test")
+        lattice_archive(task_id=task["id"], actor="human:test")
+        source = tmp_path / "must-not-copy.txt"
+        source.write_text("no")
+        metadata_before = set((lattice_dir / "artifacts" / "meta").glob("*"))
+        payload_before = set((lattice_dir / "artifacts" / "payload").glob("*"))
+        with pytest.raises(ValueError, match="archived"):
+            lattice_attach(
+                task_id=task["id"],
+                source=str(source),
+                actor="human:test",
+            )
+        assert set((lattice_dir / "artifacts" / "meta").glob("*")) == metadata_before
+        assert set((lattice_dir / "artifacts" / "payload").glob("*")) == payload_before

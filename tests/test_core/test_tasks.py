@@ -13,7 +13,9 @@ from lattice.core.tasks import (
     _NOOP_EVENT_TYPES,
     apply_event_to_snapshot,
     compact_snapshot,
+    get_artifact_evidence_refs,
     get_artifact_roles,
+    get_comment_evidence_refs,
     get_comment_role_refs,
     serialize_snapshot,
 )
@@ -459,6 +461,79 @@ class TestCommentAdded:
         snap = apply_event_to_snapshot(snap, del_ev)
         assert snap["comment_count"] == 0
 
+    def test_criterion_only_comment_survives_role_edits_until_delete(self) -> None:
+        snap = apply_event_to_snapshot(
+            _make_snapshot(),
+            {
+                "schema_version": 1,
+                "id": _EV_2,
+                "ts": _TS_2,
+                "type": "acceptance_criterion_added",
+                "task_id": _TASK_ID,
+                "actor": _ACTOR,
+                "data": {
+                    "criterion_id": "AC-1",
+                    "outcome": "Observable.",
+                    "revision": 1,
+                },
+            },
+        )
+        snap = apply_event_to_snapshot(
+            snap,
+            {
+                "schema_version": 1,
+                "id": _EV_3,
+                "ts": _TS_3,
+                "type": "comment_added",
+                "task_id": _TASK_ID,
+                "actor": _ACTOR,
+                "data": {
+                    "body": "Evidence.",
+                    "criterion_ids": ["AC-1", "AC-1"],
+                },
+            },
+        )
+        assert snap["evidence_refs"][0]["criterion_ids"] == ["AC-1"]
+        assert snap["evidence_refs"][0]["role"] is None
+
+        for event_id, role in [
+            ("ev_01DDDDDDDDDDDDDDDDDDDDDDDD", "review"),
+            ("ev_01EEEEEEEEEEEEEEEEEEEEEEEEEE", None),
+        ]:
+            snap = apply_event_to_snapshot(
+                snap,
+                {
+                    "schema_version": 1,
+                    "id": event_id,
+                    "ts": _TS_3,
+                    "type": "comment_edited",
+                    "task_id": _TASK_ID,
+                    "actor": _ACTOR,
+                    "data": {
+                        "comment_id": _EV_3,
+                        "body": "Evidence.",
+                        "previous_body": "Evidence.",
+                        "role": role,
+                    },
+                },
+            )
+            assert snap["evidence_refs"][0]["criterion_ids"] == ["AC-1"]
+            assert snap["evidence_refs"][0]["role"] == role
+
+        snap = apply_event_to_snapshot(
+            snap,
+            {
+                "schema_version": 1,
+                "id": "ev_01FFFFFFFFFFFFFFFFFFFFFFFFFF",
+                "ts": _TS_3,
+                "type": "comment_deleted",
+                "task_id": _TASK_ID,
+                "actor": _ACTOR,
+                "data": {"comment_id": _EV_3},
+            },
+        )
+        assert snap["evidence_refs"] == []
+
 
 # ---------------------------------------------------------------------------
 # apply_event_to_snapshot: relationship_added / relationship_removed
@@ -612,6 +687,89 @@ class TestArtifactAttached:
             snap = apply_event_to_snapshot(snap, ev)
         assert len(snap["evidence_refs"]) == 2
 
+    def test_stores_normalized_criterion_links_without_role(self) -> None:
+        snap = apply_event_to_snapshot(
+            _make_snapshot(),
+            {
+                "schema_version": 1,
+                "id": _EV_2,
+                "ts": _TS_2,
+                "type": "acceptance_criterion_added",
+                "task_id": _TASK_ID,
+                "actor": _ACTOR,
+                "data": {
+                    "criterion_id": "AC-1",
+                    "outcome": "Observable.",
+                    "revision": 1,
+                },
+            },
+        )
+        snap = apply_event_to_snapshot(
+            snap,
+            {
+                "schema_version": 1,
+                "id": _EV_3,
+                "ts": _TS_3,
+                "type": "artifact_attached",
+                "task_id": _TASK_ID,
+                "actor": _ACTOR,
+                "data": {
+                    "artifact_id": "art_01ARTIFACT00000000000000000",
+                    "criterion_ids": ["AC-1", "AC-1"],
+                },
+            },
+        )
+        assert snap["evidence_refs"] == [
+            {
+                "id": "art_01ARTIFACT00000000000000000",
+                "role": None,
+                "source_type": "artifact",
+                "criterion_ids": ["AC-1"],
+            }
+        ]
+
+    def test_rejects_unknown_criterion_link(self) -> None:
+        with pytest.raises(ValueError, match="not found"):
+            apply_event_to_snapshot(
+                _make_snapshot(),
+                {
+                    "schema_version": 1,
+                    "id": _EV_2,
+                    "ts": _TS_2,
+                    "type": "artifact_attached",
+                    "task_id": _TASK_ID,
+                    "actor": _ACTOR,
+                    "data": {
+                        "artifact_id": "art_01ARTIFACT00000000000000000",
+                        "criterion_ids": ["AC-404"],
+                    },
+                },
+            )
+
+    def test_same_artifact_with_different_linkage_is_malformed(self) -> None:
+        snap = _make_snapshot()
+        base = {
+            "schema_version": 1,
+            "ts": _TS_2,
+            "type": "artifact_attached",
+            "task_id": _TASK_ID,
+            "actor": _ACTOR,
+            "data": {"artifact_id": "art_01ARTIFACT00000000000000000"},
+        }
+        snap = apply_event_to_snapshot(snap, {**base, "id": _EV_2})
+        with pytest.raises(ValueError, match="different task-local linkage"):
+            apply_event_to_snapshot(
+                snap,
+                {
+                    **base,
+                    "id": _EV_3,
+                    "data": {
+                        "artifact_id": "art_01ARTIFACT00000000000000000",
+                        "role": "review",
+                    },
+                },
+            )
+
 
 # ---------------------------------------------------------------------------
 # get_artifact_roles helper
@@ -648,6 +806,21 @@ class TestGetArtifactRoles:
         del snap["evidence_refs"]
         snap["artifact_refs"] = ["art_A", "art_B"]
         assert get_artifact_roles(snap) == {"art_A": None, "art_B": None}
+
+    def test_full_records_preserve_enrichment_and_are_copied(self) -> None:
+        snap = _make_snapshot()
+        snap["evidence_refs"] = [
+            {
+                "id": "art_A",
+                "role": "review",
+                "source_type": "artifact",
+                "criterion_ids": ["AC-1"],
+            }
+        ]
+        refs = get_artifact_evidence_refs(snap)
+        assert refs[0]["criterion_ids"] == ["AC-1"]
+        refs[0]["criterion_ids"].append("AC-2")
+        assert snap["evidence_refs"][0]["criterion_ids"] == ["AC-1"]
 
 
 # ---------------------------------------------------------------------------
@@ -699,6 +872,18 @@ class TestGetCommentRoleRefs:
             {"id": "ev_B", "role": None},
         ]
         assert get_comment_role_refs(snap) == {"ev_A": "review", "ev_B": None}
+
+    def test_full_records_preserve_criterion_links(self) -> None:
+        snap = _make_snapshot()
+        snap["evidence_refs"] = [
+            {
+                "id": "ev_A",
+                "role": None,
+                "source_type": "comment",
+                "criterion_ids": ["AC-1"],
+            }
+        ]
+        assert get_comment_evidence_refs(snap) == snap["evidence_refs"]
 
 
 # ---------------------------------------------------------------------------

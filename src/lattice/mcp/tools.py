@@ -12,6 +12,14 @@ from typing import Annotated
 from pydantic import Field
 
 from lattice.core.artifacts import ARTIFACT_TYPES, create_artifact_metadata, serialize_artifact
+from lattice.core.acceptance_criteria import (
+    allocate_criterion_id,
+    criterion_without_history,
+    find_criterion,
+    normalize_criterion_ids,
+    normalize_outcome,
+    validate_criterion_id,
+)
 from lattice.core.comments import (
     materialize_comments,
     validate_comment_body,
@@ -257,6 +265,171 @@ def lattice_create(
 
 
 @mcp.tool()
+def lattice_criterion_add(
+    task_id: Annotated[str, Field(description="Task ID (ULID or short ID)")],
+    outcome: Annotated[str, Field(description="Observable outcome prose")],
+    actor: Annotated[str, Field(description="Actor ID")],
+    criterion_id: Annotated[
+        str | None, Field(description="Optional explicit task-local criterion ID")
+    ] = None,
+    lattice_root: Annotated[
+        str | None, Field(description="Path to project directory containing .lattice/")
+    ] = None,
+) -> dict:
+    """Add an optional task-local acceptance criterion."""
+    lattice_dir = _find_root(lattice_root)
+    config = _load_config(lattice_dir)
+    _validate_actor(actor)
+    task_id = _resolve_task_id(lattice_dir, task_id)
+    outcome = normalize_outcome(outcome)
+    if criterion_id is not None:
+        validate_criterion_id(criterion_id)
+
+    def decide(context):  # noqa: ANN001, ANN202
+        snapshot = context.snapshot
+        assert snapshot is not None
+        chosen_id = criterion_id or allocate_criterion_id(
+            snapshot.get("acceptance_criteria", [])
+        )
+        existing = find_criterion(snapshot, chosen_id)
+        if existing is not None:
+            if criterion_id is not None and existing["revisions"][0]["outcome"] == outcome:
+                return TaskMutationDecision(value=chosen_id, idempotent=True)
+            raise ValueError(
+                f"Acceptance criterion {chosen_id} already exists with different initial prose."
+            )
+        event = create_event(
+            "acceptance_criterion_added",
+            task_id,
+            actor,
+            {"criterion_id": chosen_id, "outcome": outcome, "revision": 1},
+        )
+        return TaskMutationDecision(events=[event], value=chosen_id)
+
+    result = mutate_task(lattice_dir, task_id, decide, config)
+    criterion = find_criterion(result.snapshot, result.callback_value)
+    return {"task_id": task_id, "criterion": criterion, "snapshot": result.snapshot}
+
+
+@mcp.tool()
+def lattice_criterion_edit(
+    task_id: Annotated[str, Field(description="Task ID (ULID or short ID)")],
+    criterion_id: Annotated[str, Field(description="Task-local criterion ID")],
+    outcome: Annotated[str, Field(description="Revised observable outcome prose")],
+    actor: Annotated[str, Field(description="Actor ID")],
+    lattice_root: Annotated[
+        str | None, Field(description="Path to project directory containing .lattice/")
+    ] = None,
+) -> dict:
+    """Revise an active task-local acceptance criterion."""
+    lattice_dir = _find_root(lattice_root)
+    config = _load_config(lattice_dir)
+    _validate_actor(actor)
+    task_id = _resolve_task_id(lattice_dir, task_id)
+    validate_criterion_id(criterion_id)
+    outcome = normalize_outcome(outcome)
+
+    def decide(context):  # noqa: ANN001, ANN202
+        snapshot = context.snapshot
+        assert snapshot is not None
+        criterion = find_criterion(snapshot, criterion_id)
+        if criterion is None:
+            raise ValueError(f"Acceptance criterion {criterion_id} not found.")
+        if criterion["retired"]:
+            raise ValueError(f"Acceptance criterion {criterion_id} is retired.")
+        if criterion["outcome"] == outcome:
+            return TaskMutationDecision(idempotent=True)
+        event = create_event(
+            "acceptance_criterion_edited",
+            task_id,
+            actor,
+            {
+                "criterion_id": criterion_id,
+                "from_outcome": criterion["outcome"],
+                "outcome": outcome,
+                "revision": criterion["revision"] + 1,
+            },
+        )
+        return TaskMutationDecision(events=[event])
+
+    result = mutate_task(lattice_dir, task_id, decide, config)
+    return {
+        "task_id": task_id,
+        "criterion": find_criterion(result.snapshot, criterion_id),
+        "snapshot": result.snapshot,
+    }
+
+
+@mcp.tool()
+def lattice_criterion_retire(
+    task_id: Annotated[str, Field(description="Task ID (ULID or short ID)")],
+    criterion_id: Annotated[str, Field(description="Task-local criterion ID")],
+    actor: Annotated[str, Field(description="Actor ID")],
+    lattice_root: Annotated[
+        str | None, Field(description="Path to project directory containing .lattice/")
+    ] = None,
+) -> dict:
+    """Retire a criterion without deleting its immutable history."""
+    lattice_dir = _find_root(lattice_root)
+    config = _load_config(lattice_dir)
+    _validate_actor(actor)
+    task_id = _resolve_task_id(lattice_dir, task_id)
+    validate_criterion_id(criterion_id)
+
+    def decide(context):  # noqa: ANN001, ANN202
+        snapshot = context.snapshot
+        assert snapshot is not None
+        criterion = find_criterion(snapshot, criterion_id)
+        if criterion is None:
+            raise ValueError(f"Acceptance criterion {criterion_id} not found.")
+        if criterion["retired"]:
+            raise ValueError(f"Acceptance criterion {criterion_id} is already retired.")
+        event = create_event(
+            "acceptance_criterion_retired",
+            task_id,
+            actor,
+            {"criterion_id": criterion_id, "revision": criterion["revision"]},
+        )
+        return TaskMutationDecision(events=[event])
+
+    result = mutate_task(lattice_dir, task_id, decide, config)
+    return {
+        "task_id": task_id,
+        "criterion": find_criterion(result.snapshot, criterion_id),
+        "snapshot": result.snapshot,
+    }
+
+
+@mcp.tool()
+def lattice_criteria(
+    task_id: Annotated[str, Field(description="Task ID (ULID or short ID)")],
+    include_retired: Annotated[bool, Field(description="Include retired criteria")] = False,
+    include_history: Annotated[bool, Field(description="Include revision histories")] = False,
+    lattice_root: Annotated[
+        str | None, Field(description="Path to project directory containing .lattice/")
+    ] = None,
+) -> dict:
+    """List criteria for an active or archived task."""
+    lattice_dir = _find_root(lattice_root)
+    task_id = _resolve_task_id(lattice_dir, task_id)
+    active_path = lattice_dir / "tasks" / f"{task_id}.json"
+    archived_path = lattice_dir / "archive" / "tasks" / f"{task_id}.json"
+    archived = not active_path.exists() and archived_path.exists()
+    path = archived_path if archived else active_path
+    if not path.exists():
+        raise ValueError(f"Task {task_id} not found.")
+    snapshot = json.loads(path.read_text(encoding="utf-8"))
+    criteria = [
+        criterion
+        for criterion in snapshot.get("acceptance_criteria", [])
+        if include_retired or not criterion["retired"]
+    ]
+    if not include_history:
+        criteria = [criterion_without_history(criterion) for criterion in criteria]
+    return {"task_id": task_id, "archived": archived, "criteria": criteria}
+
+
+@mcp.tool()
 def lattice_update(
     task_id: Annotated[str, Field(description="Task ID (ULID or short ID like LAT-42)")],
     actor: Annotated[str, Field(description="Actor ID")],
@@ -462,6 +635,10 @@ def lattice_comment(
         str | None,
         Field(description="Role of this comment (e.g., 'review'). Satisfies completion policies."),
     ] = None,
+    criterion_ids: Annotated[
+        list[str] | None,
+        Field(description="Optional task-local acceptance criterion IDs"),
+    ] = None,
     lattice_root: Annotated[
         str | None, Field(description="Path to project directory containing .lattice/")
     ] = None,
@@ -481,16 +658,24 @@ def lattice_comment(
                 f"Unknown role: '{role}'. Valid roles: {', '.join(sorted(configured_roles))}."
             )
 
-    event_data: dict = {"body": text}
-    if parent_id is not None:
-        events = read_task_events(lattice_dir, task_id)
-        validate_comment_for_reply(events, parent_id)
-        event_data["parent_id"] = parent_id
-    if role is not None:
-        event_data["role"] = role
+    def decide(context):  # noqa: ANN001, ANN202
+        snapshot = context.snapshot
+        assert snapshot is not None
+        normalized_ids = normalize_criterion_ids(criterion_ids, snapshot=snapshot)
+        event_data: dict = {"body": text}
+        if parent_id is not None:
+            validate_comment_for_reply(list(context.events), parent_id)
+            event_data["parent_id"] = parent_id
+        if role is not None:
+            event_data["role"] = role
+        if normalized_ids:
+            event_data["criterion_ids"] = normalized_ids
+        event = create_event(
+            type="comment_added", task_id=task_id, actor=actor, data=event_data
+        )
+        return TaskMutationDecision(events=[event])
 
-    event = create_event(type="comment_added", task_id=task_id, actor=actor, data=event_data)
-    return mutate_task_events(lattice_dir, task_id, [event], config).snapshot
+    return mutate_task(lattice_dir, task_id, decide, config).snapshot
 
 
 @mcp.tool()
@@ -599,6 +784,14 @@ def lattice_attach(
         str | None, Field(description="Artifact type (file, reference, conversation, prompt, log)")
     ] = None,
     summary: Annotated[str | None, Field(description="Short summary")] = None,
+    role: Annotated[str | None, Field(description="Optional evidence role")] = None,
+    criterion_ids: Annotated[
+        list[str] | None,
+        Field(description="Optional task-local acceptance criterion IDs"),
+    ] = None,
+    artifact_id: Annotated[
+        str | None, Field(description="Caller-supplied artifact ID for retry")
+    ] = None,
     lattice_root: Annotated[
         str | None, Field(description="Path to project directory containing .lattice/")
     ] = None,
@@ -608,7 +801,22 @@ def lattice_attach(
     config = _load_config(lattice_dir)
     _validate_actor(actor)
     task_id = _resolve_task_id(lattice_dir, task_id)
+
+    def validate_target(context):  # noqa: ANN001, ANN202
+        snapshot = context.snapshot
+        assert snapshot is not None
+        normalize_criterion_ids(criterion_ids, snapshot=snapshot)
+        return TaskMutationDecision(idempotent=True)
+
+    mutate_task(lattice_dir, task_id, validate_target, config)
     is_url = source.startswith("http://") or source.startswith("https://")
+
+    if role is not None:
+        configured_roles = get_configured_roles(config)
+        if configured_roles and role not in configured_roles:
+            raise ValueError(
+                f"Unknown role: '{role}'. Valid roles: {', '.join(sorted(configured_roles))}."
+            )
 
     if art_type is None:
         art_type = "reference" if is_url else "file"
@@ -617,7 +825,9 @@ def lattice_attach(
             f"Invalid artifact type: '{art_type}'. Valid: {', '.join(sorted(ARTIFACT_TYPES))}."
         )
 
-    art_id = generate_artifact_id()
+    art_id = artifact_id or generate_artifact_id()
+    if not validate_id(art_id, "art"):
+        raise ValueError(f"Invalid artifact ID format: '{art_id}'.")
 
     if title is None:
         title = source if is_url else Path(source).name
@@ -632,7 +842,29 @@ def lattice_attach(
     payload_file: str | None = None
     custom_fields: dict | None = None
 
-    if is_url:
+    meta_path = lattice_dir / "artifacts" / "meta" / f"{art_id}.json"
+    existing_metadata = (
+        json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else None
+    )
+
+    if existing_metadata is not None:
+        conflict = (
+            existing_metadata.get("type") != art_type
+            or existing_metadata.get("title") != title
+        )
+        if is_url:
+            conflict = conflict or (
+                (existing_metadata.get("custom_fields") or {}).get("url") != source
+            )
+        else:
+            expected_payload = f"{art_id}{Path(source).suffix}"
+            conflict = conflict or (
+                (existing_metadata.get("payload") or {}).get("file")
+                != expected_payload
+            )
+        if conflict:
+            raise ValueError(f"Conflict: artifact {art_id} exists with different data.")
+    elif is_url:
         custom_fields = {"url": source}
     else:
         src_path = Path(source)
@@ -645,15 +877,19 @@ def lattice_attach(
         size_bytes = src_path.stat().st_size
         payload_file = f"{art_id}{src_path.suffix}"
 
-    event_data: dict = {"artifact_id": art_id}
-    event = create_event(type="artifact_attached", task_id=task_id, actor=actor, data=event_data)
+    event_for_metadata = create_event(
+        type="artifact_attached",
+        task_id=task_id,
+        actor=actor,
+        data={"artifact_id": art_id},
+    )
 
-    metadata = create_artifact_metadata(
+    metadata = existing_metadata or create_artifact_metadata(
         art_id,
         art_type,
         title,
         created_by=actor,
-        created_at=event["ts"],
+        created_at=event_for_metadata["ts"],
         summary=summary,
         payload_file=payload_file,
         content_type=content_type,
@@ -662,10 +898,36 @@ def lattice_attach(
     )
 
     # Write artifact metadata
-    meta_path = lattice_dir / "artifacts" / "meta" / f"{art_id}.json"
-    atomic_write(meta_path, serialize_artifact(metadata))
+    if existing_metadata is None:
+        atomic_write(meta_path, serialize_artifact(metadata))
 
-    mutate_task_events(lattice_dir, task_id, [event], config)
+    def decide(context):  # noqa: ANN001, ANN202
+        snapshot = context.snapshot
+        assert snapshot is not None
+        normalized_ids = normalize_criterion_ids(criterion_ids, snapshot=snapshot)
+        requested_key = (role, normalized_ids)
+        for existing_event in context.events:
+            if existing_event.get("type") != "artifact_attached":
+                continue
+            data = existing_event.get("data", {})
+            if data.get("artifact_id") != art_id:
+                continue
+            if (data.get("role"), data.get("criterion_ids", [])) != requested_key:
+                raise ValueError(
+                    f"Artifact {art_id} is already attached with different task-local linkage."
+                )
+            return TaskMutationDecision(idempotent=True)
+        event_data: dict = {"artifact_id": art_id}
+        if role is not None:
+            event_data["role"] = role
+        if normalized_ids:
+            event_data["criterion_ids"] = normalized_ids
+        event = create_event(
+            type="artifact_attached", task_id=task_id, actor=actor, data=event_data
+        )
+        return TaskMutationDecision(events=[event])
+
+    mutate_task(lattice_dir, task_id, decide, config)
     return metadata
 
 

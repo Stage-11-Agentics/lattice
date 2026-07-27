@@ -372,6 +372,104 @@ class TestCommentRole:
         assert comment_refs == []
 
 
+class TestCommentCriterionLinks:
+    def test_roleless_comment_links_retired_criterion_and_normalizes_duplicates(
+        self, invoke, create_task
+    ) -> None:
+        task_id = create_task("Criterion evidence comment")["id"]
+        assert (
+            invoke(
+                "criterion",
+                "add",
+                task_id,
+                "Observable.",
+                "--actor",
+                "human:test",
+            ).exit_code
+            == 0
+        )
+        assert (
+            invoke(
+                "criterion",
+                "retire",
+                task_id,
+                "AC-1",
+                "--actor",
+                "human:test",
+            ).exit_code
+            == 0
+        )
+
+        result = invoke(
+            "comment",
+            task_id,
+            "Observed on the running system.",
+            "--criterion",
+            "AC-1",
+            "--criterion",
+            "AC-1",
+            "--actor",
+            "human:test",
+            "--json",
+        )
+        assert result.exit_code == 0, result.output
+        snapshot = json.loads(result.output)["data"]
+        comment_ref = next(
+            ref
+            for ref in snapshot["evidence_refs"]
+            if ref["source_type"] == "comment"
+        )
+        assert comment_ref["role"] is None
+        assert comment_ref["criterion_ids"] == ["AC-1"]
+
+        comment_id = snapshot["last_event_id"]
+        edited = invoke(
+            "comment-edit",
+            task_id,
+            comment_id,
+            "Observed twice on the running system.",
+            "--actor",
+            "human:test",
+            "--json",
+        )
+        edited_ref = next(
+            ref
+            for ref in json.loads(edited.output)["data"]["evidence_refs"]
+            if ref["source_type"] == "comment"
+        )
+        assert edited_ref["criterion_ids"] == ["AC-1"]
+
+        deleted = invoke(
+            "comment-delete",
+            task_id,
+            comment_id,
+            "--actor",
+            "human:test",
+            "--json",
+        )
+        assert not [
+            ref
+            for ref in json.loads(deleted.output)["data"]["evidence_refs"]
+            if ref["source_type"] == "comment"
+        ]
+
+    def test_unknown_criterion_is_rejected(self, invoke, create_task) -> None:
+        result = invoke(
+            "comment",
+            create_task("Unknown criterion")["id"],
+            "Evidence.",
+            "--criterion",
+            "AC-404",
+            "--actor",
+            "human:test",
+            "--json",
+        )
+        assert result.exit_code != 0
+        error = json.loads(result.output)["error"]
+        assert error["code"] == "VALIDATION_ERROR"
+        assert "not found" in error["message"]
+
+
 # ---------------------------------------------------------------------------
 # Role validation (LAT-137)
 # ---------------------------------------------------------------------------

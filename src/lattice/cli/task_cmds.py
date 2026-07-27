@@ -32,6 +32,7 @@ from lattice.core.comments import (
     validate_comment_for_reply,
     validate_emoji,
 )
+from lattice.core.acceptance_criteria import normalize_criterion_ids
 from lattice.core.config import (
     VALID_COMPLEXITIES,
     VALID_PRIORITIES,
@@ -1144,6 +1145,12 @@ def assign(
     default=None,
     help="Role of this comment (e.g., 'review'). Satisfies completion policies.",
 )
+@click.option(
+    "--criterion",
+    "criterion_ids",
+    multiple=True,
+    help="Link this evidence comment to a task-local acceptance criterion (repeatable).",
+)
 @common_options
 def comment(
     task_id: str,
@@ -1151,6 +1158,7 @@ def comment(
     file_path: str | None,
     reply_to: str | None,
     role: str | None,
+    criterion_ids: tuple[str, ...],
     model: str | None,
     session: str | None,
     output_json: bool,
@@ -1178,7 +1186,7 @@ def comment(
 
     task_id = resolve_task_id(lattice_dir, task_id, is_json)
 
-    snapshot = read_snapshot_or_exit(lattice_dir, task_id, is_json)
+    read_snapshot_or_exit(lattice_dir, task_id, is_json)
 
     # Validate reply-to if provided
     if reply_to is not None:
@@ -1204,25 +1212,35 @@ def comment(
                 is_json,
             )
 
-    event_data: dict = {"body": text}
-    if reply_to is not None:
-        event_data["parent_id"] = reply_to
-    if role is not None:
-        event_data["role"] = role
+    def decide(context):  # noqa: ANN001, ANN202
+        snapshot = context.snapshot
+        assert snapshot is not None
+        normalized_ids = normalize_criterion_ids(criterion_ids, snapshot=snapshot)
+        event_data: dict = {"body": text}
+        if reply_to is not None:
+            validate_comment_for_reply(list(context.events), reply_to)
+            event_data["parent_id"] = reply_to
+        if role is not None:
+            event_data["role"] = role
+        if normalized_ids:
+            event_data["criterion_ids"] = normalized_ids
+        event = create_event(
+            type="comment_added",
+            task_id=task_id,
+            actor=actor,
+            data=event_data,
+            model=model,
+            session=session,
+            triggered_by=triggered_by,
+            on_behalf_of=on_behalf_of,
+            reason=provenance_reason,
+        )
+        return TaskMutationDecision(events=[event])
 
-    event = create_event(
-        type="comment_added",
-        task_id=task_id,
-        actor=actor,
-        data=event_data,
-        model=model,
-        session=session,
-        triggered_by=triggered_by,
-        on_behalf_of=on_behalf_of,
-        reason=provenance_reason,
-    )
-    updated_snapshot = apply_event_to_snapshot(snapshot, event)
-    updated_snapshot = mutate_task_events(lattice_dir, task_id, [event], config).snapshot
+    try:
+        updated_snapshot = mutate_task(lattice_dir, task_id, decide, config).snapshot
+    except ValueError as exc:
+        output_error(str(exc), "VALIDATION_ERROR", is_json)
 
     msg = f"Reply added to {task_id}" if reply_to else f"Comment added to {task_id}"
     output_result(
