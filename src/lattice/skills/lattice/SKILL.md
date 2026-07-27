@@ -140,6 +140,20 @@ Options for `create`: `--priority` (critical/high/medium/low/none), `--type` (ta
 
 **Task description depth:** Match description detail to task ambiguity. Bug fixes and chores can be one-liners ("Add regex validation to frequency names"). Features and integration tasks should include: (1) what it does, (2) acceptance criteria, (3) architectural context, (4) what the user/operator experiences when done. Structured task-local criterion records are optional; add them when stable IDs and evidence traceability help, not as a universal task or workflow requirement.
 
+**Optional acceptance-criteria operations:**
+
+```bash
+lattice criterion add PROJ-1 "OAuth callback returns to the requested page" --id oauth-return --actor agent:claude-cli
+lattice criterion edit PROJ-1 oauth-return "OAuth callback returns to the original requested page" --actor agent:claude-cli
+lattice criterion list PROJ-1 --history
+lattice comment PROJ-1 "Observed a live callback return to /settings." --criterion oauth-return --actor agent:claude-cli
+lattice comment-edit PROJ-1 ev_01ABC "Observed a live callback return to /settings." --clear-role --actor agent:claude-cli
+lattice criterion retire PROJ-1 oauth-return --actor agent:claude-cli
+lattice criterion list PROJ-1 --include-retired
+```
+
+Use structured criteria only when stable IDs help. Treat `--criterion` as traceability, not proof: state the observed result in the evidence and follow the task's configured role and completion policy. `--clear-role` removes only the role; it preserves criterion links.
+
 Relationship types for `link`: `blocks`, `blocked_by`, `subtask_of`, `parent_of`, `depends_on`, `depended_on_by`, `related_to`
 
 ## Status Workflow
