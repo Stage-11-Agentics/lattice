@@ -209,7 +209,7 @@ class TestArchivePreservesArtifacts:
 
 
 class TestArchiveAlreadyArchivedErrors:
-    """Archiving an already-archived task should return CONFLICT."""
+    """Archiving an already-archived task is a successful retry."""
 
     def test_archive_already_archived_errors(self, invoke, create_task):
         task = create_task("Double archive")
@@ -219,13 +219,12 @@ class TestArchiveAlreadyArchivedErrors:
         r1 = invoke("archive", task_id, "--actor", "human:test")
         assert r1.exit_code == 0
 
-        # Second archive should fail
+        # Second archive returns the existing authoritative lifecycle event.
         r2 = invoke("archive", task_id, "--actor", "human:test", "--json")
-        assert r2.exit_code != 0
+        assert r2.exit_code == 0
         parsed = json.loads(r2.output)
-        assert parsed["ok"] is False
-        assert parsed["error"]["code"] == "CONFLICT"
-        assert "already archived" in parsed["error"]["message"]
+        assert parsed["ok"] is True
+        assert parsed["data"]["type"] == "task_archived"
 
 
 # ---------------------------------------------------------------------------

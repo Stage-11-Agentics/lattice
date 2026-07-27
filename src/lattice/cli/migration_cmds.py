@@ -15,9 +15,8 @@ from lattice.cli.helpers import (
 from lattice.cli.main import cli
 from lattice.core.config import serialize_config, validate_project_code
 from lattice.core.events import create_event
-from lattice.core.tasks import apply_event_to_snapshot
 from lattice.storage.fs import atomic_write
-from lattice.storage.short_ids import load_id_index, register_short_id, save_id_index
+from lattice.storage.operations import TaskMutationDecision, mutate_task
 
 
 def _collect_tasks_missing_short_id(lattice_dir: Path) -> list[dict]:
@@ -109,8 +108,6 @@ def backfill_ids(
             click.echo("All tasks already have short IDs.")
         return
 
-    # Allocate and assign short IDs
-    index = load_id_index(lattice_dir)
     assigned: list[str] = []
 
     # Compute prefix from project code + optional subproject code
@@ -119,35 +116,33 @@ def backfill_ids(
 
     for snap, is_archived in tasks:
         task_ulid = snap["id"]
-        next_seqs = index.get("next_seqs", {})
-        seq = next_seqs.get(prefix, 1)
-        short_id = f"{prefix}-{seq}"
-        next_seqs[prefix] = seq + 1
-        index["next_seqs"] = next_seqs
 
-        event = create_event(
-            type="task_short_id_assigned",
-            task_id=task_ulid,
-            actor=actor,
-            data={"short_id": short_id},
-        )
+        def decide(context):  # noqa: ANN001, ANN202
+            current = context.snapshot
+            assert current is not None
+            if current.get("short_id") is not None:
+                return TaskMutationDecision(value=current["short_id"], idempotent=True)
+            short_id = context.reserved_short_id
+            assert short_id is not None
+            event = create_event(
+                type="task_short_id_assigned",
+                task_id=task_ulid,
+                actor=actor,
+                data={"short_id": short_id},
+            )
+            return TaskMutationDecision(events=[event], value=short_id)
 
-        from lattice.storage.operations import mutate_task_events
-
-        mutate_task_events(
+        result = mutate_task(
             lattice_dir,
             task_ulid,
-            [event],
+            decide,
             config,
             source="archived" if is_archived else "active",
+            project_prefix=prefix,
+            allow_short_id_backfill=True,
         )
-
-        # Register in index
-        register_short_id(index, short_id, task_ulid)
-        assigned.append(short_id)
-
-    # Save index
-    save_id_index(lattice_dir, index)
+        if not result.idempotent:
+            assigned.append(result.callback_value)
 
     first_id = assigned[0] if assigned else "?"
     last_id = assigned[-1] if assigned else "?"
@@ -202,7 +197,6 @@ def migrate_needs_human(
     descriptions, display_names). Idempotent — re-running on a migrated
     instance is a no-op.
     """
-    from lattice.cli.helpers import mutate_task_events
     from lattice.core.comments import materialize_comments
 
     is_json = output_json
@@ -265,28 +259,54 @@ def migrate_needs_human(
         if dry_run:
             continue
 
-        new_events: list[dict] = []
-        updated = snap
-        if not updated.get("needs_human"):
-            flag_event = create_event(
-                type="needs_human_flagged",
-                task_id=task_id,
-                actor=actor,
-                data={"reason": reason},
-                reason="LAT-232 migration: needs_human status converted to flag",
+        def decide(context):  # noqa: ANN001, ANN202
+            current = context.snapshot
+            assert current is not None
+            if current.get("status") != "needs_human":
+                return TaskMutationDecision(idempotent=True)
+
+            current_events = list(context.events)
+            locked_return_status = "backlog"
+            for existing_event in reversed(current_events):
+                if (
+                    existing_event.get("type") == "status_changed"
+                    and existing_event.get("data", {}).get("to") == "needs_human"
+                ):
+                    candidate = existing_event.get("data", {}).get("from")
+                    if isinstance(candidate, str) and candidate in statuses_after:
+                        locked_return_status = candidate
+                    break
+
+            locked_reason = "Migrated from needs_human status"
+            comments = materialize_comments(current_events)
+            for comment in reversed(comments):
+                if not comment.get("deleted") and comment.get("body"):
+                    locked_reason = comment["body"]
+                    break
+
+            new_events: list[dict] = []
+            if not current.get("needs_human"):
+                new_events.append(
+                    create_event(
+                        type="needs_human_flagged",
+                        task_id=task_id,
+                        actor=actor,
+                        data={"reason": locked_reason},
+                        reason="LAT-232 migration: needs_human status converted to flag",
+                    )
+                )
+            new_events.append(
+                create_event(
+                    type="status_changed",
+                    task_id=task_id,
+                    actor=actor,
+                    data={"from": "needs_human", "to": locked_return_status},
+                    reason="LAT-232 migration: needs_human status converted to flag",
+                )
             )
-            new_events.append(flag_event)
-            updated = apply_event_to_snapshot(updated, flag_event)
-        status_event = create_event(
-            type="status_changed",
-            task_id=task_id,
-            actor=actor,
-            data={"from": "needs_human", "to": return_status},
-            reason="LAT-232 migration: needs_human status converted to flag",
-        )
-        new_events.append(status_event)
-        updated = apply_event_to_snapshot(updated, status_event)
-        mutate_task_events(lattice_dir, task_id, new_events, config)
+            return TaskMutationDecision(events=new_events)
+
+        mutate_task(lattice_dir, task_id, decide, config)
 
     # ---- Phase 2: strip needs_human from the workflow config ---------------
     workflow = config.get("workflow", {})

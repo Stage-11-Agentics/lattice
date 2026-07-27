@@ -529,7 +529,7 @@ class TestCorruptedFiles:
         assert len(body["data"]) == 3
 
     def test_corrupted_event_line_skipped(self, dashboard_server):
-        """A corrupted event line should be skipped in event list."""
+        """A corrupted authoritative event log is reported, never partially read."""
         base_url, ld, ids = dashboard_server
         task_id = ids["backlog"]
         event_path = ld / "events" / f"{task_id}.jsonl"
@@ -539,9 +539,9 @@ class TestCorruptedFiles:
             fh.write("{truncated json\n")
 
         status, body = _get(base_url, f"/api/tasks/{task_id}/events")
-        assert status == 200
-        # Should still have the 1 valid event
-        assert len(body["data"]) == 1
+        assert status == 409
+        assert body["error"]["code"] == "INTEGRITY_ERROR"
+        assert str(event_path) in body["error"]["message"]
 
 
 class TestNonLoopbackWarning:

@@ -148,6 +148,20 @@ class TestStatusChanged:
         assert snap["last_event_id"] == _EV_2
         assert snap["updated_at"] == _TS_2
 
+    def test_stale_from_is_rejected(self) -> None:
+        snap = _make_snapshot()
+        ev = {
+            "schema_version": 1,
+            "id": _EV_2,
+            "ts": _TS_2,
+            "type": "status_changed",
+            "task_id": _TASK_ID,
+            "actor": _ACTOR,
+            "data": {"from": "in_progress", "to": "done"},
+        }
+        with pytest.raises(ValueError, match="status_changed from"):
+            apply_event_to_snapshot(snap, ev)
+
     def test_done_at_set_when_transitioning_to_done(self) -> None:
         snap = _make_snapshot()
         assert snap["done_at"] is None
@@ -280,6 +294,20 @@ class TestAssignmentChanged:
         snap = apply_event_to_snapshot(snap, ev)
         assert snap["assigned_to"] is None
 
+    def test_stale_from_is_rejected(self) -> None:
+        snap = _make_snapshot()
+        ev = {
+            "schema_version": 1,
+            "id": _EV_2,
+            "ts": _TS_2,
+            "type": "assignment_changed",
+            "task_id": _TASK_ID,
+            "actor": _ACTOR,
+            "data": {"from": None, "to": "agent:codex"},
+        }
+        with pytest.raises(ValueError, match="assignment_changed from"):
+            apply_event_to_snapshot(snap, ev)
+
 
 # ---------------------------------------------------------------------------
 # apply_event_to_snapshot: field_updated
@@ -300,6 +328,20 @@ class TestFieldUpdated:
         }
         snap = apply_event_to_snapshot(snap, ev)
         assert snap["title"] == "Fix OAuth bug"
+
+    def test_stale_from_is_rejected(self) -> None:
+        snap = _make_snapshot()
+        ev = {
+            "schema_version": 1,
+            "id": _EV_2,
+            "ts": _TS_2,
+            "type": "field_updated",
+            "task_id": _TASK_ID,
+            "actor": _ACTOR,
+            "data": {"field": "title", "from": "Stale", "to": "New"},
+        }
+        with pytest.raises(ValueError, match="field_updated from value"):
+            apply_event_to_snapshot(snap, ev)
 
     def test_custom_fields_dot_notation(self) -> None:
         snap = _make_snapshot()
@@ -1104,7 +1146,7 @@ class TestBookkeepingAlwaysUpdated:
     _EVENT_TYPES_AND_DATA: list[tuple[str, dict]] = [
         ("status_changed", {"from": "backlog", "to": "in_planning"}),
         ("assignment_changed", {"from": "agent:claude", "to": "agent:codex"}),
-        ("field_updated", {"field": "title", "from": "old", "to": "new"}),
+        ("field_updated", {"field": "title", "from": "Fix login bug", "to": "new"}),
         ("comment_added", {"body": "test"}),
         ("comment_deleted", {"comment_id": "ev_01AAAAAAAAAAAAAAAAAAAAAAAAAA"}),
         (

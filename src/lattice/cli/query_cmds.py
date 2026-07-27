@@ -21,7 +21,6 @@ from lattice.cli.helpers import (
     require_root,
     resolve_task_id,
     validate_actor_format_or_exit,
-    mutate_task_events,
 )
 from lattice.cli.main import cli
 from lattice.core.comments import materialize_comments
@@ -41,7 +40,12 @@ from lattice.core.tasks import (
     get_artifact_evidence_refs,
     is_backward_status_transition,
 )
-from lattice.storage.operations import TaskMutationDecision, mutate_task
+from lattice.storage.operations import (
+    TaskMutationDecision,
+    discover_task_authorities,
+    mutate_task,
+    read_task_authority,
+)
 from lattice.storage.readers import read_task_events
 
 
@@ -66,21 +70,9 @@ def comments_cmd(
 
     task_id = resolve_task_id(lattice_dir, task_id, is_json, allow_archived=True)
 
-    # Read task snapshot for context header
-    snapshot = read_snapshot(lattice_dir, task_id)
-    if snapshot is None:
-        # Check archive
-        archive_path = lattice_dir / "archive" / "tasks" / f"{task_id}.json"
-        if archive_path.exists():
-            try:
-                snapshot = json.loads(archive_path.read_text())
-            except (json.JSONDecodeError, OSError):
-                pass
-
-    # Try active first, then archive
-    events = read_task_events(lattice_dir, task_id, is_archived=False)
-    if not events:
-        events = read_task_events(lattice_dir, task_id, is_archived=True)
+    authority = read_task_authority(lattice_dir, task_id, allow_missing=True)
+    snapshot = authority.snapshot if authority is not None else None
+    events = list(authority.events) if authority is not None else []
 
     comments = materialize_comments(events)
 
@@ -230,52 +222,43 @@ def event_cmd(
                 is_json,
             )
 
-        # Idempotency check: scan event log for matching ID
-        event_path = lattice_dir / "events" / f"{task_id}.jsonl"
-        if event_path.exists():
-            for line in event_path.read_text().splitlines():
-                line = line.strip()
-                if not line:
+    def decide(context):  # noqa: ANN001, ANN202
+        if ev_id is not None:
+            for existing in context.events:
+                if existing.get("id") != ev_id:
                     continue
-                try:
-                    existing = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if existing.get("id") == ev_id:
-                    # Same ID found — check if payload matches
-                    if existing.get("type") == event_type and existing.get("data") == event_data:
-                        output_result(
-                            data=existing,
-                            human_message=f"Event {ev_id} already exists (idempotent).",
-                            quiet_value=ev_id,
-                            is_json=is_json,
-                            is_quiet=quiet,
-                        )
-                        return
-                    else:
-                        output_error(
-                            f"Conflict: event {ev_id} exists with different data.",
-                            "CONFLICT",
-                            is_json,
-                        )
+                if existing.get("type") == event_type and existing.get("data") == event_data:
+                    return TaskMutationDecision(value=existing, idempotent=True)
+                output_error(
+                    f"Conflict: event {ev_id} exists with different data.",
+                    "CONFLICT",
+                    is_json,
+                )
+        event = create_event(
+            type=event_type,
+            task_id=task_id,
+            actor=actor,
+            data=event_data,
+            event_id=ev_id,
+            model=model,
+            session=session,
+            triggered_by=triggered_by,
+            on_behalf_of=on_behalf_of,
+            reason=provenance_reason,
+        )
+        return TaskMutationDecision(events=[event], value=event)
 
-    # Build event and apply to snapshot
-    event = create_event(
-        type=event_type,
-        task_id=task_id,
-        actor=actor,
-        data=event_data,
-        event_id=ev_id,
-        model=model,
-        session=session,
-        triggered_by=triggered_by,
-        on_behalf_of=on_behalf_of,
-        reason=provenance_reason,
-    )
-    # Write (event-first, then snapshot, under lock)
-    # Custom events do NOT go to _lifecycle.jsonl — the mutation path handles
-    # this automatically since the type is x_* (not in LIFECYCLE_EVENT_TYPES).
-    mutate_task_events(lattice_dir, task_id, [event], config)
+    result = mutate_task(lattice_dir, task_id, decide, config)
+    event = result.callback_value
+    if result.idempotent:
+        output_result(
+            data=event,
+            human_message=f"Event {event['id']} already exists (idempotent).",
+            quiet_value=event["id"],
+            is_json=is_json,
+            is_quiet=quiet,
+        )
+        return
 
     output_result(
         data=event,
@@ -341,29 +324,12 @@ def list_cmd(
         valid = ", ".join(config.get("workflow", {}).get("statuses", []))
         status_warning = f"'{status}' is not a configured status. Valid statuses: {valid}."
 
-    # Scan all .json files in tasks/ directory
-    tasks_dir = lattice_dir / "tasks"
     snapshots: list[dict] = []
-
-    if tasks_dir.is_dir():
-        for task_file in sorted(tasks_dir.glob("*.json")):
-            try:
-                snap = json.loads(task_file.read_text())
-            except (json.JSONDecodeError, OSError):
-                continue
-            snapshots.append(snap)
-
-    # Include archived tasks if requested
-    if include_archived:
-        archive_dir = lattice_dir / "archive" / "tasks"
-        if archive_dir.is_dir():
-            for task_file in sorted(archive_dir.glob("*.json")):
-                try:
-                    snap = json.loads(task_file.read_text())
-                except (json.JSONDecodeError, OSError):
-                    continue
-                snap["_archived"] = True
-                snapshots.append(snap)
+    for authority in discover_task_authorities(lattice_dir, include_archived=include_archived):
+        snap = dict(authority.snapshot)
+        if authority.location == "archived":
+            snap["_archived"] = True
+        snapshots.append(snap)
 
     # Apply filters (AND combination)
     filtered: list[dict] = []
@@ -672,22 +638,11 @@ def show_cmd(
 
     task_id = resolve_task_id(lattice_dir, task_id, is_json, allow_archived=True)
 
-    # Try to read task snapshot from tasks/
-    snapshot = read_snapshot(lattice_dir, task_id)
-    is_archived = False
-
-    if snapshot is None:
-        # Check archive
-        archive_path = lattice_dir / "archive" / "tasks" / f"{task_id}.json"
-        if archive_path.exists():
-            try:
-                snapshot = json.loads(archive_path.read_text())
-                is_archived = True
-            except (json.JSONDecodeError, OSError):
-                pass
-
-    if snapshot is None:
+    authority = read_task_authority(lattice_dir, task_id, allow_missing=True)
+    if authority is None:
         output_error(f"Task {task_id} not found.", "NOT_FOUND", is_json)
+    snapshot = dict(authority.snapshot)
+    is_archived = authority.location == "archived"
 
     # Load config for valid_transitions
     config = load_project_config(lattice_dir)
@@ -707,7 +662,7 @@ def show_cmd(
         return
 
     # Read event log
-    events = _read_events(lattice_dir, task_id, is_archived)
+    events = list(authority.events)
     status_rank = _status_rank_from_config(config)
     backward_count, latest_reopen = _scan_backward_status_transitions(events, status_rank)
     reopened_count = snapshot.get("reopened_count", 0)

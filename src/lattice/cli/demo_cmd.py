@@ -8,7 +8,6 @@ from pathlib import Path
 import click
 
 from lattice.cli.main import cli
-from lattice.cli.helpers import mutate_task_events
 from lattice.core.config import default_config, serialize_config
 from lattice.core.events import create_event
 from lattice.core.ids import generate_instance_id, generate_task_id
@@ -1432,28 +1431,29 @@ def _add_relationship(
     ts: str,
 ) -> None:
     """Add a relationship event between two tasks by index."""
-    import json as json_mod
+    from lattice.storage.operations import TaskMutationDecision, mutate_task
 
     source_id = task_ids[source_idx]
     target_id = task_ids[target_idx]
 
-    # Read current snapshot
-    snap_path = lattice_dir / "tasks" / f"{source_id}.json"
-    snapshot = json_mod.loads(snap_path.read_text())
+    def decide(context):  # noqa: ANN001, ANN202
+        snapshot = context.snapshot
+        assert snapshot is not None
+        if any(
+            relationship["type"] == rel_type and relationship["target_task_id"] == target_id
+            for relationship in snapshot.get("relationships_out", [])
+        ):
+            return TaskMutationDecision(idempotent=True)
+        event = create_event(
+            type="relationship_added",
+            task_id=source_id,
+            actor="agent:gregorovich",
+            data={"type": rel_type, "target_task_id": target_id},
+            ts=ts,
+        )
+        return TaskMutationDecision(events=[event])
 
-    # Check for duplicate
-    for rel in snapshot.get("relationships_out", []):
-        if rel["type"] == rel_type and rel["target_task_id"] == target_id:
-            return  # already exists
-
-    event = create_event(
-        type="relationship_added",
-        task_id=source_id,
-        actor="agent:gregorovich",
-        data={"type": rel_type, "target_task_id": target_id},
-        ts=ts,
-    )
-    mutate_task_events(lattice_dir, source_id, [event], config)
+    mutate_task(lattice_dir, source_id, decide, config)
 
 
 # ---------------------------------------------------------------------------

@@ -331,11 +331,14 @@ class TestArchive:
         assert not (lattice_dir / "tasks" / f"{task_id}.json").exists()
         assert (lattice_dir / "archive" / "tasks" / f"{task_id}.json").exists()
 
-    def test_archive_already_archived(self, lattice_env: Path):
+    def test_archive_already_archived(self, lattice_env: Path, lattice_dir: Path):
         task = lattice_create(title="Double archive", actor="human:test")
-        lattice_archive(task_id=task["id"], actor="human:test")
-        with pytest.raises(ValueError, match="already archived"):
-            lattice_archive(task_id=task["id"], actor="human:test")
+        first = lattice_archive(task_id=task["id"], actor="human:test")
+        event_path = lattice_dir / "archive" / "events" / f"{task['id']}.jsonl"
+        before = event_path.read_bytes()
+        second = lattice_archive(task_id=task["id"], actor="human:test")
+        assert second == first
+        assert event_path.read_bytes() == before
 
 
 class TestUnarchive:
@@ -354,8 +357,8 @@ class TestUnarchive:
 
     def test_unarchive_already_active(self, lattice_env: Path):
         task = lattice_create(title="Already active", actor="human:test")
-        with pytest.raises(ValueError, match="already active"):
-            lattice_unarchive(task_id=task["id"], actor="human:test")
+        result = lattice_unarchive(task_id=task["id"], actor="human:test")
+        assert result["type"] == "task_created"
 
 
 class TestEvent:

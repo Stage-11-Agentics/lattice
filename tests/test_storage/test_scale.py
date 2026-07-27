@@ -98,7 +98,7 @@ def _create_task_with_events(lattice_dir, event_count: int) -> str:
                 actor="human:test",
                 data={
                     "field": "title",
-                    "from": f"Title v{i - 1}",
+                    "from": "Many-event task" if i == 1 else f"Title v{i - 2}",
                     "to": f"Title v{i}",
                 },
             )

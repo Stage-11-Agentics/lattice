@@ -148,20 +148,23 @@ class TestArchive:
         assert parsed["ok"] is False
         assert parsed["error"]["code"] == "NOT_FOUND"
 
-    def test_archive_already_archived(self, create_task, invoke):
-        """Archiving an already-archived task should fail with CONFLICT."""
+    def test_archive_already_archived(self, create_task, invoke, initialized_root):
+        """Archiving an already-archived task is an event-idempotent retry."""
         task = create_task("Double archive")
         task_id = task["id"]
 
         r1 = invoke("archive", task_id, "--actor", "human:test")
         assert r1.exit_code == 0
+        lattice = initialized_root / ".lattice"
+        event_path = lattice / "archive" / "events" / f"{task_id}.jsonl"
+        before = event_path.read_bytes()
 
         r2 = invoke("archive", task_id, "--actor", "human:test", "--json")
-        assert r2.exit_code != 0
+        assert r2.exit_code == 0
         parsed = json.loads(r2.output)
-        assert parsed["ok"] is False
-        assert parsed["error"]["code"] == "CONFLICT"
-        assert "already archived" in parsed["error"]["message"]
+        assert parsed["ok"] is True
+        assert parsed["data"]["type"] == "task_archived"
+        assert event_path.read_bytes() == before
 
     def test_archive_not_in_list(self, create_task, invoke, invoke_json):
         """Archived tasks should not appear in `lattice list`."""
@@ -364,16 +367,15 @@ class TestUnarchive:
         assert parsed["error"]["code"] == "NOT_FOUND"
 
     def test_unarchive_already_active(self, create_task, invoke):
-        """Unarchiving an already-active task should fail with CONFLICT."""
+        """Unarchiving an already-active task is an event-idempotent retry."""
         task = create_task("Already active")
         task_id = task["id"]
 
         result = invoke("unarchive", task_id, "--actor", "human:test", "--json")
-        assert result.exit_code != 0
+        assert result.exit_code == 0
         parsed = json.loads(result.output)
-        assert parsed["ok"] is False
-        assert parsed["error"]["code"] == "CONFLICT"
-        assert "already active" in parsed["error"]["message"]
+        assert parsed["ok"] is True
+        assert parsed["data"]["type"] == "task_created"
 
     def test_unarchive_in_list(self, create_task, invoke, invoke_json):
         """Unarchived tasks should reappear in `lattice list`."""

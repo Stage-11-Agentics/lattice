@@ -238,6 +238,11 @@ _NOOP_EVENT_TYPES: frozenset[str] = frozenset(
 def _mut_status_changed(snap: dict, event: dict) -> None:
     data = event["data"]
     from_status = data.get("from")
+    if "from" in data and from_status != snap.get("status"):
+        raise ValueError(
+            "status_changed from value does not match authoritative state: "
+            f"expected {snap.get('status')!r}, got {from_status!r}"
+        )
     new_status = data["to"]
     if is_backward_status_transition(from_status, new_status):
         snap["reopened_count"] = snap.get("reopened_count", 0) + 1
@@ -268,7 +273,13 @@ def _mut_needs_human_cleared(snap: dict, event: dict) -> None:
 
 @_register_mutation("assignment_changed")
 def _mut_assignment_changed(snap: dict, event: dict) -> None:
-    snap["assigned_to"] = event["data"]["to"]
+    data = event["data"]
+    if "from" in data and data["from"] != snap.get("assigned_to"):
+        raise ValueError(
+            "assignment_changed from value does not match authoritative state: "
+            f"expected {snap.get('assigned_to')!r}, got {data['from']!r}"
+        )
+    snap["assigned_to"] = data["to"]
 
 
 @_register_mutation("field_updated")
@@ -278,6 +289,12 @@ def _mut_field_updated(snap: dict, event: dict) -> None:
     value = data["to"]
     if field.startswith("custom_fields."):
         key = field[len("custom_fields.") :]
+        current = (snap.get("custom_fields") or {}).get(key)
+        if "from" in data and data["from"] != current:
+            raise ValueError(
+                "field_updated from value does not match authoritative state: "
+                f"expected {current!r}, got {data['from']!r}"
+            )
         if snap.get("custom_fields") is None:
             snap["custom_fields"] = {}
         snap["custom_fields"][key] = value
@@ -287,6 +304,11 @@ def _mut_field_updated(snap: dict, event: dict) -> None:
             "Use the dedicated command (e.g., status, assign) instead."
         )
     else:
+        if "from" in data and data["from"] != snap.get(field):
+            raise ValueError(
+                "field_updated from value does not match authoritative state: "
+                f"expected {snap.get(field)!r}, got {data['from']!r}"
+            )
         snap[field] = value
 
 

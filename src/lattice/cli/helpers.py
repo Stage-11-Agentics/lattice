@@ -10,7 +10,11 @@ import click
 
 from lattice.core.ids import is_short_id, validate_actor, validate_id
 from lattice.storage.fs import LATTICE_DIR, LatticeRootError, find_root
-from lattice.storage.operations import mutate_task_events  # noqa: F401 - CLI re-export
+from lattice.storage.operations import (
+    AuthoritativeLogError,
+    mutate_task_events,  # noqa: F401 - CLI re-export
+    read_task_authority,
+)
 from lattice.storage.short_ids import resolve_short_id as _resolve_short
 
 
@@ -334,11 +338,25 @@ def common_options(f):  # noqa: ANN001, ANN201
 
 
 def read_snapshot(lattice_dir: Path, task_id: str) -> dict | None:
-    """Read a task snapshot, returning None if not found."""
-    path = lattice_dir / "tasks" / f"{task_id}.json"
-    if not path.exists():
+    """Read the authoritative active task view, returning None if not found."""
+    try:
+        authority = read_task_authority(lattice_dir, task_id, allow_missing=True)
+    except AuthoritativeLogError:
         return None
-    return json.loads(path.read_text())
+    if authority is None or authority.location != "active":
+        return None
+    return authority.snapshot
+
+
+def read_task_view(lattice_dir: Path, task_id: str) -> tuple[dict, bool] | None:
+    """Read a task at its event-selected placement."""
+    try:
+        authority = read_task_authority(lattice_dir, task_id, allow_missing=True)
+    except AuthoritativeLogError:
+        return None
+    if authority is None:
+        return None
+    return authority.snapshot, authority.location == "archived"
 
 
 def read_snapshot_or_exit(lattice_dir: Path, task_id: str, is_json: bool) -> dict:

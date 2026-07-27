@@ -6,8 +6,7 @@ import json
 from pathlib import Path
 from subprocess import CompletedProcess
 
-from lattice.core.ids import generate_event_id
-from lattice.core.tasks import serialize_snapshot
+from lattice.core.ids import generate_artifact_id, generate_event_id
 
 
 # ---------------------------------------------------------------------------
@@ -559,15 +558,14 @@ class TestShow:
         """Show renders auto-detected commits when git lookup returns matches."""
         from lattice.cli import query_cmds
 
+        root = Path(cli_env["LATTICE_ROOT"])
+        config_path = root / ".lattice" / "config.json"
+        config = json.loads(config_path.read_text())
+        config["project_code"] = "LAT"
+        config_path.write_text(json.dumps(config, sort_keys=True, indent=2) + "\n")
         task = create_task("Task with commits")
         task_id = task["id"]
-        short_id = "LAT-144"
-
-        root = Path(cli_env["LATTICE_ROOT"])
-        snap_path = root / ".lattice" / "tasks" / f"{task_id}.json"
-        snap = json.loads(snap_path.read_text())
-        snap["short_id"] = short_id
-        snap_path.write_text(serialize_snapshot(snap))
+        short_id = task["short_id"]
 
         def fake_auto_detect_commits(
             incoming_short_id: str | None, lattice_dir: Path
@@ -595,14 +593,13 @@ class TestShow:
         """JSON output includes auto_detected_commits when matches are found."""
         from lattice.cli import query_cmds
 
+        root = Path(cli_env["LATTICE_ROOT"])
+        config_path = root / ".lattice" / "config.json"
+        config = json.loads(config_path.read_text())
+        config["project_code"] = "LAT"
+        config_path.write_text(json.dumps(config, sort_keys=True, indent=2) + "\n")
         task = create_task("Task with commits json")
         task_id = task["id"]
-
-        root = Path(cli_env["LATTICE_ROOT"])
-        snap_path = root / ".lattice" / "tasks" / f"{task_id}.json"
-        snap = json.loads(snap_path.read_text())
-        snap["short_id"] = "LAT-145"
-        snap_path.write_text(serialize_snapshot(snap))
 
         monkeypatch.setattr(
             query_cmds,
@@ -704,22 +701,7 @@ class TestShow:
         """Archived tasks are found in archive/ directory."""
         task = create_task("Will be archived")
         task_id = task["id"]
-
-        # Manually move task to archive to simulate archival
-        root = Path(cli_env["LATTICE_ROOT"])
-        lattice_dir = root / ".lattice"
-
-        # Move snapshot
-        src_snap = lattice_dir / "tasks" / f"{task_id}.json"
-        dst_snap = lattice_dir / "archive" / "tasks" / f"{task_id}.json"
-        dst_snap.write_text(src_snap.read_text())
-        src_snap.unlink()
-
-        # Move event log
-        src_events = lattice_dir / "events" / f"{task_id}.jsonl"
-        dst_events = lattice_dir / "archive" / "events" / f"{task_id}.jsonl"
-        dst_events.write_text(src_events.read_text())
-        src_events.unlink()
+        assert invoke("archive", task_id, "--actor", "human:test").exit_code == 0
 
         result = invoke("show", task_id)
         assert result.exit_code == 0
@@ -730,13 +712,7 @@ class TestShow:
         task = create_task("Will be archived")
         task_id = task["id"]
 
-        root = Path(cli_env["LATTICE_ROOT"])
-        lattice_dir = root / ".lattice"
-
-        src_snap = lattice_dir / "tasks" / f"{task_id}.json"
-        dst_snap = lattice_dir / "archive" / "tasks" / f"{task_id}.json"
-        dst_snap.write_text(src_snap.read_text())
-        src_snap.unlink()
+        assert invoke("archive", task_id, "--actor", "human:test").exit_code == 0
 
         result = invoke("show", task_id, "--json")
         assert result.exit_code == 0
@@ -882,14 +858,17 @@ class TestShow:
         task = create_task("Task with artifact")
         task_id = task["id"]
 
-        # Manually add an artifact ref to the snapshot
-        root = Path(cli_env["LATTICE_ROOT"])
-        lattice_dir = root / ".lattice"
-        snap_path = lattice_dir / "tasks" / f"{task_id}.json"
-        snap = json.loads(snap_path.read_text())
-        art_id = "art_01J0000000000000000000000"
-        snap["evidence_refs"] = [{"id": art_id, "role": None, "source_type": "artifact"}]
-        snap_path.write_text(serialize_snapshot(snap))
+        art_id = generate_artifact_id()
+        result = invoke(
+            "attach",
+            task_id,
+            "https://example.test/evidence",
+            "--id",
+            art_id,
+            "--actor",
+            "human:test",
+        )
+        assert result.exit_code == 0
 
         result = invoke("show", task_id)
         assert result.exit_code == 0

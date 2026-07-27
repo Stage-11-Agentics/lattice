@@ -304,8 +304,6 @@ def update(
 
     task_id = resolve_task_id(lattice_dir, task_id, is_json)
 
-    snapshot = read_snapshot_or_exit(lattice_dir, task_id, is_json)
-
     if not pairs:
         output_error("No field=value pairs provided.", "VALIDATION_ERROR", is_json)
 
@@ -321,10 +319,9 @@ def update(
         field, value = pair.split("=", 1)
         parsed.append((field, value))
 
-    # Validate and build events
+    # Validate fields and normalize caller values before entering storage.
     shared_ts = utc_now()
-    events: list[dict] = []
-
+    normalized: list[tuple[str, object]] = []
     for field, value in parsed:
         # Reject status and assigned_to with helpful messages
         if field in _REDIRECT_FIELDS:
@@ -339,24 +336,7 @@ def update(
                     "VALIDATION_ERROR",
                     is_json,
                 )
-            old_value = (snapshot.get("custom_fields") or {}).get(key)
-            new_value = value
-            if old_value == new_value:
-                continue
-            events.append(
-                create_event(
-                    type="field_updated",
-                    task_id=task_id,
-                    actor=actor,
-                    data={"field": field, "from": old_value, "to": new_value},
-                    ts=shared_ts,
-                    model=model,
-                    session=session,
-                    triggered_by=triggered_by,
-                    on_behalf_of=on_behalf_of,
-                    reason=provenance_reason,
-                )
-            )
+            normalized.append((field, value))
             continue
 
         if field not in _UPDATABLE_FIELDS:
@@ -396,33 +376,50 @@ def update(
                 f"Invalid task type: '{value}'. Valid types: {valid}.", "VALIDATION_ERROR", is_json
             )
 
-        # Get old value and compute new value
         if field == "tags":
             new_value = [t.strip() for t in value.split(",") if t.strip()]
-            old_value = snapshot.get("tags") or []
         else:
             new_value = value
-            old_value = snapshot.get(field)
+        normalized.append((field, new_value))
 
-        if old_value == new_value:
-            continue
-
-        events.append(
-            create_event(
-                type="field_updated",
-                task_id=task_id,
-                actor=actor,
-                data={"field": field, "from": old_value, "to": new_value},
-                ts=shared_ts,
-                model=model,
-                session=session,
-                triggered_by=triggered_by,
-                on_behalf_of=on_behalf_of,
-                reason=provenance_reason,
+    def decide(context):  # noqa: ANN001, ANN202
+        snapshot = context.snapshot
+        assert snapshot is not None
+        events: list[dict] = []
+        for field, new_value in normalized:
+            if field.startswith("custom_fields."):
+                key = field[len("custom_fields.") :]
+                old_value = (snapshot.get("custom_fields") or {}).get(key)
+            elif field == "tags":
+                old_value = snapshot.get("tags")
+            else:
+                old_value = snapshot.get(field)
+            if (old_value or []) == new_value if field == "tags" else old_value == new_value:
+                continue
+            events.append(
+                create_event(
+                    type="field_updated",
+                    task_id=task_id,
+                    actor=actor,
+                    data={"field": field, "from": old_value, "to": new_value},
+                    ts=shared_ts,
+                    model=model,
+                    session=session,
+                    triggered_by=triggered_by,
+                    on_behalf_of=on_behalf_of,
+                    reason=provenance_reason,
+                )
             )
+            snapshot = apply_event_to_snapshot(snapshot, events[-1])
+        return TaskMutationDecision(
+            events=events,
+            value=[event["data"]["field"] for event in events],
+            idempotent=not events,
         )
 
-    if not events:
+    result = mutate_task(lattice_dir, task_id, decide, config)
+    field_names = result.callback_value
+    if not field_names:
         if is_json:
             click.echo(
                 json.dumps(
@@ -436,17 +433,8 @@ def update(
             click.echo("No changes")
         return
 
-    # Apply events to snapshot incrementally
-    updated_snapshot = snapshot
-    for event in events:
-        updated_snapshot = apply_event_to_snapshot(updated_snapshot, event)
-
-    # Write all events + updated snapshot
-    updated_snapshot = mutate_task_events(lattice_dir, task_id, events, config).snapshot
-
-    field_names = [e["data"]["field"] for e in events]
     output_result(
-        data=updated_snapshot,
+        data=result.snapshot,
         human_message=f"Updated task {task_id}: {', '.join(field_names)}",
         quiet_value="ok",
         is_json=is_json,
@@ -490,12 +478,30 @@ def edit_description(
 
     task_id = resolve_task_id(lattice_dir, task_id, is_json)
 
-    snapshot = read_snapshot_or_exit(lattice_dir, task_id, is_json)
-
-    old_value = snapshot.get("description")
     new_value = description
 
-    if old_value == new_value:
+    def decide(context):  # noqa: ANN001, ANN202
+        snapshot = context.snapshot
+        assert snapshot is not None
+        old_value = snapshot.get("description")
+        if old_value == new_value:
+            return TaskMutationDecision(idempotent=True)
+        event = create_event(
+            type="field_updated",
+            task_id=task_id,
+            actor=actor,
+            data={"field": "description", "from": old_value, "to": new_value},
+            ts=utc_now(),
+            model=model,
+            session=session,
+            triggered_by=triggered_by,
+            on_behalf_of=on_behalf_of,
+            reason=provenance_reason,
+        )
+        return TaskMutationDecision(events=[event])
+
+    result = mutate_task(lattice_dir, task_id, decide, config)
+    if result.idempotent:
         if is_json:
             click.echo(
                 json.dumps(
@@ -509,24 +515,8 @@ def edit_description(
             click.echo("No changes")
         return
 
-    event = create_event(
-        type="field_updated",
-        task_id=task_id,
-        actor=actor,
-        data={"field": "description", "from": old_value, "to": new_value},
-        ts=utc_now(),
-        model=model,
-        session=session,
-        triggered_by=triggered_by,
-        on_behalf_of=on_behalf_of,
-        reason=provenance_reason,
-    )
-
-    updated_snapshot = apply_event_to_snapshot(snapshot, event)
-    updated_snapshot = mutate_task_events(lattice_dir, task_id, [event], config).snapshot
-
     output_result(
-        data=updated_snapshot,
+        data=result.snapshot,
         human_message=f"Updated description on {task_id}",
         quiet_value="ok",
         is_json=is_json,
@@ -747,10 +737,7 @@ def status_cmd(
         validate_actor_format_or_exit(on_behalf_of, is_json)
 
     task_id = resolve_task_id(lattice_dir, task_id, is_json)
-
-    snapshot = read_snapshot_or_exit(lattice_dir, task_id, is_json)
-
-    current_status = snapshot["status"]
+    read_snapshot_or_exit(lattice_dir, task_id, is_json)
 
     # Resolve display name to slug (e.g. "on it" → "in_progress")
     from lattice.core.config import resolve_status_input
@@ -762,7 +749,7 @@ def status_cmd(
         if new_status == "needs_human":
             # Only reached when needs_human is absent from this instance's
             # config — instances that still carry the status validate above.
-            display_id = snapshot.get("short_id") or task_id
+            display_id = task_id
             output_error(
                 "needs_human is a flag, not a status. Use: "
                 f'lattice needs-human {display_id} "<what you need>" '
@@ -777,151 +764,118 @@ def status_cmd(
             is_json,
         )
 
-    # Already at the target status
-    if current_status == new_status:
-        if is_json:
-            click.echo(
-                json.dumps(
-                    {"ok": True, "data": {"message": f"Already at status {new_status}"}},
-                    sort_keys=True,
-                    indent=2,
-                )
-                + "\n"
-            )
-        elif quiet:
-            click.echo("ok")
-        else:
-            click.echo(f"Already at status {new_status}")
-        return
-
-    status_rank = _status_rank_from_config(config)
-    is_backward_transition = is_backward_status_transition(
-        current_status,
-        new_status,
-        status_rank,
-    )
-
-    # Check transition validity
-    if not validate_transition(config, current_status, new_status):
-        if not force:
-            valid_targets = get_valid_transitions(config, current_status)
-            valid_list = ", ".join(valid_targets) if valid_targets else "(none)"
-            msg = (
-                f"Invalid transition from {current_status} to {new_status}. "
-                f"Valid transitions from {current_status}: {valid_list}. "
-                "Use --force --reason to override."
-            )
-            if is_json:
-                from lattice.cli.helpers import json_envelope, json_error_obj
-
-                error_obj = json_error_obj("INVALID_TRANSITION", msg)
-                error_obj["current_status"] = current_status
-                error_obj["requested_status"] = new_status
-                error_obj["valid_transitions"] = valid_targets
-                click.echo(json_envelope(False, error=error_obj))
-                raise SystemExit(1)
-            else:
-                click.echo(f"Error: {msg}", err=True)
-                raise SystemExit(1)
-        if not provenance_reason:
-            output_error(
-                "--reason is required with --force.",
-                "VALIDATION_ERROR",
-                is_json,
-            )
-
-    # Review cycle limit: block rework transitions if cycle limit reached
-    if (
-        current_status in ("review", "in_validation", "pr_open")
-        and new_status in ("in_progress", "in_planning")
-        and not force
-    ):
-        events = read_task_events(lattice_dir, task_id)
-        cycle_count = count_review_rework_cycles(events)
-        cycle_limit = get_review_cycle_limit(config)
-        if cycle_count >= cycle_limit:
-            msg = (
-                f"Review cycle limit reached ({cycle_count}/{cycle_limit}). "
-                f"This task has been sent back from review {cycle_count} time(s). "
-                "Flag it for a human instead of cycling further: "
-                'lattice needs-human <task> "<what you need>". '
-                "Override with --force --reason."
-            )
-            output_error(msg, "REVIEW_CYCLE_LIMIT", is_json)
-
-    # Check completion policies (evidence gating)
-    policy_ok, policy_failures = validate_completion_policy(config, snapshot, new_status)
-    if not policy_ok:
-        if not force:
-            failure_msg = "; ".join(policy_failures)
-            output_error(
-                f"Completion policy not satisfied: {failure_msg}. Override with --force --reason.",
-                "COMPLETION_BLOCKED",
-                is_json,
-            )
-        if not provenance_reason:
-            output_error(
-                "--reason is required with --force.",
-                "VALIDATION_ERROR",
-                is_json,
-            )
-
-    # Planning gate: block in_progress if plan is still scaffold
-    check_plan_gate(
-        lattice_dir,
-        task_id,
-        new_status,
-        is_json,
-        config,
-        force=force,
-        reason=provenance_reason,
-    )
-
-    # Auto-assign: when transitioning to an active work status and the task
-    # is currently unassigned, automatically assign to the actor performing
-    # the transition.  This prevents "orphan active tasks" that no agent can
-    # find via ``lattice next``.
     ACTIVE_WORK_STATUSES = frozenset({"in_planning", "in_progress"})
-    events: list[dict] = []
-    auto_assigned = False
 
-    if new_status in ACTIVE_WORK_STATUSES and snapshot.get("assigned_to") is None:
-        assign_event = create_event(
-            type="assignment_changed",
+    def decide(context):  # noqa: ANN001, ANN202
+        snapshot = context.snapshot
+        assert snapshot is not None
+        current_status = snapshot["status"]
+        if current_status == new_status:
+            return TaskMutationDecision(
+                value=(current_status, False, False, None), idempotent=True
+            )
+        is_backward = is_backward_status_transition(
+            current_status, new_status, _status_rank_from_config(config)
+        )
+        if not validate_transition(config, current_status, new_status):
+            if not force:
+                valid_targets = get_valid_transitions(config, current_status)
+                valid_list = ", ".join(valid_targets) if valid_targets else "(none)"
+                output_error(
+                    f"Invalid transition from {current_status} to {new_status}. "
+                    f"Valid transitions from {current_status}: {valid_list}. "
+                    "Use --force --reason to override.",
+                    "INVALID_TRANSITION",
+                    is_json,
+                )
+            if not provenance_reason:
+                output_error("--reason is required with --force.", "VALIDATION_ERROR", is_json)
+        if (
+            current_status in ("review", "in_validation", "pr_open")
+            and new_status in ("in_progress", "in_planning")
+            and not force
+        ):
+            cycle_count = count_review_rework_cycles(list(context.events))
+            cycle_limit = get_review_cycle_limit(config)
+            if cycle_count >= cycle_limit:
+                output_error(
+                    f"Review cycle limit reached ({cycle_count}/{cycle_limit}). "
+                    f"This task has been sent back from review {cycle_count} time(s). "
+                    "Flag it for a human instead of cycling further: "
+                    'lattice needs-human <task> "<what you need>". '
+                    "Override with --force --reason.",
+                    "REVIEW_CYCLE_LIMIT",
+                    is_json,
+                )
+        policy_ok, policy_failures = validate_completion_policy(config, snapshot, new_status)
+        if not policy_ok:
+            if not force:
+                output_error(
+                    "Completion policy not satisfied: "
+                    f"{'; '.join(policy_failures)}. Override with --force --reason.",
+                    "COMPLETION_BLOCKED",
+                    is_json,
+                )
+            if not provenance_reason:
+                output_error("--reason is required with --force.", "VALIDATION_ERROR", is_json)
+        check_plan_gate(
+            lattice_dir,
+            task_id,
+            new_status,
+            is_json,
+            config,
+            force=force,
+            reason=provenance_reason,
+        )
+        events: list[dict] = []
+        auto_assigned = new_status in ACTIVE_WORK_STATUSES and snapshot.get("assigned_to") is None
+        if auto_assigned:
+            events.append(
+                create_event(
+                    type="assignment_changed",
+                    task_id=task_id,
+                    actor=actor,
+                    data={"from": None, "to": actor},
+                    model=model,
+                    session=session,
+                    triggered_by=triggered_by,
+                    on_behalf_of=on_behalf_of,
+                )
+            )
+        event_data: dict = {"from": current_status, "to": new_status}
+        if force:
+            event_data["force"] = True
+            event_data["reason"] = provenance_reason
+        status_event = create_event(
+            type="status_changed",
             task_id=task_id,
             actor=actor,
-            data={"from": None, "to": actor},
+            data=event_data,
             model=model,
             session=session,
             triggered_by=triggered_by,
             on_behalf_of=on_behalf_of,
+            reason=provenance_reason,
         )
-        events.append(assign_event)
-        snapshot = apply_event_to_snapshot(snapshot, assign_event)
-        auto_assigned = True
+        events.append(status_event)
+        return TaskMutationDecision(
+            events=events,
+            value=(current_status, is_backward, auto_assigned, status_event),
+        )
 
-    event_data: dict = {
-        "from": current_status,
-        "to": new_status,
-    }
-    if force:
-        event_data["force"] = True
-        event_data["reason"] = provenance_reason
-
-    event = create_event(
-        type="status_changed",
-        task_id=task_id,
-        actor=actor,
-        data=event_data,
-        model=model,
-        session=session,
-        triggered_by=triggered_by,
-        on_behalf_of=on_behalf_of,
-        reason=provenance_reason,
-    )
-    events.append(event)
-    updated_snapshot = apply_event_to_snapshot(snapshot, event)
-    updated_snapshot = mutate_task_events(lattice_dir, task_id, events, config).snapshot
+    result = mutate_task(lattice_dir, task_id, decide, config)
+    updated_snapshot = result.snapshot
+    current_status, is_backward_transition, auto_assigned, event = result.callback_value
+    if result.idempotent:
+        output_result(
+            data=updated_snapshot,
+            human_message=f"Already at status {new_status}",
+            quiet_value="ok",
+            is_json=is_json,
+            is_quiet=quiet,
+        )
+        return
+    assert event is not None
     if is_backward_transition:
         _append_plan_reset_section(lattice_dir, task_id, actor, event.get("ts"))
 
@@ -1069,10 +1023,28 @@ def assign(
             is_json,
         )
 
-    snapshot = read_snapshot_or_exit(lattice_dir, task_id, is_json)
-    current_assigned = snapshot.get("assigned_to")
+    def decide(context):  # noqa: ANN001, ANN202
+        snapshot = context.snapshot
+        assert snapshot is not None
+        current_assigned = snapshot.get("assigned_to")
+        if current_assigned == target_actor:
+            return TaskMutationDecision(value=current_assigned, idempotent=True)
+        event = create_event(
+            type="assignment_changed",
+            task_id=task_id,
+            actor=actor,
+            data={"from": current_assigned, "to": target_actor},
+            model=model,
+            session=session,
+            triggered_by=triggered_by,
+            on_behalf_of=on_behalf_of,
+            reason=provenance_reason,
+        )
+        return TaskMutationDecision(events=[event], value=current_assigned)
 
-    if current_assigned == target_actor:
+    result = mutate_task(lattice_dir, task_id, decide, config)
+    current_assigned = result.callback_value
+    if result.idempotent:
         if is_unassign:
             label = "Already unassigned"
         else:
@@ -1092,24 +1064,10 @@ def assign(
             click.echo(label)
         return
 
-    event = create_event(
-        type="assignment_changed",
-        task_id=task_id,
-        actor=actor,
-        data={"from": current_assigned, "to": target_actor},
-        model=model,
-        session=session,
-        triggered_by=triggered_by,
-        on_behalf_of=on_behalf_of,
-        reason=provenance_reason,
-    )
-    updated_snapshot = apply_event_to_snapshot(snapshot, event)
-    updated_snapshot = mutate_task_events(lattice_dir, task_id, [event], config).snapshot
-
     from_label = current_assigned or "unassigned"
     to_label = target_actor or "unassigned"
     output_result(
-        data=updated_snapshot,
+        data=result.snapshot,
         human_message=f"Assigned: {from_label} -> {to_label}",
         quiet_value="ok",
         is_json=is_json,
@@ -1296,8 +1254,6 @@ def comment_edit(
 
     task_id = resolve_task_id(lattice_dir, task_id, is_json)
 
-    snapshot = read_snapshot_or_exit(lattice_dir, task_id, is_json)
-
     # Validate and normalize new body
     try:
         new_text = validate_comment_body(new_text)
@@ -1314,38 +1270,39 @@ def comment_edit(
                 is_json,
             )
 
-    events = read_task_events(lattice_dir, task_id)
+    def decide(context):  # noqa: ANN001, ANN202
+        previous_body, previous_role = validate_comment_for_edit(list(context.events), comment_id)
+        event_data: dict = {
+            "comment_id": comment_id,
+            "body": new_text,
+            "previous_body": previous_body,
+        }
+        if role is not None:
+            event_data["role"] = role
+            if previous_role != role:
+                event_data["previous_role"] = previous_role
+        if previous_body == new_text and (role is None or previous_role == role):
+            return TaskMutationDecision(idempotent=True)
+        event = create_event(
+            type="comment_edited",
+            task_id=task_id,
+            actor=actor,
+            data=event_data,
+            model=model,
+            session=session,
+            triggered_by=triggered_by,
+            on_behalf_of=on_behalf_of,
+            reason=provenance_reason,
+        )
+        return TaskMutationDecision(events=[event])
+
     try:
-        previous_body, previous_role = validate_comment_for_edit(events, comment_id)
+        result = mutate_task(lattice_dir, task_id, decide, config)
     except ValueError as exc:
         output_error(str(exc), "VALIDATION_ERROR", is_json)
 
-    event_data: dict = {
-        "comment_id": comment_id,
-        "body": new_text,
-        "previous_body": previous_body,
-    }
-    if role is not None:
-        event_data["role"] = role
-        if previous_role != role:
-            event_data["previous_role"] = previous_role
-
-    event = create_event(
-        type="comment_edited",
-        task_id=task_id,
-        actor=actor,
-        data=event_data,
-        model=model,
-        session=session,
-        triggered_by=triggered_by,
-        on_behalf_of=on_behalf_of,
-        reason=provenance_reason,
-    )
-    updated_snapshot = apply_event_to_snapshot(snapshot, event)
-    updated_snapshot = mutate_task_events(lattice_dir, task_id, [event], config).snapshot
-
     output_result(
-        data=updated_snapshot,
+        data=result.snapshot,
         human_message=f"Comment {comment_id} edited on {task_id}",
         quiet_value="ok",
         is_json=is_json,
@@ -1384,30 +1341,28 @@ def comment_delete(
 
     task_id = resolve_task_id(lattice_dir, task_id, is_json)
 
-    snapshot = read_snapshot_or_exit(lattice_dir, task_id, is_json)
+    def decide(context):  # noqa: ANN001, ANN202
+        validate_comment_for_delete(list(context.events), comment_id)
+        event = create_event(
+            type="comment_deleted",
+            task_id=task_id,
+            actor=actor,
+            data={"comment_id": comment_id},
+            model=model,
+            session=session,
+            triggered_by=triggered_by,
+            on_behalf_of=on_behalf_of,
+            reason=provenance_reason,
+        )
+        return TaskMutationDecision(events=[event])
 
-    events = read_task_events(lattice_dir, task_id)
     try:
-        validate_comment_for_delete(events, comment_id)
+        result = mutate_task(lattice_dir, task_id, decide, config)
     except ValueError as exc:
         output_error(str(exc), "VALIDATION_ERROR", is_json)
 
-    event = create_event(
-        type="comment_deleted",
-        task_id=task_id,
-        actor=actor,
-        data={"comment_id": comment_id},
-        model=model,
-        session=session,
-        triggered_by=triggered_by,
-        on_behalf_of=on_behalf_of,
-        reason=provenance_reason,
-    )
-    updated_snapshot = apply_event_to_snapshot(snapshot, event)
-    updated_snapshot = mutate_task_events(lattice_dir, task_id, [event], config).snapshot
-
     output_result(
-        data=updated_snapshot,
+        data=result.snapshot,
         human_message=f"Comment {comment_id} deleted from {task_id}",
         quiet_value="ok",
         is_json=is_json,
@@ -1448,8 +1403,6 @@ def react(
 
     task_id = resolve_task_id(lattice_dir, task_id, is_json)
 
-    snapshot = read_snapshot_or_exit(lattice_dir, task_id, is_json)
-
     if not validate_emoji(emoji):
         output_error(
             f"Invalid emoji: '{emoji}'. Must be 1-50 alphanumeric, underscore, or hyphen characters.",
@@ -1457,45 +1410,40 @@ def react(
             is_json,
         )
 
-    events = read_task_events(lattice_dir, task_id)
-    try:
+    def decide(context):  # noqa: ANN001, ANN202
+        events = list(context.events)
         validate_comment_for_react(events, comment_id)
+        comments = materialize_comments(events)
+        for comment in _flatten_comments(comments):
+            if comment["id"] == comment_id and actor in comment.get("reactions", {}).get(
+                emoji, []
+            ):
+                return TaskMutationDecision(idempotent=True)
+        event = create_event(
+            type="reaction_added",
+            task_id=task_id,
+            actor=actor,
+            data={"comment_id": comment_id, "emoji": emoji},
+            model=model,
+            session=session,
+            triggered_by=triggered_by,
+            on_behalf_of=on_behalf_of,
+            reason=provenance_reason,
+        )
+        return TaskMutationDecision(events=[event])
+
+    try:
+        result = mutate_task(lattice_dir, task_id, decide, config)
     except ValueError as exc:
         output_error(str(exc), "VALIDATION_ERROR", is_json)
 
-    # Idempotency: check if actor already has this reaction
-    comments = materialize_comments(events)
-    _all_comments = _flatten_comments(comments)
-    for c in _all_comments:
-        if c["id"] == comment_id:
-            if actor in c.get("reactions", {}).get(emoji, []):
-                output_result(
-                    data=snapshot,
-                    human_message=f"Reaction :{emoji}: already exists on {comment_id} (idempotent).",
-                    quiet_value="ok",
-                    is_json=is_json,
-                    is_quiet=quiet,
-                )
-                return
-            break
-
-    event = create_event(
-        type="reaction_added",
-        task_id=task_id,
-        actor=actor,
-        data={"comment_id": comment_id, "emoji": emoji},
-        model=model,
-        session=session,
-        triggered_by=triggered_by,
-        on_behalf_of=on_behalf_of,
-        reason=provenance_reason,
-    )
-    updated_snapshot = apply_event_to_snapshot(snapshot, event)
-    updated_snapshot = mutate_task_events(lattice_dir, task_id, [event], config).snapshot
-
     output_result(
-        data=updated_snapshot,
-        human_message=f"Reaction :{emoji}: added to {comment_id}",
+        data=result.snapshot,
+        human_message=(
+            f"Reaction :{emoji}: already exists on {comment_id} (idempotent)."
+            if result.idempotent
+            else f"Reaction :{emoji}: added to {comment_id}"
+        ),
         quiet_value="ok",
         is_json=is_json,
         is_quiet=quiet,
@@ -1535,8 +1483,6 @@ def unreact(
 
     task_id = resolve_task_id(lattice_dir, task_id, is_json)
 
-    snapshot = read_snapshot_or_exit(lattice_dir, task_id, is_json)
-
     if not validate_emoji(emoji):
         output_error(
             f"Invalid emoji: '{emoji}'. Must be 1-50 alphanumeric, underscore, or hyphen characters.",
@@ -1544,47 +1490,36 @@ def unreact(
             is_json,
         )
 
-    events = read_task_events(lattice_dir, task_id)
-
-    # Validate the target comment exists and is not deleted
-    try:
+    def decide(context):  # noqa: ANN001, ANN202
+        events = list(context.events)
         validate_comment_for_react(events, comment_id)
-    except ValueError as exc:
-        output_error(str(exc), "VALIDATION_ERROR", is_json)
-
-    # Check the reaction exists for this actor
-    comments = materialize_comments(events)
-    _all_comments = _flatten_comments(comments)
-    found = False
-    for c in _all_comments:
-        if c["id"] == comment_id:
-            if actor in c.get("reactions", {}).get(emoji, []):
-                found = True
-            break
-
-    if not found:
-        output_error(
-            f"Reaction :{emoji}: by {actor} not found on comment {comment_id}.",
-            "NOT_FOUND",
-            is_json,
+        comments = materialize_comments(events)
+        found = any(
+            comment["id"] == comment_id and actor in comment.get("reactions", {}).get(emoji, [])
+            for comment in _flatten_comments(comments)
         )
+        if not found:
+            raise ValueError(f"Reaction :{emoji}: by {actor} not found on comment {comment_id}.")
+        event = create_event(
+            type="reaction_removed",
+            task_id=task_id,
+            actor=actor,
+            data={"comment_id": comment_id, "emoji": emoji},
+            model=model,
+            session=session,
+            triggered_by=triggered_by,
+            on_behalf_of=on_behalf_of,
+            reason=provenance_reason,
+        )
+        return TaskMutationDecision(events=[event])
 
-    event = create_event(
-        type="reaction_removed",
-        task_id=task_id,
-        actor=actor,
-        data={"comment_id": comment_id, "emoji": emoji},
-        model=model,
-        session=session,
-        triggered_by=triggered_by,
-        on_behalf_of=on_behalf_of,
-        reason=provenance_reason,
-    )
-    updated_snapshot = apply_event_to_snapshot(snapshot, event)
-    updated_snapshot = mutate_task_events(lattice_dir, task_id, [event], config).snapshot
+    try:
+        result = mutate_task(lattice_dir, task_id, decide, config)
+    except ValueError as exc:
+        output_error(str(exc), "NOT_FOUND", is_json)
 
     output_result(
-        data=updated_snapshot,
+        data=result.snapshot,
         human_message=f"Reaction :{emoji}: removed from {comment_id}",
         quiet_value="ok",
         is_json=is_json,
@@ -1671,23 +1606,6 @@ def complete_cmd(
         validate_actor_format_or_exit(on_behalf_of, is_json)
 
     task_id = resolve_task_id(lattice_dir, task_id, is_json)
-    snapshot = read_snapshot_or_exit(lattice_dir, task_id, is_json)
-
-    current_status = snapshot["status"]
-    already_in_review = current_status == "review"
-
-    # Validate that we can reach review (or are already there)
-    if not already_in_review:
-        if not validate_transition(config, current_status, "review"):
-            valid_targets = get_valid_transitions(config, current_status)
-            valid_list = ", ".join(valid_targets) if valid_targets else "(none)"
-            output_error(
-                f"Cannot complete: task is in '{current_status}' which cannot "
-                f"transition to review. Valid transitions: {valid_list}.",
-                "INVALID_TRANSITION",
-                is_json,
-            )
-
     # Validate review -> done transition exists
     if not validate_transition(config, "review", "done"):
         output_error(
@@ -1711,89 +1629,8 @@ def complete_cmd(
     except ValueError as exc:
         output_error(str(exc), "VALIDATION_ERROR", is_json)
 
-    # --- Build events sequentially, applying each to snapshot ---
     shared_ts = utc_now()
-    events: list[dict] = []
     art_id = generate_artifact_id()
-
-    # 1. Review comment
-    comment_event = create_event(
-        type="comment_added",
-        task_id=task_id,
-        actor=actor,
-        data={"body": review_text, "role": "review"},
-        ts=shared_ts,
-        model=model,
-        session=session,
-        triggered_by=triggered_by,
-        on_behalf_of=on_behalf_of,
-        reason=provenance_reason,
-    )
-    events.append(comment_event)
-    snapshot = apply_event_to_snapshot(snapshot, comment_event)
-
-    # 2. Status -> review (skip if already in review)
-    if not already_in_review:
-        review_status_event = create_event(
-            type="status_changed",
-            task_id=task_id,
-            actor=actor,
-            data={"from": current_status, "to": "review"},
-            ts=shared_ts,
-            model=model,
-            session=session,
-            triggered_by=triggered_by,
-            on_behalf_of=on_behalf_of,
-            reason=provenance_reason,
-        )
-        events.append(review_status_event)
-        snapshot = apply_event_to_snapshot(snapshot, review_status_event)
-
-    # 3. Attach inline review artifact
-    artifact_event = create_event(
-        type="artifact_attached",
-        task_id=task_id,
-        actor=actor,
-        data={"artifact_id": art_id, "role": "review"},
-        ts=shared_ts,
-        model=model,
-        session=session,
-        triggered_by=triggered_by,
-        on_behalf_of=on_behalf_of,
-        reason=provenance_reason,
-    )
-    events.append(artifact_event)
-    snapshot = apply_event_to_snapshot(snapshot, artifact_event)
-
-    # 4. Validate completion policy BEFORE the done transition
-    policy_ok, policy_failures = validate_completion_policy(
-        config,
-        snapshot,
-        "done",
-    )
-    if not policy_ok:
-        failure_msg = "; ".join(policy_failures)
-        output_error(
-            f"Completion policy not satisfied: {failure_msg}.",
-            "COMPLETION_BLOCKED",
-            is_json,
-        )
-
-    # 5. Status -> done
-    done_status_event = create_event(
-        type="status_changed",
-        task_id=task_id,
-        actor=actor,
-        data={"from": "review", "to": "done"},
-        ts=shared_ts,
-        model=model,
-        session=session,
-        triggered_by=triggered_by,
-        on_behalf_of=on_behalf_of,
-        reason=provenance_reason,
-    )
-    events.append(done_status_event)
-    snapshot = apply_event_to_snapshot(snapshot, done_status_event)
 
     # --- Write artifact metadata ---
     # Write inline review text as artifact payload
@@ -1834,11 +1671,92 @@ def complete_cmd(
     meta_path = lattice_dir / "artifacts" / "meta" / f"{art_id}.json"
     atomic_write(meta_path, serialize_artifact(metadata))
 
-    # --- Write all events + snapshot atomically ---
-    snapshot = mutate_task_events(lattice_dir, task_id, events, config).snapshot
+    def decide(context):  # noqa: ANN001, ANN202
+        snapshot = context.snapshot
+        assert snapshot is not None
+        current_status = snapshot["status"]
+        already_in_review = current_status == "review"
+        if not already_in_review and not validate_transition(config, current_status, "review"):
+            valid_targets = get_valid_transitions(config, current_status)
+            valid_list = ", ".join(valid_targets) if valid_targets else "(none)"
+            output_error(
+                f"Cannot complete: task is in '{current_status}' which cannot "
+                f"transition to review. Valid transitions: {valid_list}.",
+                "INVALID_TRANSITION",
+                is_json,
+            )
+        events: list[dict] = []
+        comment_event = create_event(
+            type="comment_added",
+            task_id=task_id,
+            actor=actor,
+            data={"body": review_text, "role": "review"},
+            ts=shared_ts,
+            model=model,
+            session=session,
+            triggered_by=triggered_by,
+            on_behalf_of=on_behalf_of,
+            reason=provenance_reason,
+        )
+        events.append(comment_event)
+        working = apply_event_to_snapshot(snapshot, comment_event)
+        if not already_in_review:
+            review_status_event = create_event(
+                type="status_changed",
+                task_id=task_id,
+                actor=actor,
+                data={"from": current_status, "to": "review"},
+                ts=shared_ts,
+                model=model,
+                session=session,
+                triggered_by=triggered_by,
+                on_behalf_of=on_behalf_of,
+                reason=provenance_reason,
+            )
+            events.append(review_status_event)
+            working = apply_event_to_snapshot(working, review_status_event)
+        artifact_event = create_event(
+            type="artifact_attached",
+            task_id=task_id,
+            actor=actor,
+            data={"artifact_id": art_id, "role": "review"},
+            ts=shared_ts,
+            model=model,
+            session=session,
+            triggered_by=triggered_by,
+            on_behalf_of=on_behalf_of,
+            reason=provenance_reason,
+        )
+        events.append(artifact_event)
+        working = apply_event_to_snapshot(working, artifact_event)
+        policy_ok, policy_failures = validate_completion_policy(config, working, "done")
+        if not policy_ok:
+            output_error(
+                f"Completion policy not satisfied: {'; '.join(policy_failures)}.",
+                "COMPLETION_BLOCKED",
+                is_json,
+            )
+        done_status_event = create_event(
+            type="status_changed",
+            task_id=task_id,
+            actor=actor,
+            data={"from": "review", "to": "done"},
+            ts=shared_ts,
+            model=model,
+            session=session,
+            triggered_by=triggered_by,
+            on_behalf_of=on_behalf_of,
+            reason=provenance_reason,
+        )
+        events.append(done_status_event)
+        return TaskMutationDecision(events=events, value=current_status)
+
+    result = mutate_task(lattice_dir, task_id, decide, config)
+    snapshot = result.snapshot
+    current_status = result.callback_value
 
     display_id = snapshot.get("short_id") or task_id
-    event_count = len(events)
+    event_count = len(result.appended_events)
     output_result(
         data=snapshot,
         human_message=(

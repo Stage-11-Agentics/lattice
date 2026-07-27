@@ -117,14 +117,11 @@ def _seed_example_tasks(lattice_dir: Path, config: dict) -> None:
     to demonstrate the workflow. Only called when project_code is set
     so short IDs are available.
     """
-    import json as json_mod
-
     from lattice.core.events import create_event
     from lattice.core.tasks import apply_event_to_snapshot
     from lattice.storage.operations import (
         TaskMutationDecision,
         mutate_task,
-        mutate_task_events,
         scaffold_plan,
     )
 
@@ -262,17 +259,16 @@ def _seed_example_tasks(lattice_dir: Path, config: dict) -> None:
         source_id = task_ids[i]
         target_id = task_ids[i + 1]
 
-        snap_path = lattice_dir / "tasks" / f"{source_id}.json"
-        snapshot = json_mod.loads(snap_path.read_text())
+        def relationship_decision(context):  # noqa: ANN001, ANN202
+            rel_ev = create_event(
+                type="relationship_added",
+                task_id=source_id,
+                actor=actor,
+                data={"type": "blocks", "target_task_id": target_id},
+            )
+            return TaskMutationDecision(events=[rel_ev])
 
-        rel_ev = create_event(
-            type="relationship_added",
-            task_id=source_id,
-            actor=actor,
-            data={"type": "blocks", "target_task_id": target_id},
-        )
-        snapshot = apply_event_to_snapshot(snapshot, rel_ev)
-        mutate_task_events(lattice_dir, source_id, [rel_ev], config)
+        mutate_task(lattice_dir, source_id, relationship_decision, config)
 
 
 @click.group(invoke_without_command=True)

@@ -303,18 +303,19 @@ class TestConcurrentStatusChanges:
         t1.join(timeout=15)
         t2.join(timeout=15)
 
-        assert not errors, f"Thread errors: {errors}"
+        assert len(errors) == 1
+        assert "status_changed from value does not match authoritative state" in str(errors[0])
 
         # Both events should be in the log
         event_path = lattice_dir / "events" / f"{task_id}.jsonl"
         event_lines = event_path.read_text().strip().split("\n")
         events = [json.loads(line) for line in event_lines]
 
-        # task_created + auto-assign + status(in_planning) + 2 concurrent changes = 5
-        assert len(events) == 5
+        # task_created + auto-assign + status(in_planning) + one accepted race winner = 4
+        assert len(events) == 4
 
         status_events = [e for e in events if e["type"] == "status_changed"]
-        assert len(status_events) == 3  # in_planning + planned + cancelled
+        assert len(status_events) == 2
 
         # All events are valid
         for ev in events:

@@ -27,7 +27,7 @@ from lattice.core.acceptance_criteria import (
     validate_criterion_id,
 )
 from lattice.core.events import create_event
-from lattice.storage.operations import TaskMutationDecision, mutate_task
+from lattice.storage.operations import TaskMutationDecision, mutate_task, read_task_authority
 
 
 @cli.group("criterion")
@@ -295,13 +295,11 @@ def criterion_list(
     is_json = output_json
     lattice_dir = require_root(is_json)
     task_id = resolve_task_id(lattice_dir, task_id, is_json, allow_archived=True)
-    active_path = lattice_dir / "tasks" / f"{task_id}.json"
-    archived_path = lattice_dir / "archive" / "tasks" / f"{task_id}.json"
-    archived = not active_path.exists() and archived_path.exists()
-    path = archived_path if archived else active_path
-    if not path.exists():
+    authority = read_task_authority(lattice_dir, task_id, allow_missing=True)
+    if authority is None:
         output_error(f"Task {task_id} not found.", "NOT_FOUND", is_json)
-    snapshot = json.loads(path.read_text(encoding="utf-8"))
+    archived = authority.location == "archived"
+    snapshot = authority.snapshot
     criteria = [
         copy.deepcopy(criterion)
         for criterion in snapshot.get("acceptance_criteria", [])

@@ -23,6 +23,7 @@ from lattice.storage.operations import (
     AuthoritativeLogError,
     ResolvedTaskAuthority,
     TaskMutationDecision,
+    _load_strict_id_index,
     mutate_task,
     resolve_task_authority,
 )
@@ -708,6 +709,57 @@ def doctor(fix: bool, output_json: bool) -> None:
             }
         )
 
+    authoritative_short_ids: dict[str, tuple[str, Path, int]] = {}
+    if has_project_code:
+        for task_id_key, authority in authorities.items():
+            short_id = authority.snapshot.get("short_id")
+            short_id_line = next(
+                (
+                    line
+                    for line, event in reversed(list(enumerate(authority.events, 1)))
+                    if event.get("data", {}).get("short_id") == short_id
+                ),
+                1,
+            )
+            log_path = (
+                authority.active_event_path
+                if authority.active_event_path.exists()
+                else authority.archived_event_path
+            )
+            if not isinstance(short_id, str) or not validate_short_id(short_id):
+                alias_ok = False
+                findings.append(
+                    {
+                        "level": "error",
+                        "check": "alias_integrity",
+                        "message": (
+                            f"Malformed authoritative short ID {short_id!r} for "
+                            f"{task_id_key} at {log_path}:{short_id_line}; manual immutable-log "
+                            "recovery is required"
+                        ),
+                        "task_id": task_id_key,
+                    }
+                )
+                continue
+            previous = authoritative_short_ids.get(short_id)
+            if previous is not None and previous[0] != task_id_key:
+                alias_ok = False
+                findings.append(
+                    {
+                        "level": "error",
+                        "check": "alias_integrity",
+                        "message": (
+                            f"Duplicate authoritative short ID {short_id}: "
+                            f"{previous[0]} at {previous[1]}:{previous[2]} and "
+                            f"{task_id_key} at {log_path}:{short_id_line}; manual "
+                            "immutable-log recovery is required"
+                        ),
+                        "task_id": task_id_key,
+                    }
+                )
+                continue
+            authoritative_short_ids[short_id] = (task_id_key, log_path, short_id_line)
+
     if ids_json_path.exists():
         id_index = load_id_index(lattice_dir)
         id_map = id_index.get("map", {})
@@ -740,46 +792,22 @@ def doctor(fix: bool, output_json: bool) -> None:
                     }
                 )
 
-        # Check: every authoritative creation short ID has the exact mapping.
-        for task_id_key, authority in authorities.items():
-            snap = authority.snapshot
-            snap_short_id = snap.get("short_id")
-            if snap_short_id:
-                if id_map.get(snap_short_id) != task_id_key:
-                    alias_ok = False
-                    findings.append(
-                        {
-                            "level": "warning",
-                            "check": "alias_integrity",
-                            "message": (
-                                f"Authoritative task {task_id_key} has short_id "
-                                f"{snap_short_id} but ids.json does not map it exactly; "
-                                "run lattice rebuild --all"
-                            ),
-                            "task_id": task_id_key,
-                        }
-                    )
-
-        # Check: no duplicate short IDs across snapshots
-        seen_short_ids: dict[str, str] = {}
-        for task_id_key, authority in authorities.items():
-            snap = authority.snapshot
-            snap_short_id = snap.get("short_id")
-            if snap_short_id:
-                if snap_short_id in seen_short_ids:
-                    alias_ok = False
-                    findings.append(
-                        {
-                            "level": "error",
-                            "check": "alias_integrity",
-                            "message": (
-                                f"Duplicate short ID {snap_short_id}: "
-                                f"{seen_short_ids[snap_short_id]} and {task_id_key}"
-                            ),
-                            "task_id": task_id_key,
-                        }
-                    )
-                seen_short_ids[snap_short_id] = task_id_key
+        # Check: every valid authoritative creation short ID has the exact mapping.
+        for snap_short_id, (task_id_key, _log_path, _line) in authoritative_short_ids.items():
+            if id_map.get(snap_short_id) != task_id_key:
+                alias_ok = False
+                findings.append(
+                    {
+                        "level": "warning",
+                        "check": "alias_integrity",
+                        "message": (
+                            f"Authoritative task {task_id_key} has short_id "
+                            f"{snap_short_id} but ids.json does not map it exactly; "
+                            "run lattice rebuild --all"
+                        ),
+                        "task_id": task_id_key,
+                    }
+                )
 
         # Check: per-prefix next_seqs > max assigned per prefix
         prefix_max: dict[str, int] = {}
@@ -1089,6 +1117,7 @@ def _rebuild_lifecycle_log(lattice_dir: Path) -> list[str]:
 
 def _rebuild_id_index(lattice_dir: Path) -> None:
     """Rebuild ``ids.json`` from strict authoritative task creation replay."""
+    project_code = load_project_config(lattice_dir).get("project_code")
     id_map: dict[str, str] = {}
     max_seq: dict[str, int] = {}  # per-prefix max seq
     task_ids = sorted(_collect_task_ids(lattice_dir))
@@ -1098,6 +1127,9 @@ def _rebuild_id_index(lattice_dir: Path) -> None:
     ]
 
     with multi_lock(lattice_dir / "locks", lock_keys):
+        current = _load_strict_id_index(lattice_dir)
+        authoritative: list[tuple[str, str, Path]] = []
+        seen: dict[str, tuple[str, Path]] = {}
         for task_id in task_ids:
             event_exists = any(
                 _task_paths(lattice_dir, task_id, archived)["event"].exists()
@@ -1108,25 +1140,57 @@ def _rebuild_id_index(lattice_dir: Path) -> None:
             authority = resolve_task_authority(lattice_dir, task_id)
             assert authority is not None
             short_id = authority.snapshot.get("short_id")
-            if short_id and validate_short_id(short_id):
-                existing = id_map.get(short_id)
-                if existing is not None and existing != task_id:
-                    raise AuthoritativeLogError(
-                        f"duplicate authoritative short ID {short_id}: {existing} and {task_id}"
-                    )
-                id_map[short_id] = task_id
-                prefix, num = parse_short_id(short_id)
-                max_seq[prefix] = max(max_seq.get(prefix, 0), num)
+            short_id_line = next(
+                (
+                    line
+                    for line, event in reversed(list(enumerate(authority.events, 1)))
+                    if event.get("data", {}).get("short_id") == short_id
+                ),
+                1,
+            )
+            log_path = (
+                authority.active_event_path
+                if authority.active_event_path.exists()
+                else authority.archived_event_path
+            )
+            if short_id is None and not project_code:
+                continue
+            if not isinstance(short_id, str) or not validate_short_id(short_id):
+                raise AuthoritativeLogError(
+                    f"malformed authoritative short ID {short_id!r} for {task_id}; "
+                    "manual immutable-log recovery required",
+                    path=log_path,
+                    line=short_id_line,
+                )
+            previous = seen.get(short_id)
+            if previous is not None and previous[0] != task_id:
+                raise AuthoritativeLogError(
+                    f"duplicate authoritative short ID {short_id}: "
+                    f"{previous[0]} at {previous[1]} and {task_id}",
+                    path=log_path,
+                    line=short_id_line,
+                )
+            seen[short_id] = (task_id, log_path)
+            authoritative.append((short_id, task_id, log_path))
+
+        # Only construct the replacement after the complete authority/index
+        # preflight succeeds; no partial ids.json write is possible.
+        for short_id, task_id, _log_path in authoritative:
+            id_map[short_id] = task_id
+            prefix, num = parse_short_id(short_id)
+            max_seq[prefix] = max(max_seq.get(prefix, 0), num)
 
         # Preserve valid reservation high-water marks while replacing the map
         # from immutable creation authority.
-        current = load_id_index(lattice_dir)
         current_next = current.get("next_seqs", {})
         next_seqs: dict[str, int] = {
             prefix: value
             for prefix, value in current_next.items()
             if isinstance(prefix, str) and isinstance(value, int) and value >= 1
         }
+        for short_id in current.get("map", {}):
+            prefix, num = parse_short_id(short_id)
+            next_seqs[prefix] = max(next_seqs.get(prefix, 1), num + 1)
         for prefix, max_num in max_seq.items():
             next_seqs[prefix] = max(next_seqs.get(prefix, 1), max_num + 1)
 

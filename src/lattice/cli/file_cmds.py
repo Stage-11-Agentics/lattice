@@ -19,12 +19,11 @@ from lattice.cli.helpers import (
     require_root,
     resolve_task_id,
     validate_actor_format_or_exit,
-    mutate_task_events,
 )
 from lattice.cli.main import cli
 from lattice.core.events import create_event
 from lattice.core.stats import load_all_snapshots
-from lattice.core.tasks import apply_event_to_snapshot
+from lattice.storage.operations import TaskMutationDecision, mutate_task
 from lattice.storage.readers import read_task_events
 
 
@@ -117,34 +116,35 @@ def file_link(
     except ValueError as exc:
         output_error(str(exc), "VALIDATION_ERROR", is_json)
 
-    # Read snapshot and check for duplicates
-    snapshot = read_snapshot_or_exit(lattice_dir, task_id, is_json)
-    existing = set(snapshot.get("linked_files", []))
-    new_paths = [p for p in relative_paths if p not in existing]
+    read_snapshot_or_exit(lattice_dir, task_id, is_json)
 
-    if not new_paths:
-        output_error(
-            "All specified files are already linked to this task.",
-            "CONFLICT",
-            is_json,
+    def decide(context):  # noqa: ANN001, ANN202
+        snapshot = context.snapshot
+        assert snapshot is not None
+        existing = set(snapshot.get("linked_files", []))
+        new_paths = [path for path in relative_paths if path not in existing]
+        if not new_paths:
+            output_error(
+                "All specified files are already linked to this task.",
+                "CONFLICT",
+                is_json,
+            )
+        event = create_event(
+            type="file_linked",
+            task_id=task_id,
+            actor=actor,
+            data={"paths": new_paths},
+            model=model,
+            session=session,
+            triggered_by=triggered_by,
+            on_behalf_of=on_behalf_of,
+            reason=provenance_reason,
         )
+        return TaskMutationDecision(events=[event], value=new_paths)
 
-    # Build event
-    event = create_event(
-        type="file_linked",
-        task_id=task_id,
-        actor=actor,
-        data={"paths": new_paths},
-        model=model,
-        session=session,
-        triggered_by=triggered_by,
-        on_behalf_of=on_behalf_of,
-        reason=provenance_reason,
-    )
-    updated_snapshot = apply_event_to_snapshot(snapshot, event)
-
-    # Write (event-first, then snapshot, under lock)
-    updated_snapshot = mutate_task_events(lattice_dir, task_id, [event], config).snapshot
+    result = mutate_task(lattice_dir, task_id, decide, config)
+    updated_snapshot = result.snapshot
+    new_paths = result.callback_value
 
     # Output
     paths_display = ", ".join(new_paths)
@@ -196,34 +196,35 @@ def file_unlink(
     except ValueError as exc:
         output_error(str(exc), "VALIDATION_ERROR", is_json)
 
-    # Read snapshot and check that paths exist
-    snapshot = read_snapshot_or_exit(lattice_dir, task_id, is_json)
-    existing = set(snapshot.get("linked_files", []))
-    to_remove = [p for p in relative_paths if p in existing]
+    read_snapshot_or_exit(lattice_dir, task_id, is_json)
 
-    if not to_remove:
-        output_error(
-            "None of the specified files are linked to this task.",
-            "NOT_FOUND",
-            is_json,
+    def decide(context):  # noqa: ANN001, ANN202
+        snapshot = context.snapshot
+        assert snapshot is not None
+        existing = set(snapshot.get("linked_files", []))
+        to_remove = [path for path in relative_paths if path in existing]
+        if not to_remove:
+            output_error(
+                "None of the specified files are linked to this task.",
+                "NOT_FOUND",
+                is_json,
+            )
+        event = create_event(
+            type="file_unlinked",
+            task_id=task_id,
+            actor=actor,
+            data={"paths": to_remove},
+            model=model,
+            session=session,
+            triggered_by=triggered_by,
+            on_behalf_of=on_behalf_of,
+            reason=provenance_reason,
         )
+        return TaskMutationDecision(events=[event], value=to_remove)
 
-    # Build event
-    event = create_event(
-        type="file_unlinked",
-        task_id=task_id,
-        actor=actor,
-        data={"paths": to_remove},
-        model=model,
-        session=session,
-        triggered_by=triggered_by,
-        on_behalf_of=on_behalf_of,
-        reason=provenance_reason,
-    )
-    updated_snapshot = apply_event_to_snapshot(snapshot, event)
-
-    # Write (event-first, then snapshot, under lock)
-    updated_snapshot = mutate_task_events(lattice_dir, task_id, [event], config).snapshot
+    result = mutate_task(lattice_dir, task_id, decide, config)
+    updated_snapshot = result.snapshot
+    to_remove = result.callback_value
 
     # Output
     paths_display = ", ".join(to_remove)

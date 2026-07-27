@@ -39,12 +39,13 @@ from lattice.core.tasks import (
 from lattice.storage.fs import atomic_write
 from lattice.storage.locks import multi_lock
 from lattice.storage.operations import (
+    AuthoritativeLogError,
     TaskMutationDecision,
+    discover_task_authorities,
     mutate_task,
-    mutate_task_events,
+    read_task_authority,
     scaffold_plan,
 )
-from lattice.storage.readers import read_task_events
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -281,23 +282,17 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
             self._send_json(200, _ok(config))
 
         def _handle_tasks(self, ld: Path) -> None:
-            tasks_dir = ld / "tasks"
             snapshots: list[dict] = []
-            if tasks_dir.is_dir():
-                for task_file in sorted(tasks_dir.glob("*.json")):
-                    try:
-                        snap = json.loads(task_file.read_text())
-                    except (json.JSONDecodeError, OSError):
-                        continue
-                    compact = compact_snapshot(snap)
-                    compact["updated_at"] = snap.get("updated_at")
-                    compact["created_at"] = snap.get("created_at")
-                    compact["done_at"] = snap.get("done_at")
-                    # Active session indicator: task is in_progress with an assignee
-                    compact["has_active_session"] = bool(
-                        snap.get("status") == "in_progress" and snap.get("assigned_to")
-                    )
-                    snapshots.append(compact)
+            for authority in discover_task_authorities(ld, include_archived=False):
+                snap = authority.snapshot
+                compact = compact_snapshot(snap)
+                compact["updated_at"] = snap.get("updated_at")
+                compact["created_at"] = snap.get("created_at")
+                compact["done_at"] = snap.get("done_at")
+                compact["has_active_session"] = bool(
+                    snap.get("status") == "in_progress" and snap.get("assigned_to")
+                )
+                snapshots.append(compact)
             # Sort by ID
             snapshots.sort(key=lambda s: s.get("id", ""))
             self._send_json(200, _ok(snapshots))
@@ -307,18 +302,12 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                 self._send_json(400, _err("INVALID_ID", "Invalid task ID format"))
                 return
 
-            snapshot = _read_snapshot(ld, task_id)
-            is_archived = False
-
-            if snapshot is None:
-                # Check archive
-                snapshot = _read_snapshot_archive(ld, task_id)
-                if snapshot is not None:
-                    is_archived = True
-
-            if snapshot is None:
+            authority = read_task_authority(ld, task_id, allow_missing=True)
+            if authority is None:
                 self._send_json(404, _err("NOT_FOUND", f"Task {task_id} not found"))
                 return
+            snapshot = authority.snapshot
+            is_archived = authority.location == "archived"
 
             # Enrich with notes_exists, plan_exists, and artifacts
             if is_archived:
@@ -345,10 +334,12 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                 self._send_json(400, _err("INVALID_ID", "Invalid task ID format"))
                 return
 
-            events = read_task_events(ld, task_id)
-            if not events:
-                # Check archive
-                events = read_task_events(ld, task_id, is_archived=True)
+            try:
+                authority = read_task_authority(ld, task_id, allow_missing=True)
+            except AuthoritativeLogError as exc:
+                self._send_json(409, _err("INTEGRITY_ERROR", str(exc)))
+                return
+            events = list(authority.events) if authority is not None else []
 
             # Return newest first
             events.reverse()
@@ -360,10 +351,8 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                 self._send_json(400, _err("INVALID_ID", "Invalid task ID format"))
                 return
 
-            # Try active events first, then archive
-            events = read_task_events(ld, task_id)
-            if not events:
-                events = read_task_events(ld, task_id, is_archived=True)
+            authority = read_task_authority(ld, task_id, allow_missing=True)
+            events = list(authority.events) if authority is not None else []
 
             comments = materialize_comments(events)
             self._send_json(200, _ok(comments))
@@ -374,24 +363,20 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                 self._send_json(400, _err("INVALID_ID", "Invalid task ID format"))
                 return
 
-            snapshot = _read_snapshot(ld, task_id)
-            is_archived = False
-            if snapshot is None:
-                snapshot = _read_snapshot_archive(ld, task_id)
-                if snapshot is not None:
-                    is_archived = True
-
-            if snapshot is None:
+            authority = read_task_authority(ld, task_id, allow_missing=True)
+            if authority is None:
                 self._send_json(404, _err("NOT_FOUND", f"Task {task_id} not found"))
                 return
+            snapshot = authority.snapshot
+            is_archived = authority.location == "archived"
 
             # Read events (latest 20)
-            events = read_task_events(ld, task_id, is_archived=is_archived)
+            events = list(authority.events)
             events.reverse()
             recent_events = events[:20]
 
             # Materialize comments
-            all_events = read_task_events(ld, task_id, is_archived=is_archived)
+            all_events = list(authority.events)
             comments = materialize_comments(all_events)
 
             # Enrich snapshot
@@ -535,34 +520,26 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
             self._send_json(200, _ok(stats))
 
         def _handle_archived(self, ld: Path) -> None:
-            archive_dir = ld / "archive" / "tasks"
             snapshots: list[dict] = []
-            if archive_dir.is_dir():
-                for task_file in sorted(archive_dir.glob("*.json")):
-                    try:
-                        snap = json.loads(task_file.read_text())
-                    except (json.JSONDecodeError, OSError):
-                        continue
-                    compact = compact_snapshot(snap)
-                    compact["updated_at"] = snap.get("updated_at")
-                    compact["created_at"] = snap.get("created_at")
-                    compact["done_at"] = snap.get("done_at")
-                    compact["archived"] = True
-                    snapshots.append(compact)
+            for authority in discover_task_authorities(ld, include_archived=True):
+                if authority.location != "archived":
+                    continue
+                snap = authority.snapshot
+                compact = compact_snapshot(snap)
+                compact["updated_at"] = snap.get("updated_at")
+                compact["created_at"] = snap.get("created_at")
+                compact["done_at"] = snap.get("done_at")
+                compact["archived"] = True
+                snapshots.append(compact)
             snapshots.sort(key=lambda s: s.get("id", ""))
             self._send_json(200, _ok(snapshots))
 
         def _handle_graph(self, ld: Path) -> None:
             """Handle GET /api/graph — return nodes + directed edges for graph visualization."""
-            tasks_dir = ld / "tasks"
-            snapshots: list[dict] = []
-            if tasks_dir.is_dir():
-                for task_file in sorted(tasks_dir.glob("*.json")):
-                    try:
-                        snap = json.loads(task_file.read_text())
-                    except (json.JSONDecodeError, OSError):
-                        continue
-                    snapshots.append(snap)
+            snapshots = [
+                authority.snapshot
+                for authority in discover_task_authorities(ld, include_archived=False)
+            ]
 
             # Build set of active task IDs for filtering link targets
             active_ids: set[str] = {s["id"] for s in snapshots if "id" in s}
@@ -895,56 +872,53 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                     _err("VALIDATION_ERROR", f"Invalid status: '{new_status}'. Valid: {valid}"),
                 )
                 return
-
-            # Read snapshot (outside lock — acceptable TOCTOU at v0 scale)
-            snapshot = _read_snapshot(ld, task_id)
-            if snapshot is None:
-                self._send_json(404, _err("NOT_FOUND", f"Task {task_id} not found"))
-                return
-
-            current_status = snapshot["status"]
-
-            if current_status == new_status:
+            if force and (not reason or not isinstance(reason, str) or not reason.strip()):
                 self._send_json(
-                    200,
-                    _ok({"message": f"Already at status {new_status}"}),
+                    400,
+                    _err("VALIDATION_ERROR", "'reason' is required with force=true"),
                 )
                 return
 
-            if not validate_transition(config, current_status, new_status):
-                if not force:
-                    self._send_json(
-                        400,
-                        _err(
-                            "INVALID_TRANSITION",
-                            f"Invalid transition from {current_status} to {new_status}. "
-                            "Send force=true with a reason to override.",
-                        ),
-                    )
-                    return
-                if not reason or not isinstance(reason, str) or not reason.strip():
-                    self._send_json(
-                        400,
-                        _err("VALIDATION_ERROR", "'reason' is required with force=true"),
-                    )
-                    return
-
-            # Build event data
-            event_data: dict = {"from": current_status, "to": new_status}
-            if force:
-                event_data["force"] = True
-                event_data["reason"] = reason
-
-            event = create_event(
-                type="status_changed",
-                task_id=task_id,
-                actor=actor,
-                data=event_data,
-            )
-            updated_snapshot = apply_event_to_snapshot(snapshot, event)
-
             try:
-                updated_snapshot = mutate_task_events(ld, task_id, [event], config).snapshot
+
+                def decide(context):  # noqa: ANN001, ANN202
+                    snapshot = context.snapshot
+                    assert snapshot is not None
+                    current_status = snapshot["status"]
+                    if current_status == new_status:
+                        return TaskMutationDecision(idempotent=True)
+                    if not validate_transition(config, current_status, new_status):
+                        if not force:
+                            raise ValueError(
+                                f"Invalid transition from {current_status} to {new_status}. "
+                                "Send force=true with a reason to override."
+                            )
+                        if not reason or not isinstance(reason, str) or not reason.strip():
+                            raise ValueError("'reason' is required with force=true")
+                    event_data: dict = {"from": current_status, "to": new_status}
+                    if force:
+                        event_data["force"] = True
+                        event_data["reason"] = reason
+                    event = create_event(
+                        type="status_changed",
+                        task_id=task_id,
+                        actor=actor,
+                        data=event_data,
+                    )
+                    return TaskMutationDecision(events=[event])
+
+                result = mutate_task(ld, task_id, decide, config)
+                updated_snapshot = result.snapshot
+                if result.idempotent:
+                    self._send_json(200, _ok({"message": f"Already at status {new_status}"}))
+                    return
+            except ValueError as exc:
+                message = str(exc)
+                if "no authoritative event log exists" in message:
+                    self._send_json(404, _err("NOT_FOUND", f"Task {task_id} not found"))
+                else:
+                    self._send_json(400, _err("INVALID_TRANSITION", message))
+                return
             except Exception as exc:
                 self._send_json(500, _err("WRITE_ERROR", f"Failed to update status: {exc}"))
                 return
@@ -1386,27 +1360,23 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                 self._send_json(500, _err("READ_ERROR", f"Failed to read config: {exc}"))
                 return
 
-            snapshot = _read_snapshot(ld, task_id)
-            if snapshot is None:
-                self._send_json(404, _err("NOT_FOUND", f"Task {task_id} not found"))
-                return
-
-            current_assigned = snapshot.get("assigned_to")
-
-            if current_assigned == assigned_to:
-                self._send_json(200, _ok(snapshot))
-                return
-
-            event = create_event(
-                type="assignment_changed",
-                task_id=task_id,
-                actor=actor,
-                data={"from": current_assigned, "to": assigned_to},
-            )
-            updated_snapshot = apply_event_to_snapshot(snapshot, event)
-
             try:
-                updated_snapshot = mutate_task_events(ld, task_id, [event], config).snapshot
+
+                def decide(context):  # noqa: ANN001, ANN202
+                    snapshot = context.snapshot
+                    assert snapshot is not None
+                    current_assigned = snapshot.get("assigned_to")
+                    if current_assigned == assigned_to:
+                        return TaskMutationDecision(idempotent=True)
+                    event = create_event(
+                        type="assignment_changed",
+                        task_id=task_id,
+                        actor=actor,
+                        data={"from": current_assigned, "to": assigned_to},
+                    )
+                    return TaskMutationDecision(events=[event])
+
+                updated_snapshot = mutate_task(ld, task_id, decide, config).snapshot
             except Exception as exc:
                 self._send_json(500, _err("WRITE_ERROR", f"Failed to assign task: {exc}"))
                 return
@@ -1449,34 +1419,25 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                 self._send_json(500, _err("READ_ERROR", f"Failed to read config: {exc}"))
                 return
 
-            snapshot = _read_snapshot(ld, task_id)
-            if snapshot is None:
-                self._send_json(404, _err("NOT_FOUND", f"Task {task_id} not found"))
-                return
-
-            # Validate parent_id for threaded replies
-            if parent_id is not None:
-                events = read_task_events(ld, task_id)
-                try:
-                    validate_comment_for_reply(events, parent_id)
-                except ValueError as exc:
-                    self._send_json(400, _err("VALIDATION_ERROR", str(exc)))
-                    return
-
-            event_data: dict = {"body": comment_body.strip()}
-            if parent_id is not None:
-                event_data["parent_id"] = parent_id
-
-            event = create_event(
-                type="comment_added",
-                task_id=task_id,
-                actor=actor,
-                data=event_data,
-            )
-            updated_snapshot = apply_event_to_snapshot(snapshot, event)
-
             try:
-                updated_snapshot = mutate_task_events(ld, task_id, [event], config).snapshot
+
+                def decide(context):  # noqa: ANN001, ANN202
+                    event_data: dict = {"body": comment_body.strip()}
+                    if parent_id is not None:
+                        validate_comment_for_reply(list(context.events), parent_id)
+                        event_data["parent_id"] = parent_id
+                    event = create_event(
+                        type="comment_added",
+                        task_id=task_id,
+                        actor=actor,
+                        data=event_data,
+                    )
+                    return TaskMutationDecision(events=[event])
+
+                updated_snapshot = mutate_task(ld, task_id, decide, config).snapshot
+            except ValueError as exc:
+                self._send_json(400, _err("VALIDATION_ERROR", str(exc)))
+                return
             except Exception as exc:
                 self._send_json(500, _err("WRITE_ERROR", f"Failed to add comment: {exc}"))
                 return
@@ -1581,45 +1542,31 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                     self._send_json(400, _err("VALIDATION_ERROR", "'tags' must be an array"))
                     return
 
-            snapshot = _read_snapshot(ld, task_id)
-            if snapshot is None:
-                self._send_json(404, _err("NOT_FOUND", f"Task {task_id} not found"))
-                return
-
-            # Build events for changed fields
             shared_ts = utc_now()
-            events: list[dict] = []
-
-            for field, new_value in fields.items():
-                if field == "tags":
-                    old_value = snapshot.get("tags") or []
-                else:
-                    old_value = snapshot.get(field)
-
-                if old_value == new_value:
-                    continue
-
-                events.append(
-                    create_event(
-                        type="field_updated",
-                        task_id=task_id,
-                        actor=actor,
-                        data={"field": field, "from": old_value, "to": new_value},
-                        ts=shared_ts,
-                    )
-                )
-
-            if not events:
-                self._send_json(200, _ok(snapshot))
-                return
-
-            # Apply events incrementally
-            updated_snapshot = snapshot
-            for event in events:
-                updated_snapshot = apply_event_to_snapshot(updated_snapshot, event)
 
             try:
-                updated_snapshot = mutate_task_events(ld, task_id, events, config).snapshot
+
+                def decide(context):  # noqa: ANN001, ANN202
+                    snapshot = context.snapshot
+                    assert snapshot is not None
+                    events: list[dict] = []
+                    for field, new_value in fields.items():
+                        old_value = snapshot.get(field)
+                        comparable_old = old_value or [] if field == "tags" else old_value
+                        if comparable_old == new_value:
+                            continue
+                        event = create_event(
+                            type="field_updated",
+                            task_id=task_id,
+                            actor=actor,
+                            data={"field": field, "from": old_value, "to": new_value},
+                            ts=shared_ts,
+                        )
+                        events.append(event)
+                        snapshot = apply_event_to_snapshot(snapshot, event)
+                    return TaskMutationDecision(events=events, idempotent=not events)
+
+                updated_snapshot = mutate_task(ld, task_id, decide, config).snapshot
             except Exception as exc:
                 self._send_json(500, _err("WRITE_ERROR", f"Failed to update task: {exc}"))
                 return
@@ -1729,32 +1676,30 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                 self._send_json(500, _err("READ_ERROR", f"Failed to read config: {exc}"))
                 return
 
-            snapshot = _read_snapshot(ld, task_id)
-            if snapshot is None:
-                self._send_json(404, _err("NOT_FOUND", f"Task {task_id} not found"))
-                return
-
-            events = read_task_events(ld, task_id)
             try:
-                previous_body = validate_comment_for_edit(events, comment_id)
+
+                def decide(context):  # noqa: ANN001, ANN202
+                    previous_body, _previous_role = validate_comment_for_edit(
+                        list(context.events), comment_id
+                    )
+                    if previous_body == new_body:
+                        return TaskMutationDecision(idempotent=True)
+                    event = create_event(
+                        type="comment_edited",
+                        task_id=task_id,
+                        actor=actor,
+                        data={
+                            "comment_id": comment_id,
+                            "body": new_body.strip(),
+                            "previous_body": previous_body,
+                        },
+                    )
+                    return TaskMutationDecision(events=[event])
+
+                updated_snapshot = mutate_task(ld, task_id, decide, config).snapshot
             except ValueError as exc:
                 self._send_json(400, _err("VALIDATION_ERROR", str(exc)))
                 return
-
-            event = create_event(
-                type="comment_edited",
-                task_id=task_id,
-                actor=actor,
-                data={
-                    "comment_id": comment_id,
-                    "body": new_body.strip(),
-                    "previous_body": previous_body,
-                },
-            )
-            updated_snapshot = apply_event_to_snapshot(snapshot, event)
-
-            try:
-                updated_snapshot = mutate_task_events(ld, task_id, [event], config).snapshot
             except Exception as exc:
                 self._send_json(500, _err("WRITE_ERROR", f"Failed to edit comment: {exc}"))
                 return
@@ -1796,28 +1741,22 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                 self._send_json(500, _err("READ_ERROR", f"Failed to read config: {exc}"))
                 return
 
-            snapshot = _read_snapshot(ld, task_id)
-            if snapshot is None:
-                self._send_json(404, _err("NOT_FOUND", f"Task {task_id} not found"))
-                return
-
-            events = read_task_events(ld, task_id)
             try:
-                validate_comment_for_delete(events, comment_id)
+
+                def decide(context):  # noqa: ANN001, ANN202
+                    validate_comment_for_delete(list(context.events), comment_id)
+                    event = create_event(
+                        type="comment_deleted",
+                        task_id=task_id,
+                        actor=actor,
+                        data={"comment_id": comment_id},
+                    )
+                    return TaskMutationDecision(events=[event])
+
+                updated_snapshot = mutate_task(ld, task_id, decide, config).snapshot
             except ValueError as exc:
                 self._send_json(400, _err("VALIDATION_ERROR", str(exc)))
                 return
-
-            event = create_event(
-                type="comment_deleted",
-                task_id=task_id,
-                actor=actor,
-                data={"comment_id": comment_id},
-            )
-            updated_snapshot = apply_event_to_snapshot(snapshot, event)
-
-            try:
-                updated_snapshot = mutate_task_events(ld, task_id, [event], config).snapshot
             except Exception as exc:
                 self._send_json(500, _err("WRITE_ERROR", f"Failed to delete comment: {exc}"))
                 return
@@ -1874,43 +1813,31 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                 self._send_json(500, _err("READ_ERROR", f"Failed to read config: {exc}"))
                 return
 
-            snapshot = _read_snapshot(ld, task_id)
-            if snapshot is None:
-                self._send_json(404, _err("NOT_FOUND", f"Task {task_id} not found"))
-                return
-
-            events = read_task_events(ld, task_id)
             try:
-                validate_comment_for_react(events, comment_id)
+
+                def decide(context):  # noqa: ANN001, ANN202
+                    events = list(context.events)
+                    validate_comment_for_react(events, comment_id)
+                    exists = any(
+                        candidate["id"] == comment_id
+                        and actor in candidate.get("reactions", {}).get(emoji, [])
+                        for comment in materialize_comments(events)
+                        for candidate in [comment, *comment.get("replies", [])]
+                    )
+                    if exists:
+                        return TaskMutationDecision(idempotent=True)
+                    event = create_event(
+                        type="reaction_added",
+                        task_id=task_id,
+                        actor=actor,
+                        data={"comment_id": comment_id, "emoji": emoji},
+                    )
+                    return TaskMutationDecision(events=[event])
+
+                updated_snapshot = mutate_task(ld, task_id, decide, config).snapshot
             except ValueError as exc:
                 self._send_json(400, _err("VALIDATION_ERROR", str(exc)))
                 return
-
-            # Idempotency: check if actor already has this reaction
-            comments = materialize_comments(events)
-            for c in comments:
-                if c["id"] == comment_id:
-                    if actor in c.get("reactions", {}).get(emoji, []):
-                        self._send_json(200, _ok(snapshot))
-                        return
-                    break
-                for reply in c.get("replies", []):
-                    if reply["id"] == comment_id:
-                        if actor in reply.get("reactions", {}).get(emoji, []):
-                            self._send_json(200, _ok(snapshot))
-                            return
-                        break
-
-            event = create_event(
-                type="reaction_added",
-                task_id=task_id,
-                actor=actor,
-                data={"comment_id": comment_id, "emoji": emoji},
-            )
-            updated_snapshot = apply_event_to_snapshot(snapshot, event)
-
-            try:
-                updated_snapshot = mutate_task_events(ld, task_id, [event], config).snapshot
             except Exception as exc:
                 self._send_json(500, _err("WRITE_ERROR", f"Failed to add reaction: {exc}"))
                 return
@@ -1967,51 +1894,33 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                 self._send_json(500, _err("READ_ERROR", f"Failed to read config: {exc}"))
                 return
 
-            snapshot = _read_snapshot(ld, task_id)
-            if snapshot is None:
-                self._send_json(404, _err("NOT_FOUND", f"Task {task_id} not found"))
-                return
-
-            events = read_task_events(ld, task_id)
             try:
-                validate_comment_for_react(events, comment_id)
+
+                def decide(context):  # noqa: ANN001, ANN202
+                    events = list(context.events)
+                    validate_comment_for_react(events, comment_id)
+                    found = any(
+                        candidate["id"] == comment_id
+                        and actor in candidate.get("reactions", {}).get(emoji, [])
+                        for comment in materialize_comments(events)
+                        for candidate in [comment, *comment.get("replies", [])]
+                    )
+                    if not found:
+                        raise ValueError(
+                            f"No '{emoji}' reaction by {actor} on comment {comment_id}."
+                        )
+                    event = create_event(
+                        type="reaction_removed",
+                        task_id=task_id,
+                        actor=actor,
+                        data={"comment_id": comment_id, "emoji": emoji},
+                    )
+                    return TaskMutationDecision(events=[event])
+
+                updated_snapshot = mutate_task(ld, task_id, decide, config).snapshot
             except ValueError as exc:
-                self._send_json(400, _err("VALIDATION_ERROR", str(exc)))
+                self._send_json(404, _err("NOT_FOUND", str(exc)))
                 return
-
-            # Check the reaction exists for this actor
-            comments = materialize_comments(events)
-            found = False
-            for c in comments:
-                if c["id"] == comment_id:
-                    if actor in c.get("reactions", {}).get(emoji, []):
-                        found = True
-                    break
-                for reply in c.get("replies", []):
-                    if reply["id"] == comment_id:
-                        if actor in reply.get("reactions", {}).get(emoji, []):
-                            found = True
-                        break
-
-            if not found:
-                self._send_json(
-                    404,
-                    _err(
-                        "NOT_FOUND", f"No '{emoji}' reaction by {actor} on comment {comment_id}."
-                    ),
-                )
-                return
-
-            event = create_event(
-                type="reaction_removed",
-                task_id=task_id,
-                actor=actor,
-                data={"comment_id": comment_id, "emoji": emoji},
-            )
-            updated_snapshot = apply_event_to_snapshot(snapshot, event)
-
-            try:
-                updated_snapshot = mutate_task_events(ld, task_id, [event], config).snapshot
             except Exception as exc:
                 self._send_json(500, _err("WRITE_ERROR", f"Failed to remove reaction: {exc}"))
                 return
@@ -2258,23 +2167,23 @@ def _apply_activity_filters(
 
 
 def _read_snapshot(ld: Path, task_id: str) -> dict | None:
-    path = ld / "tasks" / f"{task_id}.json"
-    if not path.is_file():
-        return None
     try:
-        return json.loads(path.read_text())
-    except (json.JSONDecodeError, OSError):
+        authority = read_task_authority(ld, task_id, allow_missing=True)
+    except AuthoritativeLogError:
         return None
+    if authority is None or authority.location != "active":
+        return None
+    return authority.snapshot
 
 
 def _read_snapshot_archive(ld: Path, task_id: str) -> dict | None:
-    path = ld / "archive" / "tasks" / f"{task_id}.json"
-    if not path.is_file():
-        return None
     try:
-        return json.loads(path.read_text())
-    except (json.JSONDecodeError, OSError):
+        authority = read_task_authority(ld, task_id, allow_missing=True)
+    except AuthoritativeLogError:
         return None
+    if authority is None or authority.location != "archived":
+        return None
+    return authority.snapshot
 
 
 def _read_artifact_info(ld: Path, snapshot: dict) -> list[dict]:

@@ -228,6 +228,57 @@ def resolve_task_authority(
     )
 
 
+def read_task_authority(
+    lattice_dir: Path,
+    task_id: str,
+    *,
+    allow_missing: bool = False,
+) -> ResolvedTaskAuthority | None:
+    """Resolve one task's event-selected state under the task read locks.
+
+    This is the canonical read path for callers that care whether a task is
+    active or archived.  It never selects placement from snapshot presence and
+    returns the replayed snapshot, so a stale cache cannot resurrect a task.
+    """
+    with multi_lock(
+        lattice_dir / "locks",
+        [f"events_{task_id}", f"tasks_{task_id}"],
+    ):
+        return resolve_task_authority(lattice_dir, task_id, allow_missing=allow_missing)
+
+
+def discover_task_authorities(
+    lattice_dir: Path,
+    *,
+    include_archived: bool = True,
+) -> list[ResolvedTaskAuthority]:
+    """Return validated task authorities discovered from event logs.
+
+    IDs are collected from both placements first, then each task is resolved
+    through :func:`read_task_authority`. Split copies therefore yield one
+    logical task at the placement selected by immutable history.
+    """
+    task_ids: set[str] = set()
+    event_dirs = [lattice_dir / "events"]
+    if include_archived:
+        event_dirs.append(lattice_dir / "archive" / "events")
+    for event_dir in event_dirs:
+        if not event_dir.is_dir():
+            continue
+        task_ids.update(
+            path.stem
+            for path in event_dir.glob("task_*.jsonl")
+            if path.name not in {"_lifecycle.jsonl", "_global.jsonl"}
+        )
+    authorities: list[ResolvedTaskAuthority] = []
+    for task_id in sorted(task_ids):
+        authority = read_task_authority(lattice_dir, task_id)
+        assert authority is not None
+        if include_archived or authority.location == "active":
+            authorities.append(authority)
+    return authorities
+
+
 def _read_lifecycle_events(path: Path) -> list[dict]:
     if not path.exists():
         return []
@@ -352,8 +403,38 @@ def _load_strict_id_index(lattice_dir: Path) -> dict:
     if not isinstance(index, dict):
         raise AuthoritativeLogError("ids.json must contain an object", path=path)
     index = load_id_index(lattice_dir)
-    if not isinstance(index.get("map"), dict) or not isinstance(index.get("next_seqs"), dict):
+    mapping = index.get("map")
+    next_seqs = index.get("next_seqs")
+    if not isinstance(mapping, dict) or not isinstance(next_seqs, dict):
         raise AuthoritativeLogError("ids.json has malformed map/next_seqs", path=path)
+    for short_id, task_id in mapping.items():
+        if (
+            not isinstance(short_id, str)
+            or not isinstance(task_id, str)
+            or not task_id.startswith("task_")
+        ):
+            raise AuthoritativeLogError(
+                f"ids.json has malformed mapping {short_id!r}: {task_id!r}",
+                path=path,
+            )
+        marker, separator, suffix = short_id.rpartition("-")
+        if not separator or not marker or not suffix.isdigit() or int(suffix) < 1:
+            raise AuthoritativeLogError(
+                f"ids.json has malformed short ID {short_id!r}",
+                path=path,
+            )
+    for prefix, next_seq in next_seqs.items():
+        if (
+            not isinstance(prefix, str)
+            or not prefix
+            or not isinstance(next_seq, int)
+            or isinstance(next_seq, bool)
+            or next_seq < 1
+        ):
+            raise AuthoritativeLogError(
+                f"ids.json has malformed counter {prefix!r}: {next_seq!r}",
+                path=path,
+            )
     return index
 
 
@@ -374,6 +455,8 @@ def _reserve_or_reconcile_short_id(
     task_id: str,
     prefix: str,
     authority: ResolvedTaskAuthority | None,
+    *,
+    allow_backfill: bool = False,
 ) -> tuple[str, bool]:
     index = _load_strict_id_index(lattice_dir)
     mapping: dict[str, str] = index["map"]
@@ -381,9 +464,8 @@ def _reserve_or_reconcile_short_id(
     changed = False
 
     if authority is not None:
-        creation = authority.events[0]
-        short_id = creation.get("data", {}).get("short_id")
-        if short_id is None:
+        short_id = authority.snapshot.get("short_id")
+        if short_id is None and not allow_backfill:
             raise AuthoritativeLogError(
                 "task_created is missing the configured project short_id",
                 path=(
@@ -393,22 +475,23 @@ def _reserve_or_reconcile_short_id(
                 ),
                 line=1,
             )
-        suffix = _parse_project_short_id(short_id, prefix)
-        existing_target = mapping.get(short_id)
-        if existing_target not in (None, task_id):
-            raise AuthoritativeLogError(
-                f"ids.json maps authoritative {short_id} to {existing_target}, not {task_id}"
-            )
-        if existing_target is None:
-            mapping[short_id] = task_id
-            changed = True
-        high_water = next_seqs.get(prefix, 1)
-        if high_water <= suffix:
-            next_seqs[prefix] = suffix + 1
-            changed = True
-        if changed:
-            save_id_index(lattice_dir, index)
-        return short_id, changed
+        if short_id is not None:
+            suffix = _parse_project_short_id(short_id, prefix)
+            existing_target = mapping.get(short_id)
+            if existing_target not in (None, task_id):
+                raise AuthoritativeLogError(
+                    f"ids.json maps authoritative {short_id} to {existing_target}, not {task_id}"
+                )
+            if existing_target is None:
+                mapping[short_id] = task_id
+                changed = True
+            high_water = next_seqs.get(prefix, 1)
+            if high_water <= suffix:
+                next_seqs[prefix] = suffix + 1
+                changed = True
+            if changed:
+                save_id_index(lattice_dir, index)
+            return short_id, changed
 
     reservations = [
         sid
@@ -446,6 +529,7 @@ def mutate_task(
     destination: TaskLocation | None = None,
     may_emit_lifecycle: bool = False,
     project_prefix: str | None = None,
+    allow_short_id_backfill: bool = False,
 ) -> TaskMutationResult:
     """Replay, validate, mutate, and materialize one task under stable locks."""
     locks_dir = lattice_dir / "locks"
@@ -489,7 +573,11 @@ def mutate_task(
         reserved_short_id = None
         if project_prefix is not None:
             reserved_short_id, _ = _reserve_or_reconcile_short_id(
-                lattice_dir, task_id, project_prefix, authority
+                lattice_dir,
+                task_id,
+                project_prefix,
+                authority,
+                allow_backfill=allow_short_id_backfill,
             )
 
         context = TaskMutationContext(

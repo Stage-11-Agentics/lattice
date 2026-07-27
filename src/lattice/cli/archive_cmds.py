@@ -48,17 +48,6 @@ def _archive_one(
     is_json: bool,
 ) -> dict | str:
     """Archive a single task. Returns the event dict on success or an error string on failure."""
-    archived_event = lattice_dir / "archive" / "events" / f"{task_id}.jsonl"
-    archived_snapshot = lattice_dir / "archive" / "tasks" / f"{task_id}.json"
-    active_event = lattice_dir / "events" / f"{task_id}.jsonl"
-    active_snapshot = lattice_dir / "tasks" / f"{task_id}.json"
-    if (
-        archived_event.exists()
-        and archived_snapshot.exists()
-        and not active_event.exists()
-        and not active_snapshot.exists()
-    ):
-        return f"Task {task_id} is already archived."
 
     def decide(context):  # noqa: ANN001, ANN202
         if context.location == "archived":
@@ -366,17 +355,6 @@ def _unarchive_one(
     provenance_reason: str | None,
 ) -> dict | str:
     """Unarchive a single task. Returns the event dict on success or an error string on failure."""
-    archived_event = lattice_dir / "archive" / "events" / f"{task_id}.jsonl"
-    archived_snapshot = lattice_dir / "archive" / "tasks" / f"{task_id}.json"
-    active_event = lattice_dir / "events" / f"{task_id}.jsonl"
-    active_snapshot = lattice_dir / "tasks" / f"{task_id}.json"
-    if (
-        active_event.exists()
-        and active_snapshot.exists()
-        and not archived_event.exists()
-        and not archived_snapshot.exists()
-    ):
-        return f"Task {task_id} is already active."
 
     def decide(context):  # noqa: ANN001, ANN202
         if context.location == "active":

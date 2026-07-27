@@ -15,11 +15,10 @@ from lattice.cli.helpers import (
     resolve_body,
     resolve_task_id,
     validate_actor_format_or_exit,
-    mutate_task_events,
 )
 from lattice.cli.main import cli
 from lattice.core.events import create_event, get_actor_display
-from lattice.core.tasks import apply_event_to_snapshot
+from lattice.storage.operations import TaskMutationDecision, mutate_task
 
 _REASON_REQUIRED = (
     "REASON is required when setting the needs_human flag. "
@@ -84,9 +83,7 @@ def needs_human_cmd(
         validate_actor_format_or_exit(on_behalf_of, is_json)
 
     task_id = resolve_task_id(lattice_dir, task_id, is_json)
-    snapshot = read_snapshot_or_exit(lattice_dir, task_id, is_json)
-    current = snapshot.get("needs_human")
-    display_id = snapshot.get("short_id") or task_id
+    read_snapshot_or_exit(lattice_dir, task_id, is_json)
 
     if clear_flag:
         if reason is not None or file_path is not None:
@@ -96,25 +93,34 @@ def needs_human_cmd(
                 "VALIDATION_ERROR",
                 is_json,
             )
-        if not current:
-            output_error(
-                f"Task {display_id} does not have the needs_human flag set.",
-                "FLAG_NOT_SET",
-                is_json,
+
+        def decide_clear(context):  # noqa: ANN001, ANN202
+            snapshot = context.snapshot
+            assert snapshot is not None
+            current = snapshot.get("needs_human")
+            display_id = snapshot.get("short_id") or task_id
+            if not current:
+                output_error(
+                    f"Task {display_id} does not have the needs_human flag set.",
+                    "FLAG_NOT_SET",
+                    is_json,
+                )
+            event = create_event(
+                type="needs_human_cleared",
+                task_id=task_id,
+                actor=actor,
+                data={"note": note},
+                model=model,
+                session=session,
+                triggered_by=triggered_by,
+                on_behalf_of=on_behalf_of,
+                reason=provenance_reason,
             )
-        event = create_event(
-            type="needs_human_cleared",
-            task_id=task_id,
-            actor=actor,
-            data={"note": note},
-            model=model,
-            session=session,
-            triggered_by=triggered_by,
-            on_behalf_of=on_behalf_of,
-            reason=provenance_reason,
-        )
-        updated = apply_event_to_snapshot(snapshot, event)
-        updated = mutate_task_events(lattice_dir, task_id, [event], config).snapshot
+            return TaskMutationDecision(events=[event], value=display_id)
+
+        result = mutate_task(lattice_dir, task_id, decide_clear, config)
+        updated = result.snapshot
+        display_id = result.callback_value
         _notify_c11(updated, flagged=False)
         note_msg = f"  Note: {note}" if note else ""
         output_result(
@@ -142,36 +148,44 @@ def needs_human_cmd(
     ).strip()
     if not reason:
         output_error(_REASON_REQUIRED, "VALIDATION_ERROR", is_json)
-    if current:
-        flagged_by = get_actor_display(current.get("flagged_by"))
-        output_error(
-            f"Task {display_id} already has the needs_human flag set "
-            f"(by {flagged_by} since {current.get('since')}: "
-            f"{current.get('reason')}). Clear it first with --clear.",
-            "FLAG_ALREADY_SET",
-            is_json,
+
+    def decide_flag(context):  # noqa: ANN001, ANN202
+        snapshot = context.snapshot
+        assert snapshot is not None
+        current = snapshot.get("needs_human")
+        display_id = snapshot.get("short_id") or task_id
+        if current:
+            flagged_by = get_actor_display(current.get("flagged_by"))
+            output_error(
+                f"Task {display_id} already has the needs_human flag set "
+                f"(by {flagged_by} since {current.get('since')}: "
+                f"{current.get('reason')}). Clear it first with --clear.",
+                "FLAG_ALREADY_SET",
+                is_json,
+            )
+        event = create_event(
+            type="needs_human_flagged",
+            task_id=task_id,
+            actor=actor,
+            data={"reason": reason},
+            model=model,
+            session=session,
+            triggered_by=triggered_by,
+            on_behalf_of=on_behalf_of,
+            reason=provenance_reason,
+        )
+        return TaskMutationDecision(
+            events=[event],
+            value=(display_id, snapshot.get("status")),
         )
 
-    event = create_event(
-        type="needs_human_flagged",
-        task_id=task_id,
-        actor=actor,
-        data={"reason": reason},
-        model=model,
-        session=session,
-        triggered_by=triggered_by,
-        on_behalf_of=on_behalf_of,
-        reason=provenance_reason,
-    )
-    updated = apply_event_to_snapshot(snapshot, event)
-    updated = mutate_task_events(lattice_dir, task_id, [event], config).snapshot
+    result = mutate_task(lattice_dir, task_id, decide_flag, config)
+    updated = result.snapshot
+    display_id, status = result.callback_value
     _notify_c11(updated, flagged=True)
     output_result(
         data=updated,
-        human_message=(
-            f"needs_human set ({display_id}, status stays {snapshot.get('status')})\n"
-            f"  Need: {reason}"
-        ),
+        human_message=(f"needs_human set ({display_id}, status stays {status})\n  Need: {reason}"),
         quiet_value="ok",
         is_json=is_json,
         is_quiet=quiet,
