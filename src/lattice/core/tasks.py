@@ -6,6 +6,12 @@ import copy
 import json
 import sys
 
+from lattice.core.acceptance_criteria import (
+    find_criterion,
+    normalize_outcome,
+    validate_criterion_id,
+)
+
 # Fields that cannot be overwritten by field_updated events.  These are
 # managed exclusively by internal bookkeeping or dedicated event types.
 PROTECTED_FIELDS: frozenset[str] = frozenset(
@@ -29,6 +35,7 @@ PROTECTED_FIELDS: frozenset[str] = frozenset(
         "reopened_count",
         "custom_fields",
         "needs_human",
+        "acceptance_criteria",
     }
 )
 
@@ -136,6 +143,16 @@ def compact_snapshot(snapshot: dict) -> dict:
         "evidence_ref_count": len(snapshot.get("evidence_refs", [])),
         "branch_link_count": len(snapshot.get("branch_links", [])),
         "linked_file_count": len(snapshot.get("linked_files", [])),
+        "acceptance_criteria_count": sum(
+            1
+            for criterion in snapshot.get("acceptance_criteria", [])
+            if not criterion["retired"]
+        ),
+        "retired_acceptance_criteria_count": sum(
+            1
+            for criterion in snapshot.get("acceptance_criteria", [])
+            if criterion["retired"]
+        ),
     }
     short_id = snapshot.get("short_id")
     if short_id is not None:
@@ -170,6 +187,7 @@ def _init_snapshot(event: dict) -> dict:
         "last_status_changed_at": event["ts"],
         "relationships_out": [],
         "evidence_refs": [],
+        "acceptance_criteria": [],
         "branch_links": [],
         "linked_files": [],
         "comment_count": 0,
@@ -314,6 +332,97 @@ def _mut_artifact_attached(snap: dict, event: dict) -> None:
             if existing_id == art_id:
                 return
     refs.append({"id": art_id, "role": role, "source_type": "artifact"})
+
+
+@_register_mutation("acceptance_criterion_added")
+def _mut_acceptance_criterion_added(snap: dict, event: dict) -> None:
+    data = event["data"]
+    criterion_id = validate_criterion_id(data.get("criterion_id"))
+    outcome = normalize_outcome(data.get("outcome"))
+    if outcome != data.get("outcome"):
+        raise ValueError("Acceptance-criterion event outcome must already be normalized.")
+    if data.get("revision") != 1:
+        raise ValueError("An added acceptance criterion must start at revision 1.")
+    if find_criterion(snap, criterion_id) is not None:
+        raise ValueError(f"Acceptance criterion {criterion_id} already exists.")
+    revision = {
+        "revision": 1,
+        "outcome": outcome,
+        "event_id": event["id"],
+        "changed_at": event["ts"],
+        "changed_by": event["actor"],
+    }
+    snap.setdefault("acceptance_criteria", []).append(
+        {
+            "id": criterion_id,
+            "outcome": outcome,
+            "revision": 1,
+            "retired": False,
+            "created_at": event["ts"],
+            "created_by": event["actor"],
+            "updated_at": event["ts"],
+            "updated_by": event["actor"],
+            "retired_at": None,
+            "retired_by": None,
+            "revisions": [revision],
+        }
+    )
+
+
+@_register_mutation("acceptance_criterion_edited")
+def _mut_acceptance_criterion_edited(snap: dict, event: dict) -> None:
+    data = event["data"]
+    criterion_id = validate_criterion_id(data.get("criterion_id"))
+    criterion = find_criterion(snap, criterion_id)
+    if criterion is None:
+        raise ValueError(f"Acceptance criterion {criterion_id} does not exist.")
+    if criterion["retired"]:
+        raise ValueError(f"Acceptance criterion {criterion_id} is retired.")
+    outcome = normalize_outcome(data.get("outcome"))
+    if outcome != data.get("outcome"):
+        raise ValueError("Acceptance-criterion event outcome must already be normalized.")
+    if data.get("from_outcome") != criterion["outcome"]:
+        raise ValueError("Acceptance-criterion edit from_outcome does not match authority.")
+    expected_revision = criterion["revision"] + 1
+    if data.get("revision") != expected_revision:
+        raise ValueError(
+            f"Acceptance-criterion edit revision must be {expected_revision}."
+        )
+    if outcome == criterion["outcome"]:
+        raise ValueError("Acceptance-criterion edit event cannot be a no-op.")
+    criterion["outcome"] = outcome
+    criterion["revision"] = expected_revision
+    criterion["updated_at"] = event["ts"]
+    criterion["updated_by"] = event["actor"]
+    criterion["revisions"].append(
+        {
+            "revision": expected_revision,
+            "outcome": outcome,
+            "event_id": event["id"],
+            "changed_at": event["ts"],
+            "changed_by": event["actor"],
+        }
+    )
+
+
+@_register_mutation("acceptance_criterion_retired")
+def _mut_acceptance_criterion_retired(snap: dict, event: dict) -> None:
+    data = event["data"]
+    criterion_id = validate_criterion_id(data.get("criterion_id"))
+    criterion = find_criterion(snap, criterion_id)
+    if criterion is None:
+        raise ValueError(f"Acceptance criterion {criterion_id} does not exist.")
+    if criterion["retired"]:
+        raise ValueError(f"Acceptance criterion {criterion_id} is already retired.")
+    if data.get("revision") != criterion["revision"]:
+        raise ValueError(
+            "Acceptance-criterion retirement must record the current outcome revision."
+        )
+    criterion["retired"] = True
+    criterion["retired_at"] = event["ts"]
+    criterion["retired_by"] = event["actor"]
+    criterion["updated_at"] = event["ts"]
+    criterion["updated_by"] = event["actor"]
 
 
 @_register_mutation("task_short_id_assigned")
