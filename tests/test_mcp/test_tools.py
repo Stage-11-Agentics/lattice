@@ -13,6 +13,7 @@ from lattice.mcp.tools import (
     lattice_assign,
     lattice_attach,
     lattice_comment,
+    lattice_comment_edit,
     lattice_config,
     lattice_create,
     lattice_criteria,
@@ -210,6 +211,81 @@ class TestComment:
         ref = next(item for item in result["evidence_refs"] if item["source_type"] == "comment")
         assert ref["role"] is None
         assert ref["criterion_ids"] == ["AC-1"]
+
+    def test_comment_edit_clear_role_preserves_links_and_is_idempotent(
+        self, lattice_env: Path, lattice_dir: Path
+    ):
+        task = lattice_create(title="Clear MCP role", actor="human:test")
+        lattice_criterion_add(
+            task_id=task["id"],
+            outcome="Observable.",
+            actor="human:test",
+        )
+        added = lattice_comment(
+            task_id=task["id"],
+            text="Observed.",
+            actor="human:test",
+            role="review",
+            criterion_ids=["AC-1"],
+        )
+        comment_id = added["last_event_id"]
+        event_path = lattice_dir / "events" / f"{task['id']}.jsonl"
+
+        omitted = lattice_comment_edit(
+            task_id=task["id"],
+            comment_id=comment_id,
+            new_text="Observed again.",
+            actor="human:test",
+        )
+        omitted_ref = next(
+            ref for ref in omitted["evidence_refs"] if ref["source_type"] == "comment"
+        )
+        assert omitted_ref["role"] == "review"
+        assert omitted_ref["criterion_ids"] == ["AC-1"]
+
+        before_conflict = event_path.read_bytes()
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            lattice_comment_edit(
+                task_id=task["id"],
+                comment_id=comment_id,
+                new_text="Observed again.",
+                actor="human:test",
+                role="review",
+                clear_role=True,
+            )
+        assert event_path.read_bytes() == before_conflict
+
+        cleared = lattice_comment_edit(
+            task_id=task["id"],
+            comment_id=comment_id,
+            new_text="Observed again.",
+            actor="human:test",
+            clear_role=True,
+        )
+        cleared_ref = next(
+            ref for ref in cleared["evidence_refs"] if ref["source_type"] == "comment"
+        )
+        assert cleared_ref == {
+            "id": comment_id,
+            "role": None,
+            "source_type": "comment",
+            "criterion_ids": ["AC-1"],
+        }
+        clear_event = json.loads(event_path.read_text().splitlines()[-1])
+        assert clear_event["type"] == "comment_edited"
+        assert clear_event["data"]["role"] is None
+        assert clear_event["data"]["previous_role"] == "review"
+
+        after_clear = event_path.read_bytes()
+        repeated = lattice_comment_edit(
+            task_id=task["id"],
+            comment_id=comment_id,
+            new_text="Observed again.",
+            actor="human:test",
+            clear_role=True,
+        )
+        assert repeated["evidence_refs"] == cleared["evidence_refs"]
+        assert event_path.read_bytes() == after_clear
 
 
 class TestAcceptanceCriteria:

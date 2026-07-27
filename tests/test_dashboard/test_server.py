@@ -295,6 +295,102 @@ class TestTaskDetailEndpoint:
         linked_comment = next(item for item in comments["data"] if item["body"] == "Observed.")
         assert linked_comment["criterion_ids"] == ["AC-1"]
 
+    def test_comment_edit_api_clears_role_without_losing_criterion_link(self, dashboard_server):
+        base_url, lattice_dir, ids = dashboard_server
+        task_id = ids["in_progress"]
+        snapshot_path = lattice_dir / "tasks" / f"{task_id}.json"
+        event_path = lattice_dir / "events" / f"{task_id}.jsonl"
+        snapshot = json.loads(snapshot_path.read_text())
+        criterion = create_event(
+            "acceptance_criterion_added",
+            task_id,
+            "human:test",
+            {"criterion_id": "AC-1", "outcome": "Observable.", "revision": 1},
+        )
+        comment = create_event(
+            "comment_added",
+            task_id,
+            "human:test",
+            {"body": "Observed.", "role": "review", "criterion_ids": ["AC-1"]},
+        )
+        with event_path.open("a", encoding="utf-8") as handle:
+            for event in (criterion, comment):
+                snapshot = apply_event_to_snapshot(snapshot, event)
+                handle.write(serialize_event(event))
+        snapshot_path.write_text(serialize_snapshot(snapshot))
+
+        status, omitted = _post(
+            base_url,
+            f"/api/tasks/{task_id}/comment-edit",
+            {
+                "comment_id": comment["id"],
+                "body": "Observed again.",
+                "actor": "human:test",
+            },
+        )
+        assert status == 200
+        omitted_ref = next(
+            ref for ref in omitted["data"]["evidence_refs"] if ref["source_type"] == "comment"
+        )
+        assert omitted_ref["role"] == "review"
+        assert omitted_ref["criterion_ids"] == ["AC-1"]
+
+        before_conflict = event_path.read_bytes()
+        status, conflict = _post(
+            base_url,
+            f"/api/tasks/{task_id}/comment-edit",
+            {
+                "comment_id": comment["id"],
+                "body": "Observed again.",
+                "role": "review",
+                "clear_role": True,
+                "actor": "human:test",
+            },
+        )
+        assert status == 400
+        assert conflict["error"]["code"] == "VALIDATION_ERROR"
+        assert event_path.read_bytes() == before_conflict
+
+        status, cleared = _post(
+            base_url,
+            f"/api/tasks/{task_id}/comment-edit",
+            {
+                "comment_id": comment["id"],
+                "body": "Observed again.",
+                "clear_role": True,
+                "actor": "human:test",
+            },
+        )
+        assert status == 200
+        cleared_ref = next(
+            ref for ref in cleared["data"]["evidence_refs"] if ref["source_type"] == "comment"
+        )
+        assert cleared_ref == {
+            "id": comment["id"],
+            "role": None,
+            "source_type": "comment",
+            "criterion_ids": ["AC-1"],
+        }
+        clear_event = json.loads(event_path.read_text().splitlines()[-1])
+        assert clear_event["type"] == "comment_edited"
+        assert clear_event["data"]["role"] is None
+        assert clear_event["data"]["previous_role"] == "review"
+
+        after_clear = event_path.read_bytes()
+        status, repeated = _post(
+            base_url,
+            f"/api/tasks/{task_id}/comment-edit",
+            {
+                "comment_id": comment["id"],
+                "body": "Observed again.",
+                "clear_role": True,
+                "actor": "human:test",
+            },
+        )
+        assert status == 200
+        assert repeated["data"]["evidence_refs"] == cleared["data"]["evidence_refs"]
+        assert event_path.read_bytes() == after_clear
+
     def test_archived_task_fallthrough(self, dashboard_server):
         base_url, _ld, ids = dashboard_server
         task_id = ids["archived"]

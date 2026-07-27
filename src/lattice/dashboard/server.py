@@ -24,6 +24,7 @@ from lattice.core.config import (
     VALID_PRIORITIES,
     VALID_URGENCIES,
     configured_event_prefix,
+    get_configured_roles,
     get_project_type,
     serialize_config,
     validate_status,
@@ -1627,7 +1628,7 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
         # ---------------------------------------------------------------
 
         def _handle_post_task_comment_edit(self, ld: Path, task_id: str) -> None:
-            """Handle POST /api/tasks/<id>/comment-edit — edit a comment's body."""
+            """Handle POST /api/tasks/<id>/comment-edit — edit a comment's body or role."""
             if not validate_id(task_id, "task"):
                 self._send_json(400, _err("INVALID_ID", "Invalid task ID format"))
                 return
@@ -1639,10 +1640,24 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
             comment_id = body.get("comment_id")
             new_body = body.get("body", "")
             actor = body.get("actor", "dashboard:web")
+            role = body.get("role")
+            clear_role = body.get("clear_role", False)
 
             if not comment_id or not isinstance(comment_id, str):
                 self._send_json(
                     400, _err("VALIDATION_ERROR", "Missing or invalid 'comment_id' field")
+                )
+                return
+
+            if not isinstance(clear_role, bool):
+                self._send_json(400, _err("VALIDATION_ERROR", "'clear_role' must be a boolean"))
+                return
+            if role is not None and not isinstance(role, str):
+                self._send_json(400, _err("VALIDATION_ERROR", "'role' must be a string"))
+                return
+            if role is not None and clear_role:
+                self._send_json(
+                    400, _err("VALIDATION_ERROR", "'role' and 'clear_role' are mutually exclusive")
                 )
                 return
 
@@ -1664,23 +1679,45 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                 self._send_json(500, _err("READ_ERROR", f"Failed to read config: {exc}"))
                 return
 
+            if role is not None:
+                configured_roles = get_configured_roles(config)
+                if configured_roles and role not in configured_roles:
+                    self._send_json(
+                        400,
+                        _err(
+                            "INVALID_ROLE",
+                            f"Unknown role: '{role}'. "
+                            f"Valid roles: {', '.join(sorted(configured_roles))}.",
+                        ),
+                    )
+                    return
+
             try:
 
                 def decide(context):  # noqa: ANN001, ANN202
-                    previous_body, _previous_role = validate_comment_for_edit(
+                    previous_body, previous_role = validate_comment_for_edit(
                         list(context.events), comment_id
                     )
-                    if previous_body == new_body:
+                    role_requested = role is not None or clear_role
+                    target_role = None if clear_role else role
+                    if previous_body == new_body and (
+                        not role_requested or previous_role == target_role
+                    ):
                         return TaskMutationDecision(idempotent=True)
+                    event_data: dict = {
+                        "comment_id": comment_id,
+                        "body": new_body,
+                        "previous_body": previous_body,
+                    }
+                    if role_requested:
+                        event_data["role"] = target_role
+                        if previous_role != target_role:
+                            event_data["previous_role"] = previous_role
                     event = create_event(
                         type="comment_edited",
                         task_id=task_id,
                         actor=actor,
-                        data={
-                            "comment_id": comment_id,
-                            "body": new_body.strip(),
-                            "previous_body": previous_body,
-                        },
+                        data=event_data,
                     )
                     return TaskMutationDecision(events=[event])
 

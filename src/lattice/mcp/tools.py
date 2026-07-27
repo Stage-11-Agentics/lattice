@@ -1143,26 +1143,54 @@ def lattice_comment_edit(
     comment_id: Annotated[str, Field(description="Event ID of the comment to edit")],
     new_text: Annotated[str, Field(description="New comment text")],
     actor: Annotated[str, Field(description="Actor ID")],
+    role: Annotated[
+        str | None,
+        Field(description="Set or change the comment's evidence role"),
+    ] = None,
+    clear_role: Annotated[
+        bool,
+        Field(description="Remove the comment's role while preserving linked acceptance criteria"),
+    ] = False,
     lattice_root: Annotated[
         str | None, Field(description="Path to project directory containing .lattice/")
     ] = None,
 ) -> dict:
-    """Edit an existing comment on a task. Returns the updated snapshot."""
+    """Edit an existing comment body or role. Returns the updated snapshot."""
     lattice_dir = _find_root(lattice_root)
     config = _load_config(lattice_dir)
     _validate_actor(actor)
     task_id = _resolve_task_id(lattice_dir, task_id)
     new_text = validate_comment_body(new_text)
 
+    if role is not None and clear_role:
+        raise ValueError("role and clear_role are mutually exclusive.")
+    if role is not None:
+        configured_roles = get_configured_roles(config)
+        if configured_roles and role not in configured_roles:
+            raise ValueError(
+                f"Unknown role: '{role}'. Valid roles: {', '.join(sorted(configured_roles))}."
+            )
+
     def decide(context):  # noqa: ANN001, ANN202
-        previous_body, _previous_role = validate_comment_for_edit(list(context.events), comment_id)
-        if previous_body == new_text:
+        previous_body, previous_role = validate_comment_for_edit(list(context.events), comment_id)
+        role_requested = role is not None or clear_role
+        target_role = None if clear_role else role
+        if previous_body == new_text and (not role_requested or previous_role == target_role):
             return TaskMutationDecision(idempotent=True)
+        event_data: dict = {
+            "comment_id": comment_id,
+            "body": new_text,
+            "previous_body": previous_body,
+        }
+        if role_requested:
+            event_data["role"] = target_role
+            if previous_role != target_role:
+                event_data["previous_role"] = previous_role
         event = create_event(
             type="comment_edited",
             task_id=task_id,
             actor=actor,
-            data={"comment_id": comment_id, "body": new_text, "previous_body": previous_body},
+            data=event_data,
         )
         return TaskMutationDecision(events=[event])
 

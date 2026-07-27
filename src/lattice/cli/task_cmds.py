@@ -1219,6 +1219,11 @@ def comment(
     help="Read the new comment body from a file (safe for long prose — no shell interpolation).",
 )
 @click.option("--role", default=None, help="Set or change the comment's role (e.g. review).")
+@click.option(
+    "--clear-role",
+    is_flag=True,
+    help="Remove the comment's role while preserving any linked acceptance criteria.",
+)
 @common_options
 def comment_edit(
     task_id: str,
@@ -1226,6 +1231,7 @@ def comment_edit(
     new_text: str | None,
     file_path: str | None,
     role: str | None,
+    clear_role: bool,
     model: str | None,
     session: str | None,
     output_json: bool,
@@ -1236,6 +1242,11 @@ def comment_edit(
 ) -> None:
     """Edit an existing comment on a task."""
     is_json = output_json
+
+    if role is not None and clear_role:
+        output_error(
+            "--role and --clear-role are mutually exclusive.", "VALIDATION_ERROR", is_json
+        )
 
     new_text = resolve_body(
         new_text,
@@ -1271,16 +1282,18 @@ def comment_edit(
 
     def decide(context):  # noqa: ANN001, ANN202
         previous_body, previous_role = validate_comment_for_edit(list(context.events), comment_id)
+        role_requested = role is not None or clear_role
+        target_role = None if clear_role else role
         event_data: dict = {
             "comment_id": comment_id,
             "body": new_text,
             "previous_body": previous_body,
         }
-        if role is not None:
-            event_data["role"] = role
-            if previous_role != role:
+        if role_requested:
+            event_data["role"] = target_role
+            if previous_role != target_role:
                 event_data["previous_role"] = previous_role
-        if previous_body == new_text and (role is None or previous_role == role):
+        if previous_body == new_text and (not role_requested or previous_role == target_role):
             return TaskMutationDecision(idempotent=True)
         event = create_event(
             type="comment_edited",
