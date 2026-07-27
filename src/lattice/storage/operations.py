@@ -292,6 +292,21 @@ def _reconcile_placement(
     other_location: TaskLocation = "archived" if location == "active" else "active"
     other = _location_paths(lattice_dir, task_id, other_location)
     placement_changed = False
+
+    # Validate non-authoritative prose before writing or deleting anything.
+    # A rebuild may select placement from valid event authority, but it must
+    # never guess between divergent human-authored plan/notes copies.
+    for name in ("plan", "notes"):
+        if (
+            target[name].exists()
+            and other[name].exists()
+            and target[name].read_bytes() != other[name].read_bytes()
+        ):
+            raise AuthoritativeLogError(
+                "active and archived supplementary files diverge; manual recovery required",
+                path=other[name],
+            )
+
     for path in target.values():
         path.parent.mkdir(parents=True, exist_ok=True)
 

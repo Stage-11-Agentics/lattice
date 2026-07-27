@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+from lattice.core.events import create_event, serialize_event
+
 
 # ---------------------------------------------------------------------------
 # Doctor tests
@@ -78,8 +80,99 @@ class TestDoctor:
         assert "drift" in result.output.lower()
         assert task_id in result.output
 
+    def test_doctor_detects_full_snapshot_drift_with_matching_last_event(
+        self, create_task, invoke, initialized_root
+    ):
+        task = create_task("Full byte drift")
+        task_id = task["id"]
+        snap_path = initialized_root / ".lattice" / "tasks" / f"{task_id}.json"
+        snapshot = json.loads(snap_path.read_text())
+        original_last_event = snapshot["last_event_id"]
+        snapshot["acceptance_criteria"] = [
+            {
+                "id": "AC-forged",
+                "outcome": "Not authoritative.",
+                "criterion_ids": ["AC-missing"],
+            }
+        ]
+        snap_path.write_text(json.dumps(snapshot, sort_keys=True, indent=2) + "\n")
+
+        result = invoke("doctor")
+        assert result.exit_code == 0
+        assert "full authoritative replay" in result.output
+        assert json.loads(snap_path.read_text())["last_event_id"] == original_last_event
+
+    def test_authoritative_dangling_criterion_link_is_nonrepairable(
+        self, create_task, invoke, initialized_root
+    ):
+        task = create_task("Malformed evidence authority")
+        task_id = task["id"]
+        snap_path = initialized_root / ".lattice" / "tasks" / f"{task_id}.json"
+        original_snapshot = snap_path.read_bytes()
+        event_path = initialized_root / ".lattice" / "events" / f"{task_id}.jsonl"
+        event = create_event(
+            "artifact_attached",
+            task_id,
+            "human:test",
+            {
+                "artifact_id": "art_01AAAAAAAAAAAAAAAAAAAAAAAA",
+                "criterion_ids": ["AC-404"],
+            },
+        )
+        with event_path.open("a", encoding="utf-8") as handle:
+            handle.write(serialize_event(event))
+
+        doctor_result = invoke("doctor")
+        assert doctor_result.exit_code != 0
+        assert "AC-404 not found" in doctor_result.output
+        assert "manual recovery" in doctor_result.output
+
+        rebuild_result = invoke("rebuild", task_id)
+        assert rebuild_result.exit_code != 0
+        assert "cannot be materialized" in rebuild_result.output
+        assert snap_path.read_bytes() == original_snapshot
+
+    def test_event_only_snapshot_is_replay_repairable(
+        self, create_task, invoke, initialized_root
+    ):
+        task_id = create_task("Missing snapshot")["id"]
+        snap_path = initialized_root / ".lattice" / "tasks" / f"{task_id}.json"
+        expected = snap_path.read_bytes()
+        snap_path.unlink()
+
+        doctor_result = invoke("doctor")
+        assert doctor_result.exit_code == 0
+        assert "Snapshot drift" in doctor_result.output
+        assert invoke("rebuild", task_id).exit_code == 0
+        assert snap_path.read_bytes() == expected
+
+    def test_ids_json_is_checked_against_authoritative_creation(
+        self, create_task, invoke, initialized_root
+    ):
+        config_path = initialized_root / ".lattice" / "config.json"
+        config = json.loads(config_path.read_text())
+        config["project_code"] = "TST"
+        config_path.write_text(json.dumps(config, sort_keys=True, indent=2) + "\n")
+        task = create_task("Authoritative alias")
+        ids_path = initialized_root / ".lattice" / "ids.json"
+        index = json.loads(ids_path.read_text())
+        original_next = index["next_seqs"]["TST"]
+        index["map"] = {}
+        ids_path.write_text(json.dumps(index, sort_keys=True, indent=2) + "\n")
+
+        doctor_result = invoke("doctor")
+        assert doctor_result.exit_code == 0
+        assert "does not map it exactly" in doctor_result.output
+        invoke("doctor", "--fix")
+        assert json.loads(ids_path.read_text())["map"] == {}
+
+        assert invoke("rebuild", "--all").exit_code == 0
+        rebuilt = json.loads(ids_path.read_text())
+        assert rebuilt["map"][task["short_id"]] == task["id"]
+        assert rebuilt["next_seqs"]["TST"] >= original_next
+
     def test_doctor_missing_relationship_target(self, create_task, invoke, initialized_root):
-        """Create a task with relationship to non-existent task. Doctor should detect."""
+        """Snapshot-only relationship corruption is classified as replayable drift."""
         task = create_task("Rel test")
         task_id = task["id"]
 
@@ -98,10 +191,10 @@ class TestDoctor:
 
         result = invoke("doctor")
         assert result.exit_code == 0
-        assert "non-existent target" in result.output
+        assert "Snapshot drift" in result.output
 
     def test_doctor_self_link(self, create_task, invoke, initialized_root):
-        """Add self-referential relationship. Doctor should detect."""
+        """Snapshot-only self-link corruption is classified as replayable drift."""
         task = create_task("Self link test")
         task_id = task["id"]
 
@@ -120,7 +213,7 @@ class TestDoctor:
 
         result = invoke("doctor")
         assert result.exit_code == 0
-        assert "self-referential" in result.output
+        assert "Snapshot drift" in result.output
 
     def test_doctor_duplicate_edge(self, create_task, invoke, initialized_root):
         """Add duplicate relationship. Doctor should detect."""
@@ -175,8 +268,9 @@ class TestDoctor:
         bad_path.write_text(json.dumps(bad_snap, sort_keys=True, indent=2) + "\n")
 
         result = invoke("doctor")
-        assert result.exit_code == 0
+        assert result.exit_code != 0
         assert "Malformed task ID" in result.output
+        assert "no authoritative event log" in result.output
 
     def test_doctor_json_output(self, create_task, invoke):
         """Run doctor with --json, verify structured output."""
@@ -198,7 +292,7 @@ class TestDoctor:
         assert isinstance(parsed["data"]["findings"], list)
 
     def test_doctor_missing_artifact(self, create_task, invoke, initialized_root):
-        """Task has evidence_ref to non-existent artifact. Doctor should detect."""
+        """Snapshot-only artifact corruption is classified as replayable drift."""
         task = create_task("Artifact test")
         task_id = task["id"]
 
@@ -211,8 +305,7 @@ class TestDoctor:
 
         result = invoke("doctor")
         assert result.exit_code == 0
-        assert "non-existent" in result.output
-        assert "artifact" in result.output.lower()
+        assert "Snapshot drift" in result.output
 
     def test_doctor_lifecycle_log_consistency(self, create_task, invoke, initialized_root):
         """Remove event from per-task log that exists in lifecycle log. Doctor detects."""
@@ -224,8 +317,27 @@ class TestDoctor:
         event_path.write_text("")
 
         result = invoke("doctor")
-        assert result.exit_code == 0
+        assert result.exit_code != 0
+        assert "authoritative" in result.output.lower()
         assert "lifecycle" in result.output.lower() or "Lifecycle" in result.output
+
+    def test_doctor_detects_mismatched_lifecycle_copy(
+        self, create_task, invoke, initialized_root
+    ):
+        task = create_task("Lifecycle mismatch")
+        lifecycle_path = initialized_root / ".lattice" / "events" / "_lifecycle.jsonl"
+        events = [
+            json.loads(line)
+            for line in lifecycle_path.read_text().splitlines()
+            if line.strip()
+        ]
+        event = next(item for item in events if item["task_id"] == task["id"])
+        event["data"]["title"] = "Mismatched derived copy"
+        lifecycle_path.write_text(serialize_event(event), encoding="utf-8")
+
+        result = invoke("doctor")
+        assert result.exit_code == 0
+        assert "does not match per-task authority" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -304,6 +416,94 @@ class TestRebuild:
         second = snap_path.read_text()
 
         assert first == second
+
+    def test_rebuild_uses_latest_event_for_archived_destination(
+        self, create_task, invoke, initialized_root
+    ):
+        task_id = create_task("Archive placement")["id"]
+        assert invoke("archive", task_id, "--actor", "human:test").exit_code == 0
+        lattice_dir = initialized_root / ".lattice"
+        archived_event = lattice_dir / "archive" / "events" / f"{task_id}.jsonl"
+        active_event = lattice_dir / "events" / f"{task_id}.jsonl"
+        active_event.write_bytes(archived_event.read_bytes())
+        archived_event.unlink()
+
+        result = invoke("rebuild", task_id)
+        assert result.exit_code == 0, result.output
+        assert archived_event.exists()
+        assert not active_event.exists()
+        assert (lattice_dir / "archive" / "tasks" / f"{task_id}.json").exists()
+        assert not (lattice_dir / "tasks" / f"{task_id}.json").exists()
+
+    def test_rebuild_refuses_divergent_event_candidates_without_overwrite(
+        self, create_task, invoke, initialized_root
+    ):
+        task_id = create_task("Divergent authority")["id"]
+        lattice_dir = initialized_root / ".lattice"
+        active_event = lattice_dir / "events" / f"{task_id}.jsonl"
+        archived_event = lattice_dir / "archive" / "events" / f"{task_id}.jsonl"
+        archived_event.parent.mkdir(parents=True, exist_ok=True)
+        event = json.loads(active_event.read_text().splitlines()[0])
+        event["data"]["title"] = "Different authoritative title"
+        archived_event.write_text(serialize_event(event), encoding="utf-8")
+        snapshot_path = lattice_dir / "tasks" / f"{task_id}.json"
+        original_snapshot = snapshot_path.read_bytes()
+
+        doctor_result = invoke("doctor")
+        assert doctor_result.exit_code != 0
+        assert "diverge" in doctor_result.output
+
+        rebuild_result = invoke("rebuild", task_id)
+        assert rebuild_result.exit_code != 0
+        assert "diverge" in rebuild_result.output
+        assert snapshot_path.read_bytes() == original_snapshot
+        assert active_event.exists()
+        assert archived_event.exists()
+
+    def test_rebuild_refuses_divergent_plan_before_snapshot_overwrite(
+        self, create_task, invoke, initialized_root
+    ):
+        task_id = create_task("Divergent plan")["id"]
+        lattice_dir = initialized_root / ".lattice"
+        active_plan = lattice_dir / "plans" / f"{task_id}.md"
+        archived_plan = lattice_dir / "archive" / "plans" / f"{task_id}.md"
+        archived_plan.parent.mkdir(parents=True, exist_ok=True)
+        archived_plan.write_text(active_plan.read_text() + "\nDifferent.\n")
+        snapshot_path = lattice_dir / "tasks" / f"{task_id}.json"
+        corrupted = json.loads(snapshot_path.read_text())
+        corrupted["title"] = "CORRUPTED CACHE"
+        snapshot_path.write_text(json.dumps(corrupted, sort_keys=True, indent=2) + "\n")
+        corrupted_bytes = snapshot_path.read_bytes()
+
+        result = invoke("rebuild", task_id)
+        assert result.exit_code != 0
+        assert "supplementary files diverge" in result.output
+        assert snapshot_path.read_bytes() == corrupted_bytes
+        assert active_plan.exists()
+        assert archived_plan.exists()
+
+    def test_rebuild_restores_byte_exact_snapshot_only_criterion_drift(
+        self, create_task, invoke, initialized_root
+    ):
+        task_id = create_task("Criterion cache drift")["id"]
+        snap_path = initialized_root / ".lattice" / "tasks" / f"{task_id}.json"
+        authoritative_bytes = snap_path.read_bytes()
+        snapshot = json.loads(authoritative_bytes)
+        snapshot["evidence_refs"] = [
+            {
+                "id": "ev_forged",
+                "role": None,
+                "source_type": "comment",
+                "criterion_ids": ["AC-404"],
+            }
+        ]
+        snap_path.write_text(json.dumps(snapshot, sort_keys=True, indent=2) + "\n")
+
+        doctor_result = invoke("doctor")
+        assert doctor_result.exit_code == 0
+        assert "Snapshot drift" in doctor_result.output
+        assert invoke("rebuild", task_id).exit_code == 0
+        assert snap_path.read_bytes() == authoritative_bytes
 
     def test_rebuild_fixes_drift(self, create_task, invoke, initialized_root):
         """Modify snapshot's last_event_id, rebuild, then doctor should pass."""

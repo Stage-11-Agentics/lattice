@@ -1481,46 +1481,26 @@ def lattice_doctor(
     ]:
         if not (lattice_dir / subdir).is_dir():
             msg = f"Missing directory: {subdir}"
-            if fix:
-                (lattice_dir / subdir).mkdir(parents=True, exist_ok=True)
-                msg += " (created)"
             issues.append({"level": "warning", "message": msg})
 
-    # Check snapshots have matching event logs
-    tasks_dir = lattice_dir / "tasks"
-    if tasks_dir.is_dir():
-        for snap_file in tasks_dir.glob("*.json"):
-            tid = snap_file.stem
-            event_file = lattice_dir / "events" / f"{tid}.jsonl"
-            if not event_file.exists():
-                issues.append(
-                    {
-                        "level": "warning",
-                        "message": f"Task {tid} has snapshot but no event log",
-                    }
-                )
+    from lattice.cli.integrity_cmds import inspect_task_authority
 
-    # Check event logs have matching snapshots
-    events_dir = lattice_dir / "events"
-    if events_dir.is_dir():
-        for event_file in events_dir.glob("*.jsonl"):
-            if event_file.name.startswith("_"):
-                continue
-            tid = event_file.stem
-            snap_file = lattice_dir / "tasks" / f"{tid}.json"
-            if not snap_file.exists():
-                issues.append(
-                    {
-                        "level": "warning",
-                        "message": f"Event log {tid} has no matching snapshot (orphaned)",
-                    }
-                )
+    authorities, authority_findings = inspect_task_authority(lattice_dir)
+    issues.extend(
+        {
+            "level": finding["level"],
+            "message": finding["message"],
+            "check": finding["check"],
+            "task_id": finding.get("task_id"),
+        }
+        for finding in authority_findings
+    )
 
     return {
         "ok": len([i for i in issues if i["level"] == "error"]) == 0,
         "issues": issues,
-        "task_count": len(list(tasks_dir.glob("*.json"))) if tasks_dir.is_dir() else 0,
-        "archived_count": len(list((lattice_dir / "archive" / "tasks").glob("*.json")))
-        if (lattice_dir / "archive" / "tasks").is_dir()
-        else 0,
+        "task_count": len(authorities),
+        "archived_count": sum(
+            1 for authority in authorities.values() if authority.location == "archived"
+        ),
     }

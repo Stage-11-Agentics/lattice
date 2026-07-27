@@ -474,8 +474,12 @@ class TestDoctor:
         orphan_path.write_text('{"type":"task_created"}\n')
 
         result = lattice_doctor()
-        orphan_issues = [i for i in result["issues"] if "orphan" in i["message"].lower()]
-        assert len(orphan_issues) >= 1
+        authority_issues = [
+            issue
+            for issue in result["issues"]
+            if "authoritative log error" in issue["message"].lower()
+        ]
+        assert len(authority_issues) >= 1
 
 
 class TestAttach:
