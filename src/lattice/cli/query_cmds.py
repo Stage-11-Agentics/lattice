@@ -15,7 +15,6 @@ from lattice.cli.helpers import (
     load_project_config,
     output_error,
     output_result,
-    read_snapshot,
     read_snapshot_or_exit,
     require_actor,
     require_root,
@@ -33,7 +32,6 @@ from lattice.core.events import (
 )
 from lattice.core.ids import extract_short_ids, validate_id
 from lattice.core.next import compute_claim_transitions, select_next
-from lattice.core.stats import load_all_snapshots
 from lattice.core.tasks import (
     apply_event_to_snapshot,
     compact_snapshot,
@@ -45,8 +43,11 @@ from lattice.storage.operations import (
     discover_task_authorities,
     mutate_task,
     read_task_authority,
+    resolve_task_prose_path,
 )
 from lattice.storage.readers import read_task_events
+
+read_snapshot = helpers.read_snapshot
 
 
 # ---------------------------------------------------------------------------
@@ -478,7 +479,10 @@ def next_cmd(
         ready_statuses = frozenset(s.strip() for s in status_csv.split(",") if s.strip())
 
     # Load all active snapshots
-    active, _archived = load_all_snapshots(lattice_dir)
+    active = [
+        authority.snapshot
+        for authority in discover_task_authorities(lattice_dir, include_archived=False)
+    ]
 
     # Select next task
     selected = select_next(active, actor=resolved_actor, ready_statuses=ready_statuses)
@@ -593,8 +597,8 @@ def next_cmd(
 
 def _read_plan_content_for_next(lattice_dir: Path, task_id: str) -> str | None:
     """Return plan markdown for *task_id* if present and non-scaffold; else None."""
-    plan_path = lattice_dir / "plans" / f"{task_id}.md"
-    if not plan_path.exists():
+    plan_path, _authority = resolve_task_prose_path(lattice_dir, task_id, "plan")
+    if plan_path is None:
         return None
     try:
         content = plan_path.read_text(encoding="utf-8")
@@ -929,15 +933,8 @@ def _enrich_relationships(lattice_dir: Path, snapshot: dict) -> list[dict]:
         enriched = dict(rel)
         target_id = rel.get("target_task_id", "")
         # Try to read target task title
-        target_snap = read_snapshot(lattice_dir, target_id)
-        if target_snap is None:
-            # Check archive
-            archive_path = lattice_dir / "archive" / "tasks" / f"{target_id}.json"
-            if archive_path.exists():
-                try:
-                    target_snap = json.loads(archive_path.read_text())
-                except (json.JSONDecodeError, OSError):
-                    pass
+        authority = read_task_authority(lattice_dir, target_id, allow_missing=True)
+        target_snap = authority.snapshot if authority is not None else None
         if target_snap is not None:
             enriched["target_title"] = target_snap.get("title")
         relationships.append(enriched)
@@ -947,31 +944,25 @@ def _enrich_relationships(lattice_dir: Path, snapshot: dict) -> list[dict]:
 def _find_incoming_relationships(lattice_dir: Path, task_id: str) -> list[dict]:
     """Find all tasks that have outgoing relationships pointing at *task_id*.
 
-    Scans active and archived snapshots. Returns a list of dicts with
+    Scans active and archived authorities. Returns a list of dicts with
     ``source_task_id``, ``source_title``, ``type``, and ``note``.
     """
     incoming: list[dict] = []
 
-    for directory in [lattice_dir / "tasks", lattice_dir / "archive" / "tasks"]:
-        if not directory.is_dir():
+    for authority in discover_task_authorities(lattice_dir, include_archived=True):
+        if authority.task_id == task_id:
             continue
-        for snap_file in directory.glob("*.json"):
-            if snap_file.stem == task_id:
-                continue  # skip self
-            try:
-                snap = json.loads(snap_file.read_text())
-            except (json.JSONDecodeError, OSError):
-                continue
-            for rel in snap.get("relationships_out", []):
-                if rel.get("target_task_id") == task_id:
-                    incoming.append(
-                        {
-                            "source_task_id": snap.get("id", snap_file.stem),
-                            "source_title": snap.get("title"),
-                            "type": rel.get("type"),
-                            "note": rel.get("note"),
-                        }
-                    )
+        snap = authority.snapshot
+        for rel in snap.get("relationships_out", []):
+            if rel.get("target_task_id") == task_id:
+                incoming.append(
+                    {
+                        "source_task_id": snap.get("id", authority.task_id),
+                        "source_title": snap.get("title"),
+                        "type": rel.get("type"),
+                        "note": rel.get("note"),
+                    }
+                )
 
     return incoming
 
@@ -1343,13 +1334,9 @@ def plan(task_id: str, output_json: bool) -> None:
     lattice_dir = require_root(is_json)
     task_id = resolve_task_id(lattice_dir, task_id, is_json)
 
-    # Check active then archive
-    plan_path = lattice_dir / "plans" / f"{task_id}.md"
-    is_archived = False
-    if not plan_path.is_file():
-        plan_path = lattice_dir / "archive" / "plans" / f"{task_id}.md"
-        is_archived = True
-    if not plan_path.is_file():
+    plan_path, authority = resolve_task_prose_path(lattice_dir, task_id, "plan")
+    is_archived = authority.location == "archived"
+    if plan_path is None:
         output_error(f"No plan file found for task {task_id}.", "NOT_FOUND", is_json)
 
     if is_json:

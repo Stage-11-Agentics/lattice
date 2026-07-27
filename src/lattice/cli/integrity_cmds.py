@@ -14,6 +14,7 @@ from lattice.cli.helpers import (
     require_root,
 )
 from lattice.cli.main import cli
+from lattice.core.config import configured_event_prefix
 from lattice.core.events import LIFECYCLE_EVENT_TYPES, serialize_event
 from lattice.core.ids import validate_id, validate_short_id, parse_short_id
 from lattice.core.tasks import serialize_snapshot
@@ -24,10 +25,12 @@ from lattice.storage.operations import (
     ResolvedTaskAuthority,
     TaskMutationDecision,
     _load_strict_id_index,
+    _reconcile_placement,
     mutate_task,
+    parse_project_short_id,
     resolve_task_authority,
 )
-from lattice.storage.short_ids import load_id_index, save_id_index
+from lattice.storage.short_ids import save_id_index
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +176,93 @@ def _task_paths(lattice_dir: Path, task_id: str, archived: bool) -> dict[str, Pa
         "plan": base / "plans" / f"{task_id}.md",
         "notes": base / "notes" / f"{task_id}.md",
     }
+
+
+def _authority_log_context(authority: ResolvedTaskAuthority, short_id: object) -> tuple[Path, int]:
+    """Return the path/line carrying an effective authoritative short ID."""
+    line_number = next(
+        (
+            line
+            for line, event in reversed(list(enumerate(authority.events, 1)))
+            if event.get("data", {}).get("short_id") == short_id
+        ),
+        1,
+    )
+    path = (
+        authority.active_event_path
+        if authority.active_event_path.exists()
+        else authority.archived_event_path
+    )
+    return path, line_number
+
+
+def _validate_authoritative_short_ids(
+    authorities: dict[str, ResolvedTaskAuthority],
+    prefix: str | None,
+) -> list[tuple[str, str, int, Path, int]]:
+    """Validate unique event-authoritative aliases with contextual failures."""
+    validated: list[tuple[str, str, int, Path, int]] = []
+    seen: dict[str, tuple[str, Path, int]] = {}
+    for task_id, authority in authorities.items():
+        short_id = authority.snapshot.get("short_id")
+        path, line = _authority_log_context(authority, short_id)
+        if short_id is None and prefix is None:
+            continue
+        if not isinstance(short_id, str):
+            raise AuthoritativeLogError(
+                f"task {task_id} has malformed authoritative short ID {short_id!r}; "
+                "manual immutable-log recovery required",
+                path=path,
+                line=line,
+            )
+        try:
+            if prefix is not None:
+                suffix = parse_project_short_id(short_id, prefix)
+            else:
+                parsed_prefix, suffix = parse_short_id(short_id)
+                if not parsed_prefix or suffix < 1:
+                    raise ValueError(short_id)
+        except (AuthoritativeLogError, ValueError) as exc:
+            detail = (
+                f"task {task_id} has authoritative short ID {short_id!r} outside "
+                f"configured prefix {prefix!r}"
+                if prefix is not None
+                else f"task {task_id} has malformed authoritative short ID {short_id!r}"
+            )
+            raise AuthoritativeLogError(
+                f"{detail}; manual immutable-log recovery required",
+                path=path,
+                line=line,
+            ) from exc
+        previous = seen.get(short_id)
+        if previous is not None and previous[0] != task_id:
+            raise AuthoritativeLogError(
+                f"duplicate authoritative short ID {short_id}: "
+                f"{previous[0]} at {previous[1]}:{previous[2]} and {task_id}; "
+                "manual immutable-log recovery required",
+                path=path,
+                line=line,
+            )
+        seen[short_id] = (task_id, path, line)
+        validated.append((short_id, task_id, suffix, path, line))
+    return validated
+
+
+def _build_rebuilt_id_index(
+    current: dict,
+    validated: list[tuple[str, str, int, Path, int]],
+) -> dict:
+    """Build a replacement map while preserving every valid high-water mark."""
+    next_seqs = dict(current["next_seqs"])
+    for short_id in current["map"]:
+        prefix, suffix = parse_short_id(short_id)
+        next_seqs[prefix] = max(next_seqs.get(prefix, 1), suffix + 1)
+    rebuilt_map: dict[str, str] = {}
+    for short_id, task_id, suffix, _path, _line in validated:
+        prefix, _ = parse_short_id(short_id)
+        rebuilt_map[short_id] = task_id
+        next_seqs[prefix] = max(next_seqs.get(prefix, 1), suffix + 1)
+    return {"schema_version": 2, "next_seqs": next_seqs, "map": rebuilt_map}
 
 
 def _inspect_task_authority_unlocked(
@@ -695,7 +785,8 @@ def doctor(fix: bool, output_json: bool) -> None:
     # -----------------------------------------------------------------
     alias_ok = True
     config = load_project_config(lattice_dir)
-    has_project_code = bool(config.get("project_code"))
+    event_prefix = configured_event_prefix(config)
+    has_project_code = event_prefix is not None
     ids_json_path = lattice_dir / "ids.json"
 
     if has_project_code and not ids_json_path.exists():
@@ -711,59 +802,38 @@ def doctor(fix: bool, output_json: bool) -> None:
 
     authoritative_short_ids: dict[str, tuple[str, Path, int]] = {}
     if has_project_code:
-        for task_id_key, authority in authorities.items():
-            short_id = authority.snapshot.get("short_id")
-            short_id_line = next(
-                (
-                    line
-                    for line, event in reversed(list(enumerate(authority.events, 1)))
-                    if event.get("data", {}).get("short_id") == short_id
-                ),
-                1,
+        try:
+            validated_short_ids = _validate_authoritative_short_ids(authorities, event_prefix)
+        except AuthoritativeLogError as exc:
+            alias_ok = False
+            findings.append(
+                {
+                    "level": "error",
+                    "check": "alias_integrity",
+                    "message": str(exc),
+                    "task_id": None,
+                }
             )
-            log_path = (
-                authority.active_event_path
-                if authority.active_event_path.exists()
-                else authority.archived_event_path
-            )
-            if not isinstance(short_id, str) or not validate_short_id(short_id):
-                alias_ok = False
-                findings.append(
-                    {
-                        "level": "error",
-                        "check": "alias_integrity",
-                        "message": (
-                            f"Malformed authoritative short ID {short_id!r} for "
-                            f"{task_id_key} at {log_path}:{short_id_line}; manual immutable-log "
-                            "recovery is required"
-                        ),
-                        "task_id": task_id_key,
-                    }
-                )
-                continue
-            previous = authoritative_short_ids.get(short_id)
-            if previous is not None and previous[0] != task_id_key:
-                alias_ok = False
-                findings.append(
-                    {
-                        "level": "error",
-                        "check": "alias_integrity",
-                        "message": (
-                            f"Duplicate authoritative short ID {short_id}: "
-                            f"{previous[0]} at {previous[1]}:{previous[2]} and "
-                            f"{task_id_key} at {log_path}:{short_id_line}; manual "
-                            "immutable-log recovery is required"
-                        ),
-                        "task_id": task_id_key,
-                    }
-                )
-                continue
+            validated_short_ids = []
+        for short_id, task_id_key, _suffix, log_path, short_id_line in validated_short_ids:
             authoritative_short_ids[short_id] = (task_id_key, log_path, short_id_line)
 
     if ids_json_path.exists():
-        id_index = load_id_index(lattice_dir)
-        id_map = id_index.get("map", {})
-        next_seqs = id_index.get("next_seqs", {})
+        try:
+            id_index = _load_strict_id_index(lattice_dir)
+        except AuthoritativeLogError as exc:
+            alias_ok = False
+            findings.append(
+                {
+                    "level": "error",
+                    "check": "alias_integrity",
+                    "message": f"Invalid derived short-ID index: {exc}",
+                    "task_id": None,
+                }
+            )
+            id_index = {"map": {}, "next_seqs": {}}
+        id_map = id_index["map"]
+        next_seqs = id_index["next_seqs"]
 
         # Check the derived alias index against authoritative task_created replay,
         # never against the snapshot cache.
@@ -1117,9 +1187,7 @@ def _rebuild_lifecycle_log(lattice_dir: Path) -> list[str]:
 
 def _rebuild_id_index(lattice_dir: Path) -> None:
     """Rebuild ``ids.json`` from strict authoritative task creation replay."""
-    project_code = load_project_config(lattice_dir).get("project_code")
-    id_map: dict[str, str] = {}
-    max_seq: dict[str, int] = {}  # per-prefix max seq
+    event_prefix = configured_event_prefix(load_project_config(lattice_dir))
     task_ids = sorted(_collect_task_ids(lattice_dir))
     lock_keys = [
         "ids_json",
@@ -1128,8 +1196,7 @@ def _rebuild_id_index(lattice_dir: Path) -> None:
 
     with multi_lock(lattice_dir / "locks", lock_keys):
         current = _load_strict_id_index(lattice_dir)
-        authoritative: list[tuple[str, str, Path]] = []
-        seen: dict[str, tuple[str, Path]] = {}
+        authorities: dict[str, ResolvedTaskAuthority] = {}
         for task_id in task_ids:
             event_exists = any(
                 _task_paths(lattice_dir, task_id, archived)["event"].exists()
@@ -1139,67 +1206,71 @@ def _rebuild_id_index(lattice_dir: Path) -> None:
                 continue
             authority = resolve_task_authority(lattice_dir, task_id)
             assert authority is not None
-            short_id = authority.snapshot.get("short_id")
-            short_id_line = next(
-                (
-                    line
-                    for line, event in reversed(list(enumerate(authority.events, 1)))
-                    if event.get("data", {}).get("short_id") == short_id
-                ),
-                1,
+            authorities[task_id] = authority
+        validated = _validate_authoritative_short_ids(authorities, event_prefix)
+        save_id_index(lattice_dir, _build_rebuilt_id_index(current, validated))
+
+
+def _rebuild_all_tasks_transaction(lattice_dir: Path) -> list[str]:
+    """Preflight all task/index authority, then repair caches as one lock epoch."""
+    task_ids = sorted(_collect_task_ids(lattice_dir))
+    lock_keys = [
+        "events__lifecycle",
+        "ids_json",
+        *(key for task_id in task_ids for key in (f"events_{task_id}", f"tasks_{task_id}")),
+    ]
+    with multi_lock(lattice_dir / "locks", lock_keys):
+        authorities, findings = _inspect_task_authority_unlocked(lattice_dir)
+        failures = [finding["message"] for finding in findings if finding["level"] == "error"]
+        missing = sorted(set(task_ids) - set(authorities))
+        failures.extend(f"{task_id}: no valid authoritative event log" for task_id in missing)
+        if failures:
+            raise AuthoritativeLogError("; ".join(failures))
+
+        # Complete index and configured-prefix validation happens before the
+        # first snapshot, placement, lifecycle, or ids.json write.
+        current_index = _load_strict_id_index(lattice_dir)
+        event_prefix = configured_event_prefix(load_project_config(lattice_dir))
+        validated_short_ids = _validate_authoritative_short_ids(authorities, event_prefix)
+        rebuilt_index = _build_rebuilt_id_index(current_index, validated_short_ids)
+
+        lifecycle_by_id: dict[str, dict] = {}
+        for task_id, authority in authorities.items():
+            for event in authority.events:
+                if event.get("type") not in LIFECYCLE_EVENT_TYPES:
+                    continue
+                event_id = event["id"]
+                existing = lifecycle_by_id.get(event_id)
+                if existing is not None and existing != event:
+                    path, line = _authority_log_context(
+                        authority, event.get("data", {}).get("short_id")
+                    )
+                    raise AuthoritativeLogError(
+                        f"conflicting lifecycle event {event_id} for {task_id}",
+                        path=path,
+                        line=line,
+                    )
+                lifecycle_by_id[event_id] = event
+        lifecycle_events = sorted(
+            lifecycle_by_id.values(), key=lambda event: (event.get("ts", ""), event["id"])
+        )
+        lifecycle_content = "".join(serialize_event(event) for event in lifecycle_events)
+
+        # All failure-prone authority/prose/index parsing is complete. Durable
+        # repair writes begin only here, while the complete stable lock set is
+        # still held.
+        for task_id, authority in authorities.items():
+            _reconcile_placement(
+                lattice_dir,
+                task_id,
+                authority.location,
+                authority.event_bytes,
+                authority.snapshot,
+                inject_faults=False,
             )
-            log_path = (
-                authority.active_event_path
-                if authority.active_event_path.exists()
-                else authority.archived_event_path
-            )
-            if short_id is None and not project_code:
-                continue
-            if not isinstance(short_id, str) or not validate_short_id(short_id):
-                raise AuthoritativeLogError(
-                    f"malformed authoritative short ID {short_id!r} for {task_id}; "
-                    "manual immutable-log recovery required",
-                    path=log_path,
-                    line=short_id_line,
-                )
-            previous = seen.get(short_id)
-            if previous is not None and previous[0] != task_id:
-                raise AuthoritativeLogError(
-                    f"duplicate authoritative short ID {short_id}: "
-                    f"{previous[0]} at {previous[1]} and {task_id}",
-                    path=log_path,
-                    line=short_id_line,
-                )
-            seen[short_id] = (task_id, log_path)
-            authoritative.append((short_id, task_id, log_path))
-
-        # Only construct the replacement after the complete authority/index
-        # preflight succeeds; no partial ids.json write is possible.
-        for short_id, task_id, _log_path in authoritative:
-            id_map[short_id] = task_id
-            prefix, num = parse_short_id(short_id)
-            max_seq[prefix] = max(max_seq.get(prefix, 0), num)
-
-        # Preserve valid reservation high-water marks while replacing the map
-        # from immutable creation authority.
-        current_next = current.get("next_seqs", {})
-        next_seqs: dict[str, int] = {
-            prefix: value
-            for prefix, value in current_next.items()
-            if isinstance(prefix, str) and isinstance(value, int) and value >= 1
-        }
-        for short_id in current.get("map", {}):
-            prefix, num = parse_short_id(short_id)
-            next_seqs[prefix] = max(next_seqs.get(prefix, 1), num + 1)
-        for prefix, max_num in max_seq.items():
-            next_seqs[prefix] = max(next_seqs.get(prefix, 1), max_num + 1)
-
-        index = {
-            "schema_version": 2,
-            "next_seqs": next_seqs,
-            "map": id_map,
-        }
-        save_id_index(lattice_dir, index)
+        atomic_write(lattice_dir / "events" / "_lifecycle.jsonl", lifecycle_content)
+        save_id_index(lattice_dir, rebuilt_index)
+    return sorted(authorities)
 
 
 def _rebuild_resource(lattice_dir: Path, resource_id: str) -> dict:
@@ -1255,35 +1326,14 @@ def rebuild(task_id: str | None, rebuild_all: bool, output_json: bool) -> None:
         )
 
     if rebuild_all:
-        # Rebuild all tasks (active + archived)
-        rebuilt_ids: list[str] = []
-        failures: list[str] = []
-        for tid in sorted(_collect_task_ids(lattice_dir)):
-            if not any(
-                _task_paths(lattice_dir, tid, archived)["event"].exists()
-                for archived in (False, True)
-            ):
-                failures.append(f"{tid}: no authoritative event log")
-                continue
-            try:
-                _rebuild_task(lattice_dir, tid)
-            except (AuthoritativeLogError, ValueError, json.JSONDecodeError) as exc:
-                failures.append(f"{tid}: {exc}")
-                continue
-            rebuilt_ids.append(tid)
-
-        if failures:
+        try:
+            rebuilt_ids = _rebuild_all_tasks_transaction(lattice_dir)
+        except (AuthoritativeLogError, ValueError, json.JSONDecodeError) as exc:
             output_error(
-                "Rebuild refused malformed or divergent authority: " + "; ".join(failures),
+                f"Rebuild refused malformed or divergent authority: {exc}",
                 "REBUILD_ERROR",
                 is_json,
             )
-
-        # Rebuild lifecycle log
-        _rebuild_lifecycle_log(lattice_dir)
-
-        # Rebuild ids.json from snapshots
-        _rebuild_id_index(lattice_dir)
 
         # Rebuild resource snapshots
         rebuilt_resources: list[str] = []

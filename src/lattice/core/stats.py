@@ -2,36 +2,24 @@
 
 from __future__ import annotations
 
-import json
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
 def load_all_snapshots(lattice_dir: Path) -> tuple[list[dict], list[dict]]:
-    """Load all active and archived task snapshots.
+    """Load all event-authoritative active and archived task snapshots.
 
     Returns (active, archived) lists.
     """
+    # Local import avoids a module cycle: storage replay depends on core task
+    # reducers, while statistics is itself a read-only storage consumer.
+    from lattice.storage.operations import discover_task_authorities
+
     active: list[dict] = []
     archived: list[dict] = []
-
-    tasks_dir = lattice_dir / "tasks"
-    if tasks_dir.is_dir():
-        for f in tasks_dir.glob("*.json"):
-            try:
-                active.append(json.loads(f.read_text()))
-            except (json.JSONDecodeError, OSError):
-                continue
-
-    archive_dir = lattice_dir / "archive" / "tasks"
-    if archive_dir.is_dir():
-        for f in archive_dir.glob("*.json"):
-            try:
-                archived.append(json.loads(f.read_text()))
-            except (json.JSONDecodeError, OSError):
-                continue
-
+    for authority in discover_task_authorities(lattice_dir, include_archived=True):
+        (archived if authority.location == "archived" else active).append(authority.snapshot)
     return active, archived
 
 
@@ -40,27 +28,17 @@ def count_events(lattice_dir: Path, archived: bool = False) -> tuple[int, Counte
 
     Returns (total_events, per_task_counter).
     """
-    if archived:
-        events_dir = lattice_dir / "archive" / "events"
-    else:
-        events_dir = lattice_dir / "events"
+    from lattice.storage.operations import discover_task_authorities
 
     total = 0
     per_task: Counter = Counter()
-
-    if not events_dir.is_dir():
-        return total, per_task
-
-    for f in events_dir.glob("*.jsonl"):
-        if f.name.startswith("_"):
-            continue  # skip _lifecycle.jsonl
-        task_id = f.stem
-        count = 0
-        for line in f.read_text().splitlines():
-            if line.strip():
-                count += 1
+    expected_location = "archived" if archived else "active"
+    for authority in discover_task_authorities(lattice_dir, include_archived=True):
+        if authority.location != expected_location:
+            continue
+        count = len(authority.events)
         total += count
-        per_task[task_id] = count
+        per_task[authority.task_id] = count
 
     return total, per_task
 
@@ -95,25 +73,17 @@ def format_days(days: float) -> str:
 
 
 def load_all_events(lattice_dir: Path) -> list[dict]:
-    """Load and parse all events from active task event logs.
+    """Load all events from logically active task authorities.
 
     Returns a flat list of event dicts, sorted by timestamp.
     """
-    events_dir = lattice_dir / "events"
-    events: list[dict] = []
-    if not events_dir.is_dir():
-        return events
-    for f in events_dir.glob("*.jsonl"):
-        if f.name.startswith("_"):
-            continue
-        for line in f.read_text().splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                events.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
+    from lattice.storage.operations import discover_task_authorities
+
+    events = [
+        event
+        for authority in discover_task_authorities(lattice_dir, include_archived=False)
+        for event in authority.events
+    ]
     events.sort(key=lambda e: e.get("ts", ""))
     return events
 

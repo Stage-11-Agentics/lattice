@@ -44,7 +44,7 @@ def _write_task_snapshot(
     updated_at: str | None = None,
     tags: list[str] | None = None,
 ) -> dict:
-    """Write a task snapshot JSON file and return the snapshot dict."""
+    """Write a task snapshot and its authoritative creation event."""
     now = datetime.now(timezone.utc)
     if updated_at is None:
         updated_at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -65,6 +65,26 @@ def _write_task_snapshot(
 
     path = lattice_dir / "tasks" / f"{task_id}.json"
     path.write_text(json.dumps(snap, sort_keys=True, indent=2) + "\n")
+
+    event = {
+        "id": f"ev_{task_id[-6:]}_create",
+        "ts": updated_at,
+        "type": "task_created",
+        "task_id": task_id,
+        "actor": "human:test",
+        "data": {
+            "title": title,
+            "status": status,
+            "priority": priority,
+            "type": "task",
+            "assigned_to": assigned_to,
+            "tags": tags or [],
+        },
+    }
+    if short_id:
+        event["data"]["short_id"] = short_id
+    event_path = lattice_dir / "events" / f"{task_id}.jsonl"
+    event_path.write_text(json.dumps(event, sort_keys=True, separators=(",", ":")) + "\n")
     return snap
 
 
@@ -79,13 +99,17 @@ def _write_event(
     if ts is None:
         ts = now.strftime("%Y-%m-%dT%H:%M:%SZ")
 
+    data_by_type = {
+        "status_changed": {"from": "backlog", "to": "backlog"},
+        "field_updated": {"field": "title", "from": "Task A", "to": "Task A"},
+    }
     ev = {
         "id": f"ev_{task_id[-6:]}_{event_type[:4]}",
         "ts": ts,
         "type": event_type,
         "task_id": task_id,
         "actor": "human:test",
-        "data": {},
+        "data": data_by_type.get(event_type, {}),
     }
     path = lattice_dir / "events" / f"{task_id}.jsonl"
     with open(path, "a") as f:
@@ -496,7 +520,7 @@ class TestEventCounting:
         result = runner.invoke(cli, ["weather", "--json"], env={"LATTICE_ROOT": str(tmp_path)})
         data = json.loads(result.output)["data"]
 
-        assert data["vital_signs"]["events_24h"] == 2
+        assert data["vital_signs"]["events_24h"] == 3
 
 
 # ---------------------------------------------------------------------------

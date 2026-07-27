@@ -125,7 +125,9 @@ def _seed_example_tasks(lattice_dir: Path, config: dict) -> None:
         scaffold_plan,
     )
 
-    project_code = config.get("project_code", "")
+    from lattice.core.config import configured_event_prefix
+
+    project_code = configured_event_prefix(config)
     actor = "system:init"
 
     # --- Create the parent task first ---

@@ -23,6 +23,7 @@ from lattice.core.comments import (
 from lattice.core.config import (
     VALID_PRIORITIES,
     VALID_URGENCIES,
+    configured_event_prefix,
     get_project_type,
     serialize_config,
     validate_status,
@@ -44,6 +45,7 @@ from lattice.storage.operations import (
     discover_task_authorities,
     mutate_task,
     read_task_authority,
+    resolve_task_prose_path,
     scaffold_plan,
 )
 
@@ -310,16 +312,12 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
             is_archived = authority.location == "archived"
 
             # Enrich with notes_exists, plan_exists, and artifacts
-            if is_archived:
-                notes_path = ld / "archive" / "notes" / f"{task_id}.md"
-                plan_path = ld / "archive" / "plans" / f"{task_id}.md"
-            else:
-                notes_path = ld / "notes" / f"{task_id}.md"
-                plan_path = ld / "plans" / f"{task_id}.md"
+            notes_path, _ = resolve_task_prose_path(ld, task_id, "notes")
+            plan_path, _ = resolve_task_prose_path(ld, task_id, "plan")
 
             result = dict(snapshot)
-            result["notes_exists"] = notes_path.exists()
-            result["plan_exists"] = plan_path.exists()
+            result["notes_exists"] = notes_path is not None
+            result["plan_exists"] = plan_path is not None
             result["artifacts"] = _read_artifact_info(ld, snapshot)
             result["has_active_session"] = bool(
                 snapshot.get("status") == "in_progress" and snapshot.get("assigned_to")
@@ -381,15 +379,11 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
 
             # Enrich snapshot
             result = dict(snapshot)
-            if is_archived:
-                notes_path = ld / "archive" / "notes" / f"{task_id}.md"
-                plan_path = ld / "archive" / "plans" / f"{task_id}.md"
-            else:
-                notes_path = ld / "notes" / f"{task_id}.md"
-                plan_path = ld / "plans" / f"{task_id}.md"
+            notes_path, _ = resolve_task_prose_path(ld, task_id, "notes")
+            plan_path, _ = resolve_task_prose_path(ld, task_id, "plan")
 
-            result["notes_exists"] = notes_path.exists()
-            result["plan_exists"] = plan_path.exists()
+            result["notes_exists"] = notes_path is not None
+            result["plan_exists"] = plan_path is not None
             result["artifacts"] = _read_artifact_info(ld, snapshot)
             result["has_active_session"] = bool(
                 snapshot.get("status") == "in_progress" and snapshot.get("assigned_to")
@@ -1268,13 +1262,7 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
             # Generate ID
             task_id = generate_task_id()
 
-            project_code = config.get("project_code")
-            subproject_code = config.get("subproject_code")
-            prefix = (
-                f"{project_code}-{subproject_code}"
-                if project_code and subproject_code
-                else project_code
-            )
+            prefix = configured_event_prefix(config)
 
             # Build event data
             event_data: dict = {
@@ -1937,11 +1925,8 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                 self._send_json(400, _err("INVALID_ID", "Invalid task ID format"))
                 return
 
-            # Resolve notes path (check active, then archive)
-            notes_path = ld / "notes" / f"{task_id}.md"
-            if not notes_path.is_file():
-                notes_path = ld / "archive" / "notes" / f"{task_id}.md"
-            if not notes_path.is_file():
+            notes_path, _authority = resolve_task_prose_path(ld, task_id, "notes")
+            if notes_path is None:
                 self._send_json(404, _err("NOT_FOUND", f"No notes file for task {task_id}"))
                 return
 
@@ -1980,17 +1965,14 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                 self._send_json(400, _err("INVALID_ID", "Invalid task ID format"))
                 return
 
-            # Resolve plan path (check active, then archive, then scaffold)
-            plan_path = ld / "plans" / f"{task_id}.md"
-            if not plan_path.is_file():
-                plan_path = ld / "archive" / "plans" / f"{task_id}.md"
-            if not plan_path.is_file():
+            plan_path, authority = resolve_task_prose_path(ld, task_id, "plan")
+            if plan_path is None:
                 # Scaffold a fresh plan file so the user lands in a useful template
-                plan_path = ld / "plans" / f"{task_id}.md"
-                snapshot = _read_snapshot(ld, task_id)
-                if snapshot is None:
+                if authority.location != "active":
                     self._send_json(404, _err("NOT_FOUND", f"Task {task_id} not found"))
                     return
+                plan_path = ld / "plans" / f"{task_id}.md"
+                snapshot = authority.snapshot
                 title = snapshot.get("title", "Untitled")
                 short_id = snapshot.get("short_id")
                 description = snapshot.get("description")
@@ -2036,32 +2018,11 @@ def _collect_events(ld: Path, *, full_scan: bool = False, tail_n: int = 10) -> l
     *tail_n* lines from each file (fast path for the unfiltered default).
     Also scans archived events when doing a full scan.
     """
-    all_events: list[dict] = []
-    dirs = [ld / "events"]
-    if full_scan:
-        archive_events = ld / "archive" / "events"
-        if archive_events.is_dir():
-            dirs.append(archive_events)
-
-    for events_dir in dirs:
-        if not events_dir.is_dir():
-            continue
-        for event_file in events_dir.glob("*.jsonl"):
-            if event_file.name == "_lifecycle.jsonl":
-                continue
-            try:
-                lines = event_file.read_text().splitlines()
-            except OSError:
-                continue
-            subset = lines if full_scan else lines[-tail_n:]
-            for line in subset:
-                line = line.strip()
-                if line:
-                    try:
-                        all_events.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        continue
-    return all_events
+    return [
+        event
+        for authority in discover_task_authorities(ld, include_archived=full_scan)
+        for event in (authority.events if full_scan else authority.events[-tail_n:])
+    ]
 
 
 def _build_facets(events: list[dict], ld: Path) -> dict:
@@ -2084,17 +2045,10 @@ def _build_facets(events: list[dict], ld: Path) -> dict:
     task_info: list[dict] = []
     for tid in sorted(task_ids):
         info: dict = {"id": tid}
-        # Try active snapshot
-        snap_path = ld / "tasks" / f"{tid}.json"
-        if not snap_path.is_file():
-            snap_path = ld / "archive" / "tasks" / f"{tid}.json"
-        if snap_path.is_file():
-            try:
-                snap = json.loads(snap_path.read_text())
-                info["short_id"] = snap.get("short_id")
-                info["title"] = snap.get("title")
-            except (json.JSONDecodeError, OSError):
-                pass
+        authority = read_task_authority(ld, tid, allow_missing=True)
+        if authority is not None:
+            info["short_id"] = authority.snapshot.get("short_id")
+            info["title"] = authority.snapshot.get("title")
         task_info.append(info)
 
     return {

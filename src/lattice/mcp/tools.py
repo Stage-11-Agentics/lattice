@@ -32,6 +32,7 @@ from lattice.core.comments import (
 from lattice.core.config import (
     VALID_PRIORITIES,
     VALID_URGENCIES,
+    configured_event_prefix,
     get_configured_roles,
     validate_completion_policy,
     validate_status,
@@ -204,11 +205,7 @@ def lattice_create(
     else:
         task_id = generate_task_id()
 
-    project_code = config.get("project_code")
-    subproject_code = config.get("subproject_code")
-    prefix = (
-        f"{project_code}-{subproject_code}" if project_code and subproject_code else project_code
-    )
+    prefix = configured_event_prefix(config)
 
     requested_data: dict = {
         "title": title,

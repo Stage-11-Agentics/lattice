@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import json
 import ast
+import os
+import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier
+from urllib.request import Request, urlopen
 
 import pytest
 
 from lattice.core.config import default_config, serialize_config
-from lattice.core.events import create_event
+from lattice.core.events import create_event, serialize_event
+from lattice.core.ids import generate_artifact_id, generate_task_id
 from lattice.core.tasks import serialize_snapshot
 from lattice.storage.fs import atomic_write, ensure_lattice_dirs, jsonl_append
 from lattice.storage.operations import (
@@ -448,6 +453,219 @@ class TestMutateTask:
         assert authority.location == "active"
         assert authority.events[-1]["id"] == unarchive_event["id"]
 
+    @pytest.mark.parametrize("direction", ["archive", "unarchive"])
+    def test_active_discovery_scans_both_event_directories_before_filtering(
+        self, tmp_path: Path, direction: str
+    ) -> None:
+        ld = _setup_lattice(tmp_path)
+        task_id = f"task_01DISCOVERY{direction.upper():0<16}"[:31]
+        _create_task(ld, task_id)
+        active = ld / "events" / f"{task_id}.jsonl"
+        archived = ld / "archive" / "events" / f"{task_id}.jsonl"
+        archived.parent.mkdir(parents=True, exist_ok=True)
+        if direction == "archive":
+            event = create_event("task_archived", task_id, "human:test", {})
+            archived.write_bytes(active.read_bytes() + serialize_event(event).encode())
+            active.unlink()
+            assert discover_task_authorities(ld, include_archived=False) == []
+        else:
+            archive_event = create_event("task_archived", task_id, "human:test", {})
+            unarchive_event = create_event("task_unarchived", task_id, "human:test", {})
+            archived.write_bytes(
+                active.read_bytes()
+                + serialize_event(archive_event).encode()
+                + serialize_event(unarchive_event).encode()
+            )
+            active.unlink()
+            discovered = discover_task_authorities(ld, include_archived=False)
+            assert [authority.task_id for authority in discovered] == [task_id]
+            assert discovered[0].location == "active"
+
+    @pytest.mark.parametrize(
+        ("event_type", "data", "message"),
+        [
+            ("task_unarchived", {}, "must alternate"),
+            (
+                "comment_edited",
+                {"comment_id": "ev_missing", "body": "nope"},
+                "not found",
+            ),
+            ("comment_deleted", {"comment_id": "ev_missing"}, "not found"),
+            (
+                "reaction_added",
+                {"comment_id": "ev_missing", "emoji": "eyes"},
+                "not found",
+            ),
+            (
+                "reaction_removed",
+                {"comment_id": "ev_missing", "emoji": "eyes"},
+                "not found",
+            ),
+        ],
+    )
+    def test_strict_replay_rejects_invalid_one_shot_semantics(
+        self,
+        tmp_path: Path,
+        event_type: str,
+        data: dict,
+        message: str,
+    ) -> None:
+        ld = _setup_lattice(tmp_path)
+        task_id = f"task_01STRICT{event_type.upper():0<18}"[:31]
+        _create_task(ld, task_id)
+        event_path = ld / "events" / f"{task_id}.jsonl"
+        event = create_event(event_type, task_id, "human:test", data)
+        event_path.write_bytes(event_path.read_bytes() + serialize_event(event).encode())
+        with pytest.raises(AuthoritativeLogError, match=message):
+            read_task_authority(ld, task_id)
+
+    def test_strict_replay_rejects_duplicate_delete_and_reaction_lifecycle(
+        self, tmp_path: Path
+    ) -> None:
+        ld = _setup_lattice(tmp_path)
+        task_id = "task_01STRICTONESHOT0000000000"
+        _create_task(ld, task_id)
+        comment = create_event("comment_added", task_id, "human:test", {"body": "one shot"})
+        reaction = create_event(
+            "reaction_added",
+            task_id,
+            "human:test",
+            {"comment_id": comment["id"], "emoji": "eyes"},
+        )
+        delete = create_event(
+            "comment_deleted",
+            task_id,
+            "human:test",
+            {"comment_id": comment["id"]},
+        )
+        mutate_task_events(ld, task_id, [comment, reaction, delete])
+        event_path = ld / "events" / f"{task_id}.jsonl"
+        duplicate = create_event(
+            "comment_deleted",
+            task_id,
+            "human:test",
+            {"comment_id": comment["id"]},
+        )
+        event_path.write_bytes(event_path.read_bytes() + serialize_event(duplicate).encode())
+        with pytest.raises(AuthoritativeLogError, match="already deleted"):
+            read_task_authority(ld, task_id)
+
+    @pytest.mark.parametrize("direction", ["archive", "unarchive"])
+    @pytest.mark.parametrize(
+        "fault_boundary",
+        [
+            "task_event_appended",
+            "task_event_fsynced",
+            "lifecycle_appended",
+            "lifecycle_fsynced",
+            "destination_event_copied",
+            "destination_snapshot_written",
+            "destination_plan_copied",
+            "destination_notes_copied",
+            "source_snapshot_removed",
+            "source_plan_removed",
+            "source_notes_removed",
+            "source_event_removed",
+        ],
+    )
+    def test_archive_unarchive_fault_boundaries_retry_to_strict_replay(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        direction: str,
+        fault_boundary: str,
+    ) -> None:
+        ld = _setup_lattice(tmp_path)
+        task_id = f"task_01FAULT{direction.upper():0<19}"[:31]
+        _create_task(ld, task_id)
+        (ld / "plans" / f"{task_id}.md").write_bytes(b"# exact plan\n")
+        (ld / "notes" / f"{task_id}.md").write_bytes(b"# exact notes\n")
+
+        def placement_decision(context):  # noqa: ANN001, ANN202
+            expected = "archived" if direction == "archive" else "active"
+            if context.location == expected:
+                return TaskMutationDecision(idempotent=True)
+            event_type = "task_archived" if direction == "archive" else "task_unarchived"
+            return TaskMutationDecision(
+                events=[create_event(event_type, task_id, "human:test", {})]
+            )
+
+        if direction == "unarchive":
+            mutate_task(
+                ld,
+                task_id,
+                lambda context: TaskMutationDecision(
+                    events=[create_event("task_archived", task_id, "human:test", {})]
+                ),
+                source="either",
+                destination="archived",
+                may_emit_lifecycle=True,
+            )
+
+        fired = False
+
+        def inject(name: str, _ld: Path, _task_id: str) -> None:
+            nonlocal fired
+            if name == fault_boundary and not fired:
+                fired = True
+                raise OSError(f"fault at {name}")
+
+        monkeypatch.setattr("lattice.storage.operations._mutation_boundary", inject)
+        with pytest.raises(OSError, match=fault_boundary):
+            mutate_task(
+                ld,
+                task_id,
+                placement_decision,
+                source="either",
+                destination="archived" if direction == "archive" else "active",
+                may_emit_lifecycle=True,
+            )
+        assert fired is True
+
+        monkeypatch.setattr(
+            "lattice.storage.operations._mutation_boundary",
+            lambda _name, _ld, _task_id: None,
+        )
+        result = mutate_task(
+            ld,
+            task_id,
+            placement_decision,
+            source="either",
+            destination="archived" if direction == "archive" else "active",
+            may_emit_lifecycle=True,
+        )
+        authority = read_task_authority(ld, task_id)
+        assert authority is not None
+        expected_location = "archived" if direction == "archive" else "active"
+        assert authority.location == expected_location
+        event_type = "task_archived" if direction == "archive" else "task_unarchived"
+        assert sum(event["type"] == event_type for event in authority.events) == 1
+        lifecycle = [
+            json.loads(line)
+            for line in (ld / "events" / "_lifecycle.jsonl").read_text().splitlines()
+            if line
+        ]
+        placement_event_ids = {
+            event["id"] for event in authority.events if event["type"] == event_type
+        }
+        assert sum(event["id"] in placement_event_ids for event in lifecycle) == 1
+        base = ld / "archive" if expected_location == "archived" else ld
+        other = ld if expected_location == "archived" else ld / "archive"
+        assert (base / "plans" / f"{task_id}.md").read_bytes() == b"# exact plan\n"
+        assert (base / "notes" / f"{task_id}.md").read_bytes() == b"# exact notes\n"
+        for directory, suffix in (
+            ("events", ".jsonl"),
+            ("tasks", ".json"),
+            ("plans", ".md"),
+            ("notes", ".md"),
+        ):
+            assert (base / directory / f"{task_id}{suffix}").exists()
+            assert not (other / directory / f"{task_id}{suffix}").exists()
+        assert (base / "tasks" / f"{task_id}.json").read_bytes() == serialize_snapshot(
+            authority.snapshot
+        ).encode()
+        assert result.snapshot == authority.snapshot
+
     @pytest.mark.parametrize(
         "fault_boundary",
         [
@@ -550,28 +768,57 @@ class TestMutateTask:
             == 1
         )
 
-    def test_hooks_run_after_task_locks_are_released(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize("direction", ["archive", "unarchive"])
+    def test_placement_hooks_run_after_locks_and_full_durability(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        direction: str,
     ) -> None:
         ld = _setup_lattice(tmp_path)
-        task_id = "task_01HOOKSAFTERLOCK000000000"
+        task_id = generate_task_id()
         _create_task(ld, task_id)
+        (ld / "plans" / f"{task_id}.md").write_text("# Hook plan\n")
+        if direction == "unarchive":
+            mutate_task(
+                ld,
+                task_id,
+                lambda _context: TaskMutationDecision(
+                    events=[create_event("task_archived", task_id, "human:test", {})]
+                ),
+                source="either",
+                destination="archived",
+                may_emit_lifecycle=True,
+            )
         observed: list[str] = []
 
-        def hook(_config, hook_ld, hook_task_id, _event):  # noqa: ANN001
+        def hook(_config, hook_ld, hook_task_id, event):  # noqa: ANN001
             authority = read_task_authority(hook_ld, hook_task_id)
             assert authority is not None
-            observed.append(authority.snapshot["title"])
+            expected = "archived" if direction == "archive" else "active"
+            assert authority.location == expected
+            base = hook_ld / "archive" if expected == "archived" else hook_ld
+            other = hook_ld if expected == "archived" else hook_ld / "archive"
+            assert (base / "events" / f"{task_id}.jsonl").exists()
+            assert (base / "tasks" / f"{task_id}.json").exists()
+            assert (base / "plans" / f"{task_id}.md").read_text() == "# Hook plan\n"
+            assert not (other / "events" / f"{task_id}.jsonl").exists()
+            observed.append(event["type"])
 
         monkeypatch.setattr("lattice.storage.operations.execute_hooks", hook)
-        event = create_event(
-            "field_updated",
+        event_type = "task_archived" if direction == "archive" else "task_unarchived"
+        mutate_task(
+            ld,
             task_id,
-            "human:test",
-            {"field": "title", "from": "Concurrent task", "to": "Hook visible"},
+            lambda _context: TaskMutationDecision(
+                events=[create_event(event_type, task_id, "human:test", {})]
+            ),
+            config={"hooks": {"enabled": True}},
+            source="either",
+            destination="archived" if direction == "archive" else "active",
+            may_emit_lifecycle=True,
         )
-        mutate_task_events(ld, task_id, [event], config={"hooks": {"enabled": True}})
-        assert observed == ["Hook visible"]
+        assert observed == [event_type]
 
 
 def test_production_task_writers_use_canonical_storage_api() -> None:
@@ -600,3 +847,252 @@ def test_production_task_writers_use_canonical_storage_api() -> None:
             if name in {"write_task_event", "jsonl_append"}:
                 violations.append(f"{path.relative_to(source_root)}:{node.lineno}:{name}")
     assert violations == []
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        "status",
+        "assignment",
+        "update",
+        "comment_edit",
+        "comment_delete",
+        "reaction",
+        "complete",
+        "archive",
+    ],
+)
+def test_production_cli_stateful_callbacks_race_under_authority_lock(
+    tmp_path: Path, operation: str
+) -> None:
+    """Exercise real Click callbacks, not handcrafted storage decisions."""
+    ld = _setup_lattice(tmp_path)
+    task_id = generate_task_id()
+    _create_task(ld, task_id)
+    comment_id: str | None = None
+    if operation in {"comment_edit", "comment_delete", "reaction"}:
+        comment = create_event("comment_added", task_id, "human:test", {"body": "original"})
+        mutate_task_events(ld, task_id, [comment])
+        comment_id = comment["id"]
+    if operation == "complete":
+        mutate_task_events(
+            ld,
+            task_id,
+            [
+                create_event(
+                    "status_changed",
+                    task_id,
+                    "human:test",
+                    {"from": "backlog", "to": "review"},
+                )
+            ],
+        )
+
+    commands = {
+        "status": ["status", task_id, "in_planning", "--actor", "human:test"],
+        "assignment": ["assign", task_id, "agent:race", "--actor", "human:test"],
+        "update": ["update", task_id, "priority=high", "--actor", "human:test"],
+        "comment_edit": [
+            "comment-edit",
+            task_id,
+            comment_id,
+            "edited",
+            "--actor",
+            "human:test",
+        ],
+        "comment_delete": [
+            "comment-delete",
+            task_id,
+            comment_id,
+            "--actor",
+            "human:test",
+        ],
+        "reaction": [
+            "react",
+            task_id,
+            comment_id,
+            "eyes",
+            "--actor",
+            "human:test",
+        ],
+        "complete": [
+            "complete",
+            task_id,
+            "--review",
+            "Race review.",
+            "--actor",
+            "human:test",
+        ],
+        "archive": ["archive", task_id, "--actor", "human:test"],
+    }
+    barrier = Barrier(2)
+
+    def invoke(_index: int):  # noqa: ANN202
+        barrier.wait()
+        return subprocess.run(
+            [str(Path(sys.executable).parent / "lattice"), *commands[operation]],
+            env={**os.environ, "LATTICE_ROOT": str(tmp_path)},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(invoke, range(2)))
+    assert any(result.returncode == 0 for result in results), [
+        (result.returncode, result.stdout, result.stderr) for result in results
+    ]
+    authority = read_task_authority(ld, task_id)
+    assert authority is not None
+    base = ld / "archive" if authority.location == "archived" else ld
+    assert (base / "tasks" / f"{task_id}.json").read_bytes() == serialize_snapshot(
+        authority.snapshot
+    ).encode()
+    event_type = {
+        "status": "status_changed",
+        "assignment": "assignment_changed",
+        "update": "field_updated",
+        "comment_edit": "comment_edited",
+        "comment_delete": "comment_deleted",
+        "reaction": "reaction_added",
+        "archive": "task_archived",
+    }.get(operation)
+    if event_type is not None and operation != "comment_edit":
+        assert sum(event["type"] == event_type for event in authority.events) == 1
+
+
+def test_production_mcp_criterion_add_and_edit_callbacks_race(
+    tmp_path: Path,
+) -> None:
+    from lattice.mcp.tools import lattice_attach, lattice_criterion_add, lattice_criterion_edit
+
+    ld = _setup_lattice(tmp_path)
+    task_id = generate_task_id()
+    _create_task(ld, task_id)
+    root = str(tmp_path)
+    barrier = Barrier(2)
+
+    def add(index: int) -> dict:
+        barrier.wait()
+        return lattice_criterion_add(
+            task_id=task_id,
+            outcome=f"Outcome {index}",
+            actor="human:test",
+            lattice_root=root,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(add, range(2)))
+    authority = read_task_authority(ld, task_id)
+    assert authority is not None
+    assert {criterion["id"] for criterion in authority.snapshot["acceptance_criteria"]} == {
+        "AC-1",
+        "AC-2",
+    }
+
+    barrier = Barrier(2)
+
+    def edit(index: int) -> dict:
+        barrier.wait()
+        return lattice_criterion_edit(
+            task_id=task_id,
+            criterion_id="AC-1",
+            outcome=f"Edited {index}",
+            actor="human:test",
+            lattice_root=root,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(edit, range(2)))
+    authority = read_task_authority(ld, task_id)
+    assert authority is not None
+    criterion = next(
+        item for item in authority.snapshot["acceptance_criteria"] if item["id"] == "AC-1"
+    )
+    assert criterion["revision"] == 3
+    assert [revision["revision"] for revision in criterion["revisions"]] == [1, 2, 3]
+
+    artifact_id = generate_artifact_id()
+    barrier = Barrier(2)
+
+    def attach(_index: int) -> dict:
+        barrier.wait()
+        return lattice_attach(
+            task_id=task_id,
+            source="https://example.com/race-evidence",
+            title="Race evidence",
+            actor="human:test",
+            artifact_id=artifact_id,
+            lattice_root=root,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(attach, range(2)))
+    authority = read_task_authority(ld, task_id)
+    assert authority is not None
+    assert (
+        sum(
+            event["type"] == "artifact_attached" and event["data"]["artifact_id"] == artifact_id
+            for event in authority.events
+        )
+        == 1
+    )
+    assert (ld / "tasks" / f"{task_id}.json").read_bytes() == serialize_snapshot(
+        authority.snapshot
+    ).encode()
+
+
+def test_production_dashboard_update_callbacks_race_across_servers(
+    tmp_path: Path,
+) -> None:
+    from lattice.dashboard.server import create_server
+
+    ld = _setup_lattice(tmp_path)
+    task_id = generate_task_id()
+    _create_task(ld, task_id)
+    servers = [
+        create_server(ld, "127.0.0.1", 0),
+        create_server(ld, "127.0.0.1", 0),
+    ]
+    with ThreadPoolExecutor(max_workers=2) as server_pool:
+        futures = [server_pool.submit(server.serve_forever) for server in servers]
+        barrier = Barrier(2)
+
+        def update(index: int) -> int:
+            barrier.wait()
+            payload = json.dumps(
+                {
+                    "actor": "human:test",
+                    "fields": {"priority": ("high", "low")[index]},
+                }
+            ).encode()
+            request = Request(
+                f"http://127.0.0.1:{servers[index].server_port}/api/tasks/{task_id}/update",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urlopen(request) as response:
+                return response.status
+
+        try:
+            with ThreadPoolExecutor(max_workers=2) as clients:
+                assert list(clients.map(update, range(2))) == [200, 200]
+        finally:
+            for server in servers:
+                server.shutdown()
+                server.server_close()
+            for future in futures:
+                future.result(timeout=5)
+    authority = read_task_authority(ld, task_id)
+    assert authority is not None
+    updates = [
+        event
+        for event in authority.events
+        if event["type"] == "field_updated" and event["data"]["field"] == "priority"
+    ]
+    assert len(updates) == 2
+    assert updates[1]["data"]["from"] == updates[0]["data"]["to"]
+    assert (ld / "tasks" / f"{task_id}.json").read_bytes() == serialize_snapshot(
+        authority.snapshot
+    ).encode()

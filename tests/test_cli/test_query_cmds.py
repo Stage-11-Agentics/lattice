@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from subprocess import CompletedProcess
 
+from lattice.core.events import create_event, serialize_event
 from lattice.core.ids import generate_artifact_id, generate_event_id
 
 
@@ -1136,3 +1137,53 @@ class TestShowAcceptanceCriteria:
         artifact = json.loads(shown.output)["data"]["artifact_info"][0]
         assert artifact["role"] is None
         assert artifact["criterion_ids"] == ["AC-1"]
+
+
+def test_wrong_only_unarchive_is_visible_to_list_next_stats_and_plan(
+    invoke, create_task, initialized_root
+) -> None:
+    task = create_task("Interrupted unarchive")
+    task_id = task["id"]
+    lattice_dir = initialized_root / ".lattice"
+    active_event = lattice_dir / "events" / f"{task_id}.jsonl"
+    archived_event = lattice_dir / "archive" / "events" / f"{task_id}.jsonl"
+    archived_event.parent.mkdir(parents=True, exist_ok=True)
+    archived_event.write_bytes(
+        active_event.read_bytes()
+        + serialize_event(create_event("task_archived", task_id, "human:test", {})).encode()
+        + serialize_event(create_event("task_unarchived", task_id, "human:test", {})).encode()
+    )
+    active_event.unlink()
+    active_plan = lattice_dir / "plans" / f"{task_id}.md"
+    archived_plan = lattice_dir / "archive" / "plans" / f"{task_id}.md"
+    archived_plan.parent.mkdir(parents=True, exist_ok=True)
+    archived_plan.write_text("# Durable plan\n\nImplement it.\n", encoding="utf-8")
+    active_plan.unlink()
+    archived_task = create_task("Interrupted archive")
+    archived_task_id = archived_task["id"]
+    archived_active_event = lattice_dir / "events" / f"{archived_task_id}.jsonl"
+    split_archived_event = lattice_dir / "archive" / "events" / f"{archived_task_id}.jsonl"
+    split_archived_event.write_bytes(
+        archived_active_event.read_bytes()
+        + serialize_event(
+            create_event("task_archived", archived_task_id, "human:test", {})
+        ).encode()
+    )
+
+    listed = invoke("list", "--json")
+    assert listed.exit_code == 0
+    assert [item["id"] for item in json.loads(listed.output)["data"]] == [task_id]
+    all_tasks = json.loads(invoke("list", "--include-archived", "--json").output)["data"]
+    assert {item["id"] for item in all_tasks} == {task_id, archived_task_id}
+    assert next(item for item in all_tasks if item["id"] == archived_task_id)["archived"] is True
+    next_result = invoke("next", "--json")
+    assert next_result.exit_code == 0
+    next_data = json.loads(next_result.output)["data"]
+    assert next_data["id"] == task_id
+    assert next_data["plan_content"] == "# Durable plan\n\nImplement it.\n"
+    stats = invoke("stats", "--json")
+    summary = json.loads(stats.output)["data"]["summary"]
+    assert summary["active_tasks"] == 1
+    assert summary["archived_tasks"] == 1
+    plan = invoke("plan", task_id, "--json")
+    assert json.loads(plan.output)["data"]["content"] == "# Durable plan\n\nImplement it.\n"

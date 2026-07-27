@@ -175,6 +175,53 @@ class TestTaskDetailEndpoint:
         assert arts[0]["title"] == "dep-report.txt"
         assert arts[0]["type"] == "text/plain"
 
+    def test_wrong_only_unarchive_is_visible_in_list_detail_events_and_activity(
+        self, dashboard_server
+    ):
+        base_url, lattice_dir, ids = dashboard_server
+        task_id = ids["backlog"]
+        active_event = lattice_dir / "events" / f"{task_id}.jsonl"
+        archived_event = lattice_dir / "archive" / "events" / f"{task_id}.jsonl"
+        archived_event.parent.mkdir(parents=True, exist_ok=True)
+        archived_event.write_bytes(
+            active_event.read_bytes()
+            + serialize_event(create_event("task_archived", task_id, "human:test", {})).encode()
+            + serialize_event(create_event("task_unarchived", task_id, "human:test", {})).encode()
+        )
+        active_event.unlink()
+        active_notes = lattice_dir / "notes" / f"{task_id}.md"
+        archived_notes = lattice_dir / "archive" / "notes" / f"{task_id}.md"
+        archived_notes.parent.mkdir(parents=True, exist_ok=True)
+        archived_notes.write_bytes(active_notes.read_bytes())
+        active_notes.unlink()
+        archived_task_id = ids["done"]
+        archived_active_event = lattice_dir / "events" / f"{archived_task_id}.jsonl"
+        split_archived_event = lattice_dir / "archive" / "events" / f"{archived_task_id}.jsonl"
+        split_archived_event.write_bytes(
+            archived_active_event.read_bytes()
+            + serialize_event(
+                create_event("task_archived", archived_task_id, "human:test", {})
+            ).encode()
+        )
+
+        status, tasks = _get(base_url, "/api/tasks")
+        assert status == 200
+        assert task_id in {task["id"] for task in tasks["data"]}
+        assert archived_task_id not in {task["id"] for task in tasks["data"]}
+        status, archived_tasks = _get(base_url, "/api/archived")
+        assert status == 200
+        assert archived_task_id in {task["id"] for task in archived_tasks["data"]}
+        status, detail = _get(base_url, f"/api/tasks/{task_id}")
+        assert status == 200
+        assert detail["data"]["notes_exists"] is True
+        status, events = _get(base_url, f"/api/tasks/{task_id}/events")
+        assert status == 200
+        assert events["data"][0]["type"] == "task_unarchived"
+        status, activity = _get(base_url, f"/api/activity?task={task_id}")
+        assert status == 200
+        assert activity["data"]["events"][0]["type"] == "task_unarchived"
+        assert task_id in {task["id"] for task in activity["data"]["facets"]["tasks"]}
+
     def test_task_detail_preserves_criteria_history_and_full_evidence_refs(self, dashboard_server):
         base_url, lattice_dir, ids = dashboard_server
         task_id = ids["in_progress"]

@@ -37,6 +37,7 @@ from lattice.core.config import (
     VALID_COMPLEXITIES,
     VALID_PRIORITIES,
     VALID_URGENCIES,
+    configured_event_prefix,
     get_configured_roles,
     get_review_cycle_limit,
     get_valid_transitions,
@@ -167,11 +168,7 @@ def create(
     else:
         task_id = generate_task_id()
 
-    project_code = config.get("project_code")
-    subproject_code = config.get("subproject_code")
-    prefix = (
-        f"{project_code}-{subproject_code}" if project_code and subproject_code else project_code
-    )
+    prefix = configured_event_prefix(config)
 
     requested_data: dict = {
         "title": title,
@@ -826,6 +823,8 @@ def status_cmd(
             config,
             force=force,
             reason=provenance_reason,
+            authoritative_snapshot=snapshot,
+            authoritative_location=context.location,
         )
         events: list[dict] = []
         auto_assigned = new_status in ACTIVE_WORK_STATUSES and snapshot.get("assigned_to") is None

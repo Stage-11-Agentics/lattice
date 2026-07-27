@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any, Callable, Literal
 
 from lattice.core.events import LIFECYCLE_EVENT_TYPES, serialize_event
+from lattice.core.comments import materialize_comments, validate_comment_for_delete
+from lattice.core.comments import validate_comment_for_edit, validate_comment_for_react
 from lattice.core.tasks import apply_event_to_snapshot, serialize_snapshot
 from lattice.storage.fs import atomic_write, jsonl_append
 from lattice.storage.hooks import execute_hooks
@@ -92,6 +94,51 @@ class ResolvedTaskAuthority:
 MutationCallback = Callable[[TaskMutationContext], TaskMutationDecision]
 
 
+def _mutation_boundary(_name: str, _lattice_dir: Path, _task_id: str) -> None:
+    """Deterministic test seam for crash recovery at durable mutation boundaries."""
+
+
+def _validate_semantic_event(events: list[dict], event: dict, location: TaskLocation) -> None:
+    """Validate stateful one-shot contracts omitted from the snapshot view.
+
+    This lives in strict replay rather than the permissive public reducer so
+    forward-compatible standalone materialization remains unchanged.
+    """
+    event_type = event.get("type")
+    data = event.get("data", {})
+    if event_type == "task_archived":
+        if location != "active":
+            raise ValueError("task_archived must alternate from active authority")
+        return
+    if event_type == "task_unarchived":
+        if location != "archived":
+            raise ValueError("task_unarchived must alternate from archived authority")
+        return
+    if event_type == "comment_edited":
+        previous_body, _previous_role = validate_comment_for_edit(events, data.get("comment_id"))
+        if "previous_body" in data and data["previous_body"] != previous_body:
+            raise ValueError("comment_edited previous_body does not match authoritative state")
+        return
+    if event_type == "comment_deleted":
+        validate_comment_for_delete(events, data.get("comment_id"))
+        return
+    if event_type in {"reaction_added", "reaction_removed"}:
+        comment_id = data.get("comment_id")
+        validate_comment_for_react(events, comment_id)
+        emoji = data.get("emoji")
+        actor = event.get("actor")
+        present = any(
+            candidate["id"] == comment_id
+            and actor in candidate.get("reactions", {}).get(emoji, [])
+            for comment in materialize_comments(events)
+            for candidate in [comment, *comment.get("replies", [])]
+        )
+        if event_type == "reaction_added" and present:
+            raise ValueError("reaction_added duplicates an existing actor reaction")
+        if event_type == "reaction_removed" and not present:
+            raise ValueError("reaction_removed has no matching actor reaction")
+
+
 def _location_paths(lattice_dir: Path, task_id: str, location: TaskLocation) -> dict[str, Path]:
     prefix = lattice_dir if location == "active" else lattice_dir / "archive"
     return {
@@ -115,6 +162,7 @@ def _parse_authoritative_log(path: Path, task_id: str) -> tuple[tuple[dict, ...]
     events: list[dict] = []
     seen_ids: set[str] = set()
     snapshot: dict | None = None
+    location: TaskLocation = "active"
     for line_number, raw_line in enumerate(raw.splitlines(), 1):
         if not raw_line.strip():
             continue
@@ -149,6 +197,7 @@ def _parse_authoritative_log(path: Path, task_id: str) -> tuple[tuple[dict, ...]
                 "task_created may appear exactly once", path=path, line=line_number
             )
         try:
+            _validate_semantic_event(events, event, location)
             snapshot = apply_event_to_snapshot(snapshot, event)
         except (KeyError, TypeError, ValueError) as exc:
             raise AuthoritativeLogError(
@@ -157,6 +206,10 @@ def _parse_authoritative_log(path: Path, task_id: str) -> tuple[tuple[dict, ...]
                 line=line_number,
             ) from exc
         events.append(event)
+        if event.get("type") == "task_archived":
+            location = "archived"
+        elif event.get("type") == "task_unarchived":
+            location = "active"
 
     if not events or snapshot is None:
         raise AuthoritativeLogError("authoritative log is empty", path=path)
@@ -247,6 +300,38 @@ def read_task_authority(
         return resolve_task_authority(lattice_dir, task_id, allow_missing=allow_missing)
 
 
+def resolve_task_prose_path(
+    lattice_dir: Path,
+    task_id: str,
+    name: Literal["plan", "notes"],
+) -> tuple[Path | None, ResolvedTaskAuthority]:
+    """Resolve plan/notes under task locks without trusting directory order.
+
+    During an interrupted placement move the only durable prose copy may
+    temporarily remain on the wrong side.  A byte-identical duplicate is safe;
+    divergent copies fail closed.
+    """
+    with multi_lock(
+        lattice_dir / "locks",
+        [f"events_{task_id}", f"tasks_{task_id}"],
+    ):
+        authority = resolve_task_authority(lattice_dir, task_id)
+        assert authority is not None
+        target = _location_paths(lattice_dir, task_id, authority.location)[name]
+        other_location: TaskLocation = "archived" if authority.location == "active" else "active"
+        other = _location_paths(lattice_dir, task_id, other_location)[name]
+        if target.exists() and other.exists() and target.read_bytes() != other.read_bytes():
+            raise AuthoritativeLogError(
+                f"active and archived {name} files diverge; manual recovery required",
+                path=other,
+            )
+        if target.exists():
+            return target, authority
+        if other.exists():
+            return other, authority
+        return None, authority
+
+
 def discover_task_authorities(
     lattice_dir: Path,
     *,
@@ -259,9 +344,7 @@ def discover_task_authorities(
     logical task at the placement selected by immutable history.
     """
     task_ids: set[str] = set()
-    event_dirs = [lattice_dir / "events"]
-    if include_archived:
-        event_dirs.append(lattice_dir / "archive" / "events")
+    event_dirs = [lattice_dir / "events", lattice_dir / "archive" / "events"]
     for event_dir in event_dirs:
         if not event_dir.is_dir():
             continue
@@ -296,7 +379,9 @@ def _read_lifecycle_events(path: Path) -> list[dict]:
     return events
 
 
-def _reconcile_lifecycle_event(lifecycle_path: Path, event: dict) -> bool:
+def _reconcile_lifecycle_event(
+    lifecycle_path: Path, event: dict, lattice_dir: Path, task_id: str
+) -> bool:
     for existing in _read_lifecycle_events(lifecycle_path):
         if existing.get("id") != event["id"]:
             continue
@@ -306,7 +391,12 @@ def _reconcile_lifecycle_event(lifecycle_path: Path, event: dict) -> bool:
                 path=lifecycle_path,
             )
         return False
-    jsonl_append(lifecycle_path, serialize_event(event))
+    jsonl_append(
+        lifecycle_path,
+        serialize_event(event),
+        after_write=lambda: _mutation_boundary("lifecycle_appended", lattice_dir, task_id),
+        after_fsync=lambda: _mutation_boundary("lifecycle_fsynced", lattice_dir, task_id),
+    )
     return True
 
 
@@ -337,6 +427,8 @@ def _reconcile_placement(
     location: TaskLocation,
     event_bytes: bytes,
     snapshot: dict,
+    *,
+    inject_faults: bool = True,
 ) -> tuple[bool, bool]:
     """Copy-first placement reconciliation. Returns (placement, snapshot)."""
     target = _location_paths(lattice_dir, task_id, location)
@@ -363,6 +455,8 @@ def _reconcile_placement(
 
     if not target["event"].exists() or target["event"].read_bytes() != event_bytes:
         atomic_write(target["event"], event_bytes)
+        if inject_faults:
+            _mutation_boundary("destination_event_copied", lattice_dir, task_id)
         placement_changed = True
 
     expected_snapshot = serialize_snapshot(snapshot)
@@ -374,9 +468,13 @@ def _reconcile_placement(
             snapshot_changed = True
     if snapshot_changed:
         atomic_write(target["snapshot"], expected_snapshot)
+        if inject_faults:
+            _mutation_boundary("destination_snapshot_written", lattice_dir, task_id)
 
     for name in ("plan", "notes"):
         if _reconcile_auxiliary_file(other[name], target[name]):
+            if inject_faults:
+                _mutation_boundary(f"destination_{name}_copied", lattice_dir, task_id)
             placement_changed = True
 
     for name in ("snapshot", "plan", "notes", "event"):
@@ -388,6 +486,8 @@ def _reconcile_placement(
                         path=other[name],
                     )
             other[name].unlink()
+            if inject_faults:
+                _mutation_boundary(f"source_{name}_removed", lattice_dir, task_id)
             placement_changed = True
     return placement_changed, snapshot_changed
 
@@ -438,7 +538,7 @@ def _load_strict_id_index(lattice_dir: Path) -> dict:
     return index
 
 
-def _parse_project_short_id(short_id: str, prefix: str) -> int:
+def parse_project_short_id(short_id: str, prefix: str) -> int:
     marker = f"{prefix}-"
     if not isinstance(short_id, str) or not short_id.startswith(marker):
         raise AuthoritativeLogError(
@@ -476,7 +576,7 @@ def _reserve_or_reconcile_short_id(
                 line=1,
             )
         if short_id is not None:
-            suffix = _parse_project_short_id(short_id, prefix)
+            suffix = parse_project_short_id(short_id, prefix)
             existing_target = mapping.get(short_id)
             if existing_target not in (None, task_id):
                 raise AuthoritativeLogError(
@@ -501,7 +601,7 @@ def _reserve_or_reconcile_short_id(
     valid_reservations = []
     for sid in reservations:
         try:
-            valid_reservations.append((_parse_project_short_id(sid, prefix), sid))
+            valid_reservations.append((parse_project_short_id(sid, prefix), sid))
         except AuthoritativeLogError:
             continue
     if len(valid_reservations) == 1:
@@ -629,7 +729,14 @@ def mutate_task(
             atomic_write(event_path, authority.event_bytes)
             placement_reconciled = True
         for event in decision.events:
-            jsonl_append(event_path, serialize_event(event))
+            jsonl_append(
+                event_path,
+                serialize_event(event),
+                after_write=lambda: _mutation_boundary(
+                    "task_event_appended", lattice_dir, task_id
+                ),
+                after_fsync=lambda: _mutation_boundary("task_event_fsynced", lattice_dir, task_id),
+            )
             appended_events.append(event)
 
         authoritative_bytes = event_path.read_bytes()
@@ -644,7 +751,9 @@ def mutate_task(
         ]
         if lifecycle_events and may_emit_lifecycle:
             for event in lifecycle_events:
-                lifecycle_reconciled |= _reconcile_lifecycle_event(lifecycle_path, event)
+                lifecycle_reconciled |= _reconcile_lifecycle_event(
+                    lifecycle_path, event, lattice_dir, task_id
+                )
 
         placement_changed, _snapshot_written = _reconcile_placement(
             lattice_dir,
@@ -659,6 +768,7 @@ def mutate_task(
         final_location = requested_location
 
     assert final_snapshot is not None and final_location is not None
+    _mutation_boundary("locks_released_and_durable", lattice_dir, task_id)
     if config:
         for event in appended_events:
             execute_hooks(config, lattice_dir, task_id, event)

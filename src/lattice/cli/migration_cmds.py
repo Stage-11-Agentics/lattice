@@ -13,7 +13,7 @@ from lattice.cli.helpers import (
     require_root,
 )
 from lattice.cli.main import cli
-from lattice.core.config import serialize_config, validate_project_code
+from lattice.core.config import configured_event_prefix, serialize_config, validate_project_code
 from lattice.core.events import create_event
 from lattice.storage.fs import atomic_write
 from lattice.storage.operations import TaskMutationDecision, mutate_task
@@ -110,9 +110,9 @@ def backfill_ids(
 
     assigned: list[str] = []
 
-    # Compute prefix from project code + optional subproject code
-    subproject_code = config.get("subproject_code")
-    prefix = f"{code}-{subproject_code}" if subproject_code else code
+    # Use the exact same configured prefix as ordinary creation.
+    prefix = configured_event_prefix(config)
+    assert prefix is not None
 
     for snap, is_archived in tasks:
         task_ulid = snap["id"]

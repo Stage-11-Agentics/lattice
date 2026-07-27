@@ -520,6 +520,8 @@ def check_plan_gate(
     *,
     force: bool = False,
     reason: str | None = None,
+    authoritative_snapshot: dict | None = None,
+    authoritative_location: str | None = None,
 ) -> None:
     """Block transition to in_progress if the plan file is still scaffold.
 
@@ -542,8 +544,26 @@ def check_plan_gate(
             )
         return
 
-    plan_path = lattice_dir / "plans" / f"{task_id}.md"
-    if not plan_path.exists():
+    if authoritative_snapshot is None:
+        from lattice.storage.operations import resolve_task_prose_path
+
+        plan_path, authority = resolve_task_prose_path(lattice_dir, task_id, "plan")
+        authoritative_snapshot = authority.snapshot
+    else:
+        base = lattice_dir / "archive" if authoritative_location == "archived" else lattice_dir
+        other_base = (
+            lattice_dir if authoritative_location == "archived" else lattice_dir / "archive"
+        )
+        target = base / "plans" / f"{task_id}.md"
+        other = other_base / "plans" / f"{task_id}.md"
+        if target.exists() and other.exists() and target.read_bytes() != other.read_bytes():
+            output_error(
+                f"Plan files diverge for {task_id}; manual recovery is required.",
+                "INTEGRITY_ERROR",
+                is_json,
+            )
+        plan_path = target if target.exists() else other if other.exists() else None
+    if plan_path is None:
         output_error(
             f"Plan file missing for {task_id}. "
             "Write a plan before moving to in_progress. "
@@ -560,12 +580,7 @@ def check_plan_gate(
     # Load the task description so we can distinguish "plan is just the
     # auto-generated description" from "plan has real content".
     description: str | None = None
-    snap_path = lattice_dir / "tasks" / f"{task_id}.json"
-    try:
-        snap = json.loads(snap_path.read_text())
-        description = snap.get("description")
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        pass
+    description = authoritative_snapshot.get("description")
 
     if is_scaffold_plan(content, description=description):
         output_error(

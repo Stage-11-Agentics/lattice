@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from lattice.core.events import create_event, serialize_event
 from lattice.mcp.resources import (
     resource_all_tasks,
     resource_config,
@@ -122,3 +123,42 @@ class TestResourcePlans:
             plan_path.unlink()
         with pytest.raises(ValueError, match="No plan"):
             resource_plans(task["id"])
+
+    def test_wrong_only_unarchive_uses_authority_for_aggregate_plan_and_notes(
+        self, lattice_env: Path, lattice_dir: Path
+    ):
+        task = lattice_create(title="Interrupted MCP unarchive", actor="human:test")
+        task_id = task["id"]
+        active_event = lattice_dir / "events" / f"{task_id}.jsonl"
+        archived_event = lattice_dir / "archive" / "events" / f"{task_id}.jsonl"
+        archived_event.parent.mkdir(parents=True, exist_ok=True)
+        archived_event.write_bytes(
+            active_event.read_bytes()
+            + serialize_event(create_event("task_archived", task_id, "human:test", {})).encode()
+            + serialize_event(create_event("task_unarchived", task_id, "human:test", {})).encode()
+        )
+        active_event.unlink()
+        active_plan = lattice_dir / "plans" / f"{task_id}.md"
+        archived_plan = lattice_dir / "archive" / "plans" / f"{task_id}.md"
+        archived_plan.parent.mkdir(parents=True, exist_ok=True)
+        archived_plan.write_text("# MCP plan\n", encoding="utf-8")
+        active_plan.unlink()
+        archived_notes = lattice_dir / "archive" / "notes" / f"{task_id}.md"
+        archived_notes.parent.mkdir(parents=True, exist_ok=True)
+        archived_notes.write_text("# MCP notes\n", encoding="utf-8")
+        archived_task = lattice_create(title="Interrupted MCP archive", actor="human:test")
+        archived_task_id = archived_task["id"]
+        archived_active_event = lattice_dir / "events" / f"{archived_task_id}.jsonl"
+        split_archived_event = lattice_dir / "archive" / "events" / f"{archived_task_id}.jsonl"
+        split_archived_event.write_bytes(
+            archived_active_event.read_bytes()
+            + serialize_event(
+                create_event("task_archived", archived_task_id, "human:test", {})
+            ).encode()
+        )
+
+        assert [item["id"] for item in json.loads(resource_all_tasks())] == [task_id]
+        assert resource_plans(task_id) == "# MCP plan\n"
+        assert resource_notes(task_id) == "# MCP notes\n"
+        assert json.loads(resource_task_detail(archived_task_id))["archived"] is True
+        assert "Interrupted MCP archive" in resource_plans(archived_task_id)

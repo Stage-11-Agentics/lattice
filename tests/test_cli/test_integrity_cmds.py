@@ -8,6 +8,18 @@ from pathlib import Path
 from lattice.core.events import create_event, serialize_event
 
 
+def _durable_bytes(lattice_dir: Path) -> dict[str, bytes]:
+    """Capture every durable project file; lock/runtime files are excluded."""
+    return {
+        str(path.relative_to(lattice_dir)): path.read_bytes()
+        for path in sorted(lattice_dir.rglob("*"))
+        if path.is_file()
+        and "locks" not in path.parts
+        and ".daemon" not in path.parts
+        and "review_state" not in path.parts
+    }
+
+
 # ---------------------------------------------------------------------------
 # Doctor tests
 # ---------------------------------------------------------------------------
@@ -185,8 +197,7 @@ class TestDoctor:
         event_path.write_text(serialize_event(event), encoding="utf-8")
         ids_path = lattice_dir / "ids.json"
         ids_path.write_text(json.dumps({"schema_version": 2, "map": {}, "next_seqs": {}}) + "\n")
-        before_ids = ids_path.read_bytes()
-        before_event = event_path.read_bytes()
+        before = _durable_bytes(lattice_dir)
 
         doctor = invoke("doctor")
         assert doctor.exit_code != 0
@@ -194,9 +205,9 @@ class TestDoctor:
         assert str(event_path) in doctor.output
         rebuild = invoke("rebuild", "--all")
         assert rebuild.exit_code != 0
-        assert "malformed" in str(rebuild.exception).lower()
-        assert ids_path.read_bytes() == before_ids
-        assert event_path.read_bytes() == before_event
+        assert "malformed" in rebuild.output.lower()
+        assert str(event_path) in rebuild.output
+        assert _durable_bytes(lattice_dir) == before
 
     def test_duplicate_authoritative_short_id_blocks_doctor_and_rebuild_without_writes(
         self, create_task, invoke, initialized_root
@@ -216,8 +227,7 @@ class TestDoctor:
             event_paths.append(event_path)
         ids_path = lattice_dir / "ids.json"
         ids_path.write_text(json.dumps({"schema_version": 2, "map": {}, "next_seqs": {}}) + "\n")
-        before_ids = ids_path.read_bytes()
-        before_events = {path: path.read_bytes() for path in event_paths}
+        before = _durable_bytes(lattice_dir)
 
         doctor = invoke("doctor")
         assert doctor.exit_code != 0
@@ -226,9 +236,56 @@ class TestDoctor:
             assert task["id"] in doctor.output
         rebuild = invoke("rebuild", "--all")
         assert rebuild.exit_code != 0
-        assert "duplicate authoritative short id" in str(rebuild.exception).lower()
-        assert ids_path.read_bytes() == before_ids
-        assert {path: path.read_bytes() for path in event_paths} == before_events
+        assert "duplicate authoritative short id" in rebuild.output.lower()
+        assert _durable_bytes(lattice_dir) == before
+
+    def test_wrong_configured_prefix_blocks_doctor_and_rebuild_without_any_write(
+        self, create_task, invoke, initialized_root
+    ):
+        task = create_task("Wrong authoritative prefix")
+        lattice_dir = initialized_root / ".lattice"
+        config_path = lattice_dir / "config.json"
+        config = json.loads(config_path.read_text())
+        config["project_code"] = "TST"
+        config_path.write_text(json.dumps(config, sort_keys=True, indent=2) + "\n")
+        event_path = lattice_dir / "events" / f"{task['id']}.jsonl"
+        event = json.loads(event_path.read_text().splitlines()[0])
+        event["data"]["short_id"] = "WRONG-1"
+        event_path.write_text(serialize_event(event), encoding="utf-8")
+        snapshot_path = lattice_dir / "tasks" / f"{task['id']}.json"
+        snapshot_path.write_text('{"sentinel":"snapshot"}\n', encoding="utf-8")
+        (lattice_dir / "notes" / f"{task['id']}.md").write_text(
+            "sentinel notes\n", encoding="utf-8"
+        )
+        artifact_path = lattice_dir / "artifacts" / "meta" / "sentinel.json"
+        artifact_path.write_text('{"sentinel":"artifact"}\n', encoding="utf-8")
+        before = _durable_bytes(lattice_dir)
+
+        doctor = invoke("doctor")
+        assert doctor.exit_code != 0
+        assert "configured prefix 'TST'" in doctor.output
+        rebuild = invoke("rebuild", "--all")
+        assert rebuild.exit_code != 0
+        assert "configured prefix 'TST'" in rebuild.output
+        assert str(event_path) in rebuild.output
+        assert _durable_bytes(lattice_dir) == before
+
+    def test_malformed_complete_index_blocks_rebuild_before_any_write(
+        self, create_task, invoke, initialized_root
+    ):
+        task = create_task("Malformed index preflight")
+        lattice_dir = initialized_root / ".lattice"
+        snapshot_path = lattice_dir / "tasks" / f"{task['id']}.json"
+        snapshot_path.write_text('{"sentinel":"snapshot"}\n', encoding="utf-8")
+        ids_path = lattice_dir / "ids.json"
+        ids_path.write_text('{"map":{"BROKEN":42},"next_seqs":{},"schema_version":2}\n')
+        before = _durable_bytes(lattice_dir)
+
+        rebuild = invoke("rebuild", "--all")
+        assert rebuild.exit_code != 0
+        assert "malformed mapping" in rebuild.output
+        assert str(ids_path) in rebuild.output
+        assert _durable_bytes(lattice_dir) == before
 
     def test_unrelated_malformed_index_entry_blocks_ordinary_create_without_writes(
         self, invoke, initialized_root
