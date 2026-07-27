@@ -801,3 +801,34 @@ Additionally, `lattice advance N` processed multiple tasks in a single context w
 ## Note: This file is append-only
 
 `Decisions.md` is an append-only log. Entries are never edited or deleted after recording. Superseded decisions are noted inline with a reference to the superseding entry. Cross-cutting architectural decisions go here; task-scoped design decisions belong in the plan file (`.lattice/plans/<task_id>.md`).
+
+---
+
+## 2026-07-27: Optional task-local acceptance criteria and authoritative task mutation (LAT-264)
+
+- **Decision:** Tasks may carry zero or more optional, stable task-local
+  acceptance criteria. Criteria describe observable outcomes; they are added
+  and revised through immutable events and retired rather than deleted.
+  Automatic IDs use exact `AC-N` allocation, while valid explicit IDs remain
+  opaque and local to the task.
+- **Evidence boundary:** Comments and artifacts may carry ordered,
+  deduplicated criterion IDs. These links are traceability only. They do not
+  record pass/fail or satisfaction and do not affect completion policies,
+  validation roles, workflow transitions, or task creation.
+- **Materialization:** Task snapshots add `acceptance_criteria` and full
+  `evidence_refs`; compact views add active/retired counts. Missing criteria
+  mean an empty set. Schema version stays 1 because the change is additive,
+  existing fields retain their meanings, old event logs remain valid, and the
+  immutable criterion events preserve truth for new readers/rebuild.
+- **Authority and writes:** Every event-producing task surface uses the
+  storage-owned `mutate_task()` callback. Storage locks, resolves active/archive
+  candidates, strictly replays the complete per-task event log, then performs
+  state-dependent validation/allocation, appends events first, and atomically
+  materializes the snapshot. Zero-event retries reconcile stale caches; hooks
+  run only after durable writes and lock release.
+- **Recovery:** The latest valid archive/unarchive event determines placement.
+  Doctor distinguishes malformed/divergent authority from rebuildable cache
+  drift, and rebuild never guesses or overwrites invalid immutable history.
+- **Consequence:** Criteria add precise local contracts and evidence navigation
+  without creating a criterion database/index/entity, correction event,
+  inherited policy, mandatory planning ritual, or new dependency.

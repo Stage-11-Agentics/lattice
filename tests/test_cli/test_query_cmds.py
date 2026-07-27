@@ -6,8 +6,8 @@ import json
 from pathlib import Path
 from subprocess import CompletedProcess
 
-from lattice.core.ids import generate_event_id
-from lattice.core.tasks import serialize_snapshot
+from lattice.core.events import create_event, serialize_event
+from lattice.core.ids import generate_artifact_id, generate_event_id
 
 
 # ---------------------------------------------------------------------------
@@ -559,15 +559,14 @@ class TestShow:
         """Show renders auto-detected commits when git lookup returns matches."""
         from lattice.cli import query_cmds
 
+        root = Path(cli_env["LATTICE_ROOT"])
+        config_path = root / ".lattice" / "config.json"
+        config = json.loads(config_path.read_text())
+        config["project_code"] = "LAT"
+        config_path.write_text(json.dumps(config, sort_keys=True, indent=2) + "\n")
         task = create_task("Task with commits")
         task_id = task["id"]
-        short_id = "LAT-144"
-
-        root = Path(cli_env["LATTICE_ROOT"])
-        snap_path = root / ".lattice" / "tasks" / f"{task_id}.json"
-        snap = json.loads(snap_path.read_text())
-        snap["short_id"] = short_id
-        snap_path.write_text(serialize_snapshot(snap))
+        short_id = task["short_id"]
 
         def fake_auto_detect_commits(
             incoming_short_id: str | None, lattice_dir: Path
@@ -595,14 +594,13 @@ class TestShow:
         """JSON output includes auto_detected_commits when matches are found."""
         from lattice.cli import query_cmds
 
+        root = Path(cli_env["LATTICE_ROOT"])
+        config_path = root / ".lattice" / "config.json"
+        config = json.loads(config_path.read_text())
+        config["project_code"] = "LAT"
+        config_path.write_text(json.dumps(config, sort_keys=True, indent=2) + "\n")
         task = create_task("Task with commits json")
         task_id = task["id"]
-
-        root = Path(cli_env["LATTICE_ROOT"])
-        snap_path = root / ".lattice" / "tasks" / f"{task_id}.json"
-        snap = json.loads(snap_path.read_text())
-        snap["short_id"] = "LAT-145"
-        snap_path.write_text(serialize_snapshot(snap))
 
         monkeypatch.setattr(
             query_cmds,
@@ -704,22 +702,7 @@ class TestShow:
         """Archived tasks are found in archive/ directory."""
         task = create_task("Will be archived")
         task_id = task["id"]
-
-        # Manually move task to archive to simulate archival
-        root = Path(cli_env["LATTICE_ROOT"])
-        lattice_dir = root / ".lattice"
-
-        # Move snapshot
-        src_snap = lattice_dir / "tasks" / f"{task_id}.json"
-        dst_snap = lattice_dir / "archive" / "tasks" / f"{task_id}.json"
-        dst_snap.write_text(src_snap.read_text())
-        src_snap.unlink()
-
-        # Move event log
-        src_events = lattice_dir / "events" / f"{task_id}.jsonl"
-        dst_events = lattice_dir / "archive" / "events" / f"{task_id}.jsonl"
-        dst_events.write_text(src_events.read_text())
-        src_events.unlink()
+        assert invoke("archive", task_id, "--actor", "human:test").exit_code == 0
 
         result = invoke("show", task_id)
         assert result.exit_code == 0
@@ -730,13 +713,7 @@ class TestShow:
         task = create_task("Will be archived")
         task_id = task["id"]
 
-        root = Path(cli_env["LATTICE_ROOT"])
-        lattice_dir = root / ".lattice"
-
-        src_snap = lattice_dir / "tasks" / f"{task_id}.json"
-        dst_snap = lattice_dir / "archive" / "tasks" / f"{task_id}.json"
-        dst_snap.write_text(src_snap.read_text())
-        src_snap.unlink()
+        assert invoke("archive", task_id, "--actor", "human:test").exit_code == 0
 
         result = invoke("show", task_id, "--json")
         assert result.exit_code == 0
@@ -882,14 +859,17 @@ class TestShow:
         task = create_task("Task with artifact")
         task_id = task["id"]
 
-        # Manually add an artifact ref to the snapshot
-        root = Path(cli_env["LATTICE_ROOT"])
-        lattice_dir = root / ".lattice"
-        snap_path = lattice_dir / "tasks" / f"{task_id}.json"
-        snap = json.loads(snap_path.read_text())
-        art_id = "art_01J0000000000000000000000"
-        snap["evidence_refs"] = [{"id": art_id, "role": None, "source_type": "artifact"}]
-        snap_path.write_text(serialize_snapshot(snap))
+        art_id = generate_artifact_id()
+        result = invoke(
+            "attach",
+            task_id,
+            "https://example.test/evidence",
+            "--id",
+            art_id,
+            "--actor",
+            "human:test",
+        )
+        assert result.exit_code == 0
 
         result = invoke("show", task_id)
         assert result.exit_code == 0
@@ -1081,3 +1061,129 @@ class TestShow:
         assert result.exit_code == 0
         assert "Review evidence:" in result.output
         assert "review:" in result.output
+
+
+class TestShowAcceptanceCriteria:
+    def test_human_full_compact_and_list_outputs(self, invoke, create_task) -> None:
+        task_id = create_task("Visible criteria")["id"]
+        assert (
+            invoke(
+                "criterion",
+                "add",
+                task_id,
+                "Playback resumes.",
+                "--actor",
+                "human:test",
+            ).exit_code
+            == 0
+        )
+        invoke(
+            "criterion",
+            "edit",
+            task_id,
+            "AC-1",
+            "Playback resumes without restart.",
+            "--actor",
+            "human:test",
+        )
+        invoke(
+            "comment",
+            task_id,
+            "Observed.",
+            "--criterion",
+            "AC-1",
+            "--actor",
+            "human:test",
+        )
+
+        shown = invoke("show", task_id)
+        assert shown.exit_code == 0
+        assert "Acceptance criteria:" in shown.output
+        assert "AC-1 (rev 2, evidence: 1)" in shown.output
+        assert "Playback resumes without restart." in shown.output
+
+        full = invoke("show", task_id, "--full")
+        assert "rev 1" in full.output
+        assert "rev 2" in full.output
+        assert '"criterion_ids": ["AC-1"]' in full.output
+
+        compact = invoke("show", task_id, "--compact")
+        assert "Criteria: 1 active, 0 retired" in compact.output
+        listed = invoke("list")
+        assert "[criteria: 1 active, 0 retired]" in listed.output
+
+    def test_json_artifact_info_preserves_full_evidence_ref(self, invoke, create_task) -> None:
+        task_id = create_task("Artifact criteria output")["id"]
+        invoke(
+            "criterion",
+            "add",
+            task_id,
+            "Artifact exists.",
+            "--actor",
+            "human:test",
+        )
+        attached = invoke(
+            "attach",
+            task_id,
+            "https://example.com/evidence",
+            "--criterion",
+            "AC-1",
+            "--actor",
+            "human:test",
+            "--json",
+        )
+        assert attached.exit_code == 0
+        shown = invoke("show", task_id, "--json")
+        artifact = json.loads(shown.output)["data"]["artifact_info"][0]
+        assert artifact["role"] is None
+        assert artifact["criterion_ids"] == ["AC-1"]
+
+
+def test_wrong_only_unarchive_is_visible_to_list_next_stats_and_plan(
+    invoke, create_task, initialized_root
+) -> None:
+    task = create_task("Interrupted unarchive")
+    task_id = task["id"]
+    lattice_dir = initialized_root / ".lattice"
+    active_event = lattice_dir / "events" / f"{task_id}.jsonl"
+    archived_event = lattice_dir / "archive" / "events" / f"{task_id}.jsonl"
+    archived_event.parent.mkdir(parents=True, exist_ok=True)
+    archived_event.write_bytes(
+        active_event.read_bytes()
+        + serialize_event(create_event("task_archived", task_id, "human:test", {})).encode()
+        + serialize_event(create_event("task_unarchived", task_id, "human:test", {})).encode()
+    )
+    active_event.unlink()
+    active_plan = lattice_dir / "plans" / f"{task_id}.md"
+    archived_plan = lattice_dir / "archive" / "plans" / f"{task_id}.md"
+    archived_plan.parent.mkdir(parents=True, exist_ok=True)
+    archived_plan.write_text("# Durable plan\n\nImplement it.\n", encoding="utf-8")
+    active_plan.unlink()
+    archived_task = create_task("Interrupted archive")
+    archived_task_id = archived_task["id"]
+    archived_active_event = lattice_dir / "events" / f"{archived_task_id}.jsonl"
+    split_archived_event = lattice_dir / "archive" / "events" / f"{archived_task_id}.jsonl"
+    split_archived_event.write_bytes(
+        archived_active_event.read_bytes()
+        + serialize_event(
+            create_event("task_archived", archived_task_id, "human:test", {})
+        ).encode()
+    )
+
+    listed = invoke("list", "--json")
+    assert listed.exit_code == 0
+    assert [item["id"] for item in json.loads(listed.output)["data"]] == [task_id]
+    all_tasks = json.loads(invoke("list", "--include-archived", "--json").output)["data"]
+    assert {item["id"] for item in all_tasks} == {task_id, archived_task_id}
+    assert next(item for item in all_tasks if item["id"] == archived_task_id)["archived"] is True
+    next_result = invoke("next", "--json")
+    assert next_result.exit_code == 0
+    next_data = json.loads(next_result.output)["data"]
+    assert next_data["id"] == task_id
+    assert next_data["plan_content"] == "# Durable plan\n\nImplement it.\n"
+    stats = invoke("stats", "--json")
+    summary = json.loads(stats.output)["data"]["summary"]
+    assert summary["active_tasks"] == 1
+    assert summary["archived_tasks"] == 1
+    plan = invoke("plan", task_id, "--json")
+    assert json.loads(plan.output)["data"]["content"] == "# Durable plan\n\nImplement it.\n"

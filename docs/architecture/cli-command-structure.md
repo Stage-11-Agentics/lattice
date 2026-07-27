@@ -18,6 +18,7 @@ Registered modules include:
 - `query_cmds.py`
 - `link_cmds.py`
 - `artifact_cmds.py`
+- `criterion_cmds.py`
 - `archive_cmds.py`
 - `integrity_cmds.py`
 - `resource_cmds.py`
@@ -36,10 +37,9 @@ Write commands generally follow:
 
 1. Resolve root (`require_root`) and actor (`require_actor`)
 2. Resolve task identifier (`resolve_task_id`) if needed
-3. Validate status/type/transition/policy gates
-4. Build event(s) with `create_event()`
-5. Materialize next snapshot via `apply_event_to_snapshot()`
-6. Persist via `write_task_event()`
+3. Put state-dependent validation and event construction in a callback
+4. Persist through `mutate_task()`, which locks, strictly replays authority,
+   appends events, and materializes the snapshot
 7. Render output (`human`, `--json`, or `--quiet`)
 
 Read commands traverse snapshots/events with no mutation.
@@ -62,6 +62,16 @@ Most commands support:
 - terse `--quiet` mode for automation
 
 Preserve these contracts when adding commands to avoid breaking scripts.
+
+## Acceptance Criteria Commands
+
+`lattice criterion add`, `edit`, `retire`, and `list` manage optional
+task-local criteria. Add/edit accept either inline outcome prose or `--file`;
+automatic IDs are `AC-N`, while `--id` accepts a validated opaque local ID.
+Listing may include retired records and history and works for archived tasks;
+mutations are active-only. `comment` and `attach` accept repeatable
+`--criterion` links to existing active or retired criteria. These links are
+traceability only and do not affect workflow or completion policies.
 
 ## Extension Pattern (New Command)
 

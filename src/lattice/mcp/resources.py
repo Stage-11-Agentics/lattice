@@ -8,6 +8,11 @@ from pathlib import Path
 from lattice.core.ids import is_short_id, validate_id
 from lattice.mcp.server import mcp
 from lattice.storage.fs import find_root
+from lattice.storage.operations import (
+    discover_task_authorities,
+    read_task_authority,
+    resolve_task_prose_path,
+)
 from lattice.storage.short_ids import resolve_short_id
 
 
@@ -39,33 +44,10 @@ def _resolve_task_id(lattice_dir: Path, raw_id: str) -> str:
 
 def _load_all_snapshots(lattice_dir: Path) -> list[dict]:
     """Load all active task snapshots."""
-    tasks_dir = lattice_dir / "tasks"
-    snapshots: list[dict] = []
-    if tasks_dir.is_dir():
-        for task_file in sorted(tasks_dir.glob("*.json")):
-            try:
-                snapshots.append(json.loads(task_file.read_text()))
-            except (json.JSONDecodeError, OSError):
-                continue
-    return snapshots
-
-
-def _read_events(lattice_dir: Path, task_id: str, is_archived: bool = False) -> list[dict]:
-    """Read all events for a task."""
-    if is_archived:
-        event_path = lattice_dir / "archive" / "events" / f"{task_id}.jsonl"
-    else:
-        event_path = lattice_dir / "events" / f"{task_id}.jsonl"
-    events: list[dict] = []
-    if event_path.exists():
-        for line in event_path.read_text().splitlines():
-            line = line.strip()
-            if line:
-                try:
-                    events.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue
-    return events
+    return [
+        authority.snapshot
+        for authority in discover_task_authorities(lattice_dir, include_archived=False)
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -87,23 +69,16 @@ def resource_task_detail(task_id: str) -> str:
     lattice_dir = _find_root_dir()
     task_id = _resolve_task_id(lattice_dir, task_id)
 
-    # Try active first
-    snap_path = lattice_dir / "tasks" / f"{task_id}.json"
-    is_archived = False
-    if snap_path.exists():
-        snapshot = json.loads(snap_path.read_text())
-    else:
-        archive_path = lattice_dir / "archive" / "tasks" / f"{task_id}.json"
-        if archive_path.exists():
-            snapshot = json.loads(archive_path.read_text())
-            is_archived = True
-        else:
-            raise ValueError(f"Task {task_id} not found.")
+    authority = read_task_authority(lattice_dir, task_id, allow_missing=True)
+    if authority is None:
+        raise ValueError(f"Task {task_id} not found.")
+    snapshot = authority.snapshot
+    is_archived = authority.location == "archived"
 
     result = dict(snapshot)
     if is_archived:
         result["archived"] = True
-    result["events"] = _read_events(lattice_dir, task_id, is_archived)
+    result["events"] = list(authority.events)
     return json.dumps(result, sort_keys=True, indent=2)
 
 
@@ -138,14 +113,9 @@ def resource_notes(task_id: str) -> str:
     lattice_dir = _find_root_dir()
     task_id = _resolve_task_id(lattice_dir, task_id)
 
-    notes_path = lattice_dir / "notes" / f"{task_id}.md"
-    if notes_path.exists():
+    notes_path, _authority = resolve_task_prose_path(lattice_dir, task_id, "notes")
+    if notes_path is not None:
         return notes_path.read_text(encoding="utf-8")
-
-    # Check archive
-    archive_notes = lattice_dir / "archive" / "notes" / f"{task_id}.md"
-    if archive_notes.exists():
-        return archive_notes.read_text(encoding="utf-8")
 
     raise ValueError(f"No notes file found for task {task_id}.")
 
@@ -156,13 +126,8 @@ def resource_plans(task_id: str) -> str:
     lattice_dir = _find_root_dir()
     task_id = _resolve_task_id(lattice_dir, task_id)
 
-    plan_path = lattice_dir / "plans" / f"{task_id}.md"
-    if plan_path.exists():
+    plan_path, _authority = resolve_task_prose_path(lattice_dir, task_id, "plan")
+    if plan_path is not None:
         return plan_path.read_text(encoding="utf-8")
-
-    # Check archive
-    archive_plans = lattice_dir / "archive" / "plans" / f"{task_id}.md"
-    if archive_plans.exists():
-        return archive_plans.read_text(encoding="utf-8")
 
     raise ValueError(f"No plan file found for task {task_id}.")

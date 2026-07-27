@@ -54,6 +54,7 @@ def _build_comments_map(events: list[dict]) -> dict[str, dict]:
                 "id": comment_id,
                 "body": data.get("body", ""),
                 "role": data.get("role"),
+                "criterion_ids": list(data.get("criterion_ids", [])),
                 "author": ev.get("actor", ""),
                 "created_at": ev.get("ts", ""),
                 "edited": False,

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -14,18 +13,14 @@ from lattice.cli.helpers import (
     load_project_config,
     output_error,
     output_result,
-    read_snapshot,
     require_actor,
     require_root,
     resolve_task_id,
     validate_actor_format_or_exit,
 )
 from lattice.cli.main import cli
-from lattice.core.events import create_event, serialize_event
-from lattice.core.tasks import apply_event_to_snapshot, serialize_snapshot
-from lattice.storage.fs import atomic_write, jsonl_append
-from lattice.storage.hooks import execute_hooks
-from lattice.storage.locks import multi_lock
+from lattice.core.events import create_event
+from lattice.storage.operations import TaskMutationDecision, mutate_task
 
 
 def _parse_task_ids(raw_ids: tuple[str, ...]) -> list[str]:
@@ -53,76 +48,38 @@ def _archive_one(
     is_json: bool,
 ) -> dict | str:
     """Archive a single task. Returns the event dict on success or an error string on failure."""
-    snapshot = read_snapshot(lattice_dir, task_id)
 
-    if snapshot is None:
-        archive_path = lattice_dir / "archive" / "tasks" / f"{task_id}.json"
-        if archive_path.exists():
-            return f"Task {task_id} is already archived."
-        return f"Task {task_id} not found."
-
-    event = create_event(
-        type="task_archived",
-        task_id=task_id,
-        actor=actor,
-        data={},
-        model=model,
-        session=session,
-        triggered_by=triggered_by,
-        on_behalf_of=on_behalf_of,
-        reason=provenance_reason,
-    )
-
-    updated_snapshot = apply_event_to_snapshot(snapshot, event)
-
-    locks_dir = lattice_dir / "locks"
-    lock_keys = sorted([f"events_{task_id}", f"tasks_{task_id}", "events__lifecycle"])
-
-    with multi_lock(locks_dir, lock_keys):
-        event_path = lattice_dir / "events" / f"{task_id}.jsonl"
-        jsonl_append(event_path, serialize_event(event))
-
-        lifecycle_path = lattice_dir / "events" / "_lifecycle.jsonl"
-        jsonl_append(lifecycle_path, serialize_event(event))
-
-        archive_tasks_dir = lattice_dir / "archive" / "tasks"
-        archive_tasks_dir.mkdir(parents=True, exist_ok=True)
-        atomic_write(
-            archive_tasks_dir / f"{task_id}.json",
-            serialize_snapshot(updated_snapshot),
-        )
-
-        snapshot_path = lattice_dir / "tasks" / f"{task_id}.json"
-        if snapshot_path.exists():
-            snapshot_path.unlink()
-
-        archive_events_dir = lattice_dir / "archive" / "events"
-        archive_events_dir.mkdir(parents=True, exist_ok=True)
-        shutil.move(
-            str(event_path),
-            str(archive_events_dir / f"{task_id}.jsonl"),
-        )
-
-        notes_path = lattice_dir / "notes" / f"{task_id}.md"
-        if notes_path.exists():
-            archive_notes_dir = lattice_dir / "archive" / "notes"
-            archive_notes_dir.mkdir(parents=True, exist_ok=True)
-            shutil.move(
-                str(notes_path),
-                str(archive_notes_dir / f"{task_id}.md"),
+    def decide(context):  # noqa: ANN001, ANN202
+        if context.location == "archived":
+            event = next(
+                event for event in reversed(context.events) if event["type"] == "task_archived"
             )
+            return TaskMutationDecision(value=event, idempotent=True)
+        event = create_event(
+            type="task_archived",
+            task_id=task_id,
+            actor=actor,
+            data={},
+            model=model,
+            session=session,
+            triggered_by=triggered_by,
+            on_behalf_of=on_behalf_of,
+            reason=provenance_reason,
+        )
+        return TaskMutationDecision(events=[event], value=event)
 
-        plans_path = lattice_dir / "plans" / f"{task_id}.md"
-        if plans_path.exists():
-            archive_plans_dir = lattice_dir / "archive" / "plans"
-            archive_plans_dir.mkdir(parents=True, exist_ok=True)
-            shutil.move(
-                str(plans_path),
-                str(archive_plans_dir / f"{task_id}.md"),
-            )
-
-    execute_hooks(config, lattice_dir, task_id, event)
-    return event
+    try:
+        return mutate_task(
+            lattice_dir,
+            task_id,
+            decide,
+            config,
+            source="either",
+            destination="archived",
+            may_emit_lifecycle=True,
+        ).callback_value
+    except ValueError as exc:
+        return str(exc)
 
 
 @cli.command()
@@ -398,72 +355,43 @@ def _unarchive_one(
     provenance_reason: str | None,
 ) -> dict | str:
     """Unarchive a single task. Returns the event dict on success or an error string on failure."""
-    import json
 
-    active_path = lattice_dir / "tasks" / f"{task_id}.json"
-    if active_path.exists():
-        return f"Task {task_id} is already active."
-
-    archive_snapshot_path = lattice_dir / "archive" / "tasks" / f"{task_id}.json"
-    if not archive_snapshot_path.exists():
-        return f"Task {task_id} not found in archive."
-
-    snapshot = json.loads(archive_snapshot_path.read_text())
-
-    event = create_event(
-        type="task_unarchived",
-        task_id=task_id,
-        actor=actor,
-        data={},
-        model=model,
-        session=session,
-        triggered_by=triggered_by,
-        on_behalf_of=on_behalf_of,
-        reason=provenance_reason,
-    )
-
-    updated_snapshot = apply_event_to_snapshot(snapshot, event)
-
-    locks_dir = lattice_dir / "locks"
-    lock_keys = sorted([f"events_{task_id}", f"tasks_{task_id}", "events__lifecycle"])
-
-    with multi_lock(locks_dir, lock_keys):
-        archive_event_path = lattice_dir / "archive" / "events" / f"{task_id}.jsonl"
-        jsonl_append(archive_event_path, serialize_event(event))
-
-        lifecycle_path = lattice_dir / "events" / "_lifecycle.jsonl"
-        jsonl_append(lifecycle_path, serialize_event(event))
-
-        shutil.move(
-            str(archive_event_path),
-            str(lattice_dir / "events" / f"{task_id}.jsonl"),
-        )
-
-        atomic_write(
-            lattice_dir / "tasks" / f"{task_id}.json",
-            serialize_snapshot(updated_snapshot),
-        )
-
-        archive_snapshot_path.unlink()
-
-        archive_notes_path = lattice_dir / "archive" / "notes" / f"{task_id}.md"
-        if archive_notes_path.exists():
-            shutil.move(
-                str(archive_notes_path),
-                str(lattice_dir / "notes" / f"{task_id}.md"),
+    def decide(context):  # noqa: ANN001, ANN202
+        if context.location == "active":
+            event = next(
+                (
+                    event
+                    for event in reversed(context.events)
+                    if event["type"] == "task_unarchived"
+                ),
+                context.events[0],
             )
+            return TaskMutationDecision(value=event, idempotent=True)
+        event = create_event(
+            type="task_unarchived",
+            task_id=task_id,
+            actor=actor,
+            data={},
+            model=model,
+            session=session,
+            triggered_by=triggered_by,
+            on_behalf_of=on_behalf_of,
+            reason=provenance_reason,
+        )
+        return TaskMutationDecision(events=[event], value=event)
 
-        archive_plans_path = lattice_dir / "archive" / "plans" / f"{task_id}.md"
-        if archive_plans_path.exists():
-            plans_dir = lattice_dir / "plans"
-            plans_dir.mkdir(parents=True, exist_ok=True)
-            shutil.move(
-                str(archive_plans_path),
-                str(plans_dir / f"{task_id}.md"),
-            )
-
-    execute_hooks(config, lattice_dir, task_id, event)
-    return event
+    try:
+        return mutate_task(
+            lattice_dir,
+            task_id,
+            decide,
+            config,
+            source="either",
+            destination="active",
+            may_emit_lifecycle=True,
+        ).callback_value
+    except ValueError as exc:
+        return str(exc)
 
 
 @cli.command()

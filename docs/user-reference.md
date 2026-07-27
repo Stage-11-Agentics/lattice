@@ -328,13 +328,17 @@ The CLI is Lattice's write interface — the primary way agents interact with th
 | `lattice migrate needs-human` | Convert tasks in the legacy `needs_human` status to the flag (`--dry-run` to preview) |
 | `lattice assign <id> <actor>` | Assign a task |
 | `lattice comment <id> "<text>"` | Add a comment (`--role` optionally tags it for completion policies) |
+| `lattice criterion add <id> "<outcome>"` | Add an optional task-local acceptance criterion |
+| `lattice criterion edit <id> <criterion> "<outcome>"` | Revise a criterion while preserving history |
+| `lattice criterion retire <id> <criterion>` | Retire a criterion without deleting it |
+| `lattice criterion list <id>` | List criteria (`--include-retired`, `--history`) |
 | `lattice update <id> field=value` | Update task fields |
 | `lattice list` | List tasks (filterable by status, type, tag, assignee) |
 | `lattice show <id>` | Full task details with history |
 | `lattice next` | Get the highest-priority available task |
 | `lattice link <src> <type> <tgt>` | Create a relationship |
 | `lattice unlink <src> <type> <tgt>` | Remove a relationship |
-| `lattice attach <id> <file-or-url>` | Attach an artifact (`--role` optionally tags it for completion policies) |
+| `lattice attach <id> <file-or-url>` | Attach an artifact (`--role` and repeatable `--criterion` add evidence metadata) |
 | `lattice event <id> <x_type>` | Record a custom event |
 | `lattice file-link <id> <path>...` | Link file(s) to a task (`--reason` for annotation) |
 | `lattice file-unlink <id> <path>...` | Unlink file(s) from a task |
@@ -364,6 +368,8 @@ The CLI is Lattice's write interface — the primary way agents interact with th
 - `--claim` — atomically assign and start a task (next)
 - `--id` — supply your own ID for idempotent retries (create/event)
 - `--role` — assign a semantic role to comments/artifacts (comment/attach)
+- `--criterion` — link a comment/artifact to an existing task-local criterion
+  (repeatable; active or retired criteria are valid historical targets)
 - `--reason` — annotate why a file is linked to a task (file-link)
 
 Validation errors always list valid options. The CLI teaches its own vocabulary.
@@ -381,6 +387,32 @@ lattice attach TASK review-notes.md --role review --actor agent:claude
 ```
 
 Both examples add `review` role evidence that completion policies can validate.
+
+### Optional task-local acceptance criteria
+
+Criteria are optional observable-outcome records with stable IDs, immutable
+outcome revisions, and retirement rather than deletion. Existing tasks need no
+migration and read as having zero criteria.
+
+```bash
+lattice criterion add LAT-42 "Playback resumes after a wedged sidecar is replaced." \
+  --actor agent:worker
+lattice criterion edit LAT-42 AC-1 "Playback resumes without restarting the app." \
+  --actor agent:worker
+lattice comment LAT-42 "Observed recovery in the running app." \
+  --role validation --criterion AC-1 --actor agent:validator
+lattice criterion retire LAT-42 AC-1 --actor human:operator
+```
+
+Automatic IDs are `AC-1`, `AC-2`, and so on; `--id` supplies a validated custom
+task-local ID. Add/edit can read multiline prose from `--file`. Criteria can be
+listed on active or archived tasks, but archived criteria cannot be mutated.
+`show --full` includes revision history; compact views contain only active and
+retired counts.
+
+A criterion link is traceability, not a verdict. It does not mark the criterion
+passed/satisfied and does not change workflow or completion policy. Use
+evidence roles and explicit prose for the result that was actually observed.
 
 ### Actor resolution
 

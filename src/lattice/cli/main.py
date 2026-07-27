@@ -17,7 +17,7 @@ from lattice.core.config import (
 )
 from lattice.core.ids import generate_instance_id, generate_task_id, validate_actor
 from lattice.storage.fs import LATTICE_DIR, atomic_write, ensure_lattice_dirs
-from lattice.storage.short_ids import _default_index, allocate_short_id, save_id_index
+from lattice.storage.short_ids import _default_index, save_id_index
 
 
 # ---------------------------------------------------------------------------
@@ -117,19 +117,21 @@ def _seed_example_tasks(lattice_dir: Path, config: dict) -> None:
     to demonstrate the workflow. Only called when project_code is set
     so short IDs are available.
     """
-    import json as json_mod
-
     from lattice.core.events import create_event
     from lattice.core.tasks import apply_event_to_snapshot
-    from lattice.storage.operations import scaffold_plan, write_task_event
+    from lattice.storage.operations import (
+        TaskMutationDecision,
+        mutate_task,
+        scaffold_plan,
+    )
 
-    project_code = config.get("project_code", "")
+    from lattice.core.config import configured_event_prefix
+
+    project_code = configured_event_prefix(config)
     actor = "system:init"
 
     # --- Create the parent task first ---
     parent_id = generate_task_id()
-    parent_sid, _ = allocate_short_id(lattice_dir, project_code, task_ulid=parent_id)
-
     parent_ev = create_event(
         type="task_created",
         task_id=parent_id,
@@ -139,13 +141,28 @@ def _seed_example_tasks(lattice_dir: Path, config: dict) -> None:
             "status": "backlog",
             "type": "task",
             "priority": "medium",
-            "short_id": parent_sid,
             "description": _GREGOROVICH_PARENT["description"],
             "tags": ["example"],
         },
     )
     parent_snapshot = apply_event_to_snapshot(None, parent_ev)
-    write_task_event(lattice_dir, parent_id, [parent_ev], parent_snapshot, config)
+
+    def parent_decision(context):  # noqa: ANN001, ANN202
+        event = dict(parent_ev)
+        event["data"] = dict(parent_ev["data"])
+        event["data"]["short_id"] = context.reserved_short_id
+        return TaskMutationDecision(events=[event])
+
+    parent_snapshot = mutate_task(
+        lattice_dir,
+        parent_id,
+        parent_decision,
+        config,
+        source="absent",
+        may_emit_lifecycle=True,
+        project_prefix=project_code,
+    ).snapshot
+    parent_sid = parent_snapshot["short_id"]
     scaffold_plan(
         lattice_dir,
         parent_id,
@@ -161,8 +178,6 @@ def _seed_example_tasks(lattice_dir: Path, config: dict) -> None:
     for ex in _GREGOROVICH_TASKS:
         task_id = generate_task_id()
         task_ids.append(task_id)
-        sid, _ = allocate_short_id(lattice_dir, project_code, task_ulid=task_id)
-
         create_ev = create_event(
             type="task_created",
             task_id=task_id,
@@ -172,7 +187,6 @@ def _seed_example_tasks(lattice_dir: Path, config: dict) -> None:
                 "status": "backlog",
                 "type": "task",
                 "priority": "medium",
-                "short_id": sid,
                 "description": ex["description"],
                 "tags": ["example"],
             },
@@ -223,7 +237,22 @@ def _seed_example_tasks(lattice_dir: Path, config: dict) -> None:
         snapshot = apply_event_to_snapshot(snapshot, rel_ev)
         events.append(rel_ev)
 
-        write_task_event(lattice_dir, task_id, events, snapshot, config)
+        def task_decision(context):  # noqa: ANN001, ANN202
+            committed_events = [dict(event) for event in events]
+            committed_events[0]["data"] = dict(events[0]["data"])
+            committed_events[0]["data"]["short_id"] = context.reserved_short_id
+            return TaskMutationDecision(events=committed_events)
+
+        snapshot = mutate_task(
+            lattice_dir,
+            task_id,
+            task_decision,
+            config,
+            source="absent",
+            may_emit_lifecycle=True,
+            project_prefix=project_code,
+        ).snapshot
+        sid = snapshot["short_id"]
         scaffold_plan(lattice_dir, task_id, ex["title"], sid, ex["description"])
         click.echo(f"    {sid}: {ex['title']} [{ex['status']}]")
 
@@ -232,17 +261,16 @@ def _seed_example_tasks(lattice_dir: Path, config: dict) -> None:
         source_id = task_ids[i]
         target_id = task_ids[i + 1]
 
-        snap_path = lattice_dir / "tasks" / f"{source_id}.json"
-        snapshot = json_mod.loads(snap_path.read_text())
+        def relationship_decision(context):  # noqa: ANN001, ANN202
+            rel_ev = create_event(
+                type="relationship_added",
+                task_id=source_id,
+                actor=actor,
+                data={"type": "blocks", "target_task_id": target_id},
+            )
+            return TaskMutationDecision(events=[rel_ev])
 
-        rel_ev = create_event(
-            type="relationship_added",
-            task_id=source_id,
-            actor=actor,
-            data={"type": "blocks", "target_task_id": target_id},
-        )
-        snapshot = apply_event_to_snapshot(snapshot, rel_ev)
-        write_task_event(lattice_dir, source_id, [rel_ev], snapshot, config)
+        mutate_task(lattice_dir, source_id, relationship_decision, config)
 
 
 @click.group(invoke_without_command=True)
@@ -1613,6 +1641,7 @@ from lattice.cli import file_cmds as _file_cmds  # noqa: E402, F401
 from lattice.cli import wait_cmd as _wait_cmd  # noqa: E402, F401
 from lattice.cli import watch_cmd as _watch_cmd  # noqa: E402, F401
 from lattice.cli import claim_cmd as _claim_cmd  # noqa: E402, F401
+from lattice.cli import criterion_cmds as _criterion_cmds  # noqa: E402, F401
 
 # ---------------------------------------------------------------------------
 # Load CLI plugins (must be after all built-in commands are registered)

@@ -415,16 +415,10 @@ class TestNextClaimConcurrency:
        REAL snapshot (assigned to alpha, in_progress) and rejects.
     """
 
-    def test_guard_rejects_when_snapshot_shows_other_owner(
+    def test_guard_ignores_non_authoritative_snapshot_patch(
         self, create_task, invoke, fill_plan, cli_env, monkeypatch
     ) -> None:
-        """Patch read_snapshot to return a claimed snapshot inside the lock.
-
-        select_next uses load_all_snapshots (not read_snapshot), so the only
-        read_snapshot call for our task_id is the re-read inside the lock.
-        We patch that single call to simulate another agent having claimed
-        the task between selection and lock acquisition.
-        """
+        """A forged snapshot read cannot override the locked event replay."""
         task = create_task("Race task")
         task_id = task["id"]
         fill_plan(task_id, "Race task")
@@ -445,11 +439,11 @@ class TestNextClaimConcurrency:
         monkeypatch.setattr(qmod, "read_snapshot", patched_read)
 
         result = invoke("next", "--actor", "agent:bravo", "--claim", "--json")
-        assert result.exit_code != 0
+        assert result.exit_code == 0
         parsed = json.loads(result.output)
-        assert parsed["ok"] is False
-        assert parsed["error"]["code"] == "ALREADY_CLAIMED"
-        assert "alpha" in parsed["error"]["message"]
+        assert parsed["ok"] is True
+        assert parsed["data"]["assigned_to"] == "agent:bravo"
+        assert parsed["data"]["status"] == "in_progress"
 
     def test_guard_allows_reclaim_by_same_actor(
         self, create_task, invoke, fill_plan, cli_env, monkeypatch
@@ -519,8 +513,10 @@ class TestNextClaimConcurrency:
         assert parsed["data"]["id"] == task_id
         assert parsed["data"]["status"] == "in_progress"
 
-    def test_guard_human_readable_error(self, create_task, invoke, fill_plan, monkeypatch) -> None:
-        """Non-JSON mode should also show the ALREADY_CLAIMED error."""
+    def test_guard_human_readable_uses_authoritative_replay(
+        self, create_task, invoke, fill_plan, monkeypatch
+    ) -> None:
+        """Human output likewise ignores a forged snapshot-only owner."""
         task = create_task("Contested HR task")
         task_id = task["id"]
         fill_plan(task_id, "Contested HR task")
@@ -540,5 +536,5 @@ class TestNextClaimConcurrency:
         monkeypatch.setattr(qmod, "read_snapshot", patched_read)
 
         result = invoke("next", "--actor", "agent:bravo", "--claim")
-        assert result.exit_code != 0
-        assert "already claimed" in result.output.lower()
+        assert result.exit_code == 0
+        assert "in_progress" in result.output

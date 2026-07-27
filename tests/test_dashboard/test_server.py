@@ -7,7 +7,9 @@ from urllib.request import Request, urlopen
 
 import pytest
 
-from lattice.core.ids import generate_task_id
+from lattice.core.events import create_event, serialize_event
+from lattice.core.ids import generate_artifact_id, generate_task_id
+from lattice.core.tasks import apply_event_to_snapshot, serialize_snapshot
 
 
 def _get(base_url: str, path: str) -> tuple[int, dict | str]:
@@ -95,6 +97,9 @@ class TestRootEndpoint:
         status, body = _get(base_url, "/")
         assert status == 200
         assert "<html" in body
+        assert "renderAcceptanceCriteria" in body
+        assert "linked evidence" in body
+        assert "acceptance_criterion_retired" in body
 
 
 class TestConfigEndpoint:
@@ -169,6 +174,222 @@ class TestTaskDetailEndpoint:
         assert len(arts) == 1
         assert arts[0]["title"] == "dep-report.txt"
         assert arts[0]["type"] == "text/plain"
+
+    def test_wrong_only_unarchive_is_visible_in_list_detail_events_and_activity(
+        self, dashboard_server
+    ):
+        base_url, lattice_dir, ids = dashboard_server
+        task_id = ids["backlog"]
+        active_event = lattice_dir / "events" / f"{task_id}.jsonl"
+        archived_event = lattice_dir / "archive" / "events" / f"{task_id}.jsonl"
+        archived_event.parent.mkdir(parents=True, exist_ok=True)
+        archived_event.write_bytes(
+            active_event.read_bytes()
+            + serialize_event(create_event("task_archived", task_id, "human:test", {})).encode()
+            + serialize_event(create_event("task_unarchived", task_id, "human:test", {})).encode()
+        )
+        active_event.unlink()
+        active_notes = lattice_dir / "notes" / f"{task_id}.md"
+        archived_notes = lattice_dir / "archive" / "notes" / f"{task_id}.md"
+        archived_notes.parent.mkdir(parents=True, exist_ok=True)
+        archived_notes.write_bytes(active_notes.read_bytes())
+        active_notes.unlink()
+        archived_task_id = ids["done"]
+        archived_active_event = lattice_dir / "events" / f"{archived_task_id}.jsonl"
+        split_archived_event = lattice_dir / "archive" / "events" / f"{archived_task_id}.jsonl"
+        split_archived_event.write_bytes(
+            archived_active_event.read_bytes()
+            + serialize_event(
+                create_event("task_archived", archived_task_id, "human:test", {})
+            ).encode()
+        )
+
+        status, tasks = _get(base_url, "/api/tasks")
+        assert status == 200
+        assert task_id in {task["id"] for task in tasks["data"]}
+        assert archived_task_id not in {task["id"] for task in tasks["data"]}
+        status, archived_tasks = _get(base_url, "/api/archived")
+        assert status == 200
+        assert archived_task_id in {task["id"] for task in archived_tasks["data"]}
+        status, detail = _get(base_url, f"/api/tasks/{task_id}")
+        assert status == 200
+        assert detail["data"]["notes_exists"] is True
+        status, events = _get(base_url, f"/api/tasks/{task_id}/events")
+        assert status == 200
+        assert events["data"][0]["type"] == "task_unarchived"
+        status, activity = _get(base_url, f"/api/activity?task={task_id}")
+        assert status == 200
+        assert activity["data"]["events"][0]["type"] == "task_unarchived"
+        assert task_id in {task["id"] for task in activity["data"]["facets"]["tasks"]}
+
+    def test_task_detail_preserves_criteria_history_and_full_evidence_refs(self, dashboard_server):
+        base_url, lattice_dir, ids = dashboard_server
+        task_id = ids["in_progress"]
+        snapshot_path = lattice_dir / "tasks" / f"{task_id}.json"
+        event_path = lattice_dir / "events" / f"{task_id}.jsonl"
+        snapshot = json.loads(snapshot_path.read_text())
+        artifact_id = generate_artifact_id()
+        events = [
+            create_event(
+                "acceptance_criterion_added",
+                task_id,
+                "human:test",
+                {
+                    "criterion_id": "AC-1",
+                    "outcome": "Dependencies update.",
+                    "revision": 1,
+                },
+                ts="2025-01-10T12:20:00Z",
+            ),
+            create_event(
+                "acceptance_criterion_edited",
+                task_id,
+                "human:test",
+                {
+                    "criterion_id": "AC-1",
+                    "from_outcome": "Dependencies update.",
+                    "outcome": "Dependencies update without regressions.",
+                    "revision": 2,
+                },
+                ts="2025-01-10T12:21:00Z",
+            ),
+            create_event(
+                "comment_added",
+                task_id,
+                "human:test",
+                {"body": "Observed.", "criterion_ids": ["AC-1"]},
+                ts="2025-01-10T12:22:00Z",
+            ),
+            create_event(
+                "artifact_attached",
+                task_id,
+                "human:test",
+                {"artifact_id": artifact_id, "criterion_ids": ["AC-1"]},
+                ts="2025-01-10T12:23:00Z",
+            ),
+        ]
+        with event_path.open("a", encoding="utf-8") as handle:
+            for event in events:
+                snapshot = apply_event_to_snapshot(snapshot, event)
+                handle.write(serialize_event(event))
+        snapshot_path.write_text(serialize_snapshot(snapshot))
+        (lattice_dir / "artifacts" / "meta" / f"{artifact_id}.json").write_text(
+            json.dumps(
+                {"id": artifact_id, "title": "criteria.txt", "type": "file"},
+                sort_keys=True,
+                indent=2,
+            )
+            + "\n"
+        )
+
+        status, body = _get(base_url, f"/api/tasks/{task_id}")
+        assert status == 200
+        criterion = body["data"]["acceptance_criteria"][0]
+        assert criterion["revision"] == 2
+        assert len(criterion["revisions"]) == 2
+        artifact = next(item for item in body["data"]["artifacts"] if item["id"] == artifact_id)
+        assert artifact["role"] is None
+        assert artifact["criterion_ids"] == ["AC-1"]
+
+        status, comments = _get(base_url, f"/api/tasks/{task_id}/comments")
+        linked_comment = next(item for item in comments["data"] if item["body"] == "Observed.")
+        assert linked_comment["criterion_ids"] == ["AC-1"]
+
+    def test_comment_edit_api_clears_role_without_losing_criterion_link(self, dashboard_server):
+        base_url, lattice_dir, ids = dashboard_server
+        task_id = ids["in_progress"]
+        snapshot_path = lattice_dir / "tasks" / f"{task_id}.json"
+        event_path = lattice_dir / "events" / f"{task_id}.jsonl"
+        snapshot = json.loads(snapshot_path.read_text())
+        criterion = create_event(
+            "acceptance_criterion_added",
+            task_id,
+            "human:test",
+            {"criterion_id": "AC-1", "outcome": "Observable.", "revision": 1},
+        )
+        comment = create_event(
+            "comment_added",
+            task_id,
+            "human:test",
+            {"body": "Observed.", "role": "review", "criterion_ids": ["AC-1"]},
+        )
+        with event_path.open("a", encoding="utf-8") as handle:
+            for event in (criterion, comment):
+                snapshot = apply_event_to_snapshot(snapshot, event)
+                handle.write(serialize_event(event))
+        snapshot_path.write_text(serialize_snapshot(snapshot))
+
+        status, omitted = _post(
+            base_url,
+            f"/api/tasks/{task_id}/comment-edit",
+            {
+                "comment_id": comment["id"],
+                "body": "Observed again.",
+                "actor": "human:test",
+            },
+        )
+        assert status == 200
+        omitted_ref = next(
+            ref for ref in omitted["data"]["evidence_refs"] if ref["source_type"] == "comment"
+        )
+        assert omitted_ref["role"] == "review"
+        assert omitted_ref["criterion_ids"] == ["AC-1"]
+
+        before_conflict = event_path.read_bytes()
+        status, conflict = _post(
+            base_url,
+            f"/api/tasks/{task_id}/comment-edit",
+            {
+                "comment_id": comment["id"],
+                "body": "Observed again.",
+                "role": "review",
+                "clear_role": True,
+                "actor": "human:test",
+            },
+        )
+        assert status == 400
+        assert conflict["error"]["code"] == "VALIDATION_ERROR"
+        assert event_path.read_bytes() == before_conflict
+
+        status, cleared = _post(
+            base_url,
+            f"/api/tasks/{task_id}/comment-edit",
+            {
+                "comment_id": comment["id"],
+                "body": "Observed again.",
+                "clear_role": True,
+                "actor": "human:test",
+            },
+        )
+        assert status == 200
+        cleared_ref = next(
+            ref for ref in cleared["data"]["evidence_refs"] if ref["source_type"] == "comment"
+        )
+        assert cleared_ref == {
+            "id": comment["id"],
+            "role": None,
+            "source_type": "comment",
+            "criterion_ids": ["AC-1"],
+        }
+        clear_event = json.loads(event_path.read_text().splitlines()[-1])
+        assert clear_event["type"] == "comment_edited"
+        assert clear_event["data"]["role"] is None
+        assert clear_event["data"]["previous_role"] == "review"
+
+        after_clear = event_path.read_bytes()
+        status, repeated = _post(
+            base_url,
+            f"/api/tasks/{task_id}/comment-edit",
+            {
+                "comment_id": comment["id"],
+                "body": "Observed again.",
+                "clear_role": True,
+                "actor": "human:test",
+            },
+        )
+        assert status == 200
+        assert repeated["data"]["evidence_refs"] == cleared["data"]["evidence_refs"]
+        assert event_path.read_bytes() == after_clear
 
     def test_archived_task_fallthrough(self, dashboard_server):
         base_url, _ld, ids = dashboard_server
@@ -451,7 +672,7 @@ class TestCorruptedFiles:
         assert len(body["data"]) == 3
 
     def test_corrupted_event_line_skipped(self, dashboard_server):
-        """A corrupted event line should be skipped in event list."""
+        """A corrupted authoritative event log is reported, never partially read."""
         base_url, ld, ids = dashboard_server
         task_id = ids["backlog"]
         event_path = ld / "events" / f"{task_id}.jsonl"
@@ -461,9 +682,9 @@ class TestCorruptedFiles:
             fh.write("{truncated json\n")
 
         status, body = _get(base_url, f"/api/tasks/{task_id}/events")
-        assert status == 200
-        # Should still have the 1 valid event
-        assert len(body["data"]) == 1
+        assert status == 409
+        assert body["error"]["code"] == "INTEGRITY_ERROR"
+        assert str(event_path) in body["error"]["message"]
 
 
 class TestNonLoopbackWarning:

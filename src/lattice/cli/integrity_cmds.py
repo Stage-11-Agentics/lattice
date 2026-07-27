@@ -14,12 +14,23 @@ from lattice.cli.helpers import (
     require_root,
 )
 from lattice.cli.main import cli
+from lattice.core.config import configured_event_prefix
 from lattice.core.events import LIFECYCLE_EVENT_TYPES, serialize_event
 from lattice.core.ids import validate_id, validate_short_id, parse_short_id
-from lattice.core.tasks import apply_event_to_snapshot, serialize_snapshot
+from lattice.core.tasks import serialize_snapshot
 from lattice.storage.fs import atomic_write
 from lattice.storage.locks import multi_lock
-from lattice.storage.short_ids import load_id_index, save_id_index
+from lattice.storage.operations import (
+    AuthoritativeLogError,
+    ResolvedTaskAuthority,
+    TaskMutationDecision,
+    _load_strict_id_index,
+    _reconcile_placement,
+    mutate_task,
+    parse_project_short_id,
+    resolve_task_authority,
+)
+from lattice.storage.short_ids import save_id_index
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +160,294 @@ def _collect_artifact_meta_files(lattice_dir: Path) -> list[Path]:
     return []
 
 
+def _collect_task_ids(lattice_dir: Path) -> set[str]:
+    """Return task IDs named by any active/archive event or snapshot candidate."""
+    return {
+        path.stem
+        for path in [*_collect_task_files(lattice_dir), *_collect_event_files(lattice_dir)]
+    }
+
+
+def _task_paths(lattice_dir: Path, task_id: str, archived: bool) -> dict[str, Path]:
+    base = lattice_dir / "archive" if archived else lattice_dir
+    return {
+        "event": base / "events" / f"{task_id}.jsonl",
+        "snapshot": base / "tasks" / f"{task_id}.json",
+        "plan": base / "plans" / f"{task_id}.md",
+        "notes": base / "notes" / f"{task_id}.md",
+    }
+
+
+def _authority_log_context(authority: ResolvedTaskAuthority, short_id: object) -> tuple[Path, int]:
+    """Return the path/line carrying an effective authoritative short ID."""
+    line_number = next(
+        (
+            line
+            for line, event in reversed(list(enumerate(authority.events, 1)))
+            if event.get("data", {}).get("short_id") == short_id
+        ),
+        1,
+    )
+    path = (
+        authority.active_event_path
+        if authority.active_event_path.exists()
+        else authority.archived_event_path
+    )
+    return path, line_number
+
+
+def _validate_authoritative_short_ids(
+    authorities: dict[str, ResolvedTaskAuthority],
+    prefix: str | None,
+) -> list[tuple[str, str, int, Path, int]]:
+    """Validate unique event-authoritative aliases with contextual failures."""
+    validated: list[tuple[str, str, int, Path, int]] = []
+    seen: dict[str, tuple[str, Path, int]] = {}
+    for task_id, authority in authorities.items():
+        short_id = authority.snapshot.get("short_id")
+        path, line = _authority_log_context(authority, short_id)
+        if short_id is None and prefix is None:
+            continue
+        if not isinstance(short_id, str):
+            raise AuthoritativeLogError(
+                f"task {task_id} has malformed authoritative short ID {short_id!r}; "
+                "manual immutable-log recovery required",
+                path=path,
+                line=line,
+            )
+        try:
+            if prefix is not None:
+                suffix = parse_project_short_id(short_id, prefix)
+            else:
+                parsed_prefix, suffix = parse_short_id(short_id)
+                if not parsed_prefix or suffix < 1:
+                    raise ValueError(short_id)
+        except (AuthoritativeLogError, ValueError) as exc:
+            detail = (
+                f"task {task_id} has authoritative short ID {short_id!r} outside "
+                f"configured prefix {prefix!r}"
+                if prefix is not None
+                else f"task {task_id} has malformed authoritative short ID {short_id!r}"
+            )
+            raise AuthoritativeLogError(
+                f"{detail}; manual immutable-log recovery required",
+                path=path,
+                line=line,
+            ) from exc
+        previous = seen.get(short_id)
+        if previous is not None and previous[0] != task_id:
+            raise AuthoritativeLogError(
+                f"duplicate authoritative short ID {short_id}: "
+                f"{previous[0]} at {previous[1]}:{previous[2]} and {task_id}; "
+                "manual immutable-log recovery required",
+                path=path,
+                line=line,
+            )
+        seen[short_id] = (task_id, path, line)
+        validated.append((short_id, task_id, suffix, path, line))
+    return validated
+
+
+def _build_rebuilt_id_index(
+    current: dict,
+    validated: list[tuple[str, str, int, Path, int]],
+) -> dict:
+    """Build a replacement map while preserving every valid high-water mark."""
+    next_seqs = dict(current["next_seqs"])
+    for short_id in current["map"]:
+        prefix, suffix = parse_short_id(short_id)
+        next_seqs[prefix] = max(next_seqs.get(prefix, 1), suffix + 1)
+    rebuilt_map: dict[str, str] = {}
+    for short_id, task_id, suffix, _path, _line in validated:
+        prefix, _ = parse_short_id(short_id)
+        rebuilt_map[short_id] = task_id
+        next_seqs[prefix] = max(next_seqs.get(prefix, 1), suffix + 1)
+    return {"schema_version": 2, "next_seqs": next_seqs, "map": rebuilt_map}
+
+
+def _inspect_task_authority_unlocked(
+    lattice_dir: Path,
+    *,
+    skip_task_ids: set[str] | None = None,
+) -> tuple[dict[str, ResolvedTaskAuthority], list[dict]]:
+    """Strictly replay every task placement set and report repair boundaries."""
+    authorities: dict[str, ResolvedTaskAuthority] = {}
+    findings: list[dict] = []
+
+    for task_id in sorted(_collect_task_ids(lattice_dir)):
+        if skip_task_ids and task_id in skip_task_ids:
+            continue
+        active = _task_paths(lattice_dir, task_id, False)
+        archived = _task_paths(lattice_dir, task_id, True)
+        event_candidates = [path for path in (active["event"], archived["event"]) if path.exists()]
+        snapshot_candidates = [
+            path for path in (active["snapshot"], archived["snapshot"]) if path.exists()
+        ]
+        if not event_candidates:
+            if snapshot_candidates:
+                findings.append(
+                    {
+                        "level": "error",
+                        "check": "authoritative_log",
+                        "message": (
+                            f"Task {task_id} has snapshot data but no authoritative event log; "
+                            "manual recovery is required."
+                        ),
+                        "task_id": task_id,
+                    }
+                )
+            continue
+
+        try:
+            authority = resolve_task_authority(lattice_dir, task_id)
+        except AuthoritativeLogError as exc:
+            findings.append(
+                {
+                    "level": "error",
+                    "check": "authoritative_log",
+                    "message": (
+                        f"Authoritative log error for {task_id}: {exc}. "
+                        "Rebuild will refuse to overwrite data; manual recovery is required."
+                    ),
+                    "task_id": task_id,
+                }
+            )
+            continue
+
+        assert authority is not None
+        authorities[task_id] = authority
+        expected_archived = authority.location == "archived"
+        target = archived if expected_archived else active
+        other = active if expected_archived else archived
+        repair = "Run lattice rebuild to restore authoritative placement."
+
+        if len(event_candidates) == 2:
+            left = active["event"].read_bytes()
+            right = archived["event"].read_bytes()
+            relation = "byte-identical" if left == right else "exact-prefix"
+            findings.append(
+                {
+                    "level": "warning",
+                    "check": "placement_drift",
+                    "message": (f"Task {task_id} has {relation} duplicate event logs. {repair}"),
+                    "task_id": task_id,
+                }
+            )
+        elif not target["event"].exists():
+            findings.append(
+                {
+                    "level": "warning",
+                    "check": "placement_drift",
+                    "message": (
+                        f"Task {task_id} event log is in the wrong location for "
+                        f"{authority.location} state. {repair}"
+                    ),
+                    "task_id": task_id,
+                }
+            )
+
+        expected_snapshot = serialize_snapshot(authority.snapshot)
+        snapshot_matches = False
+        if target["snapshot"].exists():
+            try:
+                snapshot_matches = (
+                    target["snapshot"].read_text(encoding="utf-8") == expected_snapshot
+                )
+            except OSError:
+                snapshot_matches = False
+        if not snapshot_matches:
+            findings.append(
+                {
+                    "level": "warning",
+                    "check": "snapshot_drift",
+                    "message": (
+                        f"Snapshot drift: {task_id} differs from full authoritative replay "
+                        "(even if last_event_id matches). Run lattice rebuild."
+                    ),
+                    "task_id": task_id,
+                }
+            )
+        if other["snapshot"].exists():
+            findings.append(
+                {
+                    "level": "warning",
+                    "check": "placement_drift",
+                    "message": (
+                        f"Task {task_id} has a duplicate or wrong-location snapshot. {repair}"
+                    ),
+                    "task_id": task_id,
+                }
+            )
+
+        for name in ("plan", "notes"):
+            target_file = target[name]
+            other_file = other[name]
+            if not target_file.exists() and not other_file.exists():
+                if name == "plan":
+                    findings.append(
+                        {
+                            "level": "warning",
+                            "check": "placement_drift",
+                            "message": (
+                                f"Task {task_id} has no plan file; this legacy file cannot "
+                                "be reconstructed automatically."
+                            ),
+                            "task_id": task_id,
+                        }
+                    )
+                continue
+            if target_file.exists() and other_file.exists():
+                if target_file.read_bytes() != other_file.read_bytes():
+                    findings.append(
+                        {
+                            "level": "error",
+                            "check": "placement_drift",
+                            "message": (
+                                f"Task {task_id} has divergent active/archive {name} files; "
+                                "manual recovery is required."
+                            ),
+                            "task_id": task_id,
+                        }
+                    )
+                else:
+                    findings.append(
+                        {
+                            "level": "warning",
+                            "check": "placement_drift",
+                            "message": (
+                                f"Task {task_id} has duplicate byte-identical {name} files. "
+                                f"{repair}"
+                            ),
+                            "task_id": task_id,
+                        }
+                    )
+            elif other_file.exists():
+                findings.append(
+                    {
+                        "level": "warning",
+                        "check": "placement_drift",
+                        "message": (
+                            f"Task {task_id} {name} file is in the wrong location. {repair}"
+                        ),
+                        "task_id": task_id,
+                    }
+                )
+
+    return authorities, findings
+
+
+def inspect_task_authority(
+    lattice_dir: Path,
+    *,
+    skip_task_ids: set[str] | None = None,
+) -> tuple[dict[str, ResolvedTaskAuthority], list[dict]]:
+    """Inspect all candidate bytes under one stable, deterministic lock set."""
+    task_ids = sorted(_collect_task_ids(lattice_dir))
+    lock_keys = [key for task_id in task_ids for key in (f"events_{task_id}", f"tasks_{task_id}")]
+    with multi_lock(lattice_dir / "locks", lock_keys):
+        return _inspect_task_authority_unlocked(lattice_dir, skip_task_ids=skip_task_ids)
+
+
 # ---------------------------------------------------------------------------
 # lattice doctor
 # ---------------------------------------------------------------------------
@@ -170,7 +469,7 @@ def doctor(fix: bool, output_json: bool) -> None:
     artifact_meta_files = _collect_artifact_meta_files(lattice_dir)
 
     # Count stats
-    task_count = len(task_files)
+    task_count = len(_collect_task_ids(lattice_dir))
     artifact_count = len(artifact_meta_files)
 
     # Track all parsed snapshots keyed by task ID
@@ -247,33 +546,33 @@ def doctor(fix: bool, output_json: bool) -> None:
     event_count = total_event_count
 
     # -----------------------------------------------------------------
-    # Check 3: Snapshot drift
+    # Check 3: Strict authority, placement, and full-byte snapshot drift
     # -----------------------------------------------------------------
-    drift_ok = True
-    # Only check active tasks (in tasks/, not archive/tasks/)
-    active_tasks_dir = lattice_dir / "tasks"
-    for task_id, snap in snapshots.items():
-        snap_path = active_tasks_dir / f"{task_id}.json"
-        if not snap_path.exists():
-            continue  # archived task, skip drift check
-        last_event_id = snap.get("last_event_id")
-        events = per_task_events.get(task_id, [])
-        if events:
-            actual_last_id = events[-1].get("id")
-            if last_event_id != actual_last_id:
-                drift_ok = False
-                findings.append(
-                    {
-                        "level": "warning",
-                        "check": "snapshot_drift",
-                        "message": (
-                            f"Snapshot drift: {task_id} "
-                            f"(snapshot last_event_id={last_event_id}, "
-                            f"actual last event={actual_last_id})"
-                        ),
-                        "task_id": task_id,
-                    }
-                )
+    truncated_task_ids = {
+        finding["task_id"]
+        for finding in findings
+        if finding.get("is_truncated_final")
+        and "(fixed)" not in finding["message"]
+        and finding.get("task_id")
+    }
+    authorities, authority_findings = inspect_task_authority(
+        lattice_dir, skip_task_ids=truncated_task_ids
+    )
+    findings.extend(authority_findings)
+    known_task_ids.update(_collect_task_ids(lattice_dir))
+    for task_id, authority in authorities.items():
+        snapshots[task_id] = authority.snapshot
+        per_task_events[task_id] = list(authority.events)
+
+    # A corrupt cache is replay-repairable when strict authority succeeds.
+    for finding in findings:
+        if finding["check"] == "json_parse" and finding.get("task_id") in authorities:
+            finding["level"] = "warning"
+            finding["message"] += " (snapshot cache is rebuildable from valid authority)"
+
+    drift_ok = not any(
+        finding["check"] in {"snapshot_drift", "placement_drift"} for finding in findings
+    )
 
     # -----------------------------------------------------------------
     # Check 4: Missing relationship targets
@@ -404,17 +703,34 @@ def doctor(fix: bool, output_json: bool) -> None:
     # Check 9: Lifecycle log consistency
     # -----------------------------------------------------------------
     global_ok = True
-    # Build a set of (event_id) from global log
-    global_event_ids: set[str] = set()
+    global_by_id: dict[str, dict] = {}
     for ev in global_events:
-        global_event_ids.add(ev.get("id", ""))
+        event_id = ev.get("id", "")
+        existing = global_by_id.get(event_id)
+        if existing is not None:
+            global_ok = False
+            findings.append(
+                {
+                    "level": "warning",
+                    "check": "global_log_consistency",
+                    "message": (
+                        f"Lifecycle log has a "
+                        f"{'duplicate' if existing == ev else 'mismatched duplicate'} "
+                        f"event {event_id}; run lattice rebuild --all"
+                    ),
+                    "task_id": ev.get("task_id"),
+                }
+            )
+        else:
+            global_by_id[event_id] = ev
 
     # Every lifecycle event in per-task logs should be in global
     for task_id, events in per_task_events.items():
         for ev in events:
             if ev.get("type") in LIFECYCLE_EVENT_TYPES:
                 ev_id = ev.get("id", "")
-                if ev_id not in global_event_ids:
+                global_copy = global_by_id.get(ev_id)
+                if global_copy is None:
                     global_ok = False
                     findings.append(
                         {
@@ -423,6 +739,19 @@ def doctor(fix: bool, output_json: bool) -> None:
                             "message": (
                                 f"Lifecycle event {ev_id} ({ev.get('type')}) "
                                 f"for {task_id} missing from _lifecycle.jsonl"
+                            ),
+                            "task_id": task_id,
+                        }
+                    )
+                elif global_copy != ev:
+                    global_ok = False
+                    findings.append(
+                        {
+                            "level": "warning",
+                            "check": "global_log_consistency",
+                            "message": (
+                                f"Lifecycle event {ev_id} for {task_id} does not match "
+                                "per-task authority; run lattice rebuild --all"
                             ),
                             "task_id": task_id,
                         }
@@ -456,7 +785,8 @@ def doctor(fix: bool, output_json: bool) -> None:
     # -----------------------------------------------------------------
     alias_ok = True
     config = load_project_config(lattice_dir)
-    has_project_code = bool(config.get("project_code"))
+    event_prefix = configured_event_prefix(config)
+    has_project_code = event_prefix is not None
     ids_json_path = lattice_dir / "ids.json"
 
     if has_project_code and not ids_json_path.exists():
@@ -470,20 +800,54 @@ def doctor(fix: bool, output_json: bool) -> None:
             }
         )
 
-    if ids_json_path.exists():
-        id_index = load_id_index(lattice_dir)
-        id_map = id_index.get("map", {})
-        next_seqs = id_index.get("next_seqs", {})
+    authoritative_short_ids: dict[str, tuple[str, Path, int]] = {}
+    if has_project_code:
+        try:
+            validated_short_ids = _validate_authoritative_short_ids(authorities, event_prefix)
+        except AuthoritativeLogError as exc:
+            alias_ok = False
+            findings.append(
+                {
+                    "level": "error",
+                    "check": "alias_integrity",
+                    "message": str(exc),
+                    "task_id": None,
+                }
+            )
+            validated_short_ids = []
+        for short_id, task_id_key, _suffix, log_path, short_id_line in validated_short_ids:
+            authoritative_short_ids[short_id] = (task_id_key, log_path, short_id_line)
 
-        # Check: every entry in ids.json.map points to an existing snapshot
+    if ids_json_path.exists():
+        try:
+            id_index = _load_strict_id_index(lattice_dir)
+        except AuthoritativeLogError as exc:
+            alias_ok = False
+            findings.append(
+                {
+                    "level": "error",
+                    "check": "alias_integrity",
+                    "message": f"Invalid derived short-ID index: {exc}",
+                    "task_id": None,
+                }
+            )
+            id_index = {"map": {}, "next_seqs": {}}
+        id_map = id_index["map"]
+        next_seqs = id_index["next_seqs"]
+
+        # Check the derived alias index against authoritative task_created replay,
+        # never against the snapshot cache.
         for short_id, target_ulid in id_map.items():
-            if target_ulid not in known_task_ids:
+            if target_ulid not in authorities:
                 alias_ok = False
                 findings.append(
                     {
                         "level": "warning",
                         "check": "alias_integrity",
-                        "message": f"ids.json maps {short_id} to non-existent task {target_ulid}",
+                        "message": (
+                            f"ids.json maps {short_id} to a task without valid authority "
+                            f"({target_ulid}); run lattice rebuild --all after recovery"
+                        ),
                         "task_id": target_ulid,
                     }
                 )
@@ -498,43 +862,22 @@ def doctor(fix: bool, output_json: bool) -> None:
                     }
                 )
 
-        # Check: every snapshot with short_id has matching entry in ids.json
-        for task_id_key, snap in snapshots.items():
-            snap_short_id = snap.get("short_id")
-            if snap_short_id:
-                if snap_short_id not in id_map:
-                    alias_ok = False
-                    findings.append(
-                        {
-                            "level": "warning",
-                            "check": "alias_integrity",
-                            "message": (
-                                f"Task {task_id_key} has short_id {snap_short_id} "
-                                "but it's missing from ids.json"
-                            ),
-                            "task_id": task_id_key,
-                        }
-                    )
-
-        # Check: no duplicate short IDs across snapshots
-        seen_short_ids: dict[str, str] = {}
-        for task_id_key, snap in snapshots.items():
-            snap_short_id = snap.get("short_id")
-            if snap_short_id:
-                if snap_short_id in seen_short_ids:
-                    alias_ok = False
-                    findings.append(
-                        {
-                            "level": "error",
-                            "check": "alias_integrity",
-                            "message": (
-                                f"Duplicate short ID {snap_short_id}: "
-                                f"{seen_short_ids[snap_short_id]} and {task_id_key}"
-                            ),
-                            "task_id": task_id_key,
-                        }
-                    )
-                seen_short_ids[snap_short_id] = task_id_key
+        # Check: every valid authoritative creation short ID has the exact mapping.
+        for snap_short_id, (task_id_key, _log_path, _line) in authoritative_short_ids.items():
+            if id_map.get(snap_short_id) != task_id_key:
+                alias_ok = False
+                findings.append(
+                    {
+                        "level": "warning",
+                        "check": "alias_integrity",
+                        "message": (
+                            f"Authoritative task {task_id_key} has short_id "
+                            f"{snap_short_id} but ids.json does not map it exactly; "
+                            "run lattice rebuild --all"
+                        ),
+                        "task_id": task_id_key,
+                    }
+                )
 
         # Check: per-prefix next_seqs > max assigned per prefix
         prefix_max: dict[str, int] = {}
@@ -560,13 +903,6 @@ def doctor(fix: bool, output_json: bool) -> None:
                         "task_id": None,
                     }
                 )
-
-    if fix and not alias_ok:
-        _rebuild_id_index(lattice_dir)
-        # Re-check after fix
-        for f in findings:
-            if f["check"] == "alias_integrity":
-                f["message"] += " (fixed by rebuilding ids.json)"
 
     # -----------------------------------------------------------------
     # Check 11: Resource snapshot drift & stale holders
@@ -703,8 +1039,12 @@ def doctor(fix: bool, output_json: bool) -> None:
             click.echo("\u2713 All snapshots consistent with event logs")
         else:
             for f in findings:
-                if f["check"] == "snapshot_drift":
+                if f["check"] in {"snapshot_drift", "placement_drift"}:
                     click.echo(f"\u26a0 {f['message']}")
+
+        for f in findings:
+            if f["check"] == "authoritative_log":
+                click.echo(f"\u26a0 {f['message']}")
 
         if refs_ok:
             click.echo("\u2713 All relationship targets exist")
@@ -785,35 +1125,14 @@ def doctor(fix: bool, output_json: bool) -> None:
 
 
 def _rebuild_task(lattice_dir: Path, task_id: str) -> dict:
-    """Rebuild a single task snapshot from its event log.
-
-    Returns the rebuilt snapshot dict.
-    Raises FileNotFoundError if the event log does not exist.
-    """
-    # Check both active and archive locations
-    event_path = lattice_dir / "events" / f"{task_id}.jsonl"
-    if not event_path.exists():
-        event_path = lattice_dir / "archive" / "events" / f"{task_id}.jsonl"
-    if not event_path.exists():
-        raise FileNotFoundError(f"No event log found for {task_id}")
-
-    # Parse events
-    events: list[dict] = []
-    for line in event_path.read_text().splitlines():
-        stripped = line.strip()
-        if stripped:
-            events.append(json.loads(stripped))
-
-    if not events:
-        raise ValueError(f"Event log for {task_id} is empty")
-
-    # Replay events
-    snapshot: dict | None = None
-    for event in events:
-        snapshot = apply_event_to_snapshot(snapshot, event)
-
-    assert snapshot is not None
-    return snapshot
+    """Strictly replay and reconcile one task into event-selected placement."""
+    result = mutate_task(
+        lattice_dir,
+        task_id,
+        lambda _context: TaskMutationDecision(idempotent=True),
+        source="either",
+    )
+    return result.snapshot
 
 
 def _rebuild_lifecycle_log(lattice_dir: Path) -> list[str]:
@@ -821,7 +1140,7 @@ def _rebuild_lifecycle_log(lattice_dir: Path) -> list[str]:
 
     Returns list of rebuilt task IDs (for reporting).
     """
-    all_lifecycle_events: list[dict] = []
+    lifecycle_by_id: dict[str, dict] = {}
 
     # Scan all per-task event logs (active + archive)
     for directory in [
@@ -842,9 +1161,17 @@ def _rebuild_lifecycle_log(lattice_dir: Path) -> list[str]:
                 except json.JSONDecodeError:
                     continue  # skip malformed lines during rebuild
                 if event.get("type") in LIFECYCLE_EVENT_TYPES:
-                    all_lifecycle_events.append(event)
+                    event_id = event.get("id")
+                    existing = lifecycle_by_id.get(event_id)
+                    if existing is not None and existing != event:
+                        raise AuthoritativeLogError(
+                            f"conflicting lifecycle event {event_id}; manual recovery required",
+                            path=jsonl_file,
+                        )
+                    lifecycle_by_id[event_id] = event
 
     # Sort by (ts, id) for deterministic ordering
+    all_lifecycle_events = list(lifecycle_by_id.values())
     all_lifecycle_events.sort(key=lambda e: (e.get("ts", ""), e.get("id", "")))
 
     # Write atomically
@@ -859,37 +1186,91 @@ def _rebuild_lifecycle_log(lattice_dir: Path) -> list[str]:
 
 
 def _rebuild_id_index(lattice_dir: Path) -> None:
-    """Rebuild ``ids.json`` from all task snapshots (active + archived)."""
-    id_map: dict[str, str] = {}
-    max_seq: dict[str, int] = {}  # per-prefix max seq
+    """Rebuild ``ids.json`` from strict authoritative task creation replay."""
+    event_prefix = configured_event_prefix(load_project_config(lattice_dir))
+    task_ids = sorted(_collect_task_ids(lattice_dir))
+    lock_keys = [
+        "ids_json",
+        *(key for task_id in task_ids for key in (f"events_{task_id}", f"tasks_{task_id}")),
+    ]
 
-    for directory in [lattice_dir / "tasks", lattice_dir / "archive" / "tasks"]:
-        if not directory.is_dir():
-            continue
-        for snap_file in sorted(directory.glob("*.json")):
-            try:
-                snap = json.loads(snap_file.read_text())
-            except (json.JSONDecodeError, OSError):
+    with multi_lock(lattice_dir / "locks", lock_keys):
+        current = _load_strict_id_index(lattice_dir)
+        authorities: dict[str, ResolvedTaskAuthority] = {}
+        for task_id in task_ids:
+            event_exists = any(
+                _task_paths(lattice_dir, task_id, archived)["event"].exists()
+                for archived in (False, True)
+            )
+            if not event_exists:
                 continue
-            short_id = snap.get("short_id")
-            if short_id and validate_short_id(short_id):
-                task_ulid = snap.get("id", snap_file.stem)
-                id_map[short_id] = task_ulid
-                prefix, num = parse_short_id(short_id)
-                if prefix not in max_seq or num > max_seq[prefix]:
-                    max_seq[prefix] = num
+            authority = resolve_task_authority(lattice_dir, task_id)
+            assert authority is not None
+            authorities[task_id] = authority
+        validated = _validate_authoritative_short_ids(authorities, event_prefix)
+        save_id_index(lattice_dir, _build_rebuilt_id_index(current, validated))
 
-    # Compute per-prefix next_seqs (v2 schema)
-    next_seqs: dict[str, int] = {}
-    for prefix, max_num in max_seq.items():
-        next_seqs[prefix] = max_num + 1
 
-    index = {
-        "schema_version": 2,
-        "next_seqs": next_seqs,
-        "map": id_map,
-    }
-    save_id_index(lattice_dir, index)
+def _rebuild_all_tasks_transaction(lattice_dir: Path) -> list[str]:
+    """Preflight all task/index authority, then repair caches as one lock epoch."""
+    task_ids = sorted(_collect_task_ids(lattice_dir))
+    lock_keys = [
+        "events__lifecycle",
+        "ids_json",
+        *(key for task_id in task_ids for key in (f"events_{task_id}", f"tasks_{task_id}")),
+    ]
+    with multi_lock(lattice_dir / "locks", lock_keys):
+        authorities, findings = _inspect_task_authority_unlocked(lattice_dir)
+        failures = [finding["message"] for finding in findings if finding["level"] == "error"]
+        missing = sorted(set(task_ids) - set(authorities))
+        failures.extend(f"{task_id}: no valid authoritative event log" for task_id in missing)
+        if failures:
+            raise AuthoritativeLogError("; ".join(failures))
+
+        # Complete index and configured-prefix validation happens before the
+        # first snapshot, placement, lifecycle, or ids.json write.
+        current_index = _load_strict_id_index(lattice_dir)
+        event_prefix = configured_event_prefix(load_project_config(lattice_dir))
+        validated_short_ids = _validate_authoritative_short_ids(authorities, event_prefix)
+        rebuilt_index = _build_rebuilt_id_index(current_index, validated_short_ids)
+
+        lifecycle_by_id: dict[str, dict] = {}
+        for task_id, authority in authorities.items():
+            for event in authority.events:
+                if event.get("type") not in LIFECYCLE_EVENT_TYPES:
+                    continue
+                event_id = event["id"]
+                existing = lifecycle_by_id.get(event_id)
+                if existing is not None and existing != event:
+                    path, line = _authority_log_context(
+                        authority, event.get("data", {}).get("short_id")
+                    )
+                    raise AuthoritativeLogError(
+                        f"conflicting lifecycle event {event_id} for {task_id}",
+                        path=path,
+                        line=line,
+                    )
+                lifecycle_by_id[event_id] = event
+        lifecycle_events = sorted(
+            lifecycle_by_id.values(), key=lambda event: (event.get("ts", ""), event["id"])
+        )
+        lifecycle_content = "".join(serialize_event(event) for event in lifecycle_events)
+
+        # All failure-prone authority/prose/index parsing is complete. Durable
+        # repair writes begin only here, while the complete stable lock set is
+        # still held.
+        for task_id, authority in authorities.items():
+            _reconcile_placement(
+                lattice_dir,
+                task_id,
+                authority.location,
+                authority.event_bytes,
+                authority.snapshot,
+                inject_faults=False,
+            )
+        atomic_write(lattice_dir / "events" / "_lifecycle.jsonl", lifecycle_content)
+        save_id_index(lattice_dir, rebuilt_index)
+    return sorted(authorities)
 
 
 def _rebuild_resource(lattice_dir: Path, resource_id: str) -> dict:
@@ -945,46 +1326,14 @@ def rebuild(task_id: str | None, rebuild_all: bool, output_json: bool) -> None:
         )
 
     if rebuild_all:
-        # Rebuild all tasks (active + archived)
-        rebuilt_ids: list[str] = []
-
-        # Collect event files from both active and archive directories
-        event_dirs = [
-            (lattice_dir / "events", lattice_dir / "tasks"),
-            (lattice_dir / "archive" / "events", lattice_dir / "archive" / "tasks"),
-        ]
-
-        for event_dir, target_tasks_dir in event_dirs:
-            if not event_dir.is_dir():
-                continue
-            for jsonl_file in sorted(event_dir.glob("*.jsonl")):
-                if jsonl_file.name == "_lifecycle.jsonl":
-                    continue
-                # Skip resource event files (handled separately)
-                if jsonl_file.stem.startswith("res_"):
-                    continue
-                tid = jsonl_file.stem
-                try:
-                    snapshot = _rebuild_task(lattice_dir, tid)
-                except (FileNotFoundError, ValueError, json.JSONDecodeError) as e:
-                    if is_json:
-                        output_error(str(e), "REBUILD_ERROR", is_json)
-                    else:
-                        click.echo(f"Error rebuilding {tid}: {e}", err=True)
-                    continue
-
-                # Write snapshot to the correct location (active or archive)
-                snapshot_path = target_tasks_dir / f"{tid}.json"
-                locks_dir = lattice_dir / "locks"
-                with multi_lock(locks_dir, [f"tasks_{tid}"]):
-                    atomic_write(snapshot_path, serialize_snapshot(snapshot))
-                rebuilt_ids.append(tid)
-
-        # Rebuild lifecycle log
-        _rebuild_lifecycle_log(lattice_dir)
-
-        # Rebuild ids.json from snapshots
-        _rebuild_id_index(lattice_dir)
+        try:
+            rebuilt_ids = _rebuild_all_tasks_transaction(lattice_dir)
+        except (AuthoritativeLogError, ValueError, json.JSONDecodeError) as exc:
+            output_error(
+                f"Rebuild refused malformed or divergent authority: {exc}",
+                "REBUILD_ERROR",
+                is_json,
+            )
 
         # Rebuild resource snapshots
         rebuilt_resources: list[str] = []
@@ -1032,25 +1381,19 @@ def rebuild(task_id: str | None, rebuild_all: bool, output_json: bool) -> None:
         # Single task rebuild
         assert task_id is not None
         try:
-            snapshot = _rebuild_task(lattice_dir, task_id)
-        except FileNotFoundError:
-            output_error(
-                f"No event log found for {task_id}.",
-                "NOT_FOUND",
-                is_json,
-            )
+            _rebuild_task(lattice_dir, task_id)
+        except AuthoritativeLogError as exc:
+            if "no authoritative event log exists" in str(
+                exc
+            ) and "for existing snapshot" not in str(exc):
+                output_error(
+                    f"No event log found for {task_id}.",
+                    "NOT_FOUND",
+                    is_json,
+                )
+            output_error(str(exc), "REBUILD_ERROR", is_json)
         except (ValueError, json.JSONDecodeError) as e:
             output_error(str(e), "REBUILD_ERROR", is_json)
-
-        # Determine target path (active or archive)
-        snapshot_path = lattice_dir / "tasks" / f"{task_id}.json"
-        archive_path = lattice_dir / "archive" / "tasks" / f"{task_id}.json"
-        if archive_path.exists() and not snapshot_path.exists():
-            snapshot_path = archive_path
-
-        locks_dir = lattice_dir / "locks"
-        with multi_lock(locks_dir, [f"tasks_{task_id}"]):
-            atomic_write(snapshot_path, serialize_snapshot(snapshot))
 
         if is_json:
             click.echo(

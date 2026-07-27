@@ -196,6 +196,72 @@ class TestAttachFile:
         art_refs = [r for r in snap["evidence_refs"] if r.get("source_type") == "artifact"]
         assert art_refs[0]["role"] == "review"
 
+    def test_attach_links_retired_criterion_without_role(
+        self, invoke, initialized_root, tmp_path
+    ) -> None:
+        task_id = json.loads(
+            invoke("create", "Criterion artifact", "--actor", _ACTOR, "--json").output
+        )["data"]["id"]
+        invoke(
+            "criterion",
+            "add",
+            task_id,
+            "Observable.",
+            "--actor",
+            _ACTOR,
+        )
+        invoke(
+            "criterion",
+            "retire",
+            task_id,
+            "AC-1",
+            "--actor",
+            _ACTOR,
+        )
+        source = tmp_path / "evidence.txt"
+        source.write_text("observed")
+        result = invoke(
+            "attach",
+            task_id,
+            str(source),
+            "--criterion",
+            "AC-1",
+            "--criterion",
+            "AC-1",
+            "--actor",
+            _ACTOR,
+            "--json",
+        )
+        assert result.exit_code == 0, result.output
+        lattice_dir = initialized_root / LATTICE_DIR
+        snapshot = json.loads((lattice_dir / "tasks" / f"{task_id}.json").read_text())
+        artifact_ref = next(
+            ref for ref in snapshot["evidence_refs"] if ref["source_type"] == "artifact"
+        )
+        assert artifact_ref["role"] is None
+        assert artifact_ref["criterion_ids"] == ["AC-1"]
+
+    def test_attach_unknown_criterion_is_rejected(
+        self, invoke, create_task, initialized_root, tmp_path
+    ) -> None:
+        source = tmp_path / "evidence.txt"
+        source.write_text("observed")
+        meta_dir = initialized_root / LATTICE_DIR / "artifacts" / "meta"
+        metadata_before = set(meta_dir.glob("*"))
+        result = invoke(
+            "attach",
+            create_task("Unknown criterion artifact")["id"],
+            str(source),
+            "--criterion",
+            "AC-404",
+            "--actor",
+            _ACTOR,
+            "--json",
+        )
+        assert result.exit_code != 0
+        assert "not found" in json.loads(result.output)["error"]["message"]
+        assert set(meta_dir.glob("*")) == metadata_before
+
 
 # ---------------------------------------------------------------------------
 # Attach URL

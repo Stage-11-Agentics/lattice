@@ -14,15 +14,15 @@ from lattice.cli.helpers import (
     require_root,
     resolve_task_id,
     validate_actor_format_or_exit,
-    write_task_event,
 )
 from lattice.cli.main import cli
-from lattice.core.events import create_event, serialize_event
+from lattice.core.events import create_event
 from lattice.core.relationships import RELATIONSHIP_TYPES, validate_relationship_type
-from lattice.core.tasks import apply_event_to_snapshot, serialize_snapshot
-from lattice.storage.fs import atomic_write, jsonl_append
-from lattice.storage.hooks import execute_hooks
-from lattice.storage.locks import multi_lock
+from lattice.storage.operations import (
+    TaskMutationDecision,
+    mutate_task,
+    read_task_authority,
+)
 
 
 def _validate_branch_name(branch: str, is_json: bool) -> None:
@@ -105,26 +105,15 @@ def link(
         )
 
     # Validate both tasks exist
-    snapshot = read_snapshot_or_exit(lattice_dir, task_id, is_json)
-    # Check target exists (we don't need the snapshot, just existence)
-    target_path = lattice_dir / "tasks" / f"{target_task_id}.json"
-    if not target_path.exists():
+    read_snapshot_or_exit(lattice_dir, task_id, is_json)
+    target_authority = read_task_authority(lattice_dir, target_task_id, allow_missing=True)
+    if target_authority is None or target_authority.location != "active":
         output_error(
             f"Target task {target_task_id} not found.",
             "NOT_FOUND",
             is_json,
         )
 
-    # Reject duplicates: same type + same target already in relationships_out
-    for rel in snapshot.get("relationships_out", []):
-        if rel["type"] == rel_type and rel["target_task_id"] == target_task_id:
-            output_error(
-                f"Duplicate: {rel_type} relationship to {target_task_id} already exists.",
-                "CONFLICT",
-                is_json,
-            )
-
-    # Build event
     event_data: dict = {
         "type": rel_type,
         "target_task_id": target_task_id,
@@ -132,21 +121,33 @@ def link(
     if note is not None:
         event_data["note"] = note
 
-    event = create_event(
-        type="relationship_added",
-        task_id=task_id,
-        actor=actor,
-        data=event_data,
-        model=model,
-        session=session,
-        triggered_by=triggered_by,
-        on_behalf_of=on_behalf_of,
-        reason=provenance_reason,
-    )
-    updated_snapshot = apply_event_to_snapshot(snapshot, event)
+    def decide(context):  # noqa: ANN001, ANN202
+        snapshot = context.snapshot
+        assert snapshot is not None
+        for relationship in snapshot.get("relationships_out", []):
+            if (
+                relationship["type"] == rel_type
+                and relationship["target_task_id"] == target_task_id
+            ):
+                output_error(
+                    f"Duplicate: {rel_type} relationship to {target_task_id} already exists.",
+                    "CONFLICT",
+                    is_json,
+                )
+        event = create_event(
+            type="relationship_added",
+            task_id=task_id,
+            actor=actor,
+            data=event_data,
+            model=model,
+            session=session,
+            triggered_by=triggered_by,
+            on_behalf_of=on_behalf_of,
+            reason=provenance_reason,
+        )
+        return TaskMutationDecision(events=[event])
 
-    # Write (event-first, then snapshot, under lock)
-    write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
+    updated_snapshot = mutate_task(lattice_dir, task_id, decide, config).snapshot
 
     # Output
     output_result(
@@ -202,43 +203,39 @@ def unlink(
         )
 
     # Validate source task exists and load snapshot
-    snapshot = read_snapshot_or_exit(lattice_dir, task_id, is_json)
-
-    # Validate the relationship exists in snapshot's relationships_out
-    found = False
-    for rel in snapshot.get("relationships_out", []):
-        if rel["type"] == rel_type and rel["target_task_id"] == target_task_id:
-            found = True
-            break
-
-    if not found:
-        output_error(
-            f"No {rel_type} relationship to {target_task_id}.",
-            "NOT_FOUND",
-            is_json,
-        )
-
-    # Build event
+    read_snapshot_or_exit(lattice_dir, task_id, is_json)
     event_data: dict = {
         "type": rel_type,
         "target_task_id": target_task_id,
     }
 
-    event = create_event(
-        type="relationship_removed",
-        task_id=task_id,
-        actor=actor,
-        data=event_data,
-        model=model,
-        session=session,
-        triggered_by=triggered_by,
-        on_behalf_of=on_behalf_of,
-        reason=provenance_reason,
-    )
-    updated_snapshot = apply_event_to_snapshot(snapshot, event)
+    def decide(context):  # noqa: ANN001, ANN202
+        snapshot = context.snapshot
+        assert snapshot is not None
+        found = any(
+            relationship["type"] == rel_type and relationship["target_task_id"] == target_task_id
+            for relationship in snapshot.get("relationships_out", [])
+        )
+        if not found:
+            output_error(
+                f"No {rel_type} relationship to {target_task_id}.",
+                "NOT_FOUND",
+                is_json,
+            )
+        event = create_event(
+            type="relationship_removed",
+            task_id=task_id,
+            actor=actor,
+            data=event_data,
+            model=model,
+            session=session,
+            triggered_by=triggered_by,
+            on_behalf_of=on_behalf_of,
+            reason=provenance_reason,
+        )
+        return TaskMutationDecision(events=[event])
 
-    # Write (event-first, then snapshot, under lock)
-    write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
+    updated_snapshot = mutate_task(lattice_dir, task_id, decide, config).snapshot
 
     # Output
     output_result(
@@ -288,32 +285,15 @@ def branch_link(
         validate_actor_format_or_exit(on_behalf_of, is_json)
 
     task_id = resolve_task_id(lattice_dir, task_id, is_json)
+    read_snapshot_or_exit(lattice_dir, task_id, is_json)
 
-    # Build event (branch/repo are validated; event created before lock for timestamp)
     event_data: dict = {"branch": branch}
     if repo is not None:
         event_data["repo"] = repo
 
-    event = create_event(
-        type="branch_linked",
-        task_id=task_id,
-        actor=actor,
-        data=event_data,
-        model=model,
-        session=session,
-        triggered_by=triggered_by,
-        on_behalf_of=on_behalf_of,
-        reason=provenance_reason,
-    )
-
-    # Acquire lock, then read snapshot + check + write atomically
-    locks_dir = lattice_dir / "locks"
-    lock_keys = sorted([f"events_{task_id}", f"tasks_{task_id}"])
-
-    with multi_lock(locks_dir, lock_keys):
-        # Read snapshot inside lock
-        snapshot = read_snapshot_or_exit(lattice_dir, task_id, is_json)
-
+    def decide(context):  # noqa: ANN001, ANN202
+        snapshot = context.snapshot
+        assert snapshot is not None
         # Reject duplicates: same (branch, repo) pair
         for bl in snapshot.get("branch_links", []):
             if bl["branch"] == branch and bl.get("repo") == repo:
@@ -324,18 +304,20 @@ def branch_link(
                     is_json,
                 )
 
-        updated_snapshot = apply_event_to_snapshot(snapshot, event)
+        event = create_event(
+            type="branch_linked",
+            task_id=task_id,
+            actor=actor,
+            data=event_data,
+            model=model,
+            session=session,
+            triggered_by=triggered_by,
+            on_behalf_of=on_behalf_of,
+            reason=provenance_reason,
+        )
+        return TaskMutationDecision(events=[event])
 
-        # Event-first write
-        event_path = lattice_dir / "events" / f"{task_id}.jsonl"
-        jsonl_append(event_path, serialize_event(event))
-
-        snapshot_path = lattice_dir / "tasks" / f"{task_id}.json"
-        atomic_write(snapshot_path, serialize_snapshot(updated_snapshot))
-
-    # Fire hooks after locks released
-    if config:
-        execute_hooks(config, lattice_dir, task_id, event)
+    updated_snapshot = mutate_task(lattice_dir, task_id, decide, config).snapshot
 
     # Output
     repo_display = f" (repo: {repo})" if repo else ""
@@ -386,32 +368,15 @@ def branch_unlink(
         validate_actor_format_or_exit(on_behalf_of, is_json)
 
     task_id = resolve_task_id(lattice_dir, task_id, is_json)
+    read_snapshot_or_exit(lattice_dir, task_id, is_json)
 
-    # Build event (branch/repo are validated; event created before lock for timestamp)
     event_data: dict = {"branch": branch}
     if repo is not None:
         event_data["repo"] = repo
 
-    event = create_event(
-        type="branch_unlinked",
-        task_id=task_id,
-        actor=actor,
-        data=event_data,
-        model=model,
-        session=session,
-        triggered_by=triggered_by,
-        on_behalf_of=on_behalf_of,
-        reason=provenance_reason,
-    )
-
-    # Acquire lock, then read snapshot + check + write atomically
-    locks_dir = lattice_dir / "locks"
-    lock_keys = sorted([f"events_{task_id}", f"tasks_{task_id}"])
-
-    with multi_lock(locks_dir, lock_keys):
-        # Read snapshot inside lock
-        snapshot = read_snapshot_or_exit(lattice_dir, task_id, is_json)
-
+    def decide(context):  # noqa: ANN001, ANN202
+        snapshot = context.snapshot
+        assert snapshot is not None
         # Validate the branch link exists
         found = False
         for bl in snapshot.get("branch_links", []):
@@ -427,18 +392,20 @@ def branch_unlink(
                 is_json,
             )
 
-        updated_snapshot = apply_event_to_snapshot(snapshot, event)
+        event = create_event(
+            type="branch_unlinked",
+            task_id=task_id,
+            actor=actor,
+            data=event_data,
+            model=model,
+            session=session,
+            triggered_by=triggered_by,
+            on_behalf_of=on_behalf_of,
+            reason=provenance_reason,
+        )
+        return TaskMutationDecision(events=[event])
 
-        # Event-first write
-        event_path = lattice_dir / "events" / f"{task_id}.jsonl"
-        jsonl_append(event_path, serialize_event(event))
-
-        snapshot_path = lattice_dir / "tasks" / f"{task_id}.json"
-        atomic_write(snapshot_path, serialize_snapshot(updated_snapshot))
-
-    # Fire hooks after locks released
-    if config:
-        execute_hooks(config, lattice_dir, task_id, event)
+    updated_snapshot = mutate_task(lattice_dir, task_id, decide, config).snapshot
 
     # Output
     repo_display = f" (repo: {repo})" if repo else ""

@@ -251,3 +251,94 @@ class TestAttachIdempotency:
             d2 = json.loads(r2.output)
             assert d2["ok"] is False
             assert d2["error"]["code"] == "CONFLICT"
+
+    def test_same_artifact_linkage_retry_and_conflict(
+        self, invoke, create_task, initialized_root, tmp_path
+    ):
+        task_id = create_task("Linked artifact retry")["id"]
+        invoke(
+            "criterion",
+            "add",
+            task_id,
+            "Observable.",
+            "--actor",
+            "human:test",
+        )
+        art_id = f"art_{ULID()}"
+        source = tmp_path / "evidence.txt"
+        source.write_text("evidence")
+        args = (
+            "attach",
+            task_id,
+            str(source),
+            "--id",
+            art_id,
+            "--criterion",
+            "AC-1",
+            "--actor",
+            "human:test",
+            "--json",
+        )
+        assert invoke(*args).exit_code == 0
+        event_path = initialized_root / ".lattice" / "events" / f"{task_id}.jsonl"
+        event_count = len(event_path.read_text().splitlines())
+        retry = invoke(*args)
+        assert retry.exit_code == 0, retry.output
+        assert len(event_path.read_text().splitlines()) == event_count
+
+        conflict = invoke(
+            "attach",
+            task_id,
+            str(source),
+            "--id",
+            art_id,
+            "--role",
+            "review",
+            "--criterion",
+            "AC-1",
+            "--actor",
+            "human:test",
+            "--json",
+        )
+        assert conflict.exit_code != 0
+        assert json.loads(conflict.output)["error"]["code"] == "CONFLICT"
+
+    def test_metadata_only_retry_appends_missing_task_event(
+        self, invoke, create_task, initialized_root, tmp_path
+    ):
+        task_id = create_task("Partial artifact retry")["id"]
+        art_id = f"art_{ULID()}"
+        source = tmp_path / "evidence.txt"
+        source.write_text("evidence")
+        first = invoke(
+            "attach",
+            task_id,
+            str(source),
+            "--id",
+            art_id,
+            "--actor",
+            "human:test",
+            "--json",
+        )
+        assert first.exit_code == 0
+        event_path = initialized_root / ".lattice" / "events" / f"{task_id}.jsonl"
+        events = event_path.read_text().splitlines()
+        event_path.write_text("\n".join(events[:-1]) + "\n")
+        snapshot_path = initialized_root / ".lattice" / "tasks" / f"{task_id}.json"
+        snapshot = json.loads(snapshot_path.read_text())
+        snapshot["evidence_refs"] = []
+        snapshot["last_event_id"] = json.loads(events[-2])["id"]
+        snapshot_path.write_text(json.dumps(snapshot, indent=2, sort_keys=True) + "\n")
+
+        retry = invoke(
+            "attach",
+            task_id,
+            str(source),
+            "--id",
+            art_id,
+            "--actor",
+            "human:test",
+            "--json",
+        )
+        assert retry.exit_code == 0, retry.output
+        assert json.loads(event_path.read_text().splitlines()[-1])["type"] == "artifact_attached"

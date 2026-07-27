@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 LATTICE_DIR = ".lattice"
@@ -219,7 +220,13 @@ class LatticeRootError(Exception):
     """Raised when LATTICE_ROOT env var is set but invalid."""
 
 
-def jsonl_append(path: Path, line: str) -> None:
+def jsonl_append(
+    path: Path,
+    line: str,
+    *,
+    after_write: Callable[[], None] | None = None,
+    after_fsync: Callable[[], None] | None = None,
+) -> None:
     """Append a single line to a JSONL file.
 
     The caller must already hold the appropriate lock; this function does
@@ -248,6 +255,10 @@ def jsonl_append(path: Path, line: str) -> None:
         if needs_separator:
             fh.write("\n")
         fh.write(line)
+        if after_write is not None:
+            after_write()
         fh.flush()
         os.fsync(fh.fileno())
+        if after_fsync is not None:
+            after_fsync()
     _fsync_directory(path.parent)

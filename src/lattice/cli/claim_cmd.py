@@ -14,11 +14,10 @@ from lattice.cli.helpers import (
     require_actor,
     require_root,
     resolve_task_id,
-    write_task_event,
 )
 from lattice.cli.main import cli
 from lattice.core.events import create_event
-from lattice.core.tasks import apply_event_to_snapshot
+from lattice.storage.operations import TaskMutationDecision, mutate_task
 
 
 @cli.command("claim")
@@ -61,7 +60,7 @@ def claim_cmd(
     actor = require_actor(is_json)
 
     task_id = resolve_task_id(lattice_dir, task_id, is_json)
-    snapshot = read_snapshot_or_exit(lattice_dir, task_id, is_json)
+    read_snapshot_or_exit(lattice_dir, task_id, is_json)
 
     # Resolve surface
     resolved_surface = surface_id or get_surface()
@@ -79,19 +78,21 @@ def claim_cmd(
     if workspace:
         event_data["workspace"] = workspace
 
-    event = create_event(
-        type="surface_bound",
-        task_id=task_id,
-        actor=actor,
-        data=event_data,
-        model=model,
-        session=session,
-        triggered_by=triggered_by,
-        on_behalf_of=on_behalf_of,
-        reason=provenance_reason,
-    )
-    updated_snapshot = apply_event_to_snapshot(snapshot, event)
-    write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
+    def decide(context):  # noqa: ANN001, ANN202
+        event = create_event(
+            type="surface_bound",
+            task_id=task_id,
+            actor=actor,
+            data=event_data,
+            model=model,
+            session=session,
+            triggered_by=triggered_by,
+            on_behalf_of=on_behalf_of,
+            reason=provenance_reason,
+        )
+        return TaskMutationDecision(events=[event])
+
+    updated_snapshot = mutate_task(lattice_dir, task_id, decide, config).snapshot
 
     # Rename tab if inside c11
     if c11_available():
@@ -142,23 +143,28 @@ def unclaim_cmd(
     actor = require_actor(is_json)
 
     task_id = resolve_task_id(lattice_dir, task_id, is_json)
-    snapshot = read_snapshot_or_exit(lattice_dir, task_id, is_json)
+    read_snapshot_or_exit(lattice_dir, task_id, is_json)
 
-    old_surface = snapshot.get("c11_surface")
+    def decide(context):  # noqa: ANN001, ANN202
+        snapshot = context.snapshot
+        assert snapshot is not None
+        old_surface = snapshot.get("c11_surface")
+        event = create_event(
+            type="surface_unbound",
+            task_id=task_id,
+            actor=actor,
+            data={"surface": old_surface},
+            model=model,
+            session=session,
+            triggered_by=triggered_by,
+            on_behalf_of=on_behalf_of,
+            reason=provenance_reason,
+        )
+        return TaskMutationDecision(events=[event], value=old_surface)
 
-    event = create_event(
-        type="surface_unbound",
-        task_id=task_id,
-        actor=actor,
-        data={"surface": old_surface},
-        model=model,
-        session=session,
-        triggered_by=triggered_by,
-        on_behalf_of=on_behalf_of,
-        reason=provenance_reason,
-    )
-    updated_snapshot = apply_event_to_snapshot(snapshot, event)
-    write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
+    result = mutate_task(lattice_dir, task_id, decide, config)
+    updated_snapshot = result.snapshot
+    old_surface = result.callback_value
 
     display_id = updated_snapshot.get("short_id") or task_id
     output_result(

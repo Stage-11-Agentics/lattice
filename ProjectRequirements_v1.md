@@ -188,7 +188,8 @@ Recommended (nullable/optional):
 - `assigned_to` (prefixed string: `agent:{id}` / `human:{id}` / `team:{id}`)
 - `created_by` (same format)
 - `relationships_out` (array, see section 8)
-- `artifact_refs` (array of artifact IDs, optional cache only, see section 9)
+- `evidence_refs` (array of full artifact/comment evidence records, optional cache only, see section 9)
+- `acceptance_criteria` (array, optional materialized view; missing means `[]`)
 - `git_context` (object, optional cache only, see section 11)
 - `last_event_id` (string, `ev_...` — ID of the most recent event applied to this snapshot; enables O(1) drift detection by `doctor`)
 - `custom_fields` (open object, no validation in v0)
@@ -197,7 +198,8 @@ Recommended (nullable/optional):
 
 - Agents can request a compact view:
   - `id`, `title`, `status`, `priority`, `urgency`, `type`, `assigned_to`, `tags`
-  - optional counts: `relationships_out_count`, `artifact_ref_count`
+  - optional counts: `relationships_out_count`, `artifact_ref_count`,
+    `acceptance_criteria_count`, `retired_acceptance_criteria_count`
 - This is the default for list/board operations to conserve tokens.
 
 ### 6.3 Task types (v0)
@@ -322,11 +324,17 @@ Task-scoped events (require `task_id`):
 - `field_updated`:
   - `field`, `from`, `to`
 - `comment_added`:
-  - `body` (string)
+  - `body` (string), `role` (optional string), `criterion_ids` (optional array)
 - `relationship_added` / `relationship_removed`:
   - `type`, `target_task_id`
 - `artifact_attached`:
-  - `artifact_id`, `role` (optional string)
+  - `artifact_id`, `role` (optional string), `criterion_ids` (optional array)
+- `acceptance_criterion_added`:
+  - `criterion_id`, normalized `outcome`, `revision` (always 1)
+- `acceptance_criterion_edited`:
+  - `criterion_id`, `from_outcome`, normalized `outcome`, next `revision`
+- `acceptance_criterion_retired`:
+  - `criterion_id`, current `revision`
 - `git_event`:
   - `action` (ex: `commit`)
   - `sha` (string)
@@ -420,10 +428,14 @@ Linkage between tasks and artifacts is recorded as events (`artifact_attached`) 
 ### 12.1 Locking rules (v0)
 
 - All writes are protected with lock files in `.lattice/locks/`.
-- Lock granularity:
-  - task snapshot file lock when rewriting `tasks/<id>.json`
-  - event log lock when appending `events/<id>.jsonl`
-  - global event log lock when appending `events/_lifecycle.jsonl`
+- Every task mutation uses the storage-owned callback mutation API. Under a
+  deterministic lock set it resolves active/archive event-log candidates,
+  strictly replays the authoritative log, validates and constructs new events
+  against that replayed state, appends events first, then atomically writes the
+  derived snapshot. Callers never supply a precomputed snapshot.
+- Lifecycle mutations also lock the derived lifecycle log. Task creation with
+  short IDs additionally locks `ids.json` in the same sorted lock set.
+- Hooks run only after locks are released and all durable writes succeed.
 
 ### 12.2 Deterministic lock ordering (v0)
 
@@ -436,13 +448,15 @@ Linkage between tasks and artifacts is recorded as events (`artifact_attached`) 
 - `lattice doctor`:
   - validates JSON parseability
   - detects and safely removes truncated final lines in JSONL files
-  - checks snapshot drift via `last_event_id` (O(1) consistency check)
+  - compares the complete serialized replay with the snapshot, including when
+    `last_event_id` matches
   - checks missing referenced files (tasks, artifacts)
   - validates relationship targets exist or are archived
   - flags duplicate edges and malformed IDs
   - verifies `_global.jsonl` is consistent with per-task logs
-- `lattice rebuild <task_id|all>`:
-  - replays events to regenerate task snapshots
+- `lattice rebuild <task_id|--all>`:
+  - strictly resolves and replays authoritative active/archive event logs to
+    regenerate task snapshots at event-selected placement
   - optionally rehydrates caches (relationship counts, artifact refs, git_context)
   - regenerates `_global.jsonl` from per-task event logs
 
@@ -464,7 +478,9 @@ Linkage between tasks and artifacts is recorded as events (`artifact_attached`) 
 - `lattice assign <task_id> <actor_id>`:
   - append `assignment_changed`; update snapshot
 - `lattice comment <task_id> "<text>"`:
-  - append `comment_added`
+  - append `comment_added`; repeatable `--criterion` creates traceability links
+- `lattice criterion add|edit|retire|list ...`:
+  - manage optional, stable task-local acceptance criteria
 - `lattice list [filters]`:
   - filters: `--status`, `--assigned`, `--tag`, `--type`
 - `lattice show <task_id> [--full]`
@@ -476,6 +492,7 @@ Linkage between tasks and artifacts is recorded as events (`artifact_attached`) 
   - create artifact metadata (+ payload when applicable)
   - append `artifact_attached` to task
   - supports `--id art_...`
+  - repeatable `--criterion` links evidence to existing active or retired criteria
 - `lattice link <task_id> <type> <target_task_id>`:
   - append `relationship_added`; update snapshot cache `relationships_out`
 - `lattice unlink <task_id> <type> <target_task_id>`
@@ -513,6 +530,8 @@ Linkage between tasks and artifacts is recorded as events (`artifact_attached`) 
   - board view by status
   - list view with filters
   - task detail with event timeline
+  - active and retired acceptance criteria, revision history, and evidence-link
+    badges, without inferred satisfaction state
   - recent activity feed (from global events or recent per-task events)
 
 Constraints:
@@ -610,3 +629,5 @@ Constraints:
 - not an alerting/monitoring platform (telemetry is for analysis)
 - not a code review tool
 - not an agent runtime or process manager
+- acceptance criteria are never mandatory and do not add workflow or completion
+  gates, pass/fail state, scoring, inheritance, or automatic satisfaction

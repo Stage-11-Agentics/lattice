@@ -28,7 +28,9 @@ Primary implementation lives in `src/lattice/core/events.py`.
 - Task lifecycle: `task_created`, `task_archived`, `task_unarchived`
 - Task mutation: `status_changed`, `assignment_changed`, `field_updated`,
   comments/reactions, relationships, artifacts, branch links, file links
-  (`file_linked`, `file_unlinked`)
+  (`file_linked`, `file_unlinked`), and acceptance criteria
+  (`acceptance_criterion_added`, `acceptance_criterion_edited`,
+  `acceptance_criterion_retired`)
 - Resource mutation: `resource_created`, `resource_acquired`,
   `resource_released`, `resource_heartbeat`, `resource_expired`, `resource_updated`
 
@@ -36,17 +38,28 @@ Only lifecycle events are duplicated into `_lifecycle.jsonl`.
 
 ## Write Path (Durability)
 
-Authoritative write path is `write_task_event()` in `src/lattice/storage/operations.py`:
+Authoritative write path is `mutate_task()` in `src/lattice/storage/operations.py`:
 
-1. Acquire deterministic lock set (`multi_lock`)
-2. Append per-task events JSONL (`jsonl_append`)
-3. Append lifecycle events JSONL (if applicable)
-4. Atomic-write snapshot
-5. Release locks
-6. Execute hooks (post-durability)
+1. Acquire the deterministic event/snapshot lock set (`multi_lock`), plus
+   lifecycle or ID-index locks when declared
+2. Resolve all active/archive event-log candidates and strictly replay the
+   complete authoritative history
+3. Run the caller callback against that replayed state; the callback returns
+   proposed events, not a precomputed snapshot
+4. Validate and append newly proposed per-task events
+5. Re-reduce and atomic-write the canonical snapshot, repairing stale or
+   missing caches even for a zero-event retry
+6. Reconcile declared lifecycle/placement state, release locks, then execute
+   hooks only for events appended by this invocation
 
 This ensures event-first durability: if a crash happens between event append and
 snapshot write, `lattice rebuild` can recover snapshots from events.
+
+Acceptance-criterion history is immutable and task-local. Criterion IDs are
+stable opaque tokens; automatic allocation considers only exact `AC-N` IDs.
+Optional `criterion_ids` on `comment_added` and `artifact_attached` are
+traceability links to criteria that already exist at that point in history.
+They never mean that a criterion passed or was satisfied.
 
 ## Provenance and Attribution
 

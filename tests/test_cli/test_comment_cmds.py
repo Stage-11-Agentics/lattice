@@ -372,6 +372,102 @@ class TestCommentRole:
         assert comment_refs == []
 
 
+class TestCommentCriterionLinks:
+    def test_roleless_comment_links_retired_criterion_and_normalizes_duplicates(
+        self, invoke, create_task
+    ) -> None:
+        task_id = create_task("Criterion evidence comment")["id"]
+        assert (
+            invoke(
+                "criterion",
+                "add",
+                task_id,
+                "Observable.",
+                "--actor",
+                "human:test",
+            ).exit_code
+            == 0
+        )
+        assert (
+            invoke(
+                "criterion",
+                "retire",
+                task_id,
+                "AC-1",
+                "--actor",
+                "human:test",
+            ).exit_code
+            == 0
+        )
+
+        result = invoke(
+            "comment",
+            task_id,
+            "Observed on the running system.",
+            "--criterion",
+            "AC-1",
+            "--criterion",
+            "AC-1",
+            "--actor",
+            "human:test",
+            "--json",
+        )
+        assert result.exit_code == 0, result.output
+        snapshot = json.loads(result.output)["data"]
+        comment_ref = next(
+            ref for ref in snapshot["evidence_refs"] if ref["source_type"] == "comment"
+        )
+        assert comment_ref["role"] is None
+        assert comment_ref["criterion_ids"] == ["AC-1"]
+
+        comment_id = snapshot["last_event_id"]
+        edited = invoke(
+            "comment-edit",
+            task_id,
+            comment_id,
+            "Observed twice on the running system.",
+            "--actor",
+            "human:test",
+            "--json",
+        )
+        edited_ref = next(
+            ref
+            for ref in json.loads(edited.output)["data"]["evidence_refs"]
+            if ref["source_type"] == "comment"
+        )
+        assert edited_ref["criterion_ids"] == ["AC-1"]
+
+        deleted = invoke(
+            "comment-delete",
+            task_id,
+            comment_id,
+            "--actor",
+            "human:test",
+            "--json",
+        )
+        assert not [
+            ref
+            for ref in json.loads(deleted.output)["data"]["evidence_refs"]
+            if ref["source_type"] == "comment"
+        ]
+
+    def test_unknown_criterion_is_rejected(self, invoke, create_task) -> None:
+        result = invoke(
+            "comment",
+            create_task("Unknown criterion")["id"],
+            "Evidence.",
+            "--criterion",
+            "AC-404",
+            "--actor",
+            "human:test",
+            "--json",
+        )
+        assert result.exit_code != 0
+        error = json.loads(result.output)["error"]
+        assert error["code"] == "VALIDATION_ERROR"
+        assert "not found" in error["message"]
+
+
 # ---------------------------------------------------------------------------
 # Role validation (LAT-137)
 # ---------------------------------------------------------------------------
@@ -584,6 +680,151 @@ class TestCommentFile:
 
 class TestCommentEditRole:
     """Tests for --role option on comment-edit."""
+
+    def test_clear_linked_role_is_explicit_preserving_and_idempotent(
+        self, invoke, create_task, initialized_root
+    ) -> None:
+        """--clear-role emits null while omission preserves role and criterion links."""
+        from lattice.storage.fs import LATTICE_DIR
+
+        task = create_task("Clear linked role")
+        task_id = task["id"]
+        assert (
+            invoke(
+                "criterion",
+                "add",
+                task_id,
+                "Observable result.",
+                "--actor",
+                "human:test",
+            ).exit_code
+            == 0
+        )
+        added = invoke(
+            "comment",
+            task_id,
+            "Observed.",
+            "--role",
+            "review",
+            "--criterion",
+            "AC-1",
+            "--actor",
+            "human:test",
+            "--json",
+        )
+        assert added.exit_code == 0, added.output
+        comment_id = json.loads(added.output)["data"]["last_event_id"]
+        event_path = initialized_root / LATTICE_DIR / "events" / f"{task_id}.jsonl"
+
+        omitted = invoke(
+            "comment-edit",
+            task_id,
+            comment_id,
+            "Observed again.",
+            "--actor",
+            "human:test",
+            "--json",
+        )
+        assert omitted.exit_code == 0, omitted.output
+        omitted_ref = next(
+            ref
+            for ref in json.loads(omitted.output)["data"]["evidence_refs"]
+            if ref.get("source_type") == "comment"
+        )
+        assert omitted_ref["role"] == "review"
+        assert omitted_ref["criterion_ids"] == ["AC-1"]
+
+        before_conflict = event_path.read_bytes()
+        conflict = invoke(
+            "comment-edit",
+            task_id,
+            comment_id,
+            "Observed again.",
+            "--role",
+            "review",
+            "--clear-role",
+            "--actor",
+            "human:test",
+            "--json",
+        )
+        assert conflict.exit_code != 0
+        assert json.loads(conflict.output)["error"]["code"] == "VALIDATION_ERROR"
+        assert event_path.read_bytes() == before_conflict
+
+        cleared = invoke(
+            "comment-edit",
+            task_id,
+            comment_id,
+            "Observed again.",
+            "--clear-role",
+            "--actor",
+            "human:test",
+            "--json",
+        )
+        assert cleared.exit_code == 0, cleared.output
+        cleared_ref = next(
+            ref
+            for ref in json.loads(cleared.output)["data"]["evidence_refs"]
+            if ref.get("source_type") == "comment"
+        )
+        assert cleared_ref == {
+            "id": comment_id,
+            "role": None,
+            "source_type": "comment",
+            "criterion_ids": ["AC-1"],
+        }
+        clear_event = json.loads(event_path.read_text().splitlines()[-1])
+        assert clear_event["type"] == "comment_edited"
+        assert clear_event["data"]["role"] is None
+        assert clear_event["data"]["previous_role"] == "review"
+
+        after_clear = event_path.read_bytes()
+        repeated = invoke(
+            "comment-edit",
+            task_id,
+            comment_id,
+            "Observed again.",
+            "--clear-role",
+            "--actor",
+            "human:test",
+            "--json",
+        )
+        assert repeated.exit_code == 0, repeated.output
+        assert event_path.read_bytes() == after_clear
+
+    def test_clear_role_on_legacy_unlinked_comment_removes_role_ref(
+        self, invoke, create_task
+    ) -> None:
+        """Clearing an unlinked role comment returns it to legacy comment behavior."""
+        task_id = create_task("Clear legacy role")["id"]
+        added = invoke(
+            "comment",
+            task_id,
+            "Review note.",
+            "--role",
+            "review",
+            "--actor",
+            "human:test",
+            "--json",
+        )
+        comment_id = json.loads(added.output)["data"]["last_event_id"]
+
+        cleared = invoke(
+            "comment-edit",
+            task_id,
+            comment_id,
+            "Review note.",
+            "--clear-role",
+            "--actor",
+            "human:test",
+            "--json",
+        )
+        assert cleared.exit_code == 0, cleared.output
+        assert not [
+            ref
+            for ref in json.loads(cleared.output)["data"].get("evidence_refs", [])
+            if ref.get("source_type") == "comment" and ref.get("id") == comment_id
+        ]
 
     def test_add_role_to_roleless_comment(self, invoke, create_task) -> None:
         """Adding --role to a comment without a role creates an evidence_ref."""

@@ -77,6 +77,15 @@ class HeartbeatConfig(TypedDict, total=False):
     max_advances: int
 
 
+def configured_event_prefix(config: dict) -> str | None:
+    """Return the exact short-ID prefix used for newly created task events."""
+    project_code = config.get("project_code")
+    subproject_code = config.get("subproject_code")
+    if not project_code:
+        return None
+    return f"{project_code}-{subproject_code}" if subproject_code else project_code
+
+
 # ---------------------------------------------------------------------------
 # Workflow personality presets
 # ---------------------------------------------------------------------------

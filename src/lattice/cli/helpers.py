@@ -10,7 +10,11 @@ import click
 
 from lattice.core.ids import is_short_id, validate_actor, validate_id
 from lattice.storage.fs import LATTICE_DIR, LatticeRootError, find_root
-from lattice.storage.operations import write_task_event  # noqa: F401 — re-exported
+from lattice.storage.operations import (
+    AuthoritativeLogError,
+    mutate_task_events,  # noqa: F401 - CLI re-export
+    read_task_authority,
+)
 from lattice.storage.short_ids import resolve_short_id as _resolve_short
 
 
@@ -334,11 +338,25 @@ def common_options(f):  # noqa: ANN001, ANN201
 
 
 def read_snapshot(lattice_dir: Path, task_id: str) -> dict | None:
-    """Read a task snapshot, returning None if not found."""
-    path = lattice_dir / "tasks" / f"{task_id}.json"
-    if not path.exists():
+    """Read the authoritative active task view, returning None if not found."""
+    try:
+        authority = read_task_authority(lattice_dir, task_id, allow_missing=True)
+    except AuthoritativeLogError:
         return None
-    return json.loads(path.read_text())
+    if authority is None or authority.location != "active":
+        return None
+    return authority.snapshot
+
+
+def read_task_view(lattice_dir: Path, task_id: str) -> tuple[dict, bool] | None:
+    """Read a task at its event-selected placement."""
+    try:
+        authority = read_task_authority(lattice_dir, task_id, allow_missing=True)
+    except AuthoritativeLogError:
+        return None
+    if authority is None:
+        return None
+    return authority.snapshot, authority.location == "archived"
 
 
 def read_snapshot_or_exit(lattice_dir: Path, task_id: str, is_json: bool) -> dict:
@@ -502,6 +520,8 @@ def check_plan_gate(
     *,
     force: bool = False,
     reason: str | None = None,
+    authoritative_snapshot: dict | None = None,
+    authoritative_location: str | None = None,
 ) -> None:
     """Block transition to in_progress if the plan file is still scaffold.
 
@@ -524,8 +544,26 @@ def check_plan_gate(
             )
         return
 
-    plan_path = lattice_dir / "plans" / f"{task_id}.md"
-    if not plan_path.exists():
+    if authoritative_snapshot is None:
+        from lattice.storage.operations import resolve_task_prose_path
+
+        plan_path, authority = resolve_task_prose_path(lattice_dir, task_id, "plan")
+        authoritative_snapshot = authority.snapshot
+    else:
+        base = lattice_dir / "archive" if authoritative_location == "archived" else lattice_dir
+        other_base = (
+            lattice_dir if authoritative_location == "archived" else lattice_dir / "archive"
+        )
+        target = base / "plans" / f"{task_id}.md"
+        other = other_base / "plans" / f"{task_id}.md"
+        if target.exists() and other.exists() and target.read_bytes() != other.read_bytes():
+            output_error(
+                f"Plan files diverge for {task_id}; manual recovery is required.",
+                "INTEGRITY_ERROR",
+                is_json,
+            )
+        plan_path = target if target.exists() else other if other.exists() else None
+    if plan_path is None:
         output_error(
             f"Plan file missing for {task_id}. "
             "Write a plan before moving to in_progress. "
@@ -542,12 +580,7 @@ def check_plan_gate(
     # Load the task description so we can distinguish "plan is just the
     # auto-generated description" from "plan has real content".
     description: str | None = None
-    snap_path = lattice_dir / "tasks" / f"{task_id}.json"
-    try:
-        snap = json.loads(snap_path.read_text())
-        description = snap.get("description")
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        pass
+    description = authoritative_snapshot.get("description")
 
     if is_scaffold_plan(content, description=description):
         output_error(

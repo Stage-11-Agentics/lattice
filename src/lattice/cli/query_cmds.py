@@ -15,13 +15,11 @@ from lattice.cli.helpers import (
     load_project_config,
     output_error,
     output_result,
-    read_snapshot,
     read_snapshot_or_exit,
     require_actor,
     require_root,
     resolve_task_id,
     validate_actor_format_or_exit,
-    write_task_event,
 )
 from lattice.cli.main import cli
 from lattice.core.comments import materialize_comments
@@ -34,14 +32,22 @@ from lattice.core.events import (
 )
 from lattice.core.ids import extract_short_ids, validate_id
 from lattice.core.next import compute_claim_transitions, select_next
-from lattice.core.stats import load_all_snapshots
 from lattice.core.tasks import (
     apply_event_to_snapshot,
     compact_snapshot,
+    get_artifact_evidence_refs,
     is_backward_status_transition,
 )
-from lattice.storage.locks import multi_lock
+from lattice.storage.operations import (
+    TaskMutationDecision,
+    discover_task_authorities,
+    mutate_task,
+    read_task_authority,
+    resolve_task_prose_path,
+)
 from lattice.storage.readers import read_task_events
+
+read_snapshot = helpers.read_snapshot
 
 
 # ---------------------------------------------------------------------------
@@ -65,21 +71,9 @@ def comments_cmd(
 
     task_id = resolve_task_id(lattice_dir, task_id, is_json, allow_archived=True)
 
-    # Read task snapshot for context header
-    snapshot = read_snapshot(lattice_dir, task_id)
-    if snapshot is None:
-        # Check archive
-        archive_path = lattice_dir / "archive" / "tasks" / f"{task_id}.json"
-        if archive_path.exists():
-            try:
-                snapshot = json.loads(archive_path.read_text())
-            except (json.JSONDecodeError, OSError):
-                pass
-
-    # Try active first, then archive
-    events = read_task_events(lattice_dir, task_id, is_archived=False)
-    if not events:
-        events = read_task_events(lattice_dir, task_id, is_archived=True)
+    authority = read_task_authority(lattice_dir, task_id, allow_missing=True)
+    snapshot = authority.snapshot if authority is not None else None
+    events = list(authority.events) if authority is not None else []
 
     comments = materialize_comments(events)
 
@@ -218,7 +212,7 @@ def event_cmd(
             )
 
     # Validate task exists
-    snapshot = read_snapshot_or_exit(lattice_dir, task_id, is_json)
+    read_snapshot_or_exit(lattice_dir, task_id, is_json)
 
     # Validate --id if provided
     if ev_id is not None:
@@ -229,54 +223,43 @@ def event_cmd(
                 is_json,
             )
 
-        # Idempotency check: scan event log for matching ID
-        event_path = lattice_dir / "events" / f"{task_id}.jsonl"
-        if event_path.exists():
-            for line in event_path.read_text().splitlines():
-                line = line.strip()
-                if not line:
+    def decide(context):  # noqa: ANN001, ANN202
+        if ev_id is not None:
+            for existing in context.events:
+                if existing.get("id") != ev_id:
                     continue
-                try:
-                    existing = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if existing.get("id") == ev_id:
-                    # Same ID found — check if payload matches
-                    if existing.get("type") == event_type and existing.get("data") == event_data:
-                        output_result(
-                            data=existing,
-                            human_message=f"Event {ev_id} already exists (idempotent).",
-                            quiet_value=ev_id,
-                            is_json=is_json,
-                            is_quiet=quiet,
-                        )
-                        return
-                    else:
-                        output_error(
-                            f"Conflict: event {ev_id} exists with different data.",
-                            "CONFLICT",
-                            is_json,
-                        )
+                if existing.get("type") == event_type and existing.get("data") == event_data:
+                    return TaskMutationDecision(value=existing, idempotent=True)
+                output_error(
+                    f"Conflict: event {ev_id} exists with different data.",
+                    "CONFLICT",
+                    is_json,
+                )
+        event = create_event(
+            type=event_type,
+            task_id=task_id,
+            actor=actor,
+            data=event_data,
+            event_id=ev_id,
+            model=model,
+            session=session,
+            triggered_by=triggered_by,
+            on_behalf_of=on_behalf_of,
+            reason=provenance_reason,
+        )
+        return TaskMutationDecision(events=[event], value=event)
 
-    # Build event and apply to snapshot
-    event = create_event(
-        type=event_type,
-        task_id=task_id,
-        actor=actor,
-        data=event_data,
-        event_id=ev_id,
-        model=model,
-        session=session,
-        triggered_by=triggered_by,
-        on_behalf_of=on_behalf_of,
-        reason=provenance_reason,
-    )
-    updated_snapshot = apply_event_to_snapshot(snapshot, event)
-
-    # Write (event-first, then snapshot, under lock)
-    # Custom events do NOT go to _lifecycle.jsonl — write_task_event handles
-    # this automatically since the type is x_* (not in LIFECYCLE_EVENT_TYPES).
-    write_task_event(lattice_dir, task_id, [event], updated_snapshot, config)
+    result = mutate_task(lattice_dir, task_id, decide, config)
+    event = result.callback_value
+    if result.idempotent:
+        output_result(
+            data=event,
+            human_message=f"Event {event['id']} already exists (idempotent).",
+            quiet_value=event["id"],
+            is_json=is_json,
+            is_quiet=quiet,
+        )
+        return
 
     output_result(
         data=event,
@@ -342,29 +325,12 @@ def list_cmd(
         valid = ", ".join(config.get("workflow", {}).get("statuses", []))
         status_warning = f"'{status}' is not a configured status. Valid statuses: {valid}."
 
-    # Scan all .json files in tasks/ directory
-    tasks_dir = lattice_dir / "tasks"
     snapshots: list[dict] = []
-
-    if tasks_dir.is_dir():
-        for task_file in sorted(tasks_dir.glob("*.json")):
-            try:
-                snap = json.loads(task_file.read_text())
-            except (json.JSONDecodeError, OSError):
-                continue
-            snapshots.append(snap)
-
-    # Include archived tasks if requested
-    if include_archived:
-        archive_dir = lattice_dir / "archive" / "tasks"
-        if archive_dir.is_dir():
-            for task_file in sorted(archive_dir.glob("*.json")):
-                try:
-                    snap = json.loads(task_file.read_text())
-                except (json.JSONDecodeError, OSError):
-                    continue
-                snap["_archived"] = True
-                snapshots.append(snap)
+    for authority in discover_task_authorities(lattice_dir, include_archived=include_archived):
+        snap = dict(authority.snapshot)
+        if authority.location == "archived":
+            snap["_archived"] = True
+        snapshots.append(snap)
 
     # Apply filters (AND combination)
     filtered: list[dict] = []
@@ -435,6 +401,16 @@ def list_cmd(
                 f'{prefix}{display_id}  {s_display}  {p}  {t}  "{title}"  '
                 f"{assigned_to}{archived_marker}"
             )
+            active_criteria = sum(
+                1
+                for criterion in snap.get("acceptance_criteria", [])
+                if not criterion.get("retired")
+            )
+            retired_criteria = sum(
+                1 for criterion in snap.get("acceptance_criteria", []) if criterion.get("retired")
+            )
+            if active_criteria or retired_criteria:
+                line += f"  [criteria: {active_criteria} active, {retired_criteria} retired]"
             if flag and isinstance(flag, dict) and flag.get("reason"):
                 line += f"  [needs human: {flag['reason']}]"
             click.echo(line)
@@ -503,7 +479,10 @@ def next_cmd(
         ready_statuses = frozenset(s.strip() for s in status_csv.split(",") if s.strip())
 
     # Load all active snapshots
-    active, _archived = load_all_snapshots(lattice_dir)
+    active = [
+        authority.snapshot
+        for authority in discover_task_authorities(lattice_dir, include_archived=False)
+    ]
 
     # Select next task
     selected = select_next(active, actor=resolved_actor, ready_statuses=ready_statuses)
@@ -525,15 +504,9 @@ def next_cmd(
         # Planning gate: block if plan is still scaffold
         check_plan_gate(lattice_dir, task_id, "in_progress", is_json, config)
 
-        locks_dir = lattice_dir / "locks"
-        lock_keys = sorted([f"events_{task_id}", f"tasks_{task_id}"])
-
-        with multi_lock(locks_dir, lock_keys):
-            # Re-read snapshot under lock to prevent TOCTOU race
-            snapshot = read_snapshot(lattice_dir, task_id)
-            if snapshot is None:
-                output_error(f"Task {task_id} not found.", "NOT_FOUND", is_json)
-
+        def decide(context):  # noqa: ANN001, ANN202
+            snapshot = context.snapshot
+            assert snapshot is not None
             # Concurrent claim guard: reject if another agent claimed
             # this task between our select_next() and lock acquisition.
             from lattice.core.next import _actors_match
@@ -601,28 +574,9 @@ def next_cmd(
                     snapshot = apply_event_to_snapshot(snapshot, status_event)
                     prev_status = next_status
 
-            if events:
-                # Write directly under the already-held lock (bypass write_task_event
-                # which would try to acquire its own locks)
-                from lattice.core.events import serialize_event
-                from lattice.core.tasks import serialize_snapshot
-                from lattice.storage.fs import atomic_write, jsonl_append
+            return TaskMutationDecision(events=events)
 
-                event_path = lattice_dir / "events" / f"{task_id}.jsonl"
-                for event in events:
-                    jsonl_append(event_path, serialize_event(event))
-
-                snapshot_path = lattice_dir / "tasks" / f"{task_id}.json"
-                atomic_write(snapshot_path, serialize_snapshot(snapshot))
-
-            selected = snapshot
-
-        # Fire hooks after lock release
-        if events and config:
-            from lattice.storage.hooks import execute_hooks
-
-            for event in events:
-                execute_hooks(config, lattice_dir, task_id, event)
+        selected = mutate_task(lattice_dir, task_id, decide, config).snapshot
 
     display_id = selected.get("short_id") or task_id
     result_data = selected
@@ -643,8 +597,8 @@ def next_cmd(
 
 def _read_plan_content_for_next(lattice_dir: Path, task_id: str) -> str | None:
     """Return plan markdown for *task_id* if present and non-scaffold; else None."""
-    plan_path = lattice_dir / "plans" / f"{task_id}.md"
-    if not plan_path.exists():
+    plan_path, _authority = resolve_task_prose_path(lattice_dir, task_id, "plan")
+    if plan_path is None:
         return None
     try:
         content = plan_path.read_text(encoding="utf-8")
@@ -688,22 +642,11 @@ def show_cmd(
 
     task_id = resolve_task_id(lattice_dir, task_id, is_json, allow_archived=True)
 
-    # Try to read task snapshot from tasks/
-    snapshot = read_snapshot(lattice_dir, task_id)
-    is_archived = False
-
-    if snapshot is None:
-        # Check archive
-        archive_path = lattice_dir / "archive" / "tasks" / f"{task_id}.json"
-        if archive_path.exists():
-            try:
-                snapshot = json.loads(archive_path.read_text())
-                is_archived = True
-            except (json.JSONDecodeError, OSError):
-                pass
-
-    if snapshot is None:
+    authority = read_task_authority(lattice_dir, task_id, allow_missing=True)
+    if authority is None:
         output_error(f"Task {task_id} not found.", "NOT_FOUND", is_json)
+    snapshot = dict(authority.snapshot)
+    is_archived = authority.location == "archived"
 
     # Load config for valid_transitions
     config = load_project_config(lattice_dir)
@@ -723,7 +666,7 @@ def show_cmd(
         return
 
     # Read event log
-    events = _read_events(lattice_dir, task_id, is_archived)
+    events = list(authority.events)
     status_rank = _status_rank_from_config(config)
     backward_count, latest_reopen = _scan_backward_status_transitions(events, status_rank)
     reopened_count = snapshot.get("reopened_count", 0)
@@ -990,15 +933,8 @@ def _enrich_relationships(lattice_dir: Path, snapshot: dict) -> list[dict]:
         enriched = dict(rel)
         target_id = rel.get("target_task_id", "")
         # Try to read target task title
-        target_snap = read_snapshot(lattice_dir, target_id)
-        if target_snap is None:
-            # Check archive
-            archive_path = lattice_dir / "archive" / "tasks" / f"{target_id}.json"
-            if archive_path.exists():
-                try:
-                    target_snap = json.loads(archive_path.read_text())
-                except (json.JSONDecodeError, OSError):
-                    pass
+        authority = read_task_authority(lattice_dir, target_id, allow_missing=True)
+        target_snap = authority.snapshot if authority is not None else None
         if target_snap is not None:
             enriched["target_title"] = target_snap.get("title")
         relationships.append(enriched)
@@ -1008,31 +944,25 @@ def _enrich_relationships(lattice_dir: Path, snapshot: dict) -> list[dict]:
 def _find_incoming_relationships(lattice_dir: Path, task_id: str) -> list[dict]:
     """Find all tasks that have outgoing relationships pointing at *task_id*.
 
-    Scans active and archived snapshots. Returns a list of dicts with
+    Scans active and archived authorities. Returns a list of dicts with
     ``source_task_id``, ``source_title``, ``type``, and ``note``.
     """
     incoming: list[dict] = []
 
-    for directory in [lattice_dir / "tasks", lattice_dir / "archive" / "tasks"]:
-        if not directory.is_dir():
+    for authority in discover_task_authorities(lattice_dir, include_archived=True):
+        if authority.task_id == task_id:
             continue
-        for snap_file in directory.glob("*.json"):
-            if snap_file.stem == task_id:
-                continue  # skip self
-            try:
-                snap = json.loads(snap_file.read_text())
-            except (json.JSONDecodeError, OSError):
-                continue
-            for rel in snap.get("relationships_out", []):
-                if rel.get("target_task_id") == task_id:
-                    incoming.append(
-                        {
-                            "source_task_id": snap.get("id", snap_file.stem),
-                            "source_title": snap.get("title"),
-                            "type": rel.get("type"),
-                            "note": rel.get("note"),
-                        }
-                    )
+        snap = authority.snapshot
+        for rel in snap.get("relationships_out", []):
+            if rel.get("target_task_id") == task_id:
+                incoming.append(
+                    {
+                        "source_task_id": snap.get("id", authority.task_id),
+                        "source_title": snap.get("title"),
+                        "type": rel.get("type"),
+                        "note": rel.get("note"),
+                    }
+                )
 
     return incoming
 
@@ -1044,10 +974,11 @@ def _read_artifact_info(lattice_dir: Path, snapshot: dict) -> list[dict]:
     to legacy ``artifact_refs`` for old snapshots.
     """
     artifacts: list[dict] = []
-    refs = _get_artifact_evidence_refs(snapshot)
-    for art_id, role in refs:
+    refs = get_artifact_evidence_refs(snapshot)
+    for ref in refs:
+        art_id = ref["id"]
         meta_path = lattice_dir / "artifacts" / "meta" / f"{art_id}.json"
-        info: dict = {"id": art_id, "role": role}
+        info: dict = dict(ref)
         if meta_path.exists():
             try:
                 meta = json.loads(meta_path.read_text())
@@ -1057,25 +988,6 @@ def _read_artifact_info(lattice_dir: Path, snapshot: dict) -> list[dict]:
                 pass
         artifacts.append(info)
     return artifacts
-
-
-def _get_artifact_evidence_refs(snapshot: dict) -> list[tuple[str, str | None]]:
-    """Extract (artifact_id, role) pairs from evidence_refs or legacy artifact_refs."""
-    evidence_refs = snapshot.get("evidence_refs")
-    if evidence_refs is not None:
-        return [
-            (ref["id"], ref.get("role"))
-            for ref in evidence_refs
-            if ref.get("source_type") == "artifact"
-        ]
-    # Legacy fallback
-    result = []
-    for ref in snapshot.get("artifact_refs", []):
-        if isinstance(ref, dict):
-            result.append((ref["id"], ref.get("role")))
-        else:
-            result.append((ref, None))
-    return result
 
 
 def _print_compact_show(
@@ -1106,6 +1018,14 @@ def _print_compact_show(
             f"{flag.get('reason', '?')}"
         )
     click.echo(f"Assigned: {assigned_to}{next_str}")
+    active_criteria = sum(
+        1 for criterion in snapshot.get("acceptance_criteria", []) if not criterion.get("retired")
+    )
+    retired_criteria = sum(
+        1 for criterion in snapshot.get("acceptance_criteria", []) if criterion.get("retired")
+    )
+    if active_criteria or retired_criteria:
+        click.echo(f"Criteria: {active_criteria} active, {retired_criteria} retired")
 
 
 def _print_human_show(
@@ -1193,6 +1113,32 @@ def _print_human_show(
             else:
                 click.echo(f"  {source_id} --[{rel_type}]--> this")
 
+    criteria = snapshot.get("acceptance_criteria", [])
+    if criteria:
+        evidence_counts: dict[str, int] = {}
+        for ref in snapshot.get("evidence_refs", []):
+            for criterion_id in ref.get("criterion_ids", []):
+                evidence_counts[criterion_id] = evidence_counts.get(criterion_id, 0) + 1
+        click.echo("")
+        click.echo("Acceptance criteria:")
+        for criterion in criteria:
+            criterion_id = criterion.get("id", "?")
+            retired = " [retired]" if criterion.get("retired") else ""
+            revision = criterion.get("revision", "?")
+            evidence_count = evidence_counts.get(criterion_id, 0)
+            click.echo(
+                f"  {criterion_id}{retired} (rev {revision}, "
+                f"evidence: {evidence_count}) {criterion.get('outcome', '')}"
+            )
+            if full:
+                for history in criterion.get("revisions", []):
+                    click.echo(
+                        f"    rev {history.get('revision', '?')} "
+                        f"{history.get('changed_at', '?')} "
+                        f"by {get_actor_display(history.get('changed_by', '?'))}: "
+                        f"{history.get('outcome', '')}"
+                    )
+
     if artifact_info:
         click.echo("")
         click.echo("Artifacts:")
@@ -1201,11 +1147,14 @@ def _print_human_show(
             art_title = art.get("title")
             art_type = art.get("type")
             art_role = art.get("role")
+            criterion_ids = art.get("criterion_ids", [])
             parts: list[str] = []
             if art_type:
                 parts.append(art_type)
             if art_role:
                 parts.append(f"role: {art_role}")
+            if criterion_ids:
+                parts.append(f"criteria: {', '.join(criterion_ids)}")
             suffix = f" ({', '.join(parts)})" if parts else ""
             if art_title:
                 click.echo(f'  {art_id} "{art_title}"{suffix}')
@@ -1317,7 +1266,9 @@ def _event_summary(event: dict, full: bool) -> str:
             body = body[:57] + "..."
         role = data.get("role")
         role_tag = f" [role: {role}]" if role else ""
-        return f'"{body}"{role_tag}'
+        criteria = data.get("criterion_ids", [])
+        criteria_tag = f" [criteria: {', '.join(criteria)}]" if criteria else ""
+        return f'"{body}"{role_tag}{criteria_tag}'
     elif etype == "comment_edited":
         cid = data.get("comment_id", "?")
         return f"edited comment {cid[:20]}..."
@@ -1337,7 +1288,19 @@ def _event_summary(event: dict, full: bool) -> str:
     elif etype == "relationship_removed":
         return f"{data.get('type', '?')} -x- {data.get('target_task_id', '?')}"
     elif etype == "artifact_attached":
-        return f"artifact {data.get('artifact_id', '?')}"
+        role = f" [role: {data['role']}]" if data.get("role") else ""
+        criteria = data.get("criterion_ids", [])
+        links = f" [criteria: {', '.join(criteria)}]" if criteria else ""
+        return f"artifact {data.get('artifact_id', '?')}{role}{links}"
+    elif etype == "acceptance_criterion_added":
+        return f"{data.get('criterion_id', '?')} rev 1: {data.get('outcome', '')}"
+    elif etype == "acceptance_criterion_edited":
+        return (
+            f"{data.get('criterion_id', '?')} rev {data.get('revision', '?')}: "
+            f"{data.get('outcome', '')}"
+        )
+    elif etype == "acceptance_criterion_retired":
+        return f"{data.get('criterion_id', '?')} retired"
     elif etype == "branch_linked":
         repo = data.get("repo")
         branch = data.get("branch", "?")
@@ -1371,13 +1334,9 @@ def plan(task_id: str, output_json: bool) -> None:
     lattice_dir = require_root(is_json)
     task_id = resolve_task_id(lattice_dir, task_id, is_json)
 
-    # Check active then archive
-    plan_path = lattice_dir / "plans" / f"{task_id}.md"
-    is_archived = False
-    if not plan_path.is_file():
-        plan_path = lattice_dir / "archive" / "plans" / f"{task_id}.md"
-        is_archived = True
-    if not plan_path.is_file():
+    plan_path, authority = resolve_task_prose_path(lattice_dir, task_id, "plan")
+    is_archived = authority.location == "archived"
+    if plan_path is None:
         output_error(f"No plan file found for task {task_id}.", "NOT_FOUND", is_json)
 
     if is_json:
