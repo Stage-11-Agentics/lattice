@@ -1825,7 +1825,15 @@ def complete_cmd(
         events.append(done_status_event)
         return TaskMutationDecision(events=events, value=current_status)
 
-    result = mutate_task(lattice_dir, task_id, decide, config)
+    # The artifact files above are written before the events that reference
+    # them, so a refused completion must not leave them behind. Nothing was
+    # appended when the mutation raises, so the artifact is unreferenced.
+    try:
+        result = mutate_task(lattice_dir, task_id, decide, config)
+    except BaseException:
+        dest_path.unlink(missing_ok=True)
+        meta_path.unlink(missing_ok=True)
+        raise
     snapshot = result.snapshot
     current_status = result.callback_value
 
