@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -853,3 +855,40 @@ class TestValidationSwimlane:
     def test_opinionated_display_name(self) -> None:
         config = default_config("opinionated")
         assert config["workflow"]["display_names"]["in_validation"] == "seeing it work"
+
+
+def test_reachable_review_commit_policy_mutation(tmp_path: Path) -> None:
+    """The completion door rejects an unreachable marker and accepts HEAD."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    for args in (["init"], ["checkout", "-b", "feature"]):
+        subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+    (repo / "file").write_text("one", encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(repo), "add", "file"], check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-m", "feature"],
+        check=True,
+        capture_output=True,
+    )
+    head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    lattice_dir = repo / ".lattice"
+    lattice_dir.mkdir()
+    config = default_config()
+    config["workflow"]["completion_policies"]["done"]["require_reachable_review_commit"] = True
+    snapshot = {
+        "evidence_refs": [{"id": "prospective", "role": "review", "source_type": "artifact"}],
+        "branch_links": [{"branch": "feature"}],
+    }
+    ok, _ = validate_completion_policy(
+        config, snapshot, "done", lattice_dir=lattice_dir, repo_root=repo,
+        prospective_review_payloads=["Lattice-Reviewed-Commit: " + "0" * 40 + "\n"],
+    )
+    assert ok is False
+    ok, failures = validate_completion_policy(
+        config, snapshot, "done", lattice_dir=lattice_dir, repo_root=repo,
+        prospective_review_payloads=[f"Lattice-Reviewed-Commit: {head}\n"],
+    )
+    assert ok is True
+    assert failures == []

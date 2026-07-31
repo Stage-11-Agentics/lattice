@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
+import subprocess
+from pathlib import Path
 
 import click
 
@@ -52,6 +54,15 @@ from lattice.core.tasks import apply_event_to_snapshot, is_backward_status_trans
 from lattice.storage.readers import read_task_events
 
 logger = logging.getLogger(__name__)
+
+
+def _caller_git_worktree() -> Path | None:
+    """Return the immutable git root of the invoking checkout, if any."""
+    current = Path.cwd().resolve()
+    for candidate in (current, *current.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -804,7 +815,19 @@ def status_cmd(
                     "REVIEW_CYCLE_LIMIT",
                     is_json,
                 )
-        policy_ok, policy_failures = validate_completion_policy(config, snapshot, new_status)
+        # Check completion policies (evidence gating). The reachable-review-commit
+        # policy needs the invoking checkout, not the board root.
+        target_policy = (
+            config.get("workflow", {}).get("completion_policies", {}).get(new_status, {})
+        )
+        policy_context = (
+            {"lattice_dir": lattice_dir, "repo_root": _caller_git_worktree()}
+            if target_policy.get("require_reachable_review_commit")
+            else {}
+        )
+        policy_ok, policy_failures = validate_completion_policy(
+            config, snapshot, new_status, **policy_context
+        )
         if not policy_ok:
             if not force:
                 output_error(
@@ -899,6 +922,7 @@ def status_cmd(
                 status_event_id=event["id"],
                 config=config,
                 no_auto_review_flag=no_auto_review,
+                reviewed_worktree=_caller_git_worktree() if new_status == "review" else None,
             )
         except Exception as exc:  # noqa: BLE001 — never fail the transition
             logger.warning(
@@ -926,6 +950,11 @@ def status_cmd(
                         # ``log_path`` plus the eventual review artifact.
                         "pid": auto_review_result["pid"],
                         "trigger_status_event_id": event["id"],
+                        **(
+                            {"reviewed_worktree": auto_review_result["reviewed_worktree"]}
+                            if "reviewed_worktree" in auto_review_result
+                            else {}
+                        ),
                     },
                 )
                 updated_snapshot = mutate_task_events(
@@ -1644,6 +1673,19 @@ def complete_cmd(
     shared_ts = utc_now()
     art_id = generate_artifact_id()
 
+    review_payload = review_text
+    # The opt-in gate is Lattice-owned. Capture the invoking checkout rather
+    # than the board root, which can legitimately be a different worktree.
+    policy = config.get("workflow", {}).get("completion_policies", {}).get("done", {})
+    if policy.get("require_reachable_review_commit"):
+        worktree = _caller_git_worktree()
+        if worktree is None:
+            output_error("Not inside a git worktree.", "COMPLETION_BLOCKED", is_json)
+        sha = subprocess.check_output(
+            ["git", "-C", str(worktree), "rev-parse", "HEAD"], text=True
+        ).strip()
+        review_payload = f"Lattice-Reviewed-Commit: {sha}\n\n{review_text}"
+
     # --- Write artifact metadata ---
     # Write inline review text as artifact payload
     tmp = tempfile.NamedTemporaryFile(
@@ -1652,7 +1694,7 @@ def complete_cmd(
         delete=False,
         prefix="lattice-review-",
     )
-    tmp.write(review_text)
+    tmp.write(review_payload)
     tmp.close()
     tmp_path = Path(tmp.name)
 
@@ -1677,7 +1719,7 @@ def complete_cmd(
         model=model,
         payload_file=payload_file,
         content_type="text/markdown",
-        size_bytes=len(review_text.encode("utf-8")),
+        size_bytes=len(review_payload.encode("utf-8")),
     )
 
     meta_path = lattice_dir / "artifacts" / "meta" / f"{art_id}.json"
@@ -1741,7 +1783,17 @@ def complete_cmd(
         )
         events.append(artifact_event)
         working = apply_event_to_snapshot(working, artifact_event)
-        policy_ok, policy_failures = validate_completion_policy(config, working, "done")
+        # Validate the completion policy against the prospective post-transition
+        # snapshot. The reachable-review-commit gate is bound to the invoking
+        # checkout, and the payload it inspects is the one written above.
+        policy_ok, policy_failures = validate_completion_policy(
+            config,
+            working,
+            "done",
+            lattice_dir=lattice_dir,
+            repo_root=_caller_git_worktree(),
+            prospective_review_payloads=[review_payload],
+        )
         if not policy_ok:
             output_error(
                 f"Completion policy not satisfied: {'; '.join(policy_failures)}.",

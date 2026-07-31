@@ -818,6 +818,7 @@ def run_single_review(
     prompt_content: str,
     actor: str | dict,
     timeout: int = DEFAULT_AGENT_TIMEOUT,
+    worktree: Path | None = None,
 ) -> tuple[bool, str, str | None]:
     """Run a single-agent review via ``agent_spawn.spawn_one``.
 
@@ -860,6 +861,7 @@ def run_single_review(
             output_file=output_file,
             label=f"{review_type} :: claude",
             timeout_seconds=timeout,
+            cwd=worktree,
         )
         result = spawn_one(
             request,

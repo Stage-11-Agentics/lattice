@@ -62,6 +62,28 @@ def _patch_executable(path: str = "/usr/local/bin/lattice"):
 
 
 class TestAutoFireReviewHappyPath:
+    def test_explicit_worktree_controls_child_argv_and_cwd(self, lattice_dir: Path) -> None:
+        """ACE-785 regression: board root must not replace caller worktree."""
+        worktree = lattice_dir.parent / "feature-worktree"
+        (worktree / ".git").mkdir(parents=True)
+        with (
+            patch.object(cli_auto_review.subprocess, "Popen", return_value=_FakeProc(444)) as popen,
+            _patch_executable(),
+        ):
+            result = auto_fire_review(
+                lattice_dir,
+                "task_abc",
+                "review",
+                status_event_id="evt_xyz",
+                config={},
+                no_auto_review_flag=False,
+                reviewed_worktree=worktree,
+            )
+
+        assert result["reviewed_worktree"] == str(worktree.resolve())
+        assert popen.call_args.kwargs["cwd"] == str(worktree.resolve())
+        assert popen.call_args.args[0][-2:] == ["--worktree", str(worktree.resolve())]
+
     def test_fires_for_review_with_default_config(self, lattice_dir: Path) -> None:
         with (
             patch.object(

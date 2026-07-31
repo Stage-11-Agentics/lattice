@@ -84,6 +84,7 @@ class HeadlessBackend(Backend):
                 stderr=subprocess.PIPE,
                 text=True,
                 start_new_session=True,
+                cwd=str(req.cwd) if req.cwd is not None else None,
             )
         except OSError as exc:
             duration = time.monotonic() - start

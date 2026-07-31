@@ -42,6 +42,22 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _normalize_worktree(worktree: Path | None) -> tuple[Path | None, str | None]:
+    candidate = (worktree or Path.cwd()).resolve()
+    result = subprocess.run(
+        ["git", "-C", str(candidate), "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode:
+        return None, f"Not a git worktree: {candidate}"
+    return Path(result.stdout.strip()).resolve(), None
+
+
+def _head_sha(worktree: Path) -> str:
+    return subprocess.check_output(["git", "-C", str(worktree), "rev-parse", "HEAD"], text=True).strip()
+
+
 def _claim_or_refuse(
     lattice_dir: Path,
     task_id: str,
@@ -208,6 +224,11 @@ def code_review(
         return
 
     actor = require_actor(is_json)
+    reviewed_worktree, worktree_error = _normalize_worktree(worktree)
+    if worktree_error:
+        output_error(worktree_error, "DIFF_RESOLUTION_FAILED", is_json)
+    assert reviewed_worktree is not None
+    reviewed_sha = _head_sha(reviewed_worktree)
 
     # Claim the in-flight slot (or adopt the parent's claim when this is
     # an auto-fired child invoked with --triggered-by).
@@ -222,7 +243,7 @@ def code_review(
 
     # Resolve diff
     success, diff_or_err = resolve_diff(
-        lattice_dir, task_id, snapshot, base=base, head=head, worktree=worktree
+        lattice_dir, task_id, snapshot, base=base, head=head, worktree=reviewed_worktree
     )
     if not success:
         output_error(diff_or_err, "DIFF_RESOLUTION_FAILED", is_json)
@@ -251,13 +272,17 @@ def code_review(
     template = load_review_template(lattice_dir, "code-review")
     plan_content = _read_plan(lattice_dir, task_id)
     project_context = _read_project_context(lattice_dir)
-    prompt = template.format(
+    prompt = (
+        f"Lattice-Reviewed-Commit: {reviewed_sha}\n"
+        f"Lattice-Reviewed-Worktree: {reviewed_worktree}\n\n"
+        + template.format(
         task_id=snapshot.get("short_id") or task_id,
         task_description=snapshot.get("description") or snapshot.get("title", ""),
         plan_content=plan_content,
         project_context=project_context,
         diff_content=diff_content,
         output_path="<write output here>",
+        )
     )
 
     timeout = config.get("review_timeout_seconds", 600)
@@ -275,6 +300,8 @@ def code_review(
             model=model,
             session=session,
             timeout=timeout,
+            worktree=reviewed_worktree,
+            reviewed_sha=reviewed_sha,
         )
 
     elif mode == "triple":
@@ -287,6 +314,7 @@ def code_review(
             is_json=is_json,
             quiet=quiet,
             base=base,
+            worktree=reviewed_worktree,
         )
 
 
@@ -580,6 +608,8 @@ def _run_single_and_store(
     model: str | None,
     session: str | None,
     timeout: int = 600,
+    worktree: Path | None = None,
+    reviewed_sha: str | None = None,
 ) -> str | None:
     """Run single-agent review, store artifact, print result. Returns artifact ID or None."""
     click.echo(f"Running {review_type} (single mode)...")
@@ -591,6 +621,7 @@ def _run_single_and_store(
         prompt_content=prompt,
         actor=actor,
         timeout=timeout,
+        worktree=worktree,
     )
 
     if not success:
@@ -602,7 +633,7 @@ def _run_single_and_store(
     art_id = _attach_review_artifact(
         lattice_dir=lattice_dir,
         task_id=task_id,
-        content=text,
+        content=(f"Lattice-Reviewed-Commit: {reviewed_sha}\n\n{text}" if reviewed_sha else text),
         title=f"{review_type} ({role})",
         role=role,
         actor=actor,
@@ -634,6 +665,7 @@ def _spawn_triple_pane(
     is_json: bool,
     quiet: bool,
     base: str | None,
+    worktree: Path | None = None,
 ) -> None:
     """Spawn a c11 pane that runs the trident review. Fire-and-forget.
 
@@ -654,7 +686,7 @@ def _spawn_triple_pane(
         actor=actor,
         base=base,
         short_id=short_id,
-        worktree=lattice_dir.parent,
+        worktree=worktree,
     )
 
     if not success:

@@ -103,6 +103,7 @@ class SpawnRequest:
     label: str
     timeout_seconds: int = DEFAULT_AGENT_TIMEOUT
     extra_env: dict[str, str] = field(default_factory=dict)
+    cwd: Path | None = None
 
 
 @dataclass(frozen=True)

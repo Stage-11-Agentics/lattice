@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+from pathlib import Path
 from typing import Literal, TypedDict
 
 
@@ -17,6 +19,7 @@ class WipLimits(TypedDict, total=False):
 class CompletionPolicy(TypedDict, total=False):
     require_roles: list[str]
     require_assigned: bool
+    require_reachable_review_commit: bool
 
 
 class Workflow(TypedDict, total=False):
@@ -602,6 +605,10 @@ def validate_completion_policy(
     config: dict,
     snapshot: dict,
     to_status: str,
+    *,
+    lattice_dir: Path | None = None,
+    repo_root: Path | None = None,
+    prospective_review_payloads: list[str] | None = None,
 ) -> tuple[bool, list[str]]:
     """Check whether a transition into *to_status* satisfies completion policies.
 
@@ -643,7 +650,56 @@ def validate_completion_policy(
     if policy.get("require_assigned") and not snapshot.get("assigned_to"):
         failures.append("Task must be assigned")
 
+    if policy.get("require_reachable_review_commit"):
+        if lattice_dir is None or repo_root is None:
+            failures.append("Reachable review commit check requires repository context")
+        elif not _has_reachable_review_commit(
+            snapshot, lattice_dir, repo_root, prospective_review_payloads or []
+        ):
+            failures.append(
+                "No qualifying review artifact has a Lattice-Reviewed-Commit marker "
+                "reachable from the linked branch"
+            )
+
     return (len(failures) == 0, failures)
+
+
+_REVIEW_MARKER = re.compile(r"\ALattice-Reviewed-Commit: ([0-9a-f]{40})\n")
+
+
+def _has_reachable_review_commit(
+    snapshot: dict, lattice_dir: Path, repo_root: Path, prospective: list[str]
+) -> bool:
+    """Return whether one review artifact names a commit reachable from the linked branch."""
+    branches = snapshot.get("branch_links", [])
+    branch = branches[-1].get("branch") if branches else None
+    if not isinstance(branch, str) or not branch:
+        return False
+    payloads = list(prospective)
+    for ref in snapshot.get("evidence_refs", []):
+        if ref.get("source_type") != "artifact" or ref.get("role") != "review":
+            continue
+        artifact_id = ref.get("id")
+        if not isinstance(artifact_id, str):
+            continue
+        meta_path = lattice_dir / "artifacts" / "meta" / f"{artifact_id}.json"
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            payload_name = meta.get("payload", {}).get("file")
+            if isinstance(payload_name, str):
+                payloads.append((lattice_dir / "artifacts" / "payload" / payload_name).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+    for payload in payloads:
+        marker = _REVIEW_MARKER.match(payload)
+        if marker is None:
+            continue
+        sha = marker.group(1)
+        exists = subprocess.run(["git", "-C", str(repo_root), "cat-file", "-e", f"{sha}^{{commit}}"], capture_output=True).returncode == 0
+        reachable = subprocess.run(["git", "-C", str(repo_root), "merge-base", "--is-ancestor", sha, branch], capture_output=True).returncode == 0
+        if exists and reachable:
+            return True
+    return False
 
 
 def get_configured_roles(config: LatticeConfig) -> set[str]:

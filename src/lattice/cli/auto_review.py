@@ -83,6 +83,7 @@ def auto_fire_review(
     status_event_id: str,
     config: dict,
     no_auto_review_flag: bool,
+    reviewed_worktree: Path | None = None,
 ) -> dict:
     """Spawn a detached ``lattice {code,plan}-review`` if gating allows.
 
@@ -129,6 +130,11 @@ def auto_fire_review(
         return {"fired": False, "reason": "not_a_review_gate"}
 
     mode = resolve_mode(config, new_status)
+
+    if review_type == "code-review" and reviewed_worktree is not None:
+        if not (reviewed_worktree / ".git").exists():
+            return {"fired": False, "reason": "reviewed_worktree_not_git"}
+        reviewed_worktree = reviewed_worktree.resolve()
 
     # Synchronous parent-side claim — see LAT-211 §5.
     claimed, existing = claim_review_state(
@@ -184,6 +190,8 @@ def auto_fire_review(
         "--triggered-by",
         status_event_id,
     ]
+    if reviewed_worktree is not None and review_type == "code-review":
+        cmd.extend(["--worktree", str(reviewed_worktree)])
 
     log_fh = None
     try:
@@ -193,7 +201,7 @@ def auto_fire_review(
 
         proc = subprocess.Popen(
             cmd,
-            cwd=str(lattice_dir.parent),
+            cwd=str(reviewed_worktree or lattice_dir.parent),
             stdin=subprocess.DEVNULL,
             stdout=log_fh,
             stderr=subprocess.STDOUT,
@@ -224,7 +232,7 @@ def auto_fire_review(
             except OSError:
                 logger.debug("log fd close raised", exc_info=True)
 
-    return {
+    result = {
         "fired": True,
         "review_type": review_type,
         "mode": mode,
@@ -232,6 +240,9 @@ def auto_fire_review(
         "pid": proc.pid,
         "spawned_at": spawned_at,
     }
+    if reviewed_worktree is not None:
+        result["reviewed_worktree"] = str(reviewed_worktree)
+    return result
 
 
 def _now_iso() -> str:
