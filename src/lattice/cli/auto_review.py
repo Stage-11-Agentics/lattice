@@ -70,6 +70,21 @@ def log_path_for(lattice_dir: Path, review_type: str, task_id: str) -> Path:
     return lattice_dir / DAEMON_DIR_NAME / f"auto-{review_type}-{task_id}.log"
 
 
+def _normalize_reviewed_worktree(candidate: Path | None) -> Path | None:
+    """Return a Git worktree's canonical root, or ``None`` when unavailable."""
+    if candidate is None:
+        return None
+    try:
+        top_level = subprocess.check_output(
+            ["git", "-C", str(candidate), "rev-parse", "--show-toplevel"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return Path(top_level).resolve() if top_level else None
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
@@ -131,10 +146,13 @@ def auto_fire_review(
 
     mode = resolve_mode(config, new_status)
 
-    if review_type == "code-review" and reviewed_worktree is not None:
-        if not (reviewed_worktree / ".git").exists():
+    if review_type == "code-review":
+        if reviewed_worktree is None:
+            return {"fired": False, "reason": "reviewed_worktree_unavailable"}
+        normalized_worktree = _normalize_reviewed_worktree(reviewed_worktree)
+        if normalized_worktree is None:
             return {"fired": False, "reason": "reviewed_worktree_not_git"}
-        reviewed_worktree = reviewed_worktree.resolve()
+        reviewed_worktree = normalized_worktree
 
     # Synchronous parent-side claim — see LAT-211 §5.
     claimed, existing = claim_review_state(

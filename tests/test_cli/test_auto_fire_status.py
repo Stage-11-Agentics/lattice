@@ -8,6 +8,7 @@ because the conftest disables it by default.
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -100,7 +101,13 @@ class TestAutoFireSuccessPaths:
     def test_status_to_review_spawns_code_review(self, tmp_path: Path) -> None:
         root = _make_board(tmp_path)
         worktree = tmp_path / "feature-worktree"
-        (worktree / ".git").mkdir(parents=True)
+        subprocess.run(["git", "init", str(worktree)], check=True, capture_output=True, text=True)
+        nested = worktree / "nested"
+        nested.mkdir()
+        normalized = subprocess.check_output(
+            ["git", "-C", str(nested), "rev-parse", "--show-toplevel"], text=True
+        ).strip()
+        assert normalized == str(worktree.resolve())
         runner = CliRunner()
         task_id = _create_task(runner, root)
         _walk_to_in_progress(runner, root, task_id)
@@ -109,8 +116,9 @@ class TestAutoFireSuccessPaths:
             patch.object(
                 cli_auto_review.subprocess, "Popen", return_value=_FakeProc(54321)
             ) as popen,
-            patch.object(task_cmds, "_caller_git_worktree", return_value=worktree),
+            patch.object(task_cmds, "_caller_git_worktree", return_value=nested),
             _patch_executable(),
+            patch.object(cli_auto_review, "_normalize_reviewed_worktree", return_value=worktree.resolve()),
         ):
             res = runner.invoke(
                 cli,
@@ -211,6 +219,9 @@ class TestAutoFireSkipPaths:
         with (
             patch.object(cli_auto_review.subprocess, "Popen") as popen,
             _patch_executable(),
+            patch.object(
+                cli_auto_review, "_normalize_reviewed_worktree", return_value=Path.cwd().resolve()
+            ),
         ):
             res = runner.invoke(
                 cli,
@@ -230,6 +241,9 @@ class TestAutoFireSkipPaths:
         with (
             patch.object(cli_auto_review.subprocess, "Popen") as popen,
             _patch_executable(),
+            patch.object(
+                cli_auto_review, "_normalize_reviewed_worktree", return_value=Path.cwd().resolve()
+            ),
         ):
             res = runner.invoke(
                 cli,
@@ -250,6 +264,9 @@ class TestAutoFireSkipPaths:
         with (
             patch.object(cli_auto_review.subprocess, "Popen") as popen,
             _patch_executable(),
+            patch.object(
+                cli_auto_review, "_normalize_reviewed_worktree", return_value=Path.cwd().resolve()
+            ),
         ):
             res = runner.invoke(
                 cli,
@@ -344,6 +361,9 @@ class TestAutoFireResilience:
         with (
             patch.object(cli_auto_review.subprocess, "Popen") as popen,
             _patch_executable(),
+            patch.object(
+                cli_auto_review, "_normalize_reviewed_worktree", return_value=Path.cwd().resolve()
+            ),
         ):
             res = runner.invoke(
                 cli,
@@ -365,6 +385,9 @@ class TestAutoFireResilience:
         with (
             patch.object(cli_auto_review.subprocess, "Popen", return_value=_FakeProc(31337)),
             _patch_executable(),
+            patch.object(
+                cli_auto_review, "_normalize_reviewed_worktree", return_value=Path.cwd().resolve()
+            ),
         ):
             runner.invoke(
                 cli,
@@ -425,6 +448,9 @@ def test_status_json_output_includes_auto_review_block(tmp_path: Path) -> None:
     with (
         patch.object(cli_auto_review.subprocess, "Popen", return_value=_FakeProc(99)),
         _patch_executable(),
+        patch.object(
+            cli_auto_review, "_normalize_reviewed_worktree", return_value=Path.cwd().resolve()
+        ),
     ):
         res = runner.invoke(
             cli,
