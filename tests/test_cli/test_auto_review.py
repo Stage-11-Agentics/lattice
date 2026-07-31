@@ -85,6 +85,8 @@ class TestAutoFireReviewHappyPath:
         assert popen.call_args.args[0][-2:] == ["--worktree", str(worktree.resolve())]
 
     def test_fires_for_review_with_default_config(self, lattice_dir: Path) -> None:
+        worktree = lattice_dir.parent / "caller-worktree"
+        (worktree / ".git").mkdir(parents=True)
         with (
             patch.object(
                 cli_auto_review.subprocess, "Popen", return_value=_FakeProc(12345)
@@ -98,6 +100,7 @@ class TestAutoFireReviewHappyPath:
                 status_event_id="evt_xyz",
                 config={},
                 no_auto_review_flag=False,
+                reviewed_worktree=worktree,
             )
 
         assert result["fired"] is True
@@ -118,6 +121,8 @@ class TestAutoFireReviewHappyPath:
             AUTO_REVIEW_ACTOR,
             "--triggered-by",
             "evt_xyz",
+            "--worktree",
+            str(worktree.resolve()),
         ]
         # detached and clean fds
         assert popen.call_args.kwargs["start_new_session"] is True

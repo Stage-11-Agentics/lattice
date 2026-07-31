@@ -915,15 +915,25 @@ def status_cmd(
         try:
             from lattice.cli.auto_review import auto_fire_review
 
-            auto_review_result = auto_fire_review(
-                lattice_dir,
-                task_id,
-                new_status,
-                status_event_id=event["id"],
-                config=config,
-                no_auto_review_flag=no_auto_review,
-                reviewed_worktree=_caller_git_worktree() if new_status == "review" else None,
-            )
+            reviewed_worktree = _caller_git_worktree() if new_status == "review" else None
+            # A review must inspect the checkout that requested the transition.
+            # Do not let auto_review's board-root fallback turn an unknown
+            # caller identity into a review of a different checkout.
+            if new_status == "review" and reviewed_worktree is None:
+                auto_review_result = {
+                    "fired": False,
+                    "reason": "reviewed_worktree_unavailable",
+                }
+            else:
+                auto_review_result = auto_fire_review(
+                    lattice_dir,
+                    task_id,
+                    new_status,
+                    status_event_id=event["id"],
+                    config=config,
+                    no_auto_review_flag=no_auto_review,
+                    reviewed_worktree=reviewed_worktree,
+                )
         except Exception as exc:  # noqa: BLE001 — never fail the transition
             logger.warning(
                 "auto-review spawn raised: %s",
