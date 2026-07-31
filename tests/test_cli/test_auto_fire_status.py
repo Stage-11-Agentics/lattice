@@ -118,7 +118,9 @@ class TestAutoFireSuccessPaths:
             ) as popen,
             patch.object(task_cmds, "_caller_git_worktree", return_value=nested),
             _patch_executable(),
-            patch.object(cli_auto_review, "_normalize_reviewed_worktree", return_value=worktree.resolve()),
+            patch.object(
+                cli_auto_review, "_normalize_reviewed_worktree", return_value=worktree.resolve()
+            ),
         ):
             res = runner.invoke(
                 cli,
@@ -141,7 +143,9 @@ class TestAutoFireSuccessPaths:
         assert argv[-2:] == ["--worktree", str(worktree.resolve())]
         assert popen.call_args.kwargs["cwd"] == str(worktree.resolve())
 
-    def test_status_to_review_refuses_auto_fire_without_caller_worktree(self, tmp_path: Path) -> None:
+    def test_status_to_review_refuses_auto_fire_without_caller_worktree(
+        self, tmp_path: Path
+    ) -> None:
         root = _make_board(tmp_path)
         runner = CliRunner()
         task_id = _create_task(runner, root)

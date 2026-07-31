@@ -55,7 +55,9 @@ def _normalize_worktree(worktree: Path | None) -> tuple[Path | None, str | None]
 
 
 def _head_sha(worktree: Path) -> str:
-    return subprocess.check_output(["git", "-C", str(worktree), "rev-parse", "HEAD"], text=True).strip()
+    return subprocess.check_output(
+        ["git", "-C", str(worktree), "rev-parse", "HEAD"], text=True
+    ).strip()
 
 
 def _claim_or_refuse(
@@ -276,12 +278,12 @@ def code_review(
         f"Lattice-Reviewed-Commit: {reviewed_sha}\n"
         f"Lattice-Reviewed-Worktree: {reviewed_worktree}\n\n"
         + template.format(
-        task_id=snapshot.get("short_id") or task_id,
-        task_description=snapshot.get("description") or snapshot.get("title", ""),
-        plan_content=plan_content,
-        project_context=project_context,
-        diff_content=diff_content,
-        output_path="<write output here>",
+            task_id=snapshot.get("short_id") or task_id,
+            task_description=snapshot.get("description") or snapshot.get("title", ""),
+            plan_content=plan_content,
+            project_context=project_context,
+            diff_content=diff_content,
+            output_path="<write output here>",
         )
     )
 

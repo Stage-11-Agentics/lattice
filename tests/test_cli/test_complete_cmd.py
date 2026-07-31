@@ -345,7 +345,9 @@ class TestCompleteCompletionPolicy:
 class TestReachableReviewCommitCommandBoundaries:
     """Exercise the completion door, including its prospective artifact."""
 
-    def _enable_gate_and_link_current_branch(self, invoke, root: Path, task_id: str) -> tuple[str, str]:
+    def _enable_gate_and_link_current_branch(
+        self, invoke, root: Path, task_id: str
+    ) -> tuple[str, str]:
         config_path = root / LATTICE_DIR / "config.json"
         config = json.loads(config_path.read_text())
         config["workflow"]["completion_policies"]["done"] = {
@@ -357,7 +359,9 @@ class TestReachableReviewCommitCommandBoundaries:
         branch = subprocess.check_output(
             ["git", "-C", str(repo), "branch", "--show-current"], text=True
         ).strip()
-        head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+        head = subprocess.check_output(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True
+        ).strip()
         linked = invoke("branch-link", task_id, branch, "--actor", _ACTOR)
         assert linked.exit_code == 0, linked.output
         return branch, head
@@ -369,7 +373,10 @@ class TestReachableReviewCommitCommandBoundaries:
         _, head = self._enable_gate_and_link_current_branch(invoke, initialized_root, task_id)
         bad = initialized_root / "bad-review.md"
         bad.write_text(f"Lattice-Reviewed-Commit: {'0' * 40}\n\nnope", encoding="utf-8")
-        assert invoke("attach", task_id, str(bad), "--role", "review", "--actor", _ACTOR).exit_code == 0
+        assert (
+            invoke("attach", task_id, str(bad), "--role", "review", "--actor", _ACTOR).exit_code
+            == 0
+        )
 
         rejected = invoke("status", task_id, "done", "--actor", _ACTOR, "--json")
         assert rejected.exit_code != 0
@@ -377,7 +384,10 @@ class TestReachableReviewCommitCommandBoundaries:
 
         good = initialized_root / "good-review.md"
         good.write_text(f"Lattice-Reviewed-Commit: {head}\n\npass", encoding="utf-8")
-        assert invoke("attach", task_id, str(good), "--role", "review", "--actor", _ACTOR).exit_code == 0
+        assert (
+            invoke("attach", task_id, str(good), "--role", "review", "--actor", _ACTOR).exit_code
+            == 0
+        )
         accepted = invoke("status", task_id, "done", "--actor", _ACTOR, "--json")
         assert accepted.exit_code == 0, accepted.output
         assert json.loads(accepted.output)["data"]["status"] == "done"
@@ -409,5 +419,7 @@ class TestReachableReviewCommitCommandBoundaries:
             for ref in snapshot["evidence_refs"]
             if ref["role"] == "review" and ref["source_type"] == "artifact"
         )
-        payload = (lattice_dir / "artifacts" / "payload" / f"{art_id}.md").read_text(encoding="utf-8")
+        payload = (lattice_dir / "artifacts" / "payload" / f"{art_id}.md").read_text(
+            encoding="utf-8"
+        )
         assert payload == f"Lattice-Reviewed-Commit: {head}\n\ngood"

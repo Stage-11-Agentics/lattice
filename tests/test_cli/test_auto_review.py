@@ -79,7 +79,9 @@ class TestAutoFireReviewHappyPath:
         """ACE-785 regression: board root must not replace caller worktree."""
         worktree = _git_worktree(lattice_dir.parent, "feature-worktree")
         with (
-            patch.object(cli_auto_review.subprocess, "Popen", return_value=_FakeProc(444)) as popen,
+            patch.object(
+                cli_auto_review.subprocess, "Popen", return_value=_FakeProc(444)
+            ) as popen,
             _patch_executable(),
             _patch_normalized_worktree(worktree),
         ):
@@ -207,7 +209,9 @@ class TestAutoFireReviewHappyPath:
 
 
 class TestAutoFireReviewSkipPaths:
-    def test_code_review_rejects_absent_worktree_before_claim_or_spawn(self, lattice_dir: Path) -> None:
+    def test_code_review_rejects_absent_worktree_before_claim_or_spawn(
+        self, lattice_dir: Path
+    ) -> None:
         with patch.object(cli_auto_review.subprocess, "Popen") as popen:
             result = auto_fire_review(
                 lattice_dir,

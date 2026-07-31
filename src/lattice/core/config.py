@@ -687,7 +687,11 @@ def _has_reachable_review_commit(
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
             payload_name = meta.get("payload", {}).get("file")
             if isinstance(payload_name, str):
-                payloads.append((lattice_dir / "artifacts" / "payload" / payload_name).read_text(encoding="utf-8"))
+                payloads.append(
+                    (lattice_dir / "artifacts" / "payload" / payload_name).read_text(
+                        encoding="utf-8"
+                    )
+                )
         except (OSError, json.JSONDecodeError):
             continue
     for payload in payloads:
@@ -695,8 +699,20 @@ def _has_reachable_review_commit(
         if marker is None:
             continue
         sha = marker.group(1)
-        exists = subprocess.run(["git", "-C", str(repo_root), "cat-file", "-e", f"{sha}^{{commit}}"], capture_output=True).returncode == 0
-        reachable = subprocess.run(["git", "-C", str(repo_root), "merge-base", "--is-ancestor", sha, branch], capture_output=True).returncode == 0
+        exists = (
+            subprocess.run(
+                ["git", "-C", str(repo_root), "cat-file", "-e", f"{sha}^{{commit}}"],
+                capture_output=True,
+            ).returncode
+            == 0
+        )
+        reachable = (
+            subprocess.run(
+                ["git", "-C", str(repo_root), "merge-base", "--is-ancestor", sha, branch],
+                capture_output=True,
+            ).returncode
+            == 0
+        )
         if exists and reachable:
             return True
     return False
