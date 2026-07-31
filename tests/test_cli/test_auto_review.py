@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -61,13 +62,28 @@ def _patch_executable(path: str = "/usr/local/bin/lattice"):
     return patch.object(cli_auto_review, "find_lattice_executable", return_value=path)
 
 
+def _git_worktree(tmp_path: Path, name: str = "caller-worktree") -> Path:
+    worktree = tmp_path / name
+    subprocess.run(["git", "init", str(worktree)], check=True, capture_output=True, text=True)
+    return worktree
+
+
+def _patch_normalized_worktree(worktree: Path):
+    return patch.object(
+        cli_auto_review, "_normalize_reviewed_worktree", return_value=worktree.resolve()
+    )
+
+
 class TestAutoFireReviewHappyPath:
-    def test_fires_for_review_with_default_config(self, lattice_dir: Path) -> None:
+    def test_explicit_worktree_controls_child_argv_and_cwd(self, lattice_dir: Path) -> None:
+        """ACE-785 regression: board root must not replace caller worktree."""
+        worktree = _git_worktree(lattice_dir.parent, "feature-worktree")
         with (
             patch.object(
-                cli_auto_review.subprocess, "Popen", return_value=_FakeProc(12345)
+                cli_auto_review.subprocess, "Popen", return_value=_FakeProc(444)
             ) as popen,
-            _patch_executable("/usr/local/bin/lattice"),
+            _patch_executable(),
+            _patch_normalized_worktree(worktree),
         ):
             result = auto_fire_review(
                 lattice_dir,
@@ -76,6 +92,30 @@ class TestAutoFireReviewHappyPath:
                 status_event_id="evt_xyz",
                 config={},
                 no_auto_review_flag=False,
+                reviewed_worktree=worktree,
+            )
+
+        assert result["reviewed_worktree"] == str(worktree.resolve())
+        assert popen.call_args.kwargs["cwd"] == str(worktree.resolve())
+        assert popen.call_args.args[0][-2:] == ["--worktree", str(worktree.resolve())]
+
+    def test_fires_for_review_with_default_config(self, lattice_dir: Path) -> None:
+        worktree = _git_worktree(lattice_dir.parent)
+        with (
+            patch.object(
+                cli_auto_review.subprocess, "Popen", return_value=_FakeProc(12345)
+            ) as popen,
+            _patch_executable("/usr/local/bin/lattice"),
+            _patch_normalized_worktree(worktree),
+        ):
+            result = auto_fire_review(
+                lattice_dir,
+                "task_abc",
+                "review",
+                status_event_id="evt_xyz",
+                config={},
+                no_auto_review_flag=False,
+                reviewed_worktree=worktree,
             )
 
         assert result["fired"] is True
@@ -96,6 +136,8 @@ class TestAutoFireReviewHappyPath:
             AUTO_REVIEW_ACTOR,
             "--triggered-by",
             "evt_xyz",
+            "--worktree",
+            str(worktree.resolve()),
         ]
         # detached and clean fds
         assert popen.call_args.kwargs["start_new_session"] is True
@@ -144,6 +186,7 @@ class TestAutoFireReviewHappyPath:
             patch.object(cli_auto_review, "open", _spy_open, create=True),
             patch.object(cli_auto_review.subprocess, "Popen", return_value=_FakeProc()),
             _patch_executable(),
+            _patch_normalized_worktree(lattice_dir.parent / "caller-worktree"),
         ):
             auto_fire_review(
                 lattice_dir,
@@ -152,6 +195,7 @@ class TestAutoFireReviewHappyPath:
                 status_event_id="evt_xyz",
                 config={},
                 no_auto_review_flag=False,
+                reviewed_worktree=lattice_dir.parent / "caller-worktree",
             )
 
         assert opened_handles, "open was not called"
@@ -165,6 +209,62 @@ class TestAutoFireReviewHappyPath:
 
 
 class TestAutoFireReviewSkipPaths:
+    def test_code_review_rejects_absent_worktree_before_claim_or_spawn(
+        self, lattice_dir: Path
+    ) -> None:
+        with patch.object(cli_auto_review.subprocess, "Popen") as popen:
+            result = auto_fire_review(
+                lattice_dir,
+                "task_abc",
+                "review",
+                status_event_id="evt_xyz",
+                config={},
+                no_auto_review_flag=False,
+            )
+        assert result == {"fired": False, "reason": "reviewed_worktree_unavailable"}
+        popen.assert_not_called()
+        assert read_review_state(lattice_dir, "task_abc") is None
+
+    def test_code_review_rejects_spoofed_git_entry_before_claim_or_spawn(
+        self, lattice_dir: Path
+    ) -> None:
+        spoofed = lattice_dir.parent / "spoofed-worktree"
+        (spoofed / ".git").mkdir(parents=True)
+        result = auto_fire_review(
+            lattice_dir,
+            "task_abc",
+            "review",
+            status_event_id="evt_xyz",
+            config={},
+            no_auto_review_flag=False,
+            reviewed_worktree=spoofed,
+        )
+        assert result == {"fired": False, "reason": "reviewed_worktree_not_git"}
+        assert read_review_state(lattice_dir, "task_abc") is None
+
+    def test_code_review_normalizes_nested_worktree_path(self, lattice_dir: Path) -> None:
+        worktree = _git_worktree(lattice_dir.parent)
+        nested = worktree / "nested"
+        nested.mkdir()
+        assert cli_auto_review._normalize_reviewed_worktree(nested) == worktree.resolve()
+        with (
+            patch.object(cli_auto_review.subprocess, "Popen", return_value=_FakeProc()) as popen,
+            _patch_executable(),
+            _patch_normalized_worktree(worktree),
+        ):
+            result = auto_fire_review(
+                lattice_dir,
+                "task_abc",
+                "review",
+                status_event_id="evt_xyz",
+                config={},
+                no_auto_review_flag=False,
+                reviewed_worktree=nested,
+            )
+        assert result["reviewed_worktree"] == str(worktree.resolve())
+        assert popen.call_args.args[0][-2:] == ["--worktree", str(worktree.resolve())]
+        assert popen.call_args.kwargs["cwd"] == str(worktree.resolve())
+
     def test_inline_mode_skip(self, lattice_dir: Path) -> None:
         with patch.object(cli_auto_review.subprocess, "Popen") as popen:
             result = auto_fire_review(
@@ -247,6 +347,7 @@ class TestAutoFireReviewCoordination:
         with (
             patch.object(cli_auto_review.subprocess, "Popen") as popen,
             _patch_executable(),
+            _patch_normalized_worktree(lattice_dir.parent / "caller-worktree"),
         ):
             result = auto_fire_review(
                 lattice_dir,
@@ -255,6 +356,7 @@ class TestAutoFireReviewCoordination:
                 status_event_id="evt_xyz",
                 config={},
                 no_auto_review_flag=False,
+                reviewed_worktree=lattice_dir.parent / "caller-worktree",
             )
         assert result["fired"] is False
         assert result["reason"] == "review_in_flight"
@@ -270,6 +372,7 @@ class TestAutoFireReviewCoordination:
         with (
             patch.object(cli_auto_review, "find_lattice_executable", return_value=None),
             patch.object(cli_auto_review.subprocess, "Popen") as popen,
+            _patch_normalized_worktree(lattice_dir.parent / "caller-worktree"),
         ):
             result = auto_fire_review(
                 lattice_dir,
@@ -278,6 +381,7 @@ class TestAutoFireReviewCoordination:
                 status_event_id="evt_xyz",
                 config={},
                 no_auto_review_flag=False,
+                reviewed_worktree=lattice_dir.parent / "caller-worktree",
             )
         assert result == {"fired": False, "reason": "executable_not_found"}
         popen.assert_not_called()
@@ -292,6 +396,7 @@ class TestAutoFireReviewCoordination:
                 "Popen",
                 side_effect=OSError("no fork for you"),
             ),
+            _patch_normalized_worktree(lattice_dir.parent / "caller-worktree"),
         ):
             result = auto_fire_review(
                 lattice_dir,
@@ -300,6 +405,7 @@ class TestAutoFireReviewCoordination:
                 status_event_id="evt_xyz",
                 config={},
                 no_auto_review_flag=False,
+                reviewed_worktree=lattice_dir.parent / "caller-worktree",
             )
         assert result["fired"] is False
         assert result["reason"].startswith("spawn_failed:")
@@ -313,6 +419,7 @@ class TestAutoFireReviewCoordination:
         with (
             patch.object(cli_auto_review.subprocess, "Popen", return_value=_FakeProc(42)),
             _patch_executable(),
+            _patch_normalized_worktree(lattice_dir.parent / "caller-worktree"),
         ):
             auto_fire_review(
                 lattice_dir,
@@ -321,6 +428,7 @@ class TestAutoFireReviewCoordination:
                 status_event_id="evt_xyz",
                 config={},
                 no_auto_review_flag=False,
+                reviewed_worktree=lattice_dir.parent / "caller-worktree",
             )
         state = read_review_state(lattice_dir, "task_abc")
         assert state is not None
@@ -348,6 +456,7 @@ def test_uses_claim_review_state_under_the_hood(lattice_dir: Path) -> None:
         patch.object(cli_auto_review, "claim_review_state", _spy),
         patch.object(cli_auto_review.subprocess, "Popen", return_value=_FakeProc()),
         _patch_executable(),
+        _patch_normalized_worktree(lattice_dir.parent / "caller-worktree"),
     ):
         auto_fire_review(
             lattice_dir,
@@ -356,6 +465,7 @@ def test_uses_claim_review_state_under_the_hood(lattice_dir: Path) -> None:
             status_event_id="evt_xyz",
             config={},
             no_auto_review_flag=False,
+            reviewed_worktree=lattice_dir.parent / "caller-worktree",
         )
     assert seen, "claim_review_state was not invoked"
     _, kwargs = seen[0]

@@ -372,7 +372,7 @@ class TestCodeReviewSingle:
             patch(
                 "lattice.cli.review_cmds.run_single_review",
                 return_value=(True, "Review complete.", fake_review),
-            ),
+            ) as run_single,
         ):
             result = runner.invoke(
                 cli,
@@ -385,6 +385,9 @@ class TestCodeReviewSingle:
         assert (
             result.exit_code == 0 or "Review stored" in result.output or "failed" in result.output
         )
+        # Manual command boundary carries a normalized source checkout into
+        # the reviewer; it is not inferred from LATTICE_ROOT.
+        assert run_single.call_args.kwargs["worktree"] == Path.cwd().resolve()
 
     def test_single_mode_agent_failure_reports_error(self, tmp_path):
         root = _make_board(tmp_path, {"review_mode": "single"})
@@ -506,6 +509,7 @@ class TestCodeReviewTriple:
         kwargs = mock_run.call_args.kwargs
         assert kwargs["review_type"] == "code-review"
         assert kwargs["task_id"] == task_id
+        assert kwargs["worktree"] == Path.cwd().resolve()
 
     def test_triple_mode_outside_c11_errors(self, tmp_path):
         """Triple mode outside c11 must fail cleanly with a non-zero exit and

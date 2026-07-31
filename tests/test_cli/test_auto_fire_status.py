@@ -8,12 +8,14 @@ because the conftest disables it by default.
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
 from click.testing import CliRunner
 
 from lattice.cli import auto_review as cli_auto_review
+from lattice.cli import task_cmds
 from lattice.cli.main import cli
 from lattice.core.auto_review import AUTO_REVIEW_ACTOR
 from lattice.core.config import default_config, serialize_config
@@ -98,6 +100,14 @@ def _patch_executable(path: str = "/usr/local/bin/lattice"):
 class TestAutoFireSuccessPaths:
     def test_status_to_review_spawns_code_review(self, tmp_path: Path) -> None:
         root = _make_board(tmp_path)
+        worktree = tmp_path / "feature-worktree"
+        subprocess.run(["git", "init", str(worktree)], check=True, capture_output=True, text=True)
+        nested = worktree / "nested"
+        nested.mkdir()
+        normalized = subprocess.check_output(
+            ["git", "-C", str(nested), "rev-parse", "--show-toplevel"], text=True
+        ).strip()
+        assert normalized == str(worktree.resolve())
         runner = CliRunner()
         task_id = _create_task(runner, root)
         _walk_to_in_progress(runner, root, task_id)
@@ -106,7 +116,11 @@ class TestAutoFireSuccessPaths:
             patch.object(
                 cli_auto_review.subprocess, "Popen", return_value=_FakeProc(54321)
             ) as popen,
+            patch.object(task_cmds, "_caller_git_worktree", return_value=nested),
             _patch_executable(),
+            patch.object(
+                cli_auto_review, "_normalize_reviewed_worktree", return_value=worktree.resolve()
+            ),
         ):
             res = runner.invoke(
                 cli,
@@ -126,6 +140,30 @@ class TestAutoFireSuccessPaths:
         assert argv[5] == "--triggered-by"
         # event id is a non-empty ULID-shaped string
         assert argv[6].startswith("ev_")
+        assert argv[-2:] == ["--worktree", str(worktree.resolve())]
+        assert popen.call_args.kwargs["cwd"] == str(worktree.resolve())
+
+    def test_status_to_review_refuses_auto_fire_without_caller_worktree(
+        self, tmp_path: Path
+    ) -> None:
+        root = _make_board(tmp_path)
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+        _walk_to_in_progress(runner, root, task_id)
+
+        with (
+            patch.object(cli_auto_review.subprocess, "Popen") as popen,
+            patch.object(task_cmds, "_caller_git_worktree", return_value=None),
+        ):
+            res = runner.invoke(
+                cli,
+                ["status", task_id, "review", "--actor", "agent:test"],
+                env={"LATTICE_ROOT": str(root)},
+                catch_exceptions=False,
+            )
+        assert res.exit_code == 0
+        assert "reviewed_worktree_unavailable" in res.output
+        popen.assert_not_called()
 
     def test_status_to_planned_spawns_plan_review(self, tmp_path: Path) -> None:
         root = _make_board(tmp_path, plan_review_mode="triple")
@@ -185,6 +223,9 @@ class TestAutoFireSkipPaths:
         with (
             patch.object(cli_auto_review.subprocess, "Popen") as popen,
             _patch_executable(),
+            patch.object(
+                cli_auto_review, "_normalize_reviewed_worktree", return_value=Path.cwd().resolve()
+            ),
         ):
             res = runner.invoke(
                 cli,
@@ -204,6 +245,9 @@ class TestAutoFireSkipPaths:
         with (
             patch.object(cli_auto_review.subprocess, "Popen") as popen,
             _patch_executable(),
+            patch.object(
+                cli_auto_review, "_normalize_reviewed_worktree", return_value=Path.cwd().resolve()
+            ),
         ):
             res = runner.invoke(
                 cli,
@@ -224,6 +268,9 @@ class TestAutoFireSkipPaths:
         with (
             patch.object(cli_auto_review.subprocess, "Popen") as popen,
             _patch_executable(),
+            patch.object(
+                cli_auto_review, "_normalize_reviewed_worktree", return_value=Path.cwd().resolve()
+            ),
         ):
             res = runner.invoke(
                 cli,
@@ -318,6 +365,9 @@ class TestAutoFireResilience:
         with (
             patch.object(cli_auto_review.subprocess, "Popen") as popen,
             _patch_executable(),
+            patch.object(
+                cli_auto_review, "_normalize_reviewed_worktree", return_value=Path.cwd().resolve()
+            ),
         ):
             res = runner.invoke(
                 cli,
@@ -339,6 +389,9 @@ class TestAutoFireResilience:
         with (
             patch.object(cli_auto_review.subprocess, "Popen", return_value=_FakeProc(31337)),
             _patch_executable(),
+            patch.object(
+                cli_auto_review, "_normalize_reviewed_worktree", return_value=Path.cwd().resolve()
+            ),
         ):
             runner.invoke(
                 cli,
@@ -399,6 +452,9 @@ def test_status_json_output_includes_auto_review_block(tmp_path: Path) -> None:
     with (
         patch.object(cli_auto_review.subprocess, "Popen", return_value=_FakeProc(99)),
         _patch_executable(),
+        patch.object(
+            cli_auto_review, "_normalize_reviewed_worktree", return_value=Path.cwd().resolve()
+        ),
     ):
         res = runner.invoke(
             cli,
