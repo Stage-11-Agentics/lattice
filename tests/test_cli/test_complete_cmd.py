@@ -7,6 +7,8 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from lattice.cli import task_cmds
 from lattice.storage.fs import LATTICE_DIR
 
@@ -14,6 +16,26 @@ from tests.conftest import _add_policies_to_config
 
 
 _ACTOR = "human:test"
+
+
+@pytest.fixture()
+def caller_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A throwaway git checkout that the CLI is invoked from.
+
+    The reachable-review-commit gate reads the *invoking* checkout, so these
+    tests need one they own. Borrowing the repository the suite happens to run
+    in makes them depend on its branch and HEAD — which is empty under CI's
+    detached checkout.
+    """
+    repo = tmp_path / "caller-repo"
+    repo.mkdir()
+    git = ["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t"]
+    subprocess.run(["git", "init", "-q", "-b", "work", str(repo)], check=True)
+    (repo / "file.txt").write_text("work\n", encoding="utf-8")
+    subprocess.run([*git, "add", "-A"], check=True)
+    subprocess.run([*git, "commit", "-qm", "work"], check=True)
+    monkeypatch.chdir(repo)
+    return repo
 
 
 def _create_and_advance_to(invoke, fill_plan, target_status: str) -> str:
@@ -356,6 +378,7 @@ class TestReachableReviewCommitCommandBoundaries:
         config_path.write_text(json.dumps(config, sort_keys=True, indent=2) + "\n")
         repo = task_cmds._caller_git_worktree()
         assert repo is not None
+        assert repo.name == "caller-repo", "the gate must read the invoking checkout"
         branch = subprocess.check_output(
             ["git", "-C", str(repo), "branch", "--show-current"], text=True
         ).strip()
@@ -367,7 +390,7 @@ class TestReachableReviewCommitCommandBoundaries:
         return branch, head
 
     def test_status_done_rejects_unreachable_then_accepts_reachable_artifact(
-        self, invoke, initialized_root, fill_plan
+        self, invoke, initialized_root, fill_plan, caller_repo
     ) -> None:
         task_id = _create_and_advance_to(invoke, fill_plan, "review")
         _, head = self._enable_gate_and_link_current_branch(invoke, initialized_root, task_id)
@@ -393,7 +416,7 @@ class TestReachableReviewCommitCommandBoundaries:
         assert json.loads(accepted.output)["data"]["status"] == "done"
 
     def test_complete_rejects_candidate_without_persisting_then_writes_strict_marker(
-        self, invoke, initialized_root, fill_plan
+        self, invoke, initialized_root, fill_plan, caller_repo
     ) -> None:
         task_id = _create_and_advance_to(invoke, fill_plan, "review")
         _, head = self._enable_gate_and_link_current_branch(invoke, initialized_root, task_id)
