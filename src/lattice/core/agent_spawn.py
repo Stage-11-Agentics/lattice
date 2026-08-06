@@ -157,6 +157,16 @@ class Backend(ABC):
 # ---------------------------------------------------------------------------
 
 
+#: Model every Lattice-spawned ``claude`` reviewer runs on. Bare ``claude``
+#: inherits the *operator's* configured default, which makes a review fleet
+#: silently as expensive as whatever the human happens to be driving that day —
+#: a nine-agent trident run on a premium default costs real money nobody chose.
+#: Reviews are a fixed, well-understood workload, so they get a fixed model.
+#: ``gemini`` has always been pinned this way (``-m gemini-3-pro-preview``);
+#: this brings ``claude`` in line. Override per-environment when you need to.
+REVIEW_CLAUDE_MODEL: str = os.environ.get("LATTICE_REVIEW_CLAUDE_MODEL", "claude-opus-5")
+
+
 def _agent_cli_command(agent_type: str, prompt_file: str, output_file: str) -> str | None:
     """Return the shell command string that runs the named agent CLI.
 
@@ -167,7 +177,8 @@ def _agent_cli_command(agent_type: str, prompt_file: str, output_file: str) -> s
     if agent_type == "claude":
         return (
             f"env {_HOST_SESSION_ENV_UNSET} "
-            f'claude --dangerously-skip-permissions -p "{instruction}"'
+            f"claude --dangerously-skip-permissions --model {REVIEW_CLAUDE_MODEL} "
+            f'-p "{instruction}"'
         )
     if agent_type == "codex":
         return f'codex exec --full-auto --skip-git-repo-check "{instruction}"'

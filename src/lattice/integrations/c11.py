@@ -35,6 +35,7 @@ from pathlib import Path
 
 from lattice.cli.c11_bridge import _run_c11 as _bridge_run_c11
 from lattice.core.agent_spawn import (
+    REVIEW_CLAUDE_MODEL,
     Backend,
     BackendUnavailableError,
     ProgressCallback,
@@ -232,7 +233,10 @@ def spawn_one_in_current_workspace(
 
     cd_cmd = f"cd {shlex.quote(str(cwd))}"
     instruction = f"Read {shlex.quote(str(prompt_path))} and follow the instructions."
-    claude_cmd = f'claude --dangerously-skip-permissions "{instruction}"'
+    claude_cmd = (
+        f"claude --dangerously-skip-permissions "
+        f'--model {REVIEW_CLAUDE_MODEL} "{instruction}"'
+    )
     line = f"{cd_cmd} && {claude_cmd}"
 
     _bridge_run_c11(
