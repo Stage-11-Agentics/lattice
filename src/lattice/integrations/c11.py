@@ -234,8 +234,7 @@ def spawn_one_in_current_workspace(
     cd_cmd = f"cd {shlex.quote(str(cwd))}"
     instruction = f"Read {shlex.quote(str(prompt_path))} and follow the instructions."
     claude_cmd = (
-        f"claude --dangerously-skip-permissions "
-        f'--model {REVIEW_CLAUDE_MODEL} "{instruction}"'
+        f'claude --dangerously-skip-permissions --model {REVIEW_CLAUDE_MODEL} "{instruction}"'
     )
     line = f"{cd_cmd} && {claude_cmd}"
 
