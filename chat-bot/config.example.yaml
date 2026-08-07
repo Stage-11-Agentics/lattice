@@ -1,0 +1,48 @@
+# Configure one or more platforms. Uncomment and fill in the ones you need.
+
+platforms:
+  signal:
+    api_url: "http://localhost:8080"
+    phone_number: "+1234567890"
+    poll_interval_ms: 1000
+    groups:
+      - "group.base64encodedgroupid=="
+
+  # discord:
+  #   bot_token: "YOUR_DISCORD_BOT_TOKEN"
+  #   channels:
+  #     - "1234567890123456"
+
+  # slack:
+  #   bot_token: "xoxb-YOUR-SLACK-BOT-TOKEN"
+  #   app_token: "xapp-YOUR-SLACK-APP-TOKEN"
+  #   channels:
+  #     - "C01234ABCDE"
+
+  # telegram:
+  #   bot_token: "123456789:ABCdefGHIjklMNOpqrsTUVwxyz"
+  #   chats:
+  #     - -1001234567890
+
+lattice:
+  project_root: "/path/to/your/project"
+  actor: "agent:lattice-bot"
+
+llm:
+  model: "claude-sonnet-4-5-20250929"
+
+bot:
+  name: "LatticeBot"
+  trigger_prefixes:
+    - "@lattice"
+    - "/lat"
+  history_max_messages: 50
+  help_text: |
+    I can help manage Lattice tasks. Try:
+    - "create a bug for login timeout, high priority"
+    - "show me task LAT-42"
+    - "list all in-progress tasks"
+    - "what's the weather?"
+    - "assign LAT-15 to human:alice"
+    - "move LAT-10 to review"
+    I also read chat context — discuss a problem, then "@lattice track this".

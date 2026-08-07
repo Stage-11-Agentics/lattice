@@ -1,0 +1,24 @@
+{
+  "name": "lattice-chat-bot",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "dev": "bun --watch run src/index.ts"
+  },
+  "dependencies": {
+    "smithers-orchestrator": "latest",
+    "ai": "latest",
+    "@ai-sdk/anthropic": "latest",
+    "zod": "^3.23",
+    "yaml": "^2.4",
+    "discord.js": "^14.16",
+    "@slack/bolt": "^4.1",
+    "grammy": "^1.30"
+  },
+  "devDependencies": {
+    "typescript": "^5.5",
+    "@types/bun": "latest"
+  }
+}
