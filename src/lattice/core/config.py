@@ -173,6 +173,7 @@ class LatticeConfig(TypedDict, total=False):
     plan_approval: Literal["auto", "human"]
     review_timeout_seconds: int
     review_max_diff_lines: int
+    review_max_diff_chars: int
     auto_code_review_on_transition: bool
     auto_plan_review_on_transition: bool
     done_display: Literal["all", "recent", "grouped"]
@@ -431,6 +432,7 @@ def default_config(preset: str = "classic", status_preset: str = "stage11") -> L
         "plan_approval": "auto",
         "review_timeout_seconds": 600,
         "review_max_diff_lines": 5000,
+        "review_max_diff_chars": 120000,
         "auto_code_review_on_transition": True,
         "auto_plan_review_on_transition": True,
         "done_display": "grouped",
