@@ -832,3 +832,33 @@ Additionally, `lattice advance N` processed multiple tasks in a single context w
 - **Consequence:** Criteria add precise local contracts and evidence navigation
   without creating a criterion database/index/entity, correction event,
   inherited policy, mandatory planning ritual, or new dependency.
+
+---
+
+## 2026-08-14: A failed review reports itself on the task (LAT-268)
+
+- **Decision:** A review that produces no artifact is a failed command. It exits
+  non-zero, records a `comment_added` event on the task it was reviewing, and —
+  when it was auto-fired, so no caller is reading the exit code — sets
+  `needs_human`. The pre-existing `failures.jsonl` line and per-task `.daemon`
+  log remain, as diagnostics rather than as the only signal.
+- **Evidence:** On one board, 49 recorded review failures over three days
+  produced zero signals reachable from `lattice show`, `lattice list`, or an
+  exit status. The failures were real (29 timeouts, 19 exits with code 1) and
+  the tasks sat in `review` looking reviewed. 222 auto-fired reviews on the same
+  board succeeded, which is exactly why the failures went unnoticed.
+- **Abandoned ≠ in flight:** A review whose owning process is gone without
+  writing a terminal status never reaches its own failure handler, so it leaves
+  a record reading `running` forever (24 such records on the same board).
+  `review-status` now checks the holder PID and reports `abandoned`.
+- **Provenance:** The child review process claims `review_state` with
+  `auto_fired` derived from `--triggered-by`, which only the auto-fire path
+  passes. The previous adoption test required the spawning parent to still be
+  alive, which a detached child almost never observes, so every record on every
+  board claimed `auto_fired: false`.
+- **Prompt size:** `review_max_diff_lines` caps hunks, not bytes; 5000 lines of
+  a wide diff measured at 200k–509k characters. `review_max_diff_chars`
+  (default 120000) caps the prompt itself. Measured on this machine: a 14.5k
+  prompt returned in 45s, a 209k prompt in 232s of a 600s budget.
+- **Consequence:** No new files, daemons, or schema versions. The failure paths
+  write to surfaces that already exist and that agents already read.

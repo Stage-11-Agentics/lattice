@@ -865,3 +865,65 @@ class TestResolveDiffWorktree:
         success, diff = review_mod.resolve_diff(lattice_dir, "task_01", {}, worktree=wt)
         assert success is True
         assert "ticket change" in diff
+
+
+class TestDiffCharCap:
+    def test_under_cap_unchanged(self) -> None:
+        diff = "\n".join(f"line {i}" for i in range(10))
+        capped, was_capped, original = review_mod.cap_diff_chars(diff, max_chars=10_000)
+        assert capped == diff
+        assert was_capped is False
+        assert original == len(diff)
+
+    def test_over_cap_truncates_on_a_line_boundary(self) -> None:
+        diff = "\n".join("x" * 100 for _ in range(100))  # ~10k chars, 100 lines
+        capped, was_capped, original = review_mod.cap_diff_chars(diff, max_chars=1_000)
+        assert was_capped is True
+        assert original == len(diff)
+        assert "diff truncated by Lattice" in capped
+        body = capped.split("\n\n[diff truncated")[0]
+        assert len(body) <= 1_000
+        # No half-line handed to the reviewer.
+        assert all(len(line) == 100 for line in body.splitlines())
+
+    def test_zero_disables_cap(self) -> None:
+        diff = "x" * 5_000
+        capped, was_capped, _ = review_mod.cap_diff_chars(diff, max_chars=0)
+        assert capped == diff
+        assert was_capped is False
+
+    def test_line_cap_alone_does_not_bound_a_wide_diff(self) -> None:
+        """The reason a character cap exists at all."""
+        wide = "\n".join("+" + "x" * 500 for _ in range(5_000))
+        line_capped, was_capped, _ = cap_diff(wide, max_lines=5_000)
+        assert was_capped is False
+        assert len(line_capped) > 2_000_000
+        char_capped, was_capped, _ = review_mod.cap_diff_chars(line_capped, max_chars=120_000)
+        assert was_capped is True
+        assert len(char_capped) < 121_000
+
+
+class TestAbandonedReviewDetection:
+    def test_dead_holder_is_abandoned(self) -> None:
+        state = {
+            "task_id": "task_01",
+            "started_by_pid": 4_000_000,
+            "agents": [{"name": "claude", "status": "running"}],
+        }
+        assert review_mod.is_review_abandoned(state) is True
+
+    def test_live_holder_is_not_abandoned(self) -> None:
+        state = {
+            "task_id": "task_01",
+            "started_by_pid": os.getpid(),
+            "agents": [{"name": "claude", "status": "running"}],
+        }
+        assert review_mod.is_review_abandoned(state) is False
+
+    def test_terminal_status_is_not_abandoned(self) -> None:
+        state = {"task_id": "task_01", "started_by_pid": 4_000_000, "status": "failed"}
+        assert review_mod.is_review_abandoned(state) is False
+
+    def test_record_without_pid_is_not_abandoned(self) -> None:
+        state = {"task_id": "task_01", "agents": [{"name": "claude", "status": "running"}]}
+        assert review_mod.is_review_abandoned(state) is False

@@ -408,8 +408,11 @@ class TestCodeReviewSingle:
                 env={"LATTICE_ROOT": str(root)},
                 catch_exceptions=False,
             )
-        # Agent failure should result in non-zero exit or error message
-        assert result.exit_code != 0 or "failed" in result.output
+        # Agent failure is a failed command: non-zero exit AND a stated reason.
+        # (The `or` this assertion used to allow is exactly how an exit-0
+        # failure path stayed green for two days of silent review failures.)
+        assert result.exit_code != 0
+        assert "failed" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -554,6 +557,8 @@ class TestReviewClaimAndDisplay:
     """Coordination tests for the review_state claim path (LAT-211)."""
 
     def test_review_status_displays_auto_fired_field(self, tmp_path: Path) -> None:
+        import os
+
         from lattice.core.review import write_review_state
 
         root = _make_board(tmp_path)
@@ -566,7 +571,7 @@ class TestReviewClaimAndDisplay:
                 "mode": "triple",
                 "review_type": "code-review",
                 "started_at": "2026-05-06T00:00:00Z",
-                "started_by_pid": 4242,
+                "started_by_pid": os.getpid(),
                 "auto_fired": True,
                 "agents": [],
             },
@@ -580,9 +585,11 @@ class TestReviewClaimAndDisplay:
         assert result.exit_code == 0
         assert "auto_fired:" in result.output
         assert "True" in result.output
-        assert "started_by_pid 4242" in result.output
+        assert f"started_by_pid {os.getpid()}" in result.output
 
     def test_review_status_json_round_trips_new_fields(self, tmp_path: Path) -> None:
+        import os
+
         from lattice.core.review import write_review_state
 
         root = _make_board(tmp_path)
@@ -595,7 +602,7 @@ class TestReviewClaimAndDisplay:
                 "mode": "single",
                 "review_type": "code-review",
                 "started_at": "2026-05-06T00:00:00Z",
-                "started_by_pid": 9999,
+                "started_by_pid": os.getpid(),
                 "auto_fired": False,
                 "agents": [],
             },
@@ -609,7 +616,7 @@ class TestReviewClaimAndDisplay:
         assert result.exit_code == 0
         data = json.loads(result.output)["data"]
         assert data["auto_fired"] is False
-        assert data["started_by_pid"] == 9999
+        assert data["started_by_pid"] == os.getpid()
 
     def test_code_review_refuses_when_live_other_pid_holds(self, tmp_path: Path) -> None:
         import os
@@ -890,3 +897,378 @@ class TestDiffResolution:
             success, msg = resolve_diff(tmp_path / ".lattice", "task_01ABC", {})
         assert success is False
         assert "--base" in msg
+
+
+# ---------------------------------------------------------------------------
+# Tests: a failed review has to be visible (LAT-267)
+# ---------------------------------------------------------------------------
+
+#: A pid above macOS/Linux pid_max — os.kill() on it always raises
+#: ProcessLookupError, so it is a deterministically dead holder.
+DEAD_PID = 4_000_000
+
+
+def _snapshot(root: Path, task_id: str) -> dict:
+    return json.loads((root / LATTICE_DIR / "tasks" / f"{task_id}.json").read_text())
+
+
+def _comment_bodies(root: Path, task_id: str) -> list[str]:
+    path = root / LATTICE_DIR / "events" / f"{task_id}.jsonl"
+    bodies = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        event = json.loads(line)
+        if event.get("type") == "comment_added":
+            bodies.append(event.get("data", {}).get("body", ""))
+    return bodies
+
+
+def _run_failing_code_review(runner: CliRunner, root: Path, task_id: str, *extra: str):
+    with (
+        patch(
+            "lattice.cli.review_cmds.resolve_diff",
+            return_value=(True, "diff --git a/foo.py b/foo.py\n+print('hello')"),
+        ),
+        patch(
+            "lattice.cli.review_cmds.run_single_review",
+            return_value=(False, "Agent 'claude' timed out after 600s", None),
+        ),
+    ):
+        return runner.invoke(
+            cli,
+            ["code-review", task_id, "--mode", "single", "--actor", "agent:test", *extra],
+            env={"LATTICE_ROOT": str(root)},
+            catch_exceptions=False,
+        )
+
+
+class TestFailedReviewIsVisible:
+    def test_failure_exits_non_zero(self, tmp_path):
+        root = _make_board(tmp_path, {"review_mode": "single"})
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+
+        result = _run_failing_code_review(runner, root, task_id)
+
+        assert result.exit_code != 0, result.output
+        assert "timed out after 600s" in result.output
+
+    def test_success_still_exits_zero(self, tmp_path):
+        """Positive pair for the exit-code assertion above."""
+        root = _make_board(tmp_path, {"review_mode": "single"})
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+
+        with (
+            patch(
+                "lattice.cli.review_cmds.resolve_diff",
+                return_value=(True, "diff --git a/foo.py b/foo.py\n+print('hello')"),
+            ),
+            patch(
+                "lattice.cli.review_cmds.run_single_review",
+                return_value=(True, "Review complete.", "### 1. Verdict\n**PASS**"),
+            ),
+            patch("lattice.cli.review_cmds._attach_review_artifact", return_value="art_fake"),
+        ):
+            result = runner.invoke(
+                cli,
+                ["code-review", task_id, "--mode", "single", "--actor", "agent:test"],
+                env={"LATTICE_ROOT": str(root)},
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0, result.output
+        assert not any("Automated review failed" in b for b in _comment_bodies(root, task_id))
+
+    def test_failure_comments_on_the_task(self, tmp_path):
+        root = _make_board(tmp_path, {"review_mode": "single"})
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+
+        _run_failing_code_review(runner, root, task_id)
+
+        bodies = [b for b in _comment_bodies(root, task_id) if "Automated review failed" in b]
+        assert bodies, (
+            f"no failure comment recorded; comments were {_comment_bodies(root, task_id)}"
+        )
+        assert "timed out after 600s" in bodies[0]
+        assert "has NOT been reviewed" in bodies[0]
+
+    def test_manual_failure_does_not_flag_needs_human(self, tmp_path):
+        """A human/agent running the command sees the non-zero exit directly."""
+        root = _make_board(tmp_path, {"review_mode": "single"})
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+
+        _run_failing_code_review(runner, root, task_id)
+
+        assert not _snapshot(root, task_id).get("needs_human")
+
+    def test_auto_fired_failure_flags_needs_human(self, tmp_path):
+        """Nobody is reading an auto-fired review's exit code, so raise the flag."""
+        root = _make_board(tmp_path, {"review_mode": "single"})
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+
+        _run_failing_code_review(runner, root, task_id, "--triggered-by", "ev_fake")
+
+        snapshot = _snapshot(root, task_id)
+        flag = snapshot.get("needs_human")
+        assert flag, "auto-fired review failure left no needs_human flag"
+        assert "unreviewed" in flag["reason"]
+
+    def test_plan_review_failure_exits_non_zero_and_comments(self, tmp_path):
+        root = _make_board(tmp_path, {"plan_review_mode": "single"})
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+        _write_plan(root, task_id, "# Plan\n\nApproach: implement it.\n")
+
+        with patch(
+            "lattice.cli.review_cmds.run_single_review",
+            return_value=(False, "Agent 'claude' timed out after 600s", None),
+        ):
+            result = runner.invoke(
+                cli,
+                ["plan-review", task_id, "--mode", "single", "--actor", "agent:test"],
+                env={"LATTICE_ROOT": str(root)},
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code != 0, result.output
+        assert any("Automated review failed" in b for b in _comment_bodies(root, task_id))
+
+    def test_failure_json_mode_is_an_error_envelope(self, tmp_path):
+        root = _make_board(tmp_path, {"review_mode": "single"})
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+
+        result = _run_failing_code_review(runner, root, task_id, "--json")
+
+        assert result.exit_code != 0
+        payload = json.loads(result.output[result.output.index("{") :])
+        assert payload["ok"] is False
+        assert payload["error"]["code"] == "REVIEW_FAILED"
+
+
+class TestAbandonedReviewIsVisible:
+    def _seed(self, root: Path, task_id: str, pid: int) -> None:
+        from lattice.core.review import write_review_state
+
+        write_review_state(
+            root / LATTICE_DIR,
+            {
+                "task_id": task_id,
+                "mode": "single",
+                "review_type": "code-review",
+                "started_at": "2026-05-06T00:00:00Z",
+                "started_by_pid": pid,
+                "auto_fired": True,
+                "agents": [
+                    {"name": "claude", "status": "running", "started_at": "2026-05-06T00:00:00Z"}
+                ],
+            },
+        )
+
+    def test_dead_holder_reports_abandoned(self, tmp_path):
+        root = _make_board(tmp_path)
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+        self._seed(root, task_id, DEAD_PID)
+
+        result = runner.invoke(
+            cli,
+            ["review-status", task_id],
+            env={"LATTICE_ROOT": str(root)},
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0
+        assert "abandoned" in result.output
+        assert "running" not in result.output
+
+    def test_live_holder_still_reports_running(self, tmp_path):
+        """Positive pair: the same seed with a live pid is still in flight."""
+        import os
+
+        root = _make_board(tmp_path)
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+        self._seed(root, task_id, os.getpid())
+
+        result = runner.invoke(
+            cli,
+            ["review-status", task_id],
+            env={"LATTICE_ROOT": str(root)},
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0
+        assert "running" in result.output
+        assert "abandoned" not in result.output
+
+    def test_dead_holder_reports_abandoned_json(self, tmp_path):
+        root = _make_board(tmp_path)
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+        self._seed(root, task_id, DEAD_PID)
+
+        result = runner.invoke(
+            cli,
+            ["review-status", task_id, "--json"],
+            env={"LATTICE_ROOT": str(root)},
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0
+        assert json.loads(result.output)["data"]["status"] == "abandoned"
+
+
+class TestAutoFiredProvenanceSurvivesTheHandoff:
+    def test_triggered_by_child_claims_as_auto_fired(self, tmp_path):
+        """The detached child usually outlives its parent, so adoption can't carry this."""
+        from lattice.core.review import read_review_state
+
+        root = _make_board(tmp_path, {"review_mode": "single"})
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+
+        with (
+            patch(
+                "lattice.cli.review_cmds.resolve_diff",
+                return_value=(True, "diff --git a/x.py b/x.py\n"),
+            ),
+            patch("lattice.cli.review_cmds.run_single_review", return_value=(True, "ok", "PASS")),
+            patch("lattice.cli.review_cmds._attach_review_artifact", return_value="art_fake"),
+        ):
+            runner.invoke(
+                cli,
+                [
+                    "code-review",
+                    task_id,
+                    "--mode",
+                    "single",
+                    "--actor",
+                    "agent:test",
+                    "--triggered-by",
+                    "ev_fake",
+                ],
+                env={"LATTICE_ROOT": str(root)},
+                catch_exceptions=False,
+            )
+
+        # run_single_review is mocked, so the claim record it would have
+        # rewritten (and cleared) is still exactly as the CLI body wrote it.
+        state = read_review_state(root / LATTICE_DIR, task_id)
+        assert state is not None
+        assert state["auto_fired"] is True
+
+    def test_manual_child_claims_as_not_auto_fired(self, tmp_path):
+        from lattice.core.review import read_review_state
+
+        root = _make_board(tmp_path, {"review_mode": "single"})
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+
+        with (
+            patch(
+                "lattice.cli.review_cmds.resolve_diff",
+                return_value=(True, "diff --git a/x.py b/x.py\n"),
+            ),
+            patch("lattice.cli.review_cmds.run_single_review", return_value=(True, "ok", "PASS")),
+            patch("lattice.cli.review_cmds._attach_review_artifact", return_value="art_fake"),
+        ):
+            runner.invoke(
+                cli,
+                ["code-review", task_id, "--mode", "single", "--actor", "agent:test"],
+                env={"LATTICE_ROOT": str(root)},
+                catch_exceptions=False,
+            )
+
+        state = read_review_state(root / LATTICE_DIR, task_id)
+        assert state is not None
+        assert state["auto_fired"] is False
+
+
+class TestDiffCharCap:
+    def test_prompt_is_bounded_by_char_cap(self, tmp_path):
+        """5000 lines of a wide diff is still a quarter-million-character prompt."""
+        root = _make_board(tmp_path, {"review_mode": "single", "review_max_diff_chars": 20_000})
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+
+        wide_diff = "\n".join(f"+{'x' * 500}" for _ in range(200))  # 100k chars, 200 lines
+        with (
+            patch("lattice.cli.review_cmds.resolve_diff", return_value=(True, wide_diff)),
+            patch(
+                "lattice.cli.review_cmds.run_single_review", return_value=(True, "ok", "PASS")
+            ) as run_single,
+            patch("lattice.cli.review_cmds._attach_review_artifact", return_value="art_fake"),
+        ):
+            result = runner.invoke(
+                cli,
+                ["code-review", task_id, "--mode", "single", "--actor", "agent:test"],
+                env={"LATTICE_ROOT": str(root)},
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0, result.output
+        prompt = run_single.call_args.kwargs["prompt_content"]
+        # The line cap (5000) never fires here — only the char cap can bound this.
+        assert len(prompt) < 25_000, f"prompt was {len(prompt)} chars"
+        assert "diff truncated by Lattice" in prompt
+
+    def test_small_diff_is_not_truncated(self, tmp_path):
+        root = _make_board(tmp_path, {"review_mode": "single"})
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+
+        diff = "diff --git a/foo.py b/foo.py\n+print('hello')"
+        with (
+            patch("lattice.cli.review_cmds.resolve_diff", return_value=(True, diff)),
+            patch(
+                "lattice.cli.review_cmds.run_single_review", return_value=(True, "ok", "PASS")
+            ) as run_single,
+            patch("lattice.cli.review_cmds._attach_review_artifact", return_value="art_fake"),
+        ):
+            runner.invoke(
+                cli,
+                ["code-review", task_id, "--mode", "single", "--actor", "agent:test"],
+                env={"LATTICE_ROOT": str(root)},
+                catch_exceptions=False,
+            )
+
+        prompt = run_single.call_args.kwargs["prompt_content"]
+        assert "diff truncated by Lattice" not in prompt
+        assert "print('hello')" in prompt
+
+
+class TestFailureReportNamesTheRightCommand:
+    def test_plan_review_failure_suggests_plan_review_rerun(self, tmp_path):
+        from lattice.core.review import write_review_state
+
+        root = _make_board(tmp_path)
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+        write_review_state(
+            root / LATTICE_DIR,
+            {
+                "task_id": task_id,
+                "mode": "single",
+                "review_type": "plan-review",
+                "started_at": "2026-05-06T00:00:00Z",
+                "status": "failed",
+                "error": "timed out after 600s",
+                "agents": [],
+            },
+        )
+
+        result = runner.invoke(
+            cli,
+            ["review-status", task_id],
+            env={"LATTICE_ROOT": str(root)},
+            catch_exceptions=False,
+        )
+
+        assert f"lattice plan-review {task_id}" in result.output
+        assert "lattice code-review" not in result.output

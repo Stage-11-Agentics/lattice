@@ -306,6 +306,8 @@ cat .lattice/config.json | python3 -c "import sys,json; d=json.load(sys.stdin); 
 
 **The test:** If the same agent that wrote the code also reviewed it without a fresh context boundary, the review gate is not doing its job. The whole point is independent verification.
 
+**When a review fails.** A review that produces no artifact leaves the task unreviewed, and says so where you will see it: `lattice code-review` / `plan-review` exits non-zero, a comment naming the failure lands on the task's event log, and an *auto-fired* failure also raises `needs-human` — because nobody is reading a detached subprocess's exit code. A review whose process died without recording a result (machine sleep, closed terminal, reaped child) reports as `abandoned` in `lattice review-status`, not as still running. Treat all three the same way: the task has not been reviewed, so re-run the review before moving to `done`.
+
 **Review content validation:** Before trusting a review artifact and moving to `done`, the orchestrator must sanity-check that the content is an actual review — not an error message, stack trace, agent crash output, or empty boilerplate. A valid review references the code (files, sections, or acceptance criteria), contains a verdict (pass/fail), and reads like a human wrote it. If the review content looks like agent failure output, treat it as a failed review and re-run. This is a 5-second gut check, not a deep analysis.
 
 ### Review Verdict Routing
@@ -353,7 +355,7 @@ Max cycles:   3 review->rework transitions, then CLI blocks -> set needs-human f
 
 ### Review Config Reference
 
-Five settings in `.lattice/config.json` control review behavior:
+These settings in `.lattice/config.json` control review behavior:
 
 | Setting | Values | Default | Meaning |
 |---------|--------|---------|---------|
@@ -362,6 +364,9 @@ Five settings in `.lattice/config.json` control review behavior:
 | `plan_approval` | `auto`, `human` | `auto` | After plan-review: `auto` proceeds, `human` sets the `needs-human` flag (task stays in `planned`) for approval |
 | `auto_code_review_on_transition` | `true`, `false` | `true` | Auto-spawn `lattice code-review` when a task transitions to `review` |
 | `auto_plan_review_on_transition` | `true`, `false` | `true` | Auto-spawn `lattice plan-review` when a task transitions to `planned` |
+| `review_timeout_seconds` | integer | `600` | Wall-clock budget for one review agent |
+| `review_max_diff_lines` | integer | `5000` | Ceiling on diff lines embedded in the prompt |
+| `review_max_diff_chars` | integer | `120000` | Ceiling on diff **characters**. The line cap alone does not bound prompt size — a wide diff (lockfiles, generated code) runs to hundreds of thousands of characters at 5000 lines — and prompt size is the dominant term in review wall-clock. |
 
 **`inline`** — review happens in the same agent session (no subprocess spawned).
 **`single`** — one review agent is spawned; result stored as a `review` or `plan-review` artifact.

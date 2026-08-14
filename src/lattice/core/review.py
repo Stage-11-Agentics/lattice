@@ -47,6 +47,14 @@ FAILURE_THRESHOLD = 2  # auto-create diagnostic task after this many failures
 #: ``review_max_diff_lines``.
 DEFAULT_MAX_DIFF_LINES = 5000
 
+#: Default ceiling on diff *characters* embedded in a review prompt. The line
+#: cap alone does not bound prompt size — 5000 lines of a wide diff (lockfiles,
+#: minified assets, generated code) measured at ~200k-500k characters in the
+#: field, and prompt size is the dominant term in review wall-clock: a 14.5k
+#: prompt returned in 45s where a 209k prompt took 232s of the 600s budget.
+#: Configurable via ``review_max_diff_chars``; non-positive disables the cap.
+DEFAULT_MAX_DIFF_CHARS = 120_000
+
 REVIEW_STATE_DIR = "review_state"
 TMP_PROMPTS_DIR = "tmp-prompts"
 FAILURES_FILE = "failures.jsonl"
@@ -118,13 +126,13 @@ def cleanup_prompt_dirs(lattice_dir: Path) -> int:
 #      the parent's claim, not contending with a stranger.
 #
 #    * **Normal claim.**  Otherwise (no record, stale parent PID, or no
-#      ``--triggered-by``) the child calls
-#      ``claim_review_state(..., auto_fired=False)``. The standard stale-PID
+#      ``--triggered-by``) the child calls ``claim_review_state`` with
+#      ``auto_fired=(triggered_by is not None)``. The standard stale-PID
 #      reclaim path overwrites the parent's dead record with the child's
-#      live PID. ``auto_fired=False`` here is intentional: ``review_state``
-#      is transient coordination state; the durable "this review was
-#      auto-fired" signal lives in the ``auto_review_spawned`` event in the
-#      task's event log.
+#      live PID, and ``--triggered-by`` — passed only by the auto-fire path —
+#      carries the provenance across the handoff. The durable audit signal
+#      still lives in the ``auto_review_spawned`` event; this keeps the
+#      transient record from contradicting it.
 #
 # 3. **``run_single_review`` / ``run_triple_review``.**  Once inside the
 #    review orchestrator the existing in-place ``write_review_state`` calls
@@ -610,6 +618,54 @@ def cap_diff(diff: str, max_lines: int = DEFAULT_MAX_DIFF_LINES) -> tuple[str, b
         f"review_max_diff_lines.]\n"
     )
     return kept + marker, True, original
+
+
+def cap_diff_chars(diff: str, max_chars: int = DEFAULT_MAX_DIFF_CHARS) -> tuple[str, bool, int]:
+    """Cap a diff to ``max_chars``, truncating with a visible marker if over.
+
+    Returns ``(possibly_truncated_diff, was_capped, original_char_count)``.
+
+    Complements :func:`cap_diff`: a line cap bounds how many hunks the reviewer
+    sees, a character cap bounds how big the prompt actually gets. Only the
+    second one bounds review latency, so both are applied. Truncation happens on
+    a line boundary where one exists inside the budget, so the agent never reads
+    half a diff line. A non-positive ``max_chars`` disables the cap.
+    """
+    original = len(diff)
+    if max_chars <= 0 or original <= max_chars:
+        return diff, False, original
+    kept = diff[:max_chars]
+    boundary = kept.rfind("\n")
+    if boundary > 0:
+        kept = kept[:boundary]
+    omitted = original - len(kept)
+    marker = (
+        f"\n\n[diff truncated by Lattice: showing first {len(kept)} of {original} "
+        f"characters; {omitted} characters omitted. Review the most significant changes "
+        f"above; if the change is genuinely this large, narrow the diff with --base or "
+        f"raise review_max_diff_chars.]\n"
+    )
+    return kept + marker, True, original
+
+
+def is_review_abandoned(state: dict) -> bool:
+    """True when an in-flight review record's owning process is gone.
+
+    A review subprocess that is killed — machine sleep, terminal closed, an
+    orchestrator reaping its children — never reaches its own failure handler,
+    so it writes no terminal ``status`` and no ``failures.jsonl`` line. The
+    record it leaves behind says ``agents[0].status == "running"`` forever, and
+    every reader reports the review as still in flight. Detecting the dead
+    holder PID is what turns that silence back into a signal.
+    """
+    if not isinstance(state, dict):
+        return False
+    if state.get("status") in ("failed", "done", "abandoned"):
+        return False
+    holder = state.get("started_by_pid")
+    if not isinstance(holder, int):
+        return False
+    return not pid_alive(holder)
 
 
 def _find_git_root(lattice_dir: Path) -> Path | None:

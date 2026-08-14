@@ -23,11 +23,14 @@ from lattice.cli.helpers import (
 )
 from lattice.cli.main import cli
 from lattice.core.review import (
+    DEFAULT_MAX_DIFF_CHARS,
     DEFAULT_MAX_DIFF_LINES,
     cap_diff,
+    cap_diff_chars,
     claim_review_state,
     cleanup_temp_files,
     clear_review_state,
+    is_review_abandoned,
     last_failure_for_task,
     read_review_state,
     run_single_review,
@@ -79,10 +82,14 @@ def _claim_or_refuse(
     — bypassing the live-other-PID refusal that would otherwise fire,
     because the "other" PID is our spawning parent.
 
-    Otherwise call ``claim_review_state(..., auto_fired=False)``: the
-    standard stale-PID reclaim handles the typical case (parent exited
-    before child reached this point), and the live-other-PID refusal
-    handles real contention.
+    Otherwise call ``claim_review_state(...)``: the standard stale-PID
+    reclaim handles the typical case (parent exited before child reached
+    this point), and the live-other-PID refusal handles real contention.
+    ``auto_fired`` carries over from ``--triggered-by``, which only the
+    auto-fire path ever passes — the adoption branch above depends on the
+    parent still being alive, which it usually is not by the time the
+    detached child gets here, so without this the record claimed that no
+    review on the board was ever auto-fired.
 
     Logs the friendly "review already in flight" message and exits 1
     (or returns the structured error for ``--json``) on contention.
@@ -113,7 +120,7 @@ def _claim_or_refuse(
         mode=mode,
         review_type=review_type,
         started_by_pid=os.getpid(),
-        auto_fired=False,
+        auto_fired=triggered_by is not None,
     )
     if claimed:
         return
@@ -270,6 +277,18 @@ def code_review(
             err=True,
         )
 
+    # The line cap does not bound prompt size: 5000 lines of a wide diff runs to
+    # hundreds of thousands of characters, and prompt size is what pushes a
+    # review past its timeout. Cap the characters too.
+    max_diff_chars = config.get("review_max_diff_chars", DEFAULT_MAX_DIFF_CHARS)
+    diff_content, chars_capped, diff_chars = cap_diff_chars(diff_content, max_diff_chars)
+    if chars_capped and not quiet:
+        click.echo(
+            f"Note: diff is {diff_chars} characters — truncated to {max_diff_chars} "
+            f"for review (configurable via review_max_diff_chars).",
+            err=True,
+        )
+
     # Load and fill review template
     template = load_review_template(lattice_dir, "code-review")
     plan_content = _read_plan(lattice_dir, task_id)
@@ -301,9 +320,11 @@ def code_review(
             quiet=quiet,
             model=model,
             session=session,
+            config=config,
             timeout=timeout,
             worktree=reviewed_worktree,
             reviewed_sha=reviewed_sha,
+            auto_fired=triggered_by is not None,
         )
 
     elif mode == "triple":
@@ -434,7 +455,9 @@ def plan_review(
             quiet=quiet,
             model=model,
             session=session,
+            config=config,
             timeout=timeout,
+            auto_fired=triggered_by is not None,
         )
         if art_id and plan_approval == "human":
             _flag_needs_human(lattice_dir, task_id, actor, is_json)
@@ -470,6 +493,7 @@ def _echo_review_failure(
     stderr_tail: str | None = None,
     when: str | None = None,
     source: str | None = None,
+    review_type: str = "code-review",
 ) -> None:
     """Print a clear, diagnosable FAILED report for a review."""
     header = f"Review FAILED for {task_id}"
@@ -485,7 +509,7 @@ def _echo_review_failure(
         click.echo(f"  duration:     {duration}s")
     if stderr_tail:
         click.echo(f"  stderr tail:  {stderr_tail}")
-    click.echo(f"  Re-run with:  lattice code-review {task_id}")
+    click.echo(f"  Re-run with:  lattice {review_type} {task_id}")
 
 
 @cli.command("review-status")
@@ -527,6 +551,7 @@ def review_status(task_id: str, output_json: bool) -> None:
                     stderr_tail=failure.get("stderr_tail"),
                     when=failure.get("timestamp"),
                     source="failures.jsonl",
+                    review_type=failure.get("review_type") or "code-review",
                 )
             else:
                 click.echo(
@@ -549,6 +574,28 @@ def review_status(task_id: str, output_json: bool) -> None:
                 stderr_tail=detail.get("stderr_tail"),
                 when=state.get("finished_at"),
                 source="in-flight review record",
+                review_type=state.get("review_type") or "code-review",
+            )
+        return
+
+    # An in-flight record whose owning process is gone is not in flight — it is
+    # abandoned. Rendering it as "running" is what let 24 killed reviews on one
+    # board read as still-in-progress days after the process died.
+    if is_review_abandoned(state):
+        state = dict(state)
+        state["status"] = "abandoned"
+        if is_json:
+            click.echo(json.dumps({"ok": True, "data": state}, indent=2))
+        else:
+            _echo_review_failure(
+                task_id,
+                error=(
+                    f"review process (pid {state.get('started_by_pid')}) is gone and never "
+                    f"recorded a result — the review was abandoned, not completed"
+                ),
+                when=state.get("started_at"),
+                source="in-flight review record (dead holder pid)",
+                review_type=state.get("review_type") or "code-review",
             )
         return
 
@@ -597,6 +644,87 @@ def review_status(task_id: str, output_json: bool) -> None:
 # ---------------------------------------------------------------------------
 
 
+#: Stable prefix on the comment a failed review leaves on its own task. Kept
+#: greppable so a reader (or a future dashboard lane) can find every review
+#: that never produced a verdict.
+REVIEW_FAILURE_COMMENT_PREFIX = "Automated review failed"
+
+
+def _report_review_failure(
+    lattice_dir: Path,
+    task_id: str,
+    *,
+    review_type: str,
+    message: str,
+    actor: str | dict,
+    config: dict,
+    auto_fired: bool,
+) -> None:
+    """Leave the failure where a human or agent will actually meet it.
+
+    A failed review used to write one line to ``failures.jsonl`` and one line
+    to a per-task ``.daemon`` log — two files nobody opens — while the task
+    itself carried no trace at all and the command still exited 0. The task
+    then sat in ``review`` looking reviewed. This records the failure on the
+    task's own event log, and for an auto-fired review (where by definition no
+    caller is watching the exit code) also raises ``needs_human``.
+
+    Best-effort by construction: reporting a failure must never raise over the
+    top of the failure it is reporting, so every step is guarded.
+    """
+    from lattice.cli.auto_review import log_path_for
+    from lattice.core.events import create_event
+    from lattice.storage.operations import TaskMutationDecision, mutate_task
+
+    log_path = log_path_for(lattice_dir, review_type, task_id)
+    body_lines = [
+        f"{REVIEW_FAILURE_COMMENT_PREFIX}: {review_type} — {message}",
+        "",
+        "No review artifact was produced, so this task has NOT been reviewed.",
+        f"Re-run with: lattice {review_type} {task_id}",
+    ]
+    if auto_fired and log_path.exists():
+        body_lines.append(f"Spawn log: {log_path}")
+    body = "\n".join(body_lines)
+
+    def decide_comment(context):  # noqa: ANN001, ANN202
+        event = create_event(
+            type="comment_added",
+            task_id=task_id,
+            actor=actor,
+            data={"body": body},
+        )
+        return TaskMutationDecision(events=[event])
+
+    try:
+        mutate_task(lattice_dir, task_id, decide_comment, config)
+    except Exception:  # noqa: BLE001 — never mask the review failure
+        click.echo("Warning: could not record the review failure as a comment.", err=True)
+
+    if not auto_fired:
+        return
+
+    def decide_flag(context):  # noqa: ANN001, ANN202
+        snapshot = context.snapshot
+        assert snapshot is not None
+        if snapshot.get("needs_human"):
+            return TaskMutationDecision(events=[])
+        event = create_event(
+            type="needs_human_flagged",
+            task_id=task_id,
+            actor=actor,
+            data={
+                "reason": (f"Auto-fired {review_type} failed ({message}) — task is unreviewed.")
+            },
+        )
+        return TaskMutationDecision(events=[event])
+
+    try:
+        mutate_task(lattice_dir, task_id, decide_flag, config)
+    except Exception:  # noqa: BLE001 — never mask the review failure
+        click.echo("Warning: could not flag the task for human attention.", err=True)
+
+
 def _run_single_and_store(
     *,
     lattice_dir: Path,
@@ -609,9 +737,11 @@ def _run_single_and_store(
     quiet: bool,
     model: str | None,
     session: str | None,
+    config: dict,
     timeout: int = 600,
     worktree: Path | None = None,
     reviewed_sha: str | None = None,
+    auto_fired: bool = False,
 ) -> str | None:
     """Run single-agent review, store artifact, print result. Returns artifact ID or None."""
     click.echo(f"Running {review_type} (single mode)...")
@@ -627,9 +757,19 @@ def _run_single_and_store(
     )
 
     if not success:
-        click.echo(f"Review failed: {message}", err=True)
         cleanup_temp_files(task_id)
-        return None
+        _report_review_failure(
+            lattice_dir,
+            task_id,
+            review_type=review_type,
+            message=message,
+            actor=actor,
+            config=config,
+            auto_fired=auto_fired,
+        )
+        # Exit non-zero: a review that produced no verdict is a failed command,
+        # not a successful one that happened to print a warning.
+        output_error(f"Review failed: {message}", "REVIEW_FAILED", is_json)
 
     assert text is not None
     art_id = _attach_review_artifact(
