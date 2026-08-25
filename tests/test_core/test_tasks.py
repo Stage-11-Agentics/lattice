@@ -343,6 +343,55 @@ class TestFieldUpdated:
         with pytest.raises(ValueError, match="field_updated from value"):
             apply_event_to_snapshot(snap, ev)
 
+    def test_legacy_empty_list_from_matches_unset_field(self) -> None:
+        # Writers before LAT-264's strict replay recorded ``from: []`` for list
+        # fields the snapshot had never initialized (unset -> ``None`` on raw
+        # replay). Such historical logs must still materialize.
+        snap = _make_snapshot()
+        snap.pop("tags", None)  # a task_created that never carried tags
+        ev = {
+            "schema_version": 1,
+            "id": _EV_2,
+            "ts": _TS_2,
+            "type": "field_updated",
+            "task_id": _TASK_ID,
+            "actor": _ACTOR,
+            "data": {"field": "tags", "from": [], "to": ["triage-fold"]},
+        }
+        snap = apply_event_to_snapshot(snap, ev)
+        assert snap["tags"] == ["triage-fold"]
+
+    def test_legacy_empty_list_from_matches_unset_custom_field(self) -> None:
+        snap = _make_snapshot()
+        ev = {
+            "schema_version": 1,
+            "id": _EV_2,
+            "ts": _TS_2,
+            "type": "field_updated",
+            "task_id": _TASK_ID,
+            "actor": _ACTOR,
+            "data": {"field": "custom_fields.watchers", "from": [], "to": ["a"]},
+        }
+        snap = apply_event_to_snapshot(snap, ev)
+        assert snap["custom_fields"]["watchers"] == ["a"]
+
+    def test_empty_list_from_still_rejected_against_real_value(self) -> None:
+        # The allowance is only for unset (None); a populated field keeps the
+        # strict check.
+        snap = _make_snapshot()
+        snap["tags"] = ["existing"]
+        ev = {
+            "schema_version": 1,
+            "id": _EV_2,
+            "ts": _TS_2,
+            "type": "field_updated",
+            "task_id": _TASK_ID,
+            "actor": _ACTOR,
+            "data": {"field": "tags", "from": [], "to": ["new"]},
+        }
+        with pytest.raises(ValueError, match="field_updated from value"):
+            apply_event_to_snapshot(snap, ev)
+
     def test_custom_fields_dot_notation(self) -> None:
         snap = _make_snapshot()
         ev = {

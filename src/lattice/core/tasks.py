@@ -282,6 +282,20 @@ def _mut_assignment_changed(snap: dict, event: dict) -> None:
     snap["assigned_to"] = data["to"]
 
 
+def _from_matches(recorded, current) -> bool:
+    """Does a field_updated event's recorded ``from`` match the replayed state?
+
+    Legacy allowance: writers before LAT-264's strict replay recorded ``from: []``
+    for list fields that had never been initialized (the write-time snapshot
+    defaulted them to ``[]``; raw replay leaves them absent, i.e. ``None``).
+    115 of the acetate board's 1020 task logs carry that shape, so an unset
+    field and an empty list are accepted as the same starting state.
+    """
+    if recorded == current:
+        return True
+    return recorded == [] and current is None
+
+
 @_register_mutation("field_updated")
 def _mut_field_updated(snap: dict, event: dict) -> None:
     data = event["data"]
@@ -290,7 +304,7 @@ def _mut_field_updated(snap: dict, event: dict) -> None:
     if field.startswith("custom_fields."):
         key = field[len("custom_fields.") :]
         current = (snap.get("custom_fields") or {}).get(key)
-        if "from" in data and data["from"] != current:
+        if "from" in data and not _from_matches(data["from"], current):
             raise ValueError(
                 "field_updated from value does not match authoritative state: "
                 f"expected {current!r}, got {data['from']!r}"
@@ -304,7 +318,7 @@ def _mut_field_updated(snap: dict, event: dict) -> None:
             "Use the dedicated command (e.g., status, assign) instead."
         )
     else:
-        if "from" in data and data["from"] != snap.get(field):
+        if "from" in data and not _from_matches(data["from"], snap.get(field)):
             raise ValueError(
                 "field_updated from value does not match authoritative state: "
                 f"expected {snap.get(field)!r}, got {data['from']!r}"
