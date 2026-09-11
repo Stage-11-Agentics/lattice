@@ -174,3 +174,98 @@ def fill_plan_with_policies(cli_env_with_policies: dict[str, str]):
         plan_path.write_text(f"# {title}\n\n## Approach\n\n- Implement the feature.\n")
 
     return _fill
+
+
+# ---------------------------------------------------------------------------
+# Real-git topology (LAT-271)
+# ---------------------------------------------------------------------------
+
+
+def git(cwd: Path, *args: str) -> str:
+    """Run a git command in ``cwd`` and return stdout, raising on failure."""
+    import os
+    import subprocess
+
+    env = {
+        **os.environ,
+        # Isolate from the developer's git config, hooks, and templates: the
+        # fixture must be identical everywhere and must not read ~/.gitconfig.
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_SYSTEM": os.devnull,
+        "GIT_AUTHOR_NAME": "Tester",
+        "GIT_AUTHOR_EMAIL": "t@t.com",
+        "GIT_COMMITTER_NAME": "Tester",
+        "GIT_COMMITTER_EMAIL": "t@t.com",
+    }
+    return subprocess.run(
+        ["git", *args], cwd=str(cwd), capture_output=True, text=True, check=True, env=env
+    ).stdout
+
+
+@pytest.fixture()
+def worktree_repo(tmp_path: Path):
+    """The worktree-per-ticket topology that makes diff resolution hard.
+
+    Builds, with real git and no network:
+
+    * ``origin.git`` — a bare remote carrying several sibling-ticket commits.
+    * ``mainco/`` — the checkout holding ``.lattice/``. Its *local* ``main`` is
+      several commits behind, its ``origin/main`` remote ref is current, and its
+      working tree is dirty. This is the ordinary state of a board checkout
+      nobody pulls.
+    * ``wt-222/`` — a sibling worktree on a feature branch cut from
+      ``origin/main`` carrying exactly one real commit.
+
+    A diff against the *local* ``main`` therefore drags in every sibling
+    commit; a diff against ``origin/main`` sees only ``feature.py``.
+    """
+    from types import SimpleNamespace
+
+    origin = tmp_path / "origin.git"
+    origin.mkdir()
+    git(origin, "init", "--bare", "-b", "main")
+
+    main = tmp_path / "mainco"
+    main.mkdir()
+    git(main, "init", "-b", "main")
+    (main / "README.md").write_text("base\n")
+    git(main, "add", "-A")
+    git(main, "commit", "-m", "init")
+    git(main, "remote", "add", "origin", str(origin))
+    git(main, "push", "-u", "origin", "main")
+
+    # Seven sibling tickets land on origin/main while mainco is not looking.
+    sib = tmp_path / "sib"
+    git(tmp_path, "clone", str(origin), str(sib))
+    for i in range(1, 5):
+        (sib / f"sibling_{i}.txt").write_text(f"sibling ticket {i}\n")
+        git(sib, "add", "-A")
+        git(sib, "commit", "-m", f"KWB-{200 + i}: sibling work")
+    git(sib, "push", "origin", "main")
+
+    # mainco learns about the remote (as it would when a worktree is cut) but
+    # its local ``main`` is never fast-forwarded.
+    git(main, "fetch", "origin")
+
+    branch = "feat/KWB-222-thing"
+    worktree = tmp_path / "wt-222"
+    git(main, "worktree", "add", "-b", branch, str(worktree), "origin/main")
+    (worktree / "feature.py").write_text("def feature():\n    return 'the ticket change'\n")
+    git(worktree, "add", "-A")
+    git(worktree, "commit", "-m", "KWB-222: the real ticket change")
+
+    # A dirty working tree in the board checkout, like any live board.
+    (main / "README.md").write_text("base\nuncommitted local edit\n")
+
+    lattice_dir = main / ".lattice"
+    lattice_dir.mkdir(exist_ok=True)
+
+    return SimpleNamespace(
+        root=tmp_path,
+        origin=origin,
+        main=main,
+        lattice_dir=lattice_dir,
+        worktree=worktree,
+        branch=branch,
+        sib=sib,
+    )

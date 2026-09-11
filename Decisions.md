@@ -862,3 +862,36 @@ Additionally, `lattice advance N` processed multiple tasks in a single context w
   prompt returned in 45s, a 209k prompt in 232s of a 600s budget.
 - **Consequence:** No new files, daemons, or schema versions. The failure paths
   write to surfaces that already exist and that agents already read.
+
+---
+
+## 2026-09-10: A code review names the tree it diffed (LAT-271)
+
+- **Decision:** `resolve_diff` returns a `DiffResolution` — base ref, head ref,
+  both SHAs, the worktree git ran in, and which rung of head selection won.
+  Every review header, truncation marker, and `--dry-run` line is derived from
+  it, so nothing in the review pipeline describes the caller's cwd any more.
+- **The linked branch is authoritative.** A branch link that does not resolve is
+  `HEAD_REF_UNRESOLVABLE`, not a fall-through. The two scan fallbacks — commit
+  messages matching the short ID, and commits by the assigned actor since
+  `updated_at` — are deleted. `--author` is a substring match over `git log
+  --all`, so on a busy board it answered with sibling tickets' commits and
+  reported success; a ladder that silently substitutes another ticket's work is
+  worse than an error message.
+- **The base is the remote default branch.** A local `main` nobody pulls is
+  routinely behind `origin/main`, and three-dot semantics then resolve the
+  merge-base to that stale commit, dragging every sibling ticket merged since
+  into the diff (observed: 7820 lines, truncated to 5000, for a 642-line
+  change). Candidates are `origin/HEAD` > `origin/main` > `origin/master` >
+  local `main`/`master`, and the descendant-most merge-base wins. No `git
+  fetch` — a review must not mutate refs or block on the network.
+- **Evidence:** Sixteen review artifacts on one production board carried the
+  identical `Lattice-Reviewed-Commit`, including reviews run with an explicit
+  `--base`/`--head`. That also vacuously satisfied
+  `require_reachable_review_commit`, because a stale local `main` is an ancestor
+  of every branch cut from it.
+- **Consequence:** `--dry-run` makes the resolution inspectable without spending
+  a model run, and the real-git `worktree_repo` fixture makes the stale-base and
+  unresolvable-branch cases regression-testable. The mocked diff tests are why
+  these shipped: from inside a mock, a review of the wrong tree looks identical
+  to a correct one.

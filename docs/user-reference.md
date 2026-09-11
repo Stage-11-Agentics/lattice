@@ -239,6 +239,17 @@ High-stakes changes get multiple perspectives. Launch review agents from differe
 
 Three models surface issues no single model catches alone. The synthesis separates high-confidence findings (flagged by multiple reviewers) from observations that need your judgment.
 
+### What a code review diffs
+
+`lattice code-review` diffs `<base>...<head>`, and both ends are resolved explicitly:
+
+- **Head** — `--head` if given, else the task's last linked branch, else the ambient `HEAD`. A branch link that does not resolve in this checkout is a hard error (`HEAD_REF_UNRESOLVABLE`), never a fall-through to some other tree. Fetch the branch, pass `--worktree <path>` to diff from a checkout that has it, or name `--head` yourself.
+- **Base** — `--base` if given, else the remote default branch (`origin/HEAD`, then `origin/main`/`origin/master`), then local `main`/`master`. Among the candidates that share history with the head, the one whose merge-base is the *descendant* of the others wins, so an unfetched remote degrades gracefully instead of pulling in every sibling ticket merged since the last local pull. No `git fetch` is ever run; when the remote ref is behind the local branch, the review says so.
+
+The review prompt and the stored artifact both carry `Lattice-Reviewed-Commit` (the SHA of the head actually diffed), `Lattice-Reviewed-Worktree`, `Lattice-Reviewed-Base`, and `Lattice-Reviewed-Head`.
+
+`lattice code-review <task> --dry-run` prints that resolution and the assembled prompt, then exits — it claims no review slot, spawns no agent, and stores no artifact. Add `--json` for a machine-readable form. Use it whenever a review's diff looks wrong (a truncation warning on a small ticket is the usual tell).
+
 ### Auto-fire on status transitions
 
 Transitioning a task to `review` or `planned` automatically spawns the matching review subprocess in the background:

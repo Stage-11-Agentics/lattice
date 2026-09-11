@@ -18,6 +18,32 @@ from lattice.storage.fs import LATTICE_DIR, ensure_lattice_dirs, atomic_write
 # ---------------------------------------------------------------------------
 
 
+def _resolution(
+    diff: str = "diff --git a/foo.py b/foo.py\n+print('hello')",
+    *,
+    success: bool = True,
+    error: str | None = None,
+    error_code: str | None = None,
+    base_ref: str = "origin/main",
+    head_ref: str = "feat/branch",
+):
+    """Build a DiffResolution for tests that mock out git entirely."""
+    from lattice.core.review import DiffResolution
+
+    return DiffResolution(
+        success=success,
+        diff=diff,
+        error=error,
+        error_code=error_code,
+        base_ref=base_ref,
+        head_ref=head_ref,
+        base_sha="a" * 40,
+        head_sha="b" * 40,
+        worktree=Path.cwd().resolve(),
+        source="linked_branch",
+    )
+
+
 def _make_board(tmp_path: Path, config_overrides: dict | None = None) -> Path:
     """Initialize a .lattice/ directory and return root.
 
@@ -332,7 +358,12 @@ class TestCodeReviewSingle:
         # No git repo at tmp_path, so diff resolution will fail
         with patch(
             "lattice.cli.review_cmds.resolve_diff",
-            return_value=(False, "Not inside a git repository."),
+            return_value=_resolution(
+                success=False,
+                diff="",
+                error="Not inside a git repository.",
+                error_code="NO_GIT_REPO",
+            ),
         ):
             result = runner.invoke(
                 cli,
@@ -349,7 +380,7 @@ class TestCodeReviewSingle:
 
         with patch(
             "lattice.cli.review_cmds.resolve_diff",
-            return_value=(True, ""),
+            return_value=_resolution(""),
         ):
             result = runner.invoke(
                 cli,
@@ -368,7 +399,7 @@ class TestCodeReviewSingle:
         fake_review = "### 1. Verdict\n**PASS**\n\nLooks good."
 
         with (
-            patch("lattice.cli.review_cmds.resolve_diff", return_value=(True, fake_diff)),
+            patch("lattice.cli.review_cmds.resolve_diff", return_value=_resolution(fake_diff)),
             patch(
                 "lattice.cli.review_cmds.run_single_review",
                 return_value=(True, "Review complete.", fake_review),
@@ -397,7 +428,7 @@ class TestCodeReviewSingle:
         fake_diff = "diff --git a/foo.py b/foo.py\n+print('hello')"
 
         with (
-            patch("lattice.cli.review_cmds.resolve_diff", return_value=(True, fake_diff)),
+            patch("lattice.cli.review_cmds.resolve_diff", return_value=_resolution(fake_diff)),
             patch(
                 "lattice.cli.review_cmds.run_single_review", return_value=(False, "timeout", None)
             ),
@@ -486,7 +517,7 @@ class TestCodeReviewTriple:
         fake_diff = "diff --git a/foo.py b/foo.py\n+print('hello')"
 
         with (
-            patch("lattice.cli.review_cmds.resolve_diff", return_value=(True, fake_diff)),
+            patch("lattice.cli.review_cmds.resolve_diff", return_value=_resolution(fake_diff)),
             patch(
                 "lattice.cli.review_cmds.run_triple_review",
                 return_value=(
@@ -524,7 +555,7 @@ class TestCodeReviewTriple:
         fake_diff = "diff --git a/foo.py b/foo.py\n+print('hello')"
 
         with (
-            patch("lattice.cli.review_cmds.resolve_diff", return_value=(True, fake_diff)),
+            patch("lattice.cli.review_cmds.resolve_diff", return_value=_resolution(fake_diff)),
             patch(
                 "lattice.cli.review_cmds.run_triple_review",
                 return_value=(
@@ -729,7 +760,7 @@ class TestReviewClaimAndDisplay:
         with (
             patch(
                 "lattice.cli.review_cmds.resolve_diff",
-                return_value=(True, "diff --git a/x.py b/x.py\n"),
+                return_value=_resolution("diff --git a/x.py b/x.py\n"),
             ),
             patch(
                 "lattice.cli.review_cmds.run_single_review",
@@ -847,27 +878,30 @@ class TestDiffResolution:
             patch("lattice.core.review._git_diff", return_value="some diff content"),
             patch("lattice.core.review._find_git_root", return_value=tmp_path),
             patch("lattice.core.review._ref_exists", return_value=True),
+            patch("lattice.core.review._merge_base", return_value="a" * 40),
+            patch("lattice.core.review._rev_parse", return_value="b" * 40),
         ):
-            success, diff = resolve_diff(
+            res = resolve_diff(
                 tmp_path / ".lattice",
                 "task_01ABC",
                 {},
                 base="main",
             )
-        assert success is True
-        assert diff == "some diff content"
+        assert res.success is True
+        assert res.diff == "some diff content"
+        assert res.base_ref == "main"
 
     def test_no_git_root_fails(self, tmp_path):
         from lattice.core.review import resolve_diff
 
         with patch("lattice.core.review._find_git_root", return_value=None):
-            success, msg = resolve_diff(
+            res = resolve_diff(
                 tmp_path / ".lattice",
                 "task_01ABC",
                 {},
             )
-        assert success is False
-        assert "git repository" in msg
+        assert res.success is False
+        assert "git repository" in (res.error or "")
 
     def test_branch_link_used(self, tmp_path):
         from lattice.core.review import resolve_diff
@@ -875,28 +909,51 @@ class TestDiffResolution:
         snapshot = {"branch_links": [{"branch": "feat/my-feature"}]}
         with (
             patch("lattice.core.review._find_git_root", return_value=tmp_path),
-            patch("lattice.core.review._find_base_branch", return_value="main"),
+            patch("lattice.core.review._ref_exists", return_value=True),
+            patch(
+                "lattice.core.review._resolve_base_ref",
+                return_value=("origin/main", "a" * 40, None),
+            ),
+            patch("lattice.core.review._rev_parse", return_value="b" * 40),
             patch("lattice.core.review._git_diff", return_value="branch diff"),
         ):
-            success, diff = resolve_diff(tmp_path / ".lattice", "task_01ABC", snapshot)
-        assert success is True
-        assert diff == "branch diff"
+            res = resolve_diff(tmp_path / ".lattice", "task_01ABC", snapshot)
+        assert res.success is True
+        assert res.diff == "branch diff"
+        assert res.head_ref == "feat/my-feature"
+        assert res.source == "linked_branch"
 
-    def test_fallback_to_error_when_nothing_works(self, tmp_path):
+    def test_unresolvable_linked_branch_fails_loudly(self, tmp_path):
+        """A branch link that does not resolve is an error, never a fall-through
+        to some other tree."""
+        from lattice.core.review import resolve_diff
+
+        snapshot = {"branch_links": [{"branch": "feat/gone"}], "short_id": "LAT-9"}
+        with (
+            patch("lattice.core.review._find_git_root", return_value=tmp_path),
+            patch("lattice.core.review._ref_exists", return_value=False),
+        ):
+            res = resolve_diff(tmp_path / ".lattice", "task_01ABC", snapshot)
+        assert res.success is False
+        assert res.error_code == "HEAD_REF_UNRESOLVABLE"
+        assert "feat/gone" in (res.error or "")
+        assert "--head" in (res.error or "")
+        assert res.diff == ""
+
+    def test_fallback_to_error_when_diff_command_fails(self, tmp_path):
         from lattice.core.review import resolve_diff
 
         with (
             patch("lattice.core.review._find_git_root", return_value=tmp_path),
-            patch("lattice.core.review._find_base_branch", return_value="main"),
-            patch("lattice.core.review._git_diff", return_value=None),
             patch(
-                "lattice.core.review._find_commits_by_message",
-                return_value=None,
+                "lattice.core.review._resolve_base_ref", return_value=("origin/main", None, None)
             ),
+            patch("lattice.core.review._rev_parse", return_value=None),
+            patch("lattice.core.review._git_diff", return_value=None),
         ):
-            success, msg = resolve_diff(tmp_path / ".lattice", "task_01ABC", {})
-        assert success is False
-        assert "--base" in msg
+            res = resolve_diff(tmp_path / ".lattice", "task_01ABC", {})
+        assert res.success is False
+        assert "--base" in (res.error or "")
 
 
 # ---------------------------------------------------------------------------
@@ -928,7 +985,7 @@ def _run_failing_code_review(runner: CliRunner, root: Path, task_id: str, *extra
     with (
         patch(
             "lattice.cli.review_cmds.resolve_diff",
-            return_value=(True, "diff --git a/foo.py b/foo.py\n+print('hello')"),
+            return_value=_resolution(),
         ),
         patch(
             "lattice.cli.review_cmds.run_single_review",
@@ -963,7 +1020,7 @@ class TestFailedReviewIsVisible:
         with (
             patch(
                 "lattice.cli.review_cmds.resolve_diff",
-                return_value=(True, "diff --git a/foo.py b/foo.py\n+print('hello')"),
+                return_value=_resolution(),
             ),
             patch(
                 "lattice.cli.review_cmds.run_single_review",
@@ -1136,7 +1193,7 @@ class TestAutoFiredProvenanceSurvivesTheHandoff:
         with (
             patch(
                 "lattice.cli.review_cmds.resolve_diff",
-                return_value=(True, "diff --git a/x.py b/x.py\n"),
+                return_value=_resolution("diff --git a/x.py b/x.py\n"),
             ),
             patch("lattice.cli.review_cmds.run_single_review", return_value=(True, "ok", "PASS")),
             patch("lattice.cli.review_cmds._attach_review_artifact", return_value="art_fake"),
@@ -1173,7 +1230,7 @@ class TestAutoFiredProvenanceSurvivesTheHandoff:
         with (
             patch(
                 "lattice.cli.review_cmds.resolve_diff",
-                return_value=(True, "diff --git a/x.py b/x.py\n"),
+                return_value=_resolution("diff --git a/x.py b/x.py\n"),
             ),
             patch("lattice.cli.review_cmds.run_single_review", return_value=(True, "ok", "PASS")),
             patch("lattice.cli.review_cmds._attach_review_artifact", return_value="art_fake"),
@@ -1199,7 +1256,7 @@ class TestDiffCharCap:
 
         wide_diff = "\n".join(f"+{'x' * 500}" for _ in range(200))  # 100k chars, 200 lines
         with (
-            patch("lattice.cli.review_cmds.resolve_diff", return_value=(True, wide_diff)),
+            patch("lattice.cli.review_cmds.resolve_diff", return_value=_resolution(wide_diff)),
             patch(
                 "lattice.cli.review_cmds.run_single_review", return_value=(True, "ok", "PASS")
             ) as run_single,
@@ -1225,7 +1282,7 @@ class TestDiffCharCap:
 
         diff = "diff --git a/foo.py b/foo.py\n+print('hello')"
         with (
-            patch("lattice.cli.review_cmds.resolve_diff", return_value=(True, diff)),
+            patch("lattice.cli.review_cmds.resolve_diff", return_value=_resolution(diff)),
             patch(
                 "lattice.cli.review_cmds.run_single_review", return_value=(True, "ok", "PASS")
             ) as run_single,
@@ -1272,3 +1329,160 @@ class TestFailureReportNamesTheRightCommand:
 
         assert f"lattice plan-review {task_id}" in result.output
         assert "lattice code-review" not in result.output
+
+
+# ---------------------------------------------------------------------------
+# Tests: evidence headers and --dry-run against a real git topology (LAT-271)
+# ---------------------------------------------------------------------------
+
+
+class TestReviewEvidenceHeaders:
+    """The headers must describe the tree that was diffed, not the caller's cwd.
+
+    Sixteen review artifacts on one production board carried the identical
+    ``Lattice-Reviewed-Commit`` — the board checkout's HEAD — including reviews
+    run with an explicit ``--base``/``--head``. That also defeats the
+    ``require_reachable_review_commit`` gate, since a stale local ``main`` is an
+    ancestor of every branch cut from it.
+    """
+
+    def _board(self, worktree_repo, **config):
+        runner = CliRunner()
+        root = _make_board(worktree_repo.main, config or None)
+        task_id = _create_task(runner, root)
+        _write_plan(root, task_id, "# Plan\n\nApproach: implement.\n")
+        result = runner.invoke(
+            cli,
+            ["branch-link", task_id, worktree_repo.branch, "--actor", "agent:test"],
+            env={"LATTICE_ROOT": str(root)},
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        return runner, root, task_id
+
+    def _dry_run(self, runner, root, task_id, worktree_repo, *extra):
+        return runner.invoke(
+            cli,
+            [
+                "code-review",
+                task_id,
+                "--dry-run",
+                "--worktree",
+                str(worktree_repo.main),
+                *extra,
+            ],
+            env={"LATTICE_ROOT": str(root)},
+            catch_exceptions=False,
+        )
+
+    def test_reviewed_commit_header_is_the_diffed_head(self, worktree_repo):
+        from tests.conftest import git
+
+        runner, root, task_id = self._board(worktree_repo)
+        result = self._dry_run(runner, root, task_id, worktree_repo, "--json")
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)["data"]
+        branch_tip = git(worktree_repo.main, "rev-parse", worktree_repo.branch).strip()
+        checkout_head = git(worktree_repo.main, "rev-parse", "HEAD").strip()
+        assert branch_tip != checkout_head  # the trap this test exists for
+        first_line = data["prompt"].splitlines()[0]
+        assert first_line == f"Lattice-Reviewed-Commit: {branch_tip}"
+        assert data["head_sha"] == branch_tip
+
+    def test_reviewed_base_and_head_headers_present(self, worktree_repo):
+        import re
+
+        from lattice.core.config import _REVIEW_MARKER
+
+        runner, root, task_id = self._board(worktree_repo)
+        result = self._dry_run(runner, root, task_id, worktree_repo, "--json")
+        prompt = json.loads(result.output)["data"]["prompt"]
+        assert _REVIEW_MARKER.match(prompt) is not None
+        assert re.search(r"^Lattice-Reviewed-Base: origin/main \([0-9a-f]{40}\)$", prompt, re.M)
+        assert re.search(
+            rf"^Lattice-Reviewed-Head: {re.escape(worktree_repo.branch)} \([0-9a-f]{{40}}\)$",
+            prompt,
+            re.M,
+        )
+        assert f"Lattice-Reviewed-Worktree: {worktree_repo.main}" in prompt
+
+    def test_reachable_review_commit_gate_still_matches(self, worktree_repo):
+        """The generated header must still satisfy the completion gate that
+        parses it — verified, not assumed."""
+        from lattice.core.config import _has_reachable_review_commit
+
+        runner, root, task_id = self._board(worktree_repo)
+        result = self._dry_run(runner, root, task_id, worktree_repo, "--json")
+        prompt = json.loads(result.output)["data"]["prompt"]
+        snapshot = {"branch_links": [{"branch": worktree_repo.branch}], "evidence_refs": []}
+        assert (
+            _has_reachable_review_commit(
+                snapshot, root / LATTICE_DIR, worktree_repo.main, [prompt]
+            )
+            is True
+        )
+
+    def test_dry_run_does_not_claim_or_spawn(self, worktree_repo):
+        from lattice.core.review import read_review_state
+
+        runner, root, task_id = self._board(worktree_repo)
+        with patch("lattice.cli.review_cmds.run_single_review") as run_single:
+            result = self._dry_run(runner, root, task_id, worktree_repo)
+        assert result.exit_code == 0, result.output
+        assert run_single.call_count == 0
+        assert read_review_state(root / LATTICE_DIR, task_id) is None
+        assert not list((root / LATTICE_DIR / "artifacts" / "meta").glob("*.json"))
+        assert "--- prompt ---" in result.output
+        assert f"head:     {worktree_repo.branch}" in result.output
+
+    def test_dry_run_json_shape(self, worktree_repo):
+        runner, root, task_id = self._board(worktree_repo)
+        result = self._dry_run(runner, root, task_id, worktree_repo, "--json")
+        payload = json.loads(result.output)
+        assert payload["ok"] is True
+        data = payload["data"]
+        assert set(data) >= {
+            "base_ref",
+            "head_ref",
+            "base_sha",
+            "head_sha",
+            "worktree",
+            "source",
+            "diff_lines",
+            "diff_chars",
+            "truncated",
+            "prompt",
+        }
+        assert data["base_ref"] == "origin/main"
+        assert data["head_ref"] == worktree_repo.branch
+        assert data["source"] == "linked_branch"
+        assert data["truncated"] is False
+
+    def test_dry_run_unresolvable_branch_fails_loudly(self, worktree_repo):
+        runner, root, task_id = self._board(worktree_repo)
+        result = runner.invoke(
+            cli,
+            [
+                "code-review",
+                task_id,
+                "--dry-run",
+                "--json",
+                "--worktree",
+                str(worktree_repo.main),
+                "--head",
+                "feat/does-not-exist",
+            ],
+            env={"LATTICE_ROOT": str(root)},
+            catch_exceptions=False,
+        )
+        assert result.exit_code != 0
+        assert "feat/does-not-exist" in result.output
+
+    def test_truncation_note_names_the_range(self, worktree_repo):
+        runner, root, task_id = self._board(worktree_repo, review_max_diff_lines=1)
+        # --quiet: the truncation note goes to stderr, which CliRunner merges
+        # into stdout and would otherwise break the JSON parse.
+        result = self._dry_run(runner, root, task_id, worktree_repo, "--json", "--quiet")
+        data = json.loads(result.output)["data"]
+        assert data["truncated"] is True
+        assert f"range: origin/main...{worktree_repo.branch}" in data["prompt"]

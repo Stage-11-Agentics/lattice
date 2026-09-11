@@ -22,6 +22,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -493,6 +494,37 @@ def cleanup_temp_files(task_id: str | None = None, lattice_dir: Path | None = No
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class DiffResolution:
+    """What a review actually diffed — the range, the SHAs, and the tree.
+
+    Every field describes the *resolved* range, not the caller's cwd, so the
+    evidence headers a review carries can be derived from this object alone.
+    ``source`` records which rung of head selection won: ``"explicit"`` (an
+    explicit ``--head``), ``"linked_branch"`` (the task's last branch link), or
+    ``"head"`` (the ambient ``HEAD``, only when the task has no branch link).
+    """
+
+    success: bool
+    diff: str = ""
+    error: str | None = None
+    error_code: str | None = None
+    base_ref: str | None = None
+    head_ref: str | None = None
+    base_sha: str | None = None
+    head_sha: str | None = None
+    worktree: Path | None = None
+    source: str | None = None
+    warning: str | None = None
+
+    @property
+    def range_desc(self) -> str | None:
+        """``<base>...<head>`` when both refs are known, else ``None``."""
+        if self.base_ref and self.head_ref:
+            return f"{self.base_ref}...{self.head_ref}"
+        return None
+
+
 def resolve_diff(
     lattice_dir: Path,
     task_id: str,
@@ -500,10 +532,8 @@ def resolve_diff(
     base: str | None = None,
     head: str | None = None,
     worktree: Path | None = None,
-) -> tuple[bool, str]:
-    """Resolve the git diff for a task.
-
-    Returns (success, diff_or_error_message).
+) -> DiffResolution:
+    """Resolve the git diff for a task, naming exactly what was diffed.
 
     The review must see the *branch's* changes even when it runs from a
     checkout whose ``HEAD`` is not the branch under review — the common case
@@ -511,96 +541,254 @@ def resolve_diff(
     checkout (``HEAD`` == ``main``) while the ticket's code lives on a feature
     branch in a separate worktree. Because worktrees share the object store,
     a ref-based three-dot diff ``<base>...<branch>`` resolves the real changes
-    from any checkout. HEAD-anchored resolution does not — it would diff
-    ``main`` against itself and see nothing.
+    from any checkout.
 
-    Resolution is therefore driven by an explicit *head ref* rather than the
-    ambient ``HEAD``:
+    **Head selection — the linked branch is authoritative.**
 
-    1. Head ref = ``--head`` > last linked branch (if it resolves) > ``HEAD``.
-       For each candidate, diff ``<base>...<head>`` (three-dot, merge-base
-       semantics). ``base`` = ``--base`` when given, else the repo's base
-       branch (``main``/``master``).
-    2. Fallback: scan ``git log --all`` for the task short ID in commit
-       messages → diff that range (finds commits on any branch/worktree, not
-       just those reachable from ``HEAD``).
-    3. Fallback: commits by the assigned actor since the task entered
-       ``in_progress`` (also ``--all``).
+    1. ``--head`` when given.
+    2. Else the task's last linked branch. If a branch link exists but does
+       not resolve in this repo, this **fails loudly**: reviewing a different
+       tree is worse than reviewing nothing.
+    3. Else — no ``--head`` and no branch link at all — the ambient ``HEAD``.
 
-    An **empty** diff is never accepted as success — a git command that
-    succeeds but produces no output means that candidate resolved to nothing,
-    so resolution continues to the next candidate. Only a non-empty diff
-    short-circuits. If every candidate is empty or unresolvable, this returns
-    a clear error so the caller refuses to emit a PASS on zero lines.
+    There is no scan-for-something-plausible fallback. A ladder that silently
+    substitutes another ticket's commits produces confident PASS verdicts on
+    code nobody read; the error message is the feature.
+
+    **Base selection — the remote default branch, never a bare local branch.**
+
+    A local ``main`` nobody pulls is routinely behind ``origin/main``, and a
+    three-dot diff against it drags in every sibling ticket merged since the
+    last pull. Candidates are ``origin/HEAD`` > ``origin/main`` >
+    ``origin/master`` > local ``main``/``master``; the one whose merge-base
+    with the head is the *descendant* of the others wins, so an unfetched
+    remote degrades gracefully instead of over-including. No ``git fetch`` is
+    ever run — a review must not mutate refs or block on the network.
+
+    An **empty** diff is never accepted as success.
     """
     repo_root = worktree if worktree is not None else _find_git_root(lattice_dir)
     if repo_root is None:
-        return False, "Not inside a git repository."
+        return DiffResolution(
+            success=False,
+            error="Not inside a git repository.",
+            error_code="NO_GIT_REPO",
+        )
 
     # An explicit --base/--head that doesn't resolve is a caller error worth
-    # naming precisely, rather than burying it in the generic exhausted-all-paths
-    # error (or, for head, silently falling through to HEAD and the fallbacks).
+    # naming precisely, rather than burying it in a generic failure.
     if base is not None and not _ref_exists(repo_root, base):
-        return False, f"Base ref '{base}' does not resolve in {repo_root}. Check the ref name."
+        return DiffResolution(
+            success=False,
+            error=f"Base ref '{base}' does not resolve in {repo_root}. Check the ref name.",
+            error_code="BASE_REF_UNRESOLVABLE",
+            worktree=repo_root,
+        )
     if head is not None and not _ref_exists(repo_root, head):
-        return False, f"Head ref '{head}' does not resolve in {repo_root}. Check the ref name."
+        return DiffResolution(
+            success=False,
+            error=f"Head ref '{head}' does not resolve in {repo_root}. Check the ref name.",
+            error_code="HEAD_REF_UNRESOLVABLE",
+            worktree=repo_root,
+        )
 
-    base_ref = base if base is not None else _find_base_branch(repo_root)
-
-    # Step 1: ref-based three-dot diff against a resolved head ref.
-    tried: list[str] = []
+    # --- head ----------------------------------------------------------------
     linked = _linked_branch(snapshot)
-    head_candidates: list[str] = []
-    if head:
-        head_candidates.append(head)
-    if linked and _ref_exists(repo_root, linked):
-        head_candidates.append(linked)
-    head_candidates.append("HEAD")
+    if head is not None:
+        head_ref, source = head, "explicit"
+    elif linked:
+        if not _ref_exists(repo_root, linked):
+            display_id = snapshot.get("short_id") or task_id
+            return DiffResolution(
+                success=False,
+                error=(
+                    f"HEAD_REF_UNRESOLVABLE: task {display_id} is linked to branch "
+                    f"'{linked}', which does not resolve in {repo_root}. Fetch it, pass "
+                    f"--worktree <path> to diff from a checkout that has it, or pass "
+                    f"--head <ref>. Refusing to review a different tree."
+                ),
+                error_code="HEAD_REF_UNRESOLVABLE",
+                worktree=repo_root,
+            )
+        head_ref, source = linked, "linked_branch"
+    else:
+        head_ref, source = "HEAD", "head"
 
-    for candidate in head_candidates:
-        ref = f"{base_ref}...{candidate}"
-        tried.append(ref)
-        diff = _git_diff(repo_root, ref)
-        if diff:  # non-empty only; "" and None both fall through
-            return True, diff
+    # --- base ----------------------------------------------------------------
+    base_ref, base_sha, warning = _resolve_base_ref(repo_root, head_ref, base)
+    head_sha = _rev_parse(repo_root, head_ref)
 
-    # Step 2: task short ID in git log (across all refs).
-    short_id = _get_short_id(snapshot)
-    if short_id:
-        commit_range = _find_commits_by_message(repo_root, short_id)
-        if commit_range:
-            diff = _git_diff(repo_root, commit_range)
-            if diff:
-                return True, diff
+    ref_range = f"{base_ref}...{head_ref}"
+    diff = _git_diff(repo_root, ref_range)
+    common = {
+        "base_ref": base_ref,
+        "head_ref": head_ref,
+        "base_sha": base_sha,
+        "head_sha": head_sha,
+        "worktree": repo_root,
+        "source": source,
+        "warning": warning,
+    }
+    if diff is None:
+        return DiffResolution(
+            success=False,
+            error=(
+                f"git diff failed for range '{ref_range}' in {repo_root}. "
+                f"Pass --base/--head to name the range explicitly."
+            ),
+            error_code="DIFF_FAILED",
+            **common,
+        )
+    if not diff.strip():
+        return DiffResolution(
+            success=False,
+            error=(
+                f"Diff for '{ref_range}' is empty — no changes on this range. "
+                f"If the code under review lives elsewhere, pass --base/--head to name "
+                f"the range, or --worktree <path> to diff from that checkout. "
+                f"Refusing to review an empty diff."
+            ),
+            error_code="EMPTY_DIFF",
+            **common,
+        )
 
-    # Step 3: commits by assigned actor since in_progress (across all refs).
-    assigned_to = snapshot.get("assigned_to")
-    in_progress_time = _find_status_change_time(snapshot, "in_progress")
-    if assigned_to and in_progress_time:
-        actor_name = _extract_actor_name(assigned_to)
-        diff = _git_diff_by_author(repo_root, actor_name, since=in_progress_time)
-        if diff:
-            return True, diff
+    return DiffResolution(success=True, diff=diff, **common)
 
-    tried_desc = ", ".join(tried) if tried else "(none)"
-    return False, (
-        "Could not resolve a non-empty diff for this task "
-        f"(tried: {tried_desc}). If the code under review lives on a branch or "
-        "worktree that this checkout's HEAD isn't on, pass --base/--head to name "
-        "the range explicitly, or --worktree <path> to diff from that checkout. "
-        "Refusing to review an empty diff."
+
+def _resolve_base_ref(
+    repo_root: Path, head_ref: str, explicit_base: str | None = None
+) -> tuple[str, str | None, str | None]:
+    """Pick the base ref for ``<base>...<head_ref>``.
+
+    Returns ``(base_ref, base_sha, warning)`` where ``base_sha`` is the SHA of
+    the merge-base actually used. ``explicit_base`` wins unconditionally.
+    """
+    if explicit_base is not None:
+        return explicit_base, _merge_base(repo_root, explicit_base, head_ref), None
+
+    candidates: list[str] = []
+    origin_head = _origin_head_ref(repo_root)
+    if origin_head:
+        candidates.append(origin_head)
+    for name in ("origin/main", "origin/master", "main", "master"):
+        if name not in candidates:
+            candidates.append(name)
+
+    best_ref: str | None = None
+    best_sha: str | None = None
+    for candidate in candidates:
+        if not _ref_exists(repo_root, candidate):
+            continue
+        merge_base = _merge_base(repo_root, candidate, head_ref)
+        if merge_base is None:
+            continue
+        if best_sha is None:
+            best_ref, best_sha = candidate, merge_base
+        elif merge_base != best_sha and _is_ancestor(repo_root, best_sha, merge_base):
+            # This candidate's merge-base is a descendant of the incumbent's —
+            # a tighter, still-honest range.
+            best_ref, best_sha = candidate, merge_base
+
+    warning = _stale_remote_warning(repo_root)
+    if best_ref is None:
+        # No candidate shares history with the head (or no refs at all).
+        return _find_base_branch(repo_root), None, warning
+    return best_ref, best_sha, warning
+
+
+def _stale_remote_warning(repo_root: Path) -> str | None:
+    """Warn when the remote default branch is strictly behind the local one.
+
+    Not fatal, and never fixed by this code — ``resolve_diff`` does not fetch.
+    It is simply the cheapest available signal that a fetch is overdue.
+    """
+    remote = _origin_head_ref(repo_root) or "origin/main"
+    local = remote.split("/", 1)[1] if "/" in remote else "main"
+    if not _ref_exists(repo_root, remote) or not _ref_exists(repo_root, local):
+        return None
+    remote_sha = _rev_parse(repo_root, remote)
+    local_sha = _rev_parse(repo_root, local)
+    if not remote_sha or not local_sha or remote_sha == local_sha:
+        return None
+    if _is_ancestor(repo_root, remote_sha, local_sha):
+        return (
+            f"{remote} is behind local {local} — a 'git fetch' may be overdue "
+            f"(no fetch is run by review)."
+        )
+    return None
+
+
+def _origin_head_ref(repo_root: Path) -> str | None:
+    """Return e.g. ``origin/main`` from ``refs/remotes/origin/HEAD``, or None."""
+    result = subprocess.run(
+        ["git", "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    ref = result.stdout.strip()
+    return ref or None
+
+
+def _rev_parse(repo_root: Path, ref: str) -> str | None:
+    """Resolve ``ref`` to a 40-char commit SHA, or None."""
+    result = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def _merge_base(repo_root: Path, a: str, b: str) -> str | None:
+    """Return the merge-base SHA of two refs, or None when they share none."""
+    result = subprocess.run(
+        ["git", "merge-base", a, b],
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def _is_ancestor(repo_root: Path, ancestor: str, descendant: str) -> bool:
+    """True when ``ancestor`` is reachable from ``descendant``."""
+    return (
+        subprocess.run(
+            ["git", "merge-base", "--is-ancestor", ancestor, descendant],
+            cwd=str(repo_root),
+            capture_output=True,
+        ).returncode
+        == 0
     )
 
 
-def cap_diff(diff: str, max_lines: int = DEFAULT_MAX_DIFF_LINES) -> tuple[str, bool, int]:
+def _range_suffix(range_desc: str | None) -> str:
+    return f" (range: {range_desc})" if range_desc else ""
+
+
+def cap_diff(
+    diff: str,
+    max_lines: int = DEFAULT_MAX_DIFF_LINES,
+    range_desc: str | None = None,
+) -> tuple[str, bool, int]:
     """Cap a diff to ``max_lines``, truncating with a visible marker if over.
 
     Returns ``(possibly_truncated_diff, was_capped, original_line_count)``.
 
     A non-positive ``max_lines`` disables the cap (returns the diff unchanged).
     When truncated, a clear marker is appended so the review agent — and any
-    human reading the artifact — knows the diff was cut and by how much, rather
-    than silently reviewing a partial change.
+    human reading the artifact — knows the diff was cut, by how much, and over
+    *which range*. A truncation warning on a small ticket is the cheapest
+    available signal that the range is wrong, which is only legible if the
+    marker names the range.
     """
     if max_lines <= 0:
         lines = diff.count("\n") + (1 if diff and not diff.endswith("\n") else 0)
@@ -613,14 +801,18 @@ def cap_diff(diff: str, max_lines: int = DEFAULT_MAX_DIFF_LINES) -> tuple[str, b
     omitted = original - max_lines
     marker = (
         f"\n\n[diff truncated by Lattice: showing first {max_lines} of {original} "
-        f"lines; {omitted} lines omitted. Review the most significant changes above; "
-        f"if the change is genuinely this large, narrow the diff with --base or raise "
-        f"review_max_diff_lines.]\n"
+        f"lines; {omitted} lines omitted{_range_suffix(range_desc)}. Review the most "
+        f"significant changes above; if the change is genuinely this large, narrow the "
+        f"diff with --base or raise review_max_diff_lines.]\n"
     )
     return kept + marker, True, original
 
 
-def cap_diff_chars(diff: str, max_chars: int = DEFAULT_MAX_DIFF_CHARS) -> tuple[str, bool, int]:
+def cap_diff_chars(
+    diff: str,
+    max_chars: int = DEFAULT_MAX_DIFF_CHARS,
+    range_desc: str | None = None,
+) -> tuple[str, bool, int]:
     """Cap a diff to ``max_chars``, truncating with a visible marker if over.
 
     Returns ``(possibly_truncated_diff, was_capped, original_char_count)``.
@@ -641,9 +833,9 @@ def cap_diff_chars(diff: str, max_chars: int = DEFAULT_MAX_DIFF_CHARS) -> tuple[
     omitted = original - len(kept)
     marker = (
         f"\n\n[diff truncated by Lattice: showing first {len(kept)} of {original} "
-        f"characters; {omitted} characters omitted. Review the most significant changes "
-        f"above; if the change is genuinely this large, narrow the diff with --base or "
-        f"raise review_max_diff_chars.]\n"
+        f"characters; {omitted} characters omitted{_range_suffix(range_desc)}. Review the "
+        f"most significant changes above; if the change is genuinely this large, narrow "
+        f"the diff with --base or raise review_max_diff_chars.]\n"
     )
     return kept + marker, True, original
 
@@ -731,83 +923,6 @@ def _git_diff(repo_root: Path, ref: str) -> str | None:
     if result.returncode == 0:
         return result.stdout
     return None
-
-
-def _find_commits_by_message(repo_root: Path, short_id: str) -> str | None:
-    """Find a git commit range where messages contain short_id.
-
-    Searches ``--all`` refs (not just commits reachable from ``HEAD``) so a
-    ticket whose commits live on an unmerged feature branch — in this checkout
-    or a sibling worktree — is still found. Returns a three-dot range from the
-    oldest matching commit's parent to the newest match.
-    """
-    result = subprocess.run(
-        ["git", "log", "--all", "--grep", short_id, "--format=%H"],
-        cwd=str(repo_root),
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0 or not result.stdout.strip():
-        return None
-    commits = result.stdout.strip().splitlines()
-    if not commits:
-        return None
-    # Newest match is first (git log is reverse-chronological); oldest is last.
-    newest = commits[0]
-    oldest = commits[-1]
-    return f"{oldest}^...{newest}"
-
-
-def _git_diff_by_author(repo_root: Path, author: str, since: str) -> str | None:
-    """Get diff of commits by author since a given ISO timestamp.
-
-    Searches ``--all`` refs so unmerged feature-branch/worktree commits count,
-    and diffs the resolved commit range directly (parent of the oldest match to
-    the newest match) instead of anchoring on the ambient ``HEAD``.
-    """
-    result = subprocess.run(
-        [
-            "git",
-            "log",
-            "--all",
-            "--format=%H",
-            f"--author={author}",
-            f"--since={since}",
-        ],
-        cwd=str(repo_root),
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0 or not result.stdout.strip():
-        return None
-    commits = result.stdout.strip().splitlines()
-    if not commits:
-        return None
-    newest = commits[0]
-    oldest = commits[-1]
-    return _git_diff(repo_root, f"{oldest}^...{newest}")
-
-
-def _get_short_id(snapshot: dict) -> str | None:
-    """Extract the short ID from task snapshot."""
-    return snapshot.get("short_id")
-
-
-def _find_status_change_time(snapshot: dict, target_status: str) -> str | None:
-    """Find the timestamp when a task last entered target_status."""
-    # Not available directly in snapshot — return updated_at as fallback
-    # The caller uses this for git --since, so updated_at is a reasonable proxy
-    return snapshot.get("updated_at")
-
-
-def _extract_actor_name(actor: str | dict) -> str:
-    """Extract a usable name from an actor string or dict."""
-    if isinstance(actor, dict):
-        return actor.get("name", "")
-    # actor is "prefix:identifier", extract identifier
-    if ":" in actor:
-        return actor.split(":", 1)[1]
-    return actor
 
 
 # ---------------------------------------------------------------------------

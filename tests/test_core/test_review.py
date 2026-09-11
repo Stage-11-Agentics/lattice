@@ -736,7 +736,7 @@ def _git(cwd: Path, *args: str) -> str:
 
 
 @pytest.fixture
-def worktree_repo(tmp_path: Path):
+def simple_worktree_repo(tmp_path: Path):
     """A main checkout (on ``main``) plus a sibling worktree on a feature branch.
 
     Returns ``(main_checkout, lattice_dir, feature_branch)``. The ticket's change
@@ -766,40 +766,46 @@ def worktree_repo(tmp_path: Path):
 
 
 class TestResolveDiffWorktree:
-    def test_linked_branch_resolves_nonempty_from_main_checkout(self, worktree_repo):
+    def test_linked_branch_resolves_nonempty_from_main_checkout(self, simple_worktree_repo):
         """The load-bearing case: branch-linked worktree ticket, reviewed from
         the main checkout whose HEAD is main. Must see the real diff."""
-        main, lattice_dir, feature = worktree_repo
+        main, lattice_dir, feature = simple_worktree_repo
         snapshot = {"branch_links": [{"branch": feature}], "short_id": "ACE-317"}
-        success, diff = review_mod.resolve_diff(lattice_dir, "task_01", snapshot)
-        assert success is True
-        assert "ticket change" in diff
+        res = review_mod.resolve_diff(lattice_dir, "task_01", snapshot)
+        assert res.success is True
+        assert "ticket change" in res.diff
+        assert res.head_ref == feature
+        assert res.source == "linked_branch"
 
-    def test_explicit_base_main_does_not_return_empty(self, worktree_repo):
+    def test_explicit_base_main_does_not_return_empty(self, simple_worktree_repo):
         """Pre-fix trap: ``--base main`` diffed ``main...HEAD`` (empty) and
         accepted it. Now it must resolve the linked branch's real diff."""
-        main, lattice_dir, feature = worktree_repo
+        main, lattice_dir, feature = simple_worktree_repo
         snapshot = {"branch_links": [{"branch": feature}], "short_id": "ACE-317"}
-        success, diff = review_mod.resolve_diff(lattice_dir, "task_01", snapshot, base="main")
-        assert success is True
-        assert diff.strip() != ""
-        assert "ticket change" in diff
+        res = review_mod.resolve_diff(lattice_dir, "task_01", snapshot, base="main")
+        assert res.success is True
+        assert res.diff.strip() != ""
+        assert "ticket change" in res.diff
 
-    def test_no_branch_link_resolves_via_all_history(self, worktree_repo):
-        """No branch-link: the short-id history scan must find the commit on the
-        unmerged feature branch via ``git log --all`` (not reachable from HEAD)."""
-        main, lattice_dir, feature = worktree_repo
+    def test_no_branch_link_uses_ambient_head_and_says_so(self, simple_worktree_repo):
+        """No branch link: fall back to the ambient HEAD and *say so* — never
+        scan ``git log --all`` for something that looks like this ticket. Here
+        HEAD is main, so the honest answer is an empty-range failure."""
+        main, lattice_dir, feature = simple_worktree_repo
         snapshot = {"short_id": "ACE-317"}  # no branch_links
-        success, diff = review_mod.resolve_diff(lattice_dir, "task_01", snapshot)
-        assert success is True
-        assert "ticket change" in diff
+        res = review_mod.resolve_diff(lattice_dir, "task_01", snapshot)
+        assert res.source == "head"
+        assert res.head_ref == "HEAD"
+        assert res.success is False
+        assert "empty" in (res.error or "").lower()
 
-    def test_explicit_head_ref(self, worktree_repo):
+    def test_explicit_head_ref(self, simple_worktree_repo):
         """An explicit --head names the branch under review directly."""
-        main, lattice_dir, feature = worktree_repo
-        success, diff = review_mod.resolve_diff(lattice_dir, "task_01", {}, head=feature)
-        assert success is True
-        assert "ticket change" in diff
+        main, lattice_dir, feature = simple_worktree_repo
+        res = review_mod.resolve_diff(lattice_dir, "task_01", {}, head=feature)
+        assert res.success is True
+        assert "ticket change" in res.diff
+        assert res.source == "explicit"
 
     def test_no_changes_errors_never_passes_empty(self, tmp_path):
         """A repo with a branch identical to main resolves to an empty diff and
@@ -816,23 +822,23 @@ class TestResolveDiffWorktree:
         lattice_dir = main / ".lattice"
         lattice_dir.mkdir()
         snapshot = {"branch_links": [{"branch": "feat/empty"}], "short_id": "NOPE-1"}
-        success, msg = review_mod.resolve_diff(lattice_dir, "task_01", snapshot)
-        assert success is False
-        assert "empty" in msg.lower()
+        res = review_mod.resolve_diff(lattice_dir, "task_01", snapshot)
+        assert res.success is False
+        assert "empty" in (res.error or "").lower()
 
-    def test_bad_base_ref_named_clearly(self, worktree_repo):
-        main, lattice_dir, feature = worktree_repo
-        success, msg = review_mod.resolve_diff(lattice_dir, "task_01", {}, base="no-such-ref")
-        assert success is False
-        assert "no-such-ref" in msg
+    def test_bad_base_ref_named_clearly(self, simple_worktree_repo):
+        main, lattice_dir, feature = simple_worktree_repo
+        res = review_mod.resolve_diff(lattice_dir, "task_01", {}, base="no-such-ref")
+        assert res.success is False
+        assert "no-such-ref" in (res.error or "")
 
-    def test_bad_head_ref_named_clearly(self, worktree_repo):
+    def test_bad_head_ref_named_clearly(self, simple_worktree_repo):
         """An explicit --head that doesn't resolve is named precisely, mirroring
         --base — a typo'd head shouldn't silently fall through to HEAD."""
-        main, lattice_dir, feature = worktree_repo
-        success, msg = review_mod.resolve_diff(lattice_dir, "task_01", {}, head="no-such-head")
-        assert success is False
-        assert "no-such-head" in msg
+        main, lattice_dir, feature = simple_worktree_repo
+        res = review_mod.resolve_diff(lattice_dir, "task_01", {}, head="no-such-head")
+        assert res.success is False
+        assert "no-such-head" in (res.error or "")
 
     def test_non_worktree_head_on_feature_branch(self, tmp_path):
         """Non-worktree case: the feature branch is checked out in the main
@@ -852,19 +858,20 @@ class TestResolveDiffWorktree:
         lattice_dir = main / ".lattice"
         lattice_dir.mkdir()
         snapshot = {"branch_links": [{"branch": "feat/inline"}], "short_id": "LAT-9"}
-        success, diff = review_mod.resolve_diff(lattice_dir, "task_01", snapshot)
-        assert success is True
-        assert "more" in diff
+        res = review_mod.resolve_diff(lattice_dir, "task_01", snapshot)
+        assert res.success is True
+        assert "more" in res.diff
 
-    def test_worktree_param_overrides_root(self, worktree_repo):
+    def test_worktree_param_overrides_root(self, simple_worktree_repo):
         """--worktree points resolution at a specific checkout."""
-        main, lattice_dir, feature = worktree_repo
+        main, lattice_dir, feature = simple_worktree_repo
         wt = main.parent / "wt-feature"
         # From the worktree checkout, HEAD is the feature branch, so even the
         # HEAD candidate resolves.
-        success, diff = review_mod.resolve_diff(lattice_dir, "task_01", {}, worktree=wt)
-        assert success is True
-        assert "ticket change" in diff
+        res = review_mod.resolve_diff(lattice_dir, "task_01", {}, worktree=wt)
+        assert res.success is True
+        assert "ticket change" in res.diff
+        assert res.worktree == wt
 
 
 class TestDiffCharCap:
