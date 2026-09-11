@@ -712,6 +712,35 @@ class TestTripleReviewSpawn:
         assert "lattice needs-human LAT-42" in prompt
         assert "agent:trident-pane-LAT-42" in prompt
 
+    def test_handoff_prompt_names_the_resolved_range(self) -> None:
+        """The pane shares the caller's cwd, whose HEAD is usually not the branch
+        under review — so the range has to be stated, not inferred."""
+        from lattice.core.review import build_trident_handoff_prompt
+
+        prompt = build_trident_handoff_prompt(
+            "LAT-42",
+            "code-review",
+            worktree=Path("/tmp/board"),
+            base_branch="origin/main",
+            head_ref="fix/LAT-42-thing",
+            head_sha="c" * 40,
+        )
+        assert "- Base ref: `origin/main`" in prompt
+        assert f"- Head ref: `fix/LAT-42-thing ({'c' * 40})`" in prompt
+        assert "Diff exactly `origin/main...fix/LAT-42-thing`" in prompt
+
+    def test_handoff_prompt_without_a_head_falls_back_to_head_symbol(self) -> None:
+        from lattice.core.review import build_trident_handoff_prompt
+
+        prompt = build_trident_handoff_prompt(
+            "LAT-42",
+            "plan-review",
+            worktree=Path("/tmp/board"),
+            base_branch=None,
+        )
+        assert "- Head ref: `HEAD`" in prompt
+        assert "Diff exactly `main...HEAD`" in prompt
+
 
 # ---------------------------------------------------------------------------
 # resolve_diff against a real git worktree (LAT-253 / ACE-317)

@@ -26,6 +26,7 @@ def _resolution(
     error_code: str | None = None,
     base_ref: str = "origin/main",
     head_ref: str = "feat/branch",
+    head_sha: str | None = "b" * 40,
 ):
     """Build a DiffResolution for tests that mock out git entirely."""
     from lattice.core.review import DiffResolution
@@ -38,7 +39,7 @@ def _resolution(
         base_ref=base_ref,
         head_ref=head_ref,
         base_sha="a" * 40,
-        head_sha="b" * 40,
+        head_sha=head_sha,
         worktree=Path.cwd().resolve(),
         source="linked_branch",
     )
@@ -544,6 +545,32 @@ class TestCodeReviewTriple:
         assert kwargs["review_type"] == "code-review"
         assert kwargs["task_id"] == task_id
         assert kwargs["worktree"] == Path.cwd().resolve()
+
+    def test_triple_mode_hands_the_pane_the_resolved_range(self, tmp_path):
+        """The pane's cwd is the caller's checkout, whose HEAD is usually not the
+        branch under review. Base alone leaves it diffing the wrong tree."""
+        root = _make_board(tmp_path, {"review_mode": "triple"})
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+
+        with (
+            patch("lattice.cli.review_cmds.resolve_diff", return_value=_resolution()),
+            patch(
+                "lattice.cli.review_cmds.run_triple_review",
+                return_value=(True, "Triple review running in surface:99."),
+            ) as mock_run,
+        ):
+            runner.invoke(
+                cli,
+                ["code-review", task_id, "--mode", "triple", "--actor", "agent:test"],
+                env={"LATTICE_ROOT": str(root)},
+                catch_exceptions=False,
+            )
+
+        kwargs = mock_run.call_args.kwargs
+        assert kwargs["base"] == "origin/main"
+        assert kwargs["head"] == "feat/branch"
+        assert kwargs["head_sha"] == "b" * 40
 
     def test_triple_mode_outside_c11_errors(self, tmp_path):
         """Triple mode outside c11 must fail cleanly with a non-zero exit and
@@ -1094,6 +1121,163 @@ class TestFailedReviewIsVisible:
 
         assert result.exit_code != 0, result.output
         assert any("Automated review failed" in b for b in _comment_bodies(root, task_id))
+
+    # -- resolution failures are failures too (LAT-271) ---------------------
+    #
+    # A review that dies at diff resolution never reaches the agent, so it
+    # takes none of the paths above unless it is wired to. Left unwired it
+    # vanishes: `review-status` reports "No in-flight review found ... No
+    # review artifacts found either" while the task sits in `review` looking
+    # reviewed. These assert the same visibility an agent failure gets.
+
+    def _run_failing_resolution(self, runner, root, task_id, *extra: str):
+        with patch(
+            "lattice.cli.review_cmds.resolve_diff",
+            return_value=_resolution(
+                success=False,
+                diff="",
+                error="Task has a linked branch 'feat/gone' but it does not resolve.",
+                error_code="HEAD_REF_UNRESOLVABLE",
+            ),
+        ):
+            return runner.invoke(
+                cli,
+                ["code-review", task_id, "--mode", "single", "--actor", "agent:test", *extra],
+                env={"LATTICE_ROOT": str(root)},
+                catch_exceptions=False,
+            )
+
+    def _review_status(self, runner, root, task_id, *extra: str):
+        return runner.invoke(
+            cli,
+            ["review-status", task_id, *extra],
+            env={"LATTICE_ROOT": str(root)},
+            catch_exceptions=False,
+        )
+
+    def test_resolution_failure_still_shows_in_review_status(self, tmp_path):
+        root = _make_board(tmp_path, {"review_mode": "single"})
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+
+        result = self._run_failing_resolution(runner, root, task_id)
+        assert result.exit_code != 0, result.output
+
+        status = self._review_status(runner, root, task_id)
+        assert "Review FAILED" in status.output, status.output
+        assert "does not resolve" in status.output
+        assert "No in-flight review found" not in status.output
+
+    def test_resolution_failure_review_status_json_says_failed(self, tmp_path):
+        root = _make_board(tmp_path, {"review_mode": "single"})
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+
+        self._run_failing_resolution(runner, root, task_id)
+
+        payload = json.loads(self._review_status(runner, root, task_id, "--json").output)
+        assert payload["ok"] is True
+        assert payload["data"]["status"] == "failed"
+        assert payload["data"]["detail"]["error_code"] == "HEAD_REF_UNRESOLVABLE"
+
+    def test_resolution_failure_comments_on_the_task(self, tmp_path):
+        root = _make_board(tmp_path, {"review_mode": "single"})
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+
+        self._run_failing_resolution(runner, root, task_id)
+
+        bodies = [b for b in _comment_bodies(root, task_id) if "Automated review failed" in b]
+        assert bodies, f"no failure comment; comments were {_comment_bodies(root, task_id)}"
+        assert "does not resolve" in bodies[0]
+        assert not _snapshot(root, task_id).get("needs_human"), (
+            "a manual run reads its own exit code — no flag"
+        )
+
+    def test_auto_fired_resolution_failure_flags_needs_human(self, tmp_path):
+        root = _make_board(tmp_path, {"review_mode": "single"})
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+
+        self._run_failing_resolution(runner, root, task_id, "--triggered-by", "ev_fake")
+
+        flag = _snapshot(root, task_id).get("needs_human")
+        assert flag, "auto-fired resolution failure left no needs_human flag"
+        assert "unreviewed" in flag["reason"]
+        assert "Review FAILED" in self._review_status(runner, root, task_id).output
+
+    def test_dry_run_resolution_failure_writes_nothing(self, tmp_path):
+        """A dry run claims nothing, so it must not leave a failure record either."""
+        root = _make_board(tmp_path, {"review_mode": "single"})
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+
+        result = self._run_failing_resolution(runner, root, task_id, "--dry-run")
+
+        assert result.exit_code != 0
+        assert not any("Automated review failed" in b for b in _comment_bodies(root, task_id))
+        assert "No in-flight review found" in self._review_status(runner, root, task_id).output
+
+    def test_unknown_head_sha_fails_before_writing_an_artifact(self, tmp_path):
+        """An empty Lattice-Reviewed-Commit silently re-vacuates the completion gate."""
+        root = _make_board(tmp_path, {"review_mode": "single"})
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+
+        with (
+            patch(
+                "lattice.cli.review_cmds.resolve_diff",
+                return_value=_resolution(head_sha=None),
+            ),
+            patch("lattice.cli.review_cmds.run_single_review") as run_single,
+        ):
+            result = runner.invoke(
+                cli,
+                ["code-review", task_id, "--mode", "single", "--actor", "agent:test"],
+                env={"LATTICE_ROOT": str(root)},
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code != 0, result.output
+        assert "head SHA is unknown" in result.output
+        run_single.assert_not_called()
+        assert "Review FAILED" in self._review_status(runner, root, task_id).output
+
+    def test_evidence_header_refuses_an_unknown_head_sha(self, tmp_path):
+        import pytest
+
+        from lattice.cli.review_cmds import _evidence_header
+
+        with pytest.raises(ValueError, match="head SHA is unknown"):
+            _evidence_header(_resolution(head_sha=None))
+
+    def test_stored_artifact_header_carries_the_resolved_head(self, tmp_path):
+        """The plan's criterion: prompt and stored artifact carry the same values."""
+        root = _make_board(tmp_path, {"review_mode": "single"})
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+
+        with (
+            patch("lattice.cli.review_cmds.resolve_diff", return_value=_resolution()),
+            patch(
+                "lattice.cli.review_cmds.run_single_review",
+                return_value=(True, "Review complete.", "### 1. Verdict\n**PASS**"),
+            ),
+        ):
+            result = runner.invoke(
+                cli,
+                ["code-review", task_id, "--mode", "single", "--actor", "agent:test"],
+                env={"LATTICE_ROOT": str(root)},
+                catch_exceptions=False,
+            )
+        assert result.exit_code == 0, result.output
+
+        payloads = list((root / LATTICE_DIR / "artifacts" / "payload").glob("*.md"))
+        assert payloads, "no review artifact stored"
+        stored = payloads[0].read_text(encoding="utf-8")
+        assert stored.startswith(f"Lattice-Reviewed-Commit: {'b' * 40}\n")
+        assert f"Lattice-Reviewed-Head: feat/branch ({'b' * 40})" in stored
+        assert f"Lattice-Reviewed-Base: origin/main ({'a' * 40})" in stored
 
     def test_failure_json_mode_is_an_error_envelope(self, tmp_path):
         root = _make_board(tmp_path, {"review_mode": "single"})

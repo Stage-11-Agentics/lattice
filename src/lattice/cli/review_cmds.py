@@ -65,7 +65,17 @@ def _evidence_header(resolution: DiffResolution) -> str:
     ``core.config._REVIEW_MARKER`` is ``\\A``-anchored and the
     reachable-review-commit completion gate parses it. The base/head lines go
     after it so the range is legible in the prompt and the stored artifact.
+
+    Raises ``ValueError`` when the head SHA is unknown. An empty value there
+    parses as no marker at all, which silently returns the completion gate to
+    the vacuous state this whole path exists to end — better to refuse to
+    write the header than to write half of one.
     """
+    if not resolution.head_sha:
+        raise ValueError(
+            "Cannot build the review evidence header: the resolved head SHA is unknown. "
+            "Pass --head <ref> to name the commit under review."
+        )
     lines = [f"Lattice-Reviewed-Commit: {resolution.head_sha or ''}"]
     if resolution.worktree is not None:
         lines.append(f"Lattice-Reviewed-Worktree: {resolution.worktree}")
@@ -334,9 +344,17 @@ def code_review(
     if not resolution.success:
         assert resolution.error is not None
         if not dry_run:
-            # Release the claim: a range we could not resolve is not a review
-            # in flight, and a phantom record blocks the retry that fixes it.
-            clear_review_state(lattice_dir, task_id)
+            assert actor is not None
+            _record_resolution_failure(
+                lattice_dir,
+                task_id,
+                mode=mode,
+                message=resolution.error,
+                error_code=resolution.error_code or "DIFF_RESOLUTION_FAILED",
+                actor=actor,
+                config=config,
+                auto_fired=triggered_by is not None,
+            )
         output_error(resolution.error, resolution.error_code or "DIFF_RESOLUTION_FAILED", is_json)
 
     if resolution.warning and not quiet:
@@ -351,7 +369,9 @@ def code_review(
     if not diff_content.strip():
         output_error(
             f"Diff is empty — no changes detected over {range_desc}. "
-            f"Use --base/--head if the diff range is wrong.",
+            f"The head is most likely already merged into the base (or identical to it); "
+            f"pass --base <merge-base> to review it anyway, or --base/--head if the "
+            f"diff range is wrong.",
             "EMPTY_DIFF",
             is_json,
         )
@@ -386,7 +406,22 @@ def code_review(
     # Evidence headers describe what was *diffed*, not the caller's cwd. The
     # first line keeps its exact shape: core.config._REVIEW_MARKER anchors on
     # \A and a 40-char SHA, and the reachable-review-commit gate depends on it.
-    evidence_header = _evidence_header(resolution)
+    try:
+        evidence_header = _evidence_header(resolution)
+    except ValueError as exc:
+        if not dry_run:
+            assert actor is not None
+            _record_resolution_failure(
+                lattice_dir,
+                task_id,
+                mode=mode,
+                message=str(exc),
+                error_code="HEAD_SHA_UNKNOWN",
+                actor=actor,
+                config=config,
+                auto_fired=triggered_by is not None,
+            )
+        output_error(str(exc), "HEAD_SHA_UNKNOWN", is_json)
 
     # Load and fill review template
     template = load_review_template(lattice_dir, "code-review")
@@ -448,6 +483,8 @@ def code_review(
             is_json=is_json,
             quiet=quiet,
             base=resolution.base_ref,
+            head=resolution.head_ref,
+            head_sha=resolution.head_sha,
             worktree=reviewed_worktree,
         )
 
@@ -836,6 +873,61 @@ def _report_review_failure(
         click.echo("Warning: could not flag the task for human attention.", err=True)
 
 
+def _record_resolution_failure(
+    lattice_dir: Path,
+    task_id: str,
+    *,
+    mode: str,
+    message: str,
+    error_code: str,
+    actor: str | dict,
+    config: dict,
+    auto_fired: bool,
+) -> None:
+    """Make a failed diff resolution as visible as a failed review agent.
+
+    A review that dies before it ever assembles a prompt is still a review
+    that produced no verdict, and the task still sits in ``review`` looking
+    reviewed. So it takes the same two routes as an agent failure: a durable
+    ``status: "failed"`` record for ``review-status`` to render, and a comment
+    (plus ``needs_human`` when auto-fired) on the task's own event log.
+
+    The record is deliberately *not* cleared. The claim releases itself the
+    moment this process exits — ``claim_review_state`` reclaims any slot whose
+    holder PID is dead — so keeping the failure costs no retry.
+    """
+    existing = read_review_state(lattice_dir, task_id) or {}
+    state: dict[str, Any] = dict(existing)
+    state.update(
+        {
+            "task_id": task_id,
+            "mode": existing.get("mode", mode),
+            "review_type": "code-review",
+            "status": "failed",
+            "error": message,
+            "finished_at": _now_iso(),
+            "detail": {"error_code": error_code},
+        }
+    )
+    state.setdefault("started_at", state["finished_at"])
+    state.setdefault("started_by_pid", os.getpid())
+    state.setdefault("auto_fired", auto_fired)
+    try:
+        write_review_state(lattice_dir, state)
+    except Exception:  # noqa: BLE001 — never mask the resolution failure
+        click.echo("Warning: could not record the failed review state.", err=True)
+
+    _report_review_failure(
+        lattice_dir,
+        task_id,
+        review_type="code-review",
+        message=message,
+        actor=actor,
+        config=config,
+        auto_fired=auto_fired,
+    )
+
+
 def _run_single_and_store(
     *,
     lattice_dir: Path,
@@ -918,6 +1010,8 @@ def _spawn_triple_pane(
     is_json: bool,
     quiet: bool,
     base: str | None,
+    head: str | None = None,
+    head_sha: str | None = None,
     worktree: Path | None = None,
 ) -> None:
     """Spawn a c11 pane that runs the trident review. Fire-and-forget.
@@ -938,6 +1032,8 @@ def _spawn_triple_pane(
         review_type=review_type,
         actor=actor,
         base=base,
+        head=head,
+        head_sha=head_sha,
         short_id=short_id,
         worktree=worktree,
     )

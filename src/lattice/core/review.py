@@ -644,6 +644,8 @@ def resolve_diff(
             success=False,
             error=(
                 f"Diff for '{ref_range}' is empty — no changes on this range. "
+                f"The head is most likely already merged into the base (or identical to it); "
+                f"pass --base <merge-base> to review it anyway. "
                 f"If the code under review lives elsewhere, pass --base/--head to name "
                 f"the range, or --worktree <path> to diff from that checkout. "
                 f"Refusing to review an empty diff."
@@ -697,10 +699,17 @@ def _resolve_base_ref(
 
 
 def _stale_remote_warning(repo_root: Path) -> str | None:
-    """Warn when the remote default branch is strictly behind the local one.
+    """Report when the remote-tracking default branch has drifted from the local one.
 
-    Not fatal, and never fixed by this code — ``resolve_diff`` does not fetch.
-    It is simply the cheapest available signal that a fetch is overdue.
+    Fires whenever ``origin/<default>`` is not an ancestor of local
+    ``<default>`` — behind *or* diverged. Diverged is the common shape on a
+    board checkout whose local ``main`` carries commits the remote never saw
+    while the remote moved on independently, and it is exactly where a reader
+    wants to know how old the ref is.
+
+    The base comes from the remote-tracking ref, so this states the observed
+    fact rather than prescribing a fix. ``resolve_diff`` never fetches; a
+    ``git fetch`` is what refreshes the ref the base is taken from.
     """
     remote = _origin_head_ref(repo_root) or "origin/main"
     local = remote.split("/", 1)[1] if "/" in remote else "main"
@@ -712,8 +721,13 @@ def _stale_remote_warning(repo_root: Path) -> str | None:
         return None
     if _is_ancestor(repo_root, remote_sha, local_sha):
         return (
-            f"{remote} is behind local {local} — a 'git fetch' may be overdue "
-            f"(no fetch is run by review)."
+            f"{remote} is behind local {local} — the base is read from {remote}, "
+            f"which review never fetches; 'git fetch' refreshes it."
+        )
+    if not _is_ancestor(repo_root, local_sha, remote_sha):
+        return (
+            f"{remote} and local {local} have diverged — the base is read from "
+            f"{remote}, which review never fetches; 'git fetch' refreshes it."
         )
     return None
 
@@ -1087,15 +1101,25 @@ def build_trident_handoff_prompt(
     *,
     worktree: Path,
     base_branch: str | None,
+    head_ref: str | None = None,
+    head_sha: str | None = None,
 ) -> str:
     """Build the prompt handed to the claude session running inside the c11 pane.
 
     The pane's job: run ``/trident-{code|plan}-review``, read the resulting
     artifact, triage findings, and advance the task. See the Review Verdict
     Routing section in CLAUDE.md for the triage protocol.
+
+    The prompt names the resolved range, base *and* head. The pane's cwd is the
+    caller's checkout, whose ``HEAD`` is frequently not the branch under review
+    — left to infer, the pane diffs the wrong tree.
     """
     review_short = "code" if review_type == "code-review" else "plan"
     base_line = base_branch or "main"
+    head_line = head_ref or "HEAD"
+    if head_sha:
+        head_line = f"{head_line} ({head_sha})"
+    range_line = f"{base_line}...{head_ref}" if head_ref else f"{base_line}...HEAD"
     return f"""# Triple {review_type} for {task_short_id}
 
 You're the agent running inside a c11 pane spawned by the LAT-218 review
@@ -1151,7 +1175,14 @@ or `lattice needs-human {task_short_id} "<what you need>"` for the flag rows.
 
 - Actor: `agent:trident-pane-{task_short_id}`
 - Cwd: `{worktree}` (you share the delegator's worktree)
-- Base branch: `{base_line}`
+- Base ref: `{base_line}`
+- Head ref: `{head_line}`
+
+## The range under review
+
+Diff exactly `{range_line}` — this range is already resolved for you. Do not
+diff the cwd's `HEAD`: on a board checkout it is not the branch under review,
+and reviewing it is how a review ends up reading the wrong tree.
 
 When you've advanced the task to its terminal state for this cycle, exit cleanly.
 """
@@ -1164,6 +1195,8 @@ def run_triple_review(
     actor: str | dict,
     *,
     base: str | None = None,
+    head: str | None = None,
+    head_sha: str | None = None,
     short_id: str | None = None,
     worktree: Path | None = None,
 ) -> tuple[bool, str]:
@@ -1194,6 +1227,8 @@ def run_triple_review(
         review_type,
         worktree=wt,
         base_branch=base,
+        head_ref=head,
+        head_sha=head_sha,
     )
     tab_title = f"{display_id} :: trident {review_type}"
     description = (

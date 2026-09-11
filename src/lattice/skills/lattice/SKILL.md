@@ -31,7 +31,7 @@ lattice branch-link <task_id> <branch> --actor agent:claude-cli
 
 `lattice next --claim` atomically assigns the highest-priority ready task to you and moves it to `in_progress`. If you already have a task in progress, it returns that one (resume-first logic).
 
-**Link the branch, or review reads the wrong code.** `code-review` resolves its diff from the task's linked branch, then falls back to the HEAD of the checkout holding `.lattice/`. Under one-worktree-per-task that fallback is a *sibling's* branch, so the reviewer silently reviews someone else's diff — this has happened, and the review came back FAIL on an unrelated ticket. `lattice branch-link` is the fix; `code-review --head`/`--worktree` override at review time.
+**Link the branch, or review reads the wrong code.** `code-review` resolves its diff from the task's linked branch — authoritative, and a hard error if the branch does not resolve rather than a quiet fall back to whatever the checkout holding `.lattice/` has checked out. Under one-worktree-per-task that would be a *sibling's* branch. `--head`/`--base`/`--worktree` override the resolution; `code-review <task> --dry-run` prints the resolved range (and `--json` makes it assertable) without spending a model run.
 
 If there's no existing task, create one:
 

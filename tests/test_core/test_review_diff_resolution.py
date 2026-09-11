@@ -116,7 +116,34 @@ class TestBaseResolution:
         )
         assert res.warning is not None
         assert "origin/main" in res.warning
+        assert "behind local main" in res.warning
         assert res.success is True, res.error
+
+    def test_diverged_remote_warns(self, worktree_repo):
+        """The topology on a real board: local main carries commits origin never
+        saw while origin moved on. Neither ref is an ancestor of the other, and
+        that is exactly when a reader wants to know how old the base ref is."""
+        main = worktree_repo.main
+        (main / "local_only.txt").write_text("never pushed\n")
+        git(main, "add", "-A")
+        git(main, "commit", "-m", "local-only commit on main")
+
+        res = review_mod.resolve_diff(
+            worktree_repo.lattice_dir, "task_01", _snapshot(worktree_repo.branch)
+        )
+        assert res.success is True, res.error
+        assert res.warning is not None
+        assert "diverged" in res.warning
+        assert "'git fetch' refreshes it" in res.warning
+
+    def test_fresh_remote_does_not_warn(self, worktree_repo):
+        """Local main strictly behind the remote is the ordinary, healthy state
+        of a board checkout — the base ref is current, so say nothing."""
+        res = review_mod.resolve_diff(
+            worktree_repo.lattice_dir, "task_01", _snapshot(worktree_repo.branch)
+        )
+        assert res.success is True, res.error
+        assert res.warning is None
 
 
 class TestHeadResolution:

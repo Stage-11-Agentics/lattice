@@ -76,17 +76,16 @@ This must be the primary checkout root containing `.lattice/`, never the `.latti
 
 ## CLI worktree↔root bridge footguns (`code-review` and `plan-review`)
 
-LAT-219 added directory-walking auto-detection so most `lattice` calls route correctly from a worktree (read/write tasks, comments, events, plan files all land in the root repo's `.lattice/`). **Two commands still have known worktree↔root bridge bugs even with `LATTICE_ROOT` set.**
+Directory-walking auto-detection routes most `lattice` calls correctly from a worktree (read/write tasks, comments, events, plan files all land in the root repo's `.lattice/`). One command still has a known worktree↔root bridge bug even with `LATTICE_ROOT` set.
 
-### `lattice code-review` — empty-diff failure
+### `lattice code-review` — how it picks the range
 
-- **Symptom:** `lattice code-review <TICKET> --base <remote>/main` returns an empty diff or a vacuous artifact when run from a worktree, even with `LATTICE_ROOT=/absolute/path/to/primary-checkout` set. The reviewer sees no changes and writes a useless review. The auto-fired review (`review_mode: single`) can also just **die without attaching any artifact** — `review-status` keeps ticking, the spawned pid is dead, no `--role review` artifact exists.
-- **Also:** new files are invisible to the diff until committed. **Commit before transitioning to `review`** so the reviewer (and the diff) see the whole change.
-- **Why:** The diff-resolution path doesn't fully honor the worktree's HEAD; it falls back to the primary checkout's refs in some configurations.
-- **Cheap mitigation:** Always pass `--base <remote>/main` (NEVER bare `main` — they look identical but the local ref may be behind the remote). Set `export LATTICE_ROOT=/absolute/path/to/primary-checkout` at session start. A feature-worktree `$PWD` is not a safe substitute; the value must still be the primary root containing `.lattice/`.
-- **Fallback (small tickets):** review the committed diff yourself and complete with `lattice complete <TICKET> --review "<verdict + findings>"` — the review text satisfies the `done` policy without a CLI-spawned artifact.
-- **Fallback when cheap mitigation fails:** Spawn an own-reviewer sub-agent on the delegator's own pane that computes the diff itself (`git log <remote>/main..HEAD --stat` + per-file `git diff`), writes a custom artifact at `notes/.tmp/<TICKET>-codereview-custom.md`, and attaches it via `lattice attach <TICKET> --type note --role review --inline "<markdown>" --actor agent:<id>-reviewer`. The `--role review` attachment satisfies the `done` completion policy — the orchestrator can't tell the difference from a CLI-generated review. See the `lattice-orchestrator` skill's `references/orchestrator.md` `## Own-reviewer-tab fallback` section for the full pattern.
-- **Observed:** Every Wave 2 delegator on the EC v1.2.1 run hit this independently and converged on the fallback.
+- **The linked branch is authoritative.** `code-review` diffs `<base>...<linked branch tip>` regardless of what the checkout holding `.lattice/` has checked out, so a board checkout sitting on `main` reviews the ticket's branch, not `main`. The base is the remote-tracking default branch (`origin/HEAD` > `origin/main` > `origin/master`, then local `main`/`master`), picked by the descendant-most merge-base it shares with the head — never a stale bare `main`.
+- **Unresolvable is loud, not silent.** If the task has no linked branch, or the branch does not resolve in the reviewed worktree, the command fails with `HEAD_REF_UNRESOLVABLE`, exits non-zero, records the failure on the task, and names the ways out. It never falls back to an ambient `HEAD` that happens to be checked out.
+- **See the range before spending a model run:** `lattice code-review <TICKET> --dry-run` prints the resolved base, head, SHAs and diff size and writes nothing; `--dry-run --json` gives an orchestrator a shape to assert against.
+- **Overrides:** `--head <ref>` and `--base <ref>` name the range explicitly; `--worktree <path>` names the checkout the refs are read from.
+- **Commit before transitioning to `review`** — new files are invisible to the diff until committed.
+- **`LATTICE_ROOT`** must still point at the primary root containing `.lattice/`, never at a feature worktree's `$PWD` or at the `.lattice/` directory itself.
 
 ### `lattice plan-review` — wrong-file silent read
 
@@ -95,4 +94,4 @@ LAT-219 added directory-walking auto-detection so most `lattice` calls route cor
 - **Cheap mitigation:** Before `lattice plan-review`, verify `$REPO_ROOT/.lattice/plans/<task_id>.md` has the authored content via `wc -l`. If it's the 30-line scaffold but the worktree has the real plan, copy worktree→root: `cp <worktree>/.lattice/plans/<task_id>.md $REPO_ROOT/.lattice/plans/`.
 - **Observed:** EC v1.2.1 run, PSY-47 delegator. First plan-review pass returned vacuous FAIL; worked around by the copy. File a Lattice ticket if you hit this — it's an upstream defect that should follow LAT-219's fix to the same conclusion.
 
-Both bugs are upstream defects in Lattice, not workflow issues. Document a hit in your run's closeout audit and consider filing a Lattice ticket so the maintainer can apply the LAT-219 fix to the review path.
+The plan-review read path is an upstream defect in Lattice, not a workflow issue. Document a hit in your run's closeout audit and consider filing a Lattice ticket so the maintainer can apply the LAT-219 fix to it.

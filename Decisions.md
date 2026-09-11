@@ -890,6 +890,23 @@ Additionally, `lattice advance N` processed multiple tasks in a single context w
   `--base`/`--head`. That also vacuously satisfied
   `require_reachable_review_commit`, because a stale local `main` is an ancestor
   of every branch cut from it.
+- **`Lattice-Reviewed-Base: <ref> (<sha>)` records the merge-base, not the ref's
+  tip.** The merge-base is the commit the diff was actually taken from, so it is
+  the value that reproduces the review; the ref name says where it came from.
+  A reader who runs `git rev-parse origin/main` and gets a different SHA is
+  looking at a remote that has moved on since, which is information, not a
+  mismatch.
+- **A failed resolution is as visible as a failed agent.** A review that dies
+  before it assembles a prompt still leaves the task sitting in `review` looking
+  reviewed, so it writes the same durable `status: "failed"` record that
+  `review-status` renders and the same task comment (plus `needs_human` when
+  auto-fired). The record is not cleared: the claim releases itself when the
+  process exits, because `claim_review_state` reclaims any slot whose holder PID
+  is dead.
+- **Triple mode is handed the resolved range, both ends.** The pane runs in the
+  caller's checkout, whose `HEAD` is usually not the branch under review, so the
+  handoff prompt names `<base>...<head>` explicitly rather than letting the pane
+  infer it from cwd.
 - **Consequence:** `--dry-run` makes the resolution inspectable without spending
   a model run, and the real-git `worktree_repo` fixture makes the stale-base and
   unresolvable-branch cases regression-testable. The mocked diff tests are why
