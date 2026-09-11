@@ -76,7 +76,7 @@ def _evidence_header(resolution: DiffResolution) -> str:
             "Cannot build the review evidence header: the resolved head SHA is unknown. "
             "Pass --head <ref> to name the commit under review."
         )
-    lines = [f"Lattice-Reviewed-Commit: {resolution.head_sha or ''}"]
+    lines = [f"Lattice-Reviewed-Commit: {resolution.head_sha}"]
     if resolution.worktree is not None:
         lines.append(f"Lattice-Reviewed-Worktree: {resolution.worktree}")
     if resolution.base_ref:
@@ -807,6 +807,7 @@ def _report_review_failure(
     actor: str | dict,
     config: dict,
     auto_fired: bool,
+    error_code: str | None = None,
 ) -> None:
     """Leave the failure where a human or agent will actually meet it.
 
@@ -861,8 +862,15 @@ def _report_review_failure(
             type="needs_human_flagged",
             task_id=task_id,
             actor=actor,
+            # The flag is read from a queue, in seconds: name the code, not the paragraph.
+            # The full message is already on the task comment and in `review-status`.
             data={
-                "reason": (f"Auto-fired {review_type} failed ({message}) — task is unreviewed.")
+                "reason": (
+                    f"Auto-fired {review_type} failed ({error_code}) — task is unreviewed; "
+                    f"see 'lattice review-status {task_id}'."
+                    if error_code
+                    else f"Auto-fired {review_type} failed ({message}) — task is unreviewed."
+                )
             },
         )
         return TaskMutationDecision(events=[event])
@@ -925,6 +933,7 @@ def _record_resolution_failure(
         actor=actor,
         config=config,
         auto_fired=auto_fired,
+        error_code=error_code,
     )
 
 

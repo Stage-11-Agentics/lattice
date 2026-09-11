@@ -81,7 +81,11 @@ Directory-walking auto-detection routes most `lattice` calls correctly from a wo
 ### `lattice code-review` — how it picks the range
 
 - **The linked branch is authoritative.** `code-review` diffs `<base>...<linked branch tip>` regardless of what the checkout holding `.lattice/` has checked out, so a board checkout sitting on `main` reviews the ticket's branch, not `main`. The base is the remote-tracking default branch (`origin/HEAD` > `origin/main` > `origin/master`, then local `main`/`master`), picked by the descendant-most merge-base it shares with the head — never a stale bare `main`.
-- **Unresolvable is loud, not silent.** If the task has no linked branch, or the branch does not resolve in the reviewed worktree, the command fails with `HEAD_REF_UNRESOLVABLE`, exits non-zero, records the failure on the task, and names the ways out. It never falls back to an ambient `HEAD` that happens to be checked out.
+- **Unresolvable is loud, not silent.** If the task's linked branch does not resolve in the
+  reviewed worktree, the command fails with `HEAD_REF_UNRESOLVABLE`, exits non-zero, records
+  the failure on the task, and names the ways out — it never quietly diffs a different tree.
+  A task with *no* branch link falls back to the checkout's ambient `HEAD`, which under
+  one-worktree-per-task is a sibling's branch: link the branch.
 - **See the range before spending a model run:** `lattice code-review <TICKET> --dry-run` prints the resolved base, head, SHAs and diff size and writes nothing; `--dry-run --json` gives an orchestrator a shape to assert against.
 - **Overrides:** `--head <ref>` and `--base <ref>` name the range explicitly; `--worktree <path>` names the checkout the refs are read from.
 - **Commit before transitioning to `review`** — new files are invisible to the diff until committed.
