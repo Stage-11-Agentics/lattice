@@ -7,7 +7,73 @@ from pathlib import Path
 from subprocess import CompletedProcess
 
 from lattice.core.events import create_event, serialize_event
-from lattice.core.ids import generate_artifact_id, generate_event_id
+from lattice.core.ids import generate_artifact_id, generate_event_id, generate_task_id
+from lattice.core.tasks import apply_event_to_snapshot, serialize_snapshot
+
+
+def _write_corrupt_archived_authority(lattice_dir: Path) -> tuple[str, Path, str]:
+    task_id = generate_task_id()
+    events = [
+        create_event(
+            "task_created",
+            task_id,
+            "human:test",
+            {
+                "title": "Corrupt archived task",
+                "status": "backlog",
+                "priority": "medium",
+                "type": "task",
+            },
+        ),
+        create_event(
+            "status_changed",
+            task_id,
+            "human:test",
+            {"from": "backlog", "to": "in_planning"},
+        ),
+        create_event(
+            "status_changed",
+            task_id,
+            "human:test",
+            {"from": "in_planning", "to": "planned"},
+        ),
+        create_event(
+            "status_changed",
+            task_id,
+            "human:test",
+            {"from": "planned", "to": "in_progress"},
+        ),
+        create_event("task_archived", task_id, "human:test", {}),
+        create_event(
+            "status_changed",
+            task_id,
+            "human:test",
+            {"from": "planned", "to": "review"},
+        ),
+    ]
+    event_path = lattice_dir / "archive" / "events" / f"{task_id}.jsonl"
+    event_path.parent.mkdir(parents=True, exist_ok=True)
+    event_path.write_text("".join(serialize_event(event) for event in events), encoding="utf-8")
+
+    snapshot = None
+    for event in events[:-1]:
+        snapshot = apply_event_to_snapshot(snapshot, event)
+    assert snapshot is not None
+    snapshot_path = lattice_dir / "archive" / "tasks" / f"{task_id}.json"
+    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+    snapshot_path.write_text(serialize_snapshot(snapshot), encoding="utf-8")
+    return task_id, event_path, events[-1]["id"]
+
+
+def _assert_archive_warning(
+    warning: str, task_id: str, event_path: Path, malformed_event_id: str
+) -> None:
+    assert warning.count("Warning:") == 1
+    assert task_id in warning
+    assert str(event_path) in warning
+    assert malformed_event_id in warning
+    assert "expected 'in_progress', got 'planned'" in warning
+    assert "line 6" in warning
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +316,45 @@ class TestList:
         assert result.exit_code == 0
         assert "Task A" in result.output
         assert "Task B" in result.output
+
+    def test_list_skips_corrupt_archive_only_authority(
+        self, invoke, create_task, initialized_root
+    ) -> None:
+        first = create_task("Healthy active one")
+        second = create_task("Healthy active two")
+        corrupt_id, event_path, malformed_event_id = _write_corrupt_archived_authority(
+            initialized_root / ".lattice"
+        )
+
+        result = invoke("list")
+
+        assert result.exit_code == 0
+        assert first["id"] in result.stdout
+        assert second["id"] in result.stdout
+        assert "Healthy active one" in result.stdout
+        assert "Healthy active two" in result.stdout
+        assert corrupt_id not in result.stdout
+        assert "Corrupt archived task" not in result.stdout
+        _assert_archive_warning(result.stderr, corrupt_id, event_path, malformed_event_id)
+
+    def test_list_json_keeps_archive_warning_out_of_envelope(
+        self, invoke, create_task, initialized_root
+    ) -> None:
+        first = create_task("Healthy active one")
+        second = create_task("Healthy active two")
+        corrupt_id, event_path, malformed_event_id = _write_corrupt_archived_authority(
+            initialized_root / ".lattice"
+        )
+
+        result = invoke("list", "--json")
+
+        assert result.exit_code == 0
+        parsed = json.loads(result.stdout)
+        assert parsed["ok"] is True
+        assert {item["id"] for item in parsed["data"]} == {first["id"], second["id"]}
+        assert corrupt_id not in result.stdout
+        assert "Warning:" not in result.stdout
+        _assert_archive_warning(result.stderr, corrupt_id, event_path, malformed_event_id)
 
     def test_list_empty(self, invoke):
         """Empty project returns no output."""
@@ -506,6 +611,23 @@ class TestShow:
         assert "Type: bug" in result.output
         assert "Description:" in result.output
         assert "Something is broken" in result.output
+
+    def test_show_active_skips_corrupt_archive_during_relationship_scan(
+        self, invoke, create_task, initialized_root
+    ) -> None:
+        task = create_task("Healthy active detail")
+        create_task("Healthy active peer")
+        corrupt_id, event_path, malformed_event_id = _write_corrupt_archived_authority(
+            initialized_root / ".lattice"
+        )
+
+        result = invoke("show", task["id"])
+
+        assert result.exit_code == 0
+        assert task["id"] in result.stdout
+        assert "Healthy active detail" in result.stdout
+        assert corrupt_id not in result.stdout
+        _assert_archive_warning(result.stderr, corrupt_id, event_path, malformed_event_id)
 
     def test_events_shown_latest_first(self, invoke, create_task):
         """Events are displayed in reverse chronological order."""

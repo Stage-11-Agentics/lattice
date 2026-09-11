@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import sys
 from collections.abc import Generator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -343,9 +344,13 @@ def discover_task_authorities(
     through :func:`read_task_authority`. Split copies therefore yield one
     logical task at the placement selected by immutable history.
     """
-    task_ids: set[str] = set()
-    event_dirs = [lattice_dir / "events", lattice_dir / "archive" / "events"]
-    for event_dir in event_dirs:
+    active_task_ids: set[str] = set()
+    archived_task_ids: set[str] = set()
+    event_dirs = [
+        (lattice_dir / "events", active_task_ids),
+        (lattice_dir / "archive" / "events", archived_task_ids),
+    ]
+    for event_dir, task_ids in event_dirs:
         if not event_dir.is_dir():
             continue
         task_ids.update(
@@ -354,8 +359,18 @@ def discover_task_authorities(
             if path.name not in {"_lifecycle.jsonl", "_global.jsonl"}
         )
     authorities: list[ResolvedTaskAuthority] = []
-    for task_id in sorted(task_ids):
-        authority = read_task_authority(lattice_dir, task_id)
+    for task_id in sorted(active_task_ids | archived_task_ids):
+        try:
+            authority = read_task_authority(lattice_dir, task_id)
+        except AuthoritativeLogError as exc:
+            active_event_path = _location_paths(lattice_dir, task_id, "active")["event"]
+            if task_id in active_task_ids or active_event_path.exists():
+                raise
+            print(
+                f"Warning: skipping corrupt archived task authority {task_id}: {exc}",
+                file=sys.stderr,
+            )
+            continue
         assert authority is not None
         if include_archived or authority.location == "active":
             authorities.append(authority)

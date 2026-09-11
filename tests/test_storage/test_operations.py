@@ -52,6 +52,52 @@ def _create_task(ld: Path, task_id: str) -> None:
     mutate_task_events(ld, task_id, [event], source="absent", may_emit_lifecycle=True)
 
 
+def _write_corrupt_status_log(ld: Path, task_id: str, location: str) -> tuple[Path, str]:
+    events = [
+        create_event(
+            "task_created",
+            task_id,
+            "human:test",
+            {
+                "title": "Corrupt archived task",
+                "status": "backlog",
+                "priority": "medium",
+                "type": "task",
+            },
+        ),
+        create_event(
+            "status_changed",
+            task_id,
+            "human:test",
+            {"from": "backlog", "to": "in_planning"},
+        ),
+        create_event(
+            "status_changed",
+            task_id,
+            "human:test",
+            {"from": "in_planning", "to": "planned"},
+        ),
+        create_event(
+            "status_changed",
+            task_id,
+            "human:test",
+            {"from": "planned", "to": "in_progress"},
+        ),
+        create_event("task_archived", task_id, "human:test", {}),
+        create_event(
+            "status_changed",
+            task_id,
+            "human:test",
+            {"from": "planned", "to": "review"},
+        ),
+    ]
+    prefix = ld if location == "active" else ld / "archive"
+    event_path = prefix / "events" / f"{task_id}.jsonl"
+    event_path.parent.mkdir(parents=True, exist_ok=True)
+    event_path.write_text("".join(serialize_event(event) for event in events), encoding="utf-8")
+    return event_path, events[-1]["id"]
+
+
 def _task_durable_bytes(ld: Path, task_id: str) -> dict[str, bytes | None]:
     """Capture every per-task placement file plus the shared lifecycle log."""
     paths = [ld / "events" / "_lifecycle.jsonl"]
@@ -497,6 +543,74 @@ class TestMutateTask:
             discovered = discover_task_authorities(ld, include_archived=False)
             assert [authority.task_id for authority in discovered] == [task_id]
             assert discovered[0].location == "active"
+
+    def test_discovery_skips_corrupt_archive_only_authority_once(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        ld = _setup_lattice(tmp_path)
+        healthy_id = "task_01HEALTHYDISCOVERY000000000"
+        corrupt_id = "task_01CORRUPTARCHIVE000000000"
+        _create_task(ld, healthy_id)
+        event_path, malformed_event_id = _write_corrupt_status_log(ld, corrupt_id, "archived")
+
+        discovered = discover_task_authorities(ld)
+
+        assert [authority.task_id for authority in discovered] == [healthy_id]
+        warning = capsys.readouterr().err
+        assert warning.count("Warning:") == 1
+        assert corrupt_id in warning
+        assert str(event_path) in warning
+        assert malformed_event_id in warning
+        assert "expected 'in_progress', got 'planned'" in warning
+        assert "line 6" in warning
+
+    def test_discovery_keeps_corrupt_active_authority_strict(self, tmp_path: Path) -> None:
+        ld = _setup_lattice(tmp_path)
+        task_id = "task_01CORRUPTACTIVE0000000000"
+        _write_corrupt_status_log(ld, task_id, "active")
+
+        with pytest.raises(AuthoritativeLogError, match="expected 'in_progress'"):
+            discover_task_authorities(ld)
+
+    def test_discovery_keeps_split_authority_strict(self, tmp_path: Path) -> None:
+        ld = _setup_lattice(tmp_path)
+        task_id = "task_01CORRUPTSPLIT00000000000"
+        _create_task(ld, task_id)
+        event_path, _ = _write_corrupt_status_log(ld, task_id, "archived")
+
+        with pytest.raises(AuthoritativeLogError, match=str(event_path)):
+            discover_task_authorities(ld)
+
+    def test_discovery_rechecks_for_concurrent_active_candidate(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ld = _setup_lattice(tmp_path)
+        task_id = "task_01CONCURRENTACTIVE00000000"
+        _write_corrupt_status_log(ld, task_id, "archived")
+        original_read = read_task_authority
+
+        def create_active_then_read(lattice_dir, requested_task_id, **kwargs):  # noqa: ANN001
+            active_path = lattice_dir / "events" / f"{requested_task_id}.jsonl"
+            active_event = create_event(
+                "task_created",
+                requested_task_id,
+                "human:race",
+                {
+                    "title": "Concurrent active task",
+                    "status": "backlog",
+                    "priority": "medium",
+                    "type": "task",
+                },
+            )
+            active_path.write_text(serialize_event(active_event), encoding="utf-8")
+            return original_read(lattice_dir, requested_task_id, **kwargs)
+
+        monkeypatch.setattr(
+            "lattice.storage.operations.read_task_authority", create_active_then_read
+        )
+
+        with pytest.raises(AuthoritativeLogError, match="expected 'in_progress'"):
+            discover_task_authorities(ld)
 
     @pytest.mark.parametrize(
         ("event_type", "data", "message"),
