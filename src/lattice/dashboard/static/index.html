@@ -7004,10 +7004,9 @@ var SETTINGS_KEEP_OPEN = ["#settings-panel", "#settings-btn"];
 var DETAIL_KEEP_OPEN = [
   "#detail-panel",
   ".card", ".list-row", ".done-compact-row",
-  ".settings-panel", "#settings-btn",
   "#filter-panel", "#filters-btn", "#filters-clear-btn",
   "#cv2-container", "#cube3d-container"
-];
+].concat(SETTINGS_KEEP_OPEN);
 document.addEventListener("click", function(e) {
   var path = clickPath(e);
 
