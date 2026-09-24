@@ -1632,6 +1632,9 @@ select.form-control{cursor:pointer}
 <!-- Pure actor identity logic (see actor-logic.js). Loaded WITHOUT defer so its
      definitions are global before the main IIFE below runs and calls into them. -->
 <script src="/static/actor-logic.js"></script>
+<!-- Pure panel click-outside logic (see panel-logic.js). Loaded WITHOUT defer so its
+     definitions are global before the main IIFE below runs and calls into them. -->
+<script src="/static/panel-logic.js"></script>
 <script>
 (function(){
 "use strict";
@@ -6989,26 +6992,33 @@ document.getElementById("settings-close").addEventListener("click", function() {
 });
 
 // --- Click-outside-to-dismiss for sidebars ---
+// "Inside" is decided from the click's propagation path (panel-logic.js), not
+// from `panel.contains(e.target)`: inline-edit controls in the detail panel
+// replace their own element synchronously on click, so by the time the event
+// reaches document the target is detached and contains() would say "outside",
+// closing the panel under the user (GitHub #48). composedPath() is captured at
+// dispatch, so the panel is still on it.
+var SETTINGS_KEEP_OPEN = ["#settings-panel", "#settings-btn"];
+// Elements that open/swap a detail view (cards, rows, cube nodes) or that
+// stack on top of the panel (settings, filter drawer) must not dismiss it.
+var DETAIL_KEEP_OPEN = [
+  "#detail-panel",
+  ".card", ".list-row", ".done-compact-row",
+  "#filter-panel", "#filters-btn", "#filters-clear-btn",
+  "#cv2-container", "#cube3d-container"
+].concat(SETTINGS_KEEP_OPEN);
 document.addEventListener("click", function(e) {
-  // Settings panel: close if open and click is outside panel and outside toggle button
+  var path = clickPath(e);
+
   var settingsPanel = document.getElementById("settings-panel");
-  var settingsBtn = document.getElementById("settings-btn");
   if (settingsPanel && settingsPanel.classList.contains("open") &&
-      !settingsPanel.contains(e.target) && !settingsBtn.contains(e.target)) {
+      !clickPathMatches(path, SETTINGS_KEEP_OPEN)) {
     settingsPanel.classList.remove("open");
   }
 
-  // Detail panel: close if open and click is outside panel
-  // (but not if clicking a task card, cube node, or other element that opens a detail view)
   var detailPanel = document.getElementById("detail-panel");
   if (detailPanel && detailPanel.classList.contains("open") && _detailPanelTaskId &&
-      !detailPanel.contains(e.target) &&
-      !e.target.closest(".card") && !e.target.closest(".list-row") &&
-      !e.target.closest(".done-compact-row") &&
-      !e.target.closest(".settings-panel") && !e.target.closest("#settings-btn") &&
-      !e.target.closest("#filter-panel") && !e.target.closest("#filters-btn") &&
-      !e.target.closest("#filters-clear-btn") &&
-      !e.target.closest("#cv2-container") && !e.target.closest("#cube3d-container")) {
+      !clickPathMatches(path, DETAIL_KEEP_OPEN)) {
     closeDetailPanel();
   }
 });
