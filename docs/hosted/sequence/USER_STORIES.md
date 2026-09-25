@@ -32,7 +32,7 @@ These stories were minted at the architect stage, from the operator's rulings an
 - **AC-3** No process other than the server writes a hosted project's board files. A write attempted against a client cache, or by a local CLI against a server-owned data directory, fails with a clear error and changes nothing.
 - **AC-4** If the server is killed at any instant during a write and restarted, or a write fails partway, the project passes `lattice doctor`, and the write is either wholly visible or wholly absent.
 - **AC-46** A write retried after a lost response (same operation ID, same arguments) is applied exactly once. Reusing an operation ID with different arguments is rejected.
-- **AC-47** After a client syncs, every board file in its cache is byte-identical to the server's copy.
+- **AC-47** After a client syncs, every board file in its cache is byte-identical to the server's copy. A local edit found in the cache is moved aside and reported, never silently discarded.
 
 ## US-2: The same Lattice, wherever the board lives
 
@@ -44,7 +44,8 @@ These stories were minted at the architect stage, from the operator's rulings an
 - **AC-8** With the server unreachable, reads are served from the cache with a one-line staleness notice on stderr. Writes fail with a clear "cannot reach server" error, exit non-zero, and leave no local side effect. There is no offline write queue.
 - **AC-9** The client cache has the same directory layout and file formats as a local `.lattice/`, so `cat`, `grep`, the dashboard, and every read command work on it unchanged.
 - **AC-10** Every git worktree of one repository reads the same cache and binding. A new worktree needs no setup step and no environment variable to reach the hosted board.
-- **AC-48** When client and server run different Lattice versions, an operation the server does not know fails with an error naming both versions, and an incompatible protocol version is refused before any write.
+- **AC-48** When client and server run different Lattice versions, an operation or option the server does not know fails with an error naming both versions, and an incompatible protocol version, or a client older than the server's stated minimum, is refused before any write.
+- **AC-49** A hosted project's review workflow is configured per project, as a local board's is: automatic plan reviews only, automatic code reviews only, both, or none. Each transition to `planned` or `review` on a hosted board fires exactly the reviews its project configures, and a configuration change reaches every client by its next command.
 
 ## US-3: Identity is authenticated
 
@@ -59,7 +60,7 @@ These stories were minted at the architect stage, from the operator's rulings an
 
 *As a server admin, I host many project boards on one server, each independent and each easy to reach.*
 
-- **AC-15** One server process serves many projects, each with its own short-ID sequence, write lock, change stream, and audit history. A slow or failing project does not delay or break writes on another.
+- **AC-15** One server process serves many projects, each with its own short-ID sequence, write lock, change stream, and audit history. A slow or failing project does not delay or break writes on another, and a failed project can be repaired and brought back without stopping the others. The projects still share one host's process, disk, and memory, so per-credential limits bound what any one client can consume.
 - **AC-16** Each project has a stable URL path for its API and its dashboard. An index lists the projects a credential may see.
 - **AC-17** Creating an empty project is one admin command. Importing an existing local board is one admin command, and it refuses any board that fails `lattice doctor`.
 - **AC-18** Binding a checkout to a hosted project is one client command. The committed binding names a server alias and a project, never a hostname or a credential.
@@ -85,7 +86,7 @@ These stories were minted at the architect stage, from the operator's rulings an
 
 *As a server admin, the board's full history is plain files I can read, back up, and audit.*
 
-- **AC-25** A hosted project's data directory is a standard `.lattice/` directory. Its files can be read with `cat` and backed up with `rsync` or `tar`, with no export step.
+- **AC-25** A hosted project's data directory is a standard `.lattice/` directory. Its files can be read with `cat` and backed up with `rsync` or `tar` while the server is stopped (or with a filesystem snapshot), with no export step.
 - **AC-26** The server records each project's data directory in a local git history on a short debounce, and can push that history to a configured remote. A failing push never blocks a write.
 - **AC-27** No hosted operation deletes board data. Removing a task from view is a tombstone event. The only removals are relocations (archive, session end) and the rollback of an operation that never committed, and `lattice doctor` reports any task file missing without a tombstone.
 - **AC-28** `lattice doctor` reports every short ID that does not resolve and every short ID issued twice, not only the first it finds, and checks the ID counter against the event history.
@@ -109,14 +110,14 @@ These stories were minted at the architect stage, from the operator's rulings an
 
 *As an operator, I move an existing local board onto a server without losing anything.*
 
-- **AC-34** Moving a board is two commands: an admin import on the server and a client attach in the checkout. The checkout's old board files are moved aside, never deleted, and the checkout's ignore rules are updated so the cache is never committed.
-- **AC-35** After a move, every task, event, plan, note, and artifact from the old board is present on the server, and the migrated board passes `lattice doctor`.
+- **AC-34** Moving a board is one doctor-gated admin import on the server plus a short procedure in the guide that a person or an agent can follow: stop writers, import, move the old board aside (never deleted), and attach the checkout. The checkout's ignore rules keep the cache out of every commit.
+- **AC-35** After a move, every task, event, plan, note, artifact, template, and configuration setting from the old board is present on the server, byte for byte apart from the derived files the import rebuilds, and the moved board passes `lattice doctor`. The import names every path it does not move and refuses a board it cannot copy safely.
 
 ## US-11: Every change says where it came from
 
 *As anyone reading the board, I can see who made each change, on which machine, from which worktree, and as which user.*
 
-- **AC-36** Every event written by Lattice v2, local or hosted, carries an origin: the operation name and ID, and the reported host, operating-system user, git worktree, branch, and Lattice version. Events without an origin (written before v2) still read and replay unchanged.
+- **AC-36** Every event written by Lattice v2, local or hosted, carries an origin: the operation name and ID, and the reported host, operating-system user, git worktree, branch, and Lattice version, where the worktree and branch are those of the operation itself. A change made from a dashboard says it came from a browser in place of a worktree. Events without an origin (written before v2) still read and replay unchanged.
 - **AC-37** Every event written through a server also carries the authenticated token ID, user, and machine, stamped by the server. A client cannot supply or override them.
 - **AC-38** `lattice show --events` and the dashboard's event views display the actor, user, machine, and worktree of each event.
 - **AC-39** *(follow-up ticket)* `lattice list` and the dashboard can filter by machine, user, and worktree.

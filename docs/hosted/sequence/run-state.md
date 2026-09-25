@@ -47,6 +47,7 @@ The contract lives in `docs/hosted/` rather than at the repo root, because the r
 - 2026-09-25 (architect, from review round 4): any in-process failure runs transaction recovery (the startup recovery logic, scoped to that operation) before the project admits another request; epoch rotation is recoverable through `hosted/rotation.json`; all syncs serialize on one lock; `lattice plan <task>` keeps working beside the new `plan write`.
 - 2026-09-25 (architect, from review round 2): per-family commit points and staging replaced by one mechanism: every server operation is a transaction (undo log with pre-images, a receipt holding the full result, the journal line as the single commit point, rollback on any failure or crash). Local mode keeps today's crash behavior exactly; AC-4 is a server guarantee. Live epoch rotation goes through a control-request file the owning server executes.
 - 2026-09-25 (architect): the build splits into 24 tickets (H-0 to H-23) on the `v2` branch; the deployment track (H-18, H-23) lives in the private platform addendum `platform/lattice-hosted.md`.
+- 2026-09-25 (architect, from the triple plan review): fresh-context Codex, Opus 5.5, and Fable 5.1 reviews, collated by Opus 5.5, produced 63 items (13 questions for the operator, 36 fixes, 5 risks, 9 declined); the 36 fixes (section B) are applied, including the move per the operator's ruling (a doctor-gated import plus guide steps; `attach --migrate` and `import --replace` removed), new criterion AC-49 (per-project review workflows), and new tickets H-22a (transactions proven before sync and client), H-10a to H-10c (replacing H-10), and H-13a and H-13b (replacing H-13), for 28 tickets; the 13 questions (section A) await the operator.
 
 ## Interview record
 
@@ -82,6 +83,13 @@ The contract lives in `docs/hosted/` rather than at the repo root, because the r
 - Identity model (operator, 2026-09-25): a token is issued to one person for one machine or seat, so the user and machine are authenticated; the client reports worktree path, branch, OS account and Lattice version on every write, stamped as reported. Local mode records the same fields as optional additive fields (the parity test compares everything except them). v2 shows them everywhere; filtering by them is a follow-up ticket built in near parallel.
 - Assumptions accepted: dashboard login by token paste then cookie, per-project dashboard URL; admin by shell on the server host only; archive relocation allowed, `doctor --fix` never trims a hosted log; the Lattice repo's own default test suite gets a parallelization ticket and server tests stay fast.
 
+**Contract read (operator, 2026-09-25):**
+
+- The four review-time calls are confirmed: hosted board hooks run on a client only by opt-in; every token may act as `agent:lattice-auto-review`; `claim` keeps today's non-exclusive meaning; the move of a local board is refused when it changed after import (superseded by the next point).
+- Review workflows must stay configurable per project in hosted mode: automatic plan reviews, automatic code reviews, either, or no reviews at all.
+- Moving an existing v1 board onto a server is not worth heavy tooling: an agent can do it by following the guide. Keep a doctor-gated import; drop the automated migrate-and-verify machinery.
+- For the fresh-context plan reviews: apply fixes the architect is confident in; bring only genuine questions to the operator.
+
 ## Touchpoints
 
 | Touchpoint | State |
@@ -101,4 +109,5 @@ The contract lives in `docs/hosted/` rather than at the repo root, because the r
 | 4 review, round 4 | 1 (Codex re-judge: REVISE 7/10; 2 blocking, both about in-process failure handling inside the transaction protocol) | 0 | applied: one recovery path for every in-process failure |
 | 4 review, round 5 | 1 (Codex re-judge: REVISE 8/10; 1 blocking, offline rotation versus undo classification) | 0 | applied |
 | 4 review, round 6 | 1 (Codex confirmation: PASS 8/10, no blocking; 1 important and 2 minor applied) | 0 | done |
-| 4 review, triple plan review | 4 (fresh-context Codex, Opus 5.5, Fable 5.1 reviewers; an Opus 5.5 collator), requested by the operator | pending | in progress |
+| 4 review, triple plan review | 4 (fresh-context Codex, Opus 5.5, Fable 5.1 reviewers; an Opus 5.5 collator), requested by the operator | pending (section A) | done: 63 items (A 13, B 36, C 5, D 9) |
+| 4 review, triple review applied | 1 (Opus 5.5 architect applying section B) | 0 | done: all 36 section B fixes applied; section A open |
