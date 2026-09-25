@@ -100,4 +100,5 @@ The contract lives in `docs/hosted/` rather than at the repo root, because the r
 | 4 review, round 3 | 1 (Codex re-judge after the transaction redesign: REVISE 7/10; 2 blocking, both inside the transaction protocol) | 0 | applied |
 | 4 review, round 4 | 1 (Codex re-judge: REVISE 7/10; 2 blocking, both about in-process failure handling inside the transaction protocol) | 0 | applied: one recovery path for every in-process failure |
 | 4 review, round 5 | 1 (Codex re-judge: REVISE 8/10; 1 blocking, offline rotation versus undo classification) | 0 | applied |
-| 4 review, round 6 | 1 (Codex confirmation round) | pending | in progress |
+| 4 review, round 6 | 1 (Codex confirmation: PASS 8/10, no blocking; 1 important and 2 minor applied) | 0 | done |
+| 4 review, triple plan review | 4 (fresh-context Codex, Opus 5.5, Fable 5.1 reviewers; an Opus 5.5 collator), requested by the operator | pending | in progress |

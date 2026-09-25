@@ -82,7 +82,7 @@ Criteria: AC-29, AC-27 (no refused-complete unlink), AC-5 (attestation rejection
 
 ### H-5 Operations: resources, sessions, board config · M
 `resource.*` with `acquire --wait` as a client-side loop, `session.start/end` writing `origin` into session files, actor resolution and authorization before any session touch (`SPEC.md` §3.7), `board.set_project_code`, `board.set_subproject_code`, `board.set_dashboard_config` (the operation only; H-13 converts the dashboard's settings POST to call it), and the `LOCAL_ONLY` list of maintenance commands (`SPEC.md` §3.5).
-Criteria: AC-29, AC-5 (local `acquire --wait` released by another process), G-6. Deps: H-1. Shared: `cli/helpers.py` (`require_actor`), `storage/sessions.py`, `cli/resource_cmds.py`, `cli/main.py`.
+Criteria: AC-29 (including `session start` and `session end` with no actor arguments), AC-5 (local `acquire --wait` released by another process), G-6. Deps: H-1. Shared: `cli/helpers.py` (`require_actor`), `storage/sessions.py`, `cli/resource_cmds.py`, `cli/main.py`.
 
 ### H-6 Short-ID floor and doctor completeness (absorbs LAT-280, LAT-269) · M
 `SPEC.md` §5, local and server-ready (`max_observed` hook for H-9).
@@ -192,7 +192,7 @@ The critical path is H-0 → H-1 → H-8 → H-9 → H-10 → H-11 → CP1. The 
 | **CP1** walking skeleton (human) | H-11 | Hosted feels like local across worktrees; offline errors are clear |
 | **CP2** real work on a local server (human, CLI only) | H-12 | Agents work unmodified apart from `plan write`; the board never touches git |
 | Proxy spike | H-23 | Whether followers can stream through the production proxy |
-| **CP3** first production host (human, external) | H-18 | Boxes are first-class; the dashboard is live per project |
+| **CP3** first production host (human, external) | H-18's deployment steps | Boxes are first-class; the dashboard is live per project |
 | **CP4** team (human) | CP3 + H-17 | Five identities share one board; docs let others adopt it |
 | Release gate | `EVALUATION.md` §5 | About a week of trial across two or three projects |
 

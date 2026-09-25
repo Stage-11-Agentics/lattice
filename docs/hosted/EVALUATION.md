@@ -17,7 +17,7 @@ Verifiability tags:
 |---|---|---|
 | **Project gate** | `uv run ruff check src/ tests/ && uv run ruff format --check src/ tests/ && uv run pytest -q` | Every PR, at its final head |
 | Parity | `uv run pytest tests/parity -q` | Inside the gate; named separately for evidence |
-| Torture | `uv run pytest -m torture -q` | Every PR touching `ops/`, `storage/`, `server/`, or `remote/`, and at each checkpoint |
+| Torture | `uv run pytest -m torture -q` | Every PR touching `ops/`, `storage/`, `server/`, or `remote/` once any torture test exists (an empty selection, pytest exit code 5, passes before then); the complete suite after H-15, and before CP3, CP4, and the release gate |
 | Scenario rehearsal | `uv run pytest -m torture tests/torture/test_scenarios.py -q` | Before CP3, CP4, and the release gate (CP1 and CP2 rely on the tests their tickets already own) |
 | Docs agent test | Procedure in §3, AC-44 | H-17 and terminal validation |
 

@@ -202,7 +202,7 @@ The server executes whatever operations its installed Lattice registers. It has 
 3. On a server, authorize the permission identity against the token (§8.3). Locally there is no token and this step is skipped.
 4. Only now, for a session actor, touch the session (update its last-seen time) under the `sessions_index` lock. This replaces today's unlocked read-modify-write. On a server the touch is part of the operation's transaction, so a rejected or failed operation leaves the session untouched (§8.6).
 
-`session.start` keeps today's semantics: each start allocates a new serial under the `sessions_index` lock. `sessions/` is board data (synced when hosted).
+`session.start` keeps today's semantics: each start allocates a new serial under the `sessions_index` lock. `session start` and `session end` take no actor today (`cli/session_cmds.py`) and keep that local interface; steps 1 to 4 do not apply to them. On a server, the token authorizes them as its own default actor, recorded in `origin.authenticated`, independent of the session being created or ended. `sessions/` is board data (synced when hosted).
 
 ### 3.8 Artifacts
 
