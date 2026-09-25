@@ -99,4 +99,5 @@ The contract lives in `docs/hosted/` rather than at the repo root, because the r
 | 4 review, round 2 | 1 (Codex re-judge: REVISE 6/10; most round-1 findings resolved, 4 new blocking, all in crash atomicity and receipts) | 0 | about 30 min; applied |
 | 4 review, round 3 | 1 (Codex re-judge after the transaction redesign: REVISE 7/10; 2 blocking, both inside the transaction protocol) | 0 | applied |
 | 4 review, round 4 | 1 (Codex re-judge: REVISE 7/10; 2 blocking, both about in-process failure handling inside the transaction protocol) | 0 | applied: one recovery path for every in-process failure |
-| 4 review, round 5 | 1 (Codex re-judge, running while the operator reads) | pending | in progress |
+| 4 review, round 5 | 1 (Codex re-judge: REVISE 8/10; 1 blocking, offline rotation versus undo classification) | 0 | applied |
+| 4 review, round 6 | 1 (Codex confirmation round) | pending | in progress |

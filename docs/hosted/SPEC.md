@@ -354,7 +354,7 @@ All under `lattice server`; all accept `--root`; all have `--json`.
 
 Admin commands edit files the running server reads (`tokens.json` reloads on mtime change, checked per request), under `<server_root>/admin.lock` with `atomic_write`. They never write an existing board directly. Two commands act on a board, and both respect its owner:
 
-- `project rotate-epoch <slug>` starts a new journal epoch so every cache resyncs (use it after restoring a backup). With the owner flock free it rotates directly. While a server owns the project, it writes a control request `hosted/control/<ULID>.json` (`{"action": "rotate-epoch"}`) and waits up to 30 s for `<ULID>.done`; the server checks `hosted/control/` at each admission and every 2 seconds, performs the rotation under the project's locks, and broadcasts `reset` (§8.9).
+- `project rotate-epoch <slug>` starts a new journal epoch so every cache resyncs (use it after restoring a backup). With the owner flock free it rotates directly, but refuses while any undo log exists: start the server once so recovery settles them, or run `project recover`. While a server owns the project, it writes a control request `hosted/control/<ULID>.json` (`{"action": "rotate-epoch"}`) and waits up to 30 s for `<ULID>.done`; the server checks `hosted/control/` at each admission and every 2 seconds, performs the rotation under the project's locks, and broadcasts `reset` (§8.9).
 - `project import --replace` requires the owner flock to be free (stop the server first).
 
 Rotation is itself recoverable. In order, each step fsynced: (1) write `hosted/rotation.json` `{old_epoch, new_epoch}`; (2) rename `journal.jsonl` to `hosted/journal.<old epoch>.jsonl` (kept, never deleted); (3) write a new `journal_meta.json` with `new_epoch` and a `baseline` of the current log lengths; (4) create an empty `journal.jsonl`; (5) delete `rotation.json`. Each step is idempotent, so startup completes an interrupted rotation from the marker before anything else (§8.7). The new epoch starts at seq 1.
@@ -416,7 +416,7 @@ Request headers: `Authorization`, `Content-Type: application/json` (required for
 
 Every operation on a server is a transaction, run under the project's work lock. Three server-control files carry it, all append-only JSONL with one fsync per line: the undo log `hosted/undo/<op_id>.jsonl`, the receipt file `hosted/receipts/<UTC YYYY-MM-DD>.jsonl`, and the journal.
 
-1. **Begin.** Record the byte lengths of the journal and of today's receipt file (in memory), then create the undo log.
+1. **Begin.** Record the byte lengths of the journal and of today's receipt file (in memory), then create the undo log, whose first line is `{"epoch": <current epoch>}`.
 2. **Undo entries.** The storage primitives append an entry to the undo log, and fsync it, *before* each change they guard. The log is a sequence, replayed in reverse on rollback:
    - before the first append to a path in this operation: `{"path", "kind": "length", "existed", "length"}`;
    - before creating, replacing, or unlinking a path, unless this operation already recorded a `content` entry for it: `{"path", "kind": "content", "existed", "content_b64"}` holding the path's bytes at that moment (so a log appended to and then unlinked by archive placement gets a `length` entry and then a `content` entry).
@@ -424,8 +424,8 @@ Every operation on a server is a transaction, run under the project's work lock.
    A torn final undo line guards a change that was never made (the change waits for the fsync), so it is ignored.
 3. **Work.** The operation runs, writing durable files through the normal storage code.
 4. **Receipt.** Append `{"op_id", "fp", "epoch", "seq", "result"}` (the full `OpResult` JSON) to the receipt file.
-5. **Commit point.** Record the journal's current byte length, then append the journal line and fsync. The operation is committed once that line is complete on disk.
-6. **Finish.** Update the in-memory idempotency index, delete the undo log, then hand the entry to the stream broadcaster, all still under the locks, so streams see entries in `seq` order. A failure in this step never rolls anything back: it is logged, and startup deletes any undo log whose operation is in the journal.
+5. **Commit point.** Append the journal line and fsync. In-process, the operation counts as committed only when both the write and the fsync succeed. At startup, the only evidence is on disk: a complete journal line means committed (§8.7).
+6. **Finish.** Update the in-memory idempotency index, delete the undo log, then hand the entry to the stream broadcaster, all still under the locks, so streams see entries in `seq` order. Any failure here is handled by transaction recovery below, which never rolls back a committed operation.
 
 **Failures: one recovery path.** On any failure after step 1 (an `OpError`, any other exception, or a failed write or fsync of a board or control file), the server runs **transaction recovery** for this operation before admitting another request to the project, then returns the error to the caller:
 
@@ -434,6 +434,8 @@ Every operation on a server is a transaction, run under the project's work lock.
 3. If the journal fsync failed (durability unknown), or any step of recovery fails, mark the project `BOARD_UNAVAILABLE` (503 on every route for it) and log the reason; startup recovery decides from what is on disk (§8.7).
 
 A rejected operation therefore leaves nothing behind, including a session touch or a short-ID reservation. Most rejections happen before any write, so their recovery is only the deletion of an empty undo log.
+
+**Durability errors propagate on the server.** Today `_fsync_directory` swallows `OSError` (`storage/fs.py`). Inside a server transaction, and for every server-control write, a failed file or directory fsync raises, so recovery can react. Local mode keeps today's behavior.
 
 **Journal and metadata.**
 
@@ -455,7 +457,7 @@ At project load (server start, or first request after `project create` / `import
 1. **Lease.** Acquire the owner lease (§6.2). If `hosted/rotation.json` exists, finish that rotation's remaining steps.
 2. **Journal tail.** Drop a truncated final line of `journal.jsonl` (its operation never committed). Drop torn final lines of receipt files and undo logs.
 3. **Missing journal.** If `journal.jsonl` or `journal_meta.json` is missing or unparseable beyond its final line: with no undo logs present, rotate the epoch; with undo logs present, mark the project `BOARD_UNAVAILABLE` and log that `lattice server project recover <slug> --rollback | --keep` must decide (committed state cannot be known without the journal).
-4. **Transactions.** For each `hosted/undo/<op_id>.jsonl`: if the journal holds `op_id` in a complete line, the operation committed; delete the undo log. Otherwise roll it back (§8.6) and log `recovery_rollback`. Then rebuild the idempotency index, removing orphan receipts (§8.6).
+4. **Transactions.** For each `hosted/undo/<op_id>.jsonl`: if the journal of the epoch named on its first line (the current `journal.jsonl`, or `journal.<epoch>.jsonl` if that epoch was rotated away) holds `op_id` in a complete line, the operation committed; delete the undo log. Otherwise roll it back (§8.6) and log `recovery_rollback`. Then rebuild the idempotency index, removing orphan receipts (§8.6).
 5. **Maintenance and restores.** If `hosted/maintenance.json` exists, rotate the epoch and remove it. Else if `clean_shutdown` is set and the durable tree's fingerprint (a hash over each durable file's path, size, and mtime) differs from it, rotate the epoch. Clear `clean_shutdown`.
 6. **Foreign changes.** Any log longer than its last known length (§8.6), or any durable file changed outside the journal as detected by step 5's fingerprint when the epoch was not rotated, gets an `external` journal entry listing the paths, and a warning log.
 7. **Discovery.** Run strict discovery. If it fails (for example a foreign writer left a truncated line), mark the project `BOARD_UNAVAILABLE` (503 on every route for it), log the failing path, and keep serving other projects. The admin repairs it with offline maintenance (`doctor --fix --offline-maintenance`).
