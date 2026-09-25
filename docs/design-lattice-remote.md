@@ -1,6 +1,6 @@
 # Design: lattice-remote
 
-**Status:** Draft
+**Status:** Superseded by `docs/hosted/SPEC.md` (2026-09-25). The beliefs below still hold; the `StorageBackend.write_task(events, snapshot)` seam does not.
 **Date:** 2026-02-21
 **Author:** human:atin, agent:claude-opus
 
