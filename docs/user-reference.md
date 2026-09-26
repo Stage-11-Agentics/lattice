@@ -374,7 +374,8 @@ The CLI is Lattice's write interface — the primary way agents interact with th
 - `--type` — task, bug, spike, chore (create/list)
 - `--priority` — critical, high, medium, low (create/list)
 - `--assigned` / `--assigned-to` — filter/set assignee (list/create)
-- `--tag` / `--tags` — filter/set tags (list/create)
+- `--tag` — filter by tag (list); set one tag, repeatable (create)
+- `--tags a,b` — set comma-separated tags (create); combines with `--tag`, which appends after
 - `--force --reason "..."` — override workflow constraints (status)
 - `--claim` — atomically assign and start a task (next)
 - `--id` — supply your own ID for idempotent retries (create/event)
