@@ -88,6 +88,13 @@ Hook order:
 2. `hooks.on.<event_type>`
 3. transition hooks (`from -> to`, wildcard patterns) for `status_changed`
 
+Hook environment (`_build_env` / `_build_resource_env`): `LATTICE_ROOT` is the
+project root that contains `.lattice/` (the same meaning `find_root` gives it),
+and `LATTICE_DIR` is the `.lattice/` directory. Also set: `LATTICE_EVENT_TYPE`,
+`LATTICE_EVENT_ID`, `LATTICE_ACTOR`, plus `LATTICE_TASK_ID` (task hooks),
+`LATTICE_FROM_STATUS` / `LATTICE_TO_STATUS` (transition hooks), or
+`LATTICE_RESOURCE_ID` / `LATTICE_RESOURCE_NAME` (resource hooks).
+
 ## Practical Debugging Flow
 
 For any task-state bug:

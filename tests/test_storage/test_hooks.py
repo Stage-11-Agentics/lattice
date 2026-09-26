@@ -13,6 +13,7 @@ from lattice.storage.hooks import (
     _match_transitions,
     _parse_transition_key,
     execute_hooks,
+    execute_resource_hooks,
 )
 
 
@@ -178,6 +179,7 @@ def test_hook_receives_env_vars(tmp_path: Path, lattice_dir: Path, sample_event:
     hook_script.write_text(
         f"""#!/bin/sh
 echo "ROOT=$LATTICE_ROOT" > "{env_output}"
+echo "DIR=$LATTICE_DIR" >> "{env_output}"
 echo "TASK_ID=$LATTICE_TASK_ID" >> "{env_output}"
 echo "EVENT_TYPE=$LATTICE_EVENT_TYPE" >> "{env_output}"
 echo "EVENT_ID=$LATTICE_EVENT_ID" >> "{env_output}"
@@ -196,11 +198,49 @@ echo "ACTOR=$LATTICE_ACTOR" >> "{env_output}"
         key, val = line.split("=", 1)
         env_dict[key] = val
 
-    assert env_dict["ROOT"] == str(lattice_dir)
+    # LATTICE_ROOT is the project root (what find_root accepts); LATTICE_DIR is .lattice/.
+    assert env_dict["ROOT"] == str(lattice_dir.parent)
+    assert env_dict["DIR"] == str(lattice_dir)
     assert env_dict["TASK_ID"] == sample_event["task_id"]
     assert env_dict["EVENT_TYPE"] == "status_changed"
     assert env_dict["EVENT_ID"] == sample_event["id"]
     assert env_dict["ACTOR"] == "human:test"
+
+
+def test_resource_hook_receives_env_vars(tmp_path: Path, lattice_dir: Path) -> None:
+    """Resource hook subprocess receives LATTICE_ROOT (project root) and LATTICE_DIR."""
+    env_output = tmp_path / "resource_env_output.txt"
+
+    hook_script = tmp_path / "resource_env_hook.sh"
+    hook_script.write_text(
+        f"""#!/bin/sh
+echo "ROOT=$LATTICE_ROOT" > "{env_output}"
+echo "DIR=$LATTICE_DIR" >> "{env_output}"
+echo "RESOURCE_ID=$LATTICE_RESOURCE_ID" >> "{env_output}"
+echo "RESOURCE_NAME=$LATTICE_RESOURCE_NAME" >> "{env_output}"
+echo "EVENT_TYPE=$LATTICE_EVENT_TYPE" >> "{env_output}"
+echo "EVENT_ID=$LATTICE_EVENT_ID" >> "{env_output}"
+echo "ACTOR=$LATTICE_ACTOR" >> "{env_output}"
+"""
+    )
+    hook_script.chmod(hook_script.stat().st_mode | stat.S_IEXEC)
+
+    event = {
+        "type": "resource_acquired",
+        "id": "ev_01AAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "actor": "agent:x",
+    }
+    config = {"hooks": {"post_event": str(hook_script)}}
+    execute_resource_hooks(config, lattice_dir, "res_01BBBBBBBBBBBBBBBBBBBBBBBBBB", "db", event)
+
+    env_dict = dict(line.split("=", 1) for line in env_output.read_text().strip().splitlines())
+    assert env_dict["ROOT"] == str(lattice_dir.parent)
+    assert env_dict["DIR"] == str(lattice_dir)
+    assert env_dict["RESOURCE_ID"] == "res_01BBBBBBBBBBBBBBBBBBBBBBBBBB"
+    assert env_dict["RESOURCE_NAME"] == "db"
+    assert env_dict["EVENT_TYPE"] == "resource_acquired"
+    assert env_dict["EVENT_ID"] == "ev_01AAAAAAAAAAAAAAAAAAAAAAAAAA"
+    assert env_dict["ACTOR"] == "agent:x"
 
 
 # ---------------------------------------------------------------------------
