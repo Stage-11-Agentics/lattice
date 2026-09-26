@@ -302,11 +302,22 @@ Shell hooks that fire after event writes. Configure in `.lattice/config.json`:
 {
   "hooks": {
     "transitions": {
-      "* -> review": "echo 'Task {task_id} ready for review'"
+      "* -> review": "echo \"Task $LATTICE_TASK_ID ready for review\""
     }
   }
 }
 ```
+
+Hooks run through the shell with the event JSON on stdin and these environment variables:
+
+| Variable | Value |
+|----------|-------|
+| `LATTICE_ROOT` | Project root, the directory that contains `.lattice/`. A hook that runs `lattice ...` finds the board that fired it through this. |
+| `LATTICE_DIR` | The `.lattice/` directory itself, for hooks that read board files directly. |
+| `LATTICE_EVENT_TYPE`, `LATTICE_EVENT_ID`, `LATTICE_ACTOR` | The event that fired the hook. |
+| `LATTICE_TASK_ID` | Task hooks only. |
+| `LATTICE_FROM_STATUS`, `LATTICE_TO_STATUS` | Transition hooks only. |
+| `LATTICE_RESOURCE_ID`, `LATTICE_RESOURCE_NAME` | Resource hooks only. |
 
 ### Custom events
 

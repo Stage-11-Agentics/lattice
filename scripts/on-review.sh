@@ -4,21 +4,22 @@
 #
 # Environment variables (set by Lattice hook system):
 #   LATTICE_TASK_ID  — the task being reviewed
-#   LATTICE_ROOT     — path to .lattice/ directory
+#   LATTICE_ROOT     — project root (the directory containing .lattice/)
+#   LATTICE_DIR      — path to the .lattice/ directory
 #
 # Exits immediately (<1s) — the review agent runs independently.
 
 set -euo pipefail
 
 TASK_ID="${LATTICE_TASK_ID:?LATTICE_TASK_ID not set}"
-ROOT="${LATTICE_ROOT:?LATTICE_ROOT not set}"
-PROJECT_DIR="$(dirname "$ROOT")"
-LOG_DIR="$ROOT/logs"
+PROJECT_DIR="${LATTICE_ROOT:?LATTICE_ROOT not set}"
+LATTICE_DIR="${LATTICE_DIR:?LATTICE_DIR not set}"
+LOG_DIR="$LATTICE_DIR/logs"
 
 # Ensure log directory exists
 mkdir -p "$LOG_DIR"
 
-nohup env -u CLAUDECODE claude -p "Read $PROJECT_DIR/prompts/review-hook-prompt.md and follow the instructions. LATTICE_TASK_ID=$TASK_ID LATTICE_ROOT=$ROOT" \
+nohup env -u CLAUDECODE claude -p "Read $PROJECT_DIR/prompts/review-hook-prompt.md and follow the instructions. LATTICE_TASK_ID=$TASK_ID LATTICE_ROOT=$PROJECT_DIR" \
   --dangerously-skip-permissions \
   > "$LOG_DIR/review-$TASK_ID.log" 2>&1 &
 
