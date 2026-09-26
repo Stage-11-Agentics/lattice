@@ -94,6 +94,8 @@ The contract lives in `docs/hosted/` rather than at the repo root, because the r
 
 **Final executability check (Codex, 2026-09-26):** REVISE 7/10 on the fully revised contract, 2 blocking (reloading an unloaded project; config authorization versus ordinary config-writing operations) and 6 important; all applied by the architect.
 
+**Philosophy (operator, 2026-09-26):** `Philosophy.md` gets a short amendment in its own voice explaining why v2 adds an opt-in server despite the "patience" section; owned by H-17.
+
 ## Touchpoints
 
 | Touchpoint | State |
