@@ -171,7 +171,7 @@ Criteria: AC-1 (`next --claim` race), AC-2, AC-4 (SIGKILL loop), AC-40, AC-41, A
 Criteria: AC-26. Deps: H-9, H-22 (the paused-transaction proof).
 
 ### H-17 Documentation, skill, and adoption · M
-`SPEC.md` §13 in full: the guide, `api.md`, the service templates with log rotation, the README and its "Upgrading to v2" note, the hosted section of the skill and the CLAUDE.md template, and `docs/architecture/`. `Decisions.md` entries for this build (only this ticket writes `Decisions.md`). The docs-agent test (AC-44), whose agent also follows the guide's move-back steps once on its scratch board before the trial (`EVALUATION.md` §5).
+`SPEC.md` §13 in full: the `Philosophy.md` amendment, the guide, `api.md`, the service templates with log rotation, the README and its "Upgrading to v2" note, the hosted section of the skill and the CLAUDE.md template, and `docs/architecture/`. `Decisions.md` entries for this build (only this ticket writes `Decisions.md`). The docs-agent test (AC-44), whose agent also follows the guide's move-back steps once on its scratch board before the trial (`EVALUATION.md` §5).
 Criteria: AC-32, AC-43, AC-44. Deps: H-11, H-13a, H-14, and H-13b and H-16 unless the operator has let them slip (the docs then leave those features out). Shared: `README.md`, `skills/lattice/SKILL.md` and `templates/claude_md_block.py` (after H-4), `Decisions.md`, `docs/architecture/` (sole owner).
 
 ### H-19 Parallel default suite · M
