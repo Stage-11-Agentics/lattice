@@ -52,7 +52,7 @@ These stories were minted at the architect stage, from the operator's rulings an
 *As a server admin, I know which credential wrote every event, and no client can write as someone it is not.*
 
 - **AC-11** Every request except the health check and the dashboard login (which authenticates by the token it submits) requires a credential (a bearer token, or a dashboard session derived from one). A missing or invalid credential returns 401. A valid credential without access to the requested project returns 403. Neither appends anything.
-- **AC-12** Each token is issued to one person for one machine or seat, and lists the actors it may act as (by default, only one). The actor on every event written through the server is one of those. An actor outside the list is rejected with 403. When a token permits exactly one actor, a client may omit the actor entirely.
+- **AC-12** Each token is issued to one person for one machine or seat, and lists the actors it may act as (by default the person and that person's agents; a seat token lists exactly one). The actor on every event written through the server is one of those. An actor outside the list is rejected with 403. When a token has exactly one actor without a wildcard (a person token's user, or a seat's single actor), a client may omit the actor entirely.
 - **AC-13** Revoking a token takes effect on the very next request made with it, including dashboard sessions derived from it.
 - **AC-14** The server stores token hashes, never plaintext tokens, and never writes a token to its logs. A token is shown once, at creation.
 
@@ -88,7 +88,7 @@ These stories were minted at the architect stage, from the operator's rulings an
 
 - **AC-25** A hosted project's data directory is a standard `.lattice/` directory. Its files can be read with `cat` and backed up with `rsync` or `tar` while the server is stopped (or with a filesystem snapshot), with no export step.
 - **AC-26** The server records each project's data directory in a local git history on a short debounce, and can push that history to a configured remote. A failing push never blocks a write.
-- **AC-27** No hosted operation deletes board data. Removing a task from view is a tombstone event. The only removals are relocations (archive, session end) and the rollback of an operation that never committed, and `lattice doctor` reports any task file missing without a tombstone.
+- **AC-27** No hosted operation deletes board data. Removing a task from view is a tombstone event, and one command reverses it. The only removals are relocations (archive, session end) and the rollback of an operation that never committed, and `lattice doctor` reports any task file missing without a tombstone.
 - **AC-28** `lattice doctor` reports every short ID that does not resolve and every short ID issued twice, not only the first it finds, and checks the ID counter against the event history.
 
 ## US-8: Local mode is untouched

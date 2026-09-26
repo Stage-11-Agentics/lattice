@@ -86,7 +86,7 @@ Criteria: AC-29, G-6. Deps: H-1. Shared: `cli/task_cmds.py` (after H-1), `cli/fl
 Criteria: AC-29, G-6. Deps: H-1. Shared: `cli/link_cmds.py`, `cli/criterion_cmds.py`, `cli/file_cmds.py`; `comment-*` and `react` live in `cli/task_cmds.py`, so this ticket admits only when no other `task_cmds.py` ticket is active.
 
 ### H-4 Operations: artifacts, completion, plans and notes, reviews · H
-`task.attach` (payload in params, atomic payload write, storage name from `artifact_id` and the filename's suffix only, `SPEC.md` §3.8), the `plan` group with its legacy-read dispatcher and the new `notes` group (`SPEC.md` §3.9; legacy `lattice plan <task>` plain and `--json` output tested unchanged), `task.complete` (validate before any write; remove the refused-completion unlink), attestations (`reachable_review_commits`, validated against the task's current state), new `lattice plan write` / `lattice notes write` / `lattice context write` (new module `cli/prose_cmds.py`; `context write` is `board.context_write`), `plan_written` / `notes_written` event types, plan scaffold and reset inside operations, `code-review` / `plan-review` direct writes routed through operations. Update `skills/lattice/SKILL.md` and `templates/claude_md_block.py` to teach `lattice plan write` and `lattice notes write` instead of writing `.lattice/plans/<task_id>.md` directly (today at `templates/claude_md_block.py:267-272`), so the agents of CP2 and every later checkpoint get the method that works on a cache.
+`task.attach` (payload in params, atomic payload write, storage name from `artifact_id` and the filename's suffix only, `SPEC.md` §3.8), the `plan` group with its legacy-read dispatcher and the new `notes` group (`SPEC.md` §3.9; legacy `lattice plan <task>` plain and `--json` output tested unchanged), `task.complete` (validate before any write; remove the refused-completion unlink), attestations (`reachable_review_commits`, validated against the task's current state), new `lattice plan write` / `lattice notes write` / `lattice context write` / `lattice board write` (new module `cli/prose_cmds.py`; `board.context_write` and `board.file_write` with its path rules, SPEC §3.9 and §6.1), `plan_written` / `notes_written` event types, plan scaffold and reset inside operations, `code-review` / `plan-review` direct writes routed through operations. Update `skills/lattice/SKILL.md` and `templates/claude_md_block.py` to teach `lattice plan write` and `lattice notes write` instead of writing `.lattice/plans/<task_id>.md` directly (today at `templates/claude_md_block.py:267-272`), so the agents of CP2 and every later checkpoint get the method that works on a cache.
 Criteria: AC-29, AC-27 (no refused-complete unlink), AC-5 (attestation rejection tests), G-6. Deps: H-2 (shares `cli/task_cmds.py`), H-8. Shared: `cli/task_cmds.py`, `cli/artifact_cmds.py`, `cli/review_cmds.py`, `cli/query_cmds.py` (the `plan` command), `core/events.py`, `core/tasks.py`, `skills/lattice/SKILL.md`, `templates/claude_md_block.py`.
 
 ### H-5 Operations: resources, sessions, board config · M
@@ -98,7 +98,7 @@ Criteria: AC-29 (including `session start` and `session end` with no actor argum
 Criteria: AC-2 (local part, including the appended-assignment regression test), AC-28; the perf check of `EVALUATION.md` §1 passes for `create`. Deps: H-1 (shares `storage/operations.py`). Shared: `storage/operations.py`, `cli/integrity_cmds.py`.
 
 ### H-7 Tombstones and the no-delete rule (absorbs LAT-278) · M
-`lattice erase`, `task_tombstoned`, `core` visibility helper applied to `list`, `next`, stats, and `show`; `doctor` `missing_task_file`; the recorder-based no-delete test.
+`lattice erase` and `lattice unerase` (`task_tombstoned`, `task_untombstoned`), the `core` visibility helper applied to `list`, `next`, stats, and `show`; `doctor` `missing_task_file`; the recorder-based no-delete test.
 Criteria: AC-27 (tombstones, visibility, and the doctor check, locally); the hosted no-delete proof (G-2) is H-12's. Deps: H-1, H-8. Shared: `core/tasks.py`, `core/events.py`, `cli/query_cmds.py` (with H-2), `cli/integrity_cmds.py` (with H-4, H-6). The dashboard applies the visibility helper in H-13a; until then the local dashboard still shows erased tasks.
 
 ### H-8 Board ownership and the write recorder · M
@@ -159,7 +159,7 @@ MCP tools resolve boards with `resolve_board`, write through operations, read af
 Criteria: MCP status changes enforce the plan gate; MCP tools work on a bound checkout (`tests/test_mcp/test_ops_convergence.py`); AC-36 (one MCP process, two checkouts). Deps: H-2, H-3, H-4, H-5, H-11. Shared: `mcp/tools.py` (sole owner in this build).
 
 ### H-14 Moving a board · M · Risk-reviewed (import safety)
-`lattice server project import` (`SPEC.md` §11): refusal of an existing slug, the doctor gate, the symlink and special-file refusal, the unmanaged and non-canonical lists, the regular-file copy (`config.json` and `templates/` included), short-ID repair, new epoch, audit repo, and the printed move steps. Before CP3, a dry run: import copies of the operator's real boards (the c11 board, this repository's board, and the company board; the orchestrator supplies their paths out of band) into a throwaway server root, and record the doctor findings and the counts of both lists as a comment on this ticket's Lattice task, never in the repository or the PR, because the boards are private. Nothing is committed to those repositories, and the copies are deleted afterward.
+`lattice server project import` (`SPEC.md` §11): refusal of an existing slug, the doctor gate, the symlink and special-file refusal, the unmanaged and non-canonical lists, the regular-file copy (`config.json` and `templates/` included), short-ID repair, new epoch, audit repo, and the printed move steps. Before CP3, a dry run: import copies of three of the operator's real boards (including the busiest and the oldest; the orchestrator supplies their paths out of band) into a throwaway server root, and record the doctor findings and the counts of both lists as a comment on this ticket's Lattice task, never in the repository or the PR, because the boards are private. Nothing is committed to those repositories, and the copies are deleted afterward.
 Criteria: AC-17 (import), AC-34, AC-35. Deps: H-6, H-11.
 
 ### H-15 Torture suite and scenario rehearsals · M
@@ -237,10 +237,11 @@ The critical path is H-0 → H-1 → H-8 → H-9 → H-22a → H-10a → H-10b �
 - **Agent track (the fleet):** every H-n above except the operator-assisted parts of H-18 and H-23.
 - **Operator track, in order:**
   1. Before H-23: the proxy route and credentials for one remote environment.
-  2. Before H-14's dry run: the locations of the real boards to copy (c11, this repository's, the company board), given to the orchestrator out of band.
-  3. Before CP3: the production host ready per the private addendum; tokens decided per person-machine and per seat.
-  4. Before CP4: five identities and their machines.
-  5. At the release gate: the two or three trial projects, the trial call, and named approvals for `v2` → `main`, then `prod`, then PyPI.
+  2. Before H-14's dry run: the locations of three real boards to copy, given to the orchestrator out of band.
+  3. Before CP3: the orchestration skills, which live outside this repository, switch to `lattice board write` for their run-state and review packs on hosted boards (SPEC §3.9).
+  4. Before CP3: the production host ready per the private addendum; tokens decided per person-machine and per seat.
+  5. Before CP4: five identities and their machines.
+  6. At the release gate: the two or three trial projects, the trial call, and named approvals for `v2` → `main`, then `prod`, then PyPI.
 
 ## 7. Orchestration notes
 

@@ -169,6 +169,8 @@ Every board-writing command becomes a thin Click wrapper: parse arguments, build
 | status auto-fire record | `task.record_auto_review` (the `auto_review_spawned` event) |
 | **new** `plan write`, `notes write` | `task.plan_write`, `task.notes_write` (§3.9) |
 | **new** `context write` | `board.context_write` (§3.9) |
+| **new** `board write` | `board.file_write` (§3.9) |
+| **new** `unerase` | `task.unerase` (§7) |
 | **new** `erase` | `task.erase` (§7) |
 | `set-project-code`, `set-subproject-code` | `board.set_project_code`, `board.set_subproject_code` |
 | dashboard settings POST | `board.set_dashboard_config` |
@@ -186,7 +188,7 @@ These effects run on the client after a successful write, never on the server:
 
 1. **Hooks.** Locally: exactly as today (task and resource hooks, in-process, after the lock is released). Hosted: the client runs the board's hooks (from the cache's `config.json`) for `OpResult.events`, with the same executor and timeout, **only if its remote entry sets `"run_board_hooks": true`** (default false), because a hosted board's hook commands are chosen by whoever administers the server. The hook environment never contains `LATTICE_REMOTE_*` variables, the token, or any proxy header variable. Resource operations return `resource_id` and `resource_name` in `OpResult` so the client can run resource hooks.
 2. **c11 bridge side effects** of `status`, `needs-human`/flag, and `claim`, keyed on the caller's environment as today.
-3. **Auto-review spawning** on transitions to `review` or `planned`, in the caller's worktree, followed by a `task.record_auto_review` operation. Whether a transition fires a review, and in which mode, is decided exactly as locally (`should_auto_fire`, `core/auto_review.py`) from the project's `config.json` in the caller's cache, which catch-up has just refreshed. Each hosted project therefore keeps its own review workflow: plan reviews only, code reviews only, both, or none (AC-49). The server admin sets it per project (§8.2). `agent:lattice-auto-review` is permitted for every token as a built-in allowance (§8.3); the authenticated origin still records the token. The review agent (the model process `core/agent_spawn.py` starts) runs without any `LATTICE_REMOTE_*` variable, the remote's token variable, or any proxy header variable; the `lattice code-review` or `plan-review` subprocess that starts it keeps them, because it writes through the binding.
+3. **Auto-review spawning** on transitions to `review` or `planned`, in the caller's worktree, followed by a `task.record_auto_review` operation. Whether a transition fires a review, and in which mode, is decided exactly as locally (`should_auto_fire`, `core/auto_review.py`) from the project's `config.json` in the caller's cache, which catch-up has just refreshed. Each hosted project therefore keeps its own review workflow: plan reviews only, code reviews only, both, or none (AC-49). The server admin sets it per project (§8.2). A machine can decline to run a hosted board's auto-reviews by setting `"run_auto_reviews": false` on its remote (§9.1; default `true`); the status output then says the review was skipped for that reason, and `lattice code-review <task>` still runs one by hand. The server itself never runs reviews in v2; server-run reviews are a possible later expansion. `agent:lattice-auto-review` is permitted for every token as a built-in allowance (§8.3); the authenticated origin still records the token. The review agent (the model process `core/agent_spawn.py` starts) runs without any `LATTICE_REMOTE_*` variable, the remote's token variable, or any proxy header variable; the `lattice code-review` or `plan-review` subprocess that starts it keeps them, because it writes through the binding.
 4. **Output rendering.** A replayed result (§8.6) renders and triggers effects exactly like a fresh success, because the client never saw the first response. A committed write whose post-write sync fails is also a success: the client prints the one-line staleness notice (§9.5), renders the result, and runs the effects.
 
 Machine-local runtime state stays on the client and is never synced (§6.1).
@@ -228,6 +230,7 @@ The server executes whatever operations its installed Lattice registers. It has 
 - The operation writes the content with `atomic_write` to the task's plan (or notes) file at its current placement, then appends a `plan_written` (or `notes_written`) event with `data: {sha256, bytes}`. Both event types are no-ops for snapshot materialization and are registered in `BUILTIN_EVENT_TYPES`.
 - Local users may still edit plan files directly. On a hosted cache, board files are mode 0400 and durable directories 0500 (§9.4), so a direct write, a rename-based save, or a new file under `plans/` or `notes/` all fail. An edit that gets through anyway (after a `chmod`, or as root) is moved aside at the next catch-up, never silently discarded (§9.4). The server-side plan gate reads the server's copy, so `PLAN_REQUIRED` in hosted mode appends: "write the plan with `lattice plan write <task> --file <path>`."
 - The lattice skill and the CLAUDE.md template teach `lattice plan write` and `lattice notes write` as the methods that work in every mode. They change in the same ticket that adds the commands, so every agent run after it gets them. Installed copies do not update themselves, so `remote attach` prints the refresh commands (§9.2).
+- `lattice board write <path> (--file PATH | --stdin) [--expect-sha256 HEX]` → `board.file_write` writes one file with `atomic_write` (its commit point; a transaction on a server). `<path>` is relative to `.lattice/` and must be either under `orchestration/` (any depth) or a loose file directly under `plans/` or `notes/` whose name is not `<task_id>.md` for a task of the board; anything else is `VALIDATION_ERROR`. It creates missing directories under `orchestration/`. It works in both modes, so an orchestrator keeps its run-state and review packs on the board and every machine reads them from its cache. v2 has no remove: overwrite a file instead. The orchestration skills (outside this repository) switch to it for hosted boards (BUILDPLAN §6).
 - `lattice context write (--file PATH | --stdin)` → `board.context_write` replaces `context.md` with `atomic_write` (its commit point; on a server it runs inside a transaction like any operation). Any token may run it. Board configuration (`config.json`: workflow, review modes, policies, hooks) stays admin-only in v2, through `lattice server project config` (§8.2).
 
 ### 3.10 Atomicity
@@ -285,18 +288,19 @@ LAT-280 and LAT-269, generalized.
 
 ### 6.1 Path classes
 
-Every path under a `.lattice/` directory belongs to exactly one class. The class decides whether it syncs, whether writes to it are checked and recorded, and whether it may be deleted. A path that matches none of the first five rows is unmanaged; real boards hold such paths (orchestrator state such as `orchestration/`, `reviews/`, `exports/`, `logs/`, `runner.log`).
+Every path under a `.lattice/` directory belongs to exactly one class. The class decides whether it syncs, whether writes to it are checked and recorded, and whether it may be deleted. A path that matches none of the first six rows is unmanaged; real boards hold such paths (`reviews/`, `exports/`, `logs/`, `runner.log`).
 
 | Class | Paths | Synced | Marker-checked and recorded | Deletion on a hosted board |
 |---|---|---|---|---|
 | Durable board data | `tasks/`, `events/`, `archive/`, `plans/`, `notes/`, `artifacts/`, `resources/`, `sessions/`, `templates/` (review prompt overrides, `src/lattice/templates/__init__.py:8-21`), `config.json`, `ids.json`, `context.md`, `.gitignore` | yes | yes | only as §7 permits |
+| Workspace | `orchestration/` (any depth): an orchestrator's run-state and working files | yes | yes, written only through `lattice board write` (§3.9) | only as §7 permits |
 | Runtime | `locks/`, `review_state/`, `tmp-prompts/`, `.daemon/` | no | no | allowed |
 | Temporary | `atomic_write` temp files (`.tmp.*` beside their target, `storage/fs.py:45`) | no | no | allowed |
 | Server control | `hosted/` (owner lease, journal, receipts, undo logs, control requests, maintenance record) | no | server and offline maintenance only | never by a client |
 | Cache control | `cache/` (`state.json`, the cache marker; `applying`; `follower.json`; `unreachable_until`; `acked.jsonl`; `server_info.json`; `rescued/`) | no | syncer, follower, and hosted client only | allowed |
 | Unmanaged | every other path | no | no | allowed |
 
-Unmanaged paths are never synced, never imported (§11), never committed to the audit history (§8.10), and stay writable in a cache. Every file under a durable directory is durable, including files that are not `<task_id>.md` under `plans/` and `notes/`.
+Unmanaged paths are never synced, never imported (§11), never committed to the audit history (§8.10), and stay writable in a cache. Every file under a durable directory is durable, including files that are not `<task_id>.md` under `plans/` and `notes/` (loose files such as review packs); on a cache they, like workspace files, are written through `lattice board write`. Workspace files are durable in every other respect: synced, imported, audited, and read-only on a cache.
 
 ### 6.2 Markers
 
@@ -315,7 +319,7 @@ Two markers make "one writer" structural (G-1, AC-3):
 ## 7. Tombstones and the no-delete rule
 
 - `lattice erase <task> --reason TEXT` → `task.erase` → appends `task_tombstoned` `{reason}`. Snapshot gains `tombstoned: true`, `tombstoned_at`, `tombstone_reason` (present only when tombstoned). Nothing is removed from disk.
-- Tombstoned tasks are excluded from `list`, `next`, stats, and dashboard boards by default. `list --include-tombstoned` shows them. `show` works and prints `ERASED: <reason>`. Any further write returns `TASK_ERASED`. There is no un-erase in v2.
+- Tombstoned tasks are excluded from `list`, `next`, stats, and dashboard boards by default. `list --include-tombstoned` shows them. `show` works and prints `ERASED: <reason>`. Any further write returns `TASK_ERASED`, except `lattice unerase <task> --reason TEXT` → `task.unerase`, which appends `task_untombstoned` `{reason}`; the tombstone fields leave the snapshot and the task returns to every view in the status it had. Both events stay in history, so any erase can be undone with one command.
 - **No-delete rule on hosted boards (G-2, AC-27):** the only removals of durable board data permitted under a hosted board are (a) archive and unarchive relocation, which copies before it unlinks the source; (b) session-end relocation into `sessions/archive/`, also copy-first; and (c) rollback of an uncommitted operation from its undo log (§8.6), which restores pre-images and so may truncate or remove only what that same operation wrote. Rollbacks are logged. Runtime and temporary paths (§6.1) are not board data. `doctor --fix` is `LOCAL_ONLY`.
 - **Doctor:** reports any task referenced by `_lifecycle.jsonl` or `ids.json` whose log file is absent (`missing_task_file`). A tombstoned task keeps its files, so a missing file is always a finding.
 - **Enforcement:** in server tests, the write recorder (§8.5) fails the test on any unlink under a board that is not one of the permitted cases.
@@ -398,7 +402,7 @@ All under `lattice server`; all accept `--root`; all have `--json`.
 | `project unlock <slug>` | Remove a stale owner marker (§6). |
 | `project rotate-epoch <slug>` | Start a new journal epoch (below). |
 | `project recover <slug> --rollback \| --keep` | Resolve undo logs left without a journal (§8.7 step 3): roll them back, or keep the files as they are and delete the logs. Requires the owner flock to be free. |
-| `token create --user human:NAME --machine LABEL [--actor PATTERN]... [--project SLUG]... [--all-projects]` | Mint a token; print it once. Default `--actor` is the `--user` value. If no `--actor` pattern matches `--user`, print a warning: dashboard writes will not act as the user (§8.3). |
+| `token create --user human:NAME --machine LABEL [--actor PATTERN]... [--project SLUG]... [--all-projects]` | Mint a token; print it once, with its actor patterns. With no `--actor`, the patterns are `[<user>, "agent:*"]` (a person and that person's agents); any `--actor` replaces that default entirely, so a seat token is minted with exactly one `--actor`. If no `--actor` pattern matches `--user`, print a warning: dashboard writes will not act as the user (§8.3). |
 | `token grant <token_id> (--project SLUG \| --actor PATTERN)...`, `token ungrant <token_id> (--project SLUG \| --actor PATTERN)...` | Add or remove projects or actor patterns on an existing token, so adding a project needs no new secret. Effective on the next request. |
 | `token list` | Id, user, machine, actors, projects, created, revoked. Never the secret. |
 | `token revoke <token_id>` | Set `revoked_at`. Effective on the next request (AC-13). |
@@ -418,7 +422,7 @@ Rotation is itself recoverable. In order, each step fsynced: (1) write `hosted/r
 - Token string: `lat_<token_id>_<secret>`, where `token_id` is `tok_` + ULID and `secret` is 32 random bytes, base64url. `tokens.json` stores `{id, sha256_hex(secret), user, machine, actors: [patterns], projects: [slugs] | ["*"], created_at, revoked_at}`. Comparison uses `hmac.compare_digest`. Secrets never appear in logs or error messages (AC-14, G-7).
 - A token is issued to one person (`user`, a `human:` actor) for one machine or seat (`machine`, a free label). `user` and `machine` are therefore authenticated and stamped into `origin.authenticated` (AC-37).
 - `actors` are `fnmatch` patterns over actor base IDs (`agent:*`, `agent:owner-3`, `human:alice`). A request's actor must match one pattern, else `ACTOR_NOT_PERMITTED` (AC-12), whose message lists the token's patterns and the admin command that widens them: "actor `agent:x` is not permitted for token `tok_…`; it may act as: `human:alice`. An admin can widen it with `lattice server token grant tok_… --actor '<pattern>'`." A session actor is checked by its permission identity `agent:<base_name>` (§3.7), before the session is touched.
-- Default actor: when a request carries no actor and the token has exactly one pattern with no wildcard, that is the actor. Otherwise `MISSING_ACTOR`.
+- Default actor: when a request carries no actor and the token has exactly one pattern with no wildcard, that is the actor (the user of a default person token; the single actor of a seat token). Otherwise `MISSING_ACTOR`.
 - **Browser actor.** A write from a dashboard acts as the token's `user` when one of the token's patterns matches it, else as the token's default actor, else fails with `MISSING_ACTOR`. So a person token listing `human:alice` and `agent:*` writes from the browser as `human:alice`. The hosted dashboard applies this rule on the server (§10). The local dashboard on a bound checkout applies it on the client, from the identity `/v1/info` returns, and sends that actor explicitly.
 - Built-in allowance: every token may also act as `agent:lattice-auto-review` (`core/auto_review.py:26`), so auto-review works under strict tokens (§3.4). Review subprocesses already write as the caller's own actor.
 - Auth header: `Authorization: Bearer <token>`. Missing or invalid: 401. Valid but project not listed: 403 (AC-11).
@@ -587,6 +591,7 @@ Unknown-event-type warnings go through a module-level reporter in `core/tasks.py
       "token": {"env": "LATTICE_TOKEN_TEAM"},
       "headers": {"CF-Access-Client-Id": {"env": "PROXY_ID"}, "CF-Access-Client-Secret": {"env": "PROXY_SECRET"}},
       "run_board_hooks": false,
+      "run_auto_reviews": true,
       "allow_plaintext": false,
       "retry_seconds": 30
     }
@@ -594,7 +599,7 @@ Unknown-event-type warnings go through a module-level reporter in `core/tasks.py
 }
 ```
 
-- `token` is a literal string or `{"env": "VAR"}`. Header values are always `{"env": "VAR"}`, never literals (AC-20). `run_board_hooks` (default `false`) opts this machine into running the hosted board's hooks (§3.4). `allow_plaintext` (default `false`) permits an `http://` URL whose host is not loopback (§9.1 transport). `retry_seconds` (default 30) bounds the retries of one operation (§8.6).
+- `token` is a literal string or `{"env": "VAR"}`. Header values are always `{"env": "VAR"}`, never literals (AC-20). `run_board_hooks` (default `false`) opts this machine into running the hosted board's hooks (§3.4). `run_auto_reviews` (default `true`) lets this machine decline the hosted board's auto-reviews (§3.4). `allow_plaintext` (default `false`) permits an `http://` URL whose host is not loopback (§9.1 transport). `retry_seconds` (default 30) bounds the retries of one operation (§8.6).
 - Environment overrides, for environments with no config file (thin clients): `LATTICE_REMOTE_<ALIAS>_URL`, `LATTICE_REMOTE_<ALIAS>_TOKEN`, `LATTICE_REMOTE_<ALIAS>_HEADERS` (a JSON object mapping header name to the name of the environment variable holding its value), `LATTICE_REMOTE_<ALIAS>_ALLOW_PLAINTEXT` (`1` to allow). `<ALIAS>` is uppercased with non-alphanumerics replaced by `_`. Environment wins over the file.
 - `lattice remote add <alias> <url> [--token-env VAR | --token-stdin] [--header NAME=ENVVAR]... [--allow-plaintext]` writes the file. `lattice remote list` shows aliases and URLs, never tokens.
 - **First-contact errors.** A binding whose alias has no remote, in the file or the environment, fails with `REMOTE_NOT_CONFIGURED`, which prints the line to run: `lattice remote add <alias> <url> --token-env <VAR>`, and "ask your server admin for the URL and a token". A token or header given as `{"env": "VAR"}` whose variable is unset or empty fails with `TOKEN_ENV_UNSET`, naming the variable.
