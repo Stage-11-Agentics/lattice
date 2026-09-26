@@ -12,7 +12,7 @@ Settled with the operator in the intake interview and the contract read (`sequen
 |---|---|---|
 | Write seam | Named operations run by whichever process owns the board (`SPEC.md` §3) | The rules are Python callbacks that must run where the writer is; three disagreeing copies of the rules collapse into one |
 | Server stack | Starlette + uvicorn + sse-starlette in an optional `server` extra; client is standard library | Same libraries the `mcp` extra already resolves; hardened HTTP and streaming where it matters; base install unchanged |
-| Identity | Token issued to one person for one machine or seat, listing permitted actors (default one); origin on every event, authenticated fields stamped by the server | Unforgeable attribution without a token per agent session; machine, worktree, and user first-class |
+| Identity | Token issued to one person for one machine or seat, listing permitted actors (by default the person and that person's agents; a seat token lists exactly one); origin on every event, authenticated fields stamped by the server | Unforgeable attribution without a token per agent session; machine, worktree, and user first-class |
 | Plans and notes | Written through `lattice plan write` / `notes write` in both modes; hosted cache files read-only | A read-only mirror cannot carry direct file edits to the server |
 | Cache | The checkout's gitignored, owner-only `.lattice/`, shared by every worktree through the existing worktree jump; a committed binding names an alias and a project and bootstraps a clone, and the cache's own marker routes it after that | `cat .lattice/...` still works; no hostname in any repo; branch switches cannot drop routing |
 | Freshness | Catch-up before every read unless a live follower is running; optional follower; automatic polling fallback | Correct without a daemon; live when wanted; works through any proxy |
@@ -132,13 +132,13 @@ Criteria: AC-7 (follower part), AC-20 (redirects on the stream), AC-23 (the foll
 
 A **mini rehearsal** in the default suite (`tests/test_remote/test_mini_rehearsal.py`), so CP1 is not the first two-writer race through the real client: one in-process server, a bound repo with two linked worktrees, two scripted writers alternating 50 writes, asserting that every write is visible from the other worktree on its next command and that doctor is clean on the server and on the cache. H-15 grows it into `test_w`.
 
-Criteria: AC-6, AC-7 (next-command part and the killed-follower read), AC-8, AC-10, AC-18, AC-20, AC-38 (control characters in plain output), AC-40 (mini rehearsal), AC-48 (client side), AC-49, G-8, G-10 (client side); the environment-only thin-client mechanics with `create`, `status`, and `comment` (the full AC-19 / AC-21 loop is H-12's). Retries reuse the `op_id`; the kill-and-restart proof is H-22's. Deps: H-2 (`task.record_auto_review`), H-5, H-10b. Shared: `storage/fs.py` (after H-8 and H-22a), `cli/helpers.py` (after H-5).
+Criteria: AC-6, AC-7 (next-command part and the killed-follower read), AC-8, AC-10, AC-18, AC-20, AC-38 (control characters in plain output), AC-40 (mini rehearsal), AC-48 (client side), AC-49, G-8, G-10 (client side); the environment-only thin-client mechanics with `create`, `status`, and `comment` (the full AC-19 / AC-21 loop is H-12's). Retries reuse the `op_id`; the kill-and-restart proof is H-22's. Deps: H-2 (`task.record_auto_review`), H-5, H-10b, H-10c (the killed-follower case). Shared: `storage/fs.py` (after H-8 and H-22a), `cli/helpers.py` (after H-5).
 
 **CP1 (walking skeleton) triggers here:** H-0, H-1, H-8, H-9, H-22a, H-10a, H-10b, H-10c, H-11 merged, with their dependencies.
 
 ### H-12 Hosted parity gate · M
 Run the golden corpus through an in-process server via a bound checkout; assert outputs, exit codes, and boards match the goldens; assert cache tree equals server tree after every scenario; recorder no-delete assertions. Add the G-1 boundary test (`tests/test_ops/test_write_boundary.py`, an AST scan of `src/lattice`, `SPEC.md` §14), whose allowlist names each module that writes only runtime paths or files outside any board, with a one-line reason. Fix any divergence in the owning operation (repair in place). Make the review commands truthful on a hosted checkout: `review-status` read from the board, and the `REVIEW_IN_FLIGHT` refusal with its `--force` override (`SPEC.md` §3.4).
-Criteria: AC-5 (including hosted `acquire --wait` and cross-machine review status), AC-9, AC-19, AC-21, G-1 (end-to-end), G-2 (hosted), G-5 (server subprocess run). Deps: H-2, H-3, H-4, H-5, H-11. Shared: `cli/review_cmds.py` (after H-4).
+Criteria: AC-5 (including hosted `acquire --wait` and cross-machine review status), AC-9, AC-19, AC-21, G-1 (end-to-end), G-2 (hosted), G-5 (server subprocess run), the auto-review handoff tests (SPEC §3.4), and the hosted `context write` round trip. Deps: H-2, H-3, H-4, H-5, H-7 (erase in the corpus), H-11. Shared: `cli/review_cmds.py` (after H-4).
 
 **CP2 triggers here:** H-2 to H-5 and H-12 merged.
 
@@ -194,7 +194,7 @@ H-18 (deploy to the first production host and stage the scenarios) and H-23 (spi
 
 ```
 H-0 ──► H-1 ──┬─► H-8 ──► H-9* ──► H-22a* ──► H-10a ──► H-10b ──┬─► H-10c ──► H-23
-              │     │                                           └─► H-11* ──┬─► H-12 (needs H-2..H-5)
+              │     │                                           └─► H-11* ──┬─► H-12 (needs H-2..H-5, H-7)
               │     ├─► H-4 (also needs H-2)                                ├─► H-13a (needs H-2, H-3, H-5, H-7, H-10c) ──► H-13b
               │     └─► H-7                                                 ├─► H-21 (needs H-2..H-5)
               ├─► H-2                                                       ├─► H-22 (needs H-4, H-5, H-10c) ──► H-16
@@ -204,7 +204,7 @@ H-0 ──► H-1 ──┬─► H-8 ──► H-9* ──► H-22a* ──► 
 H-0 ──► H-19                                                                     H-18 (needs all core)
                                                                                  H-20 (needs H-13a)
 
-* H-9 also needs H-5 and H-6; H-22a also needs H-2; H-11 also needs H-2 and H-5.
+* H-9 also needs H-5 and H-6; H-22a also needs H-2; H-11 also needs H-2, H-5, and H-10c.
 ```
 
 The critical path is H-0 → H-1 → H-8 → H-9 → H-22a → H-10a → H-10b → H-11 → CP1, with H-10c beside H-11. The transaction protocol (H-22a) is proven before anything is built on it. The operation conversions (H-2 to H-6) run beside the chain, so CP2 follows soon after CP1.
@@ -248,4 +248,4 @@ The critical path is H-0 → H-1 → H-8 → H-9 → H-22a → H-10a → H-10b �
 - Branches cut from `v2`; PRs target `v2`. The Merge Captain merges `main` into `v2` whenever `main` moves, before the next landing.
 - Project gate: `EVALUATION.md` §1. Torture also runs on tickets touching `ops/`, `storage/`, `server/`, or `remote/`. The `perf` check runs on the operator's laptop at H-6 and before CP3, CP4, and the release gate.
 - The orchestrator's own Lattice commands run on the operator's current install, not on `v2`. Builders validate from their worktrees with the worktree's own virtualenv (`uv pip install -e ".[dev,server]"`, then `.venv/bin/lattice`), never the global command.
-- No ticket publishes a package, merges to `main`, or deploys outside H-18.
+- No ticket publishes a package or merges to `main`. Only H-18 deploys, apart from H-23's throwaway server behind the production proxy, which it removes when the spike ends.

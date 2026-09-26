@@ -92,6 +92,8 @@ The contract lives in `docs/hosted/` rather than at the repo root, because the r
 
 **Collated review, section A (operator, 2026-09-25):** A3 full origin everywhere (the identity ruling stands); A4 no v1 guard release, trial clients pinned to v2; A5 accept the rule convergence for the local dashboard and MCP (the dashboard error names the CLI escape); A6 board config admin-only, `lattice context write` for any token; A9 every dashboard setting stays shared; A10 keep the hosted dashboard (H-13b); A11 keep attestations, labeled as client claims; A12 the guide leads with an agent-followable recipe to untrack the board for Scenario W without a server, proven by the docs agent test; A13 version 2.0.0. Then (operator, 2026-09-26, accepting the architect's recommendations): A1 orchestrator state is synced board data (`orchestration/` becomes the workspace class; loose files under `plans/` and `notes/` are written through `lattice board write`); A2 auto-reviews run by default from the board config on the machine that made the transition, a machine may decline with `run_auto_reviews: false`, and server-run reviews are a possible later expansion; A7 a person token's default actors are the user plus `agent:*` (this replaces the earlier strict default; seats are minted with one explicit actor); A8 `lattice unerase` makes every erase reversible.
 
+**Final executability check (Codex, 2026-09-26):** REVISE 7/10 on the fully revised contract, 2 blocking (reloading an unloaded project; config authorization versus ordinary config-writing operations) and 6 important; all applied by the architect.
+
 ## Touchpoints
 
 | Touchpoint | State |
