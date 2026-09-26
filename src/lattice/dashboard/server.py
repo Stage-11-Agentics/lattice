@@ -481,8 +481,7 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                 search=search,
             )
 
-            # Sort by (ts, id) descending
-            filtered.sort(key=lambda e: (e.get("ts", ""), e.get("id", "")), reverse=True)
+            filtered = _sort_activity_newest_first(filtered)
 
             total = len(filtered)
             page = filtered[offset : offset + limit]
@@ -2060,6 +2059,36 @@ def _collect_events(ld: Path, *, full_scan: bool = False, tail_n: int = 10) -> l
         for authority in discover_task_authorities(ld, include_archived=full_scan)
         for event in (authority.events if full_scan else authority.events[-tail_n:])
     ]
+
+
+def _sort_activity_newest_first(events: list[dict]) -> list[dict]:
+    """Return *events* newest first, keeping each task's log order on ties.
+
+    ``ts`` has one-second precision, so events written in the same second tie.
+    The event ``id`` is not a safe tiebreak inside one task: ULIDs are not
+    guaranteed monotonic (python-ulid reads the clock twice per ID and can
+    emit an older-looking ID within one process), so ``task_archived`` could
+    sort above the ``task_unarchived`` that followed it. A task's event log
+    is the true order, so within each same-second group of one task, the
+    group's IDs are handed out in log order and used as the tiebreak. Ties
+    across tasks still fall to the event ID.
+
+    *events* must list each task's events in log order, as
+    :func:`_collect_events` and :func:`_apply_activity_filters` leave them.
+    """
+    groups: dict[tuple[str, str], list[int]] = {}
+    for index, event in enumerate(events):
+        groups.setdefault((event.get("task_id", ""), event.get("ts", "")), []).append(index)
+    tiebreak = [""] * len(events)
+    for indices in groups.values():
+        for index, event_id in zip(indices, sorted(events[i].get("id", "") for i in indices)):
+            tiebreak[index] = event_id
+    order = sorted(
+        range(len(events)),
+        key=lambda i: (events[i].get("ts", ""), tiebreak[i]),
+        reverse=True,
+    )
+    return [events[i] for i in order]
 
 
 def _build_facets(events: list[dict], ld: Path) -> dict:

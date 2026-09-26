@@ -8,7 +8,7 @@ from urllib.request import Request, urlopen
 import pytest
 
 from lattice.core.events import create_event, serialize_event
-from lattice.core.ids import generate_artifact_id, generate_task_id
+from lattice.core.ids import generate_artifact_id, generate_event_id, generate_task_id
 from lattice.core.tasks import apply_event_to_snapshot, serialize_snapshot
 
 
@@ -183,10 +183,23 @@ class TestTaskDetailEndpoint:
         active_event = lattice_dir / "events" / f"{task_id}.jsonl"
         archived_event = lattice_dir / "archive" / "events" / f"{task_id}.jsonl"
         archived_event.parent.mkdir(parents=True, exist_ok=True)
+        # Force the worst case of a same-second pair: timestamps tie, and the
+        # earlier event carries the larger ULID (ULIDs are not guaranteed
+        # monotonic). The log order must still decide which is newest.
+        tied_ts = "2025-02-01T00:00:00Z"
+        low_id, high_id = sorted((generate_event_id(), generate_event_id()))
         archived_event.write_bytes(
             active_event.read_bytes()
-            + serialize_event(create_event("task_archived", task_id, "human:test", {})).encode()
-            + serialize_event(create_event("task_unarchived", task_id, "human:test", {})).encode()
+            + serialize_event(
+                create_event(
+                    "task_archived", task_id, "human:test", {}, event_id=high_id, ts=tied_ts
+                )
+            ).encode()
+            + serialize_event(
+                create_event(
+                    "task_unarchived", task_id, "human:test", {}, event_id=low_id, ts=tied_ts
+                )
+            ).encode()
         )
         active_event.unlink()
         active_notes = lattice_dir / "notes" / f"{task_id}.md"
@@ -472,6 +485,27 @@ class TestActivityEndpoint:
         assert isinstance(facets["tasks"], list)
         assert len(facets["types"]) > 0
         assert len(facets["actors"]) > 0
+
+    def test_activity_same_second_ties_follow_log_within_task_and_id_across_tasks(self):
+        """Same-second events of one task sort by log position, not by ULID."""
+        from lattice.dashboard.server import _sort_activity_newest_first
+
+        tied = "2025-02-01T00:00:00Z"
+        # Task A's log: archived then unarchived, but archived holds the larger ID.
+        a_archived = {"id": "ev_9", "task_id": "task_a", "ts": tied, "type": "task_archived"}
+        a_unarchived = {"id": "ev_1", "task_id": "task_a", "ts": tied, "type": "task_unarchived"}
+        # Task B ties the same second; cross-task ties keep falling to the ID.
+        b_comment = {"id": "ev_5", "task_id": "task_b", "ts": tied, "type": "comment_added"}
+        older = {"id": "ev_0", "task_id": "task_b", "ts": "2025-01-31T23:59:59Z", "type": "x"}
+
+        ordered = _sort_activity_newest_first([a_archived, a_unarchived, older, b_comment])
+
+        assert [e["type"] for e in ordered] == [
+            "task_unarchived",
+            "comment_added",
+            "task_archived",
+            "x",
+        ]
 
     def test_activity_pagination(self, dashboard_server):
         """Limit and offset should control the returned page."""
