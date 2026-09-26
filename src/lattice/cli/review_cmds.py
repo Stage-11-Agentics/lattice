@@ -1089,8 +1089,8 @@ def _attach_review_artifact(
 
     Returns the artifact ID, or None on failure.
     """
-    actor_flag = _actor_flag(actor)
-    if actor_flag is None:
+    identity_args = _identity_args(actor)
+    if identity_args is None:
         click.echo("Cannot determine actor for artifact attachment.", err=True)
         return None
 
@@ -1115,8 +1115,7 @@ def _attach_review_artifact(
                 title,
                 "--role",
                 role,
-                "--actor",
-                actor_flag,
+                *identity_args,
                 "--quiet",
             ],
             capture_output=True,
@@ -1133,12 +1132,18 @@ def _attach_review_artifact(
         Path(tmp_path).unlink(missing_ok=True)
 
 
-def _actor_flag(actor: str | dict) -> str | None:
-    """Extract a flat actor string for --actor flag."""
+def _identity_args(actor: str | dict) -> list[str] | None:
+    """Identity flags for a nested ``lattice`` subprocess.
+
+    A legacy actor string goes through ``--actor``; a resolved session dict
+    (from ``--name``) goes through ``--name``, because a bare session name
+    is not a valid ``prefix:id`` actor and ``--actor`` would reject it.
+    """
     if isinstance(actor, str):
-        return actor
+        return ["--actor", actor]
     if isinstance(actor, dict):
-        return actor.get("name") or actor.get("base_name")
+        name = actor.get("name") or actor.get("base_name")
+        return ["--name", name] if name else None
     return None
 
 
@@ -1176,8 +1181,8 @@ def _flag_needs_human(
     The task keeps its current status (planned); the flag signals that a
     human must approve the plan before work proceeds.
     """
-    actor_flag = _actor_flag(actor)
-    if actor_flag is None:
+    identity_args = _identity_args(actor)
+    if identity_args is None:
         click.echo("Cannot determine actor for needs-human flag.", err=True)
         return
 
@@ -1187,8 +1192,7 @@ def _flag_needs_human(
             "needs-human",
             task_id,
             "Plan-review complete — awaiting human plan approval",
-            "--actor",
-            actor_flag,
+            *identity_args,
         ],
         capture_output=True,
         text=True,

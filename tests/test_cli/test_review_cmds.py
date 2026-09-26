@@ -1670,3 +1670,23 @@ class TestReviewEvidenceHeaders:
         data = json.loads(result.output)["data"]
         assert data["truncated"] is True
         assert f"range: origin/main...{worktree_repo.branch}" in data["prompt"]
+
+
+class TestIdentityArgs:
+    """Nested lattice subprocesses must pass a session as --name, not --actor."""
+
+    def test_legacy_actor_string_uses_actor_flag(self):
+        from lattice.cli.review_cmds import _identity_args
+
+        assert _identity_args("agent:test") == ["--actor", "agent:test"]
+
+    def test_session_dict_uses_name_flag(self):
+        from lattice.cli.review_cmds import _identity_args
+
+        actor = {"name": "C11-238-Delegator-1", "base_name": "C11-238-Delegator", "serial": 1}
+        assert _identity_args(actor) == ["--name", "C11-238-Delegator-1"]
+
+    def test_empty_dict_is_none(self):
+        from lattice.cli.review_cmds import _identity_args
+
+        assert _identity_args({}) is None
