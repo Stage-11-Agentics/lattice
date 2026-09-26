@@ -95,7 +95,13 @@ _CREATE_COMPARE_FIELDS = (
 @click.option("--complexity", default=None, help="Agentic complexity (low, medium, high).")
 @click.option("--status", default=None, help="Initial status (default: backlog).")
 @click.option("--description", default=None, help="Task description.")
-@click.option("--tags", default=None, help="Comma-separated tags.")
+@click.option("--tags", default=None, help="Comma-separated tags, e.g. --tags a,b.")
+@click.option(
+    "--tag",
+    "tag_values",
+    multiple=True,
+    help="A single tag. Repeatable: --tag a --tag b. Combines with --tags.",
+)
 @click.option("--assigned-to", default=None, help="Assignee (actor format).")
 @click.option("--id", "task_id", default=None, help="Caller-supplied task ID.")
 @common_options
@@ -108,6 +114,7 @@ def create(
     status: str | None,
     description: str | None,
     tags: str | None,
+    tag_values: tuple[str, ...],
     assigned_to: str | None,
     task_id: str | None,
     model: str | None,
@@ -171,6 +178,9 @@ def create(
 
     # Parse tags
     tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
+    # --tag is pure sugar: its values follow --tags in argv order. No dedupe,
+    # matching how --tags a,a has always behaved.
+    tag_list += [t.strip() for t in tag_values if t.strip()]
 
     # Generate or validate task ID
     if task_id is not None:
