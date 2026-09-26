@@ -167,7 +167,8 @@ def _build_env(lattice_dir: Path, task_id: str, event: dict) -> dict[str, str]:
     from lattice.core.events import get_actor_display
 
     env = os.environ.copy()
-    env["LATTICE_ROOT"] = str(lattice_dir)
+    env["LATTICE_ROOT"] = str(lattice_dir.parent)
+    env["LATTICE_DIR"] = str(lattice_dir)
     env["LATTICE_TASK_ID"] = task_id
     env["LATTICE_EVENT_TYPE"] = event["type"]
     env["LATTICE_EVENT_ID"] = event["id"]
@@ -185,7 +186,8 @@ def _build_resource_env(
     from lattice.core.events import get_actor_display
 
     env = os.environ.copy()
-    env["LATTICE_ROOT"] = str(lattice_dir)
+    env["LATTICE_ROOT"] = str(lattice_dir.parent)
+    env["LATTICE_DIR"] = str(lattice_dir)
     env["LATTICE_RESOURCE_ID"] = resource_id
     env["LATTICE_RESOURCE_NAME"] = resource_name
     env["LATTICE_EVENT_TYPE"] = event["type"]
