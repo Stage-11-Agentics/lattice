@@ -1,1 +1,0 @@
-../../../gregorovitch/GREGOROVITCH_SOUL.md
