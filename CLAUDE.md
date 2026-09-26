@@ -48,6 +48,7 @@ uv cache clean lattice-tracker && uv tool install -e /Users/atin/Projects/Stage1
 | `ProjectRequirements_v1.md` | Full specification — object model, schemas, CLI commands, invariants |
 | `Decisions.md` | Architectural decisions with rationale (append-only log) |
 | `docs/architecture/README.md` | Index for all architecture deep dives |
+| `docs/hosted/` | Lattice Hosted (v2) build contract: `SPEC.md`, `EVALUATION.md`, `BUILDPLAN.md`, stories and run-state in `sequence/` |
 
 **Read `ProjectRequirements_v1.md` before making any architectural change.**
 
