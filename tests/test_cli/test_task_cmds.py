@@ -59,6 +59,72 @@ class TestCreate:
         assert snap["tags"] == ["ui", "backend"]
         assert snap["assigned_to"] == "agent:claude"
 
+    def test_repeated_tag(self, invoke_json):
+        data, code = invoke_json(
+            "create", "Tagged", "--tag", "x", "--tag", "y", "--actor", "human:test"
+        )
+        assert code == 0
+        assert data["data"]["tags"] == ["x", "y"]
+
+    def test_tags_comma_form_unchanged(self, invoke_json):
+        data, code = invoke_json("create", "Tagged", "--tags", "a, b,a", "--actor", "human:test")
+        assert code == 0
+        assert data["data"]["tags"] == ["a", "b", "a"]
+
+    def test_tags_then_tag_in_argv_order(self, invoke_json):
+        data, code = invoke_json(
+            "create",
+            "Tagged",
+            "--tag",
+            "c",
+            "--tags",
+            "a,b",
+            "--tag",
+            "a",
+            "--tag",
+            " d ",
+            "--tag",
+            "c",
+            "--actor",
+            "human:test",
+        )
+        assert code == 0
+        assert data["data"]["tags"] == ["a", "b", "c", "a", "d", "c"]
+
+    def test_repeated_tag_keeps_duplicates(self, invoke_json):
+        data, code = invoke_json(
+            "create", "Tagged", "--tag", "a", "--tag", "a", "--actor", "human:test"
+        )
+        assert code == 0
+        assert data["data"]["tags"] == ["a", "a"]
+
+    def test_tags_then_tag_keeps_duplicates(self, invoke_json):
+        data, code = invoke_json(
+            "create", "Tagged", "--tags", "a,b", "--tag", "b", "--actor", "human:test"
+        )
+        assert code == 0
+        assert data["data"]["tags"] == ["a", "b", "b"]
+
+    def test_tag_persisted_in_event_log(self, invoke_json, initialized_root):
+        data, code = invoke_json(
+            "create", "Tagged", "--tags", "a", "--tag", "b", "--actor", "human:test"
+        )
+        assert code == 0
+        task_id = data["data"]["id"]
+        lattice_dir = initialized_root / ".lattice"
+        snap = json.loads((lattice_dir / "tasks" / f"{task_id}.json").read_text())
+        assert snap["tags"] == ["a", "b"]
+        event = json.loads(
+            (lattice_dir / "events" / f"{task_id}.jsonl").read_text().splitlines()[0]
+        )
+        assert event["data"]["tags"] == ["a", "b"]
+
+    def test_help_documents_both_tag_forms(self, invoke):
+        result = invoke("create", "--help")
+        assert result.exit_code == 0
+        assert "--tags" in result.output
+        assert "--tag " in result.output
+
     def test_id_idempotent_success(self, invoke):
         tid = "task_00000000000000000000000000"
         r1 = invoke("create", "Idem task", "--id", tid, "--actor", "human:test")
