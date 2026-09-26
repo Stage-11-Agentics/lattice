@@ -56,7 +56,7 @@ Pre-existing defects the audit found that this build does **not** fix (filed as 
 Every ticket targets the `v2` branch. Each lists its criteria (the ticket is done when they pass per `EVALUATION.md`), dependencies (merged before it starts), files, and shared-file notes. Complexity: L/M/H. **Risk-reviewed** tickets get one independent plan review under the orchestrator's policy.
 
 ### H-0 Foundation · M
-Create `v2` from `main`; add `v2` to the CI triggers (push and pull_request). Add `tests/test_hygiene.py` (G-3, with the always-on built-in patterns and the optional salted-hash denylist of `SPEC.md` §14), the `torture` and `perf` markers, and `addopts = "-m 'not torture and not perf'"`.
+The `v2` branch is cut from `main` (with this contract merged) at launch, before H-0 starts, so H-0's own PR can target it; H-0's PR has no CI run on `v2` yet, so the Merge Captain runs the project gate locally for it. H-0 adds `v2` to the CI triggers (push and pull_request). Add `tests/test_hygiene.py` (G-3, with the always-on built-in patterns and the optional salted-hash denylist of `SPEC.md` §14), the `torture` and `perf` markers, and `addopts = "-m 'not torture and not perf'"`.
 
 Order inside the ticket matters: record the parity baseline first, from the unmodified code, and only then change CLI registration.
 
