@@ -91,7 +91,7 @@ Criteria: AC-29, AC-27 (no refused-complete unlink), AC-5 (attestation rejection
 
 ### H-5 Operations: resources, sessions, board config · M
 `resource.*` with `acquire --wait` as a client-side loop, `session.start/end` writing `origin` into session files, actor resolution and authorization before any session touch (`SPEC.md` §3.7), `board.set_project_code`, `board.set_subproject_code`, `board.set_dashboard_config` (the operation only; H-13a converts the dashboard's settings POST to call it), and the `LOCAL_ONLY` list of maintenance commands (`SPEC.md` §3.5).
-Criteria: AC-29 (including `session start` and `session end` with no actor arguments), AC-5 (local `acquire --wait` released by another process), G-6. Deps: H-1. Shared: `cli/helpers.py` (`require_actor`), `storage/sessions.py`, `cli/resource_cmds.py`, `cli/main.py`.
+Criteria: AC-29 (including `session start`, `session end`, `set-project-code`, and `set-subproject-code` with no actor arguments), AC-5 (local `acquire --wait` released by another process), G-6. Deps: H-1. Shared: `cli/helpers.py` (`require_actor`), `storage/sessions.py`, `cli/resource_cmds.py`, `cli/main.py`.
 
 ### H-6 Short-ID floor and doctor completeness (absorbs LAT-280, LAT-269) · M
 `SPEC.md` §5, local and server-ready (`max_observed` hook for H-9). If the local floor caches anything, it keys each log's contribution on `(st_size, st_mtime_ns)`, never on a directory mtime.
@@ -138,7 +138,7 @@ Criteria: AC-6, AC-7 (next-command part and the killed-follower read), AC-8, AC-
 
 ### H-12 Hosted parity gate · M
 Run the golden corpus through an in-process server via a bound checkout; assert outputs, exit codes, and boards match the goldens; assert cache tree equals server tree after every scenario; recorder no-delete assertions. Add the G-1 boundary test (`tests/test_ops/test_write_boundary.py`, an AST scan of `src/lattice`, `SPEC.md` §14), whose allowlist names each module that writes only runtime paths or files outside any board, with a one-line reason. Fix any divergence in the owning operation (repair in place). Make the review commands truthful on a hosted checkout: `review-status` read from the board, and the `REVIEW_IN_FLIGHT` refusal with its `--force` override (`SPEC.md` §3.4).
-Criteria: AC-5 (including hosted `acquire --wait` and cross-machine review status), AC-9, AC-19, AC-21, G-1 (end-to-end), G-2 (hosted), G-5 (server subprocess run), the auto-review handoff tests (SPEC §3.4), and the hosted `context write` round trip. Deps: H-2, H-3, H-4, H-5, H-7 (erase in the corpus), H-11. Shared: `cli/review_cmds.py` (after H-4).
+Criteria: AC-5 (including hosted `acquire --wait` and cross-machine review status), AC-9, AC-19, AC-21, G-1 (end-to-end), G-2 (hosted), G-5 (server subprocess run), the auto-review handoff tests (SPEC §3.4), and the hosted `context write` round trip. Also: the `plan write --file` round trip of a file rescued from a tampered cache (AC-47), and a manual `lattice code-review` on a machine with `run_auto_reviews: false` (AC-49). Deps: H-2, H-3, H-4, H-5, H-7 (erase in the corpus), H-11. Shared: `cli/review_cmds.py` (after H-4).
 
 **CP2 triggers here:** H-2 to H-5 and H-12 merged.
 
@@ -207,7 +207,7 @@ H-0 ──► H-19                                                              
 * H-9 also needs H-5 and H-6; H-22a also needs H-2; H-11 also needs H-2, H-5, and H-10c.
 ```
 
-The critical path is H-0 → H-1 → H-8 → H-9 → H-22a → H-10a → H-10b → H-11 → CP1, with H-10c beside H-11. The transaction protocol (H-22a) is proven before anything is built on it. The operation conversions (H-2 to H-6) run beside the chain, so CP2 follows soon after CP1.
+The critical path is H-0 → H-1 → H-8 → H-9 → H-22a → H-10a → H-10b → H-10c → H-11 → CP1. The transaction protocol (H-22a) is proven before anything is built on it. The operation conversions (H-2 to H-6) run beside the chain, so CP2 follows soon after CP1.
 
 **Serialize these shared files** (one active ticket at a time): `cli/task_cmds.py` (H-1, H-2, H-3, H-4), `storage/operations.py` (H-1, H-6, H-8), `storage/fs.py` (H-8, H-22a, H-11), `pyproject.toml` (H-0, H-9, H-19), `core/events.py` and `core/tasks.py` (H-1, H-4, H-7), `cli/helpers.py` (H-5, H-11), `cli/query_cmds.py` (H-2, H-4, H-7), `cli/integrity_cmds.py` (H-6, H-7), `cli/review_cmds.py` (H-4, H-12), `skills/lattice/SKILL.md` and `templates/claude_md_block.py` (H-4, H-17). Sole owners: `dashboard/server.py` and `static/index.html` (H-13a, then H-13b), `mcp/tools.py` (H-21), docs, README, and `Decisions.md` (H-17).
 
