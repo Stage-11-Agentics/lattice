@@ -90,6 +90,8 @@ The contract lives in `docs/hosted/` rather than at the repo root, because the r
 - Moving an existing v1 board onto a server is not worth heavy tooling: an agent can do it by following the guide. Keep a doctor-gated import; drop the automated migrate-and-verify machinery.
 - For the fresh-context plan reviews: apply fixes the architect is confident in; bring only genuine questions to the operator.
 
+**Collated review, section A (operator, 2026-09-25):** A3 full origin everywhere (the identity ruling stands); A4 no v1 guard release, trial clients pinned to v2; A5 accept the rule convergence for the local dashboard and MCP (the dashboard error names the CLI escape); A6 board config admin-only, `lattice context write` for any token; A9 every dashboard setting stays shared; A10 keep the hosted dashboard (H-13b); A11 keep attestations, labeled as client claims; A12 the guide leads with an agent-followable recipe to untrack the board for Scenario W without a server, proven by the docs agent test; A13 version 2.0.0. Open: A1 (orchestrator state), A2 (auto-review default), A7 (default token actors), A8 (un-erase).
+
 ## Touchpoints
 
 | Touchpoint | State |
