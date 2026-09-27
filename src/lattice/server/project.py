@@ -235,7 +235,7 @@ class Project:
         self._receipt_day: str | None = None
         #: The idempotency index, ``(token_id, op_id) -> IndexEntry``, and the
         #: current epoch's op-status map, ``(token_id, op_id) -> seq`` (SPEC §8.6).
-        #: Filled as operations commit; rebuilt from disk at load by H-22.
+        #: Filled as operations commit, and rebuilt from disk at every load.
         self.index: dict[tuple[str | None, str], IndexEntry] = {}
         self.op_seqs: dict[tuple[str | None, str], int] = {}
         #: The finalized memory (journal index, manifest, floors, watched baselines),
@@ -274,7 +274,7 @@ class Project:
             self._reported_types.add(etype)
             self.log.warning("unknown_event_type", project=self.slug, type=etype)
 
-    # -- load (SPEC §8.7; transactions and foreign appends are H-22's) ------
+    # -- load (SPEC §8.7; the recovery steps are in lattice.server.recovery) --
 
     def load(self) -> None:
         """Take the lease and bring the project to ``loaded`` or ``unavailable``.
