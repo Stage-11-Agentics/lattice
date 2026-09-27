@@ -1632,12 +1632,16 @@ select.form-control{cursor:pointer}
   </div>
 </div>
 
-<script src="https://unpkg.com/d3@7"></script>
-<script src="https://unpkg.com/d3-binarytree@1"></script>
-<script src="https://unpkg.com/d3-octree@1"></script>
-<script src="https://unpkg.com/d3-force-3d@3"></script>
-<script src="https://unpkg.com/force-graph@1/dist/force-graph.min.js"></script>
-<script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+<!-- Third-party graph libraries, vendored with their licenses (static/vendor/,
+     pinned in VERSIONS.json by scripts/vendor-dashboard-js.sh): the page loads
+     nothing from another origin, so the hosted CSP holds and a local dashboard
+     works offline. -->
+<script src="static/vendor/d3/d3.min.js"></script>
+<script src="static/vendor/d3-binarytree/d3-binarytree.min.js"></script>
+<script src="static/vendor/d3-octree/d3-octree.min.js"></script>
+<script src="static/vendor/d3-force-3d/d3-force-3d.min.js"></script>
+<script src="static/vendor/force-graph/force-graph.min.js"></script>
+<script src="static/vendor/three/three.min.js"></script>
 <link rel="stylesheet" href="static/cube3d.css">
 <script src="static/cube3d.js" defer></script>
 <link rel="stylesheet" href="static/cube-v2.css">

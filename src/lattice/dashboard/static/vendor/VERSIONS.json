@@ -1,0 +1,76 @@
+{
+  "packages": [
+    {
+      "name": "d3",
+      "spec": "d3@7",
+      "version": "7.9.0",
+      "integrity": "sha512-e1U46jVP+w7Iut8Jt8ri1YsPOvFpg46k+K8TpCb0P+zjCkjkPnV7WzfDJzMHy1LnA+wj5pLT1wjO901gLXeEhA==",
+      "source": "dist/d3.min.js",
+      "file": "d3/d3.min.js",
+      "sha256": "f2094bbf6141b359722c4fe454eb6c4b0f0e42cc10cc7af921fc158fceb86539",
+      "licenses": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "d3-binarytree",
+      "spec": "d3-binarytree@1",
+      "version": "1.0.2",
+      "integrity": "sha512-cElUNH+sHu95L04m92pG73t2MEJXKu+GeKUN1TJkFsu93E5W8E9Sc3kHEGJKgenGvj19m6upSn2EunvMgMD2Yw==",
+      "source": "dist/d3-binarytree.min.js",
+      "file": "d3-binarytree/d3-binarytree.min.js",
+      "sha256": "34ee89660516611365de94ab44ff8e06d968f6bfb7b3772667d12793a4bc5b57",
+      "licenses": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "d3-octree",
+      "spec": "d3-octree@1",
+      "version": "1.1.0",
+      "integrity": "sha512-F8gPlqpP+HwRPMO/8uOu5wjH110+6q4cgJvgJT6vlpy3BEaDIKlTZrgHKZSp/i1InRpVfh4puY/kvL6MxK930A==",
+      "source": "dist/d3-octree.min.js",
+      "file": "d3-octree/d3-octree.min.js",
+      "sha256": "62c23034a7a7e9c3d5cb3118e108ac82ceffed0351f2d7b6400ddc66cd2643a2",
+      "licenses": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "d3-force-3d",
+      "spec": "d3-force-3d@3",
+      "version": "3.0.6",
+      "integrity": "sha512-4tsKHUPLOVkyfEffZo1v6sFHvGFwAIIjt/W8IThbp08DYAsXZck+2pSHEG5W1+gQgEvFLdZkYvmJAbRM2EzMnA==",
+      "source": "dist/d3-force-3d.min.js",
+      "file": "d3-force-3d/d3-force-3d.min.js",
+      "sha256": "412b4aadc3218aa65de10b70ba3324dd365d4bf7a061299fa682f530e8506ee9",
+      "licenses": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "force-graph",
+      "spec": "force-graph@1",
+      "version": "1.51.4",
+      "integrity": "sha512-TdJ2KbkoiDQ7NIRx8IPGD0mAXXpLhamS7c+b7W98b0MHG7lphnda1VOQX/98UDTsttIAdH4TcP0l0MauSnLK8w==",
+      "source": "dist/force-graph.min.js",
+      "file": "force-graph/force-graph.min.js",
+      "sha256": "1008539bb9e171a0dc343453366451a1b3a6ded06028ef4f978608b658ba2d0a",
+      "licenses": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "three",
+      "spec": "three@0.160.0",
+      "version": "0.160.0",
+      "integrity": "sha512-DLU8lc0zNIPkM7rH5/e1Ks1Z8tWCGRq6g8mPowdDJpw1CFBJMU7UoJjC6PefXW7z//SSl0b2+GCw14LB+uDhng==",
+      "source": "build/three.min.js",
+      "file": "three/three.min.js",
+      "sha256": "170c6789f43217c96b3170f4b42fafe135de7f7cd48497a4218f9757ee1d49fa",
+      "licenses": [
+        "LICENSE"
+      ]
+    }
+  ]
+}

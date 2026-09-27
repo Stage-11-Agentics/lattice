@@ -87,6 +87,10 @@ class TestPage:
         assert script.headers["content-type"].startswith("application/javascript")
         assert web.get("/p/alpha/favicon.ico").status == 200
         assert web.get("/p/alpha/static/../server.py").status in (403, 404)
+        for src in re.findall(r'src="(static/vendor/[^"]+)"', page.text):
+            vendored = web.get(f"/p/alpha/{src}")  # same origin: the CSP allows it
+            assert vendored.status == 200, src
+            _assert_headers(vendored, src)
 
     def test_bare_slug_redirects_to_its_base_path(self, web: WebClient) -> None:
         response = web.get("/p/alpha")
@@ -191,7 +195,9 @@ class TestWrites:
         refused = _drag(web, task_id, "in_progress")
         assert refused.status == 422
         assert refused.json["error"]["code"] == "PLAN_REQUIRED"
-        assert "--force" in refused.json["error"]["message"]
+        short_id = created.json["data"]["short_id"]
+        escape = f'lattice status {short_id} in_progress --force --reason "..."'
+        assert escape in refused.json["error"]["message"]
 
     def test_foreign_origin_is_refused(self, server, root, web: WebClient) -> None:
         before = board_hash(root, "alpha")
