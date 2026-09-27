@@ -154,13 +154,27 @@ def test_check_board_path_accepts_the_workspace() -> None:
     assert check_board_path("plans/pack.md") == ("plans", "pack.md")
 
 
-def test_client_normalizes_what_the_user_typed(tmp_path: Path) -> None:
-    lattice_dir = tmp_path / LATTICE_DIR
-    assert normalize_board_path("./orchestration//a.md", lattice_dir) == "orchestration/a.md"
-    assert normalize_board_path(".lattice/plans/p.md", lattice_dir) == "plans/p.md"
-    assert normalize_board_path(str(lattice_dir / "notes" / "n.md"), lattice_dir) == "notes/n.md"
-    assert normalize_board_path("/etc/passwd", lattice_dir) == "/etc/passwd"
-    assert normalize_board_path("orchestration/../x", lattice_dir) == "orchestration/../x"
+def test_client_only_tidies_relative_paths() -> None:
+    assert normalize_board_path("./orchestration//a.md") == "orchestration/a.md"
+    assert normalize_board_path("orchestration/../x") == "orchestration/../x"
+    assert normalize_board_path("/etc/passwd") == "/etc/passwd"
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+def test_absolute_path_inside_the_board_is_refused(
+    invoke, initialized_root: Path, tmp_path: Path, as_json: bool
+) -> None:  # noqa: ANN001
+    """PATH is relative to .lattice/ (SPEC §3.9); an absolute one is never resolved."""
+    src = tmp_path / "x.md"
+    src.write_text("x")
+    target = initialized_root / LATTICE_DIR / "orchestration" / "abs.md"
+    flag = ["--json"] if as_json else []
+    result = invoke("board", "write", str(target), "--file", str(src), *flag)
+    assert result.exit_code == 1
+    assert "absolute" in result.output
+    if as_json:
+        assert json.loads(result.output)["error"]["code"] == "VALIDATION_ERROR"
+    assert not target.exists()
 
 
 class TestCli:
@@ -231,3 +245,43 @@ class TestCli:
             result = invoke("board", "write", "orchestration/a.md", "--file", str(src), *flag)
             assert result.exit_code == 1
             assert "Cannot read --file" in result.output and "Permission denied" in result.output
+
+
+class TestSymlinkWithSameContent:
+    """A symlink out of the board that already holds the requested bytes must
+    be refused, not reported as an idempotent success: the target is resolved
+    and confined before it is read."""
+
+    def test_board_write(self, board: LocalBoard, tmp_path: Path) -> None:
+        outside = tmp_path / "outside.md"
+        outside.write_text(RUN_STATE)
+        (board.lattice_dir / "orchestration").mkdir()
+        (board.lattice_dir / "orchestration" / "link.md").symlink_to(outside)
+        with pytest.raises(OpError) as exc:
+            _write(board, "orchestration/link.md", RUN_STATE)
+        assert exc.value.code == "VALIDATION_ERROR"
+        assert exc.value.details["reason"] == "PATH_OUTSIDE_BOARD"
+        assert outside.read_text() == RUN_STATE
+
+    def test_context_write(self, board: LocalBoard, tmp_path: Path) -> None:
+        outside = tmp_path / "context.md"
+        outside.write_text("ctx")
+        context = board.lattice_dir / "context.md"
+        context.unlink(missing_ok=True)
+        context.symlink_to(outside)
+        with pytest.raises(OpError) as exc:
+            board.execute("board.context_write", {"stdin": "ctx"}, Caller())
+        assert exc.value.code == "VALIDATION_ERROR"
+
+    def test_plan_write(self, board: LocalBoard, tmp_path: Path) -> None:
+        task_id = _task(board)
+        plan = board.lattice_dir / "plans" / f"{task_id}.md"
+        outside = tmp_path / "plan.md"
+        outside.write_text("same")
+        plan.unlink()
+        plan.symlink_to(outside)
+        with pytest.raises(OpError) as exc:
+            board.execute(
+                "task.plan_write", {"task": task_id, "stdin": "same"}, Caller(actor="agent:t")
+            )
+        assert exc.value.code == "VALIDATION_ERROR"

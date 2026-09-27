@@ -27,10 +27,9 @@ from lattice.cli.helpers import (
     resolve_task_id,
 )
 from lattice.cli.main import cli
-from lattice.cli.ops_bridge import board_or_exit, check_or_exit, provenance_params, run_operation
+from lattice.cli.ops_bridge import check_or_exit, provenance_params, run_operation
 from lattice.ops.board_file_write import check_board_path
 from lattice.ops.prose_common import check_content_sources, check_expect_sha256
-from lattice.storage.fs import LATTICE_DIR
 from lattice.storage.operations import resolve_task_prose_path
 
 
@@ -256,27 +255,17 @@ def board() -> None:
     """Write the board's workspace files (orchestration/, loose plans/ and notes/ files)."""
 
 
-def normalize_board_path(raw: str, lattice_dir: Path | None) -> str:
-    """What the user typed, as a path relative to ``.lattice/`` (client-side).
+def normalize_board_path(raw: str) -> str:
+    """What the user typed, tidied as a path relative to ``.lattice/`` (client-side).
 
-    Accepts ``./x``, ``.lattice/x``, and an absolute path inside this board's
-    ``.lattice/``; the operation checks the result against the workspace rules.
+    Only ``.`` and empty components are dropped (``./orchestration//a.md``).
+    PATH is relative to ``.lattice/`` (SPEC §3.9): an absolute path is passed
+    on untouched, never resolved against this machine's filesystem, and the
+    operation refuses it.
     """
-    path = raw
-    if lattice_dir is not None and Path(raw).is_absolute():
-        try:
-            path = Path(raw).relative_to(lattice_dir.resolve()).as_posix()
-        except ValueError:
-            try:
-                path = Path(raw).relative_to(lattice_dir).as_posix()
-            except ValueError:
-                return raw
-    if path.startswith("/"):
-        return path  # outside this board: the operation refuses it
-    parts = [p for p in path.split("/") if p not in ("", ".")]
-    if parts[:1] == [LATTICE_DIR]:
-        parts = parts[1:]
-    return "/".join(parts)
+    if raw.startswith("/"):
+        return raw
+    return "/".join(p for p in raw.split("/") if p not in ("", "."))
 
 
 @board.command("write")
@@ -300,8 +289,7 @@ def board_write(
     task's own <task_id>.md. There is no remove: overwrite a file instead.
     """
     is_json = output_json
-    board_obj = board_or_exit(is_json)
-    relative = normalize_board_path(path, board_obj.lattice_dir)
+    relative = normalize_board_path(path)
     check_or_exit(is_json, check_board_path, relative)
     check_or_exit(is_json, check_content_sources, file_path is not None, use_stdin, "the content")
     check_or_exit(is_json, check_expect_sha256, expect_sha256)
@@ -310,6 +298,5 @@ def board_write(
         "board.file_write",
         {"path": relative, "expect_sha256": expect_sha256, **content},
         is_json,
-        board=board_obj,
     )
     _render_board_write(result, is_json, quiet)
