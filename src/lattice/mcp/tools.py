@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import mimetypes
-import shutil
 from pathlib import Path
 from typing import Annotated
 
@@ -865,7 +864,7 @@ def lattice_attach(
         if not src_path.is_file():
             raise ValueError(f"Source file not found: '{source}'.")
         dest_path = lattice_dir / "artifacts" / "payload" / f"{art_id}{src_path.suffix}"
-        shutil.copy2(str(src_path), str(dest_path))
+        atomic_write(dest_path, src_path.read_bytes())
         guessed_type, _ = mimetypes.guess_type(src_path.name)
         content_type = guessed_type
         size_bytes = src_path.stat().st_size

@@ -591,3 +591,20 @@ def test_cli_offline_maintenance_on_a_local_board(board: Path, invoke) -> None: 
     result = invoke("doctor", "--fix", "--offline-maintenance", "--json")
     assert result.exit_code == 1
     assert json.loads(result.output)["error"]["code"] == "VALIDATION_ERROR"
+
+
+@pytest.mark.parametrize("marker", ["state", "hosted"])
+def test_cli_attach_leaves_no_payload_on_a_marked_board(
+    board: Path,
+    invoke,  # noqa: ANN001
+    tmp_path: Path,
+    marker: str,
+) -> None:
+    source = tmp_path / "evidence.txt"
+    source.write_text("evidence")
+    _plant(board, marker)
+    before = _durable_tree(board)
+    result = invoke("attach", _task_id(board), str(source), "--actor", "human:t", "--json")
+    assert result.exit_code == 1
+    assert json.loads(result.output)["error"]["code"] == MARKERS[marker][1]
+    assert _durable_tree(board) == before
