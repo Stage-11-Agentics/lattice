@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from lattice.cli.main import cli
@@ -214,3 +215,40 @@ def test_counter_for_a_prefix_only_in_the_logs_is_checked(tmp_path: Path) -> Non
         "next_seqs['OLD'] (unset, implicitly 1) is at or below the max short-ID seq in "
         "the event logs (4); run lattice rebuild --all"
     ]
+
+
+@pytest.mark.parametrize("bad", [[], ["LAT-1"], {"id": "LAT-1"}], ids=["list", "list1", "object"])
+def test_non_string_short_id_is_reported_not_crashed_on(tmp_path: Path, bad: object) -> None:
+    """A replayable non-string alias is a malformed-ID finding; create still works."""
+    lattice_dir = _board(tmp_path)
+    ids = []
+    for n in range(1, 3):
+        result = _invoke(tmp_path, "create", f"Task {n}", "--actor", "human:test", "--json")
+        ids.append(json.loads(result.output)["data"]["id"])
+    log = lattice_dir / "events" / f"{ids[1]}.jsonl"
+    lines = log.read_text().splitlines()
+    event = json.loads(lines[0])
+    event["data"]["short_id"] = bad
+    lines[0] = serialize_event(event).rstrip("\n")
+    log.write_text("\n".join(lines) + "\n")
+    # A later assignment in another log also carries the malformed value.
+    _append(lattice_dir, ids[0], "x_note", {"short_id": bad})
+
+    plain = _invoke(tmp_path, "doctor")
+    assert plain.exception is None or isinstance(plain.exception, SystemExit), plain.exception
+    assert plain.exit_code == 1
+    assert f"task {ids[1]} has malformed authoritative short ID {bad!r}" in plain.output
+
+    result = _invoke(tmp_path, "doctor", "--json")
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    payload = json.loads(result.output)
+    assert payload["ok"] is True
+    alias = [f for f in payload["data"]["findings"] if f["check"] == "alias_integrity"]
+    malformed = [f for f in alias if "malformed authoritative short ID" in f["message"]]
+    assert len(malformed) == 1 and malformed[0]["level"] == "error"
+    assert f"task {ids[1]} has malformed authoritative short ID {bad!r}" in malformed[0]["message"]
+    assert payload["data"]["summary"]["errors"] >= 1
+
+    created = _invoke(tmp_path, "create", "Task 3", "--actor", "human:test", "--json")
+    assert created.exit_code == 0, created.output
+    assert json.loads(created.output)["data"]["short_id"] == "LAT-3"

@@ -201,6 +201,21 @@ class TestFloorPrimitives:
 
         assert _create(board, "After reservation")["short_id"] == "LAT-51"
 
+    def test_floor_ignores_non_string_short_ids(self) -> None:
+        raw = b"".join(
+            serialize_event(
+                create_event(type_, "task_x", "human:test", {"short_id": value})
+            ).encode()
+            for type_, value in [
+                ("task_created", []),
+                ("task_short_id_assigned", {"id": "LAT-9"}),
+                ("x_custom", ["LAT-8"]),
+                ("x_custom", 7),
+                ("x_custom", "LAT-2"),
+            ]
+        )
+        assert short_ids_in_log(raw) == ["LAT-2"]
+
     def test_short_ids_in_log_on_empty_and_plain_logs(self) -> None:
         assert short_ids_in_log(b"") == []
         assert short_ids_in_log(b'{"type":"task_created","data":{"title":"x"}}\n') == []

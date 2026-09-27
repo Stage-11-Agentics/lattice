@@ -35,6 +35,7 @@ from lattice.storage.short_ids import (
     SHORT_ID_EVENT_TYPES,
     max_observed_short_ids,
     save_id_index,
+    split_short_id,
 )
 
 
@@ -276,10 +277,14 @@ def _historical_short_id_duplicates(
     from the replayed snapshots while the history still issued it twice. IDs
     that are also effective duplicates are left to the effective check.
     """
-    effective: dict[object, set[str]] = {}
+    effective: dict[str, set[str]] = {}
     issued: dict[str, dict[str, tuple[Path, int]]] = {}
     for task_id, authority in authorities.items():
-        effective.setdefault(authority.snapshot.get("short_id"), set()).add(task_id)
+        # Only well-formed aliases are indexed; any other replayable value
+        # (a list, an object) is reported by the effective-alias check.
+        effective_id = authority.snapshot.get("short_id")
+        if split_short_id(effective_id) is not None:
+            effective.setdefault(effective_id, set()).add(task_id)
         path = (
             authority.active_event_path
             if authority.active_event_path.exists()
@@ -290,7 +295,7 @@ def _historical_short_id_duplicates(
             if event.get("type") not in SHORT_ID_EVENT_TYPES or not isinstance(data, dict):
                 continue
             short_id = data.get("short_id")
-            if isinstance(short_id, str):
+            if split_short_id(short_id) is not None:
                 issued.setdefault(short_id, {}).setdefault(task_id, (path, line))
     messages = []
     for short_id in sorted(issued):
