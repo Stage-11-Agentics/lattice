@@ -93,12 +93,12 @@ Each sub-agent should use a distinct actor ID (e.g., `agent:claude-opus-4-planne
 
 ### The Planning Gate
 
-The plan file lives at `.lattice/plans/<task_id>.md` — scaffolded on creation, empty until you fill it.
+The plan file lives at `.lattice/plans/<task_id>.md` — scaffolded on creation, empty until you fill it. Read it there; write it with `lattice plan write <task> --file <path>` (or `--stdin`), which works on every board, including a hosted checkout whose `.lattice/` is a read-only mirror.
 
 This is the **planning sub-agent's** job. Spawn a sub-agent whose sole purpose is to explore the codebase, understand the problem, and write the plan. It should:
 1. Read the task description and any linked context.
 2. Explore the relevant source files — understand existing patterns and constraints.
-3. Write the plan to `.lattice/plans/<task_id>.md` — scope, approach, key files, acceptance criteria. For trivial tasks, a single sentence is fine. For substantial work, be thorough.
+3. Write the plan with `lattice plan write <task> --file <path>` — scope, approach, key files, acceptance criteria. For trivial tasks, a single sentence is fine. For substantial work, be thorough.
 4. Move to `planned` only when the plan file reflects what it intends to build.
 
 **The test:** If you moved to `planned` and the plan file is still empty scaffold, you didn't plan. Every task gets a plan — even trivial tasks get a one-line plan. The CLI enforces this: transitioning to `in_progress` is blocked when the plan is still scaffold.
@@ -285,7 +285,7 @@ This records decision provenance — later, `lattice explain <filepath>` shows w
 
 ### Leave Breadcrumbs
 
-You are not the last mind that will touch this work. Use `lattice comment` for what you tried, chose, and left undone. Use `plans/<task_id>.md` for structured plans and `notes/<task_id>.md` for working notes and context dumps. The record you leave is the only bridge to the next agent's context.
+You are not the last mind that will touch this work. Use `lattice comment` for what you tried, chose, and left undone. Use the plan (`lattice plan write <task> --file <path>`) for structured plans and the notes (`lattice notes write <task> --file <path>`) for working notes and context dumps; read them at `.lattice/plans/<task_id>.md` and `.lattice/notes/<task_id>.md`. The record you leave is the only bridge to the next agent's context.
 
 ### Shared Worktree Discipline
 
@@ -309,6 +309,8 @@ lattice create "<title>" --actor agent:<id>
 lattice status <task> <status> --actor agent:<id>
 lattice assign <task> <actor> --actor agent:<id>
 lattice comment <task> "<text>" --actor agent:<id>
+lattice plan write <task> --file <path> --actor agent:<id>    # or --stdin
+lattice notes write <task> --file <path> --actor agent:<id>   # or --stdin
 lattice link <task> <type> <target> --actor agent:<id>
 lattice branch-link <task> <branch> --actor agent:<id>
 lattice file-link <task> <path>... --actor agent:<id> [--reason "why"]
