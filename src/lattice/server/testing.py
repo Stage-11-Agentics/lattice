@@ -277,10 +277,11 @@ def _test_server(config: Any) -> Any:
             state = self.server_state
             for connection in list(state.connections):
                 connection.shutdown()
-            deadline = time.monotonic() + self.config.timeout_graceful_shutdown
+            grace = self.config.timeout_graceful_shutdown  # None: wait as long as it takes
+            deadline = None if grace is None else time.monotonic() + grace
             await asyncio.sleep(0.01)
             while (state.connections or state.tasks) and not self.force_exit:
-                if time.monotonic() > deadline:
+                if deadline is not None and time.monotonic() > deadline:
                     for task in state.tasks:
                         task.cancel(msg="Task cancelled, timeout graceful shutdown exceeded")
                     break
