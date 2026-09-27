@@ -100,16 +100,7 @@ def _read_private(path: Path) -> str | None:
 
 def _file_entry(alias: str) -> dict[str, Any] | None:
     """The file's entry for *alias* (the file must be private, 0600)."""
-    path = remotes_path()
-    raw = _read_private(path)
-    if raw is None:
-        return None
-    try:
-        data = json.loads(raw)
-    except ValueError as exc:
-        raise OpError("VALIDATION_ERROR", f"{path} is not valid JSON: {exc}") from None
-    remotes = data.get("remotes") if isinstance(data, dict) else None
-    entry = remotes.get(alias) if isinstance(remotes, dict) else None
+    entry = _read_file()["remotes"].get(alias)
     return entry if isinstance(entry, dict) else None
 
 
@@ -254,13 +245,14 @@ def _env_headers(prefix: str, raw: str) -> dict:
 
 
 def _read_file() -> dict:
+    """``remotes.json`` parsed, ``{"remotes": {}}`` when absent. The one reader of
+    the file: every caller (resolution, ``add``, ``list``, secret discovery) goes
+    through :func:`_read_private`'s descriptor check (a regular file, not a
+    symlink, owner-only), because the file can hold tokens (SPEC §9.1)."""
     path = remotes_path()
-    try:
-        raw = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
+    raw = _read_private(path)
+    if raw is None:
         return {"remotes": {}}
-    except OSError as exc:
-        raise OpError("VALIDATION_ERROR", f"cannot read {path}: {exc}") from None
     try:
         data = json.loads(raw)
     except ValueError as exc:
@@ -358,7 +350,11 @@ def secret_env_names(env: Mapping[str, str] | None = None) -> set[str]:
     Every ``LATTICE_REMOTE_*`` variable, every variable a ``remotes.json``
     entry names for its token or a header, and every variable a
     ``LATTICE_REMOTE_<ALIAS>_HEADERS`` override names. Hook commands and review
-    agents run without them. Never raises: an unreadable file names nothing.
+    agents run without them.
+
+    Fails closed: a ``remotes.json`` that is not a private regular file raises
+    ``VALIDATION_ERROR`` (its token variables could not be named, so nothing is
+    started with them); an absent file names nothing.
     """
     env = os.environ if env is None else env
     names = {name for name in env if name.startswith("LATTICE_REMOTE_")}
@@ -370,11 +366,7 @@ def secret_env_names(env: Mapping[str, str] | None = None) -> set[str]:
                 continue
             if isinstance(parsed, dict):
                 names.update(v for v in parsed.values() if isinstance(v, str))
-    try:
-        remotes = _read_file()["remotes"]
-    except OpError:
-        return names
-    for entry in remotes.values():
+    for entry in _read_file()["remotes"].values():
         if not isinstance(entry, dict):
             continue
         token = entry.get("token")

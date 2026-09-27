@@ -151,3 +151,27 @@ def test_local_plain_output_keeps_control_characters(tmp_path: Path) -> None:
     )
     plain = run_cli(tmp_path, "show", "LOC-1", color=True)
     assert "Local \x1b]0;t\x07 title" in plain.stdout
+
+
+def test_hosted_plain_errors_replace_control_characters(
+    hosted_env: HostedEnv,  # noqa: F811 - the fixture imported above
+    tmp_path: Path,
+) -> None:
+    """A server-derived error can quote another user's text (``FLAG_ALREADY_SET``
+    quotes the standing needs-human reason): stderr is scrubbed too (SPEC §4)."""
+    from tests.test_remote.hosted import make_repo, run_cli
+
+    repo = make_repo(tmp_path / "repo")
+    assert run_cli(repo, "remote", "attach", "team", "demo").exit_code == 0
+    hosted_env.server_op("task.create", {"title": "Flagged"}, actor="human:alice")
+    hosted_env.server_op(
+        "task.needs_human",
+        {"task": "DEM-1", "flag_reason": "Need: \x1b]0;pwned\x07 a call \x9b2J now"},
+        actor="human:alice",
+    )
+    again = run_cli(repo, "needs-human", "DEM-1", "Need: another", color=True)
+    assert again.exit_code == 1, again.output
+    assert "already has the needs_human flag set" in again.stderr
+    for raw in ("\x1b", "\x07", "\x9b"):
+        assert raw not in again.stderr
+    assert "Need: �]0;pwned� a call �2J now" in again.stderr

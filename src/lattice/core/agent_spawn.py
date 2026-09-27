@@ -89,6 +89,8 @@ def scrub_remote_secrets(env: MutableMapping[str, str]) -> None:
     Every ``LATTICE_REMOTE_*`` variable, and every variable a configured remote
     names for its token or a proxy header. A review agent or a hook command
     never needs them; the ``lattice`` process that spawns it keeps them.
+    Raises ``OpError`` (``VALIDATION_ERROR``) when ``remotes.json`` is not a
+    private file: the caller must not start the child.
     """
     from lattice.remote.config import secret_env_names
 

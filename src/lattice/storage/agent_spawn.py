@@ -17,6 +17,7 @@ import time
 from collections.abc import Sequence
 from pathlib import Path
 
+from lattice.core.errors import OpError
 from lattice.core.agent_spawn import (
     Backend,
     ProgressCallback,
@@ -58,7 +59,12 @@ class HeadlessBackend(Backend):
         # Strip the firing session's identity (CLAUDECODE + c11/cmux vars) so
         # the headless agent can't rename the host tab or think it's nested.
         env = os.environ.copy()
-        scrub_host_session_env(env)
+        try:
+            scrub_host_session_env(env)
+        except OpError as exc:
+            # remotes.json could not be read safely: start nothing with an
+            # environment that may still hold a remote's credentials.
+            return _failure_result(req, exc.message, duration=0.0)
         for k, v in req.extra_env.items():
             env[k] = v
 

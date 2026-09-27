@@ -33,9 +33,9 @@ def board_or_exit(is_json: bool) -> LocalBoard | HostedBoard:
     except OpError as exc:
         output_error(exc.message, exc.code, is_json)
     if isinstance(board, HostedBoard):
-        from lattice.remote.session import scrub_stdout
+        from lattice.remote.session import scrub_output
 
-        scrub_stdout()
+        scrub_output()
     return board
 
 

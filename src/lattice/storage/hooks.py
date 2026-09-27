@@ -8,6 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from lattice.core.errors import OpError
+
 HOOK_TIMEOUT_SECONDS = 10
 
 
@@ -34,7 +36,12 @@ def execute_hooks(
     if not hooks:
         return
 
-    env = _build_env(lattice_dir, task_id, event)
+    try:
+        env = _build_env(lattice_dir, task_id, event)
+    except OpError as exc:
+        # remotes.json is not private: run no hook with credentials in reach.
+        print(f"lattice: hooks skipped: {exc.message}", file=sys.stderr)
+        return
     stdin_data = json.dumps(event, sort_keys=True, separators=(",", ":"))
 
     # 1. post_event (catch-all)
@@ -147,7 +154,12 @@ def execute_resource_hooks(
     if not hooks:
         return
 
-    env = _build_resource_env(lattice_dir, resource_id, resource_name, event)
+    try:
+        env = _build_resource_env(lattice_dir, resource_id, resource_name, event)
+    except OpError as exc:
+        # remotes.json is not private: run no hook with credentials in reach.
+        print(f"lattice: hooks skipped: {exc.message}", file=sys.stderr)
+        return
     stdin_data = json.dumps(event, sort_keys=True, separators=(",", ":"))
 
     # post_event (catch-all)

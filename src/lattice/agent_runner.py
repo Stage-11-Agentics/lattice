@@ -101,7 +101,12 @@ def _run_agent_mode() -> int:
     # spawned agent can't rename the host tab or think it's nested. See
     # lattice.core.agent_spawn.scrub_host_session_env.
     env = os.environ.copy()
-    scrub_host_session_env(env)
+    try:
+        scrub_host_session_env(env)
+    except Exception as exc:  # noqa: BLE001 - OpError: remotes.json is not private
+        _emit_failure(out_path, str(exc), code=2)
+        _maybe_set_c11_metadata(label, status="failed")
+        return 2
 
     # Stream stdout/stderr live so the c11/terminal pane hosting this
     # wrapper shows output as the agent produces it, rather than dumping

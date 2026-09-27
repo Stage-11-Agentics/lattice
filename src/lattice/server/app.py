@@ -121,6 +121,13 @@ class ServerState:
         self.heartbeat_seconds: float = config.stream.heartbeat_seconds
         #: The event loop serving requests (set at startup); streams are woken on it.
         self.loop: asyncio.AbstractEventLoop | None = None
+        #: Pending operations, ``(slug, token_id, op_id) -> count`` (SPEC §8.6, op
+        #: status): joined once a request carrying a client ``op_id`` passed the
+        #: per-token limits, before admission; left after its finish step recorded
+        #: the commit, or after rollback, rejection, or a lock timeout. A count, so
+        #: a retry queued behind its own first attempt keeps the pair pending.
+        #: Touched only on the event loop.
+        self.pending_ops: dict[tuple[str, str, str], int] = {}
 
     def _tokens_reloaded(self, **fields: Any) -> None:
         level = "info" if fields.get("ok") else "error"
@@ -636,7 +643,7 @@ async def op_request(request: Request, state: ServerState) -> Response:
     try:
         state.limits.take_op(token.id)
         raw = await read_body(request, state, token)
-        write, _body = parse_envelope(request, state, token, op_name, raw)
+        write, body = parse_envelope(request, state, token, op_name, raw)
         state.disk.check()
 
         def work() -> Any:
@@ -644,8 +651,18 @@ async def op_request(request: Request, state: ServerState) -> Response:
                 project.admit()
                 return project.run_write(write)
 
-        async with state.registry.admitted(project):
-            outcome = await in_worker(work)
+        # A request without a client op_id has nothing to look up (SPEC §8.4).
+        pending = (slug, token.id, write.caller.origin["op_id"]) if body.get("op_id") else None
+        if pending is not None:
+            state.pending_ops[pending] = state.pending_ops.get(pending, 0) + 1
+        try:
+            async with state.registry.admitted(project):
+                outcome = await in_worker(work)
+        finally:
+            if pending is not None:
+                left = state.pending_ops.pop(pending) - 1
+                if left:
+                    state.pending_ops[pending] = left
         log_fields["seq"] = outcome.seq
         if outcome.replayed:
             log_fields["replayed"] = True
@@ -662,8 +679,10 @@ async def op_request(request: Request, state: ServerState) -> Response:
 
 async def op_status(request: Request, state: ServerState) -> Response:
     """``GET /v1/projects/{slug}/ops/{op_id}``: the outcome of one of the caller's
-    own operations (SPEC §8.6). A loaded project answers from memory without
-    admission; one that has never loaded is admitted (and loads) first."""
+    own operations (SPEC §8.6): ``committed``, ``in_flight`` (still pending,
+    possibly queued for the locks), or ``not_found``. A loaded project answers
+    from memory without admission; one that has never loaded is admitted (and
+    loads) first."""
     slug = request.path_params["slug"]
     op_id = request.path_params["op"]
     log_fields = request.scope["state"]["log"]
@@ -677,6 +696,13 @@ async def op_status(request: Request, state: ServerState) -> Response:
                 pass
         project.require_loaded()
         data = await in_worker(lambda: project.op_status(token.id, op_id))
+        if data["state"] == "not_found":
+            if (slug, token.id, op_id) in state.pending_ops:
+                data = {"state": "in_flight"}
+            else:
+                # It may have committed and left the set between the two checks
+                # (it leaves only after its commit is recorded): look again.
+                data = await in_worker(lambda: project.op_status(token.id, op_id))
         return envelope_ok(data)
 
     return await _with_token(request, state, run)
