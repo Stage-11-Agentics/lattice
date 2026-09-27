@@ -30,7 +30,6 @@ import dataclasses
 import json
 import re
 import time
-import traceback
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict
 from pathlib import Path
@@ -58,7 +57,7 @@ from lattice.server import admin
 from lattice.server.config import ServerConfig
 from lattice.server.journal import fingerprint
 from lattice.server.limits import DiskFloor, TokenLimits, check_event_data_cap
-from lattice.server.log import ServerLog
+from lattice.server.log import ServerLog, exception_fields
 from lattice.server.project import Project, WriteRequest
 from lattice.server.protocol import (
     HEADER_CLIENT_VERSION,
@@ -208,23 +207,12 @@ def endpoint(
         except LockTimeout as exc:
             log_fields["error_code"] = "BOARD_BUSY"
             return envelope_error(OpError("BOARD_BUSY", str(exc)))
-        except WorkerCrash as exc:
-            log_fields["error_code"] = "INTERNAL_ERROR"
-            state.log.error(
-                "op_crashed",
-                exception=type(exc.original).__name__,
-                message=str(exc.original)[:500],
-                traceback="".join(traceback.format_exception(exc.original))[-4000:],
-                **{k: log_fields.get(k) for k in ("project", "op", "op_id", "token_id")},
-            )
-            return internal_error()
         except Exception as exc:  # noqa: BLE001 - a bug must answer 500, never drop the loop
+            original = exc.original if isinstance(exc, WorkerCrash) else exc
             log_fields["error_code"] = "INTERNAL_ERROR"
             state.log.error(
                 "op_crashed" if log_fields.get("op") else "request_crashed",
-                exception=type(exc).__name__,
-                message=str(exc)[:500],
-                traceback="".join(traceback.format_exception(exc))[-4000:],
+                **exception_fields(original),
                 **{k: log_fields.get(k) for k in ("project", "op", "op_id", "token_id")},
             )
             return internal_error()
@@ -298,9 +286,9 @@ async def read_body(request: Request, state: ServerState, token: TokenRecord) ->
         state.limits.take_bytes(token.id, length)
     received = bytearray()
     async for chunk in request.stream():
+        if len(received) + len(chunk) > limit:
+            raise too_large  # checked before copying: nothing is buffered past the limit
         received.extend(chunk)
-        if len(received) > limit:
-            raise too_large
         if declared is None:
             state.limits.take_bytes(token.id, len(chunk))
     return bytes(received)
@@ -417,42 +405,26 @@ def _parse_envelope(
     if expect_last is not None and not isinstance(expect_last, str):
         raise OpError("VALIDATION_ERROR", "expect.last_event_id must be a string.")
 
-    actor = body.get("actor")
-    actor_name = body.get("actor_name")
-    if actor is not None and not isinstance(actor, str):
-        raise OpError("VALIDATION_ERROR", "actor must be a string.")
-    if actor_name is not None:
-        if not isinstance(actor_name, str):
-            raise OpError("VALIDATION_ERROR", "actor_name must be a string.")
-        check_path_component(actor_name, "session name")
     authenticated = token.authenticated_origin()
     if getattr(op_cls, "no_actor", False):
-        # SPEC §3.7: the token authorizes these as its own default actor.
+        # SPEC §3.7: these take no actor. The envelope's actor and actor_name are
+        # ignored (not authorized, not fingerprinted, not logged); the token
+        # authorizes the call as its own default actor, recorded in
+        # origin.authenticated.
         if token.default_actor is None:
             raise OpError(
                 "MISSING_ACTOR",
                 f"operation {op_name} runs as the token's default actor, and token "
                 f"{token.id} has none (it needs exactly one literal actor pattern).",
             )
+        actor, actor_name = None, None
         authenticated["actor"] = token.default_actor
-    elif actor_name is None:
-        if actor is None:
-            actor = token.default_actor
-            if actor is None:
-                raise OpError(
-                    "MISSING_ACTOR",
-                    f"no actor given, and token {token.id} has no single default actor; "
-                    "pass --actor.",
-                )
-        if not validate_actor(actor):
-            raise OpError(
-                "INVALID_ACTOR",
-                f"Invalid actor format: '{actor}'. "
-                "Expected prefix:identifier (e.g., human:atin, agent:claude).",
-            )
-    log_fields["actor"] = actor if actor_name is None else f"name:{actor_name}"
-    if actor is not None and actor_name is None:
-        token.authorize_actor(actor)
+        log_fields["actor"] = token.default_actor
+    else:
+        actor, actor_name = _resolve_request_actor(body, token)
+        log_fields["actor"] = actor if actor_name is None else f"name:{actor_name}"
+        if actor_name is None:
+            token.authorize_actor(actor)
 
     caller = Caller(
         actor=actor,
@@ -465,9 +437,7 @@ def _parse_envelope(
         attestations=attestations,
         expect_last_event_id=expect_last,
     )
-    fp = fingerprint(
-        op_name, params_json, body.get("actor"), actor_name, attestations, expect_last
-    )
+    fp = fingerprint(op_name, params_json, actor, actor_name, attestations, expect_last)
     write = WriteRequest(
         op=op_name,
         params=params,
@@ -477,6 +447,35 @@ def _parse_envelope(
         authorize=lambda identity, _caller: token.authorize_actor(identity),
     )
     return write, body
+
+
+def _resolve_request_actor(body: dict, token: TokenRecord) -> tuple[str | None, str | None]:
+    """The envelope's ``(actor, actor_name)``: a session name checked as one safe path
+    component (it is authorized later, by ``execute``, once resolved), else a string
+    actor defaulted from the token and validated."""
+    actor = body.get("actor")
+    actor_name = body.get("actor_name")
+    if actor is not None and not isinstance(actor, str):
+        raise OpError("VALIDATION_ERROR", "actor must be a string.")
+    if actor_name is not None:
+        if not isinstance(actor_name, str):
+            raise OpError("VALIDATION_ERROR", "actor_name must be a string.")
+        check_path_component(actor_name, "session name")
+        return None, actor_name  # a session wins over --actor, as locally
+    if actor is None:
+        actor = token.default_actor
+        if actor is None:
+            raise OpError(
+                "MISSING_ACTOR",
+                f"no actor given, and token {token.id} has no single default actor; pass --actor.",
+            )
+    if not validate_actor(actor):
+        raise OpError(
+            "INVALID_ACTOR",
+            f"Invalid actor format: '{actor}'. "
+            "Expected prefix:identifier (e.g., human:atin, agent:claude).",
+        )
+    return actor, None
 
 
 def result_json(result: OpResult) -> dict:
@@ -701,7 +700,16 @@ async def task_list(request: Request, state: ServerState) -> Response:
 
 
 async def not_found(request: Request, state: ServerState) -> Response:
-    raise OpError("NOT_FOUND", f"no route {request.method} {request.url.path}")
+    """No such route. Under ``/v1`` the caller is authenticated first (protocol,
+    credential, in-flight limit), so an unauthenticated request learns nothing
+    about which paths exist (AC-11)."""
+
+    async def missing(_token: TokenRecord | None = None) -> Response:
+        raise OpError("NOT_FOUND", f"no route {request.method} {request.url.path}")
+
+    if request.url.path == "/v1" or request.url.path.startswith("/v1/"):
+        return await _with_token(request, state, missing)
+    return await missing()
 
 
 # ---------------------------------------------------------------------------

@@ -44,7 +44,7 @@ from lattice.server.journal import (
     now_ms,
     rotate_epoch,
 )
-from lattice.server.log import ServerLog
+from lattice.server.log import ServerLog, describe_error
 from lattice.storage.fs import MutationKind, atomic_write, ensure_dir, recording, unlink_path
 from lattice.storage.locks import LockTimeout
 from lattice.storage.operations import AuthoritativeLogError, discover_task_authorities
@@ -204,7 +204,7 @@ class Project:
             with self.locked():
                 self._load()
         except BaseException as exc:
-            self._mark_unavailable(f"load failed: {type(exc).__name__}: {exc}")
+            self._mark_unavailable(f"load failed: {describe_error(exc)}")
             if not isinstance(exc, Exception):
                 raise
 
@@ -332,7 +332,7 @@ class Project:
                 }
             )
         except BaseException as exc:
-            self._mark_unavailable(f"journal append failed: {type(exc).__name__}: {exc}")
+            self._mark_unavailable(f"journal append failed: {describe_error(exc)}")
             raise OpError("BOARD_UNAVAILABLE", f"project {self.slug} is unavailable") from exc
         self._remember_watched()
         self.log.warning("external_change", project=self.slug, paths=changed, seq=seq)
@@ -432,7 +432,7 @@ class Project:
         except BaseException as exc:
             # The commit point failed: durability unknown, so quarantine (SPEC §8.6).
             self._log_uncommitted(tracker, op, op_id)
-            self._mark_unavailable(f"journal append failed: {type(exc).__name__}: {exc}")
+            self._mark_unavailable(f"journal append failed: {describe_error(exc)}")
             raise OpError(
                 "BOARD_UNAVAILABLE",
                 f"project {self.slug} could not record operation {op_id}; it is "

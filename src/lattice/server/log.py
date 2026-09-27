@@ -10,10 +10,13 @@ is written.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 import threading
+import traceback
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, TextIO
 
 _LEVELS = {"debug": 10, "info": 20, "warning": 30, "error": 40}
@@ -73,3 +76,29 @@ class ServerLog:
 
     def error(self, event: str, **fields: Any) -> None:
         self.emit("error", event, **fields)
+
+
+def describe_error(exc: BaseException) -> str:
+    """A one-line description with no exception message: the type, plus the errno
+    text for an ``OSError`` (a fixed system string, never request data)."""
+    name = type(exc).__name__
+    if isinstance(exc, OSError) and exc.errno is not None:
+        return f"{name} [Errno {exc.errno}] {os.strerror(exc.errno)}"
+    return name
+
+
+def exception_fields(exc: BaseException) -> dict[str, Any]:
+    """Log fields for a crash: exception types and stack frames, never messages or
+    values, which can hold payload text or credentials (SPEC §8.11, G-7)."""
+    chain: list[str] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen and len(chain) < 5:
+        seen.add(id(current))
+        chain.append(describe_error(current))
+        current = current.__cause__ or current.__context__
+    frames = [
+        f"{Path(frame.filename).name}:{frame.lineno} in {frame.name}"
+        for frame in traceback.extract_tb(exc.__traceback__)
+    ]
+    return {"exception": type(exc).__name__, "chain": chain, "frames": frames[-40:]}

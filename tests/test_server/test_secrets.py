@@ -85,3 +85,24 @@ def test_token_parsing_handles_underscores_and_hyphens_in_secrets() -> None:
     for _ in range(50):
         secret = tokens.new_secret()
         assert tokens.parse_token(tokens.format_token(token_id, secret)) == (token_id, secret)
+
+
+def test_a_crash_carrying_a_secret_never_reaches_the_log(root: Path) -> None:
+    """A1: crash logs hold exception types and stack frames, never messages or values."""
+    data = tokens.create_token(root, user="human:alice", machine="m", all_projects=True)
+    token = data["token"]
+    _, secret = tokens.parse_token(token)
+    raw_secret = tokens.new_secret()  # a bare 43-character secret, no lat_ prefix
+    with running_server(root) as server:
+        for text in (raw_secret, token, f"payload-{raw_secret}-tail"):
+            status, _, body = server.op("alpha", "xtest.leak", {"text": text}, token=token)
+            assert status == 500 and body["error"]["code"] == "INTERNAL_ERROR"
+            assert raw_secret not in json.dumps(body)
+        log_text = server.log_stream.getvalue()
+        crashes = [x for x in server.log_lines if x["event"] == "op_crashed"]
+    assert len(crashes) == 3
+    assert crashes[0]["exception"] == "RuntimeError"
+    assert crashes[0]["chain"] == ["RuntimeError", "ValueError"]
+    assert any("server_ops.py" in f for f in crashes[0]["frames"])
+    for leaked in (raw_secret, secret, token):
+        assert leaked not in log_text

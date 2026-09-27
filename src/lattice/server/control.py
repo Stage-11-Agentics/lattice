@@ -202,15 +202,20 @@ def run_request(project: Any, path: Path, log: Any = None) -> dict:
     except OpError as exc:
         return {"ok": False, "error": exc.to_dict()}
     except Exception as exc:  # noqa: BLE001 - answered and logged, never raised
+        from lattice.server.log import describe_error, exception_fields
+
         if log is not None:
             log.error(
                 "control_request_crashed",
                 request=path.stem,
                 action=str(request.get("action"))[:64],
-                exception=type(exc).__name__,
-                message=str(exc)[:500],
+                **exception_fields(exc),
             )
         return {
             "ok": False,
-            "error": {"code": "INTERNAL_ERROR", "message": f"{type(exc).__name__}: {exc}"},
+            "error": {
+                "code": "INTERNAL_ERROR",
+                "message": f"the server failed running this request ({describe_error(exc)}); "
+                "see its log",
+            },
         }

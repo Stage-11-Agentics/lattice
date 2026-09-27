@@ -37,6 +37,7 @@ from lattice.core.errors import OpError
 from lattice.core.events import utc_now
 from lattice.core.ids import generate_instance_id, validate_actor
 from lattice.server.config import TOKENS_JSON
+from lattice.server.log import describe_error
 from lattice.storage.fs import atomic_write
 
 TOKEN_PREFIX = "lat_"
@@ -218,7 +219,7 @@ class TokenStore:
                 self._by_id = {}
                 self._key = key
                 if self.on_reload:
-                    self.on_reload(ok=False, error=f"{type(exc).__name__}: {exc}")
+                    self.on_reload(ok=False, error=describe_error(exc))
                 return
             self._by_id = {r.id: r for r in records}
             self._key = key

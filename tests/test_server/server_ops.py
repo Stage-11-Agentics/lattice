@@ -124,3 +124,21 @@ class NoActor:
 
     def run(self, ctx: OpContext, p: NoActorParams) -> OpResult:
         return OpResult(value={"actor": ctx.actor}, idempotent=True)
+
+
+@dataclass(frozen=True, kw_only=True)
+class LeakParams(CommonParams):
+    text: str
+
+
+@operation("xtest.leak")
+class Leak:
+    """Raises an exception whose message is a parameter value (a careless plugin)."""
+
+    Params = LeakParams
+
+    def run(self, ctx: OpContext, p: LeakParams) -> OpResult:
+        try:
+            raise ValueError(f"inner {p.text}")
+        except ValueError as exc:
+            raise RuntimeError(f"could not handle {p.text}") from exc
