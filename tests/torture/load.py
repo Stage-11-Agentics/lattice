@@ -1,37 +1,42 @@
 """The load rig for AC-42 (``tests/torture/test_load.py``): a server subprocess
-holding a 1,000-task board, readers, writers, and followers, with write latency
-measured per operation.
+holding a 1,000-task board, with readers, writers, and followers in their
+specified roles, and write latency measured per operation.
 
 Shared by ``test_readers_writers`` (H-15) and ``test_with_dashboards`` (H-13b),
-which adds dashboard viewers to the same rig::
+which adds dashboard viewers to the same rig (fixture ``load_rig`` in
+``tests/torture/conftest.py``)::
 
-    rig = LoadRig.build(tmp_path, tasks=1000)
-    try:
-        rig.start_followers(5)
-        readers = rig.start_readers(20)
-        latencies = rig.run_writers(5, seconds=60)   # blocks for the duration
-        reads = rig.stop_readers(readers)
-    finally:
-        rig.close()
-    assert p95(latencies) < 0.5
+    def test_x(load_rig: LoadRig) -> None:
+        load_rig.start_followers(5)
+        readers = load_rig.start_readers(20)
+        latencies = load_rig.run_writers(5, seconds=60)   # blocks; fails fast
+        reads = load_rig.stop_readers(readers)
+        assert p95(latencies) < 0.5
 
-- A **reader** is a process looping ``list --json`` from its own checkout with no
-  follower, so every read is a catch-up plus a ``list`` (SPEC §9.5).
-- A **follower** is ``lattice sync --follow`` in its own checkout.
-- A **writer** is a thread posting mixed operations over HTTP with an ``op_id``;
+Roles and cadence (the same shape as H-13b's harness):
+
+- A **reader** is a long-lived process on its own bound checkout (no follower),
+  running the real client's ``lattice list --json`` every
+  :data:`READ_INTERVAL_SECONDS`, so each read is a catch-up plus a ``list``
+  (SPEC §9.5). Readers start staggered across one interval.
+- A **follower** is ``lattice sync --follow`` on its own checkout.
+- A **writer** is a thread with one keep-alive HTTP connection, posting one
+  mixed operation (with an ``op_id``) every :data:`WRITE_INTERVAL_SECONDS`;
   its latency is one operation's round trip, what ``HostedBoard.execute`` waits
   for before its post-write sync.
 
-Checkouts are directories holding only ``.lattice-remote.json``; each gets its
-initial sync before the measured window. ``TORTURE_LOAD_SECONDS`` and
-``TORTURE_LOAD_TASKS`` (not ``LATTICE_*`` names: the suite strips those) shrink
-the run for a quick local check. ``TORTURE_CLIENT_DIR`` puts the client
-checkouts elsewhere (a tmpfs): on one box every client cache fsyncs on the
-server's disk, which a real deployment's clients never do.
+Every reader, follower, writer, and loader has its own token, as separate
+machines would (one token would hit ``max_inflight_per_token`` and the per-token
+rate). A reader or follower that dies fails the run at once; every reader ends
+its output with a ``done`` line. ``TORTURE_CLIENT_DIR`` (not a ``LATTICE_*``
+name: the suite strips those) puts client checkouts elsewhere, for example a
+tmpfs, so client caches stop sharing the server's disk; it never changes the
+workload.
 """
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import random
@@ -59,8 +64,8 @@ from tests.torture.harness import (
 )
 from tests.torture.rehearsal import read_jsonl, start_scripted
 
-LOAD_SECONDS = float(os.environ.get("TORTURE_LOAD_SECONDS", "60"))
-LOAD_TASKS = int(os.environ.get("TORTURE_LOAD_TASKS", "1000"))
+READ_INTERVAL_SECONDS = 5.0
+WRITE_INTERVAL_SECONDS = 0.2
 
 
 def p95(values: list[float]) -> float:
@@ -71,20 +76,22 @@ def p95(values: list[float]) -> float:
 
 
 @dataclass
+class WriterReport:
+    latencies: list[float] = field(default_factory=list)
+    finished: bool = False
+
+
+@dataclass
 class LoadRig:
     work: Path
     server: ServerProcess
-    client: Client
-    token: str
     tasks: list[str]
     checkouts: int = 0
     procs: list[subprocess.Popen] = field(default_factory=list)
-    #: Each checkout's own client (and token): every reader, follower, and writer
-    #: is its own machine, as far as the server's per-token limits go.
+    #: Each checkout's own client (and token).
     clients: dict[Path, Client] = field(default_factory=dict)
-    #: Where client checkouts live: under *work*, or under ``TORTURE_CLIENT_DIR``
-    #: (for example a tmpfs), so client cache writes stop sharing the server's disk.
-    client_dir: Path = field(default_factory=lambda: Path())
+    client_dir: Path = field(default_factory=Path)
+    writers: list[WriterReport] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         base = os.environ.get("TORTURE_CLIENT_DIR")
@@ -95,28 +102,33 @@ class LoadRig:
         )
 
     @classmethod
-    def build(cls, work: Path, *, tasks: int = LOAD_TASKS) -> LoadRig:
-        """Start a server and fill project ``demo`` with *tasks* tasks over HTTP."""
+    def build(cls, work: Path, *, tasks: int = 1000) -> LoadRig:
+        """Start a server and fill project ``demo`` with *tasks* tasks over HTTP. The
+        server is stopped again if anything here fails."""
         server = ServerProcess(make_root(work, projects={PROJECT: {"code": "DEM"}}))
         server.start()
-        client = server.client(work / "home", user="human:alice", machine="load-box")
-        token = server.mint(user="human:loader", machine="load-box")
-        loaders = [server.mint(user="human:loader", machine=f"loader-{n}") for n in range(8)]
+        try:
+            loaders = [server.mint(user="human:loader", machine=f"loader-{n}") for n in range(8)]
 
-        def create(n: int) -> str:
-            status, body = server.op(
-                "task.create",
-                {"title": f"Load task {n}", "description": "x" * 200},
-                token=loaders[n % len(loaders)],
-                actor="agent:loader",
-                op_id=generate_op_id(),
-            )
-            assert status == 200, body
-            return body["data"]["result"]["task"]["short_id"]
+            def create(n: int) -> str:
+                status, body = server.op(
+                    "task.create",
+                    {"title": f"Load task {n}", "description": "x" * 200},
+                    token=loaders[n % len(loaders)],
+                    actor="agent:loader",
+                    op_id=generate_op_id(),
+                )
+                assert status == 200, body
+                return body["data"]["result"]["task"]["short_id"]
 
-        with ThreadPoolExecutor(8) as pool:
-            short_ids = list(pool.map(create, range(tasks)))
-        return cls(work=work, server=server, client=client, token=token, tasks=short_ids)
+            with ThreadPoolExecutor(8) as pool:
+                short_ids = list(pool.map(create, range(tasks)))
+            return cls(work=work, server=server, tasks=short_ids)
+        except BaseException:
+            server.stop()
+            raise
+
+    # -- clients ------------------------------------------------------------
 
     def checkout(self, label: str) -> Path:
         """A bound directory with its initial sync done, for a client of its own
@@ -130,7 +142,7 @@ class LoadRig:
         )
         client = self.server.client(self.client_dir / f"home-{name}", machine=name)
         self.clients[path] = client
-        lattice(client, path, "sync", timeout=300)
+        lattice(client, path, "sync", timeout=600)
         return path
 
     def checkouts_for(self, label: str, n: int) -> list[Path]:
@@ -142,20 +154,20 @@ class LoadRig:
         followers = []
         for path in self.checkouts_for("follower", n):
             client = self.clients[path]
-            proc = spawn_lattice(
-                client, path, "sync", "--follow", log=path.parent / f"{path.name}.log"
-            )
+            log = path.parent / f"{path.name}.log"
+            proc = spawn_lattice(client, path, "sync", "--follow", log=log)
             self.procs.append(proc)
             followers.append(proc)
-            deadline = time.monotonic() + 30
+            deadline = time.monotonic() + 60
             while not lattice_json(client, path, "remote", "status")["follower"]["live"]:
-                assert proc.poll() is None, (path.parent / f"{path.name}.log").read_text()
+                assert proc.poll() is None, log.read_text()
                 assert time.monotonic() < deadline, "follower never went live"
                 time.sleep(0.2)
         return followers
 
     def start_readers(self, n: int) -> list[tuple[subprocess.Popen, Path, Path]]:
-        """*n* reader processes looping catch-up plus ``list`` until :meth:`stop`."""
+        """*n* reader processes, each running ``list`` every READ_INTERVAL_SECONDS
+        from its own checkout, staggered across one interval, until :meth:`stop_readers`."""
         readers = []
         stop = self.work / "stop-readers"
         for k, path in enumerate(self.checkouts_for("reader", n)):
@@ -168,6 +180,8 @@ class LoadRig:
                     "out": str(out),
                     "stop": str(stop),
                     "summary": True,
+                    "interval": READ_INTERVAL_SECONDS,
+                    "offset": READ_INTERVAL_SECONDS * k / n,
                 },
                 self.work / f"reader-{k}",
             )
@@ -175,57 +189,77 @@ class LoadRig:
             readers.append((proc, path, out))
         return readers
 
-    def run_writers(self, n: int, *, seconds: float = LOAD_SECONDS) -> list[float]:
-        """*n* writer threads posting mixed operations for *seconds*; returns every
-        operation's latency in seconds. Any failed operation fails the run."""
-        latencies: list[float] = []
-        errors: list[str] = []
-        lock = threading.Lock()
+    # -- writers ------------------------------------------------------------
+
+    def run_writers(self, n: int, *, seconds: float) -> list[float]:
+        """*n* writers, one operation every WRITE_INTERVAL_SECONDS each, for
+        *seconds*; returns every operation's latency. Fails at once if an
+        operation fails or a reader or follower dies, and afterwards unless every
+        writer finished with samples (``self.writers``)."""
+        self.writers = [WriterReport() for _ in range(n)]
         tokens = [self.server.mint(user="human:writer", machine=f"writer-{w}") for w in range(n)]
+        errors: list[str] = []
+        abort = threading.Event()
         deadline = time.monotonic() + seconds
 
         def writer(w: int) -> None:
             rng = random.Random(w)
+            report = self.writers[w]
+            conn: http.client.HTTPConnection | None = None
+            next_at = time.monotonic()
             k = 0
-            while time.monotonic() < deadline and not errors:
-                k += 1
-                task = rng.choice(self.tasks)
-                roll = rng.random()
-                if roll < 0.2:
-                    op, params = "task.create", {"title": f"writer {w} task {k}"}
-                elif roll < 0.7:
-                    op, params = "task.comment", {"task": task, "text": f"w{w} c{k}"}
-                elif roll < 0.85:
-                    op, params = "task.assign", {"task": task, "actor_id": f"agent:w{w}"}
-                else:
-                    priority = rng.choice(["low", "medium", "high"])
-                    op, params = "task.update", {"task": task, "pairs": [f"priority={priority}"]}
-                started = time.monotonic()
-                status, body = self.server.op(
-                    op, params, token=tokens[w], actor=f"agent:w{w}", op_id=generate_op_id()
-                )
-                elapsed = time.monotonic() - started
-                with lock:
+            try:
+                while time.monotonic() < deadline and not abort.is_set():
+                    time.sleep(max(0.0, next_at - time.monotonic()))
+                    next_at = max(next_at + WRITE_INTERVAL_SECONDS, time.monotonic())
+                    k += 1
+                    op, params = _mixed_op(rng, self.tasks, w, k)
+                    if conn is None:
+                        conn = http.client.HTTPConnection(
+                            "127.0.0.1", self.server.port, timeout=60
+                        )
+                    started = time.monotonic()
+                    status, body = _post(conn, op, params, tokens[w], f"agent:w{w}")
+                    report.latencies.append(time.monotonic() - started)
                     if status != 200:
-                        errors.append(f"{op} {params}: {status} {body}")
-                    latencies.append(elapsed)
+                        errors.append(f"writer {w}: {op} {params}: {status} {body}")
+                        abort.set()
+                report.finished = True
+            except Exception as exc:  # noqa: BLE001 - reported, and fails the run
+                errors.append(f"writer {w}: {type(exc).__name__}: {exc}")
+                abort.set()
+            finally:
+                if conn is not None:
+                    conn.close()
 
-        threads = [threading.Thread(target=writer, args=(w,)) for w in range(n)]
+        threads = [threading.Thread(target=writer, args=(w,), daemon=True) for w in range(n)]
         for thread in threads:
             thread.start()
-        for thread in threads:
-            thread.join(timeout=seconds + 120)
+        while any(t.is_alive() for t in threads):
+            dead = [p for p in self.procs if p.poll() is not None]
+            if dead and not abort.is_set():
+                errors.append(f"{len(dead)} reader or follower process(es) died: {dead[0].args}")
+                abort.set()
+            if time.monotonic() > deadline + 120:
+                errors.append("a writer is still running two minutes past the window")
+                abort.set()
+                break
+            time.sleep(0.2)
         assert not errors, errors[:3]
-        return latencies
+        unfinished = [w for w, r in enumerate(self.writers) if not r.finished or not r.latencies]
+        assert not unfinished, f"writers without a full run and samples: {unfinished}"
+        return [x for report in self.writers for x in report.latencies]
 
     def stop_readers(self, readers: list[tuple[subprocess.Popen, Path, Path]]) -> list[dict]:
-        """Stop the readers; return every read (``t0``/``t`` and the task count)."""
+        """Stop the readers; every one must end with its ``done`` line. Returns every
+        read (``t0``/``t``, the task count, any notice)."""
         (self.work / "stop-readers").write_text("")
         rows = []
-        for proc, _path, out in readers:
-            proc.wait(timeout=120)
-            assert proc.returncode == 0, f"reader exited {proc.returncode}"
-            rows += read_jsonl(out)
+        for proc, path, out in readers:
+            proc.wait(timeout=READ_INTERVAL_SECONDS + 120)
+            lines = read_jsonl(out)
+            assert proc.returncode == 0 and lines and lines[-1].get("done"), (path, lines[-1:])
+            rows += [line for line in lines if "cwd" in line]
         return rows
 
     def close(self) -> None:
@@ -236,3 +270,34 @@ class LoadRig:
         if not self.client_dir.is_relative_to(self.work):
             chmod_tree_writable(self.client_dir)
             shutil.rmtree(self.client_dir, ignore_errors=True)
+
+
+def _mixed_op(rng: random.Random, tasks: list[str], w: int, k: int) -> tuple[str, dict]:
+    task = rng.choice(tasks)
+    roll = rng.random()
+    if roll < 0.2:
+        return "task.create", {"title": f"writer {w} task {k}"}
+    if roll < 0.7:
+        return "task.comment", {"task": task, "text": f"w{w} c{k}"}
+    if roll < 0.85:
+        return "task.assign", {"task": task, "actor_id": f"agent:w{w}"}
+    priority = rng.choice(["low", "medium", "high"])
+    return "task.update", {"task": task, "pairs": [f"priority={priority}"]}
+
+
+def _post(
+    conn: http.client.HTTPConnection, op: str, params: dict, token: str, actor: str
+) -> tuple[int, object]:
+    body = json.dumps({"params": params, "actor": actor, "op_id": generate_op_id()})
+    conn.request(
+        "POST",
+        f"/v1/projects/{PROJECT}/ops/{op}",
+        body=body,
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+    )
+    response = conn.getresponse()
+    raw = response.read()
+    try:
+        return response.status, json.loads(raw)
+    except ValueError:
+        return response.status, raw[:200]

@@ -10,11 +10,16 @@ one directory, and writes one JSON line per step to ``spec["out"]``.
   that names a task, the task's short ID and ``last_event_id`` after the write
   (from the command's ``--json`` output, or from ``show`` when the output has
   no snapshot, as for ``plan write``).
-- ``{"mode": "poll", "cwds": [...], "out", "stop": path, "summary"?: bool}``: until *stop* exists,
-  run ``list --json`` from each directory in turn and record when it started
+- ``{"mode": "poll", "cwds": [...], "out", "stop": path, "summary"?: bool,
+  "interval"?: seconds, "offset"?: seconds}``: until *stop* exists, once every
+  *interval* (starting after *offset*, never bursting to catch up), run
+  ``list --json`` from each directory in turn and record when it started
   (``t0``) and returned (``t``) and every task's ``last_event_id`` (with
   ``summary``, only how many tasks it listed), plus any stderr notice (a
   catch-up that could not reach the server, or found it busy, says so there).
+
+Children always report: a run ends with ``{"done": true, ...}``, or with
+``{"crashed": "..."}`` if anything raised.
 
 ``TORTURE_HOST`` replaces ``socket.gethostname()`` (the reported host, SPEC §4).
 """
@@ -89,19 +94,28 @@ def write(spec: dict) -> None:
                         saved[step["save"]] = record["task"]
             fh.write(json.dumps(record) + "\n")
             fh.flush()
+        fh.write(json.dumps({"done": True, "steps": len(spec["steps"])}) + "\n")
 
 
 def poll(spec: dict) -> None:
     stop = Path(spec["stop"])
+    interval = float(spec.get("interval", 0))
+    reads = 0
     with open(spec["out"], "a", encoding="utf-8") as fh:
+        next_at = time.time() + float(spec.get("offset", 0))
         while not stop.exists():
+            # A fixed cadence: one round every *interval*, never a burst to catch up.
+            time.sleep(max(0.0, next_at - time.time()))
+            next_at = max(next_at + interval, time.time())
             for cwd in spec["cwds"]:
                 os.chdir(cwd)
                 started = time.time()
                 code, out, err = _invoke(["list", "--json"])
                 t = time.time()
+                reads += 1
                 if code != 0:
                     fh.write(json.dumps({"cwd": cwd, "t": t, "error": (out + err)[-500:]}) + "\n")
+                    fh.flush()
                     continue
                 tasks = {
                     row.get("short_id") or row["id"]: row.get("last_event_id")
@@ -116,8 +130,19 @@ def poll(spec: dict) -> None:
                     row["tasks"] = tasks
                 fh.write(json.dumps(row) + "\n")
                 fh.flush()
+        fh.write(json.dumps({"done": True, "reads": reads}) + "\n")
+
+
+def main(path: str) -> None:
+    """Run the spec; whatever happens, the last line of ``out`` says how it ended."""
+    spec = json.loads(Path(path).read_text(encoding="utf-8"))
+    try:
+        {"write": write, "poll": poll}[spec["mode"]](spec)
+    except BaseException as exc:
+        with open(spec["out"], "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"crashed": f"{type(exc).__name__}: {exc}"}) + "\n")
+        raise
 
 
 if __name__ == "__main__":
-    spec = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-    {"write": write, "poll": poll}[spec["mode"]](spec)
+    main(sys.argv[1])

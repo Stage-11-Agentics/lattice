@@ -104,50 +104,60 @@ def writer_steps(w: int, tasks: int, writes: int, actor: str) -> list[dict]:
     return steps[:writes]
 
 
+#: How often each directory's poller reads; well inside the 2 s bound.
+POLL_INTERVAL = 0.5
+
+
 def run_writers(
     work: Path,
     writers: list[tuple[Client, Path, list[dict]]],
     poll_dirs: list[tuple[Client, list[Path]]],
 ) -> tuple[list[dict], list[dict]]:
     """Run one scripted writer per ``(client, cwd, steps)``, all starting at once,
-    and one poller per ``(client, dirs)``; return all write records and all polls."""
+    and one poller per directory in each ``(client, dirs)``, reading every
+    :data:`POLL_INTERVAL`; return all write records and all reads. Every child is
+    killed if anything fails, and every child must end with its ``done`` line."""
     stop = work / "stop-polling"
-    pollers = [
-        start_scripted(
-            client,
-            {
+    dirs = [(client, d) for client, ds in poll_dirs for d in ds]
+    children: list = []
+    try:
+        for n, (client, d) in enumerate(dirs):
+            spec = {
                 "mode": "poll",
-                "cwds": [str(d) for d in dirs],
+                "cwds": [str(d)],
                 "out": str(work / f"poll-{n}.jsonl"),
                 "stop": str(stop),
-            },
-            work / f"poll-{n}",
-        )
-        for n, (client, dirs) in enumerate(poll_dirs)
-    ]
-    start_at = time.time() + 2.0  # every writer starts at once
-    procs = [
-        start_scripted(
-            client,
-            {
+                "interval": POLL_INTERVAL,
+                "offset": POLL_INTERVAL * n / len(dirs),
+            }
+            children.append(start_scripted(client, spec, work / f"poll-{n}"))
+        pollers = list(children)
+        start_at = time.time() + 2.0  # every writer starts at once
+        for w, (client, cwd, steps) in enumerate(writers):
+            spec = {
                 "mode": "write",
                 "cwd": str(cwd),
                 "steps": steps,
                 "out": str(work / f"writer-{w}.jsonl"),
                 "start_at": start_at,
-            },
-            work / f"writer-{w}",
-        )
-        for w, (client, cwd, steps) in enumerate(writers)
-    ]
-    try:
-        wait_all(procs, timeout=400)
+            }
+            children.append(start_scripted(client, spec, work / f"writer-{w}"))
+        wait_all(children[len(pollers) :], timeout=400)
         time.sleep(FRESHNESS_SECONDS + 1.0)  # the pollers see the last writes
-    finally:
         stop.write_text("")
         wait_all(pollers, timeout=60)
-    records = [r for w in range(len(writers)) for r in read_jsonl(work / f"writer-{w}.jsonl")]
-    polls = [p for n in range(len(poll_dirs)) for p in read_jsonl(work / f"poll-{n}.jsonl")]
+    finally:
+        stop.write_text("")
+        for proc in children:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=10)
+    writer_lines = [read_jsonl(work / f"writer-{w}.jsonl") for w in range(len(writers))]
+    poll_lines = [read_jsonl(work / f"poll-{n}.jsonl") for n in range(len(dirs))]
+    for lines in [*writer_lines, *poll_lines]:
+        assert lines and lines[-1].get("done"), lines[-1:] or "a child wrote nothing"
+    records = [r for lines in writer_lines for r in lines if "i" in r]
+    polls = [p for lines in poll_lines for p in lines if "cwd" in p]
     failed = [r for r in records if r["exit"] != 0]
     assert not failed, failed[:3]
     assert len(records) == sum(len(steps) for _, _, steps in writers)
@@ -156,12 +166,16 @@ def run_writers(
     return records, polls
 
 
-def assert_fresh(records: list[dict], polls: list[dict], dirs: list[Path]) -> dict[str, float]:
-    worst = freshness(records, polls)
-    assert set(worst) == {str(d) for d in dirs}, worst
-    late = {cwd: delay for cwd, delay in worst.items() if delay > FRESHNESS_SECONDS}
-    assert not late, f"writes visible later than {FRESHNESS_SECONDS}s: {late}"
-    return worst
+def assert_fresh(records: list[dict], polls: list[dict], dirs: list[Path]) -> dict:
+    """Every write was seen from every directory within 2 s of its acknowledgement,
+    by readers that read at least every 2 s."""
+    measured = freshness(records, polls)
+    assert set(measured) == {str(d) for d in dirs}, measured
+    late = {cwd: m for cwd, m in measured.items() if m.delay > FRESHNESS_SECONDS}
+    assert not late, f"writes first seen later than {FRESHNESS_SECONDS}s: {late}"
+    slow = {cwd: m for cwd, m in measured.items() if m.gap > FRESHNESS_SECONDS}
+    assert not slow, f"reads further apart than {FRESHNESS_SECONDS}s: {slow}"
+    return measured
 
 
 def server_heads(server: ServerProcess) -> dict[str, str]:
@@ -472,7 +486,7 @@ def test_t(tmp_path: Path) -> None:
             polling,
         )
         worst = freshness(records, polls)
-        assert all(delay < float("inf") for delay in worst.values()), worst
+        assert all(m.delay < float("inf") for m in worst.values()), worst
         print(f"T worst visibility delay per directory: {worst}")
 
         # Everyone sees the full current state: ten tickets done, on every checkout.

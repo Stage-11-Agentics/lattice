@@ -11,7 +11,13 @@ run side by side on one box::
     alice = server.client(tmp_path / "alice", user="human:alice", machine="laptop")
     lattice(alice, repo, "create", "A task", "--actor", "agent:a")
     server.kill()      # SIGKILL
-    server.start()     # same port, so every client's remote still points at it
+    server.start()     # a new port; every client's remotes.json is rewritten
+
+The server binds ``127.0.0.1:0`` itself: :data:`SERVE_SHIM` runs the real
+``lattice server serve --port 0`` and, once uvicorn listens, writes the bound port
+to ``TORTURE_READY_FILE``, so no port is ever chosen by one process and bound by
+another. Every child process and server started here is registered, and the
+``torture`` conftest reaps whatever a test leaves running, pass or fail.
 
 ``TORTURE_HOST`` (not a ``LATTICE_*`` name: the suite strips those) replaces
 ``socket.gethostname()`` in the CLI subprocess, so one box reports several hosts.
@@ -22,7 +28,6 @@ from __future__ import annotations
 import json
 import os
 import signal
-import socket
 import subprocess
 import sys
 import time
@@ -47,11 +52,54 @@ CLI_SHIM = (
     "cli(prog_name='lattice')\n"
 )
 
+#: ``lattice server serve`` unchanged, except that its uvicorn server reports the
+#: port it bound (``--port 0``) to ``TORTURE_READY_FILE`` once it listens.
+SERVE_SHIM = (
+    "import os\n"
+    "from lattice.server import serve as _serve\n"
+    "_server_class = _serve._server_class\n"
+    "def _reporting(state):\n"
+    "    base = _server_class(state)\n"
+    "    class Reporting(base):\n"
+    "        async def startup(self, sockets=None):\n"
+    "            await super().startup(sockets)\n"
+    "            port = self.servers[0].sockets[0].getsockname()[1]\n"
+    "            path = os.environ['TORTURE_READY_FILE']\n"
+    "            with open(path + '.tmp', 'w') as fh:\n"
+    "                fh.write(str(port))\n"
+    "            os.replace(path + '.tmp', path)\n"
+    "    return Reporting\n"
+    "_serve._server_class = _reporting\n"
+    "from lattice.cli.main import cli\n"
+    "cli(prog_name='lattice')\n"
+)
 
-def free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+#: Every child process and server the harness started, for the conftest's reaper.
+CHILDREN: list[subprocess.Popen] = []
+SERVERS: list[ServerProcess] = []
+
+
+def track(proc: subprocess.Popen) -> subprocess.Popen:
+    CHILDREN.append(proc)
+    return proc
+
+
+def reap_all() -> None:
+    """Stop every server and kill every child still running (unconditional cleanup)."""
+    while SERVERS:
+        server = SERVERS.pop()
+        try:
+            server.stop()
+        except Exception:  # noqa: BLE001 - cleanup keeps going; kill() below
+            server.kill()
+    while CHILDREN:
+        proc = CHILDREN.pop()
+        if proc.poll() is None:
+            proc.kill()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                pass
 
 
 def base_env() -> dict[str, str]:
@@ -71,55 +119,73 @@ class Client:
     machine: str
     host: str | None
     token: str
+    remotes: Path | None = None
 
 
 @dataclass
 class ServerProcess:
-    """``lattice server serve`` as a subprocess on a fixed port."""
+    """``lattice server serve`` as a subprocess on a port it binds itself."""
 
     root: Path
-    port: int = field(default_factory=free_port)
+    port: int = 0
     proc: subprocess.Popen | None = None
     log_path: Path | None = None
     starts: int = 0
+    #: Clients whose remote points straight at this server: rewritten on restart.
+    clients: list[Client] = field(default_factory=list)
 
     @property
     def url(self) -> str:
         return f"http://127.0.0.1:{self.port}"
 
-    def start(self, timeout: float = 20.0) -> None:
+    def start(self, timeout: float = 30.0) -> None:
         assert self.proc is None or self.proc.poll() is not None, "already running"
+        if self not in SERVERS:
+            SERVERS.append(self)
         self.starts += 1
         self.log_path = self.root.parent / f"server-{self.starts}.log"
-        log = open(self.log_path, "wb")  # noqa: SIM115 - the child owns it
-        self.proc = subprocess.Popen(
-            [
-                sys.executable,
-                "-c",
-                CLI_SHIM,
-                "server",
-                "serve",
-                "--root",
-                str(self.root),
-                "--port",
-                str(self.port),
-            ],
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            env=base_env(),
-        )
-        log.close()
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if self.proc.poll() is not None:
-                raise AssertionError(f"server exited {self.proc.returncode}: {self.log()}")
-            try:
-                if http_request("GET", self.url + "/healthz", timeout=1)[0] == 200:
-                    return
-            except OSError:
-                pass
-            time.sleep(0.05)
-        raise AssertionError(f"server not healthy after {timeout}s: {self.log()}")
+        ready = self.root.parent / f"server-{self.starts}.port"
+        ready.unlink(missing_ok=True)
+        env = base_env()
+        env["TORTURE_READY_FILE"] = str(ready)
+        with open(self.log_path, "wb") as log:
+            self.proc = track(
+                subprocess.Popen(
+                    [
+                        sys.executable,
+                        "-c",
+                        SERVE_SHIM,
+                        "server",
+                        "serve",
+                        "--root",
+                        str(self.root),
+                        "--host",
+                        "127.0.0.1",
+                        "--port",
+                        "0",
+                    ],
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    env=env,
+                )
+            )
+        try:
+            deadline = time.monotonic() + timeout
+            while not ready.exists():
+                if self.proc.poll() is not None:
+                    raise AssertionError(f"server exited {self.proc.returncode}: {self.log()}")
+                if time.monotonic() > deadline:
+                    raise AssertionError(f"server did not listen within {timeout}s: {self.log()}")
+                time.sleep(0.02)
+            old_url, self.port = self.url, int(ready.read_text())
+            status = http_request("GET", self.url + "/healthz", timeout=10)[0]
+            assert status == 200, f"healthz answered {status}: {self.log()}"
+        except BaseException:
+            self.kill()
+            raise
+        if old_url != self.url:
+            for client in self.clients:
+                _point_remote(client, self.url)
 
     def log(self) -> str:
         if self.log_path is None or not self.log_path.exists():
@@ -193,7 +259,18 @@ class ServerProcess:
         )
         if host:
             env["TORTURE_HOST"] = host
-        return Client(name=home.name, env=env, user=user, machine=machine, host=host, token=token)
+        client = Client(
+            name=home.name,
+            env=env,
+            user=user,
+            machine=machine,
+            host=host,
+            token=token,
+            remotes=remotes,
+        )
+        if url is None:
+            self.clients.append(client)
+        return client
 
     def op(
         self, op: str, params: dict, *, token: str, project: str = PROJECT, **envelope: Any
@@ -218,6 +295,13 @@ class ServerProcess:
         return self.root / "projects" / project / ".lattice"
 
 
+def _point_remote(client: Client, url: str) -> None:
+    assert client.remotes is not None
+    data = json.loads(client.remotes.read_text())
+    data["remotes"][REMOTE]["url"] = url
+    client.remotes.write_text(json.dumps(data, indent=2) + "\n")
+
+
 def lattice(
     client: Client,
     cwd: Path,
@@ -226,7 +310,7 @@ def lattice(
     timeout: float = 120,
     input: str | None = None,
 ) -> subprocess.CompletedProcess:
-    """``lattice <args>`` as a subprocess in *cwd* for *client*."""
+    """``lattice <args>`` as a subprocess in *cwd* for *client* (killed on timeout)."""
     proc = subprocess.run(
         [sys.executable, "-c", CLI_SHIM, *args],
         cwd=cwd,
@@ -249,12 +333,14 @@ def lattice_json(client: Client, cwd: Path, *args: str) -> Any:
 def spawn_lattice(client: Client, cwd: Path, *args: str, log: Path) -> subprocess.Popen:
     """A long-running ``lattice`` subprocess (``sync --follow``), output to *log*."""
     with open(log, "wb") as fh:
-        return subprocess.Popen(
-            [sys.executable, "-c", CLI_SHIM, *args],
-            cwd=cwd,
-            env=client.env,
-            stdout=fh,
-            stderr=subprocess.STDOUT,
+        return track(
+            subprocess.Popen(
+                [sys.executable, "-c", CLI_SHIM, *args],
+                cwd=cwd,
+                env=client.env,
+                stdout=fh,
+                stderr=subprocess.STDOUT,
+            )
         )
 
 

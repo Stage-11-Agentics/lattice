@@ -27,6 +27,7 @@ from tests.torture.harness import (
     base_env,
     git,
     lattice,
+    track,
 )
 
 SCRIPTED = Path(__file__).with_name("scripted.py")
@@ -169,14 +170,17 @@ def start_scripted(client: Client, spec: dict, path: Path) -> subprocess.Popen:
     spec_path = path.with_suffix(".json")
     spec_path.write_text(json.dumps(spec))
     log = open(path.with_suffix(".log"), "wb")  # noqa: SIM115 - the child owns it
-    proc = subprocess.Popen(
-        [sys.executable, str(SCRIPTED), str(spec_path)],
-        env=client.env,
-        stdout=log,
-        stderr=subprocess.STDOUT,
-    )
-    log.close()
-    return proc
+    try:
+        return track(
+            subprocess.Popen(
+                [sys.executable, str(SCRIPTED), str(spec_path)],
+                env=client.env,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+            )
+        )
+    finally:
+        log.close()
 
 
 def read_jsonl(path: Path) -> list[dict]:
@@ -192,16 +196,26 @@ def wait_all(procs: list[subprocess.Popen], timeout: float) -> None:
         assert proc.returncode == 0, f"scripted client exited {proc.returncode}"
 
 
-def freshness(writes: list[dict], polls: list[dict]) -> dict[str, float]:
-    """For each directory polled, the longest a write stayed invisible there: the
-    greatest delay between a write's acknowledgement and the start of a ``list``
-    that still did not show it (0 when every ``list`` started after the
-    acknowledgement showed it). A write no ``list`` there ever showed is ``inf``.
+@dataclass
+class Freshness:
+    """One directory's measured freshness."""
 
-    So "every write visible within 2 s" is ``freshness(...)[cwd] <= 2`` for every
-    directory: any read that began 2 s after a write saw it. Measuring from the
-    start of the read keeps a slow poll cycle (two cores, a dozen processes) from
-    counting as staleness.
+    delay: float  # worst acknowledgement-to-first-observation delay (inf: never seen)
+    gap: float  # longest time between two completed reads there (the cadence bound)
+    reads: int
+
+
+def freshness(writes: list[dict], polls: list[dict]) -> dict[str, Freshness]:
+    """For each directory polled: for every write, the time from its acknowledgement
+    to the end of the first read there that showed it (0 when a read that ended
+    before the acknowledgement already showed it; ``inf`` when no read ever did),
+    worst case; and the longest gap between consecutive completed reads, from the
+    first write's acknowledgement to the last one's.
+
+    "Every write visible within 2 s" is ``delay <= 2`` in every directory, and it
+    means something only when ``gap <= 2`` too: a read cadence slower than the
+    bound could not have seen a write sooner. Both come from completed reads, so
+    a rare read that finally shows an old write counts the whole wait.
 
     A task's writes come from one writer in order, so a ``list`` showing a task's
     *k*-th ``last_event_id`` shows every earlier write to it too.
@@ -216,21 +230,30 @@ def freshness(writes: list[dict], polls: list[dict]) -> dict[str, float]:
             continue  # an idempotent write: nothing new to see
         order[task].append(event)
         acked.setdefault(task, []).append(record["t"])
+    all_acks = [t for times in acked.values() for t in times]
+    window = (min(all_acks), max(all_acks)) if all_acks else (0.0, 0.0)
     by_cwd: dict[str, list[dict]] = {}
     for poll in polls:
         if "tasks" in poll:
             by_cwd.setdefault(poll["cwd"], []).append(poll)
-    worst: dict[str, float] = {}
+    measured: dict[str, Freshness] = {}
     for cwd, rows in by_cwd.items():
-        stale = 0.0
+        rows.sort(key=lambda r: r["t"])
+        delay = 0.0
         for task, events in order.items():
             index = {event: n for n, event in enumerate(events)}
-            shown = [(row["t0"], index.get(row["tasks"].get(task), -1)) for row in rows]
+            seen_at: list[float | None] = [None] * len(events)
+            for row in rows:
+                k = index.get(row["tasks"].get(task), -1)
+                for j in range(k + 1):
+                    if seen_at[j] is None:
+                        seen_at[j] = row["t"]
             for j, t_ack in enumerate(acked[task]):
-                if not any(k >= j for _, k in shown):
-                    stale = float("inf")
-                    continue
-                missed = [t0 - t_ack for t0, k in shown if k < j and t0 > t_ack]
-                stale = max(stale, *missed, 0.0)
-        worst[cwd] = stale
-    return worst
+                seen = seen_at[j]
+                delay = max(delay, float("inf") if seen is None else max(0.0, seen - t_ack))
+        ends = [window[0]] + [r["t"] for r in rows if window[0] <= r["t"] <= window[1]]
+        after = [r["t"] for r in rows if r["t"] > window[1]]
+        ends += after[:1] or [float("inf")]
+        gap = max(b - a for a, b in zip(ends, ends[1:], strict=False))
+        measured[cwd] = Freshness(delay=delay, gap=gap, reads=len(rows))
+    return measured
