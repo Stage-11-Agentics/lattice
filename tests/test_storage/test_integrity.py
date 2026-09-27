@@ -103,12 +103,12 @@ def test_doctor_output_is_byte_identical_to_the_pre_extraction_golden(
     src = _findings_board(tmp_path)
     args = ["doctor"] + (["--json"] if mode == "json" else [])
     result = CliRunner().invoke(cli, args, env={"LATTICE_ROOT": str(src)})
-    observed = f"exit={result.exit_code}\n" + _normalize(result.output, src)
-    golden = GOLDEN / f"findings.{mode}.txt"
+    observed = {"exit_code": result.exit_code, "output": _normalize(result.output, src)}
+    golden = GOLDEN / f"findings.{mode}.json"
     if os.environ.get("RECORD_DOCTOR_GOLDEN"):
         golden.parent.mkdir(parents=True, exist_ok=True)
-        golden.write_text(observed)
-    assert observed == golden.read_text()
+        golden.write_text(json.dumps(observed, indent=2) + "\n")
+    assert observed == json.loads(golden.read_text())
 
 
 def test_check_board_reports_what_the_cli_prints(tmp_path: Path) -> None:
