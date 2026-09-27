@@ -191,6 +191,20 @@ def _write_owner_marker(board: Path, server_id: str) -> None:
     )
 
 
+def seal_new_board(board: Path) -> Journal:
+    """Finish a board built for a new project (``create`` and ``import``).
+
+    Starts the journal at a new epoch, head 0, with a baseline of the board's
+    current log lengths; creates the control-request directory; writes the
+    owner marker. The caller holds the board's owner flock under
+    :func:`owning_board`. The audit repository (SPEC §8.10) belongs here too.
+    """
+    journal = Journal.create(board)
+    ensure_dir(board / HOSTED_DIR / control.CONTROL_DIR)
+    _write_owner_marker(board, "lattice-server-admin")
+    return journal
+
+
 def create_project(
     root: Path,
     slug: str,
@@ -263,9 +277,7 @@ def create_project(
                     if any(v is not None for v in toggles.values()):
                         config.update({k: v for k, v in toggles.items() if v is not None})
                         atomic_write(board / "config.json", serialize_config(config))
-                    journal = Journal.create(board)
-                    ensure_dir(board / HOSTED_DIR / control.CONTROL_DIR)
-                    _write_owner_marker(board, "lattice-server-admin")
+                    journal = seal_new_board(board)
                 finally:
                     release_owner_flock(fd)
             os.rename(staging, final)
