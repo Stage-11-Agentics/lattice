@@ -42,7 +42,6 @@ from lattice.server import admin, tokens
 from lattice.server.testing import make_root, running_server
 from tests.parity.corpus import Scenario
 from tests.parity.fixture_op import FIXTURE_OP
-from tests.test_remote import sync_shim
 from tests.parity.record import (
     DURABLE_DIRS,
     DURABLE_FILES,
@@ -226,8 +225,6 @@ def parity_server(base: Path) -> Iterator[ParityServer]:
     root = make_root(base)
     person, strict = _mint(root)
     with recording_mutations() as mutations, running_server(root) as handle:
-        # TODO(rebase onto v2): H-10a's real sync route replaces the shim.
-        sync_shim.install(handle.app)
         yield ParityServer(
             root=root, url=handle.url, token=person, strict_token=strict, mutations=mutations
         )
@@ -344,7 +341,8 @@ class HostedTarget(LocalTarget):
     def finish(self, root: Path, invoke: Any) -> None:
         """Catch the cache up (a scenario may end on a fixture or a refusal), so
         the captured board is the server's as of the last step."""
-        catch_up(root, self.env(root))
+        result = invoke(["sync", "--json"])
+        assert result["exit_code"] == 0, result
 
     def fixture(self, root: Path, rel: str, text: str | None, executable: bool) -> bool:
         if not rel.startswith(".lattice/"):
@@ -426,22 +424,6 @@ def declared_differences(capture: dict[str, Any]) -> dict[str, Any]:
             step = {**step, "stdout": {"lines": lines}}
         steps.append(step)
     return {**capture, "steps": steps}
-
-
-def catch_up(root: Path, env: dict[str, str]) -> None:
-    """One catch-up of the checkout at *root* (what every read command does first,
-    SPEC §9.5), outside any command. TODO(H-10c): ``lattice sync``."""
-    from lattice.remote import session
-    from lattice.remote.binding import classify
-    from tests.parity.record import _base_env, _process_env
-
-    with _process_env({**_base_env(root), **env}):
-        hosted = classify(root)
-        assert hosted is not None
-        try:
-            assert session.catch_up_and_report(hosted), "the final catch-up failed"
-        finally:
-            session.reset_process_state()
 
 
 def hosted_target(server: ParityServer, scenario: Scenario) -> HostedTarget:

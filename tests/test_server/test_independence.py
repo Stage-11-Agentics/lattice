@@ -52,19 +52,7 @@ from tests.parity.record import FROZEN_CLOCK_TARGETS, FROZEN_NOW
 
 for target in FROZEN_CLOCK_TARGETS:
     mock.patch(target, lambda: FROZEN_NOW).start()
-from lattice.server import app as server_app
-from tests.test_remote import sync_shim
 
-_create_app = server_app.create_app
-
-
-def create_app(*args, **kwargs):
-    app = _create_app(*args, **kwargs)
-    sync_shim.install(app)  # TODO(rebase onto v2): H-10a's real sync route
-    return app
-
-
-server_app.create_app = create_app
 from lattice.cli.main import cli
 
 cli()

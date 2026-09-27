@@ -652,7 +652,7 @@ def test_a_rescued_plan_goes_back_through_plan_write(hosted_env, tmp_path: Path)
     from tests.test_remote.hosted import events_of, make_repo, run_cli
 
     repo = make_repo(tmp_path / "repo")
-    assert run_cli(repo, "remote", "attach", "team", PROJECT).exit_code == 0
+    assert run_cli(repo, "remote", "attach", "team", "demo").exit_code == 0
     assert run_cli(repo, "create", "Planned", "--actor", "agent:dev").exit_code == 0
     written = run_cli(
         repo, "plan", "write", "DEM-1", "--stdin", "--actor", "agent:dev", input="v1\n"

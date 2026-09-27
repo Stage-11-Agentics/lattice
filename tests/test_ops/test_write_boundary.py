@@ -80,6 +80,10 @@ BOARD_OWNERS: dict[str, str] = {
     "lattice.server.registry": "the owning server: server_status.json in the server root (SPEC §8.2)",
     "lattice.server.tokens": "tokens.json in the server root, outside any board (SPEC §8.3)",
     "lattice.remote.cache": "the cache syncer, the only writer of a cache (SPEC §6.2, §9.4)",
+    "lattice.remote.follower": "the follower's cache/follower.json (cache control, SPEC §6.1, "
+    "§9.6)",
+    "lattice.server.testing": "test helper: a server project built from a fixture board, as "
+    "the owning server's import would (SPEC §11)",
     "lattice.cli.main": "init and its example tasks (LOCAL_ONLY, SPEC §3.5)",
     "lattice.cli.demo_cmd": "demo init (LOCAL_ONLY, SPEC §3.5)",
     "lattice.cli.integrity_cmds": "rebuild, doctor --fix, backfill-ids (LOCAL_ONLY, SPEC §3.5)",
