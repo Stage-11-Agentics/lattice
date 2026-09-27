@@ -23,7 +23,6 @@ INSTALL_HINT = (
 
 def server_extra_available() -> bool:
     try:
-        import sse_starlette  # noqa: F401
         import starlette  # noqa: F401
         import uvicorn  # noqa: F401
     except ImportError:

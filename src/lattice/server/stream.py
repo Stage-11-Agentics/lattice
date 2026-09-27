@@ -9,9 +9,9 @@ queue is full is removed and its pump cancelled, even mid-``send`` on a
 connection that has stopped reading; uvicorn then closes the transport of the
 unfinished response. The reader resumes later from its ``Last-Event-ID``.
 
-The SSE framing is a small ASGI response rather than
-``sse_starlette.EventSourceResponse``, because the overflow rule needs to
-cancel a ``send`` blocked on back-pressure, which that class does not expose.
+The stream is written directly on Starlette, with no SSE library (SPEC §8.9,
+framing and lifecycle): the overflow rule needs to cancel a ``send`` blocked
+on back-pressure, and shutdown needs to end every stream at once.
 
 Wire format (one frame per event, ``\\n`` line endings, compact sorted JSON)::
 
@@ -262,7 +262,7 @@ class EventStream:
                     "type": "http.response.start",
                     "status": 200,
                     "headers": [
-                        (b"content-type", b"text/event-stream; charset=utf-8"),
+                        (b"content-type", b"text/event-stream"),
                         (b"cache-control", b"no-store"),
                         (b"x-accel-buffering", b"no"),
                     ],

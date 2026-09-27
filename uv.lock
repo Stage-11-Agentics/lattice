@@ -314,7 +314,6 @@ dev = [
     { name = "pytest-timeout" },
     { name = "pytest-xdist" },
     { name = "ruff" },
-    { name = "sse-starlette" },
     { name = "starlette" },
     { name = "uvicorn" },
 ]
@@ -322,7 +321,6 @@ mcp = [
     { name = "mcp" },
 ]
 server = [
-    { name = "sse-starlette" },
     { name = "starlette" },
     { name = "uvicorn" },
 ]
@@ -340,8 +338,6 @@ requires-dist = [
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3.5" },
     { name = "python-ulid", specifier = ">=2.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4" },
-    { name = "sse-starlette", marker = "extra == 'dev'", specifier = ">=1.6.1" },
-    { name = "sse-starlette", marker = "extra == 'server'", specifier = ">=1.6.1" },
     { name = "starlette", marker = "extra == 'dev'", specifier = ">=0.27" },
     { name = "starlette", marker = "extra == 'server'", specifier = ">=0.27" },
     { name = "typing-extensions", marker = "python_full_version < '3.14'", specifier = ">=4.0" },

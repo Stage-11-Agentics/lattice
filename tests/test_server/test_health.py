@@ -4,6 +4,7 @@ disk floor it reports 503 and operations get 507 STORAGE_LOW while reads still w
 from __future__ import annotations
 
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -70,7 +71,13 @@ def test_sync_works_under_the_disk_floor_and_an_empty_sync_logs_below_info(
         assert reset["reset"] is True and reset["head_seq"] == 2
         delta = board.sync(since=1, epoch=reset["epoch"], hash=board.project.journal.hash_at(1))
         assert delta["reset"] is False and delta["files"]
-        before = len(board.handle.log_lines)
+
+        def requests() -> list[dict]:
+            return [x for x in board.handle.log_lines if x.get("event") == "request"]
+
+        # A request's log line is written after its response: wait for all five
+        # (two ops, the refused op, the reset, the delta) before counting.
+        assert wait_for(lambda: len(requests()) == 5)
         head = board.sync(since=2, epoch=reset["epoch"], hash=reset["head_hash"])
         assert head["files"] == {} and head["removed"] == []
         # An empty delta assembled under the locks logs below info too.
@@ -81,5 +88,5 @@ def test_sync_works_under_the_disk_floor_and_an_empty_sync_logs_below_info(
             journal = board.project.journal
             journal.head = (journal.epoch, journal.head_seq, journal.head_hash)
         assert locked["files"] == {} and locked["reset"] is False
-        new_lines = board.handle.log_lines[before:]
-        assert not [line for line in new_lines if line.get("event") == "request"]
+        time.sleep(0.2)
+        assert len(requests()) == 5, requests()[5:]
