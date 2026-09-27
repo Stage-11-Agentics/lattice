@@ -224,7 +224,13 @@ def parity_server(base: Path) -> Iterator[ParityServer]:
     """One in-process server for a worker's scenarios, recording every mutation."""
     root = make_root(base)
     person, strict = _mint(root)
+    from lattice.core.tasks import set_unknown_type_reporter
+
     with recording_mutations() as mutations, running_server(root) as handle:
+        # The server installs a process-wide reporter for unknown event types.
+        # This server outlives the parity tests (one per worker), so give the
+        # default back: other tests in the worker expect it on stderr.
+        set_unknown_type_reporter(None)
         yield ParityServer(
             root=root, url=handle.url, token=person, strict_token=strict, mutations=mutations
         )
