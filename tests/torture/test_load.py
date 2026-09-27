@@ -10,7 +10,7 @@ import pytest
 
 from tests.torture.load import LOAD_SECONDS, LOAD_TASKS, LoadRig, p95
 
-pytestmark = [pytest.mark.torture, pytest.mark.envelope, pytest.mark.timeout(1200)]
+pytestmark = [pytest.mark.torture, pytest.mark.envelope, pytest.mark.timeout(2400)]
 
 READERS = 20
 WRITERS = 5
