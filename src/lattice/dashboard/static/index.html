@@ -2330,32 +2330,21 @@ function _sleep(ms) {
   return new Promise(function(resolve) { setTimeout(resolve, ms); });
 }
 
-// One logical write. Hosted, it carries one Lattice-Op-Id for all its
-// attempts and is retried on a lost response or a transient refusal, so the
-// server applies it once (SPEC §8.6). Locally it is sent once, as before.
-async function apiPost(path, data) {
-  var opId = HOSTED_SLUG ? newOpId(Date.now(), _randomBytes) : null;
-  for (var attempt = 1; ; attempt++) {
-    var headers = {"Content-Type": "application/json"};
-    if (opId) headers["Lattice-Op-Id"] = opId;
-    var r = null;
-    var body = null;
-    var opts = {method: "POST", headers: headers, body: JSON.stringify(data)};
-    try {
-      r = await fetch(apiUrl(BASE_PATH, path), opts);
-      body = await r.json();
-    } catch (e) {
-      body = null;
-    }
-    if (opId) {
-      var code = body && body.error ? body.error.code : null;
-      var wait = retryDelay(attempt, r ? r.status : 0, code, r ? r.headers.get("Retry-After") : null);
-      if (wait !== null) { await _sleep(wait); continue; }
-    }
-    if (!body) throw new Error("Network error: the server did not answer");
-    if (!body.ok) throw new Error(body.error ? body.error.message : "API error");
-    return body.data;
-  }
+// Every write goes through one writer (static/live.js): hosted, one
+// Lattice-Op-Id per logical write for all its attempts, retried on a lost or
+// unreadable answer or a transient refusal, so the server applies it once (SPEC
+// §8.6); locally sent once, as before. A write identical to one still in flight
+// joins it, so a double click applies once.
+var pageWriter = createWriter({
+  fetch: function(url, opts) { return fetch(url, opts); },
+  url: function(path) { return apiUrl(BASE_PATH, path); },
+  hosted: !!HOSTED_SLUG,
+  newOpId: function() { return newOpId(Date.now(), _randomBytes); },
+  sleep: _sleep
+});
+
+function apiPost(path, data) {
+  return pageWriter.post(path, data);
 }
 
 // --- Delegated page actions ---
@@ -7465,10 +7454,12 @@ var AUTO_REFRESH_MS = 5000;
 
 // Locally the page polls every AUTO_REFRESH_MS and, on a bound checkout, also
 // watches the cache's head every second (GET /api/head). Hosted, it refetches on
-// every change-stream entry and polls only while the stream is down (static/live.js).
+// every change-stream entry and polls only while the stream is down. All three
+// go through one refresh scheduler, so refreshes never overlap (static/live.js).
 var liveRefresh = null;
 var headWatch = null;
 var HEAD_WATCH_MS = 1000;
+var refreshScheduler = createRefreshScheduler(refreshCurrentView);
 
 function startAutoRefresh() {
   stopAutoRefresh();
@@ -7477,7 +7468,7 @@ function startAutoRefresh() {
       liveRefresh = createLiveRefresh({
         url: streamUrl(HOSTED_SLUG),
         EventSource: EventSource,
-        refresh: refreshCurrentView,
+        schedule: refreshScheduler.trigger,
         startPoll: startPolling,
         stopPoll: stopPolling
       });
@@ -7490,7 +7481,7 @@ function startAutoRefresh() {
   if (!headWatch) {
     headWatch = createHeadWatch({
       fetchHead: function() { return api("/api/head").then(function(d) { return d.head; }); },
-      refresh: refreshCurrentView,
+      schedule: refreshScheduler.trigger,
       intervalMs: HEAD_WATCH_MS,
       setInterval: function(fn, ms) { return setInterval(fn, ms); },
       clearInterval: function(id) { clearInterval(id); }
@@ -7501,7 +7492,7 @@ function startAutoRefresh() {
 
 function startPolling() {
   if (autoRefreshInterval) return;
-  autoRefreshInterval = setInterval(refreshCurrentView, AUTO_REFRESH_MS);
+  autoRefreshInterval = setInterval(refreshScheduler.trigger, AUTO_REFRESH_MS);
 }
 
 function stopPolling() {

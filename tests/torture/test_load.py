@@ -70,15 +70,17 @@ def test_readers_writers(tmp_path: Path) -> None:
 @pytest.mark.timeout(2400)
 def test_with_dashboards(tmp_path: Path) -> None:
     """The same load plus 5 hosted-dashboard viewers, each refetching the page's
-    panels once per journal entry it receives (no coalescing); every viewer
-    refetches exactly as many times as it received entries."""
+    panels once per journal entry it receives (no coalescing). Every viewer is
+    live before the writers start and drains through the final entry after they
+    stop: it receives exactly the entries written after it became ready, and
+    refetches once for each (one journal entry per write)."""
     with LoadRig.running(tmp_path, tasks=TASKS) as rig:
         followers = rig.start_followers(FOLLOWERS)
         readers = rig.start_readers(READERS)
         viewers = rig.start_viewers(VIEWERS)
         latencies = rig.run_writers(WRITERS, seconds=SECONDS)
         reads = rig.stop_readers(readers)
-        views = rig.stop_viewers(viewers)
+        final, views = rig.stop_viewers(viewers)
         assert all(proc.poll() is None for proc in followers), "a follower died under load"
 
     bad = [r for r in reads if "error" in r or "notice" in r]
@@ -89,11 +91,14 @@ def test_with_dashboards(tmp_path: Path) -> None:
         f"load with {VIEWERS} viewers: {len(writes)} writes, "
         f"p50={writes[len(writes) // 2] * 1000:.0f}ms p95={p95(writes) * 1000:.0f}ms "
         f"max={writes[-1] * 1000:.0f}ms; client reads p95={p95(read_times) * 1000:.0f}ms "
-        f"(reported); viewers (received, refetched) "
-        f"{[(v['received'], v['refetched']) for v in views]}"
+        f"(reported); final seq {final}; viewers (ready seq, received, refetched) "
+        f"{[(v['ready_seq'], v['received'], v['refetched']) for v in views]}"
     )
     for view in views:
-        assert view["received"] > 0 and view["refetched"] == view["received"], views
+        # Ready before the first write: every write since is one journal entry.
+        assert final - view["ready_seq"] == len(writes), (final, len(writes), view)
+        assert view["received"] == view["refetched"] == len(writes), (final, view)
+        assert view["last_seq"] == final, (final, view)
     assert p95(latencies) < P95_LIMIT_SECONDS
 
 

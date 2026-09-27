@@ -5,9 +5,12 @@
 // stream (/v1/projects/<slug>/stream, authenticated by the session cookie) and
 // refetches its current view on every entry, falling back to the 5-second poll
 // whenever the stream is down. Every write names one op_id per logical action,
-// reused on each retry (Lattice-Op-Id), so a retry after a lost response applies
-// once. Locally (served at "/"), nothing here changes: the poll runs, and writes
-// are never retried (a local board has no idempotency index).
+// reused on each retry (Lattice-Op-Id), so a retry after a lost or unreadable
+// response applies once. Locally (served at "/"), the poll runs, a bound
+// checkout's head is watched, and writes are never retried (a local board has no
+// idempotency index). Everywhere, one refresh runs at a time (one scheduler for
+// the stream, the head watch, and the poll), and a write identical to one still
+// in flight joins it rather than sending again (a double click applies once).
 //
 // Like escape.js: a classic script loaded WITHOUT defer before the inline IIFE,
 // ES5-flavored, with a CommonJS export guard for node:test (tests/js/live.test.js).
@@ -56,16 +59,14 @@ function retryDelay(attempt, status, errorCode, retryAfter) {
   return Math.min(5000, 500 * Math.pow(2, attempt - 1));
 }
 
-// Follow a change stream. opts: {url, EventSource, refresh, startPoll, stopPoll}.
-// refresh() refetches the current view (it may return a promise); a stream
-// entry that arrives while one runs queues exactly one more, so the view always
-// ends at the newest entry without overlapping fetches. The poll runs only
-// while the stream is not open.
-function createLiveRefresh(opts) {
-  var source = null;
+// The page's one refresh path: every source (the stream, the head watch, the
+// poll) calls trigger(). refresh() refetches the current view (it may return a
+// promise); a trigger while one runs queues exactly one more, so fetches never
+// overlap (no stale answer rendered over a newer one) and the view always ends
+// at the newest change.
+function createRefreshScheduler(refresh) {
   var running = false;
   var pending = false;
-  var open = false;
 
   function trigger() {
     if (running) { pending = true; return; }
@@ -75,9 +76,83 @@ function createLiveRefresh(opts) {
       if (pending) { pending = false; trigger(); }
     };
     var result;
-    try { result = opts.refresh(); } catch (e) { result = null; }
+    try { result = refresh(); } catch (e) { result = null; }
     Promise.resolve(result).then(done, done);
   }
+
+  return { trigger: trigger, isRunning: function() { return running; } };
+}
+
+// The page's writes. opts: {fetch, url(path), hosted, newOpId(), sleep(ms)}.
+// post(path, data) resolves to the answer's data or rejects with its message.
+//
+// - One logical write, one op_id: hosted, every attempt carries the same
+//   Lattice-Op-Id, retried (retryDelay) on no response, a transient refusal, or
+//   an answer whose body cannot be read, since then the write's outcome is
+//   unknown; the server applies the op_id once (SPEC §8.6).
+// - A post identical (path and body) to one still in flight returns that
+//   post's promise instead of sending: a double click applies once, and the
+//   next action, once it settles, gets a fresh op_id.
+function createWriter(opts) {
+  var inflight = {};
+
+  function send(path, body) {
+    var opId = opts.hosted ? opts.newOpId() : null;
+    function attempt(n) {
+      var headers = {"Content-Type": "application/json"};
+      if (opId) headers["Lattice-Op-Id"] = opId;
+      return Promise.resolve()
+        .then(function() {
+          return opts.fetch(opts.url(path), {method: "POST", headers: headers, body: body});
+        })
+        .then(function(r) {
+          return Promise.resolve()
+            .then(function() { return r.json(); })
+            .then(function(b) { return {r: r, body: b || null}; },
+                  function() { return {r: r, body: null}; });
+        }, function() { return {r: null, body: null}; })
+        .then(function(res) {
+          var r = res.r;
+          var b = res.body;
+          if (opId) {
+            // No readable answer (no response, or a body that would not parse)
+            // is an unknown outcome: retried like a lost response.
+            var status = b ? r.status : 0;
+            var code = b && b.error ? b.error.code : null;
+            var retryAfter = r && r.headers ? r.headers.get("Retry-After") : null;
+            var wait = retryDelay(n, status, code, retryAfter);
+            if (wait !== null) return opts.sleep(wait).then(function() { return attempt(n + 1); });
+          }
+          if (!r) throw new Error("Network error: the server did not answer");
+          if (!b) throw new Error("The server's answer could not be read; the write may have applied");
+          if (!b.ok) throw new Error(b.error ? b.error.message : "API error");
+          return b.data;
+        });
+    }
+    return attempt(1);
+  }
+
+  function post(path, data) {
+    var body = JSON.stringify(data === undefined ? {} : data);
+    var key = path + "\n" + body;
+    if (Object.prototype.hasOwnProperty.call(inflight, key)) return inflight[key];
+    var promise = send(path, body);
+    inflight[key] = promise;
+    var clear = function() { if (inflight[key] === promise) delete inflight[key]; };
+    promise.then(clear, clear);
+    return promise;
+  }
+
+  return { post: post, pending: function() { return Object.keys(inflight).length; } };
+}
+
+// Follow a change stream. opts: {url, EventSource, schedule, startPoll, stopPoll}.
+// schedule() is the page's refresh scheduler's trigger. The poll runs only
+// while the stream is not open.
+function createLiveRefresh(opts) {
+  var source = null;
+  var open = false;
+  var trigger = opts.schedule;
 
   function connect() {
     close();
@@ -116,25 +191,16 @@ function createLiveRefresh(opts) {
 // on a bound checkout it is the cache's {epoch, seq}, moved by the embedded
 // follower, so the page refetches within a second of any write anywhere. A
 // local board answers {head: null}: the watch stops and the 5-second poll
-// carries on alone. opts: {fetchHead, refresh, intervalMs, setInterval,
-// clearInterval}; fetchHead() resolves to the head object, null, or throws.
+// carries on alone. opts: {fetchHead,
+// schedule, intervalMs, setInterval, clearInterval}; fetchHead() resolves to
+// the head object, null, or throws; schedule() is the refresh scheduler's trigger.
+//
+// The first head seen also refreshes: the page's first read happened before it,
+// so a write in between would otherwise stay unseen until the poll. From then
+// on, every refresh follows a head read, and any later write moves the head.
 function createHeadWatch(opts) {
   var timer = null;
   var last;          // undefined until the first answer
-  var running = false;
-  var pending = false;
-
-  function trigger() {
-    if (running) { pending = true; return; }
-    running = true;
-    var done = function() {
-      running = false;
-      if (pending) { pending = false; trigger(); }
-    };
-    var result;
-    try { result = opts.refresh(); } catch (e) { result = null; }
-    Promise.resolve(result).then(done, done);
-  }
 
   function check() {
     var answer;
@@ -142,7 +208,7 @@ function createHeadWatch(opts) {
     return Promise.resolve(answer).then(function(head) {
       if (head === null) { stop(); return; } // not a bound checkout
       var key = head.epoch + ":" + head.seq;
-      if (last !== undefined && key !== last) trigger();
+      if (key !== last) opts.schedule();
       last = key;
     }, function() { /* the dashboard may be restarting; the poll covers it */ });
   }
@@ -166,6 +232,8 @@ if (typeof module !== "undefined" && module.exports) {
     hostedSlug: hostedSlug,
     streamUrl: streamUrl,
     retryDelay: retryDelay,
+    createRefreshScheduler: createRefreshScheduler,
+    createWriter: createWriter,
     createLiveRefresh: createLiveRefresh,
     createHeadWatch: createHeadWatch,
     WRITE_ATTEMPTS: WRITE_ATTEMPTS,

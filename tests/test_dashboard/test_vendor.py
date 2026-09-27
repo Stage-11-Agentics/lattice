@@ -8,11 +8,13 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from pathlib import Path
 from urllib.request import urlopen
 
 from lattice.dashboard.server import STATIC_DIR
 
 VENDOR = STATIC_DIR / "vendor"
+REPO = Path(__file__).resolve().parents[2]
 
 
 def _page() -> str:
@@ -27,21 +29,41 @@ def test_the_page_loads_nothing_from_another_origin() -> None:
     assert "unpkg.com" not in _page()
 
 
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def test_every_vendored_script_is_pinned_hashed_and_licensed() -> None:
     packages = json.loads((VENDOR / "VERSIONS.json").read_text())["packages"]
     page = _page()
     for package in packages:
         assert re.fullmatch(r"\d+\.\d+\.\d+", package["version"]), package
+        assert package["spec"] == f"{package['name']}@{package['version']}", package
         assert package["integrity"].startswith("sha512-"), package
         path = VENDOR / package["file"]
-        assert hashlib.sha256(path.read_bytes()).hexdigest() == package["sha256"], package
-        assert package["licenses"] and all(
-            (path.parent / name).is_file() for name in package["licenses"]
-        ), package
+        assert _sha256(path) == package["sha256"], package
+        licenses = package["licenses"]
+        assert licenses, package
+        for name, digest in licenses.items():
+            assert _sha256(path.parent / name) == digest, (package["name"], name)
+        shipped = {p.name for p in path.parent.iterdir()}
+        assert shipped == {path.name, *licenses}, package  # nothing unrecorded
         assert f'<script src="static/vendor/{package["file"]}"></script>' in page, package
     vendored = {p["file"] for p in packages}
     referenced = set(re.findall(r'src="static/vendor/([^"]+)"', page))
     assert referenced == vendored
+
+
+def test_the_vendoring_script_pins_exactly_what_is_recorded() -> None:
+    """Regenerating fetches the recorded versions, never a newer one in a range."""
+    script = (REPO / "scripts" / "vendor-dashboard-js.sh").read_text()
+    block = re.search(r"^PACKAGES=\((.*?)^\)", script, re.M | re.S)
+    assert block, "the script lists its packages in PACKAGES=( ... )"
+    specs = re.findall(r'"([^"|]+)\|[^"]*"', block.group(1))
+    recorded = [p["spec"] for p in json.loads((VENDOR / "VERSIONS.json").read_text())["packages"]]
+    assert specs == recorded
+    for spec in specs:
+        assert re.fullmatch(r"[a-z0-9-]+@\d+\.\d+\.\d+", spec), spec
 
 
 def test_the_local_dashboard_serves_the_vendored_scripts(dashboard_server) -> None:

@@ -7,20 +7,24 @@
 # unpkg serves for it (the package's "unpkg" field, else "browser", else
 # "main", unless a path is given) is copied with the package's LICENSE files.
 # vendor/VERSIONS.json records the version, the tarball's npm integrity, and
-# each file's sha256, so a reviewer can check them against the registry.
+# the sha256 of the script and of each license file, so a reviewer can check
+# them against the registry.
 #
 # Needs npm and network access to registry.npmjs.org. Run from the repo root:
 #   scripts/vendor-dashboard-js.sh
 set -euo pipefail
 
 DEST="src/lattice/dashboard/static/vendor"
-# spec | file (empty: what unpkg serves for the bare spec)
+# name@exact-version | file (empty: what unpkg serves for the package).
+# Versions are exact: regenerating reproduces VERSIONS.json byte for byte, and
+# tests/test_dashboard/test_vendor.py checks each spec against the version it
+# records. To upgrade a library, change its version here and rerun.
 PACKAGES=(
-  "d3@7|"
-  "d3-binarytree@1|"
-  "d3-octree@1|"
-  "d3-force-3d@3|"
-  "force-graph@1|dist/force-graph.min.js"
+  "d3@7.9.0|"
+  "d3-binarytree@1.0.2|"
+  "d3-octree@1.1.0|"
+  "d3-force-3d@3.0.6|"
+  "force-graph@1.51.4|dist/force-graph.min.js"
   "three@0.160.0|build/three.min.js"
 )
 
@@ -58,12 +62,21 @@ for item in "${PACKAGES[@]}"; do
     echo "error: $name@$version ships no LICENSE file" >&2
     exit 1
   fi
+  if [ "$spec" != "$name@$version" ]; then
+    echo "error: $spec resolved to $name@$version; pin the exact version" >&2
+    exit 1
+  fi
   sha="$(sha256sum "$DEST/$name/$(basename "$file")" | cut -d' ' -f1)"
+  license_shas=()
+  for lic in "${licenses[@]}"; do
+    license_shas+=("$lic=$(sha256sum "$DEST/$name/$lic" | cut -d' ' -f1)")
+  done
   entries+=("$(node -e '
     const [name, version, integrity, file, sha, spec, lic] = process.argv.slice(1);
+    const licenses = Object.fromEntries(lic.split(",").map((pair) => pair.split("=")));
     console.log(JSON.stringify({name, spec, version, integrity, source: file,
-      file: `${name}/${require("path").basename(file)}`, sha256: sha, licenses: lic.split(",")}));' \
-    "$name" "$version" "$integrity" "$file" "$sha" "$spec" "$(IFS=,; echo "${licenses[*]}")")")
+      file: `${name}/${require("path").basename(file)}`, sha256: sha, licenses}));' \
+    "$name" "$version" "$integrity" "$file" "$sha" "$spec" "$(IFS=,; echo "${license_shas[*]}")")")
   echo "vendored $name@$version: $file"
 done
 printf '%s\n' "${entries[@]}" | node -e '

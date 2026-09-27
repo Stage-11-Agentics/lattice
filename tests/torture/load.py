@@ -24,6 +24,9 @@ Roles and cadence (the same shape as H-13b's harness):
 - A **viewer** (H-13b) is a process standing in for a browser on the hosted
   dashboard (``tests/torture/viewer.py``): it logs in, holds a session stream,
   and refetches the page's panels once per journal entry, without coalescing.
+  :meth:`LoadRig.start_viewers` returns only once every viewer is ready (its
+  stream live from a known head), and :meth:`LoadRig.stop_viewers` records the
+  final head and has every viewer drain through it.
 - A **writer** is a thread with one keep-alive HTTP connection, posting one
   mixed operation (with an ``op_id``) every :data:`WRITE_INTERVAL_SECONDS`;
   its latency is one operation's round trip, what ``HostedBoard.execute`` waits
@@ -64,7 +67,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from lattice.core.ids import generate_op_id
-from lattice.server.testing import make_root
+from lattice.server.testing import http_request, make_root
 from tests.torture.harness import (
     PROJECT,
     REMOTE,
@@ -81,8 +84,10 @@ from tests.torture.rehearsal import read_jsonl, start_scripted
 
 READ_INTERVAL_SECONDS = 5.0
 WRITE_INTERVAL_SECONDS = 0.2
-#: A viewer's budget, after the stop, to refetch every entry it already received.
+#: A viewer's budget, after the stop, to receive and refetch every entry through the final one.
 VIEWER_DRAIN_SECONDS = 120.0
+#: How long every viewer has to log in and hold a live stream before the writers start.
+VIEWER_READY_SECONDS = 120.0
 #: What the page refetches per entry: the board, stats, activity, and config panels.
 VIEWER_PANELS = ("/api/tasks", "/api/stats", "/api/activity", "/api/config")
 VIEWER = Path(__file__).with_name("viewer.py")
@@ -318,8 +323,10 @@ class LoadRig:
         return readers
 
     def start_viewers(self, n: int) -> list[tuple[subprocess.Popen, Path]]:
-        """*n* hosted-dashboard viewers, each its own process and token, until
-        :meth:`stop_viewers`."""
+        """*n* hosted-dashboard viewers, each its own process and token, returned
+        once every one is logged in and holds a live stream (its ``ready`` marker
+        names the head from which it receives every entry), so the writers never
+        run before all of them watch. Run until :meth:`stop_viewers`."""
         viewers = []
         for k in range(n):
             out = self.work / f"viewer-{k}.json"
@@ -331,8 +338,9 @@ class LoadRig:
                         "port": self.server.port,
                         "project": PROJECT,
                         "token": self.server.mint(user="human:viewer", machine=f"viewer-{k}"),
+                        "ready": str(self.work / f"viewer-{k}.ready"),
                         "out": str(out),
-                        "stop": str(self.work / "stop-readers"),
+                        "stop": str(self.work / "stop-viewers"),
                         "drain": VIEWER_DRAIN_SECONDS,
                         "panels": list(VIEWER_PANELS),
                     }
@@ -351,7 +359,25 @@ class LoadRig:
                 log.close()
             self.procs.append(proc)
             viewers.append((proc, out))
+        deadline = time.monotonic() + VIEWER_READY_SECONDS
+        for k, (proc, out) in enumerate(viewers):
+            ready = self.work / f"viewer-{k}.ready"
+            while not ready.exists():
+                assert proc.poll() is None, (
+                    f"viewer {k} exited ({proc.returncode}) before it was ready: "
+                    + (self.work / f"viewer-{k}.log").read_text()[-2000:]
+                )
+                assert time.monotonic() < deadline, f"viewer {k} not ready in time"
+                time.sleep(0.1)
         return viewers
+
+    def head_seq(self) -> int:
+        """The project's journal head, from the server (``GET /v1/projects``)."""
+        token = self.server.mint(user="human:observer", machine="observer")
+        status, _, body = http_request("GET", f"{self.server.url}/v1/projects", token=token)
+        assert status == 200, body
+        (row,) = [p for p in body["data"]["projects"] if p["slug"] == PROJECT]
+        return int(row["head_seq"])
 
     # -- writers ------------------------------------------------------------
 
@@ -426,13 +452,20 @@ class LoadRig:
             rows += [line for line in lines if "cwd" in line]
         return rows
 
-    def stop_viewers(self, viewers: list[tuple[subprocess.Popen, Path]]) -> list[dict]:
-        """Stop the viewers (with the readers' stop file); every one must exit 0
-        with its ``done`` report. Returns the reports (``received``, ``refetched``)."""
-        (self.work / "stop-readers").write_text("")
-        return [
+    def stop_viewers(self, viewers: list[tuple[subprocess.Popen, Path]]) -> tuple[int, list[dict]]:
+        """Record the final head, then stop the viewers: each drains every entry
+        through it and must exit 0 with its ``done`` report. Returns the final
+        ``seq`` and the reports (``ready_seq``, ``last_seq``, ``received``,
+        ``refetched``). Call it after the writers are done."""
+        final = self.head_seq()
+        stop = self.work / "stop-viewers"
+        partial = stop.with_suffix(".tmp")
+        partial.write_text(json.dumps({"final_seq": final}) + "\n")
+        partial.replace(stop)
+        reports = [
             viewer_report(proc, out, timeout=VIEWER_DRAIN_SECONDS + 60) for proc, out in viewers
         ]
+        return final, reports
 
     def close(self) -> None:
         """Stop every child and the server, then remove the client filesystem, even
