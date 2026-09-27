@@ -265,7 +265,6 @@ def resolve(module: Module, expr: ast.expr) -> str | None:
     return None
 
 
-
 def _loads(tree: ast.AST) -> list[ast.expr]:
     """Every loaded name or attribute in *tree*, in source order."""
     nodes = [
