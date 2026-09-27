@@ -31,7 +31,8 @@ OP_POLICY = http.Policy(connect_seconds=5.0, response_seconds=90.0)
 FIRST_BACKOFF_SECONDS = 0.5
 MAX_BACKOFF_SECONDS = 5.0
 
-#: Test seam: the sleep between attempts.
+#: Test seams: the clock the retry budget runs on, and the sleep between attempts.
+_now: Callable[[], float] = time.monotonic
 _sleep: Callable[[float], None] = time.sleep
 
 
@@ -108,7 +109,7 @@ def post_operation(remote: http.Remote, project: str, op_name: str, body: dict) 
         f"/v1/projects/{urllib.parse.quote(project, safe='')}/ops/"
         f"{urllib.parse.quote(op_name, safe='.')}"
     )
-    deadline = time.monotonic() + remote.retry_seconds
+    deadline = _now() + remote.retry_seconds
     backoff = FIRST_BACKOFF_SECONDS
     reached = False
     while True:
@@ -135,7 +136,7 @@ def post_operation(remote: http.Remote, project: str, op_name: str, body: dict) 
         if wait is None:
             wait = backoff
             backoff = min(backoff * 2, MAX_BACKOFF_SECONDS)
-        if time.monotonic() + wait > deadline:
+        if _now() + wait > deadline:
             if reached:
                 raise outcome_unknown(remote, op_id, detail)
             raise server_unreachable(remote, detail)

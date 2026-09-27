@@ -64,14 +64,17 @@ def add_worktree(repo: Path, path: Path, branch: str, *, relative: bool = False)
     return path
 
 
-def run_cli(cwd: Path, *args: str, input: str | None = None) -> Result:
-    """``lattice <args>`` in-process, as if started in *cwd*."""
+def run_cli(cwd: Path, *args: str, input: str | None = None, color: bool = False) -> Result:
+    """``lattice <args>`` in-process, as if started in *cwd*. With *color*, click
+    keeps escape sequences as it would for a terminal."""
     from lattice.cli.main import cli
 
     previous = Path.cwd()
     os.chdir(cwd)
     try:
-        return CliRunner().invoke(cli, list(args), input=input, catch_exceptions=False)
+        return CliRunner().invoke(
+            cli, list(args), input=input, catch_exceptions=False, color=color
+        )
     finally:
         os.chdir(previous)
 

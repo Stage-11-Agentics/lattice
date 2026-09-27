@@ -1,4 +1,8 @@
-"""AC-7 (follower part) and AC-45: freshness is applied syncs, whatever the stream does.
+"""AC-7 and AC-45: freshness is applied syncs, whatever the stream does.
+
+H-11's part (at the end): with no follower, a checkout's very next command
+reflects another client's write; a killed follower's leftover
+``cache/follower.json`` is ignored (SPEC §9.5).
 
 A writes to H-10a's real server while B follows it, syncing with H-10b's real
 ``catch_up``; the stream goes direct or through a test proxy that blocks,
@@ -11,8 +15,15 @@ have room.
 from __future__ import annotations
 
 import contextlib
+import json
+import os
+import signal
+import subprocess
+import sys
 import threading
+import time
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -23,6 +34,7 @@ from lattice.remote.http import Remote
 from lattice.server.testing import BoardServer, serve_board
 from tests.test_remote.conftest import bind
 from tests.test_remote.follower_support import following
+from tests.test_remote.hosted import HostedEnv, make_repo, run_cli
 from tests.test_remote.stream_stub import StubSyncer, TestProxy, wait_for
 
 
@@ -169,3 +181,57 @@ def test_ac45_refused_stream_polls_and_never_advances(tmp_path, server, monkeypa
 
 def test_ac45_buffered_stream_polls_and_never_advances(tmp_path, server, monkeypatch) -> None:
     _never_advances(tmp_path, server, monkeypatch, "buffer")
+
+
+# ---------------------------------------------------------------------------
+# H-11: no follower, and a killed follower
+# ---------------------------------------------------------------------------
+
+
+def _clones(env: HostedEnv, tmp_path: Path) -> tuple[Path, Path]:
+    a, b = make_repo(tmp_path / "a"), make_repo(tmp_path / "b")
+    for repo in (a, b):
+        assert run_cli(repo, "remote", "attach", "team", "demo").exit_code == 0
+    return a, b
+
+
+def _titles(repo: Path) -> list[str]:
+    result = run_cli(repo, "list", "--json")
+    assert result.exit_code == 0, result.output
+    return sorted(t["title"] for t in json.loads(result.stdout)["data"])
+
+
+def test_the_very_next_command_sees_another_clients_write(
+    hosted_env: HostedEnv, tmp_path: Path
+) -> None:
+    a, b = _clones(hosted_env, tmp_path)
+    for n in range(3):
+        started = time.monotonic()
+        assert _titles(b) == [f"t{i}" for i in range(n)]
+        assert run_cli(a, "create", f"t{n}", "--actor", "agent:a").exit_code == 0
+        # B's next command, well within 100 ms of its previous one finishing.
+        assert f"t{n}" in _titles(b)
+        assert time.monotonic() - started < 5
+
+
+def test_a_killed_followers_file_is_ignored(hosted_env: HostedEnv, tmp_path: Path) -> None:
+    a, b = _clones(hosted_env, tmp_path)
+    follower = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        record = {
+            "pid": follower.pid,
+            "stream_live_until": (datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
+        }
+        path = b / ".lattice" / "cache" / "follower.json"
+        path.write_text(json.dumps(record))
+        assert run_cli(a, "create", "While followed", "--actor", "agent:a").exit_code == 0
+        # A live follower is trusted: B reads its cache without a catch-up.
+        assert _titles(b) == []
+        os.kill(follower.pid, signal.SIGKILL)
+        follower.wait(timeout=5)
+        # The pid is dead: B catches up itself.
+        assert _titles(b) == ["While followed"]
+    finally:
+        if follower.poll() is None:
+            follower.kill()
+            follower.wait(timeout=5)
