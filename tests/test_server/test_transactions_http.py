@@ -6,6 +6,7 @@ server on ``127.0.0.1:0``.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -130,3 +131,28 @@ def test_a_failed_control_directory_fsync_propagates(
         _spy_dir_fsyncs(monkeypatch, fail_at=fail_at)
         with pytest.raises(OSError, match="injected directory fsync failure"):
             control.send_request(board, "set-config", {"set": {"review_mode": "inline"}})
+
+
+def test_a_retry_queued_behind_its_own_first_attempt_applies_once(root: Path) -> None:
+    """AC-46: the idempotency check runs after admission, so a retry that waited
+    behind its first attempt sees the committed result and replays it."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from lattice.server.testing import wait_for
+
+    token = mint(root)
+    op_id = generate_op_id()
+    with running_server(root) as server, ThreadPoolExecutor(2) as pool:
+        first = pool.submit(
+            server.op, "alpha", "xtest.sleep", {"ms": 400}, token=token, op_id=op_id
+        )
+        assert wait_for(lambda: server.project("alpha").work.locked())
+        retry = pool.submit(
+            server.op, "alpha", "xtest.sleep", {"ms": 400}, token=token, op_id=op_id
+        )
+        (s1, _, b1), (s2, _, b2) = first.result(), retry.result()
+    assert s1 == s2 == 200
+    assert b1["data"]["seq"] == b2["data"]["seq"]
+    assert b2["data"]["result"]["replayed"] is True and not b1["data"]["result"]["replayed"]
+    journal = root / "projects" / "alpha" / ".lattice" / "hosted" / "journal.jsonl"
+    assert [json.loads(x)["op_id"] for x in journal.read_text().splitlines()].count(op_id) == 1
