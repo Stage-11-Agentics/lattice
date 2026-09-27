@@ -14,7 +14,7 @@ from tests.test_remote.conftest import bind
 from tests.test_remote.proxies import fixed_answer, recording_listener
 from tests.test_remote.stub_sync_server import StubServer
 
-TOKEN = "lat_tok_secret_for_transport"
+TOKEN = "transport-test-bearer-secret"
 PROXY_HEADERS = {
     "CF-Access-Client-Id": "proxy-id-value",
     "CF-Access-Client-Secret": "proxy-secret",
