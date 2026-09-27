@@ -9,40 +9,27 @@ import click
 
 from lattice.cli.helpers import (
     common_options,
-    load_project_config,
+    resolve_body,
     output_error,
     output_result,
-    require_actor,
     require_root,
-    resolve_body,
     resolve_task_id,
-    validate_actor_format_or_exit,
 )
 from lattice.cli.main import cli
-from lattice.core.acceptance_criteria import (
-    allocate_criterion_id,
-    criterion_without_history,
-    find_criterion,
-    normalize_outcome,
-    validate_criterion_id,
+from lattice.cli.ops_bridge import (
+    check_or_exit,
+    params_or_exit,
+    provenance_params,
+    run_operation,
 )
-from lattice.core.events import create_event
-from lattice.storage.operations import TaskMutationDecision, mutate_task, read_task_authority
+from lattice.ops.task_criterion_add import check_criterion_id
+from lattice.core.acceptance_criteria import criterion_without_history
+from lattice.storage.operations import read_task_authority
 
 
 @cli.group("criterion")
 def criterion_group() -> None:
     """Manage optional task-local acceptance criteria."""
-
-
-def _mutation_context(is_json: bool, raw_task_id: str, on_behalf_of: str | None):
-    lattice_dir = require_root(is_json)
-    config = load_project_config(lattice_dir)
-    actor = require_actor(is_json)
-    if on_behalf_of is not None:
-        validate_actor_format_or_exit(on_behalf_of, is_json)
-    task_id = resolve_task_id(lattice_dir, raw_task_id, is_json)
-    return lattice_dir, config, actor, task_id
 
 
 @criterion_group.command("add")
@@ -71,58 +58,27 @@ def criterion_add(
 ) -> None:
     """Add an observable outcome to a task."""
     is_json = output_json
-    outcome = normalize_outcome(
-        resolve_body(
-            outcome,
-            file_path,
-            is_json,
-            what="acceptance-criterion outcome",
-            arg_label="OUTCOME",
-        )
+    # The outcome and the ID are argument problems, checked before the board.
+    # Today's argument order: OUTCOME or --file (exactly one, and the file is
+    # read only then), the outcome's prose, then --id; all before the board.
+    body = resolve_body(
+        outcome, file_path, is_json, what="acceptance-criterion outcome", arg_label="OUTCOME"
     )
-    if criterion_id is not None:
-        try:
-            validate_criterion_id(criterion_id)
-        except ValueError as exc:
-            output_error(str(exc), "VALIDATION_ERROR", is_json)
-    lattice_dir, config, actor, task_id = _mutation_context(is_json, task_id, on_behalf_of)
-
-    def decide(context):  # noqa: ANN001, ANN202
-        snapshot = context.snapshot
-        assert snapshot is not None
-        chosen_id = criterion_id or allocate_criterion_id(snapshot.get("acceptance_criteria", []))
-        existing = find_criterion(snapshot, chosen_id)
-        if existing is not None:
-            initial_outcome = existing["revisions"][0]["outcome"]
-            if criterion_id is not None and initial_outcome == outcome:
-                return TaskMutationDecision(value=copy.deepcopy(existing), idempotent=True)
-            raise ValueError(
-                f"Acceptance criterion {chosen_id} already exists with different initial prose."
-            )
-        event = create_event(
-            type="acceptance_criterion_added",
-            task_id=task_id,
-            actor=actor,
-            data={"criterion_id": chosen_id, "outcome": outcome, "revision": 1},
-            model=model,
-            session=session,
-            triggered_by=triggered_by,
-            on_behalf_of=on_behalf_of,
-            reason=provenance_reason,
-        )
-        return TaskMutationDecision(events=[event], value=chosen_id)
-
-    try:
-        result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
-    except ValueError as exc:
-        output_error(str(exc), "VALIDATION_ERROR", is_json)
-    chosen_id = (
-        result.callback_value["id"]
-        if isinstance(result.callback_value, dict)
-        else result.callback_value
+    params = params_or_exit(
+        "task.criterion_add",
+        {
+            "task": task_id,
+            "outcome": body if file_path is None else None,
+            "file": body if file_path is not None else None,
+            "id": criterion_id,
+            **provenance_params(model, session, triggered_by, on_behalf_of, provenance_reason),
+        },
+        is_json,
     )
-    criterion = find_criterion(result.snapshot, chosen_id)
-    data = {"task_id": task_id, "criterion": criterion, "snapshot": result.snapshot}
+    result = run_operation("task.criterion_add", params, is_json)
+    data = result.value
+    task_id = data["task_id"]
+    chosen_id = data["criterion"]["id"]
     output_result(
         data=data,
         human_message=(
@@ -159,56 +115,30 @@ def criterion_edit(
 ) -> None:
     """Revise an active criterion's outcome prose."""
     is_json = output_json
+    # Today's argument order: the criterion ID, then OUTCOME or --file (exactly
+    # one, and the file is read only then), then the prose; all before the board.
+    check_or_exit(is_json, check_criterion_id, criterion_id)
     try:
-        validate_criterion_id(criterion_id)
-        outcome = normalize_outcome(
-            resolve_body(
-                outcome,
-                file_path,
-                is_json,
-                what="acceptance-criterion outcome",
-                arg_label="OUTCOME",
-            )
+        body = resolve_body(
+            outcome, file_path, is_json, what="acceptance-criterion outcome", arg_label="OUTCOME"
         )
-    except ValueError as exc:
+    except ValueError as exc:  # an undecodable file, as this command always reported it
         output_error(str(exc), "VALIDATION_ERROR", is_json)
-    lattice_dir, config, actor, task_id = _mutation_context(is_json, task_id, on_behalf_of)
-
-    def decide(context):  # noqa: ANN001, ANN202
-        snapshot = context.snapshot
-        assert snapshot is not None
-        criterion = find_criterion(snapshot, criterion_id)
-        if criterion is None:
-            raise ValueError(f"Acceptance criterion {criterion_id} not found.")
-        if criterion["retired"]:
-            raise ValueError(f"Acceptance criterion {criterion_id} is retired.")
-        if criterion["outcome"] == outcome:
-            return TaskMutationDecision(value=copy.deepcopy(criterion), idempotent=True)
-        event = create_event(
-            type="acceptance_criterion_edited",
-            task_id=task_id,
-            actor=actor,
-            data={
-                "criterion_id": criterion_id,
-                "from_outcome": criterion["outcome"],
-                "outcome": outcome,
-                "revision": criterion["revision"] + 1,
-            },
-            model=model,
-            session=session,
-            triggered_by=triggered_by,
-            on_behalf_of=on_behalf_of,
-            reason=provenance_reason,
-        )
-        return TaskMutationDecision(events=[event])
-
-    try:
-        result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
-    except ValueError as exc:
-        output_error(str(exc), "VALIDATION_ERROR", is_json)
-    criterion = find_criterion(result.snapshot, criterion_id)
+    params = params_or_exit(
+        "task.criterion_edit",
+        {
+            "task": task_id,
+            "criterion_id": criterion_id,
+            "outcome": body if file_path is None else None,
+            "file": body if file_path is not None else None,
+            **provenance_params(model, session, triggered_by, on_behalf_of, provenance_reason),
+        },
+        is_json,
+    )
+    result = run_operation("task.criterion_edit", params, is_json)
+    criterion = result.value["criterion"]
     output_result(
-        data={"task_id": task_id, "criterion": criterion, "snapshot": result.snapshot},
+        data=result.value,
         human_message=(
             f"Acceptance criterion {criterion_id} unchanged."
             if result.idempotent
@@ -237,40 +167,19 @@ def criterion_retire(
 ) -> None:
     """Retire an active criterion without deleting its history."""
     is_json = output_json
-    try:
-        validate_criterion_id(criterion_id)
-    except ValueError as exc:
-        output_error(str(exc), "VALIDATION_ERROR", is_json)
-    lattice_dir, config, actor, task_id = _mutation_context(is_json, task_id, on_behalf_of)
-
-    def decide(context):  # noqa: ANN001, ANN202
-        snapshot = context.snapshot
-        assert snapshot is not None
-        criterion = find_criterion(snapshot, criterion_id)
-        if criterion is None:
-            raise ValueError(f"Acceptance criterion {criterion_id} not found.")
-        if criterion["retired"]:
-            raise ValueError(f"Acceptance criterion {criterion_id} is already retired.")
-        event = create_event(
-            type="acceptance_criterion_retired",
-            task_id=task_id,
-            actor=actor,
-            data={"criterion_id": criterion_id, "revision": criterion["revision"]},
-            model=model,
-            session=session,
-            triggered_by=triggered_by,
-            on_behalf_of=on_behalf_of,
-            reason=provenance_reason,
-        )
-        return TaskMutationDecision(events=[event])
-
-    try:
-        result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
-    except ValueError as exc:
-        output_error(str(exc), "VALIDATION_ERROR", is_json)
-    criterion = find_criterion(result.snapshot, criterion_id)
+    params = params_or_exit(
+        "task.criterion_retire",
+        {
+            "task": task_id,
+            "criterion_id": criterion_id,
+            **provenance_params(model, session, triggered_by, on_behalf_of, provenance_reason),
+        },
+        is_json,
+    )
+    result = run_operation("task.criterion_retire", params, is_json)
+    criterion = result.value["criterion"]
     output_result(
-        data={"task_id": task_id, "criterion": criterion, "snapshot": result.snapshot},
+        data=result.value,
         human_message=f"Retired acceptance criterion {criterion_id} at revision {criterion['revision']}.",
         quiet_value=criterion_id,
         is_json=is_json,
