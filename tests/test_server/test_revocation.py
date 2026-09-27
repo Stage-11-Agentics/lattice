@@ -6,12 +6,14 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from lattice.cli.main import cli
 from lattice.server import tokens
-from lattice.server.testing import ServerHandle
+from lattice.server.testing import ServerHandle, open_stream, running_server
 from lattice.server.tokens import TokenStore
+from tests.test_server.web_client import WebClient
 
 
 def test_revoke_via_admin_cli_while_running(server: ServerHandle, root: Path) -> None:
@@ -60,3 +62,80 @@ def test_a_broken_tokens_file_fails_closed(root: Path) -> None:
     assert reloads[-1]["ok"] is False
     (root / "tokens.json").write_text(good)
     assert store.authenticate(f"Bearer {data['token']}").user == "human:a"
+
+
+# ---------------------------------------------------------------------------
+# Dashboard sessions (AC-13, H-13b)
+# ---------------------------------------------------------------------------
+
+
+def _session_stream(server: ServerHandle, web: WebClient):
+    return open_stream(
+        server.url, "alpha", None, headers={"Cookie": f"lattice_session={web.session}"}
+    )
+
+
+def test_revoking_the_token_ends_its_sessions(root: Path) -> None:
+    data = tokens.create_token(root, user="human:alice", machine="m", all_projects=True)
+    with running_server(root, heartbeat_seconds=0.2) as server:
+        web = WebClient(server)
+        assert web.login(data["token"]).status == 303
+        assert web.get("/p/alpha/api/tasks").status == 200
+        stream = _session_stream(server, web)
+        assert stream.status == 200
+        stream.next_of("heartbeat")
+        result = CliRunner().invoke(
+            cli, ["server", "token", "revoke", data["record"]["id"], "--root", str(root)]
+        )
+        assert result.exit_code == 0, result.output
+        assert web.get("/p/alpha/api/tasks").status == 401
+        assert web.get("/p/alpha/").status == 303
+        with pytest.raises(EOFError):
+            stream.next_of("journal", timeout=5)
+        stream.close()
+
+
+def test_logout_ends_the_session_and_its_stream(root: Path) -> None:
+    token = tokens.create_token(root, user="human:alice", machine="m", all_projects=True)["token"]
+    with running_server(root, heartbeat_seconds=0.2) as server:
+        web = WebClient(server)
+        web.login(token)
+        cookie = web.session
+        stream = _session_stream(server, web)
+        stream.next_of("heartbeat")
+        assert web.logout(origin="http://evil.example").status == 403
+        assert web.get("/p/alpha/api/tasks").status == 200
+        response = web.logout()
+        assert response.status == 303
+        assert web.session is None
+        web.cookies["lattice_session"] = cookie  # a copy kept after logout
+        assert web.get("/p/alpha/api/tasks").status == 401
+        with pytest.raises(EOFError):
+            stream.next_of("journal", timeout=5)
+        stream.close()
+
+
+def test_an_expired_session_is_refused_and_pruned(root: Path) -> None:
+    import json
+
+    token = tokens.create_token(root, user="human:alice", machine="m", all_projects=True)["token"]
+    with running_server(root) as server:
+        web = WebClient(server)
+        web.login(token)
+        path = root / "web_sessions.json"
+        body = json.loads(path.read_text())
+        body["sessions"][0]["expires_at"] = "2000-01-01T00:00:00Z"
+        path.write_text(json.dumps(body))
+        assert web.get("/p/alpha/api/tasks").status == 401
+        WebClient(server).login(token)  # any write prunes the expired session
+        assert len(json.loads(path.read_text())["sessions"]) == 1
+
+
+def test_a_session_cannot_reach_another_project_after_ungrant(root: Path) -> None:
+    data = tokens.create_token(root, user="human:alice", machine="m", projects=("alpha",))
+    with running_server(root) as server:
+        web = WebClient(server)
+        web.login(data["token"])
+        assert web.get("/p/alpha/api/tasks").status == 200
+        tokens.ungrant(root, data["record"]["id"], projects=("alpha",))
+        assert web.get("/p/alpha/api/tasks").status == 403

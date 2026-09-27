@@ -1,0 +1,314 @@
+"""AC-24 (hosted, API level) and AC-16 (the per-project dashboard): the hosted
+dashboard at ``/p/<slug>/`` over the authoritative board (SPEC §10)."""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+import re
+from pathlib import Path
+
+import pytest
+
+from lattice.dashboard import api
+from lattice.dashboard.server import STATIC_DIR
+from lattice.server.testing import ServerHandle, running_server
+from tests.test_server.conftest import board_hash, create_task, mint
+from tests.test_server.web_client import WebClient
+
+CSP_FIXED = (
+    "default-src 'self'; script-src 'self'{hashes}; style-src 'self' 'unsafe-inline'; "
+    "img-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; "
+    "form-action 'self'"
+)
+
+READ_PATHS = [
+    "/api/config",
+    "/api/tasks",
+    "/api/stats",
+    "/api/activity",
+    "/api/archived",
+    "/api/graph",
+]
+
+HOSTILE = 'it\'s "quoted" <script>alert(1)</script> \x1b[31mred\x1b[0m \x07'
+
+
+def _expected_csp() -> str:
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    hashes = []
+    for match in re.finditer(r"<script>(.*?)</script>", html, re.S):
+        digest = hashlib.sha256(match.group(1).encode("utf-8")).digest()
+        hashes.append(f" 'sha256-{base64.b64encode(digest).decode()}'")
+    assert hashes, "index.html has an inline script block"
+    return CSP_FIXED.format(hashes="".join(hashes))
+
+
+def _logged_in(server: ServerHandle, token: str) -> WebClient:
+    web = WebClient(server)
+    response = web.login(token)
+    assert response.status == 303, response.text
+    assert web.session
+    return web
+
+
+def _assert_headers(response, where: str) -> None:
+    assert response.headers.get("x-content-type-options") == "nosniff", where
+    assert response.headers.get("content-security-policy") == _expected_csp(), where
+
+
+@pytest.fixture()
+def web(server: ServerHandle, root: Path) -> WebClient:
+    return _logged_in(server, mint(root, projects=["alpha"]))
+
+
+# ---------------------------------------------------------------------------
+# AC-16: the page and its assets
+# ---------------------------------------------------------------------------
+
+
+class TestPage:
+    def test_without_credential_redirects_to_login(self, server: ServerHandle) -> None:
+        anon = WebClient(server)
+        response = anon.get("/p/alpha/")
+        assert response.status == 303
+        assert response.headers["location"] == "/login?next=/p/alpha/"
+        assert anon.get("/p/alpha/api/tasks").status == 401
+        assert anon.get("/p/alpha/static/escape.js").status == 401
+
+    def test_serves_the_dashboard_and_its_assets(self, web: WebClient) -> None:
+        page = web.get("/p/alpha/")
+        assert page.status == 200
+        assert page.headers["content-type"].startswith("text/html")
+        assert page.text == (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+        script = web.get("/p/alpha/static/escape.js")
+        assert script.status == 200
+        assert script.headers["content-type"].startswith("application/javascript")
+        assert web.get("/p/alpha/favicon.ico").status == 200
+        assert web.get("/p/alpha/static/../server.py").status in (403, 404)
+
+    def test_bare_slug_redirects_to_its_base_path(self, web: WebClient) -> None:
+        response = web.get("/p/alpha")
+        assert response.status in (301, 307, 308)
+        assert response.headers["location"] == "/p/alpha/"
+
+    def test_other_project_is_403_and_missing_is_404(self, server: ServerHandle, root) -> None:
+        web = _logged_in(server, mint(root, projects=["alpha"]))
+        assert web.get("/p/beta/").status == 403
+        assert web.get("/p/beta/api/tasks").status == 403
+        everywhere = _logged_in(server, mint(root))
+        assert everywhere.get("/p/nope/api/tasks").status == 404
+
+    def test_bearer_token_reads_the_api(self, server: ServerHandle, root: Path) -> None:
+        token = mint(root, projects=["alpha"])
+        status, _, body = server.request("GET", "/p/alpha/api/tasks", token=token)
+        assert status == 200 and body["ok"] is True
+
+
+# ---------------------------------------------------------------------------
+# AC-24: reads
+# ---------------------------------------------------------------------------
+
+
+class TestReads:
+    def test_gets_match_the_local_dashboard(self, server, root, web: WebClient) -> None:
+        token = mint(root)
+        task = create_task(server, token, title="first")
+        server.op("alpha", "task.comment", {"task": task["id"], "text": "hi"}, token=token)
+        board = root / "projects" / "alpha" / ".lattice"
+        paths = [
+            *READ_PATHS,
+            f"/api/tasks/{task['id']}",
+            f"/api/tasks/{task['id']}/events",
+            f"/api/tasks/{task['id']}/comments",
+            f"/api/tasks/{task['id']}/full",
+        ]
+        for path in paths:
+            hosted = web.get("/p/alpha" + path)
+            local = api.route_get(board, path)
+            assert hosted.status == local.status, path
+            assert hosted.json == json.loads(local.body()), path
+            assert hosted.headers["cache-control"] == "no-store", path
+
+    def test_git_views_are_unavailable_when_hosted(self, web: WebClient) -> None:
+        body = web.get("/p/alpha/api/git").json
+        assert body == {"ok": True, "data": {"available": False, "reason": "hosted"}}
+
+    def test_two_viewers_at_one_seq_cost_one_computation(self, server, root, monkeypatch) -> None:
+        calls: list[str] = []
+        original = api.route_get
+
+        def counting(ld, path, *args, **kwargs):
+            calls.append(path)
+            return original(ld, path, *args, **kwargs)
+
+        monkeypatch.setattr(api, "route_get", counting)
+        token = mint(root, projects=["alpha"])
+        viewers = [_logged_in(server, token), _logged_in(server, token)]
+        for viewer in viewers:
+            for path in READ_PATHS:
+                assert viewer.get("/p/alpha" + path).status == 200
+        assert sorted(calls) == sorted(READ_PATHS)
+
+        create_task(server, token)  # a new head: every endpoint computes once more
+        calls.clear()
+        for viewer in viewers:
+            assert viewer.get("/p/alpha/api/tasks").status == 200
+        assert calls == ["/api/tasks"]
+
+    def test_etag_answers_304_from_the_memo(self, web: WebClient) -> None:
+        first = web.get("/p/alpha/api/graph")
+        etag = first.headers["etag"]
+        again = web.request("GET", "/p/alpha/api/graph", headers={"If-None-Match": etag})
+        assert again.status == 304
+
+
+# ---------------------------------------------------------------------------
+# AC-24: writes
+# ---------------------------------------------------------------------------
+
+
+def _drag(web: WebClient, task_id: str, status: str, **kw):
+    return web.post_json(f"/p/alpha/api/tasks/{task_id}/status", {"status": status}, **kw)
+
+
+class TestWrites:
+    def test_plan_gate_refuses_a_drag(self, web: WebClient) -> None:
+        created = web.post_json("/p/alpha/api/tasks", {"title": "gated"})
+        assert created.status == 201, created.text
+        task_id = created.json["data"]["id"]
+        for step in ("in_planning", "planned"):
+            assert _drag(web, task_id, step).status == 200
+        refused = _drag(web, task_id, "in_progress")
+        assert refused.status == 422
+        assert refused.json["error"]["code"] == "PLAN_REQUIRED"
+        assert "--force" in refused.json["error"]["message"]
+
+    def test_foreign_origin_is_refused(self, server, root, web: WebClient) -> None:
+        before = board_hash(root, "alpha")
+        for origin in ("http://evil.example", "null", None):
+            response = web.post_json("/p/alpha/api/tasks", {"title": "x"}, origin=origin)
+            assert response.status == 403, origin
+            assert response.json["error"]["code"] == "FORBIDDEN"
+        assert board_hash(root, "alpha") == before
+
+    def test_public_origins_are_accepted(self, root: Path) -> None:
+        proxy = "https://lattice.example.internal"
+        with running_server(root, config={"public_origins": [proxy]}) as server:
+            web = _logged_in(server, mint(root, projects=["alpha"]))
+            ok = web.post_json("/p/alpha/api/tasks", {"title": "via proxy"}, origin=proxy)
+            assert ok.status == 201, ok.text
+            other = web.post_json(
+                "/p/alpha/api/tasks", {"title": "x"}, origin="https://other.example.internal"
+            )
+            assert other.status == 403
+
+    def test_json_content_type_is_required(self, web: WebClient) -> None:
+        response = web.request(
+            "POST",
+            "/p/alpha/api/tasks",
+            body=b"title=x",
+            headers={"Origin": web.origin, "Content-Type": "application/x-www-form-urlencoded"},
+        )
+        assert response.status == 415
+
+    @pytest.mark.parametrize(
+        "actors", [("human:alice",), ("human:alice", "agent:*")], ids=["strict", "person"]
+    )
+    def test_writes_as_the_browser_actor(self, server, root, actors) -> None:
+        token = mint(root, projects=["alpha"], actors=actors)
+        web = _logged_in(server, token)
+        created = web.post_json(
+            "/p/alpha/api/tasks", {"title": "from browser", "actor": "agent:mallory"}
+        )
+        assert created.status == 201, created.text
+        task_id = created.json["data"]["id"]
+        commented = web.post_json(
+            f"/p/alpha/api/tasks/{task_id}/comment",
+            {"body": "hello", "actor": "human:mallory"},
+        )
+        assert commented.status == 200, commented.text
+        events = web.get(f"/p/alpha/api/tasks/{task_id}/events").json["data"]
+        assert {e["actor"] for e in events} == {"human:alice"}
+        for event in events:
+            assert event["origin"]["reported"] == {"source": "browser"}
+            assert event["origin"]["authenticated"]["user"] == "human:alice"
+
+    def test_token_without_browser_actor_is_missing_actor(self, server, root) -> None:
+        token = mint(root, projects=["alpha"], actors=("agent:*",))
+        web = _logged_in(server, token)
+        refused = web.post_json("/p/alpha/api/tasks", {"title": "x"})
+        assert refused.json["error"]["code"] == "MISSING_ACTOR"
+
+    def test_open_prose_is_local_only(self, server, root, web: WebClient) -> None:
+        task = create_task(server, mint(root))
+        for sub in ("open-notes", "open-plans"):
+            response = web.post_json(f"/p/alpha/api/tasks/{task['id']}/{sub}", {})
+            assert response.json["error"]["code"] == "LOCAL_ONLY", sub
+
+    def test_session_cookie_is_refused_on_v1(self, server, root, web: WebClient) -> None:
+        before = board_hash(root, "alpha")
+        response = web.post_json("/v1/projects/alpha/ops/task.create", {"params": {"title": "x"}})
+        assert response.status == 401
+        for path in (
+            "/v1/info",
+            "/v1/projects",
+            "/v1/projects/alpha/sync?since=0",
+            "/v1/projects/alpha/files/config.json",
+            "/v1/projects/alpha/tasks",
+        ):
+            assert web.get(path).status == 401, path
+        assert board_hash(root, "alpha") == before
+
+
+# ---------------------------------------------------------------------------
+# AC-24: headers and hostile content
+# ---------------------------------------------------------------------------
+
+
+class TestHeaders:
+    def test_every_page_and_api_response_carries_csp_and_nosniff(
+        self, server, root, web: WebClient
+    ) -> None:
+        anon = WebClient(server)
+        for response, where in [
+            (anon.get("/login"), "login form"),
+            (anon.get("/"), "index, anonymous"),
+            (web.get("/"), "index"),
+            (web.get("/p/alpha/"), "page"),
+            (web.get("/p/alpha/static/escape.js"), "asset"),
+            (web.get("/p/alpha/api/tasks"), "api"),
+            (web.get("/p/alpha/api/nope"), "api 404"),
+            (web.get("/p/beta/api/tasks"), "api 403"),
+            (anon.get("/p/alpha/api/tasks"), "api 401"),
+            (web.post_json("/p/alpha/api/tasks", {"title": "x"}, origin=None), "post 403"),
+            (web.post_json("/p/alpha/api/tasks", {"title": "x"}), "post"),
+        ]:
+            _assert_headers(response, where)
+
+    def test_hostile_content_is_served_only_as_json(self, server, root, web) -> None:
+        token = mint(root)
+        task = create_task(server, token, title=HOSTILE, description=HOSTILE)
+        server.op("alpha", "task.comment", {"task": task["id"], "text": HOSTILE}, token=token)
+        server.op(
+            "alpha",
+            "task.comment",
+            {"task": task["id"], "text": "x"},
+            token=token,
+            origin={"reported": {"host": "<script>'\"", "worktree": "</script><img src=x>"}},
+        )
+        seen = 0
+        for path in [
+            *READ_PATHS,
+            f"/api/tasks/{task['id']}",
+            f"/api/tasks/{task['id']}/events",
+            f"/api/tasks/{task['id']}/full",
+        ]:
+            response = web.get("/p/alpha" + path)
+            assert response.headers["content-type"].startswith("application/json"), path
+            _assert_headers(response, path)
+            seen += "<script>" in response.json.__repr__()
+        assert seen  # the hostile strings reach the page only inside JSON
+        page = web.get("/p/alpha/")
+        assert "alert(1)" not in page.text and "\x1b" not in page.text

@@ -155,3 +155,20 @@ def test_erased_tasks_leave_the_list_and_return_on_unerase(
     )
     assert status == 200, body
     assert listed() == [task["id"]]
+
+
+def test_index_lists_exactly_the_sessions_projects(server: ServerHandle, root: Path) -> None:
+    """AC-16 (H-13b): ``GET /`` lists the session token's projects, each linking to
+    its dashboard."""
+    from tests.test_server.web_client import WebClient
+
+    admin.create_project(root, "gamma")
+    web = WebClient(server)
+    assert web.login(mint(root, projects=["alpha", "gamma"])).status == 303
+    page = web.get("/")
+    assert page.status == 200
+    assert page.headers["content-type"].startswith("text/html")
+    assert 'href="/p/alpha/"' in page.text and 'href="/p/gamma/"' in page.text
+    assert "/p/beta/" not in page.text
+    assert "ALP" in page.text
+    assert "<script" not in page.text

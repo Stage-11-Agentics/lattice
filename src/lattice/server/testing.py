@@ -390,6 +390,7 @@ def open_stream(
     last_event_id: str | None = None,
     query: dict[str, Any] | None = None,
     timeout: float = 10.0,
+    headers: dict[str, str] | None = None,
 ) -> SSEReader:
     """Open ``GET <url>/v1/projects/<slug>/stream`` and return its reader (any status)."""
     parts = urllib.parse.urlsplit(url)
@@ -397,7 +398,7 @@ def open_stream(
     path = f"/v1/projects/{slug}/stream"
     if query:
         path += "?" + urllib.parse.urlencode({k: v for k, v in query.items() if v is not None})
-    headers = {"Accept": "text/event-stream"}
+    headers = {"Accept": "text/event-stream", **(headers or {})}
     if token is not None:
         headers["Authorization"] = f"Bearer {token}"
     if last_event_id is not None:

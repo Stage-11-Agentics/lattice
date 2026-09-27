@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from lattice.server import tokens
 from lattice.server.testing import ServerHandle
 from tests.test_server.conftest import board_hash, mint
+from tests.test_server.web_client import WebClient
 
 
 def _bad_tokens(good: str) -> list[str | None]:
@@ -58,3 +60,119 @@ def test_forbidden_before_existence(server: ServerHandle, root: Path) -> None:
     status, _, body = server.op("nope", "task.create", {"title": "x"}, token=wide)
     assert status == 404 and body["error"]["code"] == "NOT_FOUND"
     assert server.op("Bad_Slug", "task.create", {"title": "x"}, token=wide)[0] == 403
+
+
+# ---------------------------------------------------------------------------
+# Dashboard login (AC-11, H-13b)
+# ---------------------------------------------------------------------------
+
+
+def _sessions(root: Path) -> list[dict]:
+    path = root / "web_sessions.json"
+    if not path.exists():
+        return []
+    return json.loads(path.read_text())["sessions"]
+
+
+def test_login_form_answers_without_a_credential(server: ServerHandle) -> None:
+    response = WebClient(server).get("/login")
+    assert response.status == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert '<form method="post" action="/login"' in response.text
+    assert "<script" not in response.text
+
+
+def test_login_with_a_bad_token_is_401_and_no_session(server: ServerHandle, root: Path) -> None:
+    good = mint(root, projects=["alpha"])
+    for bad in [b for b in _bad_tokens(good) if b is not None]:
+        web = WebClient(server)
+        response = web.login(bad)
+        assert response.status == 401, bad
+        assert web.session is None
+    tokens.revoke_token(root, tokens.parse_token(good)[0])
+    assert WebClient(server).login(good).status == 401
+    assert _sessions(root) == []
+
+
+def test_login_with_a_foreign_origin_is_403_and_no_session(
+    server: ServerHandle, root: Path
+) -> None:
+    good = mint(root, projects=["alpha"])
+    for origin in ("http://evil.example", "null", None, server.url + ".evil.example"):
+        web = WebClient(server)
+        response = web.login(good, origin=origin)
+        assert response.status == 403, origin
+        assert web.session is None
+    assert _sessions(root) == []
+
+
+def test_login_sets_a_strict_http_only_cookie(server: ServerHandle, root: Path) -> None:
+    web = WebClient(server)
+    response = web.login(mint(root, projects=["alpha"]))
+    assert response.status == 303
+    assert response.headers["location"] == "/"
+    (cookie,) = response.set_cookies()
+    parts = [p.strip() for p in cookie.split(";")]
+    assert parts[0].startswith("lattice_session=") and len(parts[0]) > 40
+    lowered = {p.lower() for p in parts[1:]}
+    assert {"httponly", "samesite=strict", "path=/"} <= lowered
+    assert "secure" not in lowered  # plain HTTP, no trusted proxy
+    assert len(_sessions(root)) == 1
+
+
+def test_login_redirects_only_to_a_dashboard_path(server: ServerHandle, root: Path) -> None:
+    token = mint(root, projects=["alpha"])
+    for next_path, expected in [
+        ("/p/alpha/", "/p/alpha/"),
+        ("https://evil.example/", "/"),
+        ("//evil.example/", "/"),
+        ("/p/alpha/../../x", "/"),
+        ("/\\evil.example", "/"),
+    ]:
+        response = WebClient(server).login(token, next_path=next_path)
+        assert response.headers["location"] == expected, next_path
+
+
+def test_secure_cookie_behind_a_trusted_proxy(root: Path) -> None:
+    from lattice.server.testing import running_server
+
+    token = mint(root, projects=["alpha"])
+    with running_server(root, config={"trusted_proxy": True}) as server:
+        web = WebClient(server)
+        response = web.request(
+            "POST",
+            "/login",
+            body=f"token={token}".encode(),
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Origin": "https://" + server.url.removeprefix("http://"),
+                "X-Forwarded-Proto": "https",
+            },
+        )
+        assert response.status == 303, response.text
+        assert "secure" in response.set_cookies()[0].lower()
+
+
+def test_forwarded_proto_is_ignored_without_trusted_proxy(
+    server: ServerHandle, root: Path
+) -> None:
+    web = WebClient(server)
+    response = web.request(
+        "POST",
+        "/login",
+        body=f"token={mint(root)}".encode(),
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Origin": "https://" + server.url.removeprefix("http://"),
+            "X-Forwarded-Proto": "https",
+        },
+    )
+    assert response.status == 403
+
+
+def test_index_requires_a_session(server: ServerHandle, root: Path) -> None:
+    response = WebClient(server).get("/")
+    assert response.status == 303 and response.headers["location"] == "/login"
+    # A bearer token is not a browser session.
+    status, _, _ = server.request("GET", "/", token=mint(root))
+    assert status in (303, 401)

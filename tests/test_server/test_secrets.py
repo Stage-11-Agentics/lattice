@@ -106,3 +106,37 @@ def test_a_crash_carrying_a_secret_never_reaches_the_log(root: Path) -> None:
     assert any("server_ops.py" in f for f in crashes[0]["frames"])
     for leaked in (raw_secret, secret, token):
         assert leaked not in log_text
+
+
+def test_web_sessions_hold_no_secret_and_logs_hold_no_cookie(root: Path) -> None:
+    """G-7 (H-13b): web_sessions.json stores hashes only, mode 0600; neither the
+    token submitted at login nor any session cookie value reaches the log."""
+    import os
+    import stat
+
+    from tests.test_server.web_client import WebClient
+
+    data = tokens.create_token(root, user="human:alice", machine="m", all_projects=True)
+    token = data["token"]
+    _, secret = tokens.parse_token(token)
+    with running_server(root) as server:
+        web = WebClient(server)
+        web.login(token + "x")  # a failed login
+        web.login(token, origin="http://evil.example")  # a refused login
+        web.login(token)
+        cookie = web.session
+        assert cookie
+        web.get("/p/alpha/api/tasks")
+        web.post_json("/p/alpha/api/tasks", {"title": "hello"})
+        web.get("/")
+        web.logout()
+        web.cookies["lattice_session"] = cookie
+        web.get("/p/alpha/api/tasks")  # a dead session
+        log_text = server.log_stream.getvalue()
+    stored = (root / "web_sessions.json").read_text()
+    for value in (token, secret, cookie):
+        assert value not in log_text
+        assert value not in stored
+    assert '"/login"' in log_text  # the requests were logged, by path only
+    mode = stat.S_IMODE(os.stat(root / "web_sessions.json").st_mode)
+    assert mode == 0o600
