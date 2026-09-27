@@ -46,9 +46,8 @@ from pathlib import Path
 
 from lattice.core.config import configured_event_prefix
 from lattice.core.events import create_event, serialize_event
-from lattice.core.origin import origin_scope, stamp_origin
+from lattice.core.origin import origin_scope
 from lattice.core.tasks import HISTORY_RECONCILED, apply_event_to_snapshot
-from lattice.storage.fs import jsonl_append
 from lattice.storage.integrity import (
     DoctorReport,
     _collect_task_ids,
@@ -64,6 +63,7 @@ from lattice.storage.operations import (
     AuthoritativeLogError,
     ResolvedTaskAuthority,
     _load_strict_id_index,
+    append_repair_events,
     parse_project_short_id,
     resolve_task_authority,
 )
@@ -163,9 +163,7 @@ def repair_history(
             return plan
         with origin_scope(origin or {"op": "doctor.fix"}):
             for repair in plan.repairs:
-                for event in repair.events:
-                    stamp_origin(event)
-                jsonl_append(repair.path, "".join(serialize_event(e) for e in repair.events))
+                append_repair_events(repair.path, repair.events)
         plan.applied = True
         _repair_task_derived_files_unlocked(lattice_dir, reconcile_placement=False)
         return plan

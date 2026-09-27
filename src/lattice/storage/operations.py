@@ -1197,6 +1197,19 @@ def mutate_task_events(
     )
 
 
+def append_repair_events(event_path: Path, events: list[dict]) -> None:
+    """Append doctor's history-repair events to one task log (SPEC §11).
+
+    The only per-task append outside :func:`mutate_task`, which strictly
+    replays the log first and so cannot take a task whose history needs the
+    repair. The caller holds every task lock and has already replayed the
+    resulting bytes strictly; one write and one fsync, no hooks.
+    """
+    for event in events:
+        stamp_origin(event)
+    jsonl_append(event_path, "".join(serialize_event(event) for event in events))
+
+
 def scaffold_plan(
     lattice_dir: Path,
     task_id: str,
