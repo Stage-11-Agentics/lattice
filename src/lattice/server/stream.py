@@ -149,6 +149,19 @@ class Broadcaster:
         self._subscribers: list[Subscriber] = []
         #: Streams disconnected because their queue filled (tests and logs).
         self.overflows = 0
+        #: What heartbeats announce, ``(epoch, head_seq)``. Changed only after the
+        #: matching entry or ``reset`` is queued to every subscriber, so no
+        #: heartbeat names a head or epoch whose message a stream has not queued.
+        self._announced: tuple[str, int] = ("", 0)
+
+    @property
+    def announced(self) -> tuple[str, int]:
+        with self._lock:
+            return self._announced
+
+    def announce(self, epoch: str, head_seq: int) -> None:
+        with self._lock:
+            self._announced = (epoch, head_seq)
 
     def count(self) -> int:
         with self._lock:
@@ -171,7 +184,19 @@ class Broadcaster:
         with self._lock:
             return bool(self._subscribers)
 
-    def publish(self, item: tuple[str, int, bytes]) -> None:
+    def publish(self, epoch: str, seq: int, data: bytes | None) -> None:
+        """Queue a journal entry's frame to every subscriber, then announce it.
+        *data* is ``None`` when nobody listens (only the announcement changes)."""
+        if data is not None:
+            self._offer((JOURNAL, seq, data))
+        self.announce(epoch, seq)
+
+    def reset(self, epoch: str) -> None:
+        """Queue ``reset`` to every subscriber, then announce the new epoch at seq 0."""
+        self._offer((RESET, 0, reset_frame(epoch)))
+        self.announce(epoch, 0)
+
+    def _offer(self, item: tuple[str, int, bytes]) -> None:
         with self._lock:
             subscribers = list(self._subscribers)
         for subscriber in subscribers:
@@ -194,16 +219,20 @@ class Broadcaster:
 
 
 class EventStream:
-    """An ASGI response that sends *initial* frames, then a heartbeat, then live
-    entries from *subscriber*, with a heartbeat every *heartbeat_seconds*.
+    """An ASGI response: the *initial* frames (a ``reset`` or the replay), then a
+    heartbeat, then live messages from *subscriber*, with a heartbeat every
+    *heartbeat_seconds*.
 
-    *heartbeat* returns the next heartbeat frame, or ``None`` to end the stream
-    (the credential no longer holds, or the project is gone). *sent_seq* is the
-    last ``seq`` the initial frames delivered; live entries at or below it are
-    dropped. *on_close* runs once, however the stream ends.
+    Before each heartbeat the stream checks *alive* (the credential still holds
+    and the project still serves; otherwise it ends), then sends every message
+    already queued, and only then a heartbeat naming *announced* as read before
+    that queue came up empty. Messages are queued before the broadcaster
+    announces them, so a heartbeat never names an epoch or head whose ``reset``
+    or entry this stream has not sent yet (SPEC §8.9).
+
+    *sent_seq* is the last ``seq`` the initial frames delivered; live entries at
+    or below it are dropped. *on_close* runs once, however the stream ends.
     """
-
-    media_type = "text/event-stream"
 
     def __init__(
         self,
@@ -211,14 +240,16 @@ class EventStream:
         *,
         initial: list[bytes],
         sent_seq: int,
-        heartbeat: Callable[[], bytes | None],
+        alive: Callable[[], bool],
+        announced: Callable[[], tuple[str, int]],
         heartbeat_seconds: float,
         on_close: Callable[[Subscriber], None],
     ) -> None:
         self.subscriber = subscriber
         self.initial = initial
         self.sent_seq = sent_seq
-        self.heartbeat = heartbeat
+        self.alive = alive
+        self.announced = announced
         self.heartbeat_seconds = max(0.01, float(heartbeat_seconds))
         self.on_close = on_close
         self.outcome = "open"
@@ -264,25 +295,47 @@ class EventStream:
     async def _body(self, send: Send, data: bytes) -> None:
         await send({"type": "http.response.body", "body": data, "more_body": True})
 
+    async def _deliver(self, send: Send, items: list[tuple[str, int, bytes]]) -> bool:
+        """Send queued messages; ``False`` once a close message ends the stream."""
+        for kind, seq, data in items:
+            if kind == CLOSE:
+                self.outcome = "closed"
+                return False
+            if kind == JOURNAL:
+                if seq <= self.sent_seq:
+                    continue  # already delivered by the replay
+                self.sent_seq = seq
+            elif kind == RESET:
+                self.sent_seq = 0  # the new epoch starts at seq 1
+            await self._body(send, data)
+        return True
+
+    async def _heartbeat(self, send: Send) -> bool:
+        """Recheck, drain the queue, then announce; ``False`` when the stream ends."""
+        if not self.alive():
+            self.outcome = "ended"
+            return False
+        while True:
+            epoch, head_seq = self.announced()
+            items = self.subscriber.take()
+            if not items:
+                await self._body(send, heartbeat_frame(epoch, head_seq))
+                return True
+            if not await self._deliver(send, items):
+                return False
+
     async def _pump(self, send: Send) -> None:
         sub = self.subscriber
         for data in self.initial:
             await self._body(send, data)
-        beat = self.heartbeat()
-        if beat is None:
-            self.outcome = "ended"
+        if not await self._heartbeat(send):
             return
-        await self._body(send, beat)
         next_beat = time.monotonic() + self.heartbeat_seconds
-        sent = self.sent_seq
         while True:
             if time.monotonic() >= next_beat:
                 # Due even on a busy stream: the heartbeat carries the credential recheck.
-                beat = self.heartbeat()
-                if beat is None:
-                    self.outcome = "ended"
+                if not await self._heartbeat(send):
                     return
-                await self._body(send, beat)
                 next_beat = time.monotonic() + self.heartbeat_seconds
             sub.wake.clear()
             items = sub.take()
@@ -292,14 +345,5 @@ class EventStream:
                 with anyio.move_on_after(max(0.0, next_beat - time.monotonic())):
                     await sub.wake.wait()
                 continue
-            for kind, seq, data in items:
-                if kind == CLOSE:
-                    self.outcome = "closed"
-                    return
-                if kind == JOURNAL:
-                    if seq <= sent:
-                        continue  # already delivered by the replay
-                    sent = seq
-                elif kind == RESET:
-                    sent = 0  # the new epoch starts at seq 1
-                await self._body(send, data)
+            if not await self._deliver(send, items):
+                return

@@ -33,7 +33,7 @@ from lattice.core.config import serialize_config
 from lattice.core.errors import OpError
 from lattice.core.ids import generate_op_id
 from lattice.ops.base import Authorizer, Caller, OpResult, execute
-from lattice.server import control
+from lattice.server import control, transactions
 from lattice.server.floors import ShortIdFloors
 from lattice.server.journal import (
     HOSTED_DIR,
@@ -46,7 +46,7 @@ from lattice.server.journal import (
     rotate_epoch,
 )
 from lattice.server.log import ServerLog, describe_error
-from lattice.server.stream import JOURNAL, RESET, Broadcaster, journal_frame, reset_frame
+from lattice.server.stream import Broadcaster, journal_frame
 from lattice.server.syncstate import Manifest, entry_events
 from lattice.server.transactions import (
     IndexEntry,
@@ -329,6 +329,7 @@ class Project:
         # SPEC §8.7 step 8: the sync path's state (line hashes and length history
         # live in the journal; the manifest is hashed here, once).
         self.manifest = Manifest.build(board)
+        self.broadcaster.announce(journal.epoch, journal.head_seq)
         ensure_dir(board / HOSTED_DIR / control.CONTROL_DIR)
         self.remember_watched()
         self._set_state(LOADED, None)
@@ -394,8 +395,9 @@ class Project:
             return
         if self.journal is None:
             raise OpError("BOARD_UNAVAILABLE", f"project {self.slug} is not loaded")
+        journal = self.journal
         try:
-            seq, line = self.journal.append(
+            seq, line, raw = journal.write(
                 {
                     "op": "external",
                     "op_id": None,
@@ -407,11 +409,16 @@ class Project:
                     "lengths": {},
                 }
             )
-            self.observe_committed(line)
         except BaseException as exc:
             self._mark_unavailable(f"journal append failed: {describe_error(exc)}")
             raise OpError("BOARD_UNAVAILABLE", f"project {self.slug} is unavailable") from exc
-        self.remember_watched(changed)
+        try:
+            self.finalize_committed(line, raw)
+        except BaseException as exc:
+            self._mark_unavailable(
+                f"finalizing external seq {seq} in memory failed: {describe_error(exc)}"
+            )
+            raise OpError("BOARD_UNAVAILABLE", f"project {self.slug} is unavailable") from exc
         self.log.warning("external_change", project=self.slug, paths=changed, seq=seq)
         try:
             self._publish(line)
@@ -598,28 +605,47 @@ class Project:
 
     # -- the sync path's memory and the stream (SPEC §8.6 step 6, §8.9) -----
 
-    def observe_committed(self, line: dict) -> None:
-        """Bring the manifest up to date with a committed line's ``paths`` (the line
-        hash and length history were accounted when the journal accepted it)."""
-        if self.manifest is not None:
-            self.manifest.update(
-                self.board, list(line.get("paths") or ()), frozenset(line.get("lengths") or ())
-            )
+    def finalize_committed(self, line: dict, raw: bytes, events: list | tuple = ()) -> None:
+        """Bring memory up to date with one committed journal line: its hash and
+        offset, each log's length history, the manifest entries of its ``paths``,
+        the short-ID floors, and the watched-file baselines (SPEC §8.6 step 6).
+
+        The one finalizer for transactions and ``external`` entries. Idempotent: a
+        line already accounted is skipped. The manifest changes are staged first
+        (reading files, changing nothing), then everything is swapped in with no
+        I/O, so a failure leaves memory exactly as it was; callers quarantine.
+        """
+        journal = self.journal
+        if journal is None or self.manifest is None:
+            raise RuntimeError(f"project {self.slug} is not loaded")
+        seq = line["seq"]
+        if seq <= journal.head_seq:
+            return
+        if seq != journal.head_seq + 1:
+            raise RuntimeError(f"journal line {seq} follows head {journal.head_seq}")
+        paths = [p for p in line.get("paths") or () if isinstance(p, str)]
+        staged = self.manifest.stage(self.board, paths, frozenset(line.get("lengths") or ()))
+        transactions._fault("finish.memory", seq=seq)
+        journal.accept(line, raw)
+        self.manifest.apply(staged)
+        self.floors.observe_events(list(events))
+        self.remember_watched(paths)
 
     def _publish(self, line: dict) -> None:
         """Hand a committed line to every open stream (under the locks, in ``seq``
         order). Its events are read back only when someone is listening."""
         journal = self.journal
-        if journal is None or not self.broadcaster.has_subscribers():
-            return
+        if journal is None:
+            raise RuntimeError(f"project {self.slug} is not loaded")
         seq = line["seq"]
-        digest = journal.hash_at(seq)
-        if digest is None:
-            raise RuntimeError(f"journal line {seq} has no hash; was it accepted?")
-        events = entry_events(self.board, journal, line)
-        self.broadcaster.publish(
-            (JOURNAL, seq, journal_frame(journal.epoch, line, digest, events))
-        )
+        data = None
+        if self.broadcaster.has_subscribers():
+            digest = journal.hash_at(seq)
+            if digest is None:
+                raise RuntimeError(f"journal line {seq} has no hash; was it accepted?")
+            events = entry_events(self.board, journal, line)
+            data = journal_frame(journal.epoch, line, digest, events)
+        self.broadcaster.publish(journal.epoch, seq, data)
 
     def rotate_epoch(self) -> dict:
         """Start a new epoch under the locks (the ``rotate-epoch`` control request,
@@ -641,7 +667,8 @@ class Project:
                 "BOARD_UNAVAILABLE",
                 f"project {self.slug}: epoch rotation failed; it finishes at the next load",
             ) from exc
-        self.broadcaster.publish((RESET, 0, reset_frame(rotated.epoch)))
+        # Queued to every stream before heartbeats may name the new epoch (SPEC §8.9).
+        self.broadcaster.reset(rotated.epoch)
         self.log.info("epoch_rotated", project=self.slug, old_epoch=old_epoch, epoch=rotated.epoch)
         return {"project": self.slug, "old_epoch": old_epoch, "epoch": rotated.epoch}
 

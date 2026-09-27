@@ -54,6 +54,22 @@ def _regular_size(path: Path) -> int | None:
     return info.st_size if stat.S_ISREG(info.st_mode) else None
 
 
+def board_file(board: Path, rel: str) -> Path | None:
+    """*rel* under *board* when it is a regular file reached without any symlink,
+    else ``None``: a board path never reads outside its board (SPEC §8.8)."""
+    path = Path(board) / rel
+    if _regular_size(path) is None:
+        return None
+    try:
+        root = Path(board).resolve(strict=True)
+        resolved = path.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+    if resolved != root.joinpath(*rel.split("/")):
+        return None  # a symlinked directory on the way
+    return resolved
+
+
 # ---------------------------------------------------------------------------
 # The manifest
 # ---------------------------------------------------------------------------
@@ -65,8 +81,17 @@ class ManifestEntry:
     size: int
 
 
+#: A staged manifest change: the new entry and hash state, or ``None`` (removed).
+Staged = dict[str, "tuple[ManifestEntry, Any] | None"]
+
+
 class Manifest:
-    """Every synced board file's hash and size (SPEC §8.8 "Manifest")."""
+    """Every synced board file's hash and size (SPEC §8.8 "Manifest").
+
+    Changes are computed by :meth:`stage`, which reads files but changes
+    nothing, and made by :meth:`apply`, which only assigns, so a committed
+    line's manifest update is all or nothing.
+    """
 
     def __init__(self) -> None:
         self.entries: dict[str, ManifestEntry] = {}
@@ -76,47 +101,56 @@ class Manifest:
     @classmethod
     def build(cls, board: Path) -> Manifest:
         manifest = cls()
-        for rel in synced_files(board):
-            manifest._rehash(board, rel)
+        manifest.apply(manifest.stage(board, synced_files(board), frozenset()))
         return manifest
 
     def get(self, rel: str) -> ManifestEntry | None:
         return self.entries.get(rel)
 
-    def update(self, board: Path, paths: list[str], appended: set[str] | frozenset[str]) -> None:
-        """Bring *paths* up to date after a committed line. A path in *appended* was
-        only appended to, so its hash continues from the bytes already covered."""
+    def stage(self, board: Path, paths: list[str], appended: set[str] | frozenset[str]) -> Staged:
+        """The manifest changes *paths* need now. A path in *appended* was only
+        appended to, so its hash continues from the bytes already covered."""
+        staged: Staged = {}
         for rel in paths:
             if not is_synced_path(rel):
                 continue
-            size = _regular_size(board / rel)
-            if size is None:
+            path = board_file(board, rel)
+            if path is None:
+                staged[rel] = None
+                continue
+            state = self._hashers.get(rel)
+            if rel in appended and state is not None and state[1] <= path.stat().st_size:
+                staged[rel] = _hash_from(path, state[0], state[1])
+            else:
+                staged[rel] = _hash_from(path, hashlib.sha256(), 0)
+        return staged
+
+    def apply(self, staged: Staged) -> None:
+        for rel, change in staged.items():
+            if change is None:
                 self.entries.pop(rel, None)
                 self._hashers.pop(rel, None)
                 continue
-            state = self._hashers.get(rel)
-            if rel in appended and state is not None and state[1] <= size:
-                self._extend(board, rel, state[0], state[1])
+            entry, hasher = change
+            self.entries[rel] = entry
+            if rel.endswith(".jsonl"):
+                self._hashers[rel] = (hasher, entry.size)
             else:
-                self._rehash(board, rel)
+                self._hashers.pop(rel, None)
 
-    def _rehash(self, board: Path, rel: str) -> None:
-        self._hashers.pop(rel, None)
-        self._extend(board, rel, hashlib.sha256(), 0)
+    def update(self, board: Path, paths: list[str], appended: set[str] | frozenset[str]) -> None:
+        self.apply(self.stage(board, paths, appended))
 
-    def _extend(self, board: Path, rel: str, hasher: Any, start: int) -> None:
-        hasher = hasher.copy()
-        covered = start
-        with open(board / rel, "rb") as fh:
-            fh.seek(start)
-            while chunk := fh.read(_CHUNK):
-                hasher.update(chunk)
-                covered += len(chunk)
-        self.entries[rel] = ManifestEntry(hasher.hexdigest(), covered)
-        if rel.endswith(".jsonl"):
-            self._hashers[rel] = (hasher, covered)
-        else:
-            self._hashers.pop(rel, None)
+
+def _hash_from(path: Path, hasher: Any, start: int) -> tuple[ManifestEntry, Any]:
+    hasher = hasher.copy()
+    covered = start
+    with open(path, "rb") as fh:
+        fh.seek(start)
+        while chunk := fh.read(_CHUNK):
+            hasher.update(chunk)
+            covered += len(chunk)
+    return ManifestEntry(hasher.hexdigest(), covered), hasher
 
 
 def synced_files(board: Path) -> list[str]:
@@ -201,10 +235,13 @@ def reset_body(
     budget = RESET_INLINE_CAP
     for rel, entry in sorted(manifest.entries.items()):
         spec: dict[str, Any] = {"sha256": entry.sha256, "size": entry.size}
+        path = board_file(board, rel)
+        if path is None:
+            raise OpError("INTEGRITY_ERROR", f"{rel} is in the manifest but not a board file")
         if entry.size <= inline_file_bytes and entry.size <= budget:
-            data = (board / rel).read_bytes()
+            data = _read(path, 0, entry.size)
             budget -= len(data)
-            spec["content_b64"] = base64.b64encode(data).decode("ascii")
+            spec["content_b64"] = _b64(data)
         else:
             spec["href"] = href(slug, rel, entry.sha256)
         files[rel] = spec
@@ -219,7 +256,9 @@ def delta_body(
     since: int,
     inline_file_bytes: int,
 ) -> dict[str, Any]:
-    """Every path changed in lines ``since+1..head``, coalesced to its current content."""
+    """Every path changed in lines ``since+1..head``, coalesced to its current content.
+    ``sha256`` and ``size`` always describe the whole current file (the manifest);
+    an append delta's ``content_b64`` carries only bytes ``append_from..size``."""
     touched: set[str] = set()
     for _seq, raw in journal.read_lines(since):
         touched.update(json.loads(raw).get("paths") or ())
@@ -228,44 +267,34 @@ def delta_body(
     for rel in sorted(touched):
         if not is_synced_path(rel):
             continue
-        path = board / rel
-        size = _regular_size(path)
-        if size is None:
-            if not os.path.lexists(path):
-                removed.append(rel)
-            continue  # a directory (or a non-regular file) is never sent
         entry = manifest.get(rel)
+        path = board_file(board, rel)
+        if entry is None or path is None:
+            if not os.path.lexists(board / rel):
+                removed.append(rel)
+            continue  # a directory is never sent
+        spec: dict[str, Any] = {"sha256": entry.sha256, "size": entry.size}
         base = journal.length_at(rel, since) if journal.is_log(rel) else None
-        if base is not None and base <= size and size - base <= inline_file_bytes:
-            with open(path, "rb") as fh:
-                data = fh.read()
-            digest = hashlib.sha256(data).hexdigest()
-            files[rel] = {
-                "sha256": digest,
-                "size": len(data),
-                "append_from": base,
-                "content_b64": base64.b64encode(data[base:]).decode("ascii"),
-                "href": href(slug, rel, digest),
-            }
-        elif size <= inline_file_bytes:
-            data = path.read_bytes()
-            files[rel] = {
-                "sha256": hashlib.sha256(data).hexdigest(),
-                "size": len(data),
-                "content_b64": base64.b64encode(data).decode("ascii"),
-            }
+        if base is not None and base <= entry.size and entry.size - base <= inline_file_bytes:
+            spec["append_from"] = base
+            spec["content_b64"] = _b64(_read(path, base, entry.size))
+            spec["href"] = href(slug, rel, entry.sha256)
+        elif entry.size <= inline_file_bytes:
+            spec["content_b64"] = _b64(_read(path, 0, entry.size))
         else:
-            digest = entry.sha256 if entry is not None and entry.size == size else _hash_file(path)
-            files[rel] = {"sha256": digest, "size": size, "href": href(slug, rel, digest)}
+            spec["href"] = href(slug, rel, entry.sha256)
+        files[rel] = spec
     return {**_head_fields(journal), "reset": False, "files": files, "removed": removed}
 
 
-def _hash_file(path: Path) -> str:
-    hasher = hashlib.sha256()
+def _read(path: Path, start: int, end: int) -> bytes:
     with open(path, "rb") as fh:
-        while chunk := fh.read(_CHUNK):
-            hasher.update(chunk)
-    return hasher.hexdigest()
+        fh.seek(start)
+        return fh.read(end - start)
+
+
+def _b64(data: bytes) -> str:
+    return base64.b64encode(data).decode("ascii")
 
 
 # ---------------------------------------------------------------------------
@@ -291,18 +320,10 @@ def check_file_path(rel: str) -> str:
 def read_board_file(board: Path, rel: str, sha256: str | None) -> bytes:
     """A synced board file's bytes, confined to the board; ``STALE_VERSION`` when
     it no longer has the pinned hash."""
-    missing = OpError("NOT_FOUND", f"no board file {rel}")
-    root = board.resolve()
-    path = board / rel
-    try:
-        resolved = path.resolve(strict=True)
-    except (OSError, RuntimeError):
-        raise missing from None
-    if not resolved.is_relative_to(root) or resolved != root.joinpath(*rel.split("/")):
-        raise missing  # a symlink anywhere on the way: never follow it
-    if _regular_size(resolved) is None:
-        raise missing
-    data = resolved.read_bytes()
+    path = board_file(board, rel)
+    if path is None:
+        raise OpError("NOT_FOUND", f"no board file {rel}")
+    data = path.read_bytes()
     if sha256 is not None and hashlib.sha256(data).hexdigest() != sha256:
         raise OpError(
             "STALE_VERSION",

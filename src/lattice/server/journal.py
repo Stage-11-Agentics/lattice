@@ -283,8 +283,15 @@ class Journal:
             self._account(line, raw)
 
     def append(self, entry: dict[str, Any]) -> tuple[int, dict]:
-        """Append one line outside a transaction (``external`` entries); returns
+        """Append one line outside a transaction and account for it; returns
         ``(seq, line)``. Operations commit through :mod:`lattice.server.transactions`."""
+        seq, line, raw = self.write(entry)
+        self.accept(line, raw)
+        return seq, line
+
+    def write(self, entry: dict[str, Any]) -> tuple[int, dict, bytes]:
+        """Append and fsync one line without accounting for it (the caller's
+        finalizer does, :meth:`accept`); returns ``(seq, line, raw)``."""
         seq, line, raw = self.prepare(entry)
         try:
             before = self.path.stat().st_size
@@ -296,8 +303,7 @@ class Journal:
             # Never leave a partial line for the next append to bury mid-file.
             self._truncate(before)
             raise
-        self.accept(line, raw)
-        return seq, line
+        return seq, line, raw
 
     def _truncate(self, length: int) -> None:
         try:

@@ -69,8 +69,16 @@ from lattice.server.protocol import (
     server_version,
 )
 from lattice.server.registry import ProjectRegistry, WorkerCrash, in_worker
+from lattice.server.stream import (
+    EventStream,
+    Subscriber,
+    journal_frame,
+    parse_entry_id,
+    reset_frame,
+)
 from lattice.server.syncstate import (
     check_file_path,
+    entry_events,
     delta_body,
     fast_path_body,
     manifest_body,
@@ -849,6 +857,120 @@ async def board_file(request: Request, state: ServerState) -> Response:
     return await _with_token(request, state, run)
 
 
+# ---------------------------------------------------------------------------
+# Stream (SPEC §8.9)
+# ---------------------------------------------------------------------------
+
+
+def _resume_point(request: Request) -> tuple[bool, str | None, int, str | None]:
+    """``(given, epoch, seq, hash)`` from ``Last-Event-ID`` (which wins) or the query.
+    A malformed ``Last-Event-ID`` is a resume point that matches nothing (a reset)."""
+    header = request.headers.get("last-event-id")
+    if header is not None and header.strip():
+        parsed = parse_entry_id(header)
+        if parsed is None:
+            return True, None, -1, None
+        return True, parsed[0], parsed[1], parsed[2]
+    if "since" not in request.query_params:
+        return False, None, 0, None
+    since = _query_int(request, "since")
+    return (
+        True,
+        request.query_params.get("epoch") or None,
+        since,
+        (request.query_params.get("hash") or None),
+    )
+
+
+def _stream_start(
+    project: Project, limits: Any, subscriber: Subscriber, resume: tuple
+) -> tuple[list[bytes], int]:
+    """Under the work lock: subscribe, then build the replay (or one ``reset``).
+
+    Publication happens only under this lock, so the subscriber's queue starts
+    exactly after the head the replay reads up to: no gap, no duplicate.
+    """
+    journal = project.journal
+    if journal is None:
+        project.require_loaded()
+        raise OpError("BOARD_UNAVAILABLE", f"project {project.slug} is not loaded")
+    if not project.broadcaster.subscribe(subscriber, limits.max_stream_subscribers_per_project):
+        raise _too_many_streams(project)
+    try:
+        given, epoch, since, client_hash = resume
+        if not given:
+            return [], journal.head_seq  # live only, from the current head
+        if (
+            epoch != journal.epoch
+            or since < 0
+            or since > journal.head_seq
+            or (since > 0 and client_hash != journal.hash_at(since))
+            or journal.head_seq - since > limits.replay_reset_entries
+        ):
+            return [reset_frame(journal.epoch)], journal.head_seq
+        frames = []
+        for seq, raw in journal.read_lines(since):
+            line = json.loads(raw)
+            digest = journal.hash_at(seq)
+            assert digest is not None
+            events = entry_events(project.board, journal, line)
+            frames.append(journal_frame(journal.epoch, line, digest, events))
+        return frames, journal.head_seq
+    except BaseException:
+        project.broadcaster.unsubscribe(subscriber)
+        raise
+
+
+def _too_many_streams(project: Project) -> OpError:
+    return OpError(
+        "RATE_LIMITED",
+        f"project {project.slug} already has the most open streams it allows; retry later",
+        {"retry_after": 1},
+    )
+
+
+async def stream(request: Request, state: ServerState) -> Response:
+    """``GET /v1/projects/{slug}/stream``: SSE. Subscribe, replay after the resume
+    point (or ``reset``), then live entries; a heartbeat at once and every
+    ``heartbeat_seconds``, each after rechecking the credential."""
+    slug = request.path_params["slug"]
+    request.scope["state"]["log"]["project"] = slug
+    check_protocol(request)
+    authorization = request.headers.get("authorization")
+    token = authenticate(request, state)  # open streams are not in the in-flight limit
+    project = resolve_project(state, token, slug)
+    resume = _resume_point(request)
+    limits = state.config.limits
+    if project.broadcaster.count() >= limits.max_stream_subscribers_per_project:
+        raise _too_many_streams(project)
+    subscriber = Subscriber(asyncio.get_running_loop(), limits.stream_queue_entries)
+    initial, sent_seq = await state.registry.run_locked(
+        project, lambda: _stream_start(project, limits, subscriber, resume)
+    )
+
+    def alive() -> bool:
+        try:
+            current = state.tokens.authenticate(authorization)
+        except OpError:
+            return False
+        return current.permits_project(slug) and project.state == LOADED
+
+    def closed(sub: Subscriber) -> None:
+        project.broadcaster.unsubscribe(sub)
+        if sub.overflowed:
+            state.log.warning("stream_overflow", project=slug, token_id=token.id)
+
+    return EventStream(
+        subscriber,
+        initial=initial,
+        sent_seq=sent_seq,
+        alive=alive,
+        announced=lambda: project.broadcaster.announced,
+        heartbeat_seconds=state.heartbeat_seconds,
+        on_close=closed,
+    )
+
+
 async def not_found(request: Request, state: ServerState) -> Response:
     """No such route. Under ``/v1`` the caller is authenticated first (protocol,
     credential, in-flight limit), so an unauthenticated request learns nothing
@@ -903,6 +1025,7 @@ def create_app(root: Path, *, config: ServerConfig, log: ServerLog | None = None
         Route("/v1/projects/{slug}/ops/{op}", endpoint(op_request), methods=["POST"]),
         Route("/v1/projects/{slug}/ops/{op}", endpoint(op_status), methods=["GET"]),
         Route("/v1/projects/{slug}/sync", endpoint(sync), methods=["GET"]),
+        Route("/v1/projects/{slug}/stream", endpoint(stream), methods=["GET"]),
         Route("/v1/projects/{slug}/files/{path:path}", endpoint(board_file), methods=["GET"]),
         Route("/v1/projects/{slug}/tasks", endpoint(task_list), methods=["GET"]),
         Route("/v1/projects/{slug}/tasks/{task_id}", endpoint(task_read), methods=["GET"]),

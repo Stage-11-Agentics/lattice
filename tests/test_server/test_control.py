@@ -80,7 +80,7 @@ def test_control_requests_run_at_admission(root: Path) -> None:
 def test_bad_control_requests_are_answered_not_run(root: Path) -> None:
     with running_server(root):
         board = root / "projects" / "alpha" / ".lattice"
-        for action, payload in (("set-config", {"set": {"hooks": "x"}}), ("rotate-epoch", {})):
+        for action, payload in (("set-config", {"set": {"hooks": "x"}}), ("no-such-action", {})):
             answer = control.send_request(board, action, payload, wait_seconds=5)
             assert answer["ok"] is False and answer["error"]["code"] == "VALIDATION_ERROR"
         assert _journal(root) == []
