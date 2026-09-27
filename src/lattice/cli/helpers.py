@@ -57,10 +57,22 @@ def require_root(is_json: bool = False) -> Path:
         from lattice.remote.session import prepare_read
 
         try:
-            return prepare_read(hosted)
+            return prepare_read(hosted, lock=not _long_running_command())
         except OpError as exc:
             output_error(exc.message, exc.code, is_json)
     return root / LATTICE_DIR
+
+
+#: Commands that run until stopped. Holding the cache's shared read lock for
+#: their lifetime would starve every sync on the machine, so they read without it.
+LONG_RUNNING_COMMANDS = frozenset({"dashboard", "watch", "wait"})
+
+
+def _long_running_command() -> bool:
+    ctx = click.get_current_context(silent=True)
+    while ctx is not None and ctx.parent is not None and ctx.parent.parent is not None:
+        ctx = ctx.parent
+    return ctx is not None and ctx.info_name in LONG_RUNNING_COMMANDS
 
 
 def hosted_or_exit(root: Path, is_json: bool) -> Hosted | None:

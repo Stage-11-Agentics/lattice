@@ -9,6 +9,7 @@ offline write queue).
 from __future__ import annotations
 
 import json
+import os
 import socket
 import threading
 from collections.abc import Iterator
@@ -172,3 +173,27 @@ def test_a_fresh_clone_offline_says_there_is_no_cache(
     error = json.loads(result.stdout)["error"]
     assert error["code"] == "SERVER_UNREACHABLE"
     assert "no cache of team/demo yet" in error["message"]
+
+
+def test_long_running_commands_read_without_holding_the_lock(
+    hosted_env: HostedEnv, repo: Path
+) -> None:
+    """``dashboard``, ``watch``, and ``wait`` run until stopped: holding the shared
+    read lock for their lifetime would starve every sync."""
+    import click
+
+    from lattice.cli.helpers import require_root
+    from lattice.cli.main import cli
+    from lattice.remote import session
+
+    previous = Path.cwd()
+    os.chdir(repo)
+    try:
+        for name, held in (("watch", False), ("dashboard", False), ("list", True)):
+            with click.Context(cli, info_name="lattice") as root_ctx:
+                with click.Context(click.Command(name), parent=root_ctx, info_name=name):
+                    require_root(False)
+                    assert bool(session._locks) is held, name
+            session.reset_process_state()
+    finally:
+        os.chdir(previous)

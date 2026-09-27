@@ -7,6 +7,8 @@ import json
 import stat
 from pathlib import Path
 
+import pytest
+
 from tests.test_remote.hosted import HostedEnv, git, make_repo, run_cli
 
 
@@ -62,3 +64,24 @@ def test_init_on_a_bound_checkout_has_its_own_message(
     result = run_cli(repo, "init", "--actor", "human:a", "--project-code", "X")
     assert result.exit_code == 1
     assert "This checkout is bound to 'team/demo'; its board lives on the server." in result.stderr
+
+
+def test_hosted_mode_needs_a_posix_platform(
+    hosted_env: HostedEnv, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SPEC §6.2: off POSIX, attach and every command on a hosted root fail with
+    ``HOSTED_UNSUPPORTED_PLATFORM``; local boards are unaffected."""
+    from lattice.remote import binding
+
+    repo = make_repo(tmp_path / "repo")
+    assert run_cli(repo, "remote", "attach", "team", "demo").exit_code == 0
+    monkeypatch.setattr(binding, "hosted_supported", lambda: False)
+    for args in (
+        ("list", "--json"),
+        ("create", "x", "--actor", "agent:a", "--json"),
+        ("remote", "attach", "team", "demo", "--json"),
+        ("remote", "status", "--json"),
+    ):
+        result = run_cli(repo, *args)
+        assert result.exit_code == 1, (args, result.output)
+        assert json.loads(result.stdout)["error"]["code"] == "HOSTED_UNSUPPORTED_PLATFORM"
