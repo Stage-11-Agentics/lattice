@@ -351,7 +351,7 @@ Two markers make "one writer" structural (G-1, AC-3):
 {
   "bind": "127.0.0.1",
   "port": 8740,
-  "trusted_proxy": false,
+  "trusted_proxies": [],
   "public_origins": [],
   "log_level": "info",
   "audit": {"enabled": true, "debounce_seconds": 5, "max_interval_seconds": 60, "push": null},
@@ -372,7 +372,7 @@ Two markers make "one writer" structural (G-1, AC-3):
 }
 ```
 
-`audit.push` is `null` or `{"remote": "<git remote name>", "branch": "<branch>"}` applied per project (a project's `.lattice/hosted/audit.json` may override it). `trusted_proxy: true` makes the server honor `X-Forwarded-Proto` and `X-Forwarded-For` for cookie security and logs. `public_origins` lists the browser origins (for example `https://lattice.example.internal`) accepted by the dashboard's `Origin` check when a proxy rewrites `Host`. `limits.lock_timeout_seconds` may not exceed 60.
+`audit.push` is `null` or `{"remote": "<git remote name>", "branch": "<branch>"}` applied per project (a project's `.lattice/hosted/audit.json` may override it). `trusted_proxies` lists the addresses or CIDR ranges (IPv4 or IPv6) of the reverse proxies allowed to set `X-Forwarded-Proto` and `X-Forwarded-For`, which decide cookie security and logged client addresses; default `[]`. The server honors those headers only on a connection whose peer address is in the list, and ignores them from every other peer. This matters once the server binds an address other hosts can reach directly, as when a proxy on another host dials it. The client address is the rightmost `X-Forwarded-For` entry that is not itself in the list. Tokens still gate every request either way. The server configures uvicorn from the same list: `proxy_headers` is on only when the list is non-empty, and `forwarded_allow_ips` is always passed explicitly, so neither uvicorn's default nor its `FORWARDED_ALLOW_IPS` environment variable ever decides trust. The pre-release key `trusted_proxy` is refused at startup with a message naming `trusted_proxies`. Proxy addresses live in the operator's own `server.json`, never in the repository (G-3). `public_origins` lists the browser origins (for example `https://lattice.example.internal`) accepted by the dashboard's `Origin` check when a proxy rewrites `Host`. `limits.lock_timeout_seconds` may not exceed 60.
 
 **Limits.** No project is isolated from the host: all projects share one process, one disk, and one memory. These limits bound what one credential can take from the others:
 
