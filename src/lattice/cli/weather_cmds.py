@@ -10,6 +10,7 @@ import click
 
 from lattice.cli.helpers import json_envelope, load_project_config, require_root
 from lattice.cli.main import cli
+from lattice.core.visibility import is_tombstoned, visible
 from lattice.core.stats import (
     build_stats,
     days_ago,
@@ -238,11 +239,18 @@ def _find_attention_needed(
 def _build_weather(lattice_dir: Path, config: dict) -> dict:
     """Build the full weather report data structure."""
     now = datetime.now(timezone.utc)
-    stats = build_stats(lattice_dir, config)
+    # Erased tasks never appear in the report: not in its counts, not in its lists.
+    stats = build_stats(lattice_dir, config, include_tombstoned=False)
     active, archived = load_all_snapshots(lattice_dir)
+    erased = {snap["id"] for snap in active + archived if is_tombstoned(snap)}
+    active, archived = visible(active), visible(archived)
 
     # Recent events
-    recent_events = _load_recent_events(lattice_dir, hours=24.0)
+    recent_events = [
+        ev
+        for ev in _load_recent_events(lattice_dir, hours=24.0)
+        if ev.get("task_id") not in erased
+    ]
 
     # In-progress count
     in_progress_statuses = {"in_planning", "in_progress", "review", "in_validation"}

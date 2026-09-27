@@ -696,7 +696,8 @@ def mutate_task(
     the event history, when the caller keeps it (a server); ``None`` rescans
     every task log under the allocation lock.
     ``allow_tombstoned``: an erased task raises ``TASK_ERASED`` before the
-    callback runs unless this is set (``unerase`` and maintenance only).
+    callback runs unless this is set (``unerase``, and ``rebuild``, which
+    appends nothing); even then, any event but ``task_untombstoned`` raises it.
     """
     locks_dir = lattice_dir / "locks"
     lock_keys = [f"events_{task_id}", f"tasks_{task_id}"]
@@ -767,6 +768,11 @@ def mutate_task(
         decision = callback(context)
         if not isinstance(decision, TaskMutationDecision):
             raise TypeError("task mutation callback must return TaskMutationDecision")
+        if authority is not None and any(
+            event.get("type") != "task_untombstoned" for event in decision.events
+        ):
+            # Even with allow_tombstoned, unerase is the only write an erased task takes.
+            require_not_tombstoned(authority.snapshot)
         callback_value = decision.value
         idempotent = decision.idempotent
 

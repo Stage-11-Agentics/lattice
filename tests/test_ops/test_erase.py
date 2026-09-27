@@ -20,6 +20,7 @@ from lattice.cli.main import cli
 from lattice.core.tasks import apply_event_to_snapshot, compact_snapshot
 from lattice.core.ids import generate_op_id
 from lattice.ops import Caller, OpError, execute
+from lattice.storage.operations import AuthoritativeLogError, read_task_authority
 
 ACTOR = ("--actor", "human:test")
 
@@ -351,3 +352,132 @@ def test_reducers_add_and_remove_the_tombstone_fields() -> None:
         assert key not in restored and key not in snap
     assert "tombstoned" not in compact_snapshot(restored)
     assert restored["status"] == "backlog"
+
+
+# ---------------------------------------------------------------------------
+# Review round 1: protected tombstone fields, backfill-ids, stats and weather
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("field", ["tombstoned", "tombstoned_at", "tombstone_reason"])
+def test_field_updated_cannot_forge_a_tombstone_field(board: dict, run, field: str) -> None:  # noqa: ANN001
+    """The tombstone fields belong to the tombstone events alone: strict replay
+    rejects a field_updated that names one, erased or not."""
+    root, target = board["root"], board["target"]
+    result = run("update", target, f"{field}=ghost", *ACTOR, "--json")
+    assert result.exit_code == 1 and _json(result)["ok"] is False
+
+    log = root / ".lattice" / "events" / f"{target}.jsonl"
+    forged = {
+        "schema_version": 1,
+        "id": "ev_01J9ZABCDEFGHJKMNPQRSTVWXY",
+        "ts": "2026-09-27T00:00:00Z",
+        "type": "field_updated",
+        "task_id": target,
+        "actor": "human:test",
+        "data": {"field": field, "to": "ghost"},
+    }
+    with log.open("a") as f:
+        f.write(json.dumps(forged, sort_keys=True, separators=(",", ":")) + "\n")
+    with pytest.raises(AuthoritativeLogError, match="protected field"):
+        read_task_authority(root / ".lattice", target)
+
+
+def test_backfill_ids_skips_an_erased_task_and_reports_it(
+    cli_runner: CliRunner, cli_env: dict[str, str], initialized_root: Path
+) -> None:
+    def run(*args: str):  # noqa: ANN202
+        return cli_runner.invoke(cli, list(args), env=cli_env)
+
+    erased = _json(run("create", "Erased", *ACTOR, "--json"))["data"]["id"]
+    kept = _json(run("create", "Kept", *ACTOR, "--json"))["data"]["id"]
+    assert "short_id" not in _json(run("show", kept, "--json"))["data"]
+    assert run("erase", erased, "--reason", "noise", *ACTOR).exit_code == 0
+    log = initialized_root / ".lattice" / "events" / f"{erased}.jsonl"
+    before = log.read_bytes()
+
+    result = run("backfill-ids", "--code", "BF", "--json")
+    assert result.exit_code == 0, result.output
+    assert _json(result)["data"] == {
+        "assigned": 1,
+        "first": "BF-1",
+        "last": "BF-1",
+        "skipped_erased": [erased],
+    }
+    assert log.read_bytes() == before
+    assert _json(run("show", kept, "--json"))["data"]["short_id"] == "BF-1"
+
+    plain = run("backfill-ids")
+    assert plain.exit_code == 0
+    assert plain.output.splitlines() == [
+        f"Skipped 1 erased task(s): {erased}. Unerase them, then run backfill-ids again."
+    ]
+    # After unerase, the same command assigns the next ID.
+    assert run("unerase", erased, "--reason", "back", *ACTOR).exit_code == 0
+    again = _json(run("backfill-ids", "--json"))["data"]
+    assert again == {"assigned": 1, "first": "BF-2", "last": "BF-2"}
+
+
+def test_rebuild_exemption_cannot_append_to_an_erased_task(board: dict) -> None:
+    """``allow_tombstoned`` admits only ``task_untombstoned``."""
+    from lattice.core.errors import TaskErased
+    from lattice.core.events import create_event
+    from lattice.storage.operations import TaskMutationDecision, mutate_task
+
+    root, target = board["root"], board["target"]
+    resolve_board(root).execute(
+        "task.erase", {"task": target, "reason": "gone"}, Caller(actor="human:test")
+    )
+    before = _files(root)
+    event = create_event("comment_added", target, "human:test", {"body": "sneak"})
+    with pytest.raises(TaskErased):
+        mutate_task(
+            root / ".lattice",
+            target,
+            lambda _c: TaskMutationDecision(events=[event]),
+            run_hooks=False,
+            allow_tombstoned=True,
+        )
+    assert _files(root) == before
+
+
+def test_stats_visibility_is_explicit(board: dict, run) -> None:  # noqa: ANN001
+    """``lattice stats`` hides erased tasks; ``build_stats``' default (the
+    dashboard's call, until H-13a) still counts them."""
+    from lattice.core.config import default_config
+    from lattice.core.stats import build_stats
+
+    root = board["root"]
+    run("erase", board["target"], "--reason", "gone", *ACTOR)
+    lattice_dir = root / ".lattice"
+    config = default_config()
+    assert build_stats(lattice_dir, config)["summary"]["active_tasks"] == 2
+    hidden = build_stats(lattice_dir, config, include_tombstoned=False)
+    assert hidden["summary"]["active_tasks"] == 1
+    assert _json(run("stats", "--json"))["data"]["summary"] == hidden["summary"]
+
+
+def test_weather_never_shows_an_erased_task(
+    cli_runner: CliRunner, cli_env: dict[str, str], initialized_root: Path, fill_plan
+) -> None:  # noqa: ANN001
+    def run(*args: str):  # noqa: ANN202
+        return cli_runner.invoke(cli, list(args), env=cli_env)
+
+    erased = _json(run("create", "Ghost planned task", *ACTOR, "--json"))["data"]["id"]
+    fill_plan(erased, "Ghost")
+    assert run("status", erased, "planned", *ACTOR).exit_code == 0
+    assert run("erase", erased, "--reason", "gone", *ACTOR).exit_code == 0
+
+    data = _json(run("weather", "--json"))["data"]
+    assert data["vital_signs"]["active_tasks"] == 0
+    assert data["vital_signs"]["events_24h"] == 0
+    assert data["up_next"] == [] and data["attention"] == []
+    for args in (("weather",), ("weather", "--markdown"), ("weather", "--json")):
+        output = run(*args).output
+        assert erased not in output and "Ghost planned task" not in output
+
+    # Unerased, the same task is back in both the counts and the lists.
+    assert run("unerase", erased, "--reason", "back", *ACTOR).exit_code == 0
+    data = _json(run("weather", "--json"))["data"]
+    assert data["vital_signs"]["active_tasks"] == 1
+    assert [t["title"] for t in data["up_next"]] == ["Ghost planned task"]

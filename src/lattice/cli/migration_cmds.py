@@ -15,6 +15,7 @@ from lattice.cli.helpers import (
 from lattice.cli.main import cli
 from lattice.cli.maintenance import maintenance_gate, offline_maintenance_option
 from lattice.core.config import configured_event_prefix, serialize_config, validate_project_code
+from lattice.core.errors import TaskErased
 from lattice.core.events import create_event
 from lattice.storage.fs import atomic_write
 from lattice.storage.operations import TaskMutationDecision, mutate_task
@@ -114,6 +115,8 @@ def backfill_ids(
         return
 
     assigned: list[str] = []
+    # Erased tasks take no write but unerase (SPEC §7): skip them, and say so.
+    skipped_erased: list[str] = []
 
     # Use the exact same configured prefix as ordinary creation.
     prefix = configured_event_prefix(config)
@@ -141,17 +144,21 @@ def backfill_ids(
             )
             return TaskMutationDecision(events=[event], value=short_id)
 
-        result = mutate_task(
-            lattice_dir,
-            task_ulid,
-            decide,
-            config,
-            source="archived" if is_archived else "active",
-            project_prefix=prefix,
-            allow_short_id_backfill=True,
-            short_id_floor=floor,
-            run_hooks=True,
-        )
+        try:
+            result = mutate_task(
+                lattice_dir,
+                task_ulid,
+                decide,
+                config,
+                source="archived" if is_archived else "active",
+                project_prefix=prefix,
+                allow_short_id_backfill=True,
+                short_id_floor=floor,
+                run_hooks=True,
+            )
+        except TaskErased:
+            skipped_erased.append(task_ulid)
+            continue
         parsed = split_short_id(result.callback_value)
         if parsed is not None and parsed[1] > floor.get(parsed[0], 0):
             floor[parsed[0]] = parsed[1]
@@ -163,23 +170,18 @@ def backfill_ids(
     count = len(assigned)
 
     if is_json:
-        click.echo(
-            json.dumps(
-                {
-                    "ok": True,
-                    "data": {
-                        "assigned": count,
-                        "first": first_id,
-                        "last": last_id,
-                    },
-                },
-                sort_keys=True,
-                indent=2,
-            )
-            + "\n"
-        )
+        data: dict = {"assigned": count, "first": first_id, "last": last_id}
+        if skipped_erased:
+            data["skipped_erased"] = skipped_erased
+        click.echo(json.dumps({"ok": True, "data": data}, sort_keys=True, indent=2) + "\n")
     else:
-        click.echo(f"Assigned {first_id} through {last_id} to {count} existing tasks.")
+        if count or not skipped_erased:
+            click.echo(f"Assigned {first_id} through {last_id} to {count} existing tasks.")
+        if skipped_erased:
+            click.echo(
+                f"Skipped {len(skipped_erased)} erased task(s): {', '.join(skipped_erased)}. "
+                "Unerase them, then run backfill-ids again."
+            )
 
 
 # ---------------------------------------------------------------------------

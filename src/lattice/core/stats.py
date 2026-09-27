@@ -238,15 +238,21 @@ def _compute_agent_activity(events: list[dict]) -> list[dict]:
     ]
 
 
-def build_stats(lattice_dir: Path, config: dict) -> dict:
-    """Build the full stats data structure."""
+def build_stats(lattice_dir: Path, config: dict, *, include_tombstoned: bool = True) -> dict:
+    """Build the full stats data structure.
+
+    ``include_tombstoned=False`` leaves erased tasks out of every figure (SPEC
+    §7), as ``lattice stats`` and ``lattice weather`` do. The default keeps
+    them, for the dashboard until it applies the visibility helper (H-13a).
+    """
     from lattice.core.visibility import is_tombstoned, visible
 
     now = datetime.now(timezone.utc)
     active, archived = load_all_snapshots(lattice_dir)
-    # Erased tasks are left out of every figure (SPEC §7).
-    erased = {snap["id"] for snap in active + archived if is_tombstoned(snap)}
-    active, archived = visible(active), visible(archived)
+    erased: set[str] = set()
+    if not include_tombstoned:
+        erased = {snap["id"] for snap in active + archived if is_tombstoned(snap)}
+        active, archived = visible(active), visible(archived)
 
     # Event counts
     active_events, active_per_task = count_events(lattice_dir, archived=False)

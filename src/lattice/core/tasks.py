@@ -37,6 +37,10 @@ PROTECTED_FIELDS: frozenset[str] = frozenset(
         "custom_fields",
         "needs_human",
         "acceptance_criteria",
+        # Set and cleared only by task_tombstoned / task_untombstoned (SPEC §7).
+        "tombstoned",
+        "tombstoned_at",
+        "tombstone_reason",
     }
 )
 
