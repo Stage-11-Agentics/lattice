@@ -81,3 +81,30 @@ def test_serve_process_lifecycle(root: Path) -> None:
     assert events[0] == "startup" and events[-1] == "shutdown"
     assert "project_load" in events
     assert not control.server_running(root)
+
+
+def test_sigterm_ends_open_streams_at_once(root: Path) -> None:
+    """SPEC §8.9 framing and lifecycle: on SIGTERM every open stream ends at once, so
+    a follower never holds up the graceful shutdown (H-22 proves the full AC-31 row)."""
+    import time
+
+    from lattice.server import tokens
+    from lattice.server.testing import open_stream
+
+    token = tokens.create_token(root, user="human:alice", machine="m", all_projects=True)["token"]
+    proc, port = _start(root)
+    try:
+        reader = open_stream(f"http://127.0.0.1:{port}", "alpha", token)
+        assert reader.status == 200 and reader.next().event == "heartbeat"
+        started = time.monotonic()
+        proc.send_signal(signal.SIGTERM)
+        while reader.next(timeout=5) is not None:
+            pass  # heartbeats until the server ends the stream
+        ended = time.monotonic() - started
+        proc.communicate(timeout=10)
+        exited = time.monotonic() - started
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    assert proc.returncode == 0
+    assert ended < 2.0 and exited < 5.0

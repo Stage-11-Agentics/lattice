@@ -209,6 +209,9 @@ def test_a_hand_edit_during_an_operation_is_not_adopted(root: Path) -> None:
         )
         slow.start()
         assert wait_for(lambda: server.project("alpha").work.locked())
+        # The lock is taken just before the op's own admission check runs; let that
+        # check pass (the op sleeps 400 ms) so the edit lands during the operation.
+        time.sleep(0.1)
         (board / "context.md").write_text("# Edited while the op ran\n")
         slow.join()
         create_task(server, token)

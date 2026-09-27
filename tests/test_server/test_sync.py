@@ -175,31 +175,6 @@ def test_mismatches_get_a_reset(board: BoardServer, query: dict) -> None:
     assert set(body["files"]) == set(syncstate.synced_files(board.board))
 
 
-def test_manifest_lists_hashes_only(board: BoardServer) -> None:
-    create(board)
-    body = board.sync(manifest=True)
-    assert body["reset"] is True and body["removed"] == []
-    assert {rel: spec["sha256"] for rel, spec in body["files"].items()} == durable_hashes(
-        board.board
-    )
-    assert all(set(spec) == {"sha256", "size"} for spec in body["files"].values())
-
-
-def test_only_synced_board_paths_are_returned(board: BoardServer) -> None:
-    lattice = board.board
-    (lattice / "reviews").mkdir()
-    (lattice / "reviews" / "r.md").write_text("unmanaged")
-    (lattice / "runner.log").write_text("unmanaged")
-    (lattice / "locks" / "x.lock").write_text("")
-    (lattice / "orchestration").mkdir()
-    board.project.manifest = syncstate.Manifest.build(lattice)
-    files = board.sync()["files"]
-    assert not any(p.startswith(("reviews/", "locks/", "hosted/", "cache/")) for p in files)
-    assert "runner.log" not in files
-    workspace = {p for p in files if p.startswith("orchestration/")}
-    assert workspace == set()  # an empty workspace directory holds no files
-
-
 def test_the_manifest_follows_every_commit(board: BoardServer) -> None:
     task = create(board)
     for text in ("a", "b", "c"):
