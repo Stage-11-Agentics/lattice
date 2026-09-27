@@ -18,7 +18,7 @@ from lattice.cli.helpers import (
 from lattice.cli.main import cli
 from lattice.cli.ops_bridge import board_or_exit, caller_from_context, run_operation
 from lattice.ops import OpError, check_path_component
-from lattice.ops.base import resolve_actor
+from lattice.ops.base import check_board_writable, resolve_actor
 from lattice.ops.task_archive import UNRESOLVED_TASK
 
 
@@ -67,8 +67,28 @@ def _check_actor_first(board: LocalBoard, provenance: dict, is_json: bool) -> No
         validate_actor_format_or_exit(provenance["on_behalf_of"], is_json)
 
 
+# The failures a multi-task command aggregates: the task is absent, or not at
+# the placement the move needs. Resolution failures are marked separately.
+_PER_TASK_CODES = frozenset({"NOT_FOUND", "CONFLICT"})
+
+
+def _check_writable_first(board: LocalBoard, is_json: bool) -> None:
+    """Refuse a board this process may not write (a client cache, a server-owned
+    board) once, before the actor check, the ``--stale`` scan, or any task, so
+    the refusal is typed even when there is nothing to move."""
+    try:
+        check_board_writable(board.lattice_dir, caller_from_context())
+    except OpError as exc:
+        output_error(exc.message, exc.code, is_json)
+
+
 def _move_one(
-    board: LocalBoard, op_name: str, raw_id: str, provenance: dict, config: dict
+    board: LocalBoard,
+    op_name: str,
+    raw_id: str,
+    provenance: dict,
+    config: dict,
+    is_json: bool,
 ) -> dict | str:
     """Run one archive/unarchive: the event on success, the error message on failure.
 
@@ -85,7 +105,11 @@ def _move_one(
         if exc.details.get("reason") == UNRESOLVED_TASK:
             click.echo(f"Error: {exc.message}", err=True)
             return f"Invalid or unresolvable task ID: {raw_id}"
-        return exc.message
+        if exc.code in _PER_TASK_CODES:
+            return exc.message
+        # A board- or storage-level refusal (BOARD_IS_*, INTEGRITY_ERROR, ...)
+        # is not one task's failure: report it typed and stop.
+        output_error(exc.message, exc.code, is_json)
 
 
 def _report_many(
@@ -160,6 +184,7 @@ def archive(
     provenance = _provenance(model, session, triggered_by, on_behalf_of, provenance_reason)
 
     board = board_or_exit(is_json)
+    _check_writable_first(board, is_json)
     # One configuration, read before any write, governs every task's hooks.
     config = board.load_config()
     _check_actor_first(board, provenance, is_json)
@@ -199,7 +224,7 @@ def archive(
     succeeded: list[str] = []
     failed: list[tuple[str, str]] = []
     for raw_id in parsed_ids:
-        result = _move_one(board, "task.archive", raw_id, provenance, config)
+        result = _move_one(board, "task.archive", raw_id, provenance, config, is_json)
         if isinstance(result, str):
             failed.append((raw_id, result))
         else:
@@ -259,7 +284,7 @@ def _archive_stale(
     succeeded: list[str] = []
     failed: list[tuple[str, str]] = []
     for task_id in candidates:
-        result = _move_one(board, "task.archive", task_id, provenance, config)
+        result = _move_one(board, "task.archive", task_id, provenance, config, is_json)
         if isinstance(result, str):
             failed.append((task_id, result))
         else:
@@ -300,6 +325,7 @@ def unarchive(
     provenance = _provenance(model, session, triggered_by, on_behalf_of, provenance_reason)
 
     board = board_or_exit(is_json)
+    _check_writable_first(board, is_json)
     # One configuration, read before any write, governs every task's hooks.
     config = board.load_config()
     _check_actor_first(board, provenance, is_json)
@@ -328,7 +354,7 @@ def unarchive(
     succeeded: list[str] = []
     failed: list[tuple[str, str]] = []
     for raw_id in parsed_ids:
-        result = _move_one(board, "task.unarchive", raw_id, provenance, config)
+        result = _move_one(board, "task.unarchive", raw_id, provenance, config, is_json)
         if isinstance(result, str):
             failed.append((raw_id, result))
         else:
