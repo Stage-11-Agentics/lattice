@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 
@@ -30,10 +31,32 @@ def _worker_home(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return home
 
 
+@pytest.fixture(scope="session")
+def _worker_tmp(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """The parent of each test's ``tmp_path``, one per xdist worker."""
+    return tmp_path_factory.mktemp("t")
+
+
+@pytest.fixture()
+def tmp_path(request: pytest.FixtureRequest, _worker_tmp: Path) -> Path:
+    """pytest's ``tmp_path``, made with ``mkdtemp``: pytest's own scans every
+    numbered sibling under the session's base dir for the next number, a cost that
+    grew with each test the worker had run (G-9). Still under the base dir, so
+    pytest's retention of the last few sessions applies; named after the test."""
+    name = re.sub(r"\W", "_", request.node.name)[:30]
+    return Path(tempfile.mkdtemp(prefix=f"{name}-", dir=_worker_tmp))
+
+
+@pytest.fixture(scope="session")
+def _worker_systmp(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """The parent of each test's fresh system temp dir, one per xdist worker."""
+    return tmp_path_factory.mktemp("systmp")
+
+
 @pytest.fixture(autouse=True)
 def _hermetic_env(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path_factory: pytest.TempPathFactory,
+    _worker_systmp: Path,
     _worker_home: Path,
 ) -> None:
     """Keep every test off the developer's real home, temp dir and environment.
@@ -54,7 +77,9 @@ def _hermetic_env(
     for name in list(os.environ):
         if name.startswith(_AMBIENT_ENV_PREFIXES) or name in _AMBIENT_ENV:
             monkeypatch.delenv(name)
-    sys_tmp = str(tmp_path_factory.mktemp("systmp"))
+    # mkdtemp, not tmp_path_factory.mktemp: that scans every numbered sibling for
+    # the next number, a cost that grew with each test the worker had run.
+    sys_tmp = tempfile.mkdtemp(dir=_worker_systmp)
     for name in ("TMPDIR", "TMP", "TEMP"):
         monkeypatch.setenv(name, sys_tmp)
     monkeypatch.setattr(tempfile, "tempdir", sys_tmp)
