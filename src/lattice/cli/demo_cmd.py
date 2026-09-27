@@ -8,7 +8,8 @@ from pathlib import Path
 import click
 
 from lattice.cli.main import cli
-from lattice.cli.maintenance import enter_offline_maintenance, offline_maintenance_option
+from lattice.cli.maintenance import maintenance_gate, offline_maintenance_option
+from lattice.storage.ownership import is_hosted_scaffold
 from lattice.core.config import default_config, serialize_config
 from lattice.core.events import create_event
 from lattice.core.ids import generate_instance_id, generate_task_id
@@ -1500,11 +1501,10 @@ def demo_init(
         target_dir = Path.cwd() / "lattice-demo"
     else:
         target_dir = Path(target_path)
-    if offline_maintenance:
-        enter_offline_maintenance(target_dir / LATTICE_DIR, "demo init", False)
+    maintenance_gate(target_dir / LATTICE_DIR, "demo init", False, offline_maintenance)
 
-    # Check if already exists
-    if (target_dir / LATTICE_DIR).is_dir():
+    # Check if already exists (a server project's hosted scaffold is not a board yet)
+    if (target_dir / LATTICE_DIR).is_dir() and not is_hosted_scaffold(target_dir / LATTICE_DIR):
         raise click.ClickException(
             f"Demo already exists at {target_dir / LATTICE_DIR}. "
             "Remove it first or choose a different path."

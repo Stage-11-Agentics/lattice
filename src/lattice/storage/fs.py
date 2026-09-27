@@ -11,15 +11,21 @@ The write recorder (SPEC §8.5)::
     def before(path: Path, kind: str) -> None:  # kind: append | create | replace | unlink
         ...  # e.g. write an undo entry; raising here aborts the write
 
-    with recording(before) as recorder:
-        result = execute(board_dir, op_name, params, caller, run_hooks=False)
-    changed = recorder.relative_paths(board_dir)  # sorted, relative to .lattice/
+    result = execute(board_dir, op_name, params, caller, run_hooks=False, on_mutation=before)
+    result.paths  # sorted, relative to .lattice/, directories included
 
-It sees durable and workspace paths only (SPEC §6.1), as resolved absolute
-paths, and calls the callback before every mutation of one. A recorder is a
-``contextvars`` value: create it in the thread that runs the operation; it
-never follows work into another thread. Directory creation is neither recorded
-nor reported.
+    with recording(before) as recorder:  # the same, around any other code
+        ...
+    recorder.relative_paths(board_dir)
+
+``lattice.ops.execute`` owns one per call: it takes the callback as
+``on_mutation`` and returns the paths as ``OpResult.paths``. The recorder sees
+durable and workspace paths only (SPEC §6.1), as resolved absolute paths, and
+calls the callback before every mutation of one: a file written (``create`` /
+``replace``), appended (``append``), or unlinked (``unlink``), and each
+directory ``ensure_dir`` creates (``create``). A recorder is a ``contextvars``
+value: create it in the thread that runs the operation; it never follows work
+into another thread.
 """
 
 from __future__ import annotations
@@ -81,7 +87,8 @@ class WriteRecorder:
 
     @property
     def paths(self) -> list[Path]:
-        """Resolved durable paths written, appended, or unlinked, in first-touch order."""
+        """Resolved durable paths written, appended, unlinked, or created as
+        directories, in first-touch order."""
         return list(self._paths)
 
     def relative_paths(self, lattice_dir: Path) -> list[str]:
@@ -193,15 +200,19 @@ def ensure_dir(path: Path) -> None:
     """``mkdir -p`` for a directory, confined to its board and marker-checked.
 
     An existing directory is left alone without a marker check (so reads on a
-    cache that ensure a directory keep working); creating one is checked like
-    any other write to its path class.
+    cache that ensure a directory keep working). Each directory it creates,
+    missing parents first, is checked like any other write to its path class
+    and reported to the recorder as a ``create`` before its ``mkdir``.
     """
-    target = locate(path)
-    if path.is_dir():
-        return
-    if target is not None:
-        check_write(target)
-    path.mkdir(parents=True, exist_ok=True)
+    locate(path)  # confinement, even when nothing needs creating
+    missing: list[Path] = []
+    current = Path(path)
+    while not current.is_dir() and current.parent != current:
+        missing.append(current)
+        current = current.parent
+    for directory in reversed(missing):
+        _guard(directory, "create")
+        directory.mkdir(exist_ok=True)
 
 
 def unlink_path(path: Path, *, missing_ok: bool = False) -> None:

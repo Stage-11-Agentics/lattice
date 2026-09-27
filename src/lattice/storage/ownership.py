@@ -20,11 +20,12 @@ board it does not own:
   board is the one set by :func:`board_scope` (``lattice.ops.execute`` sets it
   for the whole operation); outside a scope it is the prefix of the path up to
   its *first* ``.lattice`` component, so ``a/.lattice/../../b/.lattice/x``
-  cannot reach a sibling board. A path with no ``.lattice`` component and no
-  scope is not a board path and is written unchecked. Markers and classes are
-  checked against every ``.lattice`` directory enclosing the resolved target
-  within that board, so a board kept under a directory that is itself named
-  ``.lattice`` is still checked as itself.
+  cannot reach a sibling board. Markers and classes are checked against every
+  ``.lattice`` directory enclosing the *resolved* target (and the board above),
+  so neither a symlink alias into a board nor a board kept under a directory
+  that is itself named ``.lattice`` escapes its markers. A path whose written
+  and resolved forms both lack a ``.lattice`` component, outside any scope, is
+  not a board path and is written unchecked.
 - **Flags** are ``contextvars`` values holding the resolved ``.lattice/`` they
   apply to, never process globals: :func:`owning_board` (the server that holds
   the owner lease), :func:`syncing_board` (the cache syncer), and the
@@ -179,6 +180,12 @@ def board_state(lattice_dir: Path) -> str:
     return "local"
 
 
+def is_hosted_scaffold(lattice_dir: Path) -> bool:
+    """A server project's ``.lattice/`` not initialized yet: ``hosted/``, no ``config.json``."""
+    board = Path(lattice_dir)
+    return (board / "hosted").is_dir() and not (board / "config.json").exists()
+
+
 def _cache_error(board: Path, path: Path | None) -> BoardIsCache:
     marker = _read_json(board / "cache" / "state.json") or _read_json(board / "cache" / "applying")
     remote, project = marker.get("remote"), marker.get("project")
@@ -240,10 +247,11 @@ class BoardTarget:
     """A primitive's target, resolved against the board it is confined to.
 
     ``classes`` holds the target's class relative to every ``.lattice``
-    directory that encloses it within that board, outermost first: normally
-    one entry, more only when a board lives under an ancestor that is itself
-    named ``.lattice``. Every one of them is checked, so a write can never be
-    classified against the wrong board and slip past its markers.
+    directory that encloses its resolved path (plus the board it is confined
+    to), outermost first: normally one entry, more only when a board lives
+    under an ancestor that is itself named ``.lattice``. Every one of them is
+    checked, so a write can never be classified against the wrong board and
+    slip past its markers.
     """
 
     board: Path  # the resolved .lattice/ the write is confined to
@@ -266,27 +274,27 @@ def locate(path: Path) -> BoardTarget | None:
     Raises ``BoardPathError`` when the resolved path escapes the board.
     """
     absolute = Path(path).absolute()
+    resolved = absolute.resolve()
     board = _SCOPE.get()
     if board is None:
         parts = absolute.parts
-        if _LATTICE_DIR not in parts:
-            return None
-        board = Path(*parts[: parts.index(_LATTICE_DIR) + 1]).resolve()
-    resolved = absolute.resolve()
-    if resolved != board and not resolved.is_relative_to(board):
+        if _LATTICE_DIR in parts:
+            board = Path(*parts[: parts.index(_LATTICE_DIR) + 1]).resolve()
+    if board is not None and resolved != board and not resolved.is_relative_to(board):
         raise BoardPathError(
             f"Refusing to write {path}: it resolves to {resolved}, outside the board {board}.",
             {"reason": "PATH_OUTSIDE_BOARD", "board": str(board)},
         )
-    enclosing = [board] + [
-        candidate
-        for candidate in (*reversed(resolved.parents), resolved)
-        if candidate.name == _LATTICE_DIR
-        and candidate != board
-        and candidate.is_relative_to(board)
-    ]
-    classes = tuple((b, classify_path(resolved.relative_to(b))) for b in enclosing)
-    return BoardTarget(board, resolved, classes)
+    # Boards are found from the resolved target as well as from the path as
+    # written, so a symlink alias into a board is still checked as that board.
+    enclosing = {c for c in (*resolved.parents, resolved) if c.name == _LATTICE_DIR}
+    if board is not None:
+        enclosing.add(board)
+    if not enclosing:
+        return None
+    ordered = sorted(enclosing, key=lambda b: len(b.parts))
+    classes = tuple((b, classify_path(resolved.relative_to(b))) for b in ordered)
+    return BoardTarget(board if board is not None else ordered[-1], resolved, classes)
 
 
 def check_write(target: BoardTarget) -> None:

@@ -14,7 +14,7 @@ from lattice.cli.helpers import (
     require_root,
 )
 from lattice.cli.main import cli
-from lattice.cli.maintenance import enter_offline_maintenance, offline_maintenance_option
+from lattice.cli.maintenance import maintenance_gate, offline_maintenance_option
 from lattice.core.config import configured_event_prefix
 from lattice.core.events import LIFECYCLE_EVENT_TYPES, serialize_event
 from lattice.core.ids import validate_id, validate_short_id, parse_short_id
@@ -462,8 +462,10 @@ def doctor(fix: bool, output_json: bool, offline_maintenance: bool) -> None:
     """Check project integrity and report issues."""
     is_json = output_json
     lattice_dir = require_root(is_json)
-    if offline_maintenance:
-        enter_offline_maintenance(lattice_dir, "doctor --fix" if fix else "doctor", is_json)
+    if fix or offline_maintenance:
+        maintenance_gate(
+            lattice_dir, "doctor --fix" if fix else "doctor", is_json, offline_maintenance
+        )
 
     findings: list[dict] = []
 
@@ -1318,8 +1320,7 @@ def rebuild(
     """Rebuild task snapshots from event logs."""
     is_json = output_json
     lattice_dir = require_root(is_json)
-    if offline_maintenance:
-        enter_offline_maintenance(lattice_dir, "rebuild", is_json)
+    maintenance_gate(lattice_dir, "rebuild", is_json, offline_maintenance)
 
     # Validate arguments: exactly one of task_id or --all
     if task_id is not None and rebuild_all:

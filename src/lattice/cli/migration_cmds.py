@@ -13,7 +13,7 @@ from lattice.cli.helpers import (
     require_root,
 )
 from lattice.cli.main import cli
-from lattice.cli.maintenance import enter_offline_maintenance, offline_maintenance_option
+from lattice.cli.maintenance import maintenance_gate, offline_maintenance_option
 from lattice.core.config import configured_event_prefix, serialize_config, validate_project_code
 from lattice.core.events import create_event
 from lattice.storage.fs import atomic_write
@@ -62,8 +62,7 @@ def backfill_ids(
     """Assign short IDs to existing tasks that don't have one."""
     is_json = output_json
     lattice_dir = require_root(is_json)
-    if offline_maintenance:
-        enter_offline_maintenance(lattice_dir, "backfill-ids", is_json)
+    maintenance_gate(lattice_dir, "backfill-ids", is_json, offline_maintenance)
     config = load_project_config(lattice_dir)
 
     # Resolve project code
@@ -209,8 +208,7 @@ def migrate_needs_human(
 
     is_json = output_json
     lattice_dir = require_root(is_json)
-    if offline_maintenance:
-        enter_offline_maintenance(lattice_dir, "migrate needs-human", is_json)
+    maintenance_gate(lattice_dir, "migrate needs-human", is_json, offline_maintenance)
     config = load_project_config(lattice_dir)
 
     # ---- Phase 1: tasks sitting in the needs_human status -----------------

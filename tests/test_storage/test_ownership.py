@@ -587,6 +587,165 @@ def test_cli_rebuild_offline_maintenance(board: Path, invoke, flock_holder) -> N
     release_owner_flock(fd)
 
 
+# Every maintenance command, gated at entry (SPEC §3.5). The board commands
+# run on an initialized server-owned board; init and demo init on a hosted
+# scaffold (hosted/ and owner.json, no config.json yet). Each argv is one that
+# changes nothing on a fresh board (a dry run, an already-clean doctor, a
+# migration with nothing to migrate), so a refusal can only come from the gate.
+BOARD_MAINTENANCE = {
+    "rebuild": (["rebuild", "--all", "--json"], "rebuild"),
+    "doctor --fix": (["doctor", "--fix", "--json"], "doctor --fix"),
+    "backfill-ids": (["backfill-ids", "--code", "BF", "--json"], "backfill-ids"),
+    "migrate needs-human": (["migrate", "needs-human", "--json"], "migrate needs-human"),
+    "migrate needs-human --dry-run": (
+        ["migrate", "needs-human", "--dry-run", "--json"],
+        "migrate needs-human",
+    ),
+}
+
+
+def _error_code(result) -> str | None:  # noqa: ANN001
+    try:
+        return json.loads(result.output)["error"]["code"]
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
+@pytest.mark.parametrize("name", sorted(BOARD_MAINTENANCE))
+def test_board_maintenance_command_gated_at_entry(
+    board: Path,
+    invoke,  # noqa: ANN001
+    flock_holder,  # noqa: ANN001
+    name: str,
+) -> None:
+    argv, recorded = BOARD_MAINTENANCE[name]
+    _plant(board, "hosted")
+    before = _durable_tree(board)
+
+    refused = invoke(*argv)
+    assert refused.exit_code == 1 and _error_code(refused) == "BOARD_IS_HOSTED", refused.output
+    assert _durable_tree(board) == before
+    assert not (board / "hosted" / "maintenance.json").exists()
+
+    holder = flock_holder(board)
+    held = invoke(*argv, "--offline-maintenance")
+    assert held.exit_code == 1 and _error_code(held) == "BOARD_IS_HOSTED", held.output
+    assert "a running Lattice server holds this board" in held.output
+    assert _durable_tree(board) == before
+    assert not (board / "hosted" / "maintenance.json").exists()
+    holder.stdin.close()
+    holder.wait(timeout=10)
+
+    ok = invoke(*argv, "--offline-maintenance")
+    assert ok.exit_code == 0, ok.output
+    assert json.loads(ok.output)["ok"] is True
+    record = json.loads((board / "hosted" / "maintenance.json").read_text())
+    assert record["command"] == recorded
+    fd = try_owner_flock(board)
+    assert fd is not None  # released when the command ended
+    release_owner_flock(fd)
+
+
+def test_read_only_doctor_is_not_gated(board: Path, invoke) -> None:  # noqa: ANN001
+    _plant(board, "hosted")
+    result = invoke("doctor", "--json")
+    assert result.exit_code == 0, result.output
+    assert not (board / "hosted" / "maintenance.json").exists()
+
+
+@pytest.mark.parametrize("marker", ["state", "applying"])
+@pytest.mark.parametrize("name", sorted(BOARD_MAINTENANCE))
+def test_board_maintenance_command_refused_on_a_cache(
+    board: Path,
+    invoke,  # noqa: ANN001
+    marker: str,
+    name: str,
+) -> None:
+    _plant(board, marker)
+    before = _durable_tree(board)
+    result = invoke(*BOARD_MAINTENANCE[name][0])
+    assert result.exit_code == 1 and _error_code(result) == "BOARD_IS_CACHE", result.output
+    assert _durable_tree(board) == before
+
+
+def _hosted_scaffold(root: Path) -> Path:
+    lattice_dir = root / ".lattice"
+    (lattice_dir / "hosted").mkdir(parents=True)
+    _plant(lattice_dir, "hosted")
+    return lattice_dir
+
+
+INIT_COMMANDS = {
+    "init": (
+        lambda root: ["init", "--path", str(root), "--project-code", "SRV", "--actor", "human:t"],
+        "init",
+    ),
+    "demo init": (lambda root: ["demo", "init", "--path", str(root), "--quiet"], "demo init"),
+}
+
+
+@pytest.mark.parametrize("name", sorted(INIT_COMMANDS))
+def test_init_commands_initialize_a_hosted_scaffold_under_maintenance(
+    tmp_path: Path,
+    cli_runner,  # noqa: ANN001
+    flock_holder,  # noqa: ANN001
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+) -> None:
+    from lattice.cli.main import cli
+
+    monkeypatch.delenv("LATTICE_ROOT", raising=False)
+    root = tmp_path / "projects" / "apollo"
+    lattice_dir = _hosted_scaffold(root)
+    argv = INIT_COMMANDS[name][0](root)
+
+    refused = cli_runner.invoke(cli, argv)
+    assert refused.exit_code == 1
+    assert "Error: this board is owned by a Lattice server" in refused.output
+    assert not (lattice_dir / "config.json").exists()
+
+    holder = flock_holder(lattice_dir)
+    held = cli_runner.invoke(cli, [*argv, "--offline-maintenance"])
+    assert held.exit_code == 1
+    assert "a running Lattice server holds this board" in held.output
+    assert not (lattice_dir / "config.json").exists()
+    assert not (lattice_dir / "hosted" / "maintenance.json").exists()
+    holder.stdin.close()
+    holder.wait(timeout=10)
+
+    ok = cli_runner.invoke(cli, [*argv, "--offline-maintenance"])
+    assert ok.exit_code == 0, ok.output
+    assert "already" not in ok.output
+    assert (lattice_dir / "config.json").exists()
+    assert list((lattice_dir / "tasks").iterdir()) or name == "init"
+    record = json.loads((lattice_dir / "hosted" / "maintenance.json").read_text())
+    assert record["command"] == INIT_COMMANDS[name][1]
+
+    # Once initialized, the board is a board: init reports it, demo init refuses.
+    again = cli_runner.invoke(cli, [*argv, "--offline-maintenance"])
+    if name == "init":
+        assert again.exit_code == 0 and "Lattice already initialized" in again.output
+    else:
+        assert again.exit_code == 1 and "Demo already exists" in again.output
+
+
+def test_init_on_a_fresh_directory_is_unchanged(
+    tmp_path: Path,
+    cli_runner,  # noqa: ANN001
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from lattice.cli.main import cli
+
+    monkeypatch.delenv("LATTICE_ROOT", raising=False)
+    root = tmp_path / "plain"
+    root.mkdir()
+    argv = ["init", "--path", str(root), "--project-code", "PLN", "--actor", "human:t"]
+    assert cli_runner.invoke(cli, argv).exit_code == 0
+    assert (root / ".lattice" / "config.json").exists()
+    flagged = cli_runner.invoke(cli, [*argv, "--offline-maintenance"])
+    assert flagged.exit_code == 1 and "no hosted/ directory" in flagged.output
+
+
 def test_cli_offline_maintenance_on_a_local_board(board: Path, invoke) -> None:  # noqa: ANN001
     result = invoke("doctor", "--fix", "--offline-maintenance", "--json")
     assert result.exit_code == 1
@@ -626,3 +785,83 @@ def test_board_under_an_ancestor_named_lattice_is_still_checked(
     with recording() as recorder, writer(board):
         atomic_write(board / "plans" / "x.md", "x")
     assert recorder.relative_paths(board) == ["plans/x.md"]
+
+
+# ---------------------------------------------------------------------------
+# Symlink aliases into a board are checked as that board
+# ---------------------------------------------------------------------------
+
+
+def _alias_writes(alias: Path, task_id: str) -> dict:
+    from lattice.storage.operations import _copy_atomic
+
+    return {
+        "atomic_write create": lambda: atomic_write(alias / "plans" / "new.md", "x"),
+        "atomic_write replace": lambda: atomic_write(alias / "config.json", "{}"),
+        "jsonl_append": lambda: jsonl_append(alias / "events" / f"{task_id}.jsonl", '{"x":1}\n'),
+        "placement copy": lambda: _copy_atomic(
+            alias / "plans" / f"{task_id}.md", alias / "archive" / "plans" / f"{task_id}.md"
+        ),
+        "placement unlink": lambda: unlink_path(alias / "plans" / f"{task_id}.md"),
+        "ensure_dir": lambda: ensure_dir(alias / "resources" / "new-resource"),
+    }
+
+
+@pytest.mark.parametrize("marker", ["state", "hosted"])
+@pytest.mark.parametrize(
+    "write",
+    [
+        "atomic_write create",
+        "atomic_write replace",
+        "jsonl_append",
+        "placement copy",
+        "placement unlink",
+        "ensure_dir",
+    ],
+)
+def test_symlink_alias_into_a_marked_board_is_refused(
+    board: Path, tmp_path: Path, marker: str, write: str
+) -> None:
+    """``/tmp/alias/plans/x.md`` with ``alias`` -> a marked ``.lattice``: the
+    path as written has no ``.lattice`` component."""
+    task_id = _task_id(board)
+    (board / "archive" / "plans").mkdir(parents=True, exist_ok=True)
+    alias = tmp_path / "alias"
+    alias.symlink_to(board, target_is_directory=True)
+    _plant(board, marker)
+    before = _durable_tree(board)
+    error_type, code = MARKERS[marker]
+    with pytest.raises(error_type) as exc:
+        _alias_writes(alias, task_id)[write]()
+    assert exc.value.code == code
+    assert _durable_tree(board) == before
+
+
+@pytest.mark.parametrize("marker", ["state", "hosted"])
+def test_symlink_alias_to_a_directory_inside_a_marked_board_is_refused(
+    board: Path, tmp_path: Path, marker: str
+) -> None:
+    alias = tmp_path / "plans-alias"
+    alias.symlink_to(board / "plans", target_is_directory=True)
+    _plant(board, marker)
+    for write in (
+        lambda: atomic_write(alias / "x.md", "x"),
+        lambda: jsonl_append(alias / "x.jsonl", "{}\n"),
+        lambda: ensure_dir(alias / "sub"),
+        lambda: unlink_path(alias / f"{_task_id(board)}.md"),
+    ):
+        with pytest.raises(MARKERS[marker][0]):
+            write()
+    assert sorted(p.name for p in (board / "plans").iterdir()) == [f"{_task_id(board)}.md"]
+
+
+def test_symlink_alias_writes_are_recorded_as_the_board(board: Path, tmp_path: Path) -> None:
+    alias = tmp_path / "alias"
+    alias.symlink_to(board, target_is_directory=True)
+    with recording() as recorder:
+        atomic_write(alias / "plans" / "via-alias.md", "x")
+        ensure_dir(alias / "resources" / "via-alias")
+    assert recorder.relative_paths(board.resolve()) == [
+        "plans/via-alias.md",
+        "resources/via-alias",
+    ]

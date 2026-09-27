@@ -15,10 +15,11 @@ from lattice.core.config import (
     validate_project_code,
     validate_subproject_code,
 )
-from lattice.cli.maintenance import enter_offline_maintenance, offline_maintenance_option
+from lattice.cli.maintenance import maintenance_gate, offline_maintenance_option
 from lattice.core.errors import BoardWriteError
 from lattice.core.ids import generate_instance_id, generate_task_id, validate_actor
 from lattice.storage.fs import LATTICE_DIR, atomic_write, ensure_lattice_dirs
+from lattice.storage.ownership import is_hosted_scaffold
 from lattice.storage.short_ids import _default_index, save_id_index
 
 
@@ -499,16 +500,16 @@ def init(
     """Initialize a new Lattice project."""
     root = Path(target_path)
     lattice_dir = root / LATTICE_DIR
-    if offline_maintenance:
-        enter_offline_maintenance(lattice_dir, "init", False)
+    maintenance_gate(lattice_dir, "init", False, offline_maintenance)
 
-    # Idempotency: if .lattice/ already exists as a directory, skip
-    if lattice_dir.is_dir():
+    # Idempotency: if .lattice/ already exists as a directory, skip (a server
+    # project's hosted scaffold is not a board yet: initialize it)
+    if lattice_dir.is_dir() and not is_hosted_scaffold(lattice_dir):
         click.echo(f"Lattice already initialized in {LATTICE_DIR}/")
         return
 
     # Fail clearly if .lattice exists as a file (not a directory)
-    if lattice_dir.exists():
+    if lattice_dir.exists() and not lattice_dir.is_dir():
         raise click.ClickException(
             f"Cannot initialize: '{LATTICE_DIR}' exists but is not a directory. "
             "Remove it and try again."

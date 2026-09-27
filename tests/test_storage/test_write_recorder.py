@@ -89,11 +89,15 @@ def test_only_durable_and_workspace_paths_are_recorded(lattice_dir: Path, tmp_pa
         ensure_dir(lattice_dir / "cache")
         atomic_write(lattice_dir / "cache" / "follower.json", "{}")
         atomic_write(tmp_path / "outside.txt", "not a board")
-        ensure_dir(lattice_dir / "orchestration")  # directories are not recorded
+        ensure_dir(lattice_dir / "orchestration")
         atomic_write(lattice_dir / "orchestration" / "run-state.md", "workspace")
+        ensure_dir(lattice_dir / "orchestration")  # exists: no mutation
         unlink_path(lattice_dir / "plans" / "missing.md", missing_ok=True)  # no mutation
-    assert calls == [("run-state.md", "create")]
-    assert recorder.relative_paths(lattice_dir) == ["orchestration/run-state.md"]
+    assert calls == [("orchestration", "create"), ("run-state.md", "create")]
+    assert recorder.relative_paths(lattice_dir) == [
+        "orchestration",
+        "orchestration/run-state.md",
+    ]
 
 
 def test_no_recorder_outside_a_recording_block(lattice_dir: Path) -> None:
@@ -130,34 +134,132 @@ def test_recorder_repr_and_default(lattice_dir: Path) -> None:
     assert recorder.callback is None and recorder.paths == []
 
 
-def test_an_operation_reports_every_durable_path(lattice_dir: Path) -> None:
-    """``task.create`` through ``execute``: its event log, snapshot, lifecycle
-    entry, short-ID index, and plan scaffold, and nothing else."""
-    kinds: dict[str, set[str]] = {}
+def test_ensure_dir_reports_each_directory_it_creates(lattice_dir: Path) -> None:
+    seen: list[tuple[str, str, bool]] = []
 
     def before(path: Path, kind: str) -> None:
-        kinds.setdefault(path.relative_to(lattice_dir).as_posix(), set()).add(kind)
+        seen.append((path.relative_to(lattice_dir).as_posix(), kind, path.exists()))
 
+    with recording(before) as recorder:
+        ensure_dir(lattice_dir / "resources" / "db" / "shards")
+    # Missing parents first, each reported before its mkdir.
+    assert seen == [("resources/db", "create", False), ("resources/db/shards", "create", False)]
+    assert recorder.relative_paths(lattice_dir) == ["resources/db", "resources/db/shards"]
+    assert (lattice_dir / "resources" / "db" / "shards").is_dir()
+
+
+def test_ensure_dir_callback_raising_leaves_no_directory(lattice_dir: Path) -> None:
+    def refuse(path: Path, kind: str) -> None:
+        raise RuntimeError("no")
+
+    with recording(refuse), pytest.raises(RuntimeError):
+        ensure_dir(lattice_dir / "resources" / "db" / "shards")
+    assert not (lattice_dir / "resources" / "db").exists()
+
+    def refuse_leaf(path: Path, kind: str) -> None:
+        if path.name == "shards":
+            raise RuntimeError("no")
+
+    with recording(refuse_leaf) as recorder, pytest.raises(RuntimeError):
+        ensure_dir(lattice_dir / "resources" / "db" / "shards")
+    # The parent was reported before it was made; the refused leaf was never made.
+    assert recorder.relative_paths(lattice_dir) == ["resources/db"]
+    assert (lattice_dir / "resources" / "db").is_dir()
+    assert not (lattice_dir / "resources" / "db" / "shards").exists()
+
+
+def _caller() -> Caller:
+    return Caller(actor="human:t", origin={"op_id": OP_ID})
+
+
+def _with_project_code(lattice_dir: Path) -> None:
     config = json.loads((lattice_dir / "config.json").read_text())
     config["project_code"] = "REC"
     (lattice_dir / "config.json").write_text(json.dumps(config))
+
+
+def test_execute_owns_the_recorder_and_returns_its_paths(lattice_dir: Path) -> None:
+    """``task.create`` through ``execute`` alone: the callback sees every durable
+    mutation before it happens, with its kind, and ``OpResult.paths`` lists
+    exactly its event log, snapshot, lifecycle entry, short-ID index, and plan."""
+    _with_project_code(lattice_dir)
     ids_existed = (lattice_dir / "ids.json").exists()
-    with recording(before) as recorder:
-        result = execute(
+    seen: list[tuple[str, str, int | None]] = []
+
+    def before(path: Path, kind: str) -> None:
+        size = path.stat().st_size if path.exists() else None
+        seen.append((path.relative_to(lattice_dir).as_posix(), kind, size))
+
+    lifecycle_size = (lattice_dir / "events" / "_lifecycle.jsonl").stat().st_size
+    result = execute(
+        lattice_dir,
+        "task.create",
+        {"title": "Recorded"},
+        _caller(),
+        run_hooks=False,
+        on_mutation=before,
+    )
+    task_id = result.task["id"]
+    assert result.task["short_id"] == "REC-1"
+    expected = {
+        f"events/{task_id}.jsonl": ("append", None),
+        f"tasks/{task_id}.json": ("create", None),
+        f"plans/{task_id}.md": ("create", None),
+        "events/_lifecycle.jsonl": ("append", lifecycle_size),
+        "ids.json": ("replace", None) if ids_existed else ("create", None),
+    }
+    assert {path: (kind, size) for path, kind, size in seen if path != "ids.json"} == {
+        k: v for k, v in expected.items() if k != "ids.json"
+    }
+    assert {kind for path, kind, _ in seen if path == "ids.json"} == {expected["ids.json"][0]}
+    assert result.paths == tuple(sorted(expected))
+
+
+def test_each_execute_call_has_its_own_paths(lattice_dir: Path) -> None:
+    created = execute(lattice_dir, "task.create", {"title": "A"}, _caller(), run_hooks=False)
+    task_id = created.task["id"]
+    other_op = "op_01J9ZABCDEFGHJKMNPQRSTVWXZ"
+    with recording() as outer:
+        commented = execute(
             lattice_dir,
-            "task.create",
-            {"title": "Recorded"},
-            Caller(actor="human:t", origin={"op_id": OP_ID}),
+            "task.comment",
+            {"task": task_id, "text": "hi"},
+            Caller(actor="human:t", origin={"op_id": other_op}),
             run_hooks=False,
         )
-    task_id = result.task["id"]
-    expected = {
-        f"events/{task_id}.jsonl": {"append"},
-        f"tasks/{task_id}.json": {"create"},
-        f"plans/{task_id}.md": {"create"},
-        "events/_lifecycle.jsonl": {"append"},
-        "ids.json": {"replace" if ids_existed else "create"},
-    }
-    assert result.task["short_id"] == "REC-1"
-    assert kinds == expected
-    assert recorder.relative_paths(lattice_dir) == sorted(expected)
+    assert commented.paths == (f"events/{task_id}.jsonl", f"tasks/{task_id}.json")
+    assert outer.paths == []  # the call's own recorder, not an enclosing one
+
+
+def test_execute_callback_raising_aborts_before_any_write(lattice_dir: Path) -> None:
+    created = execute(lattice_dir, "task.create", {"title": "A"}, _caller(), run_hooks=False)
+    task_id = created.task["id"]
+    log = lattice_dir / "events" / f"{task_id}.jsonl"
+    before_bytes = log.read_bytes()
+
+    def refuse(path: Path, kind: str) -> None:
+        raise RuntimeError(f"undo log full: {kind} {path.name}")
+
+    with pytest.raises(RuntimeError, match="append"):
+        execute(
+            lattice_dir,
+            "task.comment",
+            {"task": task_id, "text": "hi"},
+            _caller(),
+            run_hooks=False,
+            on_mutation=refuse,
+        )
+    assert log.read_bytes() == before_bytes
+
+
+def test_execute_in_a_worker_thread_records_there(lattice_dir: Path) -> None:
+    results: list = []
+    thread = threading.Thread(
+        target=lambda: results.append(
+            execute(lattice_dir, "task.create", {"title": "T"}, _caller(), run_hooks=False)
+        )
+    )
+    thread.start()
+    thread.join()
+    task_id = results[0].task["id"]
+    assert f"events/{task_id}.jsonl" in results[0].paths
