@@ -177,7 +177,7 @@ Criteria: AC-26. Deps: H-9, H-22 (the paused-transaction proof).
 Criteria: AC-32, AC-43, AC-44. Deps: H-11, H-13a, H-14, and H-13b and H-16 unless the operator has let them slip (the docs then leave those features out). Shared: `README.md`, `skills/lattice/SKILL.md` and `templates/claude_md_block.py` (after H-4), `Decisions.md`, `docs/architecture/` (sole owner).
 
 ### H-19 Parallel default suite · M
-Add `pytest-xdist`, run the default suite with `-n auto`, fix tests that share state, record the baseline wall time. Target ≤ 30 s on the operator's laptop.
+Add `pytest-xdist`, run the default suite with `-n auto`, fix tests that share state, record the baseline wall time. Target ≤ 40 s on the operator's laptop (`EVALUATION.md` §1).
 Criteria: G-9. Deps: H-0. Shared: `pyproject.toml`, `tests/conftest.py`. Admit early: it speeds every later gate.
 
 ### H-20 Follow-up: filter by machine, user, worktree · L
@@ -211,7 +211,7 @@ H-0 ──► H-19                                                              
 
 The critical path is H-0 → H-1 → H-8 → H-9 → H-22a → H-10a → H-10b → H-10c → H-11 → CP1. The transaction protocol (H-22a) is proven before anything is built on it. The operation conversions (H-2 to H-6) run beside the chain, so CP2 follows soon after CP1.
 
-**Serialize these shared files** (one active ticket at a time): `cli/task_cmds.py` (H-1, H-2, H-3, H-4), `storage/operations.py` (H-1, H-6, H-8), `storage/fs.py` (H-8, H-22a, H-11), `pyproject.toml` (H-0, H-9, H-19), `core/events.py` and `core/tasks.py` (H-1, H-4, H-7), `cli/helpers.py` (H-5, H-11), `cli/query_cmds.py` (H-2, H-4, H-7), `cli/integrity_cmds.py` (H-6, H-7), `cli/review_cmds.py` (H-4, H-12), `skills/lattice/SKILL.md` and `templates/claude_md_block.py` (H-4, H-17). Sole owners: `dashboard/server.py` and `static/index.html` (H-13a, then H-13b), `mcp/tools.py` (H-21), docs, README, and `Decisions.md` (H-17).
+**Serialize these shared files** (one active ticket at a time): `cli/task_cmds.py` (H-1, H-2, H-3, H-4), `storage/operations.py` (H-1, H-6, H-8), `storage/fs.py` (H-8, H-22a, H-11), `pyproject.toml` (H-0, H-9, H-19), `core/events.py` and `core/tasks.py` (H-1, H-4, H-7), `cli/helpers.py` (H-5, H-11), `cli/query_cmds.py` (H-2, H-4, H-7), `cli/integrity_cmds.py` (H-6, H-7), `cli/review_cmds.py` (H-4, H-12), `skills/lattice/SKILL.md` and `templates/claude_md_block.py` (H-4, H-17). Sole owners: `dashboard/server.py` and `static/index.html` (H-13a, then H-13b), `mcp/tools.py` (H-21), docs, README, and `Decisions.md` (H-17). When a ticket moves CLI logic into an operation, that operation's module joins this list for every ticket that touches the same logic (H-2 and H-7 collided in `ops/board_next_claim.py`, which the list did not name).
 
 ---
 
@@ -248,6 +248,6 @@ The critical path is H-0 → H-1 → H-8 → H-9 → H-22a → H-10a → H-10b �
 ## 7. Orchestration notes
 
 - Branches cut from `v2`; PRs target `v2`. The Merge Captain merges `main` into `v2` whenever `main` moves, before the next landing.
-- Project gate: `EVALUATION.md` §1. Torture also runs on tickets touching `ops/`, `storage/`, `server/`, or `remote/`. The `perf` check runs on the operator's laptop at H-6 and before CP3, CP4, and the release gate.
+- Project gate: `EVALUATION.md` §1. Green CI at the exact head stands in for a local run; the Merge Captain runs the per-PR torture lane locally on tickets touching `ops/`, `storage/`, `server/`, or `remote/`. Envelope tests run only in the background and never block a landing or an admission. The `perf` check runs on the operator's laptop at H-6 and before CP3, CP4, and the release gate.
 - The orchestrator's own Lattice commands run on the operator's current install, not on `v2`. Builders validate from their worktrees with the worktree's own virtualenv (`uv pip install -e ".[dev,server]"`, then `.venv/bin/lattice`), never the global command.
 - No ticket publishes a package or merges to `main`. Only H-18 deploys, apart from H-23's throwaway server behind the production proxy, which it removes when the spike ends.
