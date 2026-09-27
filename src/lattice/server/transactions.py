@@ -336,8 +336,9 @@ class Transaction:
         if "memory" not in self.done:
             _fault("finish.accept")  # before anything changes: recovery may retry
             try:
-                # Line hash, length history, manifest, floors: staged, then swapped
-                # in at once (H-10a). A failure here quarantines (see recover()).
+                # The next finalized state (journal index, manifest, floors, watched
+                # baselines), computed off to the side and published by one
+                # assignment (H-10a). A failure here quarantines (see recover()).
                 project.finalize_committed(self.line, self.raw, self.events)
             except BaseException:
                 self.memory_failed = True

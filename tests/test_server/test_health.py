@@ -3,6 +3,7 @@ disk floor it reports 503 and operations get 507 STORAGE_LOW while reads still w
 
 from __future__ import annotations
 
+import dataclasses
 import threading
 import time
 from pathlib import Path
@@ -81,12 +82,15 @@ def test_sync_works_under_the_disk_floor_and_an_empty_sync_logs_below_info(
         head = board.sync(since=2, epoch=reset["epoch"], hash=reset["head_hash"])
         assert head["files"] == {} and head["removed"] == []
         # An empty delta assembled under the locks logs below info too.
-        board.project.journal.head = ("forces-the-locked-path", 0, None)
-        try:
+        project = board.project
+        state = project._state
+        project._state = dataclasses.replace(
+            state, journal=dataclasses.replace(state.journal, head=("elsewhere", 0, None))
+        )
+        try:  # the fast path no longer matches: assembled under the locks
             locked = board.sync(since=2, epoch=reset["epoch"], hash=reset["head_hash"])
         finally:
-            journal = board.project.journal
-            journal.head = (journal.epoch, journal.head_seq, journal.head_hash)
+            project._state = state
         assert locked["files"] == {} and locked["reset"] is False
         time.sleep(0.2)
         assert len(requests()) == 5, requests()[5:]

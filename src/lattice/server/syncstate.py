@@ -26,7 +26,9 @@ import os
 import stat
 import urllib.parse
 from dataclasses import dataclass
+from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
+from types import MappingProxyType
 from typing import Any
 
 from lattice.core.errors import OpError
@@ -86,26 +88,31 @@ Staged = dict[str, "tuple[ManifestEntry, Any] | None"]
 
 
 class Manifest:
-    """Every synced board file's hash and size (SPEC §8.8 "Manifest").
-
-    Changes are computed by :meth:`stage`, which reads files but changes
-    nothing, and made by :meth:`apply`, which only assigns, so a committed
-    line's manifest update is all or nothing.
+    """Every synced board file's hash and size (SPEC §8.8 "Manifest"): an immutable
+    value. :meth:`stage` computes a committed line's changes (reading files,
+    changing nothing) and :meth:`applied` returns the next value, which the
+    project publishes with the rest of its finalized memory in one assignment.
     """
 
-    def __init__(self, seq: int = 0) -> None:
-        #: The journal seq this manifest reflects (its commits are idempotent by seq).
+    __slots__ = ("seq", "entries", "_hashers")
+
+    def __init__(
+        self,
+        seq: int = 0,
+        entries: Mapping[str, ManifestEntry] | None = None,
+        hashers: Mapping[str, tuple[Any, int]] | None = None,
+    ) -> None:
+        #: The journal seq this manifest reflects.
         self.seq = seq
-        self.entries: dict[str, ManifestEntry] = {}
-        #: ``*.jsonl`` path -> (hash state, bytes it covers), for incremental rehashing.
-        self._hashers: dict[str, tuple[Any, int]] = {}
+        self.entries: Mapping[str, ManifestEntry] = MappingProxyType(dict(entries or {}))
+        #: ``*.jsonl`` path -> (hash state, bytes it covers), for incremental hashing.
+        #: A stored hash state is never updated: extending one works on a copy.
+        self._hashers: Mapping[str, tuple[Any, int]] = MappingProxyType(dict(hashers or {}))
 
     @classmethod
     def build(cls, board: Path, seq: int = 0) -> Manifest:
         """Hash every synced file; the result reflects journal *seq*."""
-        manifest = cls()
-        manifest.apply(manifest.stage(board, synced_files(board), frozenset()), seq)
-        return manifest
+        return cls().applied(cls().stage(board, synced_files(board), frozenset()), seq)
 
     def get(self, rel: str) -> ManifestEntry | None:
         return self.entries.get(rel)
@@ -128,25 +135,28 @@ class Manifest:
                 staged[rel] = _hash_from(path, hashlib.sha256(), 0)
         return staged
 
-    def apply(self, staged: Staged, seq: int | None = None) -> None:
-        """Assign *staged* (in-memory only; applying the same changes again is
-        harmless), then record *seq*."""
+    def applied(self, staged: Staged, seq: int) -> Manifest:
+        """The manifest with *staged* applied, reflecting *seq*; this one is unchanged."""
+        entries = dict(self.entries)
+        hashers = dict(self._hashers)
         for rel, change in staged.items():
             if change is None:
-                self.entries.pop(rel, None)
-                self._hashers.pop(rel, None)
+                entries.pop(rel, None)
+                hashers.pop(rel, None)
                 continue
             entry, hasher = change
-            self.entries[rel] = entry
+            entries[rel] = entry
             if rel.endswith(".jsonl"):
-                self._hashers[rel] = (hasher, entry.size)
+                hashers[rel] = (hasher, entry.size)
             else:
-                self._hashers.pop(rel, None)
-        if seq is not None:
-            self.seq = seq
+                hashers.pop(rel, None)
+        return Manifest(seq, entries, hashers)
 
-    def update(self, board: Path, paths: list[str], appended: set[str] | frozenset[str]) -> None:
-        self.apply(self.stage(board, paths, appended))
+    def advanced(
+        self, board: Path, paths: list[str], appended: set[str] | frozenset[str], seq: int
+    ) -> Manifest:
+        """:meth:`stage` then :meth:`applied`."""
+        return self.applied(self.stage(board, paths, appended), seq)
 
 
 def _hash_from(path: Path, hasher: Any, start: int) -> tuple[ManifestEntry, Any]:

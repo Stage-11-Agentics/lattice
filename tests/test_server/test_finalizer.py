@@ -1,18 +1,23 @@
 """The one committed-line finalizer (SPEC §8.6 step 6; plan-review resolution 2).
 
-Transactions and ``external`` entries share ``Project.finalize_committed``: the
-manifest change is staged, then swapped in with the line's hash and length
-history. A failure while finalizing memory quarantines the project with memory
-unchanged; a publication failure closes the project's streams.
+Transactions and ``external`` entries share ``Project.finalize_committed``: it
+computes the complete next ``FinalizedState`` (journal index, manifest, floors,
+watched baselines) off to the side and publishes it with one assignment. A
+failure while finalizing quarantines the project with memory unchanged; a
+publication failure closes the project's streams.
 """
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
+from lattice.server.journal import Journal
+from lattice.server.project import FinalizedState
+from lattice.server.syncstate import Manifest
 from lattice.server.testing import BoardServer, serve_board
 from tests.test_server.faults import Injector, install
 
@@ -45,27 +50,6 @@ def test_a_finish_memory_failure_quarantines_and_closes_streams(
     # Committed on disk (never rolled back); the next load rebuilds memory from it.
     lines = (board.board / "hosted" / "journal.jsonl").read_bytes().splitlines()
     assert len(lines) == 2
-
-
-def test_finish_memory_state_is_swapped_in_whole(
-    board: BoardServer, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The fault fires after staging: nothing staged reached the manifest or journal."""
-    task = board.op("task.create", {"title": "t"})["task"]["id"]
-    project = board.project
-    journal, manifest = project.journal, project.manifest
-    head_before, entries_before = journal.head, dict(manifest.entries)
-    with monkeypatch.context() as m:
-        install(m, Injector("finish.memory"))
-        board.handle.op(
-            "demo",
-            "task.comment",
-            {"task": task, "text": "x"},
-            token=board.token,
-            actor=board.user,
-        )
-    assert journal.head == head_before  # the object the project held, unchanged
-    assert manifest.entries == entries_before
 
 
 def test_an_external_entry_whose_finalizer_fails_quarantines(
@@ -114,113 +98,154 @@ def test_an_external_entry_whose_publication_fails_closes_streams(
 
 
 # ---------------------------------------------------------------------------
-# Atomic and idempotent, directly (review round 1, finding 1)
+# One immutable state, one assignment (review round 2, the prescribed design)
 # ---------------------------------------------------------------------------
 
+POINTS = [
+    "finish.memory",
+    "finish.memory.manifest",
+    "finish.memory.floors",
+    "finish.memory.watched",
+]
 
-def _live(project) -> tuple:  # noqa: ANN001
-    """A deep snapshot of every in-memory component the finalizer changes."""
-    journal, manifest = project.journal, project.manifest
-    return (
-        journal.head,
-        journal.head_seq,
-        journal.end_offset,
-        list(journal.line_hashes),
-        list(journal.line_offsets),
-        {k: list(v) for k, v in journal.length_history.items()},
-        dict(journal.known_lengths),
-        manifest.seq,
-        dict(manifest.entries),
-        {k: v[1] for k, v in manifest._hashers.items()},
+
+def _dump(state: FinalizedState) -> str:
+    """Every field of a finalized state, byte for byte (hash states by their digest)."""
+    journal = state.journal
+    return json.dumps(
+        {
+            "journal": {
+                "epoch": journal.epoch,
+                "baseline": dict(journal.baseline),
+                "line_offsets": list(journal.line_offsets),
+                "line_hashes": list(journal.line_hashes),
+                "end_offset": journal.end_offset,
+                "head_seq": journal.head_seq,
+                "head": list(journal.head),
+                "length_history": {k: list(v) for k, v in journal.length_history.items()},
+                "known_lengths": dict(journal.known_lengths),
+            },
+            "manifest": {
+                "seq": state.manifest.seq,
+                "entries": {k: [e.sha256, e.size] for k, e in state.manifest.entries.items()},
+                "hashers": {
+                    k: [h.hexdigest(), n] for k, (h, n) in state.manifest._hashers.items()
+                },
+            },
+            "floors": dict(state.floors.max_observed),
+            "watched": {k: list(v) if v else None for k, v in state.watched.items()},
+        },
+        sort_keys=True,
     )
 
 
-@pytest.mark.parametrize(
-    "fail",
-    ["finish.memory", "finish.memory.manifest", "manifest.apply"],
-)
-def test_a_failed_finalize_changes_nothing_live_or_completes_on_retry(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fail: str
-) -> None:
-    from lattice.server import syncstate
-    from lattice.server.journal import Journal
-    from lattice.server.syncstate import Manifest
-
-    with serve_board(tmp_path) as board:
-        task = board.op("task.create", {"title": "t"})["task"]["id"]
-        board.op("task.comment", {"task": task, "text": "one"})
-        project = board.project
-        journal_path = board.board / "hosted" / "journal.jsonl"
-        raw_before = journal_path.read_bytes()
-        with project.locked():
-            before = _live(project)
-            seq, line, raw = project.journal.write(
-                {
-                    "op": "external",
-                    "op_id": None,
-                    "fp": None,
-                    "token_id": None,
-                    "task_id": None,
-                    "event_ids": [],
-                    "paths": ["context.md", f"events/{task}.jsonl"],
-                    "lengths": {},
-                }
-            )
-            (board.board / "context.md").write_text("# changed\n")
-            with monkeypatch.context() as m:
-                if fail == "manifest.apply":
-                    # After the journal's commit: the one step that could leave a
-                    # half-updated memory if it were not idempotent by seq.
-                    def broken(self, staged, seq=None):  # noqa: ANN001, ANN202
-                        raise OSError(5, "injected")
-
-                    m.setattr(syncstate.Manifest, "apply", broken)
-                else:
-                    install(m, Injector(fail))
-                with pytest.raises(OSError):
-                    project.finalize_committed(line, raw)
-            if fail != "manifest.apply":
-                assert _live(project) == before  # every live component unchanged
-            else:
-                assert project.manifest.seq == before[7]  # the manifest did not move
-            project.finalize_committed(line, raw)  # the retry completes it
-            project.finalize_committed(line, raw)  # and a second retry is a no-op
-            after = _live(project)
-        assert journal_path.read_bytes().startswith(raw_before)
-        fresh = Journal.load(board.board)
-        assert after[:7] == (
-            fresh.head,
-            fresh.head_seq,
-            fresh.end_offset,
-            fresh.line_hashes,
-            fresh.line_offsets,
-            {k: list(v) for k, v in fresh.length_history.items()},
-            fresh.known_lengths,
+def _committed_line(board: BoardServer, task: str) -> tuple[dict, bytes, list[dict]]:
+    """Append a board log and write its journal line, as a transaction does before
+    its finish step: the line is committed on disk, memory not yet finalized."""
+    project = board.project
+    log = board.board / "events" / f"{task}.jsonl"
+    event = {"id": "ev_01J9Z000000000000000000FIN", "type": "x_fin", "data": {"short_id": "DEM-7"}}
+    with open(log, "ab") as fh:
+        fh.write(json.dumps(event).encode() + b"\n")
+    (board.board / "context.md").write_text("# changed with the line\n")
+    with project.locked():
+        _seq, line, raw = project.journal.write(
+            {
+                "op": "xtest.fin",
+                "op_id": None,
+                "fp": None,
+                "token_id": None,
+                "task_id": task,
+                "event_ids": [event["id"]],
+                "paths": ["context.md", f"events/{task}.jsonl"],
+                "lengths": {f"events/{task}.jsonl": log.stat().st_size},
+            }
         )
-        rebuilt = Manifest.build(board.board)
-        assert after[7] == seq and after[8] == rebuilt.entries
-        # The server keeps serving, and a sync at the new head answers from memory.
-        body = board.sync(since=seq, epoch=fresh.epoch, hash=fresh.head_hash)
-        assert body["head_seq"] == seq and body["files"] == {}
+    return line, raw, [event]
 
 
-def test_journal_commit_drops_what_an_interrupted_commit_left(tmp_path: Path) -> None:
-    from lattice.server.journal import Journal
-    from lattice.storage.ownership import owning_board
+@pytest.fixture()
+def fault_free(tmp_path: Path) -> str:
+    """The finalized state a fault-free run produces, on an identical board."""
+    with serve_board(tmp_path / "reference") as board:
+        return _reference_run(board)
 
-    lattice = tmp_path / ".lattice"
-    (lattice / "hosted").mkdir(parents=True)
-    (lattice / "events").mkdir()
-    (lattice / "config.json").write_text("{}")
-    with owning_board(lattice):
-        journal = Journal.create(lattice)
-    line = {"seq": 1, "paths": ["events/a.jsonl"], "lengths": {"events/a.jsonl": 5}}
-    delta = journal.stage(line, b'{"seq":1}')
-    # Simulate a commit interrupted after its first assignments.
-    journal.line_hashes.append("partial")
-    journal.length_history.setdefault("events/a.jsonl", []).append((1, 99))
-    journal.commit(delta)
-    journal.commit(delta)  # idempotent
-    assert journal.line_hashes == [delta.digest]
-    assert journal.length_history == {"events/a.jsonl": [(1, 5)]}
-    assert journal.head == (journal.epoch, 1, delta.digest)
+
+def _reference_run(board: BoardServer) -> str:
+    task = board.op("task.create", {"title": "t"})["task"]["id"]
+    line, raw, events = _committed_line(board, task)
+    with board.project.locked():
+        board.project.finalize_committed(line, raw, events)
+    return _normalized(board, board.project._state)
+
+
+def _normalized(board: BoardServer, state: FinalizedState) -> str:
+    """The state with the values that differ between two boards (ids, epochs, times,
+    inodes) replaced by stable ones, so a reference run can be compared."""
+    text = _dump(state)
+    task = next(iter(board.board.glob("tasks/*.json"))).stem
+    text = text.replace(task, "TASK").replace(state.journal.epoch, "EPOCH")
+    data = json.loads(text)
+    data["watched"] = sorted(data["watched"])  # stat keys hold mtimes and inodes
+    data["journal"]["line_hashes"] = len(data["journal"]["line_hashes"])
+    data["journal"]["head"] = data["journal"]["head"][:2]
+    data["journal"].pop("line_offsets")
+    data["journal"].pop("end_offset")
+    data["manifest"]["entries"] = sorted(data["manifest"]["entries"])
+    data["manifest"]["hashers"] = sorted(data["manifest"]["hashers"])
+    return json.dumps(data, sort_keys=True)
+
+
+@pytest.mark.parametrize("point", POINTS)
+def test_a_fault_anywhere_leaves_the_live_state_unchanged_and_a_retry_completes_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, point: str, fault_free: str
+) -> None:
+    """(a) the live state is byte-for-byte unchanged after a fault after each
+    sub-step; (b) a retry completes to exactly the fault-free state; (c) a second
+    retry is a no-op."""
+    with serve_board(tmp_path / "board") as board:
+        task = board.op("task.create", {"title": "t"})["task"]["id"]
+        line, raw, events = _committed_line(board, task)
+        project = board.project
+        before = project._state
+        before_dump = _dump(before)
+        with project.locked():
+            with monkeypatch.context() as m:
+                injector = install(m, Injector(point))
+                with pytest.raises(OSError):
+                    project.finalize_committed(line, raw, events)
+                assert injector.fired
+            assert project._state is before  # (a) nothing was published
+            assert _dump(project._state) == before_dump
+            project.finalize_committed(line, raw, events)  # (b) the retry
+            after = project._state
+            assert after is not before and after.journal.head_seq == line["seq"]
+            project.finalize_committed(line, raw, events)  # (c) a no-op
+            assert project._state is after
+        assert _normalized(board, after) == fault_free
+        # Independent rebuilds agree with the retried state.
+        rebuilt = Journal.load(board.board).index
+        assert (rebuilt.line_offsets, rebuilt.line_hashes, rebuilt.end_offset) == (
+            after.journal.line_offsets,
+            after.journal.line_hashes,
+            after.journal.end_offset,
+        )
+        assert dict(rebuilt.length_history) == dict(after.journal.length_history)
+        assert rebuilt.head == after.journal.head
+        assert dict(Manifest.build(board.board).entries) == dict(after.manifest.entries)
+        assert after.floors.max_observed["DEM"] == 7
+        assert after.watched["context.md"] is not None
+        assert after.watched["context.md"] != before.watched["context.md"]
+        # And the server serves the finalized state.
+        body = board.sync(
+            since=line["seq"], epoch=after.journal.epoch, hash=after.journal.head_hash
+        )
+        assert body["head_seq"] == line["seq"] and body["files"] == {}
+
+
+def test_the_head_advances_only_through_the_single_assignment(board: BoardServer) -> None:
+    """``Journal.accept`` on a project's journal is refused; its index is the state's."""
+    project = board.project
+    assert project.journal.index is project._state.journal
+    with pytest.raises(RuntimeError):
+        project.journal.accept({"seq": 1, "paths": [], "lengths": {}}, b"{}")

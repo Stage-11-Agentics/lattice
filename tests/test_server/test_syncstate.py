@@ -64,16 +64,16 @@ def test_incremental_hash_equals_a_full_hash(board: Path) -> None:
     for chunk in (b"y" * 7, b"z" * 3_000_000):
         with open(log, "ab") as fh:
             fh.write(chunk)
-        manifest.update(board, ["events/a.jsonl"], {"events/a.jsonl"})
+        manifest = manifest.advanced(board, ["events/a.jsonl"], {"events/a.jsonl"}, 1)
         entry = manifest.get("events/a.jsonl")
         assert entry is not None
         assert entry.sha256 == hashlib.sha256(log.read_bytes()).hexdigest()
         assert entry.size == log.stat().st_size
     log.write_bytes(b"replaced")  # not an append: rehashed from byte 0
-    manifest.update(board, ["events/a.jsonl"], set())
+    manifest = manifest.advanced(board, ["events/a.jsonl"], set(), 2)
     assert manifest.get("events/a.jsonl").sha256 == hashlib.sha256(b"replaced").hexdigest()
     log.unlink()
-    manifest.update(board, ["events/a.jsonl", "hosted/journal.jsonl"], set())
+    manifest = manifest.advanced(board, ["events/a.jsonl", "hosted/journal.jsonl"], set(), 3)
     assert manifest.get("events/a.jsonl") is None
     assert "hosted/journal.jsonl" not in manifest.entries
 

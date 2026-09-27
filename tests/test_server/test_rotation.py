@@ -13,7 +13,6 @@ import pytest
 from click.testing import CliRunner
 
 from lattice.cli.main import cli
-from lattice.server import syncstate
 from lattice.server.testing import BoardServer, serve_board
 
 HEARTBEAT = 0.2
@@ -32,26 +31,27 @@ def create(board: BoardServer, title: str = "t") -> str:
 def test_no_heartbeat_names_the_new_epoch_before_its_reset(
     board: BoardServer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Plan-review resolution 3: rotation swaps the journal, then (here, held) builds
-    the manifest, then queues ``reset``. Heartbeats during the hold name the old
-    epoch; the first heartbeat naming the new epoch follows the reset."""
+    """Plan-review resolution 3: rotation publishes the new epoch's state, then
+    (here, held) queues ``reset``. Heartbeats during the hold name the old epoch;
+    the first heartbeat naming the new epoch follows the reset."""
     create(board)
     old_epoch = board.project.journal.epoch
     entered, release = threading.Event(), threading.Event()
-    real_build = syncstate.Manifest.build.__func__
+    broadcaster = board.project.broadcaster
+    real_reset = broadcaster.reset
 
-    def held_build(cls, lattice_dir):  # noqa: ANN001, ANN202
+    def held_reset(epoch: str) -> None:
         entered.set()
         assert release.wait(10)
-        return real_build(cls, lattice_dir)
+        real_reset(epoch)
 
     with board.stream() as reader:
         assert reader.next().event == "heartbeat"
-        monkeypatch.setattr(syncstate.Manifest, "build", classmethod(held_build))
+        monkeypatch.setattr(broadcaster, "reset", held_reset)
         rotation = threading.Thread(target=board.rotate_epoch)
         rotation.start()
         assert entered.wait(10)
-        assert board.project.journal.epoch != old_epoch  # swapped, reset not yet queued
+        assert board.project.journal.epoch != old_epoch  # published, reset not yet queued
         during = [reader.next_of("heartbeat") for _ in range(3)]
         assert all(b.data["epoch"] == old_epoch for b in during)
         release.set()

@@ -17,7 +17,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from dataclasses import dataclass, field
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
+from types import MappingProxyType
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -111,43 +113,208 @@ def _rename(src: Path, dst: Path) -> None:
         os.close(fd)
 
 
+_EMPTY: Mapping[str, Any] = MappingProxyType({})
+
+
+def _history_entries(entry: dict, is_log: Callable[[str], bool]) -> list[tuple[str, int | None]]:
+    """The length-history entries line *entry* adds: ``(path, None)`` for a known log
+    it changed other than by appending, then ``(path, length)`` for each append."""
+    lengths = entry.get("lengths") or {}
+    history: list[tuple[str, int | None]] = [
+        (path, None) for path in entry.get("paths") or () if path not in lengths and is_log(path)
+    ]
+    history.extend(lengths.items())
+    return history
+
+
 @dataclass(frozen=True)
-class LineDelta:
-    """What accepting one journal line changes (:meth:`Journal.stage`)."""
+class JournalIndex:
+    """The journal's in-memory index for one epoch: an immutable value.
 
-    seq: int
-    digest: str
-    size: int  # the line's bytes on disk, newline included
-    history: tuple[tuple[str, int | None], ...]
-    lengths: tuple[tuple[str, int], ...]
+    A committed line produces a new index (:meth:`advance`, which changes
+    nothing); a project publishes it with its other finalized memory in one
+    assignment, so no reader ever sees a half-advanced index.
+    """
 
-
-@dataclass
-class Journal:
-    """The in-memory view of one project's journal for the current epoch."""
-
-    board: Path
     epoch: str
-    created_at: str
-    baseline: dict[str, int]
-    head_seq: int = 0
-    #: ``line_hashes[seq - 1]`` is line ``seq``'s hash.
-    line_hashes: list[str] = field(default_factory=list)
+    baseline: Mapping[str, int] = _EMPTY
     #: ``line_offsets[seq - 1]`` is the byte offset where line ``seq`` starts;
-    #: ``end_offset`` is the journal's length after the last accepted line.
-    line_offsets: list[int] = field(default_factory=list)
+    #: ``end_offset`` is the journal's length after the head line.
+    line_offsets: tuple[int, ...] = ()
+    #: ``line_hashes[seq - 1]`` is line ``seq``'s hash.
+    line_hashes: tuple[str, ...] = ()
     end_offset: int = 0
-    #: The last known length of every log: ``baseline`` updated by each line's ``lengths``.
-    known_lengths: dict[str, int] = field(default_factory=dict)
+    head_seq: int = 0
+    #: ``(epoch, head_seq, head_hash)``.
+    head: tuple[str, int, str | None] = ("", 0, None)
     #: Each log's length history in this epoch (SPEC §8.8 "Append deltas"):
     #: ``(seq, length)`` for every ``lengths`` entry, and ``(seq, None)`` when a
     #: known log was changed some other way (created whole, replaced, unlinked,
     #: relocated), which leaves no append base at that seq.
-    length_history: dict[str, list[tuple[int, int | None]]] = field(default_factory=dict)
-    clean_shutdown: Any = None
-    #: ``(epoch, head_seq, head_hash)``, replaced in one assignment after each
-    #: accepted line, so a reader without the work lock sees a consistent head.
-    head: tuple[str, int, str | None] = ("", 0, None)
+    length_history: Mapping[str, tuple[tuple[int, int | None], ...]] = _EMPTY
+    #: The last known length of every log: ``baseline`` updated by each ``lengths``.
+    known_lengths: Mapping[str, int] = _EMPTY
+
+    @classmethod
+    def build(
+        cls, epoch: str, baseline: dict[str, int], lines: list[tuple[dict, bytes]]
+    ) -> JournalIndex:
+        """The index of an epoch's lines, in one pass (loading a journal)."""
+        offsets: list[int] = []
+        hashes: list[str] = []
+        history: dict[str, list[tuple[int, int | None]]] = {}
+        known = dict(baseline)
+        end = 0
+        for entry, raw in lines:
+            seq = entry["seq"]
+            if seq != len(hashes) + 1:
+                raise JournalError(f"journal line {seq} does not follow head {len(hashes)}")
+            for path, length in _history_entries(entry, lambda p: p in baseline or p in history):
+                history.setdefault(path, []).append((seq, length))
+            known.update(entry.get("lengths") or {})
+            offsets.append(end)
+            end += len(raw.rstrip(b"\n")) + 1
+            hashes.append(line_hash(raw))
+        head_seq = len(hashes)
+        return cls(
+            epoch=epoch,
+            baseline=MappingProxyType(dict(baseline)),
+            line_offsets=tuple(offsets),
+            line_hashes=tuple(hashes),
+            end_offset=end,
+            head_seq=head_seq,
+            head=(epoch, head_seq, hashes[-1] if hashes else None),
+            length_history=MappingProxyType({k: tuple(v) for k, v in history.items()}),
+            known_lengths=MappingProxyType(known),
+        )
+
+    def advance(self, entry: dict, raw: bytes) -> JournalIndex:
+        """The index after committed line *entry*: a new value; this one is unchanged."""
+        seq = entry["seq"]
+        if seq != self.head_seq + 1:
+            raise JournalError(f"journal line {seq} does not follow head {self.head_seq}")
+        history = dict(self.length_history)
+        for path, length in _history_entries(entry, self.is_log):
+            history[path] = (*history.get(path, ()), (seq, length))
+        known = dict(self.known_lengths)
+        known.update(entry.get("lengths") or {})
+        digest = line_hash(raw)
+        return replace(
+            self,
+            line_offsets=(*self.line_offsets, self.end_offset),
+            line_hashes=(*self.line_hashes, digest),
+            end_offset=self.end_offset + len(raw.rstrip(b"\n")) + 1,
+            head_seq=seq,
+            head=(self.epoch, seq, digest),
+            length_history=MappingProxyType(history),
+            known_lengths=MappingProxyType(known),
+        )
+
+    # -- reads ----------------------------------------------------------------
+
+    @property
+    def head_hash(self) -> str | None:
+        return self.head[2]
+
+    def is_log(self, path: str) -> bool:
+        """Whether *path* is an append-only log this epoch knows (baseline or ``lengths``)."""
+        return path in self.baseline or path in self.length_history
+
+    def length_at(self, path: str, seq: int) -> int | None:
+        """The log's length as of *seq*: its latest history value at or before *seq*,
+        else its ``baseline`` length. ``None``: it did not exist then, or was last
+        changed by something other than an append (no append base)."""
+        length = self.baseline.get(path)
+        for at, value in self.length_history.get(path, ()):
+            if at > seq:
+                break
+            length = value
+        return length
+
+    def hash_at(self, seq: int) -> str | None:
+        """Line *seq*'s hash (``None`` for 0 or beyond the head)."""
+        if 0 < seq <= self.head_seq:
+            return self.line_hashes[seq - 1]
+        return None
+
+
+class Journal:
+    """One project's journal file for the current epoch, and its index.
+
+    The index is an immutable :class:`JournalIndex`. A standalone journal keeps
+    its own (:meth:`accept` replaces it). A project's journal is *bound* to the
+    project's published state (:meth:`bind`), so it advances only through the
+    project's committed-line finalizer, in the same assignment as the rest of
+    that state.
+    """
+
+    def __init__(
+        self,
+        board: Path,
+        epoch: str,
+        created_at: str,
+        baseline: dict[str, int],
+        clean_shutdown: Any = None,
+        index: JournalIndex | None = None,
+    ) -> None:
+        self.board = board
+        self.epoch = epoch
+        self.created_at = created_at
+        self.baseline = baseline
+        self.clean_shutdown = clean_shutdown
+        self._index = index or JournalIndex.build(epoch, baseline, [])
+        self._source: Callable[[], JournalIndex] | None = None
+
+    @property
+    def index(self) -> JournalIndex:
+        return self._source() if self._source is not None else self._index
+
+    def bind(self, source: Callable[[], JournalIndex]) -> None:
+        """Read the index from *source* (the owning project's published state) from now on."""
+        self._source = source
+
+    # The index's fields, read through the current value.
+
+    @property
+    def head_seq(self) -> int:
+        return self.index.head_seq
+
+    @property
+    def head(self) -> tuple[str, int, str | None]:
+        return self.index.head
+
+    @property
+    def head_hash(self) -> str | None:
+        return self.index.head_hash
+
+    @property
+    def line_hashes(self) -> tuple[str, ...]:
+        return self.index.line_hashes
+
+    @property
+    def line_offsets(self) -> tuple[int, ...]:
+        return self.index.line_offsets
+
+    @property
+    def end_offset(self) -> int:
+        return self.index.end_offset
+
+    @property
+    def length_history(self) -> Mapping[str, tuple[tuple[int, int | None], ...]]:
+        return self.index.length_history
+
+    @property
+    def known_lengths(self) -> Mapping[str, int]:
+        return self.index.known_lengths
+
+    def is_log(self, path: str) -> bool:
+        return self.index.is_log(path)
+
+    def length_at(self, path: str, seq: int) -> int | None:
+        return self.index.length_at(path, seq)
+
+    def hash_at(self, seq: int) -> str | None:
+        return self.index.hash_at(seq)
 
     @property
     def hosted(self) -> Path:
@@ -156,10 +323,6 @@ class Journal:
     @property
     def path(self) -> Path:
         return self.hosted / JOURNAL
-
-    @property
-    def head_hash(self) -> str | None:
-        return self.head[2]
 
     # -- creation and loading ------------------------------------------------
 
@@ -179,16 +342,17 @@ class Journal:
         return cls._from_meta(board, meta)
 
     @classmethod
-    def _from_meta(cls, board: Path, meta: dict) -> Journal:
+    def _from_meta(
+        cls, board: Path, meta: dict, lines: list[tuple[dict, bytes]] | None = None
+    ) -> Journal:
         baseline = dict(meta.get("baseline") or {})
         return cls(
             board=board,
             epoch=meta["epoch"],
             created_at=meta.get("created_at", ""),
             baseline=baseline,
-            known_lengths=dict(baseline),
             clean_shutdown=meta.get("clean_shutdown"),
-            head=(meta["epoch"], 0, None),
+            index=JournalIndex.build(meta["epoch"], baseline, lines or []),
         )
 
     @classmethod
@@ -214,7 +378,7 @@ class Journal:
         if data and not data.endswith(b"\n"):
             data = data[: data.rfind(b"\n") + 1]
             atomic_write(journal_path, data)
-        journal = cls._from_meta(board, meta)
+        lines: list[tuple[dict, bytes]] = []
         for number, raw in enumerate(data.splitlines(), start=1):
             try:
                 entry = json.loads(raw)
@@ -222,93 +386,22 @@ class Journal:
                 raise JournalError(f"{journal_path} line {number} is not JSON") from exc
             if not isinstance(entry, dict) or entry.get("seq") != number:
                 raise JournalError(f"{journal_path} line {number} has seq {entry!r:.60}")
-            journal._account(entry, raw)
-        return journal
-
-    def _account(self, entry: dict, raw: bytes) -> None:
-        self.commit(self.stage(entry, raw))
-
-    def stage(self, entry: dict, raw: bytes) -> LineDelta:
-        """Everything accepting line *entry* changes, computed without changing
-        anything (the committed-line finalizer's first half)."""
-        seq = entry["seq"]
-        if seq != self.head_seq + 1:
-            raise JournalError(f"journal line {seq} does not follow head {self.head_seq}")
-        lengths = {p: n for p, n in (entry.get("lengths") or {}).items()}
-        history: list[tuple[str, int | None]] = [
-            (path, None)
-            for path in entry.get("paths") or ()
-            if path not in lengths and self.is_log(path)
-        ]
-        history.extend(lengths.items())
-        return LineDelta(
-            seq=seq,
-            digest=line_hash(raw),
-            size=len(raw.rstrip(b"\n")) + 1,
-            history=tuple(history),
-            lengths=tuple(lengths.items()),
-        )
-
-    def commit(self, delta: LineDelta) -> None:
-        """Apply a staged line: in-memory assignments only, the head last.
-
-        Idempotent by ``seq``: a line already accounted is skipped, and anything an
-        interrupted earlier commit left past the head is dropped before applying.
-        """
-        head = self.head_seq
-        if delta.seq <= head:
-            return
-        del self.line_hashes[head:]
-        del self.line_offsets[head:]
-        for path, _length in delta.history:
-            entries = self.length_history.get(path)
-            while entries and entries[-1][0] > head:
-                entries.pop()
-            if entries == []:
-                del self.length_history[path]
-        for path, length in delta.history:
-            self.length_history.setdefault(path, []).append((delta.seq, length))
-        for path, length in delta.lengths:
-            self.known_lengths[path] = length
-        self.line_offsets.append(self.end_offset)
-        self.line_hashes.append(delta.digest)
-        self.end_offset += delta.size
-        self.head_seq = delta.seq
-        self.head = (self.epoch, delta.seq, delta.digest)
+            lines.append((entry, raw))
+        return cls._from_meta(board, meta, lines)
 
     # -- the sync path's reads (call under the work lock) -------------------
-
-    def is_log(self, path: str) -> bool:
-        """Whether *path* is an append-only log this epoch knows (baseline or ``lengths``)."""
-        return path in self.baseline or path in self.length_history
-
-    def length_at(self, path: str, seq: int) -> int | None:
-        """The log's length as of *seq*: its latest history value at or before *seq*,
-        else its ``baseline`` length. ``None``: it did not exist then, or was last
-        changed by something other than an append (no append base)."""
-        length = self.baseline.get(path)
-        for at, value in self.length_history.get(path, ()):
-            if at > seq:
-                break
-            length = value
-        return length
-
-    def hash_at(self, seq: int) -> str | None:
-        """Line *seq*'s hash (``None`` for 0 or beyond the head)."""
-        if 0 < seq <= self.head_seq:
-            return self.line_hashes[seq - 1]
-        return None
 
     def read_lines(self, after: int, upto: int | None = None) -> list[tuple[int, bytes]]:
         """``(seq, raw line without newline)`` for ``after < seq <= upto`` (default the
         head), read by offset."""
-        upto = self.head_seq if upto is None else min(upto, self.head_seq)
+        index = self.index
+        upto = index.head_seq if upto is None else min(upto, index.head_seq)
         if upto <= after:
             return []
-        start = self.line_offsets[after]
+        start = index.line_offsets[after]
         with open(self.path, "rb") as fh:
             fh.seek(start)
-            data = fh.read(self.end_offset - start)
+            data = fh.read(index.end_offset - start)
         lines = data.split(b"\n")
         return [(after + i + 1, lines[i]) for i in range(upto - after)]
 
@@ -324,9 +417,12 @@ class Journal:
         return seq, line, raw.encode("utf-8")
 
     def accept(self, line: dict, raw: bytes) -> None:
-        """Account for a line written and fsynced (the in-memory head, hash, lengths)."""
-        if line["seq"] == self.head_seq + 1:
-            self.commit(self.stage(line, raw))
+        """Account for a line written and fsynced, on a standalone journal. A bound
+        journal advances only through its project's finalizer."""
+        if self._source is not None:
+            raise RuntimeError("a project's journal advances only through its finalizer")
+        if line["seq"] == self._index.head_seq + 1:
+            self._index = self._index.advance(line, raw)
 
     def append(self, entry: dict[str, Any]) -> tuple[int, dict]:
         """Append one line outside a transaction and account for it; returns

@@ -60,7 +60,7 @@ def test_append_assigns_seq_ts_and_line_hashes(board: Path) -> None:
     assert (seq1, seq2) == (1, 2)
     assert line1["ts"].endswith("Z") and "." in line1["ts"]
     raw = (board / "hosted" / "journal.jsonl").read_bytes().splitlines()
-    assert journal.line_hashes == [line_hash(r) for r in raw]
+    assert journal.line_hashes == tuple(line_hash(r) for r in raw)
     assert journal.known_lengths["events/task_A.jsonl"] == 20
     reloaded = Journal.load(board)
     assert reloaded.head_seq == 2

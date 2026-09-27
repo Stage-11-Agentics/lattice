@@ -4,6 +4,7 @@ hashes, the manifest form, and which paths may ever be returned."""
 from __future__ import annotations
 
 import base64
+import dataclasses
 import hashlib
 import json
 import os
@@ -41,7 +42,10 @@ def test_only_synced_board_paths_are_returned(board: BoardServer) -> None:
     (lattice / "runner.log").write_text("unmanaged")
     (lattice / "locks" / "x.lock").write_text("")
     (lattice / "orchestration").mkdir()
-    board.project.manifest = syncstate.Manifest.build(lattice)
+    project = board.project
+    project._state = dataclasses.replace(
+        project._state, manifest=syncstate.Manifest.build(lattice, project.journal.head_seq)
+    )
     files = board.sync()["files"]
     assert not any(p.startswith(("reviews/", "locks/", "hosted/", "cache/")) for p in files)
     assert "runner.log" not in files
