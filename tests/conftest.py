@@ -269,3 +269,25 @@ def worktree_repo(tmp_path: Path):
         branch=branch,
         sib=sib,
     )
+
+
+# ---------------------------------------------------------------------------
+# Caller-shell isolation (LAT-296)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _strip_caller_shell_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Strip every ``LATTICE_*`` / ``C11_*`` / ``CMUX_*`` variable the shell exported.
+
+    A ``LATTICE_ROOT`` exported in the shell that runs pytest points any test
+    that relies on cwd discovery at a real board (it once let a test claim a
+    task on the live board), and ``C11_*`` makes the c11 bridge drive the
+    caller's real c11 session. Prefix matching covers variables nobody listed.
+    Tests that need one set it themselves (``CliRunner`` ``env=``, ``monkeypatch``).
+    """
+    import os
+
+    for key in list(os.environ):
+        if key.startswith(("LATTICE_", "C11_", "CMUX_")) and key != "LATTICE_NO_UPDATE_CHECK":
+            monkeypatch.delenv(key, raising=False)
