@@ -20,7 +20,7 @@ from lattice.remote import cache
 from lattice.server.testing import serve_board
 from tests.test_remote.conftest import bind, tree_hashes
 from tests.test_remote.proxies import tcp_proxy
-from tests.torture.envelope import MIB, build_envelope, durable_bytes
+from tests.torture.envelope import MIB, STARTUP_TIMEOUT, build_envelope, durable_bytes
 
 pytestmark = [pytest.mark.torture, pytest.mark.envelope, pytest.mark.timeout(900)]
 
@@ -32,7 +32,9 @@ def test_initial_sync_and_reset_at_the_supported_size_through_a_slow_link(
     source = tmp_path / "source"
     build_envelope(source, tasks=2000, hot_log_bytes=8 * MIB, total_bytes=total)
     assert durable_bytes(source / ".lattice") >= total
-    with serve_board(tmp_path / "server", source=source) as server:
+    with serve_board(
+        tmp_path / "server", source=source, startup_timeout=STARTUP_TIMEOUT
+    ) as server:
         with tcp_proxy(server.handle.port, bytes_per_second=MIB) as proxy:
             client = bind(
                 tmp_path / "client", proxy.url, server.token, monkeypatch, project=server.slug

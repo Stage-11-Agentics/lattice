@@ -16,7 +16,7 @@ from lattice.remote import cache
 from lattice.server.testing import serve_board
 from tests.test_remote.conftest import bind, record_requests, tree_hashes
 from tests.test_remote.proxies import tcp_proxy
-from tests.torture.envelope import MIB, build_envelope
+from tests.torture.envelope import MIB, STARTUP_TIMEOUT, build_envelope
 
 pytestmark = [pytest.mark.torture, pytest.mark.envelope, pytest.mark.timeout(300)]
 
@@ -30,7 +30,9 @@ def test_continuous_sync_of_a_hot_log_carries_only_appended_bytes(
     source = tmp_path / "source"
     hot = build_envelope(source, tasks=2000, hot_log_bytes=4 * MIB)
     hot_rel = f"events/{hot}.jsonl"
-    with serve_board(tmp_path / "server", source=source) as server:
+    with serve_board(
+        tmp_path / "server", source=source, startup_timeout=STARTUP_TIMEOUT
+    ) as server:
         with tcp_proxy(server.handle.port, bytes_per_second=MIB) as proxy:
             client = bind(
                 tmp_path / "client", proxy.url, server.token, monkeypatch, project=server.slug
