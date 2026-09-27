@@ -159,3 +159,22 @@ def test_a_slow_work_lock_hold_is_logged(tmp_path: Path, monkeypatch: pytest.Mon
         close(project)
     slow = [line for line in log_lines(stream) if line["event"] == "work_lock_slow"]
     assert slow and slow[0]["held_ms"] >= 100 and slow[0]["thread"], slow
+
+
+def test_a_file_changed_after_the_prehash_is_hashed_again(tmp_path: Path) -> None:
+    """The prehash runs while writes continue; the stage under the lock still
+    records every file's bytes as they are at the stage."""
+    directory = _repo(tmp_path, 50)
+    tasks = directory / ".lattice" / "tasks"
+    stager = Stager(directory)
+    try:
+        stager.stage()
+        for n in range(10):
+            (tasks / f"task_{n:05d}.json").write_text(f"first {n}\n")
+        stager.prehash()
+        (tasks / "task_00003.json").write_text("second 3\n")  # same size as "first 3"
+        (tasks / "task_00004.json").unlink()
+        (tasks / "task_99999.json").write_text("new\n")
+        assert stager.stage() == Stager(directory).stage_here()
+    finally:
+        stager.close()

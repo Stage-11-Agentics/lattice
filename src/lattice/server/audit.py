@@ -295,13 +295,23 @@ class Stager:
     def stage(self) -> str:
         """Rebuild the index from the board and return its tree id. Call with the
         board quiescent (under the project's work lock)."""
+        return self._ask(b"stage")["tree"]
+
+    def prehash(self) -> None:
+        """Hash the files changed since the last stage into the worker's cache,
+        with the board still changing (outside the work lock), so the stage
+        under the lock hashes only what changed after this. A file that changes
+        or vanishes meanwhile is simply hashed again by the stage."""
+        self._ask(b"prehash")
+
+    def _ask(self, command: bytes) -> dict[str, Any]:
         with self._lock:
             worker = self._worker
             if worker is None or worker.poll() is not None:
                 worker = self._worker = self._start_worker()
             assert worker.stdin is not None and worker.stdout is not None
             try:
-                worker.stdin.write(b"stage\n")
+                worker.stdin.write(command + b"\n")
                 worker.stdin.flush()
                 line = worker.stdout.readline()
             except OSError:
@@ -316,7 +326,7 @@ class Stager:
             if "error" in reply:
                 error = reply["error"]
                 raise GitError(error["args"], error["returncode"], error["stderr"])
-            return reply["tree"]
+            return reply
 
     def close(self) -> None:
         """End the worker (it also ends when this process does). Never waits."""
@@ -348,7 +358,22 @@ class Stager:
                 worker.wait()
 
     def stage_here(self) -> str:
-        """:meth:`stage`'s work in this process (the child runs it)."""
+        """:meth:`stage`'s work in this process (the worker runs it)."""
+        listing = self._hash_changed(settled=True)
+        index_info = b"".join(
+            b"100644 " + sha.encode() + b"\t" + os.fsencode(".lattice/" + rel) + b"\0"
+            for rel, sha in sorted(listing)
+        )
+        git(self.directory, "read-tree", "--empty")
+        git(self.directory, "update-index", "-z", "--index-info", input=index_info)
+        return git_text(self.directory, "write-tree")
+
+    def _hash_changed(self, *, settled: bool) -> list[tuple[str, str]]:
+        """Hash every file whose stat changed since it was cached; return the
+        ``(rel, sha)`` listing. Each cache key is the stat taken before hashing,
+        so a file that changes while it is hashed never matches it again.
+        Unless *settled* (the board may be changing), a failed batch is left
+        for the next call."""
         listing: list[tuple[str, str]] = []
         to_hash: list[tuple[str, Path, tuple[int, int, int, int]]] = []
         for rel, path, st in durable_files(self.board):
@@ -362,43 +387,50 @@ class Stager:
             batch = to_hash[start : start + HASH_BATCH]
             # Paths as arguments after "--": any name a POSIX file may have (a
             # newline, a leading "-") passes intact; --stdin-paths is newline-delimited.
-            out = git(
-                self.directory,
-                "hash-object",
-                "-w",
-                "--no-filters",
-                "--",
-                *(str(path) for _, path, _ in batch),
-            )
+            try:
+                out = git(
+                    self.directory,
+                    "hash-object",
+                    "-w",
+                    "--no-filters",
+                    "--",
+                    *(str(path) for _, path, _ in batch),
+                )
+            except GitError:
+                if settled:
+                    raise
+                continue
             shas = _text(out.stdout).split()
             if len(shas) != len(batch):
+                if not settled:
+                    continue
                 raise GitError(["hash-object"], 0, "hash-object returned a short listing")
             for (rel, _path, key), sha in zip(batch, shas, strict=True):
                 self._cache[rel] = (key, sha)
                 listing.append((rel, sha))
-        present = {rel for rel, _ in listing}
-        for rel in [r for r in self._cache if r not in present]:
-            del self._cache[rel]
-        index_info = b"".join(
-            b"100644 " + sha.encode() + b"\t" + os.fsencode(".lattice/" + rel) + b"\0"
-            for rel, sha in sorted(listing)
-        )
-        git(self.directory, "read-tree", "--empty")
-        git(self.directory, "update-index", "-z", "--index-info", input=index_info)
-        return git_text(self.directory, "write-tree")
+        if settled:
+            present = {rel for rel, _ in listing}
+            for rel in [r for r in self._cache if r not in present]:
+                del self._cache[rel]
+        return listing
 
 
 _STAGE_WORKER = "from lattice.server.audit import _stage_worker; _stage_worker()"
 
 
 def _stage_worker() -> None:
-    """The stage worker (``sys.argv[1]`` is the directory): each input line asks
-    for one stage and gets one JSON line back, ``{"tree"}`` or ``{"error"}`` (a
-    :class:`GitError`). It exits at end of input."""
+    """The stage worker (``sys.argv[1]`` is the directory): each input line is
+    ``stage`` or ``prehash`` and gets one JSON line back, ``{"tree"}`` (``null``
+    for a prehash) or ``{"error"}`` (a :class:`GitError`). It exits at end of
+    input."""
     stager = Stager(Path(sys.argv[1]))
-    for _request in sys.stdin.buffer:
+    for request in sys.stdin.buffer:
         try:
-            reply: dict[str, Any] = {"tree": stager.stage_here()}
+            if request.strip() == b"prehash":
+                stager._hash_changed(settled=False)
+                reply: dict[str, Any] = {"tree": None}
+            else:
+                reply = {"tree": stager.stage_here()}
         except GitError as exc:
             reply = {
                 "error": {"args": exc.git_args, "returncode": exc.returncode, "stderr": exc.stderr}
@@ -732,7 +764,13 @@ class AuditCommitter:
             self._cond.wait(remaining)
 
     def _cycle(self) -> None:
-        """Stage under the work lock, then commit outside it; requeue on failure."""
+        """Prehash, stage under the work lock, then commit outside it; requeue on
+        failure."""
+        prehash_started = time.monotonic()
+        try:
+            self.stager.prehash()
+        except Exception as exc:  # noqa: BLE001 - the stage hashes whatever this missed
+            self.log.debug("audit_prehash_failed", project=self.slug, error=redact(str(exc)))
         self.waiting_for_lock = True
         started = time.monotonic()
         try:
@@ -756,6 +794,7 @@ class AuditCommitter:
         finally:
             self.lock.release()
         timings = {
+            "prehash_ms": round((started - prehash_started) * 1000, 1),
             "lock_wait_ms": round((locked_at - started) * 1000, 1),
             "stage_ms": round((time.monotonic() - locked_at) * 1000, 1),
         }
@@ -799,8 +838,9 @@ class AuditCommitter:
         timings: dict[str, float] | None = None,
     ) -> bool:
         """Commit *tree*; ``False`` when it matches ``HEAD`` (nothing changed).
-        *timings* (the cycle's ``lock_wait_ms`` and ``stage_ms``, the time it
-        held the work lock) join ``commit_ms`` on the ``audit_commit`` line."""
+        *timings* (the cycle's ``prehash_ms``, ``lock_wait_ms``, and
+        ``stage_ms``, the time it held the work lock) join ``commit_ms`` on the
+        ``audit_commit`` line."""
         if pending is None:
             pending = _Pending(0, 0, 0, 0.0, 0.0, None)
         started = time.monotonic()
