@@ -10,7 +10,10 @@ that strict doctor refuses and import does not repair:
    field a named event touched, an ordinary event restores the value the
    task's existing snapshot file shows, with ``from`` equal to the reconciled
    value. A ``custom_fields`` key the snapshot lacks is restored to ``null``,
-   the closest state an event can reach (``field_updated`` only sets keys).
+   the closest state an event can reach (``field_updated`` only sets keys),
+   and so is a top-level field the snapshot lacks. A snapshot file that is
+   missing, not JSON, not UTF-8, or not an object is no readable snapshot:
+   the task is reconciled, nothing is restored, and the rebuild replaces it.
 2. **Short IDs outside the configured prefix**, reassigned first.
 3. **Duplicate short IDs**, then: the holder ``ids.json`` maps the ID to keeps
    it if it is a current, non-tombstoned holder; otherwise the non-tombstoned
@@ -50,13 +53,14 @@ from lattice.core.origin import origin_scope
 from lattice.core.tasks import HISTORY_RECONCILED, apply_event_to_snapshot
 from lattice.storage.integrity import (
     DoctorReport,
+    _build_rebuilt_id_index,
     _collect_task_ids,
     _historical_short_id_duplicates,
     _lifecycle_events,
     _repair_task_derived_files_unlocked,
+    _require_valid_short_ids,
     _task_file_findings,
     _task_paths,
-    _validate_authoritative_short_ids,
 )
 from lattice.storage.locks import all_task_locks
 from lattice.storage.operations import (
@@ -438,9 +442,17 @@ def _preflight(
         _lifecycle_events(planned)
     except AuthoritativeLogError as exc:
         refused.append(str(exc))
+    # The derived rebuild's index checks, exactly as it runs them, so it
+    # cannot fail once history has been appended.
+    try:
+        _build_rebuilt_id_index(
+            _load_strict_id_index(lattice_dir),
+            _require_valid_short_ids(planned, prefix),
+            max_observed_short_ids(lattice_dir),
+        )
+    except (AuthoritativeLogError, ValueError) as exc:
+        refused.append(f"after repair, the derived rebuild would fail: {exc}")
     if prefix is not None:
-        _valid, problems = _validate_authoritative_short_ids(planned, prefix)
-        refused.extend(f"after repair: {problem}" for problem in problems)
         refused.extend(
             message
             for level, message in _historical_short_id_duplicates(planned)

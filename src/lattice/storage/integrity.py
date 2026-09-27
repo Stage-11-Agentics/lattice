@@ -527,7 +527,7 @@ def _task_file_findings(
     if target["snapshot"].exists():
         try:
             snapshot_matches = target["snapshot"].read_text(encoding="utf-8") == expected_snapshot
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             snapshot_matches = False
     if not snapshot_matches:
         findings.append(
@@ -626,7 +626,7 @@ def _write_snapshot_in_place(
     expected = serialize_snapshot(authority.snapshot)
     try:
         current = target.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         current = None
     if current != expected:
         ensure_dir(target.parent)
@@ -732,14 +732,18 @@ def check_board(lattice_dir: Path, *, fix: bool = False) -> DoctorReport:
                         }
                     )
             elif jf.parent.name in ("tasks",) and jf.suffix == ".json":
-                snapshots[jf.stem] = data
+                # A snapshot that is not an object is an unusable cache: the
+                # snapshot checks skip it, and authority replaces it below.
+                if isinstance(data, dict):
+                    snapshots[jf.stem] = data
                 known_task_ids.add(jf.stem)
             elif jf.parent.parent.name == "archive" and jf.parent.name == "tasks":
-                snapshots[jf.stem] = data
+                if isinstance(data, dict):
+                    snapshots[jf.stem] = data
                 known_task_ids.add(jf.stem)
             elif jf.parent.name == "meta":
                 known_artifact_ids.add(jf.stem)
-        except json.JSONDecodeError as e:
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
             json_ok = False
             findings.append(
                 {

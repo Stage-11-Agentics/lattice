@@ -293,6 +293,23 @@ def test_unsupported_error_blocks_history_appends(fixture) -> None:
     assert board.logs() == before
 
 
+def test_refuses_when_the_derived_rebuild_would_fail(fixture) -> None:
+    """An ids.json key the rebuild cannot parse refuses before any append."""
+    board, t = fixture
+    index = json.loads((board.lattice / "ids.json").read_text())
+    index["map"]["BAD!-2"] = t["back"]
+    (board.lattice / "ids.json").write_text(json.dumps(index))
+    before = board.logs()
+    touched: list[tuple[Path, str]] = []
+    with recording(lambda path, kind: touched.append((path, kind))):
+        result = fix(board.root)
+    assert result.exit_code == 1
+    assert "History repair appends nothing" in result.output
+    assert "derived rebuild would fail" in result.output and "BAD!-2" in result.output
+    assert not [kind for path, kind in touched if kind == "append"]
+    assert board.logs() == before
+
+
 def test_refuses_stale_history_with_divergent_plan_same_task(fixture) -> None:
     board, t = fixture
     task_id = t["back"]
@@ -392,7 +409,7 @@ def test_list_field_restore(tmp_path: Path) -> None:
     assert authority(board, task_id).snapshot["tags"] == ["b", "c"]
 
 
-@pytest.mark.parametrize("snapshot", ["missing", "brace"])
+@pytest.mark.parametrize("snapshot", ["missing", "brace", "null", "list", "invalid_utf8"])
 def test_unreadable_snapshot(tmp_path: Path, snapshot: str) -> None:
     """No readable snapshot file: reconcile, restore nothing, rebuild the snapshot."""
     board = DamagedBoard(tmp_path)
@@ -402,7 +419,14 @@ def test_unreadable_snapshot(tmp_path: Path, snapshot: str) -> None:
     if snapshot == "missing":
         path.unlink()
     else:
-        path.write_text("{")
+        path.write_bytes(
+            {"brace": b"{", "null": b"null\n", "list": b"[1]\n", "invalid_utf8": b'{"\xff": 1}'}[
+                snapshot
+            ]
+        )
+    data, code = run_json(tmp_path, "doctor")
+    assert code == 1  # the stale history, not a crash
+    assert any(f.get("check") == "authoritative_log" for f in data["data"]["findings"])
     board.ids_map = {"LAT-1": task_id}
     board.next_seq = 2
     board.write_ids()
