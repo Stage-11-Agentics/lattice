@@ -34,7 +34,6 @@ through it.
 from __future__ import annotations
 
 import contextlib
-import errno
 import json
 import os
 from collections.abc import Callable, Iterator
@@ -43,11 +42,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from lattice.remote import cache_paths
+
 ACKED_FILE = "acked.jsonl"
 LOCK_FILE = "acked.lock"
 RETENTION_DAYS = 90
-#: ``.lattice/`` and ``cache/`` are owner-only and writable (SPEC §9.4).
-PRIVATE_DIR_MODE = 0o700
 
 
 def _now() -> datetime:
@@ -68,58 +67,22 @@ def _parse(stamp: Any) -> datetime | None:
         return None
 
 
-_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
-
-
-def _private_dir(name: str, parent_fd: int, path: Path) -> int:
-    """Open *name* under *parent_fd* as a real directory, creating it where
-    missing, and set it to 0700 whatever the umask (an existing ``.lattice/``
-    may be a fresh clone's runtime leftovers, SPEC §9.3, made with a looser
-    mode). A symlink or a non-directory there is refused unchanged."""
-    with contextlib.suppress(FileExistsError):
-        os.mkdir(name, PRIVATE_DIR_MODE, dir_fd=parent_fd)
-    try:
-        fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | _NOFOLLOW, dir_fd=parent_fd)
-    except OSError as exc:
-        if exc.errno in (errno.ELOOP, errno.ENOTDIR):
-            raise NotADirectoryError(
-                errno.ENOTDIR,
-                "not a real directory (a symlink or a file); left untouched",
-                str(path),
-            ) from exc
-        raise
-    try:
-        os.fchmod(fd, PRIVATE_DIR_MODE)
-    except BaseException:
-        os.close(fd)
-        raise
-    return fd
-
-
 @contextlib.contextmanager
 def _locked(cache_dir: Path) -> Iterator[int]:
-    """Hold ``acked.lock``; yields a descriptor of *cache_dir* (``.lattice/cache``),
-    through which the ledger is written."""
+    """Hold ``acked.lock``; yields a descriptor of *cache_dir* (``.lattice/cache``,
+    each component a real directory, made 0700), through which the ledger is
+    written (:mod:`lattice.remote.cache_paths`)."""
     import fcntl
 
-    root_fd = os.open(cache_dir.parent.parent, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        lattice_fd = _private_dir(cache_dir.parent.name, root_fd, cache_dir.parent)
-    finally:
-        os.close(root_fd)
-    try:
-        dir_fd = _private_dir(cache_dir.name, lattice_fd, cache_dir)
-    finally:
-        os.close(lattice_fd)
-    try:
-        fd = os.open(LOCK_FILE, os.O_RDWR | os.O_CREAT | _NOFOLLOW, 0o600, dir_fd=dir_fd)
+    base = cache_dir.parent.parent
+    with cache_paths.opened_dir(base, cache_dir.parent.name, cache_dir.name) as dir_fd:
+        flags = os.O_RDWR | os.O_CREAT | cache_paths.NOFOLLOW
+        fd = os.open(LOCK_FILE, flags, 0o600, dir_fd=dir_fd)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
             yield dir_fd
         finally:
             os.close(fd)  # releases the flock
-    finally:
-        os.close(dir_fd)
 
 
 def record(cache_dir: Path, *, op_id: str, project: str, epoch: str | None, seq: Any) -> None:
@@ -133,7 +96,7 @@ def record(cache_dir: Path, *, op_id: str, project: str, epoch: str | None, seq:
     }
     data = (json.dumps(line, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
     with _locked(cache_dir) as dir_fd:
-        flags = os.O_RDWR | os.O_APPEND | os.O_CREAT | _NOFOLLOW
+        flags = os.O_RDWR | os.O_APPEND | os.O_CREAT | cache_paths.NOFOLLOW
         fd = os.open(ACKED_FILE, flags, 0o600, dir_fd=dir_fd)
         try:
             _cut_torn_tail(fd)
@@ -254,14 +217,4 @@ def _rewrite(dir_fd: int, lines: list[dict]) -> None:
         if not lines:
             return
     body = "".join(json.dumps(x, sort_keys=True, separators=(",", ":")) + "\n" for x in lines)
-    tmp = f".{ACKED_FILE}.{os.getpid()}.tmp"
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _NOFOLLOW
-    fd = os.open(tmp, flags, 0o600, dir_fd=dir_fd)
-    try:
-        view = memoryview(body.encode("utf-8"))
-        while view:
-            view = view[os.write(fd, view) :]
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-    os.replace(tmp, ACKED_FILE, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    cache_paths.write_file(dir_fd, ACKED_FILE, body.encode("utf-8"))

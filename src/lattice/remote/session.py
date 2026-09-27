@@ -29,12 +29,14 @@ import json
 import os
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any, TextIO
 
 from lattice.core.errors import OpError
+from lattice.remote import cache_paths
 from lattice.remote.binding import Hosted
+from lattice.storage.fs import LATTICE_DIR
 
 UNREACHABLE_WINDOW_SECONDS = 15.0
 UNREACHABLE_FILE = "unreachable_until"
@@ -98,23 +100,35 @@ def in_unreachable_window(hosted: Hosted) -> bool:
     return time.time() < until
 
 
-def open_unreachable_window(hosted: Hosted) -> None:
-    path = _window_path(hosted)
-    if not path.parent.is_dir():
-        return
-    key = hosted.root.resolve()
-    if key not in _window_before:
-        try:
-            _window_before[key] = path.read_bytes()
-        except OSError:
-            _window_before[key] = None
-    tmp = path.with_name(f".{UNREACHABLE_FILE}.{os.getpid()}.tmp")
+@contextlib.contextmanager
+def _existing_cache_dir(hosted: Hosted) -> Iterator[int | None]:
+    """A descriptor of an existing ``cache/`` (never followed, SPEC §9.4), or
+    ``None`` when there is none or it is not a real directory: the offline window
+    and the server info are best effort."""
     try:
-        tmp.write_text(f"{time.time() + UNREACHABLE_WINDOW_SECONDS:.3f}\n", encoding="utf-8")
-        os.replace(tmp, path)
+        fd = cache_paths.open_dir(hosted.root, LATTICE_DIR, "cache", create=False)
     except OSError:
+        yield None
+        return
+    try:
+        yield fd
+    finally:
+        os.close(fd)
+
+
+def open_unreachable_window(hosted: Hosted) -> None:
+    with _existing_cache_dir(hosted) as fd:
+        if fd is None:
+            return
+        key = hosted.root.resolve()
+        if key not in _window_before:
+            try:
+                _window_before[key] = cache_paths.read_file(fd, UNREACHABLE_FILE)
+            except OSError:
+                _window_before[key] = None
         with contextlib.suppress(OSError):
-            tmp.unlink()
+            until = f"{time.time() + UNREACHABLE_WINDOW_SECONDS:.3f}\n"
+            cache_paths.write_file(fd, UNREACHABLE_FILE, until.encode("utf-8"))
 
 
 def restore_unreachable_window(hosted: Hosted) -> None:
@@ -127,20 +141,20 @@ def restore_unreachable_window(hosted: Hosted) -> None:
     if key not in _window_before:
         return
     before = _window_before.pop(key)
-    path = _window_path(hosted)
-    with contextlib.suppress(OSError):
+    with _existing_cache_dir(hosted) as fd, contextlib.suppress(OSError):
+        if fd is None:
+            return
         if before is None:
-            path.unlink()
+            cache_paths.remove_file(fd, UNREACHABLE_FILE)
         else:
-            tmp = path.with_name(f".{UNREACHABLE_FILE}.{os.getpid()}.tmp")
-            tmp.write_bytes(before)
-            os.replace(tmp, path)
+            cache_paths.write_file(fd, UNREACHABLE_FILE, before)
 
 
 def close_unreachable_window(hosted: Hosted) -> None:
     """Any successful request to the server ends the offline window."""
-    with contextlib.suppress(OSError):
-        _window_path(hosted).unlink()
+    with _existing_cache_dir(hosted) as fd, contextlib.suppress(OSError):
+        if fd is not None:
+            cache_paths.remove_file(fd, UNREACHABLE_FILE)
 
 
 # ---------------------------------------------------------------------------
@@ -231,7 +245,7 @@ def _sync_in_progress(hosted: Hosted) -> bool:
 
     path = hosted.lattice_dir / "locks" / "cache_sync.lock"
     try:
-        fd = os.open(path, os.O_RDWR)
+        fd = os.open(path, os.O_RDWR | cache_paths.NOFOLLOW)
     except OSError:
         return False
     try:
@@ -331,15 +345,10 @@ def refresh_server_info(hosted: Hosted, *, force: bool = False) -> dict:
         "min_client_version": data.get("min_client_version"),
         "event_types": sorted(t for t in data.get("event_types") or [] if isinstance(t, str)),
     }
-    path = _cache_dir(hosted) / SERVER_INFO_FILE
-    if path.parent.is_dir():
-        tmp = path.with_name(f".{SERVER_INFO_FILE}.{os.getpid()}.tmp")
-        try:
-            tmp.write_text(json.dumps(info, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-            os.replace(tmp, path)
-        except OSError:
-            with contextlib.suppress(OSError):
-                tmp.unlink()
+    with _existing_cache_dir(hosted) as fd, contextlib.suppress(OSError):
+        if fd is not None:
+            text = json.dumps(info, sort_keys=True, indent=2) + "\n"
+            cache_paths.write_file(fd, SERVER_INFO_FILE, text.encode("utf-8"))
     return info
 
 

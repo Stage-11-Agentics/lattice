@@ -59,8 +59,11 @@ RAW_WRITERS: dict[str, str] = {
     "lattice.remote.cache": "cache control (SPEC §6.1): cache/incoming staging, cache/rescued, "
     "cache/applying, cache/unreachable_until",
     "lattice.remote.acked": "cache/acked.jsonl and its lock (cache control, SPEC §6.1, §9.2)",
+    "lattice.remote.cache_paths": "the client's own directories under a hosted .lattice/ "
+    "(cache/, runtime) and files in them, never through a symlink (SPEC §6.1, §9.4)",
     "lattice.remote.config": "remotes.json in the user's config dir",
-    "lattice.remote.session": "cache/unreachable_until and cache/acked.jsonl (cache control)",
+    "lattice.remote.session": "opens locks/cache_sync.lock to probe it (runtime); its cache "
+    "files go through lattice.remote.cache_paths",
     "lattice.server.control": "control requests under hosted/control (server control)",
     "lattice.server.journal": "the journal under hosted/ (server control)",
     "lattice.server.transactions": "undo logs and receipts under hosted/ (server control)",
@@ -90,8 +93,6 @@ BOARD_OWNERS: dict[str, str] = {
     "staging board (SPEC §11)",
     "lattice.server.tokens": "tokens.json in the server root, outside any board (SPEC §8.3)",
     "lattice.remote.cache": "the cache syncer, the only writer of a cache (SPEC §6.2, §9.4)",
-    "lattice.remote.follower": "the follower's cache/follower.json (cache control, SPEC §6.1, "
-    "§9.6)",
     "lattice.server.testing": "test helper: a server project built from a fixture board, as "
     "the owning server's import would (SPEC §11)",
     "lattice.cli.main": "init and its example tasks (LOCAL_ONLY, SPEC §3.5)",

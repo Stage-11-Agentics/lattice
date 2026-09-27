@@ -12,7 +12,10 @@ whether that root is **hosted**:
    adopted as an empty cache; the first sync fills it.
 
 A binding beside a local board, or a marker naming another remote or project
-than the binding, is ``BINDING_CONFLICT``. Everything else is a local board.
+than the binding, is ``BINDING_CONFLICT``, and so is a bound or marked root whose
+``.lattice`` or ``.lattice/cache`` is a symlink or not a directory (a clone can
+commit one): the client never writes through it (``lattice.remote.cache_paths``).
+Everything else is a local board.
 """
 
 from __future__ import annotations
@@ -91,10 +94,15 @@ def holds_local_board(root: Path) -> bool:
 
 def classify(root: Path) -> Hosted | None:
     """The hosted identity of *root* (a ``find_root`` result), or ``None`` for a
-    local board. Raises ``BINDING_CONFLICT`` for the two cases §9.3 names."""
+    local board. Raises ``BINDING_CONFLICT`` for the two cases §9.3 names, and
+    for a bound or marked root whose cache is not a real directory."""
+    from lattice.remote.cache_paths import require_safe_layout
+
     root = Path(root)
     binding_path = root / BINDING_FILE
     marker = marker_identity(root)
+    if marker is not None or binding_path.is_file():
+        require_safe_layout(root)
     if marker is not None:
         binding = read_binding(root) if binding_path.is_file() else None
         if binding is not None and binding != marker:
