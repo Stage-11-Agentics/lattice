@@ -55,6 +55,9 @@ def _run(is_json: bool, fn: Callable[[], Any], render: Callable[[Any], str]) -> 
         _hosted_platform()
         data = fn()
     except OpError as exc:
+        if is_json and exc.details:
+            click.echo(json_envelope(False, error=exc.to_dict()))
+            raise SystemExit(1) from None
         output_error(exc.message, exc.code, is_json)
     if is_json:
         click.echo(json_envelope(True, data=data), nl=False)
@@ -172,6 +175,70 @@ def project_create(
         )
 
     _run(is_json, action, lambda d: f"Created project {d['slug']} at {d['path']}.")
+
+
+@project_group.command("import")
+@click.argument("slug")
+@click.option(
+    "--from",
+    "source",
+    required=True,
+    type=click.Path(file_okay=True, dir_okay=True, path_type=Path),
+    help="The directory that holds the board's .lattice/ (a copy of it, writers stopped).",
+)
+@_root_option
+@_json_option
+def project_import(slug: str, source: Path, root: str | None, is_json: bool) -> None:
+    """Import a local board as a new project; the source is never modified.
+
+    Refuses a board that fails lattice doctor, a symbolic link or special file
+    under a durable path, and an existing slug. Prints the paths it does not
+    copy, the non-canonical plan and notes files it does copy, and the steps
+    that finish the move.
+    """
+    from lattice.server.importer import import_project
+
+    def render(data: dict) -> str:
+        summary = data["doctor"]["summary"]
+        clean = (
+            "doctor clean"
+            if not summary["warnings"]
+            else (
+                f"doctor passed with {summary['warnings']} warning"
+                f"{'' if summary['warnings'] == 1 else 's'}"
+            )
+        )
+        lines = [
+            f"Imported {data['slug']} from {data['source']} into {data['path']}: "
+            f"{data['copied']} files copied, {clean}. Journal epoch {data['epoch']}, head 0."
+        ]
+        lines += [f"  {f['level']}: {f['message']}" for f in data["doctor"]["findings"]]
+        lines.append("")
+        if data["not_copied"]:
+            lines.append(f"Not copied ({len(data['not_copied'])}; they stay in the old board):")
+            lines += [f"  {row['path']}  ({row['class']})" for row in data["not_copied"]]
+        else:
+            lines.append("Not copied: nothing.")
+        if data["non_canonical"]:
+            lines.append(
+                f"Copied, not a task's plan or notes file ({len(data['non_canonical'])}):"
+            )
+            lines += [f"  {path}" for path in data["non_canonical"]]
+        else:
+            lines.append("Copied, not a task's plan or notes file: none.")
+        if not data["project_code"]:
+            lines.append(
+                "This board has no project code. To give it one, run "
+                "'lattice set-project-code CODE' on a bound checkout after the move."
+            )
+        lines.append("")
+        lines.append("To finish the move:")
+        for step in data["move_steps"]:
+            lines.append(f"  {step['step']}. {step['text']}")
+            lines += [f"       {command}" for command in step["commands"]]
+        return "\n".join(lines)
+
+    _run(is_json, lambda: import_project(_root(root), slug, source.absolute()), render)
 
 
 @project_group.command("list")

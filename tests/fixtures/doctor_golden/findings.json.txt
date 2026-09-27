@@ -1,0 +1,83 @@
+exit=1
+{
+  "data": {
+    "findings": [
+      {
+        "check": "jsonl_parse",
+        "level": "error",
+        "message": "Invalid JSON at line 2 in <task:1>.jsonl",
+        "task_id": "<task:1>"
+      },
+      {
+        "check": "jsonl_parse",
+        "level": "warning",
+        "message": "Truncated final line in <task:2>.jsonl",
+        "task_id": "<task:2>"
+      },
+      {
+        "check": "snapshot_drift",
+        "level": "warning",
+        "message": "Snapshot drift: <task:3> differs from full authoritative replay (even if last_event_id matches). Run lattice rebuild.",
+        "task_id": "<task:3>"
+      },
+      {
+        "check": "authoritative_log",
+        "level": "error",
+        "message": "Authoritative log error for <task:1>: <SRC>/.lattice/events/<task:1>.jsonl: invalid JSONL record: Expecting property name enclosed in double quotes: line 1 column 2 (char 1) (line 2). Rebuild will refuse to overwrite data; manual recovery is required.",
+        "task_id": "<task:1>"
+      },
+      {
+        "check": "snapshot_drift",
+        "level": "warning",
+        "message": "Snapshot drift: <task:4> differs from full authoritative replay (even if last_event_id matches). Run lattice rebuild.",
+        "task_id": "<task:4>"
+      },
+      {
+        "check": "global_log_consistency",
+        "level": "warning",
+        "message": "Lifecycle event <ev:5> (task_created) for <task:3> missing from _lifecycle.jsonl",
+        "task_id": "<task:3>"
+      },
+      {
+        "check": "alias_integrity",
+        "level": "warning",
+        "message": "ids.json maps INT-2 to a task without valid authority (<task:1>); run lattice rebuild --all after recovery",
+        "task_id": "<task:1>"
+      },
+      {
+        "check": "alias_integrity",
+        "level": "warning",
+        "message": "ids.json maps INT-3 to a task without valid authority (<task:2>); run lattice rebuild --all after recovery",
+        "task_id": "<task:2>"
+      },
+      {
+        "check": "alias_integrity",
+        "level": "warning",
+        "message": "ids.json maps INT-99 to a task without valid authority (<task:6>); run lattice rebuild --all after recovery",
+        "task_id": "<task:6>"
+      },
+      {
+        "check": "alias_integrity",
+        "level": "warning",
+        "message": "next_seqs['INT'] (3) is at or below the max short-ID seq in the event logs (30); run lattice rebuild --all",
+        "task_id": null
+      },
+      {
+        "check": "missing_task_file",
+        "level": "error",
+        "message": "Task <task:6> is referenced by ids.json but its event log is missing (events/<task:6>.jsonl)",
+        "task_id": "<task:6>"
+      }
+    ],
+    "summary": {
+      "artifacts": 0,
+      "errors": 3,
+      "events": 7,
+      "resources": 1,
+      "tasks": 4,
+      "warnings": 8
+    }
+  },
+  "ok": true
+}
+

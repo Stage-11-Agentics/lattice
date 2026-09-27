@@ -195,14 +195,14 @@ def test_an_apply_waits_for_the_whole_doctor_scan(
     import threading
     import time
 
-    from lattice.cli import integrity_cmds
+    from lattice.storage import integrity
 
     task = create_task(server)
     cache.catch_up(client)
     marks: list[str] = []
     monkeypatch.setattr(cache, "_seam", marks.append)
     started: list[threading.Thread] = []
-    real = integrity_cmds._collect_task_files
+    real = integrity._collect_task_files
 
     def enumerate_then_race(lattice_dir: Path) -> list[Path]:
         files = real(lattice_dir)
@@ -215,7 +215,7 @@ def test_an_apply_waits_for_the_whole_doctor_scan(
             assert "applying_written" not in marks  # the apply waits for doctor
         return files
 
-    monkeypatch.setattr(integrity_cmds, "_collect_task_files", enumerate_then_race)
+    monkeypatch.setattr(integrity, "_collect_task_files", enumerate_then_race)
     result = _doctor(client, "--json")
     started[0].join(5)
     assert result.exit_code == 0, result.output
