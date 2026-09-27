@@ -25,7 +25,6 @@ from click.testing import CliRunner, Result
 
 from lattice.server import tokens
 from lattice.server.testing import ServerHandle, make_root, running_server
-from tests.test_remote import sync_shim
 
 REMOTE = "team"
 PROJECT = "demo"
@@ -114,7 +113,6 @@ class HostedEnv:
 
     def start(self) -> None:
         self.handle = self._stack.enter_context(running_server(self.server_root))
-        sync_shim.install(self.handle.app)
         self.write_remote()
 
     def stop(self) -> None:

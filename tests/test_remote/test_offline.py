@@ -20,7 +20,6 @@ import pytest
 
 from lattice.core.errors import OpError
 from lattice.remote import cache
-from tests.test_remote import sync_shim
 from tests.test_remote.hosted import HostedEnv, make_repo, run_cli, tree_hash
 
 WINDOW = Path(".lattice/cache/unreachable_until")
@@ -139,10 +138,13 @@ def test_stopped_server_opens_the_window(hosted_env: HostedEnv, repo: Path) -> N
 def test_busy_server_prints_the_busy_line(
     hosted_env: HostedEnv, repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def busy(project: object, query: dict) -> dict:
+    from lattice.server import app as server_app
+
+    def busy(*args: object, **kwargs: object) -> dict:
         raise OpError("BOARD_BUSY", "project demo is busy; retry shortly.")
 
-    monkeypatch.setattr(sync_shim, "assemble", busy)
+    # The checkout is at the head, so the server answers from its fast path.
+    monkeypatch.setattr(server_app, "fast_path_body", busy)
     result = run_cli(repo, "show", "DEM-1")
     assert result.exit_code == 0, result.output
     notices = _notices(result.stderr)
