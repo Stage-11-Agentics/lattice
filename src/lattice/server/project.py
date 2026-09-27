@@ -328,7 +328,7 @@ class Project:
         self.floors = ShortIdFloors.from_board(board)
         # SPEC §8.7 step 8: the sync path's state (line hashes and length history
         # live in the journal; the manifest is hashed here, once).
-        self.manifest = Manifest.build(board)
+        self.manifest = Manifest.build(board, journal.head_seq)
         self.broadcaster.announce(journal.epoch, journal.head_seq)
         ensure_dir(board / HOSTED_DIR / control.CONTROL_DIR)
         self.remember_watched()
@@ -610,24 +610,36 @@ class Project:
         offset, each log's length history, the manifest entries of its ``paths``,
         the short-ID floors, and the watched-file baselines (SPEC §8.6 step 6).
 
-        The one finalizer for transactions and ``external`` entries. Idempotent: a
-        line already accounted is skipped. The manifest changes are staged first
-        (reading files, changing nothing), then everything is swapped in with no
-        I/O, so a failure leaves memory exactly as it was; callers quarantine.
+        The one finalizer for transactions and ``external`` entries. Every fallible
+        step comes first and changes nothing live: the journal's changes are
+        staged, then the manifest's (which reads files). Only then are both
+        committed, by in-memory assignments. Each component is idempotent by
+        ``seq``, so running this again after any failure completes it; callers
+        quarantine the project on failure (plan-review resolution 2).
         """
-        journal = self.journal
-        if journal is None or self.manifest is None:
+        journal, manifest = self.journal, self.manifest
+        if journal is None or manifest is None:
             raise RuntimeError(f"project {self.slug} is not loaded")
         seq = line["seq"]
-        if seq <= journal.head_seq:
+        if journal.head_seq >= seq and manifest.seq >= seq:
             return
-        if seq != journal.head_seq + 1:
-            raise RuntimeError(f"journal line {seq} follows head {journal.head_seq}")
+        if journal.head_seq not in (seq - 1, seq) or manifest.seq not in (seq - 1, seq):
+            raise RuntimeError(
+                f"journal line {seq} does not follow head {journal.head_seq} "
+                f"(manifest at {manifest.seq})"
+            )
         paths = [p for p in line.get("paths") or () if isinstance(p, str)]
-        staged = self.manifest.stage(self.board, paths, frozenset(line.get("lengths") or ()))
+        delta = journal.stage(line, raw) if journal.head_seq < seq else None
         transactions._fault("finish.memory", seq=seq)
-        journal.accept(line, raw)
-        self.manifest.apply(staged)
+        staged = None
+        if manifest.seq < seq:
+            staged = manifest.stage(self.board, paths, frozenset(line.get("lengths") or ()))
+        transactions._fault("finish.memory.manifest", seq=seq)
+        # Commit: assignments only, from here to the end.
+        if delta is not None:
+            journal.commit(delta)
+        if staged is not None:
+            manifest.apply(staged, seq)
         self.floors.observe_events(list(events))
         self.remember_watched(paths)
 

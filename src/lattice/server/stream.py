@@ -39,7 +39,11 @@ from typing import Any
 import anyio
 from starlette.types import Receive, Scope, Send
 
-JOURNAL, RESET, CLOSE = "journal", "reset", "close"
+JOURNAL, RESET = "journal", "reset"
+
+#: The scope key under which :class:`~lattice.server.app.HeadersMiddleware` keeps the
+#: server's own ``send``, so an aborted stream can abort its connection.
+RAW_SEND = "lattice.raw_send"
 
 
 def frame(event: str, data: Any, event_id: str | None = None) -> bytes:
@@ -87,8 +91,9 @@ class Subscriber:
         self.loop = loop
         self.max_entries = max(1, max_entries)
         self.wake = asyncio.Event()
+        #: The stream is ending at once: its queue filled, or it was aborted.
+        self.aborted = False
         self.overflowed = False
-        self.closed = False
         self._lock = threading.Lock()
         self._items: deque[tuple[str, int, bytes]] = deque()
         self._abort: Callable[[], None] | None = None
@@ -101,27 +106,26 @@ class Subscriber:
 
     def offer(self, item: tuple[str, int, bytes]) -> bool:
         """Queue *item* without blocking; ``False`` when this subscriber is gone
-        (a full queue disconnects it)."""
+        (a full queue ends it at once)."""
         with self._lock:
-            if self.closed:
+            if self.aborted:
                 return False
-            if len(self._items) >= self.max_entries:
-                self.overflowed = self.closed = True
-                self._items.clear()
-                full = True
-            else:
+            if len(self._items) < self.max_entries:
                 self._items.append(item)
-                full = False
-        self._call(self._do_abort if full else self.wake.set)
-        return not full
+                self._call(self.wake.set)
+                return True
+            self.overflowed = True
+        self.abort()
+        return False
 
-    def close(self) -> None:
-        """End the stream gracefully once what is queued has been sent."""
+    def abort(self) -> None:
+        """End the stream at once, even while its pump waits on a ``send`` a stalled
+        client never drains: the pump is cancelled and the connection aborted
+        (server shutdown, a failed publication, a quarantine, a full queue)."""
         with self._lock:
-            if self.closed:
-                return
-            self._items.append((CLOSE, 0, b""))
-        self._call(self.wake.set)
+            self.aborted = True
+            self._items.clear()
+        self._call(self._do_abort)
 
     def take(self) -> list[tuple[str, int, bytes]]:
         with self._lock:
@@ -132,7 +136,7 @@ class Subscriber:
     def attach_abort(self, abort: Callable[[], None]) -> None:
         """Called on the loop by the response once its pump runs."""
         self._abort = abort
-        if self.overflowed:
+        if self.aborted:
             abort()
 
     def _do_abort(self) -> None:
@@ -207,10 +211,11 @@ class Broadcaster:
                         self.overflows += 1
 
     def close_all(self) -> None:
+        """End every open stream at once (followers resume from ``Last-Event-ID``)."""
         with self._lock:
             subscribers, self._subscribers = self._subscribers, []
         for subscriber in subscribers:
-            subscriber.close()
+            subscriber.abort()
 
 
 # ---------------------------------------------------------------------------
@@ -273,12 +278,11 @@ class EventStream:
                 group.start_soon(self._watch_disconnect, receive, group.cancel_scope)
                 await self._pump(send)
                 group.cancel_scope.cancel()
-            if sub.overflowed:
-                self.outcome = "overflow"
-            if self.outcome in ("closed", "ended"):
+            if sub.aborted:
+                self.outcome = "overflow" if sub.overflowed else "aborted"
+                _abort_connection(scope)
+            elif self.outcome == "ended":
                 await send({"type": "http.response.body", "body": b"", "more_body": False})
-            # Otherwise (overflow, client gone) return with the response unfinished:
-            # uvicorn closes the transport.
         except OSError:
             self.outcome = "disconnected"
         finally:
@@ -296,11 +300,8 @@ class EventStream:
         await send({"type": "http.response.body", "body": data, "more_body": True})
 
     async def _deliver(self, send: Send, items: list[tuple[str, int, bytes]]) -> bool:
-        """Send queued messages; ``False`` once a close message ends the stream."""
+        """Send queued messages."""
         for kind, seq, data in items:
-            if kind == CLOSE:
-                self.outcome = "closed"
-                return False
             if kind == JOURNAL:
                 if seq <= self.sent_seq:
                     continue  # already delivered by the replay
@@ -340,10 +341,21 @@ class EventStream:
             sub.wake.clear()
             items = sub.take()
             if not items:
-                if sub.overflowed:
+                if sub.aborted:
                     return
                 with anyio.move_on_after(max(0.0, next_beat - time.monotonic())):
                     await sub.wake.wait()
                 continue
             if not await self._deliver(send, items):
                 return
+
+
+def _abort_connection(scope: Scope) -> None:
+    """Abort the connection under an unfinished stream. Closing it would wait to
+    flush bytes a stalled client never reads, and uvicorn's graceful shutdown
+    waits for every connection to close."""
+    owner = getattr(scope.get(RAW_SEND), "__self__", None)
+    transport = getattr(owner, "transport", None)
+    abort = getattr(transport, "abort", None)
+    if callable(abort):
+        abort()

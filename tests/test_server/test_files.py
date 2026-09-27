@@ -88,3 +88,19 @@ def test_a_symlink_out_of_the_board_is_not_followed(board: BoardServer, tmp_path
 def test_a_directory_is_not_a_file(board: BoardServer) -> None:
     status, _ = board.file("events")
     assert status == 404
+
+
+def test_a_pinned_fetch_of_a_file_that_moved_away_is_stale(board: BoardServer) -> None:
+    """Review round 1, finding 3: sync, archive, then fetch the old href → 412, so the
+    client syncs again instead of failing its catch-up."""
+    task = board.op("task.create", {"title": "t"})["task"]["id"]
+    body = board.sync()
+    snapshot = body["files"][f"tasks/{task}.json"]
+    board.op("task.archive", {"task": task})
+    href = f"/v1/projects/demo/files/tasks/{task}.json?sha256={snapshot['sha256']}"
+    status, data = board.file_href(href)
+    assert status == 412 and b'"STALE_VERSION"' in data
+    status, _ = board.file(f"tasks/{task}.json")  # unpinned: simply not found
+    assert status == 404
+    status, _ = board.file(f"archive/tasks/{task}.json", snapshot["sha256"])
+    assert status in (200, 412)  # the archived copy: same bytes or a newer snapshot

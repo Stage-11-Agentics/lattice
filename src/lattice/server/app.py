@@ -70,6 +70,7 @@ from lattice.server.protocol import (
 )
 from lattice.server.registry import ProjectRegistry, WorkerCrash, in_worker
 from lattice.server.stream import (
+    RAW_SEND,
     EventStream,
     Subscriber,
     journal_frame,
@@ -170,6 +171,7 @@ class HeadersMiddleware:
             await self.app(scope, receive, send)
             return
         started = time.monotonic()
+        scope[RAW_SEND] = send  # an aborted stream aborts its connection through it
         path = scope.get("path", "")
         fields = scope.setdefault("state", {}).setdefault("log", {})
         status_holder = {"status": 500}

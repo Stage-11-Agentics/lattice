@@ -130,3 +130,40 @@ def test_a_resume_point_past_the_replay_threshold_gets_reset(board: BoardServer)
     with board.stream(last_event_id=near) as reader:
         seqs = [reader.next_of("journal").data["seq"] for _ in range(5)]
         assert seqs == list(range(head - 4, head + 1))
+
+
+def test_an_abort_ends_a_stream_blocked_in_send_and_releases_its_connection(
+    tmp_path: Path,
+) -> None:
+    """Review round 1, finding 2: shutdown (and a failed publication or quarantine)
+    ends a stream at once, even while its pump waits on a send a stalled client
+    never drains, and aborts the connection so uvicorn's graceful shutdown has
+    nothing to wait for."""
+    with serve_board(tmp_path, heartbeat_seconds=HEARTBEAT) as board:
+        task = board.op("task.create", {"title": "t"})["task"]["id"]
+        stalled = stalled_stream(board)
+        project = board.project
+        assert wait_for(lambda: project.broadcaster.count() == 1)
+        subscriber = project.broadcaster._subscribers[0]
+        payload = json.dumps({"blob": "x" * 60_000})
+        for _ in range(120):
+            board.op("task.event", {"task": task, "event_type": "x_blob", "data": payload})
+            if len(subscriber._items) >= 3:
+                break
+        # Entries stay queued: the pump is blocked sending to the stalled client.
+        assert wait_for(lambda: len(subscriber._items) >= 3, timeout=2)
+        connections = board.handle._server.server_state.connections
+        before = len(connections)
+        started = time.monotonic()
+        board.handle.state.registry.close_all_streams()
+        assert wait_for(lambda: len(connections) < before, timeout=2)
+        assert time.monotonic() - started < 1.0
+        assert project.broadcaster.count() == 0
+        # The client sees its connection end once it reads what was already sent.
+        stalled.settimeout(5)
+        try:
+            while stalled.recv(1 << 20):
+                pass
+        except ConnectionResetError:
+            pass
+        stalled.close()

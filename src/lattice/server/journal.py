@@ -111,6 +111,17 @@ def _rename(src: Path, dst: Path) -> None:
         os.close(fd)
 
 
+@dataclass(frozen=True)
+class LineDelta:
+    """What accepting one journal line changes (:meth:`Journal.stage`)."""
+
+    seq: int
+    digest: str
+    size: int  # the line's bytes on disk, newline included
+    history: tuple[tuple[str, int | None], ...]
+    lengths: tuple[tuple[str, int], ...]
+
+
 @dataclass
 class Journal:
     """The in-memory view of one project's journal for the current epoch."""
@@ -148,7 +159,7 @@ class Journal:
 
     @property
     def head_hash(self) -> str | None:
-        return self.line_hashes[-1] if self.line_hashes else None
+        return self.head[2]
 
     # -- creation and loading ------------------------------------------------
 
@@ -215,20 +226,55 @@ class Journal:
         return journal
 
     def _account(self, entry: dict, raw: bytes) -> None:
+        self.commit(self.stage(entry, raw))
+
+    def stage(self, entry: dict, raw: bytes) -> LineDelta:
+        """Everything accepting line *entry* changes, computed without changing
+        anything (the committed-line finalizer's first half)."""
         seq = entry["seq"]
-        lengths = entry.get("lengths") or {}
-        for path in entry.get("paths") or ():
-            if path not in lengths and self.is_log(path):
-                self.length_history.setdefault(path, []).append((seq, None))
-        for path, length in lengths.items():
+        if seq != self.head_seq + 1:
+            raise JournalError(f"journal line {seq} does not follow head {self.head_seq}")
+        lengths = {p: n for p, n in (entry.get("lengths") or {}).items()}
+        history: list[tuple[str, int | None]] = [
+            (path, None)
+            for path in entry.get("paths") or ()
+            if path not in lengths and self.is_log(path)
+        ]
+        history.extend(lengths.items())
+        return LineDelta(
+            seq=seq,
+            digest=line_hash(raw),
+            size=len(raw.rstrip(b"\n")) + 1,
+            history=tuple(history),
+            lengths=tuple(lengths.items()),
+        )
+
+    def commit(self, delta: LineDelta) -> None:
+        """Apply a staged line: in-memory assignments only, the head last.
+
+        Idempotent by ``seq``: a line already accounted is skipped, and anything an
+        interrupted earlier commit left past the head is dropped before applying.
+        """
+        head = self.head_seq
+        if delta.seq <= head:
+            return
+        del self.line_hashes[head:]
+        del self.line_offsets[head:]
+        for path, _length in delta.history:
+            entries = self.length_history.get(path)
+            while entries and entries[-1][0] > head:
+                entries.pop()
+            if entries == []:
+                del self.length_history[path]
+        for path, length in delta.history:
+            self.length_history.setdefault(path, []).append((delta.seq, length))
+        for path, length in delta.lengths:
             self.known_lengths[path] = length
-            self.length_history.setdefault(path, []).append((seq, length))
-        digest = line_hash(raw)
         self.line_offsets.append(self.end_offset)
-        self.end_offset += len(raw.rstrip(b"\n")) + 1
-        self.line_hashes.append(digest)
-        self.head_seq = seq
-        self.head = (self.epoch, seq, digest)
+        self.line_hashes.append(delta.digest)
+        self.end_offset += delta.size
+        self.head_seq = delta.seq
+        self.head = (self.epoch, delta.seq, delta.digest)
 
     # -- the sync path's reads (call under the work lock) -------------------
 
@@ -249,7 +295,7 @@ class Journal:
 
     def hash_at(self, seq: int) -> str | None:
         """Line *seq*'s hash (``None`` for 0 or beyond the head)."""
-        if 0 < seq <= len(self.line_hashes):
+        if 0 < seq <= self.head_seq:
             return self.line_hashes[seq - 1]
         return None
 
@@ -280,7 +326,7 @@ class Journal:
     def accept(self, line: dict, raw: bytes) -> None:
         """Account for a line written and fsynced (the in-memory head, hash, lengths)."""
         if line["seq"] == self.head_seq + 1:
-            self._account(line, raw)
+            self.commit(self.stage(line, raw))
 
     def append(self, entry: dict[str, Any]) -> tuple[int, dict]:
         """Append one line outside a transaction and account for it; returns

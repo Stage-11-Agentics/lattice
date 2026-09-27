@@ -111,3 +111,116 @@ def test_an_external_entry_whose_publication_fails_closes_streams(
     assert project.manifest.get("context.md").size == len("# edited by hand\n")
     with board.stream(since=1, epoch=project.journal.epoch, hash=project.journal.hash_at(1)) as r:
         assert [r.next_of("journal").data["op"] for _ in range(2)] == ["external", "task.create"]
+
+
+# ---------------------------------------------------------------------------
+# Atomic and idempotent, directly (review round 1, finding 1)
+# ---------------------------------------------------------------------------
+
+
+def _live(project) -> tuple:  # noqa: ANN001
+    """A deep snapshot of every in-memory component the finalizer changes."""
+    journal, manifest = project.journal, project.manifest
+    return (
+        journal.head,
+        journal.head_seq,
+        journal.end_offset,
+        list(journal.line_hashes),
+        list(journal.line_offsets),
+        {k: list(v) for k, v in journal.length_history.items()},
+        dict(journal.known_lengths),
+        manifest.seq,
+        dict(manifest.entries),
+        {k: v[1] for k, v in manifest._hashers.items()},
+    )
+
+
+@pytest.mark.parametrize(
+    "fail",
+    ["finish.memory", "finish.memory.manifest", "manifest.apply"],
+)
+def test_a_failed_finalize_changes_nothing_live_or_completes_on_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fail: str
+) -> None:
+    from lattice.server import syncstate
+    from lattice.server.journal import Journal
+    from lattice.server.syncstate import Manifest
+
+    with serve_board(tmp_path) as board:
+        task = board.op("task.create", {"title": "t"})["task"]["id"]
+        board.op("task.comment", {"task": task, "text": "one"})
+        project = board.project
+        journal_path = board.board / "hosted" / "journal.jsonl"
+        raw_before = journal_path.read_bytes()
+        with project.locked():
+            before = _live(project)
+            seq, line, raw = project.journal.write(
+                {
+                    "op": "external",
+                    "op_id": None,
+                    "fp": None,
+                    "token_id": None,
+                    "task_id": None,
+                    "event_ids": [],
+                    "paths": ["context.md", f"events/{task}.jsonl"],
+                    "lengths": {},
+                }
+            )
+            (board.board / "context.md").write_text("# changed\n")
+            with monkeypatch.context() as m:
+                if fail == "manifest.apply":
+                    # After the journal's commit: the one step that could leave a
+                    # half-updated memory if it were not idempotent by seq.
+                    def broken(self, staged, seq=None):  # noqa: ANN001, ANN202
+                        raise OSError(5, "injected")
+
+                    m.setattr(syncstate.Manifest, "apply", broken)
+                else:
+                    install(m, Injector(fail))
+                with pytest.raises(OSError):
+                    project.finalize_committed(line, raw)
+            if fail != "manifest.apply":
+                assert _live(project) == before  # every live component unchanged
+            else:
+                assert project.manifest.seq == before[7]  # the manifest did not move
+            project.finalize_committed(line, raw)  # the retry completes it
+            project.finalize_committed(line, raw)  # and a second retry is a no-op
+            after = _live(project)
+        assert journal_path.read_bytes().startswith(raw_before)
+        fresh = Journal.load(board.board)
+        assert after[:7] == (
+            fresh.head,
+            fresh.head_seq,
+            fresh.end_offset,
+            fresh.line_hashes,
+            fresh.line_offsets,
+            {k: list(v) for k, v in fresh.length_history.items()},
+            fresh.known_lengths,
+        )
+        rebuilt = Manifest.build(board.board)
+        assert after[7] == seq and after[8] == rebuilt.entries
+        # The server keeps serving, and a sync at the new head answers from memory.
+        body = board.sync(since=seq, epoch=fresh.epoch, hash=fresh.head_hash)
+        assert body["head_seq"] == seq and body["files"] == {}
+
+
+def test_journal_commit_drops_what_an_interrupted_commit_left(tmp_path: Path) -> None:
+    from lattice.server.journal import Journal
+    from lattice.storage.ownership import owning_board
+
+    lattice = tmp_path / ".lattice"
+    (lattice / "hosted").mkdir(parents=True)
+    (lattice / "events").mkdir()
+    (lattice / "config.json").write_text("{}")
+    with owning_board(lattice):
+        journal = Journal.create(lattice)
+    line = {"seq": 1, "paths": ["events/a.jsonl"], "lengths": {"events/a.jsonl": 5}}
+    delta = journal.stage(line, b'{"seq":1}')
+    # Simulate a commit interrupted after its first assignments.
+    journal.line_hashes.append("partial")
+    journal.length_history.setdefault("events/a.jsonl", []).append((1, 99))
+    journal.commit(delta)
+    journal.commit(delta)  # idempotent
+    assert journal.line_hashes == [delta.digest]
+    assert journal.length_history == {"events/a.jsonl": [(1, 5)]}
+    assert journal.head == (journal.epoch, 1, delta.digest)

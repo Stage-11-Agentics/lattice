@@ -93,15 +93,18 @@ class Manifest:
     line's manifest update is all or nothing.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, seq: int = 0) -> None:
+        #: The journal seq this manifest reflects (its commits are idempotent by seq).
+        self.seq = seq
         self.entries: dict[str, ManifestEntry] = {}
         #: ``*.jsonl`` path -> (hash state, bytes it covers), for incremental rehashing.
         self._hashers: dict[str, tuple[Any, int]] = {}
 
     @classmethod
-    def build(cls, board: Path) -> Manifest:
+    def build(cls, board: Path, seq: int = 0) -> Manifest:
+        """Hash every synced file; the result reflects journal *seq*."""
         manifest = cls()
-        manifest.apply(manifest.stage(board, synced_files(board), frozenset()))
+        manifest.apply(manifest.stage(board, synced_files(board), frozenset()), seq)
         return manifest
 
     def get(self, rel: str) -> ManifestEntry | None:
@@ -125,7 +128,9 @@ class Manifest:
                 staged[rel] = _hash_from(path, hashlib.sha256(), 0)
         return staged
 
-    def apply(self, staged: Staged) -> None:
+    def apply(self, staged: Staged, seq: int | None = None) -> None:
+        """Assign *staged* (in-memory only; applying the same changes again is
+        harmless), then record *seq*."""
         for rel, change in staged.items():
             if change is None:
                 self.entries.pop(rel, None)
@@ -137,6 +142,8 @@ class Manifest:
                 self._hashers[rel] = (hasher, entry.size)
             else:
                 self._hashers.pop(rel, None)
+        if seq is not None:
+            self.seq = seq
 
     def update(self, board: Path, paths: list[str], appended: set[str] | frozenset[str]) -> None:
         self.apply(self.stage(board, paths, appended))
@@ -318,18 +325,27 @@ def check_file_path(rel: str) -> str:
 
 
 def read_board_file(board: Path, rel: str, sha256: str | None) -> bytes:
-    """A synced board file's bytes, confined to the board; ``STALE_VERSION`` when
-    it no longer has the pinned hash."""
+    """A synced board file's bytes, confined to the board.
+
+    A request pinned to *sha256* gets ``STALE_VERSION`` whenever the file no
+    longer has that hash, including when it no longer exists (removed, or
+    relocated by an archive after the sync answer was built): the client then
+    syncs again (SPEC §8.8). An unpinned request for a missing file is
+    ``NOT_FOUND``.
+    """
+    stale = OpError(
+        "STALE_VERSION",
+        f"{rel} no longer has sha256 {sha256}; sync again from your head_seq",
+        {"path": rel},
+    )
     path = board_file(board, rel)
     if path is None:
+        if sha256 is not None:
+            raise stale
         raise OpError("NOT_FOUND", f"no board file {rel}")
     data = path.read_bytes()
     if sha256 is not None and hashlib.sha256(data).hexdigest() != sha256:
-        raise OpError(
-            "STALE_VERSION",
-            f"{rel} no longer has sha256 {sha256}; sync again from your head_seq",
-            {"path": rel},
-        )
+        raise stale
     return data
 
 

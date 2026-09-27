@@ -237,6 +237,7 @@ def test_every_boundary_leaves_the_operation_wholly_present_or_absent(
         "journal.close",
         "finish.accept",
         "finish.memory",
+        "finish.memory.manifest",
         "finish.index",
         "undo.close",
         "finish.undo_delete",
@@ -262,7 +263,7 @@ def test_every_boundary_leaves_the_operation_wholly_present_or_absent(
                 error = exc
         assert injector.fired, case
 
-        if position == commit_at or point == "finish.memory":
+        if position == commit_at or point.startswith("finish.memory"):
             # Durability unknown, or committed but memory could not be finalized
             # (H-10a: never left half-updated): quarantine, nothing more is written.
             assert isinstance(error, OpError) and error.code == "BOARD_UNAVAILABLE", case
