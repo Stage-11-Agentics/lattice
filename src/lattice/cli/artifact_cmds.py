@@ -8,7 +8,14 @@ import click
 
 from lattice.cli.helpers import common_options, output_error, output_result
 from lattice.cli.main import cli
-from lattice.cli.ops_bridge import params_or_exit, provenance_params, run_operation
+from lattice.cli.ops_bridge import (
+    board_or_exit,
+    caller_from_context,
+    params_or_exit,
+    provenance_params,
+    run_operation,
+)
+from lattice.ops import OpError
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +62,7 @@ def attach(
     provenance_reason: str | None,
 ) -> None:
     """Attach a file or URL to a task as an artifact."""
-    from lattice.ops.task_attach import encode_payload
+    from lattice.ops.task_attach import SOURCE_NOT_FOUND, encode_payload
 
     is_json = output_json
     params: dict = {
@@ -76,11 +83,21 @@ def attach(
     params_or_exit("task.attach", params, is_json)
 
     # A readable file travels as its content (SPEC §3.8); its name is only
-    # metadata. A path that is not a readable file stays a bare SOURCE, which
-    # the operation reports as not found in the order it always has.
+    # metadata. A path that is not a file stays a bare SOURCE, which the
+    # operation reports as not found in the order it always has.
+    board = board_or_exit(is_json)
     if source is not None and not source.startswith(("http://", "https://")):
         src_path = Path(source)
         if src_path.is_file():
+            # Validate before reading: every rule that has always come before
+            # the file is read (role, task, criteria, type, ID) runs first, as
+            # a call with the bare SOURCE. It writes nothing, and only the
+            # refusal for want of the file's content lets the read go ahead.
+            try:
+                board.execute("task.attach", params, caller_from_context())
+            except OpError as exc:
+                if exc.details.get("reason") != SOURCE_NOT_FOUND:
+                    output_error(exc.message, exc.code, is_json)
             try:
                 content = src_path.read_bytes()
             except OSError as exc:
@@ -92,7 +109,7 @@ def attach(
             params["source"] = None
             params["payload"] = encode_payload(src_path.name, content)
 
-    result = run_operation("task.attach", params, is_json)
+    result = run_operation("task.attach", params, is_json, board=board)
     metadata = result.value
     output_result(
         data=metadata,

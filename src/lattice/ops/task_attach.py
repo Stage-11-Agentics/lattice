@@ -35,6 +35,8 @@ from lattice.storage.operations import (
 _PAYLOAD_KEYS = {"filename", "content_b64", "sha256"}
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+#: ``details.reason`` when a non-URL SOURCE arrives without its content.
+SOURCE_NOT_FOUND = "SOURCE_NOT_FOUND"
 #: The name an inline attachment's payload carries (its suffix and content type).
 INLINE_FILENAME = "inline.md"
 
@@ -176,7 +178,11 @@ class Attach:
         else:
             art_id = generate_artifact_id()
         if p.source is not None and not is_url:
-            raise OpError("NOT_FOUND", f"Source file not found: '{p.source}'.")
+            raise OpError(
+                "NOT_FOUND",
+                f"Source file not found: '{p.source}'.",
+                {"reason": SOURCE_NOT_FOUND, "param": "source"},
+            )
         if title is None:
             title = p.source if is_url else PurePosixPath(filename or "").name
 

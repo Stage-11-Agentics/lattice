@@ -124,6 +124,21 @@ def test_missing_task_is_not_found(board: LocalBoard) -> None:
 class TestCliSource:
     """The client turns a readable file into a payload; anything else stays a SOURCE."""
 
+    @pytest.fixture()
+    def unreadable(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        """A file whose read fails (patched, so it holds when the suite runs as root)."""
+        src = tmp_path / "secret.md"
+        src.write_text("x")
+        real = Path.read_bytes
+
+        def read_bytes(self: Path) -> bytes:
+            if self == src:
+                raise PermissionError(13, "Permission denied")
+            return real(self)
+
+        monkeypatch.setattr(Path, "read_bytes", read_bytes)
+        return src
+
     def test_directory_source_is_not_found_as_before(
         self, invoke, create_task, tmp_path: Path
     ) -> None:  # noqa: ANN001
@@ -134,21 +149,62 @@ class TestCliSource:
             "message": f"Source file not found: '{tmp_path}'.",
         }
 
-    def test_read_error_is_a_validation_error(
-        self, invoke, create_task, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:  # noqa: ANN001
+    def test_read_error_is_a_validation_error(self, invoke, create_task, unreadable: Path) -> None:  # noqa: ANN001
         task = create_task("T")
-        src = tmp_path / "secret.md"
-        src.write_text("x")
-
-        def denied(self: Path) -> bytes:
-            raise PermissionError(13, "Permission denied")
-
-        monkeypatch.setattr(Path, "read_bytes", denied)
         for flag in ([], ["--json"]):
-            result = invoke("attach", task["id"], str(src), "--actor", "agent:t", *flag)
+            result = invoke("attach", task["id"], str(unreadable), "--actor", "agent:t", *flag)
             assert result.exit_code == 1
             assert "Cannot read source file" in result.output
+
+    @pytest.mark.parametrize("as_json", [False, True])
+    @pytest.mark.parametrize(
+        ("extra", "task_arg", "code", "needle"),
+        [
+            (["--role", "bogus"], None, "INVALID_ROLE", "Unknown role: 'bogus'"),
+            ([], "NOPE-9", "NOT_FOUND", "Short ID 'NOPE-9' not found."),
+            ([], "task_01AAAAAAAAAAAAAAAAAAAAAAAA", "NOT_FOUND", "not found."),
+            (["--criterion", "nope"], None, "VALIDATION_ERROR", "nope"),
+            (["--type", "bogus"], None, "VALIDATION_ERROR", "Invalid artifact type: 'bogus'"),
+            (["--id", "nonsense"], None, "INVALID_ID", "Invalid artifact ID format"),
+        ],
+    )
+    def test_validations_win_over_an_unreadable_file(
+        self,
+        invoke,
+        create_task,
+        unreadable: Path,
+        extra: list[str],
+        task_arg: str | None,
+        code: str,
+        needle: str,
+        as_json: bool,
+    ) -> None:  # noqa: ANN001
+        """Today's order: every rule that ran before the file was read still wins."""
+        task = create_task("T")
+        flag = ["--json"] if as_json else []
+        result = invoke(
+            "attach", task_arg or task["id"], str(unreadable), *extra, "--actor", "agent:t", *flag
+        )
+        assert result.exit_code == 1
+        assert needle in result.output
+        assert "Cannot read" not in result.output
+        if as_json:
+            assert json.loads(result.output)["error"]["code"] == code
+
+    def test_the_probe_writes_nothing(
+        self, invoke, create_task, unreadable: Path, initialized_root: Path
+    ) -> None:  # noqa: ANN001
+        task = create_task("T")
+        lattice_dir = initialized_root / ".lattice"
+        before = sorted(
+            (str(p), p.read_text()) for p in lattice_dir.rglob("*.json*") if p.is_file()
+        )
+        invoke("attach", task["id"], str(unreadable), "--actor", "agent:t")
+        after = sorted(
+            (str(p), p.read_text()) for p in lattice_dir.rglob("*.json*") if p.is_file()
+        )
+        assert after == before
+        assert list((lattice_dir / "artifacts" / "payload").iterdir()) == []
 
     def test_argument_errors_win_over_the_source(
         self, invoke, create_task, tmp_path: Path
