@@ -16,6 +16,7 @@ touched only on the event loop.
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import time
@@ -146,3 +147,21 @@ class DiskFloor:
                 f"free disk under the server root ({free} bytes) is below the floor "
                 f"({self.minimum} bytes); writes are refused, reads still work",
             )
+
+
+def check_event_data_cap(op_name: str, params: object, limit: int) -> None:
+    """``task.event`` refuses ``data`` whose canonical JSON exceeds *limit* bytes
+    (SPEC §8.1, ``max_event_data_bytes``), before the operation runs."""
+    if op_name != "task.event" or not isinstance(params, dict) or "data" not in params:
+        return
+    size = len(
+        json.dumps(
+            params["data"], sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
+    )
+    if size > limit:
+        raise OpError(
+            "PAYLOAD_TOO_LARGE",
+            f"task.event data is {size} bytes; this server's limit is {limit} bytes",
+            {"size": size, "limit": limit},
+        )

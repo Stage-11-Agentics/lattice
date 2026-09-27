@@ -246,3 +246,134 @@ def project_config(
         )
 
     _run(is_json, action, render)
+
+
+# ---------------------------------------------------------------------------
+# Tokens
+# ---------------------------------------------------------------------------
+
+
+@server.group("token")
+def token_group() -> None:
+    """Mint, list, scope, and revoke access tokens."""
+
+
+def _describe_token(record: dict) -> str:
+    projects = ", ".join(record["projects"]) or "(none)"
+    actors = ", ".join(record["actors"]) or "(none)"
+    revoked = f"  revoked {record['revoked_at']}" if record.get("revoked_at") else ""
+    return (
+        f"{record['id']}  {record['user']} @ {record['machine']}  actors: {actors}  "
+        f"projects: {projects}  created {record['created_at']}{revoked}"
+    )
+
+
+@token_group.command("create")
+@click.option("--user", required=True, help="The person the token is issued to (human:NAME).")
+@click.option("--machine", required=True, help="The machine or seat it is issued for.")
+@click.option(
+    "--actor",
+    "actors",
+    multiple=True,
+    help="Actor pattern it may act as (repeatable; replaces the default <user>, agent:*).",
+)
+@click.option("--project", "projects", multiple=True, help="Project slug (repeatable).")
+@click.option("--all-projects", is_flag=True, help="Every project on this server.")
+@_root_option
+@_json_option
+def token_create(
+    user: str,
+    machine: str,
+    actors: tuple[str, ...],
+    projects: tuple[str, ...],
+    all_projects: bool,
+    root: str | None,
+    is_json: bool,
+) -> None:
+    """Mint a token and print it once."""
+    from lattice.server import tokens
+
+    def action() -> dict:
+        data = tokens.create_token(
+            _root(root),
+            user=user,
+            machine=machine,
+            actors=actors,
+            projects=projects,
+            all_projects=all_projects,
+        )
+        if data["warning"]:
+            click.echo(f"Warning: {data['warning']}", err=True)
+        return data
+
+    def render(data: dict) -> str:
+        record = data["record"]
+        return (
+            f"{data['token']}\n"
+            f"Token {record['id']} for {record['user']} @ {record['machine']}; it may act as: "
+            f"{', '.join(record['actors'])}; projects: {', '.join(record['projects']) or '(none)'}.\n"
+            "This is the only time the token is shown. Store it now."
+        )
+
+    _run(is_json, action, render)
+
+
+@token_group.command("list")
+@_root_option
+@_json_option
+def token_list(root: str | None, is_json: bool) -> None:
+    """Every token's id, user, machine, actors, projects, created, revoked (never the secret)."""
+    from lattice.server import tokens
+
+    _run(
+        is_json,
+        lambda: tokens.list_tokens(_root(root)),
+        lambda rows: "\n".join(_describe_token(r) for r in rows) or "No tokens.",
+    )
+
+
+@token_group.command("revoke")
+@click.argument("token_id")
+@_root_option
+@_json_option
+def token_revoke(token_id: str, root: str | None, is_json: bool) -> None:
+    """Revoke a token; effective on the server's next request."""
+    from lattice.server import tokens
+
+    _run(
+        is_json,
+        lambda: tokens.revoke_token(_root(root), token_id),
+        lambda r: f"Revoked {r['id']} at {r['revoked_at']}.",
+    )
+
+
+def _scope_command(name: str, verb: str) -> Callable:
+    @token_group.command(
+        name, help=f"{verb} projects or actor patterns on a token (effective next request)."
+    )
+    @click.argument("token_id")
+    @click.option("--project", "projects", multiple=True, help="Project slug (repeatable).")
+    @click.option("--actor", "actors", multiple=True, help="Actor pattern (repeatable).")
+    @_root_option
+    @_json_option
+    def command(
+        token_id: str,
+        projects: tuple[str, ...],
+        actors: tuple[str, ...],
+        root: str | None,
+        is_json: bool,
+    ) -> None:
+        from lattice.server import tokens
+
+        fn = getattr(tokens, name)
+        _run(
+            is_json,
+            lambda: fn(_root(root), token_id, projects=projects, actors=actors),
+            lambda r: f"{verb} {r['id']}: " + _describe_token(r),
+        )
+
+    return command
+
+
+token_grant = _scope_command("grant", "Granted")
+token_ungrant = _scope_command("ungrant", "Ungranted")
