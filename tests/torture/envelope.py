@@ -15,6 +15,9 @@ from lattice.ops import Caller, execute
 from lattice.storage.board_init import create_board
 
 MIB = 1024 * 1024
+#: ``serve_board``'s startup wait for an envelope board. Loading one hashes
+#: every durable byte (about 1 s idle); the default 10 s is sized for small boards.
+STARTUP_TIMEOUT = 120.0
 _COMMENT = 60_000  # bytes of text per comment that grows the hot log
 _PLAN = 5 * MIB  # bytes per padding plan
 

@@ -503,7 +503,8 @@ def serve_board(
 
     The project is new (``project create`` with *code*), or a copy of the local
     board *source* (a directory holding ``.lattice/``, or the ``.lattice/``
-    itself) placed with a fresh journal whose baseline is its current logs.
+    itself) placed with a fresh journal whose baseline is its current logs and,
+    as ``project import`` does, its audit repository.
     """
     from lattice.server import tokens
 
@@ -522,8 +523,9 @@ def serve_board(
 
 
 def _place_board(root: Path, slug: str, source: Path) -> None:
-    from lattice.server.journal import HOSTED_DIR, Journal
+    from lattice.server.config import load_config
     from lattice.server.control import CONTROL_DIR
+    from lattice.server.journal import HOSTED_DIR, Journal
     from lattice.storage.fs import ensure_dir
     from lattice.storage.ownership import owning_board, release_owner_flock, try_owner_flock
 
@@ -543,8 +545,14 @@ def _place_board(root: Path, slug: str, source: Path) -> None:
         fd = try_owner_flock(board)
         assert fd is not None
         try:
-            Journal.create(board)
+            journal = Journal.create(board)
             ensure_dir(board / HOSTED_DIR / CONTROL_DIR)
             admin._write_owner_marker(board, "lattice-server-test")
         finally:
             release_owner_flock(fd)
+    # The audit repository, as ``project create`` and ``project import`` make it.
+    # Left to the first load, its one-time init (seconds for an envelope-size
+    # board) would run inside the server's startup prewarm and its bounded wait.
+    admin._create_audit_repo(
+        admin.project_dir(root, slug), load_config(root).audit, epoch=journal.epoch
+    )
