@@ -134,3 +134,4 @@ def stream_stub() -> Iterator[StreamStubServer]:
     server.files = {"config.json": b'{"project_code": "DEM"}\n', "events/T1.jsonl": b""}
     with server.running():
         yield server
+from tests.test_remote.hosted import hosted_env  # noqa: F401 - H-11 end-to-end fixture
