@@ -83,6 +83,8 @@ def _receipt_lines(root: Path) -> list[bytes]:
     return [line for p in sorted(receipts.glob("*.jsonl")) for line in p.read_bytes().splitlines()]
 
 
+# Every-boundary walk with real fsyncs: slow CI runners need more than the 15 s default.
+@pytest.mark.timeout(120)
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=lambda s: s.name)
 def test_a_crash_at_every_boundary_recovers_at_startup(
     scenario: Scenario,

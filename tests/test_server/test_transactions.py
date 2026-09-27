@@ -23,10 +23,12 @@ worker does; a few HTTP cases cover what a client sees.
 
 from __future__ import annotations
 
+import asyncio
 import errno
 import json
 import shutil
 from collections.abc import Callable, Iterator
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -38,6 +40,7 @@ from lattice.core.errors import OpError
 from lattice.core.ids import generate_op_id
 from lattice.server import transactions
 from lattice.server.project import Project
+from lattice.server.stream import JOURNAL, Subscriber
 from lattice.server.testing import make_root
 from lattice.server.transactions import read_undo_log
 from lattice.storage import fs
@@ -252,12 +255,48 @@ def _prepared(fresh: Fresh, projects: list[Project], scenario: Scenario):  # noq
 
 
 def wire_publication(project: Project) -> list[int]:
-    """Point the publication hook at the ``publication`` fault seam; returns the
-    seqs whose failed publication closed the project's streams."""
+    """Put the ``publication`` fault seam in front of the real publication hook;
+    returns the seqs whose failed publication closed the project's streams."""
     closed: list[int] = []
-    project.publish = lambda line: transactions._fault("publication", seq=line["seq"])
-    project.close_streams = lambda: closed.append(project.journal.head_seq)
+    real_publish = project._publish
+
+    def publish(line: dict) -> None:
+        transactions._fault("publication", seq=line["seq"])
+        real_publish(line)
+
+    def close_streams() -> None:
+        closed.append(project.journal.head_seq)
+        project.broadcaster.close_all()
+
+    project.publish = publish
+    project.close_streams = close_streams
     return closed
+
+
+@contextmanager
+def follower(project: Project) -> Iterator[Subscriber]:
+    """A connected stream subscriber on *project* (no HTTP: the broadcaster's queue)."""
+    loop = asyncio.new_event_loop()
+    subscriber = Subscriber(loop, 1000)
+    assert project.broadcaster.subscribe(subscriber, 64)
+    try:
+        yield subscriber
+    finally:
+        project.broadcaster.unsubscribe(subscriber)
+        loop.close()
+
+
+def assert_follower_missed_no_seq(
+    subscriber: Subscriber, after: int, head: int, case: str
+) -> None:
+    """Every committed seq after *after* reached the follower in order, with no gap;
+    or its stream was ended (a failed publication), and it resumes from its
+    ``Last-Event-ID`` with what it had, which is itself gap-free (SPEC §8.9)."""
+    seqs = [seq for kind, seq, _ in subscriber.take() if kind == JOURNAL]
+    if subscriber.aborted:
+        assert seqs == list(range(after + 1, after + 1 + len(seqs))), case
+    else:
+        assert seqs == list(range(after + 1, head + 1)), case
 
 
 # Every-boundary fault walk with real fsyncs: slow CI runners need more than the 15 s default.
@@ -306,8 +345,11 @@ def test_every_boundary_leaves_the_operation_wholly_present_or_absent(
         root, project, build = _prepared(fresh, projects, scenario)
         closed = wire_publication(project)
         before = state(root)
+        head_before = project.journal.head_seq
         write = build()
         error: BaseException | None = None
+        stream = ExitStack()
+        subscriber = stream.enter_context(follower(project))
         with monkeypatch.context() as m:
             injector = install(m, Injector(point, occurrence, short=point.endswith(".write")))
             try:
@@ -326,6 +368,7 @@ def test_every_boundary_leaves_the_operation_wholly_present_or_absent(
                 run(project, request("task.create", {"title": "blocked"}))
             assert again.value.code == "BOARD_UNAVAILABLE"
             assert state(root) == after, case
+            stream.close()
             continue
 
         assert error is not None, case
@@ -347,6 +390,9 @@ def test_every_boundary_leaves_the_operation_wholly_present_or_absent(
         discover_task_authorities(board_of(root))
         doctor_clean(root)
         assert_next_write_commits_and_replays(root, project)
+        # In the in-process branch a connected follower misses no seq (AC-4, H-22).
+        assert_follower_missed_no_seq(subscriber, head_before, project.journal.head_seq, case)
+        stream.close()
 
 
 @pytest.mark.parametrize("name", ["task.archive", "task.unarchive"])
