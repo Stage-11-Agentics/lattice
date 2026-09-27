@@ -11,8 +11,6 @@ spawn, in either order of the child starting and the parent recording it.
 from __future__ import annotations
 
 import json
-import os
-import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -25,13 +23,12 @@ from tests.test_remote.hosted import (
     HostedEnv,
     SpawnRecorder,
     events_of,
+    fake_agent_on_path,
     git,
     make_repo,
     run_cli,
     walk_to,
 )
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 @contextmanager
@@ -43,26 +40,6 @@ def on_host(monkeypatch: pytest.MonkeyPatch, host: str) -> Iterator[None]:
     with monkeypatch.context() as m:
         m.setattr(lattice.boards, "_process_origin", lambda: dict(fields))
         yield
-
-
-def fake_agent_on_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A stand-in ``claude`` first on ``PATH``: the fixture agent, which prints a
-    fixed review, after recording the environment it was started with."""
-    bin_dir = tmp_path / "agent-bin"
-    bin_dir.mkdir()
-    env_dump = tmp_path / "agent-env.json"
-    shim = bin_dir / "claude"
-    shim.write_text(
-        "#!/bin/sh\n"
-        f'"{sys.executable}" -c "import json, os; '
-        f"json.dump(dict(os.environ), open('{env_dump}', 'w'))\"\n"
-        "LATTICE_FAKE_BEHAVIOR=stdout LATTICE_AGENT_OUTPUT=/dev/null "
-        f'exec "{sys.executable}" "{REPO_ROOT / "tests" / "fixtures" / "fake_agent.py"}"\n'
-    )
-    shim.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
-    monkeypatch.setenv("LATTICE_SPAWN_BACKEND", "headless")
-    return env_dump
 
 
 def two_checkouts(env: HostedEnv, tmp_path: Path) -> tuple[Path, Path]:
@@ -166,7 +143,9 @@ def test_a_spawn_older_than_the_timeout_reads_as_failed(
 
     with on_host(monkeypatch, "b"):
         plain = run_cli(b, "review-status", "DEM-1")
-        assert "code-review: spawned on a, no artifact after 600 s; treat as failed" in plain.stdout
+        assert (
+            "code-review: spawned on a, no artifact after 600 s; treat as failed" in plain.stdout
+        )
         assert "Re-run with:  lattice code-review" in plain.stdout
         data = json.loads(run_cli(b, "review-status", "DEM-1", "--json").stdout)["data"]
         assert data["status"] == "failed"

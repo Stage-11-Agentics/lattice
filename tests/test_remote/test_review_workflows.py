@@ -1,17 +1,21 @@
-"""AC-49 (H-11 part): a machine whose remote sets ``run_auto_reviews: false``
-starts no review for a transition the board config would review, and says
-why (SPEC §3.4). The hand-run review end to end is H-12's."""
+"""AC-49: a machine whose remote sets ``run_auto_reviews: false`` starts no
+review for a transition the board config would review, and says why (SPEC
+§3.4, H-11); ``lattice code-review`` still runs one by hand, end to end (H-12)."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
+import pytest
+
 from lattice.server import admin
 from tests.test_remote.hosted import (
     HostedEnv,
     SpawnRecorder,
     events_of,
+    fake_agent_on_path,
+    git,
     make_repo,
     run_cli,
     walk_to,
@@ -59,3 +63,44 @@ def test_default_machine_runs_the_boards_reviews(
     assert run_cli(repo, "create", "Accepted", "--actor", "agent:dev").exit_code == 0
     walk_to(repo, "DEM-1", "in_planning", "planned")
     assert spawns.review_types == ["plan-review"]
+
+
+def test_declining_machine_still_runs_a_review_by_hand(
+    hosted_env: HostedEnv,
+    tmp_path: Path,
+    spawns: SpawnRecorder,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AC-49 (H-12 part): ``run_auto_reviews: false`` declines the board's
+    auto-review, and ``lattice code-review <task>`` still runs one by hand, end
+    to end: a stub agent reviews the diff and the artifact reaches the server."""
+    admin.set_project_config(
+        hosted_env.server_root,
+        "demo",
+        {"auto_code_review_on_transition": "true", "auto_plan_review_on_transition": "false"},
+    )
+    hosted_env.write_remote(run_auto_reviews=False)
+    repo = make_repo(tmp_path / "repo")
+    assert run_cli(repo, "remote", "attach", "team", "demo").exit_code == 0
+    git(repo, "checkout", "-q", "-b", "feat")
+    (repo / "feature.txt").write_text("feature\n")
+    git(repo, "add", "feature.txt")
+    git(repo, "commit", "-q", "-m", "feature")
+    assert run_cli(repo, "create", "By hand", "--actor", "agent:dev").exit_code == 0
+    walk_to(repo, "DEM-1", "in_planning", "planned", "in_progress")
+    moved = run_cli(repo, "status", "DEM-1", "review", "--actor", "agent:dev", "--json")
+    assert json.loads(moved.stdout)["data"]["auto_review"]["reason"] == "run_auto_reviews_false"
+    assert spawns.calls == []
+
+    fake_agent_on_path(tmp_path, monkeypatch)
+    review = run_cli(
+        repo, "code-review", "DEM-1", "--base", "main", "--head", "feat", "--actor", "agent:dev"
+    )
+    assert review.exit_code == 0, review.output
+    assert "Review stored as artifact" in review.stdout
+    events = events_of(hosted_env, "DEM-1")
+    attached = [e for e in events if e["type"] == "artifact_attached"]
+    assert [e["data"]["role"] for e in attached] == ["review"]
+    assert not [e for e in events if e["type"] == "auto_review_spawned"]
+    status = run_cli(repo, "review-status", "DEM-1")
+    assert "Review artifacts exist" in status.stdout
