@@ -1,73 +1,38 @@
 """The short-ID floor a server keeps in memory (SPEC §5, "Server").
 
-Each project keeps ``max_observed[prefix]``: the highest short-ID sequence
-any task log (active or archived) holds for that prefix, from creation events
-and short-ID assignments. It is computed from the logs once, at project load,
-and updated from every committed operation's appended events, so a server
-create never rescans.
-
-The allocator that consumes the floor is H-6's (``storage/operations.py``).
-Until it lands this module only keeps the numbers; ``floor_for`` is the value
-the server passes to that allocator.
+Each project keeps ``max_observed[prefix]``: the highest short-ID sequence any
+task log (active or archived) holds for that prefix, in any event's
+``data.short_id``. It is computed from the logs once, at project load
+(:func:`lattice.storage.short_ids.max_observed_short_ids`), updated from every
+committed operation's appended events, and passed to allocation as
+``execute(short_id_floor=...)``, so a server create never rescans.
 """
 
 from __future__ import annotations
 
-import json
-import re
 from pathlib import Path
 
-_SHORT_ID_RE = re.compile(r"^([A-Z][A-Z0-9]*(?:-[A-Z][A-Z0-9]*)?)-(\d+)$")
-_SHORT_ID_EVENTS = ("task_created", "task_short_id_assigned")
-
-
-def _observe(short_id: object, into: dict[str, int]) -> None:
-    if not isinstance(short_id, str):
-        return
-    match = _SHORT_ID_RE.match(short_id)
-    if match is None:
-        return
-    prefix, seq = match.group(1), int(match.group(2))
-    if seq > into.get(prefix, 0):
-        into[prefix] = seq
+from lattice.storage.short_ids import max_observed_short_ids, split_short_id
 
 
 class ShortIdFloors:
     """``max_observed`` per short-ID prefix for one project."""
 
-    def __init__(self) -> None:
-        self.max_observed: dict[str, int] = {}
+    def __init__(self, max_observed: dict[str, int] | None = None) -> None:
+        self.max_observed: dict[str, int] = dict(max_observed or {})
 
     @classmethod
     def from_board(cls, board: Path) -> ShortIdFloors:
         """Scan every task log, active and archived, once."""
-        floors = cls()
-        for events_dir in (Path(board) / "events", Path(board) / "archive" / "events"):
-            if not events_dir.is_dir():
-                continue
-            for log in sorted(events_dir.glob("task_*.jsonl")):
-                floors._scan_log(log)
-        return floors
-
-    def _scan_log(self, log: Path) -> None:
-        try:
-            with open(log, encoding="utf-8") as fh:
-                for line in fh:
-                    if not any(t in line for t in _SHORT_ID_EVENTS):
-                        continue
-                    try:
-                        event = json.loads(line)
-                    except ValueError:
-                        continue
-                    self.observe_event(event)
-        except OSError:
-            return
+        return cls(max_observed_short_ids(Path(board)))
 
     def observe_event(self, event: dict) -> None:
-        if event.get("type") in _SHORT_ID_EVENTS:
-            data = event.get("data")
-            if isinstance(data, dict):
-                _observe(data.get("short_id"), self.max_observed)
+        data = event.get("data")
+        if not isinstance(data, dict):
+            return
+        parsed = split_short_id(data.get("short_id"))
+        if parsed is not None and parsed[1] > self.max_observed.get(parsed[0], 0):
+            self.max_observed[parsed[0]] = parsed[1]
 
     def observe_events(self, events: list[dict]) -> None:
         for event in events:

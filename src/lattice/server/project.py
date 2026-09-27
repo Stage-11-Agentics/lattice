@@ -390,6 +390,7 @@ class Project:
                 caller,
                 run_hooks=False,
                 on_mutation=tracker,
+                short_id_floor=self.floors.max_observed,
             )
         except BaseException:
             self._log_uncommitted(tracker, request.op, caller.origin.get("op_id"))

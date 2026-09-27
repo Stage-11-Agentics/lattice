@@ -6,9 +6,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from lattice.server.floors import ShortIdFloors
 from lattice.server.project import MutationTracker
-from lattice.server.testing import ServerHandle
+from lattice.server.testing import ServerHandle, running_server
 from tests.test_server.conftest import create_task, mint
 
 
@@ -72,3 +74,39 @@ def test_short_id_floors_follow_creates(server: ServerHandle, root: Path) -> Non
     rescanned = ShortIdFloors.from_board(root / "projects" / "alpha" / ".lattice")
     assert rescanned.max_observed == {"ALP": 3}
     assert rescanned.floor_for("NEW") == 1
+
+
+def test_allocation_uses_the_in_memory_floor(
+    server: ServerHandle, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import lattice.storage.operations as operations
+    import lattice.storage.short_ids as short_ids
+
+    token = mint(root)
+    create_task(server, token)
+    calls = []
+    real = short_ids.max_observed_short_ids
+
+    def counting(board):  # noqa: ANN001, ANN202
+        calls.append(board)
+        return real(board)
+
+    monkeypatch.setattr(operations, "max_observed_short_ids", counting)
+    task = create_task(server, token)
+    assert task["short_id"] == "ALP-2"
+    assert calls == []  # the server's floor, never a rescan
+
+
+def test_a_regressed_ids_json_never_reissues_a_logged_id(root: Path) -> None:
+    token = mint(root)
+    with running_server(root) as server:
+        issued = [create_task(server, token)["short_id"] for _ in range(3)]
+    board = root / "projects" / "alpha" / ".lattice"
+    index = json.loads((board / "ids.json").read_text())
+    index["next_seqs"]["ALP"] = 1
+    index["map"] = {}
+    (board / "ids.json").write_text(json.dumps(index))
+    with running_server(root) as server:
+        assert server.project("alpha").floors.max_observed == {"ALP": 3}
+        fresh = create_task(server, token)["short_id"]
+    assert fresh not in issued and fresh == "ALP-4"

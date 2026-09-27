@@ -374,6 +374,9 @@ class OpContext:
     caller: Caller
     op_name: str
     run_hooks: bool
+    #: The caller's in-memory short-ID floor (a server's ``max_observed``,
+    #: SPEC §5); ``None`` lets allocation rescan the logs.
+    short_id_floor: Mapping[str, int] | None = None
     _expectation_pending: bool = True
 
     @property
@@ -427,6 +430,8 @@ class OpContext:
         """
         expect = self.caller.expect_last_event_id if self._expectation_pending else None
         self._expectation_pending = False
+        if self.short_id_floor is not None:
+            kwargs.setdefault("short_id_floor", self.short_id_floor)
         return mutate_task(
             self.lattice_dir,
             task_id,
@@ -574,6 +579,7 @@ def execute(
     config: dict | None = None,
     on_mutation: Callable[[Path, MutationKind], None] | None = None,
     authorize: Authorizer | None = None,
+    short_id_floor: Mapping[str, int] | None = None,
 ) -> OpResult:
     """Run one operation against the board at *board_dir* (its ``.lattice/``).
 
@@ -585,6 +591,9 @@ def execute(
     and the effects even if a hook edits ``config.json``. Loaded from the board
     when omitted. ``authorize``: the server's actor check (see
     :data:`Authorizer`); ``None`` locally.
+    ``short_id_floor``: the highest short-ID sequence per prefix
+    in the board's event history, when the caller keeps it in memory (a server,
+    SPEC §5); ``None`` lets allocation rescan the logs.
 
     Every storage write the operation makes is confined to this board
     (``BoardPathError``, ``VALIDATION_ERROR``).
@@ -605,6 +614,7 @@ def execute(
             run_hooks=run_hooks,
             config=config,
             authorize=authorize,
+            short_id_floor=short_id_floor,
         )
     return dataclasses.replace(result, paths=tuple(recorder.relative_paths(board_dir)))
 
@@ -618,6 +628,7 @@ def _execute(
     run_hooks: bool,
     config: dict | None,
     authorize: Authorizer | None,
+    short_id_floor: Mapping[str, int] | None = None,
 ) -> OpResult:
     # 1. Only the board's owner writes it.
     check_board_writable(board_dir, caller)
@@ -656,6 +667,7 @@ def _execute(
         caller=caller,
         op_name=op_name,
         run_hooks=run_hooks,
+        short_id_floor=short_id_floor,
     )
     # 5. Run it; storage failures surface as typed errors.
     with origin_scope(origin):
