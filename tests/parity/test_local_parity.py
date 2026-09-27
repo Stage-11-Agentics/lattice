@@ -81,3 +81,16 @@ def test_corpus_covers_forced_status_and_session_actors() -> None:
     steps = [s.args for sc in SCENARIOS for s in sc.steps if isinstance(s, Cli)]
     assert any(a[0] == "status" and "--force" in a and "--reason" in a for a in steps)
     assert any("--name" in a and a[:2] != ("session", "start") for a in steps)
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_attached_jsonl_payload_keeps_user_origin(mode: str) -> None:
+    """Only event logs lose ``origin``; an attached JSONL artifact is user data."""
+    board = json.loads(golden_path("artifacts", mode).read_text())["board"]
+    payloads = [
+        v["jsonl"]
+        for k, v in board.items()
+        if k.startswith("artifacts/payload/") and k.endswith(".jsonl")
+    ]
+    assert payloads, "the artifacts scenario attaches a JSONL payload"
+    assert [line["origin"] for line in payloads[0]] == ["keep", {"host": "user-host"}]

@@ -472,6 +472,13 @@ ARTIFACTS = Scenario(
             "art_01JBBBBBBBBBBBBBBBBBBBBBBB",
             *A,
         ),
+        # A JSONL payload whose lines carry their own origin: user data, kept whole.
+        WriteFile(
+            "trace.jsonl",
+            '{"origin": "keep", "ts": "note", "type": "user"}\n'
+            '{"origin": {"host": "user-host"}, "ts": "2026-01-01T00:00:00Z", "type": "x"}\n',
+        ),
+        c("attach", "PAR-1", "<<root>>/trace.jsonl", "--title", "Trace", *A),
         c("attach", "PAR-1", "--inline", "x", "--id", "nonsense", *A),
         c("attach", "PAR-1", "--inline", "x", "--role", "bogus", *A),
         c("attach", "PAR-1", "<<root>>/missing.md", *A),

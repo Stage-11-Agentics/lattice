@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from tests.parity.record import FROZEN_NOW, Normalizer, _frozen_clock
+from tests.parity.record import FROZEN_NOW, Normalizer, _frozen_clock, is_event_log
 
 EVENT = {
     "actor": "agent:a",
@@ -26,6 +26,30 @@ def test_event_log_strips_only_the_top_level_origin() -> None:
     (record,) = _norm().file("events/x.jsonl", line.encode(), session_file=False)["jsonl"]
     assert "origin" not in record
     assert record["data"] == {"origin": "user-data", "ts": "note", "type": "user"}
+
+
+def test_only_event_log_paths_count_as_event_logs() -> None:
+    for rel in (
+        "events/task_x.jsonl",
+        "events/_lifecycle.jsonl",
+        "events/res_x.jsonl",
+        "archive/events/task_x.jsonl",
+    ):
+        assert is_event_log(rel), rel
+    for rel in (
+        "artifacts/payload/art_x.jsonl",
+        "notes/trace.jsonl",
+        "orchestration/log.jsonl",
+        "archive/artifacts/x.jsonl",
+        "events/task_x.json",
+    ):
+        assert not is_event_log(rel), rel
+
+
+def test_artifact_jsonl_payload_keeps_origin() -> None:
+    line = json.dumps({"type": "user", "ts": "note", "origin": "keep"}) + "\n"
+    out = _norm().file("artifacts/payload/art_x.jsonl", line.encode(), session_file=False)
+    assert out["jsonl"] == [{"origin": "keep", "ts": "note", "type": "user"}]
 
 
 def test_session_file_strips_top_level_origin_only() -> None:

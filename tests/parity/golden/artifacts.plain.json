@@ -13,16 +13,16 @@
         "locks/"
       ]
     },
-    "artifacts/meta/<ID-11>.json": {
+    "artifacts/meta/<ID-12>.json": {
       "json": {
         "created_at": "<TS>",
         "created_by": "agent:worker",
         "custom_fields": {},
-        "id": "<ID-11>",
+        "id": "<ID-12>",
         "model": null,
         "payload": {
           "content_type": "text/markdown",
-          "file": "<ID-11>.md",
+          "file": "<ID-12>.md",
           "size_bytes": 19
         },
         "schema_version": 1,
@@ -34,16 +34,16 @@
         "type": "note"
       }
     },
-    "artifacts/meta/<ID-12>.json": {
+    "artifacts/meta/<ID-13>.json": {
       "json": {
         "created_at": "<TS>",
         "created_by": "agent:worker",
         "custom_fields": {},
-        "id": "<ID-12>",
+        "id": "<ID-13>",
         "model": null,
         "payload": {
           "content_type": "text/markdown",
-          "file": "<ID-12>.md",
+          "file": "<ID-13>.md",
           "size_bytes": 54
         },
         "schema_version": 1,
@@ -149,8 +149,29 @@
         "id": "<ID-6>",
         "model": null,
         "payload": {
+          "content_type": null,
+          "file": "<ID-6>.jsonl",
+          "size_bytes": 126
+        },
+        "schema_version": 1,
+        "sensitive": false,
+        "summary": null,
+        "tags": [],
+        "title": "Trace",
+        "token_usage": null,
+        "type": "file"
+      }
+    },
+    "artifacts/meta/<ID-7>.json": {
+      "json": {
+        "created_at": "<TS>",
+        "created_by": "agent:worker",
+        "custom_fields": {},
+        "id": "<ID-7>",
+        "model": null,
+        "payload": {
           "content_type": "text/markdown",
-          "file": "<ID-6>.md",
+          "file": "<ID-7>.md",
           "size_bytes": 8
         },
         "schema_version": 1,
@@ -162,12 +183,12 @@
         "type": "note"
       }
     },
-    "artifacts/payload/<ID-11>.md": {
+    "artifacts/payload/<ID-12>.md": {
       "lines": [
         "Reviewed: all good."
       ]
     },
-    "artifacts/payload/<ID-12>.md": {
+    "artifacts/payload/<ID-13>.md": {
       "lines": [
         "Multi-paragraph review.",
         "",
@@ -191,7 +212,23 @@
         "Caller id"
       ]
     },
-    "artifacts/payload/<ID-6>.md": {
+    "artifacts/payload/<ID-6>.jsonl": {
+      "jsonl": [
+        {
+          "origin": "keep",
+          "ts": "note",
+          "type": "user"
+        },
+        {
+          "origin": {
+            "host": "user-host"
+          },
+          "ts": "<TS>",
+          "type": "x"
+        }
+      ]
+    },
+    "artifacts/payload/<ID-7>.md": {
       "lines": [
         "evidence"
       ]
@@ -204,7 +241,7 @@
         "default_priority": "medium",
         "default_status": "backlog",
         "done_display": "grouped",
-        "instance_id": "<ID-13>",
+        "instance_id": "<ID-14>",
         "plan_approval": "auto",
         "plan_review_mode": "single",
         "project_code": "PAR",
@@ -364,14 +401,110 @@
           "actor": "human:parity",
           "data": {
             "priority": "medium",
-            "short_id": "PAR-4",
+            "short_id": "PAR-3",
             "status": "backlog",
-            "title": "Complete without review",
+            "title": "Complete from file",
             "type": "task"
           },
           "id": "<ID-17>",
           "schema_version": 1,
           "task_id": "<ID-10>",
+          "ts": "<TS>",
+          "type": "task_created"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "from": null,
+            "to": "human:parity"
+          },
+          "id": "<ID-34>",
+          "schema_version": 1,
+          "task_id": "<ID-10>",
+          "ts": "<TS>",
+          "type": "assignment_changed"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "force": true,
+            "from": "backlog",
+            "reason": "straight to work",
+            "to": "in_progress"
+          },
+          "id": "<ID-35>",
+          "provenance": {
+            "reason": "straight to work"
+          },
+          "schema_version": 1,
+          "task_id": "<ID-10>",
+          "ts": "<TS>",
+          "type": "status_changed"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "body": "Multi-paragraph review.\n\nSecond paragraph with `code`.",
+            "role": "review"
+          },
+          "id": "<ID-36>",
+          "schema_version": 1,
+          "task_id": "<ID-10>",
+          "ts": "<TS>",
+          "type": "comment_added"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "from": "in_progress",
+            "to": "review"
+          },
+          "id": "<ID-37>",
+          "schema_version": 1,
+          "task_id": "<ID-10>",
+          "ts": "<TS>",
+          "type": "status_changed"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "artifact_id": "<ID-13>",
+            "role": "review"
+          },
+          "id": "<ID-38>",
+          "schema_version": 1,
+          "task_id": "<ID-10>",
+          "ts": "<TS>",
+          "type": "artifact_attached"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "from": "review",
+            "to": "done"
+          },
+          "id": "<ID-39>",
+          "schema_version": 1,
+          "task_id": "<ID-10>",
+          "ts": "<TS>",
+          "type": "status_changed"
+        }
+      ]
+    },
+    "events/<ID-11>.jsonl": {
+      "jsonl": [
+        {
+          "actor": "human:parity",
+          "data": {
+            "priority": "medium",
+            "short_id": "PAR-4",
+            "status": "backlog",
+            "title": "Complete without review",
+            "type": "task"
+          },
+          "id": "<ID-18>",
+          "schema_version": 1,
+          "task_id": "<ID-11>",
           "ts": "<TS>",
           "type": "task_created"
         }
@@ -388,7 +521,7 @@
             "title": "Artifact task",
             "type": "task"
           },
-          "id": "<ID-14>",
+          "id": "<ID-15>",
           "schema_version": 1,
           "task_id": "<ID-1>",
           "ts": "<TS>",
@@ -400,7 +533,7 @@
             "artifact_id": "<ID-2>",
             "role": "review"
           },
-          "id": "<ID-18>",
+          "id": "<ID-19>",
           "schema_version": 1,
           "task_id": "<ID-1>",
           "ts": "<TS>",
@@ -411,7 +544,7 @@
           "data": {
             "artifact_id": "<ID-3>"
           },
-          "id": "<ID-19>",
+          "id": "<ID-20>",
           "schema_version": 1,
           "task_id": "<ID-1>",
           "ts": "<TS>",
@@ -423,7 +556,7 @@
             "artifact_id": "<ID-4>",
             "role": "validation"
           },
-          "id": "<ID-20>",
+          "id": "<ID-21>",
           "schema_version": 1,
           "task_id": "<ID-1>",
           "ts": "<TS>",
@@ -434,7 +567,18 @@
           "data": {
             "artifact_id": "<ID-5>"
           },
-          "id": "<ID-21>",
+          "id": "<ID-22>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "artifact_attached"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "artifact_id": "<ID-6>"
+          },
+          "id": "<ID-23>",
           "schema_version": 1,
           "task_id": "<ID-1>",
           "ts": "<TS>",
@@ -447,7 +591,7 @@
             "outcome": "Report exists",
             "revision": 1
           },
-          "id": "<ID-22>",
+          "id": "<ID-24>",
           "schema_version": 1,
           "task_id": "<ID-1>",
           "ts": "<TS>",
@@ -456,12 +600,12 @@
         {
           "actor": "agent:worker",
           "data": {
-            "artifact_id": "<ID-6>",
+            "artifact_id": "<ID-7>",
             "criterion_ids": [
               "report"
             ]
           },
-          "id": "<ID-23>",
+          "id": "<ID-25>",
           "schema_version": 1,
           "task_id": "<ID-1>",
           "ts": "<TS>",
@@ -473,7 +617,7 @@
             "env": "staging",
             "n": 1
           },
-          "id": "<ID-24>",
+          "id": "<ID-26>",
           "schema_version": 1,
           "task_id": "<ID-1>",
           "ts": "<TS>",
@@ -486,7 +630,7 @@
             "ts": "<TS>",
             "type": "user"
           },
-          "id": "<ID-25>",
+          "id": "<ID-27>",
           "schema_version": 1,
           "task_id": "<ID-1>",
           "ts": "<TS>",
@@ -495,107 +639,11 @@
         {
           "actor": "agent:worker",
           "data": {},
-          "id": "<ID-7>",
+          "id": "<ID-8>",
           "schema_version": 1,
           "task_id": "<ID-1>",
           "ts": "<TS>",
           "type": "x_deploy"
-        }
-      ]
-    },
-    "events/<ID-8>.jsonl": {
-      "jsonl": [
-        {
-          "actor": "human:parity",
-          "data": {
-            "priority": "medium",
-            "short_id": "PAR-2",
-            "status": "backlog",
-            "title": "Complete me",
-            "type": "task"
-          },
-          "id": "<ID-15>",
-          "schema_version": 1,
-          "task_id": "<ID-8>",
-          "ts": "<TS>",
-          "type": "task_created"
-        },
-        {
-          "actor": "human:parity",
-          "data": {
-            "from": null,
-            "to": "human:parity"
-          },
-          "id": "<ID-26>",
-          "schema_version": 1,
-          "task_id": "<ID-8>",
-          "ts": "<TS>",
-          "type": "assignment_changed"
-        },
-        {
-          "actor": "human:parity",
-          "data": {
-            "force": true,
-            "from": "backlog",
-            "reason": "straight to work",
-            "to": "in_progress"
-          },
-          "id": "<ID-27>",
-          "provenance": {
-            "reason": "straight to work"
-          },
-          "schema_version": 1,
-          "task_id": "<ID-8>",
-          "ts": "<TS>",
-          "type": "status_changed"
-        },
-        {
-          "actor": "agent:worker",
-          "data": {
-            "body": "Reviewed: all good.",
-            "role": "review"
-          },
-          "id": "<ID-28>",
-          "schema_version": 1,
-          "task_id": "<ID-8>",
-          "ts": "<TS>",
-          "type": "comment_added"
-        },
-        {
-          "actor": "agent:worker",
-          "data": {
-            "from": "in_progress",
-            "to": "review"
-          },
-          "id": "<ID-29>",
-          "schema_version": 1,
-          "task_id": "<ID-8>",
-          "ts": "<TS>",
-          "type": "status_changed"
-        },
-        {
-          "actor": "agent:worker",
-          "data": {
-            "artifact_id": "<ID-11>",
-            "role": "review"
-          },
-          "id": "<ID-30>",
-          "schema_version": 1,
-          "task_id": "<ID-8>",
-          "ts": "<TS>",
-          "type": "artifact_attached"
-        },
-        {
-          "actor": "agent:worker",
-          "data": {
-            "from": "review",
-            "to": "done"
-          },
-          "id": "<ID-31>",
-          "schema_version": 1,
-          "task_id": "<ID-8>",
-          "ts": "<TS>",
-          "type": "status_changed"
         }
       ]
     },
@@ -605,9 +653,9 @@
           "actor": "human:parity",
           "data": {
             "priority": "medium",
-            "short_id": "PAR-3",
+            "short_id": "PAR-2",
             "status": "backlog",
-            "title": "Complete from file",
+            "title": "Complete me",
             "type": "task"
           },
           "id": "<ID-16>",
@@ -622,7 +670,7 @@
             "from": null,
             "to": "human:parity"
           },
-          "id": "<ID-32>",
+          "id": "<ID-28>",
           "schema_version": 1,
           "task_id": "<ID-9>",
           "ts": "<TS>",
@@ -636,7 +684,7 @@
             "reason": "straight to work",
             "to": "in_progress"
           },
-          "id": "<ID-33>",
+          "id": "<ID-29>",
           "provenance": {
             "reason": "straight to work"
           },
@@ -648,10 +696,10 @@
         {
           "actor": "agent:worker",
           "data": {
-            "body": "Multi-paragraph review.\n\nSecond paragraph with `code`.",
+            "body": "Reviewed: all good.",
             "role": "review"
           },
-          "id": "<ID-34>",
+          "id": "<ID-30>",
           "schema_version": 1,
           "task_id": "<ID-9>",
           "ts": "<TS>",
@@ -663,7 +711,7 @@
             "from": "in_progress",
             "to": "review"
           },
-          "id": "<ID-35>",
+          "id": "<ID-31>",
           "schema_version": 1,
           "task_id": "<ID-9>",
           "ts": "<TS>",
@@ -675,7 +723,7 @@
             "artifact_id": "<ID-12>",
             "role": "review"
           },
-          "id": "<ID-36>",
+          "id": "<ID-32>",
           "schema_version": 1,
           "task_id": "<ID-9>",
           "ts": "<TS>",
@@ -687,7 +735,7 @@
             "from": "review",
             "to": "done"
           },
-          "id": "<ID-37>",
+          "id": "<ID-33>",
           "schema_version": 1,
           "task_id": "<ID-9>",
           "ts": "<TS>",
@@ -706,7 +754,7 @@
             "title": "Artifact task",
             "type": "task"
           },
-          "id": "<ID-14>",
+          "id": "<ID-15>",
           "schema_version": 1,
           "task_id": "<ID-1>",
           "ts": "<TS>",
@@ -721,9 +769,9 @@
             "title": "Complete me",
             "type": "task"
           },
-          "id": "<ID-15>",
+          "id": "<ID-16>",
           "schema_version": 1,
-          "task_id": "<ID-8>",
+          "task_id": "<ID-9>",
           "ts": "<TS>",
           "type": "task_created"
         },
@@ -736,9 +784,9 @@
             "title": "Complete from file",
             "type": "task"
           },
-          "id": "<ID-16>",
+          "id": "<ID-17>",
           "schema_version": 1,
-          "task_id": "<ID-9>",
+          "task_id": "<ID-10>",
           "ts": "<TS>",
           "type": "task_created"
         },
@@ -751,9 +799,9 @@
             "title": "Complete without review",
             "type": "task"
           },
-          "id": "<ID-17>",
+          "id": "<ID-18>",
           "schema_version": 1,
-          "task_id": "<ID-10>",
+          "task_id": "<ID-11>",
           "ts": "<TS>",
           "type": "task_created"
         }
@@ -763,9 +811,9 @@
       "json": {
         "map": {
           "PAR-1": "<ID-1>",
-          "PAR-2": "<ID-8>",
-          "PAR-3": "<ID-9>",
-          "PAR-4": "<ID-10>"
+          "PAR-2": "<ID-9>",
+          "PAR-3": "<ID-10>",
+          "PAR-4": "<ID-11>"
         },
         "next_seqs": {
           "PAR": 5
@@ -775,6 +823,11 @@
     },
     "plans/<ID-10>.md": {
       "lines": [
+        "# PAR-3: Complete from file"
+      ]
+    },
+    "plans/<ID-11>.md": {
+      "lines": [
         "# PAR-4: Complete without review"
       ]
     },
@@ -783,17 +836,53 @@
         "# PAR-1: Artifact task"
       ]
     },
-    "plans/<ID-8>.md": {
+    "plans/<ID-9>.md": {
       "lines": [
         "# PAR-2: Complete me"
       ]
     },
-    "plans/<ID-9>.md": {
-      "lines": [
-        "# PAR-3: Complete from file"
-      ]
-    },
     "tasks/<ID-10>.json": {
+      "json": {
+        "acceptance_criteria": [],
+        "assigned_to": "human:parity",
+        "branch_links": [],
+        "comment_count": 1,
+        "complexity": null,
+        "created_at": "<TS>",
+        "created_by": "human:parity",
+        "custom_fields": {},
+        "description": null,
+        "done_at": "<TS>",
+        "evidence_refs": [
+          {
+            "id": "<ID-36>",
+            "role": "review",
+            "source_type": "comment"
+          },
+          {
+            "id": "<ID-13>",
+            "role": "review",
+            "source_type": "artifact"
+          }
+        ],
+        "id": "<ID-10>",
+        "last_event_id": "<ID-39>",
+        "last_status_changed_at": "<TS>",
+        "linked_files": [],
+        "priority": "medium",
+        "relationships_out": [],
+        "reopened_count": 0,
+        "schema_version": 1,
+        "short_id": "PAR-3",
+        "status": "done",
+        "tags": null,
+        "title": "Complete from file",
+        "type": "task",
+        "updated_at": "<TS>",
+        "urgency": null
+      }
+    },
+    "tasks/<ID-11>.json": {
       "json": {
         "acceptance_criteria": [],
         "assigned_to": null,
@@ -806,8 +895,8 @@
         "description": null,
         "done_at": null,
         "evidence_refs": [],
-        "id": "<ID-10>",
-        "last_event_id": "<ID-17>",
+        "id": "<ID-11>",
+        "last_event_id": "<ID-18>",
         "last_status_changed_at": "<TS>",
         "linked_files": [],
         "priority": "medium",
@@ -839,7 +928,7 @@
               {
                 "changed_at": "<TS>",
                 "changed_by": "human:parity",
-                "event_id": "<ID-22>",
+                "event_id": "<ID-24>",
                 "outcome": "Report exists",
                 "revision": 1
               }
@@ -879,16 +968,21 @@
             "source_type": "artifact"
           },
           {
+            "id": "<ID-6>",
+            "role": null,
+            "source_type": "artifact"
+          },
+          {
             "criterion_ids": [
               "report"
             ],
-            "id": "<ID-6>",
+            "id": "<ID-7>",
             "role": null,
             "source_type": "artifact"
           }
         ],
         "id": "<ID-1>",
-        "last_event_id": "<ID-7>",
+        "last_event_id": "<ID-8>",
         "last_status_changed_at": "<TS>",
         "linked_files": [],
         "priority": "medium",
@@ -899,47 +993,6 @@
         "status": "backlog",
         "tags": null,
         "title": "Artifact task",
-        "type": "task",
-        "updated_at": "<TS>",
-        "urgency": null
-      }
-    },
-    "tasks/<ID-8>.json": {
-      "json": {
-        "acceptance_criteria": [],
-        "assigned_to": "human:parity",
-        "branch_links": [],
-        "comment_count": 1,
-        "complexity": null,
-        "created_at": "<TS>",
-        "created_by": "human:parity",
-        "custom_fields": {},
-        "description": null,
-        "done_at": "<TS>",
-        "evidence_refs": [
-          {
-            "id": "<ID-28>",
-            "role": "review",
-            "source_type": "comment"
-          },
-          {
-            "id": "<ID-11>",
-            "role": "review",
-            "source_type": "artifact"
-          }
-        ],
-        "id": "<ID-8>",
-        "last_event_id": "<ID-31>",
-        "last_status_changed_at": "<TS>",
-        "linked_files": [],
-        "priority": "medium",
-        "relationships_out": [],
-        "reopened_count": 0,
-        "schema_version": 1,
-        "short_id": "PAR-2",
-        "status": "done",
-        "tags": null,
-        "title": "Complete me",
         "type": "task",
         "updated_at": "<TS>",
         "urgency": null
@@ -959,7 +1012,7 @@
         "done_at": "<TS>",
         "evidence_refs": [
           {
-            "id": "<ID-34>",
+            "id": "<ID-30>",
             "role": "review",
             "source_type": "comment"
           },
@@ -970,17 +1023,17 @@
           }
         ],
         "id": "<ID-9>",
-        "last_event_id": "<ID-37>",
+        "last_event_id": "<ID-33>",
         "last_status_changed_at": "<TS>",
         "linked_files": [],
         "priority": "medium",
         "relationships_out": [],
         "reopened_count": 0,
         "schema_version": 1,
-        "short_id": "PAR-3",
+        "short_id": "PAR-2",
         "status": "done",
         "tags": null,
-        "title": "Complete from file",
+        "title": "Complete me",
         "type": "task",
         "updated_at": "<TS>",
         "urgency": null
@@ -1157,6 +1210,30 @@
       }
     },
     {
+      "write_file": "trace.jsonl"
+    },
+    {
+      "args": [
+        "attach",
+        "PAR-1",
+        "<ROOT>/trace.jsonl",
+        "--title",
+        "Trace",
+        "--actor",
+        "agent:worker"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Attached artifact <ID-6> \"Trace\" to task <ID-1>",
+          "  type: file  sensitive: False"
+        ]
+      }
+    },
+    {
       "args": [
         "attach",
         "PAR-1",
@@ -1271,7 +1348,7 @@
       },
       "stdout": {
         "lines": [
-          "Attached artifact <ID-6> \"inline attachment\" to task <ID-1>",
+          "Attached artifact <ID-7> \"inline attachment\" to task <ID-1>",
           "  type: note  sensitive: False"
         ]
       }
@@ -1322,7 +1399,7 @@
         "PAR-1",
         "x_deploy",
         "--id",
-        "<ID-7>",
+        "<ID-8>",
         "--actor",
         "agent:worker"
       ],
@@ -1342,7 +1419,7 @@
         "PAR-1",
         "x_deploy",
         "--id",
-        "<ID-7>",
+        "<ID-8>",
         "--actor",
         "agent:worker"
       ],
@@ -1352,7 +1429,7 @@
       },
       "stdout": {
         "lines": [
-          "Event <ID-7> already exists (idempotent)."
+          "Event <ID-8> already exists (idempotent)."
         ]
       }
     },
@@ -1427,7 +1504,7 @@
       },
       "stdout": {
         "lines": [
-          "Created task PAR-2 (<ID-8>) \"Complete me\"",
+          "Created task PAR-2 (<ID-9>) \"Complete me\"",
           "  status: backlog  priority: medium  type: task"
         ]
       }
@@ -1505,7 +1582,7 @@
       },
       "stdout": {
         "lines": [
-          "Created task PAR-3 (<ID-9>) \"Complete from file\"",
+          "Created task PAR-3 (<ID-10>) \"Complete from file\"",
           "  status: backlog  priority: medium  type: task"
         ]
       }
@@ -1567,7 +1644,7 @@
       },
       "stdout": {
         "lines": [
-          "Created task PAR-4 (<ID-10>) \"Complete without review\"",
+          "Created task PAR-4 (<ID-11>) \"Complete without review\"",
           "  status: backlog  priority: medium  type: task"
         ]
       }

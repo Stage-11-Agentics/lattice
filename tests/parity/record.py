@@ -11,7 +11,8 @@ Normalization is applied identically when recording and when comparing:
 - JSON and JSONL are parsed and kept as objects (the golden is re-dumped with
   sorted keys), so key order and indentation never matter;
 - the top-level ``origin`` key (v2 adds it) is dropped at known event
-  boundaries only: each record of a board ``.jsonl`` event log, a session file
+  boundaries only: each record of an event log (``events/*.jsonl``, including
+  ``_lifecycle.jsonl`` and resource logs, and ``archive/events/*.jsonl``), a session file
   under ``sessions/``, the hook sentinel's stdin event, and the ``data`` event
   (or list of events) printed by ``EVENT_DATA_COMMANDS`` under ``--json``. It
   is never stripped from an arbitrary nested object, so user data keeps it;
@@ -185,6 +186,9 @@ class Normalizer:
         except UnicodeDecodeError:
             return {"binary_bytes": len(content)}
         if rel.endswith(".jsonl"):
+            # Only event logs lose origin; any other JSONL (an attached artifact
+            # payload, say) is user data and is kept whole.
+            event_log = is_event_log(rel)
             records = []
             for line in text.splitlines():
                 if not line.strip():
@@ -194,7 +198,7 @@ class Normalizer:
                 except ValueError:
                     records.append({"unparsed": self.text(line)})
                     continue
-                records.append(self.obj(_strip_origin(record)))
+                records.append(self.obj(_strip_origin(record) if event_log else record))
             return {"jsonl": records}
         if rel.endswith(".json"):
             try:
@@ -205,6 +209,16 @@ class Normalizer:
                 parsed = _strip_origin(parsed)
             return {"json": self.obj(parsed)}
         return {"lines": [self.text(line) for line in text.splitlines()]}
+
+
+def is_event_log(rel: str) -> bool:
+    """True for an event-log path: ``events/<name>.jsonl`` or ``archive/events/<name>.jsonl``."""
+    parts = rel.split("/")
+    if not rel.endswith(".jsonl"):
+        return False
+    return (len(parts) == 2 and parts[0] == "events") or (
+        len(parts) == 3 and parts[:2] == ["archive", "events"]
+    )
 
 
 def _strip_origin(value: Any) -> Any:
