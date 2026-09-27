@@ -169,15 +169,26 @@ def pending_requests(board: Path) -> list[Path]:
     ]
 
 
-def run_request(project: Any, path: Path) -> dict:
-    """Run one request (caller holds the project's locks); returns the ``.done`` object."""
+def answer_unowned(path: Path, answer: dict) -> None:
+    """Answer a request for a project this server does not hold, touching nothing
+    else: the ``.done`` goes through the same private writer the admin uses."""
+    _write_private(path.with_suffix(".done"), (json.dumps(answer, sort_keys=True) + "\n").encode())
+    path.unlink(missing_ok=True)
+
+
+def run_request(project: Any, path: Path, log: Any = None) -> dict:
+    """Run one request (caller holds the project's locks); returns the ``.done`` object.
+
+    Any failure becomes an answer, so one bad request never wedges the project.
+    """
     try:
         request = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(request, dict):
             raise ValueError("request is not an object")
     except (OSError, ValueError) as exc:
         return {"ok": False, "error": {"code": "VALIDATION_ERROR", "message": str(exc)}}
-    handler = ACTIONS.get(request.get("action"))
+    action_name = request.get("action")
+    handler = ACTIONS.get(action_name) if isinstance(action_name, str) else None
     if handler is None:
         return {
             "ok": False,
@@ -190,3 +201,16 @@ def run_request(project: Any, path: Path) -> dict:
         return {"ok": True, "result": handler(project, request)}
     except OpError as exc:
         return {"ok": False, "error": exc.to_dict()}
+    except Exception as exc:  # noqa: BLE001 - answered and logged, never raised
+        if log is not None:
+            log.error(
+                "control_request_crashed",
+                request=path.stem,
+                action=str(request.get("action"))[:64],
+                exception=type(exc).__name__,
+                message=str(exc)[:500],
+            )
+        return {
+            "ok": False,
+            "error": {"code": "INTERNAL_ERROR", "message": f"{type(exc).__name__}: {exc}"},
+        }

@@ -41,9 +41,22 @@ def test_two_edits_within_one_mtime_tick_are_both_seen(root: Path) -> None:
     assert store.get(second["record"]["id"]).revoked_at is not None
 
 
-def test_a_broken_tokens_file_keeps_the_last_good_registry(root: Path) -> None:
+def test_a_broken_tokens_file_fails_closed(root: Path) -> None:
+    """A hand edit that breaks tokens.json (say, while revoking a token) authenticates
+    nobody until the file parses again; it never leaves the old registry in force."""
+    import pytest
+
+    from lattice.core.errors import OpError
+
     data = tokens.create_token(root, user="human:a", machine="m", all_projects=True)
-    store = TokenStore(root)
+    good = (root / "tokens.json").read_text()
+    reloads = []
+    store = TokenStore(root, on_reload=lambda **f: reloads.append(f))
     assert store.authenticate(f"Bearer {data['token']}").user == "human:a"
     (root / "tokens.json").write_text("{not json")
+    with pytest.raises(OpError) as exc:
+        store.authenticate(f"Bearer {data['token']}")
+    assert exc.value.code == "UNAUTHENTICATED"
+    assert reloads[-1]["ok"] is False
+    (root / "tokens.json").write_text(good)
     assert store.authenticate(f"Bearer {data['token']}").user == "human:a"

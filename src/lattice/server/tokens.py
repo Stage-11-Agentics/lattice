@@ -211,10 +211,14 @@ class TokenStore:
                 return
             try:
                 records = _read(self.root)
-            except (OSError, ValueError, KeyError, TypeError) as exc:
-                # A half-edited file keeps the last good registry; never open up.
+            except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+                # Fail closed: an unreadable registry authenticates nobody (a
+                # hand edit that revoked a token must never leave it valid),
+                # until the file changes and parses again.
+                self._by_id = {}
+                self._key = key
                 if self.on_reload:
-                    self.on_reload(ok=False, error=str(exc))
+                    self.on_reload(ok=False, error=f"{type(exc).__name__}: {exc}")
                 return
             self._by_id = {r.id: r for r in records}
             self._key = key

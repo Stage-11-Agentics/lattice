@@ -214,9 +214,27 @@ class Journal:
         seq = self.head_seq + 1
         line = {"seq": seq, "ts": now_ms(), **entry}
         raw = json.dumps(line, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-        jsonl_append(self.path, raw + "\n")
+        try:
+            before = self.path.stat().st_size
+        except FileNotFoundError:
+            before = 0
+        try:
+            jsonl_append(self.path, raw + "\n")
+        except BaseException:
+            # Never leave a partial line for the next append to bury mid-file.
+            self._truncate(before)
+            raise
         self._account(line, raw.encode("utf-8"))
         return seq, line
+
+    def _truncate(self, length: int) -> None:
+        try:
+            with open(self.path, "r+b") as fh:
+                fh.truncate(length)
+                fh.flush()
+                os.fsync(fh.fileno())
+        except OSError:
+            pass  # the caller quarantines the project; load drops a torn tail
 
     def read_entries(self, after: int = 0) -> list[dict]:
         """Journal entries with ``seq > after`` (reads the file)."""

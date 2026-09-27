@@ -105,8 +105,9 @@ def require_root(root: Path) -> None:
 def init_root(root: Path) -> dict:
     """Create the root, ``server.json``, empty ``tokens.json`` (0600). Idempotent."""
     root = Path(root)
-    root.mkdir(parents=True, exist_ok=True)
-    os.chmod(root, 0o700)
+    if not root.exists():
+        root.mkdir(parents=True)
+        os.chmod(root, 0o700)
     created: list[str] = []
     with admin_lock(root):
         ensure_dir(root / PROJECTS_DIR)

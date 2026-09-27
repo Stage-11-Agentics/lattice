@@ -45,7 +45,14 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from lattice.core.errors import OpError
 from lattice.core.events import BUILTIN_EVENT_TYPES
 from lattice.core.ids import generate_op_id, validate_actor
-from lattice.ops.base import Caller, OpResult, check_op_id, get_operation, parse_params
+from lattice.ops.base import (
+    Caller,
+    OpResult,
+    check_op_id,
+    check_path_component,
+    get_operation,
+    parse_params,
+)
 from lattice.ops.base import registered_operations as _registered_operations
 from lattice.server import admin
 from lattice.server.config import ServerConfig
@@ -95,7 +102,8 @@ class ServerState:
         self.disk = DiskFloor(self.root, config.limits.min_free_disk_bytes)
 
     def _tokens_reloaded(self, **fields: Any) -> None:
-        self.log.info("config_reload", file="tokens.json", **fields)
+        level = "info" if fields.get("ok") else "error"
+        self.log.emit(level, "config_reload", file="tokens.json", **fields)
 
 
 # ---------------------------------------------------------------------------
@@ -328,6 +336,15 @@ def parse_envelope(
 ) -> tuple[WriteRequest, dict]:
     """Validate the op request body into a :class:`WriteRequest`."""
     try:
+        return _parse_envelope(request, state, token, op_name, raw)
+    except RecursionError:
+        raise OpError("VALIDATION_ERROR", "request body is nested too deeply.") from None
+
+
+def _parse_envelope(
+    request: Request, state: ServerState, token: TokenRecord, op_name: str, raw: bytes
+) -> tuple[WriteRequest, dict]:
+    try:
         body = json.loads(raw.decode("utf-8")) if raw else {}
     except (UnicodeDecodeError, ValueError):
         raise OpError("VALIDATION_ERROR", "request body is not valid JSON.") from None
@@ -404,9 +421,21 @@ def parse_envelope(
     actor_name = body.get("actor_name")
     if actor is not None and not isinstance(actor, str):
         raise OpError("VALIDATION_ERROR", "actor must be a string.")
-    if actor_name is not None and not isinstance(actor_name, str):
-        raise OpError("VALIDATION_ERROR", "actor_name must be a string.")
-    if not getattr(op_cls, "no_actor", False) and actor_name is None:
+    if actor_name is not None:
+        if not isinstance(actor_name, str):
+            raise OpError("VALIDATION_ERROR", "actor_name must be a string.")
+        check_path_component(actor_name, "session name")
+    authenticated = token.authenticated_origin()
+    if getattr(op_cls, "no_actor", False):
+        # SPEC §3.7: the token authorizes these as its own default actor.
+        if token.default_actor is None:
+            raise OpError(
+                "MISSING_ACTOR",
+                f"operation {op_name} runs as the token's default actor, and token "
+                f"{token.id} has none (it needs exactly one literal actor pattern).",
+            )
+        authenticated["actor"] = token.default_actor
+    elif actor_name is None:
         if actor is None:
             actor = token.default_actor
             if actor is None:
@@ -431,7 +460,7 @@ def parse_envelope(
         origin={
             "op_id": op_id,
             "reported": reported,
-            "authenticated": token.authenticated_origin(),
+            "authenticated": authenticated,
         },
         attestations=attestations,
         expect_last_event_id=expect_last,
@@ -462,14 +491,14 @@ def result_json(result: OpResult) -> dict:
 
 
 async def healthz(request: Request, state: ServerState) -> Response:
-    free = state.disk.free_bytes()
+    free, counts = await in_worker(lambda: (state.disk.free_bytes(), state.registry.counts()))
     ok = free >= state.config.limits.min_free_disk_bytes
     body = {
         "ok": ok,
         "version": state.version,
         "protocol": PROTOCOL,
         "disk_free_bytes": free,
-        "projects": state.registry.counts(),
+        "projects": counts,
     }
     return JSONResponse(body, status_code=200 if ok else 503)
 
@@ -528,7 +557,7 @@ async def info(request: Request, state: ServerState) -> Response:
 
 
 async def projects(request: Request, state: ServerState) -> Response:
-    async def run(token: TokenRecord) -> Response:
+    def rows_for(token: TokenRecord) -> list[dict]:
         rows = []
         for slug in _visible_slugs(state, token):
             project = state.registry.get(slug)
@@ -544,7 +573,10 @@ async def projects(request: Request, state: ServerState) -> Response:
             rows.append(
                 {"slug": slug, "project_code": code, "head_seq": head, "state": project.state}
             )
-        return envelope_ok({"projects": rows})
+        return rows
+
+    async def run(token: TokenRecord) -> Response:
+        return envelope_ok({"projects": await in_worker(lambda: rows_for(token))})
 
     return await _with_token(request, state, run)
 

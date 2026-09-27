@@ -165,6 +165,11 @@ def parse_config(raw: Any) -> ServerConfig:
     for name in ("max_inflight_per_token", "token_ops_per_minute", "lock_timeout_seconds"):
         if getattr(limits, name) < 1:
             raise ServerConfigError(f"limits.{name} must be at least 1")
+    if limits.token_body_bytes_per_minute < max(1, limits.max_body_bytes):
+        raise ServerConfigError(
+            "limits.token_body_bytes_per_minute must be at least limits.max_body_bytes, "
+            "or a body the server accepts could never fit a token's budget"
+        )
     kwargs["limits"] = limits
     stream = _section(StreamConfig, "stream", raw.get("stream"))
     if stream.heartbeat_seconds < 1:

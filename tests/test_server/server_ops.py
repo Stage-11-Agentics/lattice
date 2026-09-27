@@ -108,3 +108,19 @@ class Defaulted:
 
     def run(self, ctx: OpContext, p: ExtraParams) -> OpResult:
         return OpResult(value={"color": p.color}, idempotent=True)
+
+
+@dataclass(frozen=True)
+class NoActorParams:
+    label: str = "x"
+
+
+@operation("xtest.no_actor")
+class NoActor:
+    """An operation that takes no actor (like ``session start``): writes nothing."""
+
+    Params = NoActorParams
+    no_actor = True
+
+    def run(self, ctx: OpContext, p: NoActorParams) -> OpResult:
+        return OpResult(value={"actor": ctx.actor}, idempotent=True)

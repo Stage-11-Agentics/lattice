@@ -23,7 +23,7 @@ import os
 import socket
 import threading
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TypeVar
@@ -171,13 +171,15 @@ class Project:
 
     @contextmanager
     def locked(self, *, timeout: float | None = None) -> Iterator[None]:
-        """Hold the work lock, as this board's owner (call from a worker thread)."""
+        """Hold the work lock (call from a worker thread). The owner flag, which
+        lets the board primitives write this server-owned board, is set only
+        while this process holds the project's owner lease."""
         acquired = self.work.acquire(timeout=-1 if timeout is None else timeout)
         if not acquired:
             raise OpError("BOARD_BUSY", f"project {self.slug} is busy; retry shortly.")
         token = CURRENT_PROJECT.set(self.slug)
         try:
-            with owning_board(self.board):
+            with owning_board(self.board) if self._lease_fd is not None else nullcontext():
                 yield
         finally:
             CURRENT_PROJECT.reset(token)
@@ -209,12 +211,18 @@ class Project:
         if not (board / "config.json").is_file():
             self._mark_unavailable("not a board: config.json is missing")
             return
-        ensure_dir(board / HOSTED_DIR)
+        if not (board / HOSTED_DIR).is_dir():
+            self._mark_unavailable("not a server project: hosted/ is missing")
+            return
         fd = try_owner_flock(board)
         if fd is None:
             self._mark_unavailable("another process holds this project's owner lease")
             return
         self._lease_fd = fd
+        with owning_board(board):
+            self._load_owned(board)
+
+    def _load_owned(self, board: Path) -> None:
         owner_path = board / HOSTED_DIR / "owner.json"
         if owner_path.exists():
             self.log.info("lease_takeover", project=self.slug, previous=_read_json(owner_path))
@@ -269,6 +277,7 @@ class Project:
 
     def _mark_unavailable(self, reason: str) -> None:
         self.state, self.reason = UNAVAILABLE, reason
+        self.journal = None
         if self._lease_fd is not None:
             release_owner_flock(self._lease_fd)
             self._lease_fd = None
@@ -305,19 +314,24 @@ class Project:
         ]
         if not changed:
             return
-        assert self.journal is not None
-        seq, _ = self.journal.append(
-            {
-                "op": "external",
-                "op_id": None,
-                "fp": None,
-                "token_id": None,
-                "task_id": None,
-                "event_ids": [],
-                "paths": changed,
-                "lengths": {},
-            }
-        )
+        if self.journal is None:
+            raise OpError("BOARD_UNAVAILABLE", f"project {self.slug} is not loaded")
+        try:
+            seq, _ = self.journal.append(
+                {
+                    "op": "external",
+                    "op_id": None,
+                    "fp": None,
+                    "token_id": None,
+                    "task_id": None,
+                    "event_ids": [],
+                    "paths": changed,
+                    "lengths": {},
+                }
+            )
+        except BaseException as exc:
+            self._mark_unavailable(f"journal append failed: {type(exc).__name__}: {exc}")
+            raise OpError("BOARD_UNAVAILABLE", f"project {self.slug} is unavailable") from exc
         self._remember_watched()
         self.log.warning("external_change", project=self.slug, paths=changed, seq=seq)
 
@@ -325,9 +339,20 @@ class Project:
         """Run every pending control request; returns how many ran."""
         ran = 0
         for path in control.pending_requests(self.board):
-            answer = control.run_request(self, path)
-            atomic_write(path.with_suffix(".done"), json.dumps(answer, sort_keys=True) + "\n")
-            unlink_path(path, missing_ok=True)
+            if self.state != LOADED or self._lease_fd is None or self.journal is None:
+                # Never act on a board this server does not hold: answer, write nothing.
+                answer = {
+                    "ok": False,
+                    "error": {
+                        "code": "BOARD_UNAVAILABLE",
+                        "message": f"project {self.slug} is {self.state}: {self.reason}",
+                    },
+                }
+                control.answer_unowned(path, answer)
+            else:
+                answer = control.run_request(self, path, self.log)
+                atomic_write(path.with_suffix(".done"), json.dumps(answer, sort_keys=True) + "\n")
+                unlink_path(path, missing_ok=True)
             self.log.info(
                 "control_request",
                 project=self.slug,
@@ -398,8 +423,37 @@ class Project:
         tracker: MutationTracker,
     ) -> tuple[int, dict]:
         """Append the journal line: the operation's commit point (SPEC §8.6 step 5)."""
+        if self.journal is None:
+            raise OpError("BOARD_UNAVAILABLE", f"project {self.slug} is not loaded")
+        try:
+            seq, line = self._append_journal(
+                op, op_id, fp, token_id, task_id, event_ids, paths, tracker
+            )
+        except BaseException as exc:
+            # The commit point failed: durability unknown, so quarantine (SPEC §8.6).
+            self._log_uncommitted(tracker, op, op_id)
+            self._mark_unavailable(f"journal append failed: {type(exc).__name__}: {exc}")
+            raise OpError(
+                "BOARD_UNAVAILABLE",
+                f"project {self.slug} could not record operation {op_id}; it is "
+                "unavailable until it is reloaded",
+            ) from exc
+        self._remember_watched()
+        return seq, line
+
+    def _append_journal(
+        self,
+        op: str,
+        op_id: str | None,
+        fp: str | None,
+        token_id: str | None,
+        task_id: str | None,
+        event_ids: list,
+        paths: list[str],
+        tracker: MutationTracker,
+    ) -> tuple[int, dict]:
         assert self.journal is not None
-        seq, line = self.journal.append(
+        return self.journal.append(
             {
                 "op": op,
                 "op_id": op_id,
@@ -411,8 +465,6 @@ class Project:
                 "lengths": tracker.lengths(),
             }
         )
-        self._remember_watched()
-        return seq, line
 
     def _log_uncommitted(self, tracker: MutationTracker, op: str, op_id: str | None) -> None:
         # H-22a replaces this with rollback from the undo log.
