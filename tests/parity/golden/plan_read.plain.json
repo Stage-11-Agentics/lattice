@@ -1,0 +1,627 @@
+{
+  "board": {
+    ".gitignore": {
+      "lines": [
+        "# Ephemeral Lattice runtime state — not part of the durable board.",
+        "# The board (tasks/ events/ plans/ artifacts/ ids.json config.json)",
+        "# stays tracked: it is the audit log and cross-machine coordination",
+        "# state. The paths below are mutated constantly and must never",
+        "# diverge per-worktree or collide on merge.",
+        "review_state/",
+        "tmp-prompts/",
+        ".daemon/",
+        "locks/"
+      ]
+    },
+    "archive/events/<ID-1>.jsonl": {
+      "jsonl": [
+        {
+          "actor": "human:parity",
+          "data": {
+            "description": "Why it matters.",
+            "priority": "medium",
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "title": "Planned task",
+            "type": "task"
+          },
+          "id": "<ID-3>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "task_created"
+        },
+        {
+          "actor": "human:parity",
+          "data": {},
+          "id": "<ID-4>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "task_archived"
+        }
+      ]
+    },
+    "archive/plans/<ID-1>.md": {
+      "lines": [
+        "# Plan",
+        "",
+        "## Approach",
+        "",
+        "- Do the work in one careful pass."
+      ]
+    },
+    "archive/tasks/<ID-1>.json": {
+      "json": {
+        "acceptance_criteria": [],
+        "assigned_to": null,
+        "branch_links": [],
+        "comment_count": 0,
+        "complexity": null,
+        "created_at": "<TS>",
+        "created_by": "human:parity",
+        "custom_fields": {},
+        "description": "Why it matters.",
+        "done_at": null,
+        "evidence_refs": [],
+        "id": "<ID-1>",
+        "last_event_id": "<ID-4>",
+        "last_status_changed_at": "<TS>",
+        "linked_files": [],
+        "priority": "medium",
+        "relationships_out": [],
+        "reopened_count": 0,
+        "schema_version": 1,
+        "short_id": "PAR-1",
+        "status": "backlog",
+        "tags": null,
+        "title": "Planned task",
+        "type": "task",
+        "updated_at": "<TS>",
+        "urgency": null
+      }
+    },
+    "config.json": {
+      "json": {
+        "auto_code_review_on_transition": false,
+        "auto_plan_review_on_transition": false,
+        "default_actor": "human:parity",
+        "default_priority": "medium",
+        "default_status": "backlog",
+        "done_display": "grouped",
+        "instance_id": "<ID-5>",
+        "plan_approval": "auto",
+        "plan_review_mode": "single",
+        "project_code": "PAR",
+        "review_max_diff_chars": 120000,
+        "review_max_diff_lines": 5000,
+        "review_mode": "single",
+        "review_timeout_seconds": 600,
+        "schema_version": 1,
+        "status_preset": "stage11",
+        "task_types": [
+          "task",
+          "bug",
+          "spike",
+          "chore"
+        ],
+        "workflow": {
+          "completion_policies": {
+            "done": {
+              "require_roles": [
+                "review"
+              ]
+            },
+            "pr_open": {
+              "require_roles": [
+                "validation"
+              ]
+            }
+          },
+          "descriptions": {
+            "backlog": "Task is captured but no work has started. No planning, no implementation.",
+            "blocked": "Work cannot proceed due to an external dependency or unresolved issue.",
+            "cancelled": "Work has been abandoned. No further action will be taken.",
+            "done": "Work is reviewed, merged, and shipped. No further action needed.",
+            "in_planning": "Design, dialogue, and scoping underway. No implementation code should be written yet.",
+            "in_progress": "Implementation is actively underway. Code is being written, tested, or integrated.",
+            "in_validation": "End-to-end validation is underway. The change is being exercised against a running system — browser automation, simulator flows, curl — before the PR opens. The bar: 'I saw it work,' not 'I think it should work.'",
+            "planned": "Plan is written and approved. Ready for implementation but work has not started.",
+            "pr_open": "PR is open and awaiting human review, CI, or merge. Local review and validation artifacts are recorded.",
+            "review": "Local review is underway. A review sub-agent is examining the diff before validation begins."
+          },
+          "roles": [
+            "review",
+            "plan-review",
+            "review-individual",
+            "validation"
+          ],
+          "statuses": [
+            "backlog",
+            "in_planning",
+            "planned",
+            "in_progress",
+            "review",
+            "in_validation",
+            "pr_open",
+            "done",
+            "blocked",
+            "cancelled"
+          ],
+          "transitions": {
+            "backlog": [
+              "in_planning",
+              "planned",
+              "cancelled"
+            ],
+            "blocked": [
+              "in_planning",
+              "planned",
+              "in_progress",
+              "in_validation",
+              "pr_open",
+              "cancelled"
+            ],
+            "cancelled": [],
+            "done": [],
+            "in_planning": [
+              "planned",
+              "cancelled"
+            ],
+            "in_progress": [
+              "review",
+              "blocked",
+              "cancelled"
+            ],
+            "in_validation": [
+              "pr_open",
+              "in_progress",
+              "in_planning",
+              "blocked",
+              "cancelled"
+            ],
+            "planned": [
+              "in_progress",
+              "review",
+              "blocked",
+              "cancelled"
+            ],
+            "pr_open": [
+              "done",
+              "in_progress",
+              "review",
+              "blocked",
+              "cancelled"
+            ],
+            "review": [
+              "in_validation",
+              "pr_open",
+              "done",
+              "in_progress",
+              "in_planning",
+              "cancelled"
+            ]
+          },
+          "universal_targets": [
+            "cancelled"
+          ],
+          "wip_limits": {
+            "in_progress": 10,
+            "in_validation": 5,
+            "pr_open": 10,
+            "review": 5
+          }
+        },
+        "workflow_preset": "classic"
+      }
+    },
+    "context.md": {
+      "lines": [
+        "# Instance Context",
+        "",
+        "<!-- Every lattice instance exists for a reason — a convergence of intention",
+        "     and infrastructure. This file declares that reason. Agents and humans",
+        "     read it to understand the purpose, conventions, and relationships",
+        "     of this particular node in the lattice. -->",
+        "",
+        "## Purpose",
+        "",
+        "<!-- What does this instance observe? What project, team, or domain",
+        "     does it serve? Declare the scope of attention. -->",
+        "",
+        "## Related Instances",
+        "",
+        "<!-- If this node coordinates with other lattice instances, name them here.",
+        "     Include instance_id, instance_name, and the nature of the relationship.",
+        "     The lattice is stronger when its nodes are aware of each other. -->",
+        "",
+        "## Conventions",
+        "",
+        "<!-- Every instance develops its own rhythms — workflow conventions,",
+        "     naming patterns, status meanings that diverge from defaults.",
+        "     Record them here so that new minds arriving in this context",
+        "     can orient immediately. -->"
+      ]
+    },
+    "events/<ID-2>.jsonl": {
+      "jsonl": [
+        {
+          "actor": "human:parity",
+          "data": {
+            "priority": "medium",
+            "short_id": "PAR-2",
+            "status": "backlog",
+            "title": "Planless task",
+            "type": "task"
+          },
+          "id": "<ID-6>",
+          "schema_version": 1,
+          "task_id": "<ID-2>",
+          "ts": "<TS>",
+          "type": "task_created"
+        }
+      ]
+    },
+    "events/_lifecycle.jsonl": {
+      "jsonl": [
+        {
+          "actor": "human:parity",
+          "data": {
+            "description": "Why it matters.",
+            "priority": "medium",
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "title": "Planned task",
+            "type": "task"
+          },
+          "id": "<ID-3>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "task_created"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "priority": "medium",
+            "short_id": "PAR-2",
+            "status": "backlog",
+            "title": "Planless task",
+            "type": "task"
+          },
+          "id": "<ID-6>",
+          "schema_version": 1,
+          "task_id": "<ID-2>",
+          "ts": "<TS>",
+          "type": "task_created"
+        },
+        {
+          "actor": "human:parity",
+          "data": {},
+          "id": "<ID-4>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "task_archived"
+        }
+      ]
+    },
+    "ids.json": {
+      "json": {
+        "map": {
+          "PAR-1": "<ID-1>",
+          "PAR-2": "<ID-2>"
+        },
+        "next_seqs": {
+          "PAR": 3
+        },
+        "schema_version": 2
+      }
+    },
+    "tasks/<ID-2>.json": {
+      "json": {
+        "acceptance_criteria": [],
+        "assigned_to": null,
+        "branch_links": [],
+        "comment_count": 0,
+        "complexity": null,
+        "created_at": "<TS>",
+        "created_by": "human:parity",
+        "custom_fields": {},
+        "description": null,
+        "done_at": null,
+        "evidence_refs": [],
+        "id": "<ID-2>",
+        "last_event_id": "<ID-6>",
+        "last_status_changed_at": "<TS>",
+        "linked_files": [],
+        "priority": "medium",
+        "relationships_out": [],
+        "reopened_count": 0,
+        "schema_version": 1,
+        "short_id": "PAR-2",
+        "status": "backlog",
+        "tags": null,
+        "title": "Planless task",
+        "type": "task",
+        "updated_at": "<TS>",
+        "urgency": null
+      }
+    }
+  },
+  "description": "the legacy plan read (lattice plan <task>), recorded before plan became a group",
+  "mode": "plain",
+  "scenario": "plan_read",
+  "steps": [
+    {
+      "args": [
+        "init",
+        "--path",
+        "<ROOT>",
+        "--actor",
+        "human:parity",
+        "--project-code",
+        "PAR",
+        "--no-setup-claude",
+        "--no-setup-agents",
+        "--no-seed"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "",
+          ".lattice/ created — a mind now has a place to remember.",
+          "Default actor: human:parity",
+          "Project code: PAR",
+          "Workflow statuses: stage11 (10 statuses)"
+        ]
+      }
+    },
+    {
+      "args": [
+        "create",
+        "Planned task",
+        "--description",
+        "Why it matters.",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Created task PAR-1 (<ID-1>) \"Planned task\"",
+          "  status: backlog  priority: medium  type: task"
+        ]
+      }
+    },
+    {
+      "args": [
+        "plan",
+        "PAR-1"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "# PAR-1: Planned task",
+          "",
+          "Why it matters.",
+          ""
+        ]
+      }
+    },
+    {
+      "write_file": ".lattice/plans/<ID-1>.md"
+    },
+    {
+      "args": [
+        "plan",
+        "PAR-1"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "# Plan",
+          "",
+          "## Approach",
+          "",
+          "- Do the work in one careful pass.",
+          ""
+        ]
+      }
+    },
+    {
+      "args": [
+        "plan",
+        "<ID-1>"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "# Plan",
+          "",
+          "## Approach",
+          "",
+          "- Do the work in one careful pass.",
+          ""
+        ]
+      }
+    },
+    {
+      "args": [
+        "plan",
+        "par-1"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "# Plan",
+          "",
+          "## Approach",
+          "",
+          "- Do the work in one careful pass.",
+          ""
+        ]
+      }
+    },
+    {
+      "args": [
+        "plan",
+        "--json",
+        "PAR-1"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "archived": false,
+            "content": "# Plan\n\n## Approach\n\n- Do the work in one careful pass.\n",
+            "plan_path": "<ROOT>/.lattice/plans/<ID-1>.md",
+            "task_id": "<ID-1>"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "plan",
+        "NOPE-1"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Short ID 'NOPE-1' not found."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "plan",
+        "not-an-id!"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Invalid task ID format: 'not-an-id!'."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "create",
+        "Planless task",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Created task PAR-2 (<ID-2>) \"Planless task\"",
+          "  status: backlog  priority: medium  type: task"
+        ]
+      }
+    },
+    {
+      "delete_file": ".lattice/plans/<ID-2>.md"
+    },
+    {
+      "args": [
+        "plan",
+        "PAR-2"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: No plan file found for task <ID-2>."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "archive",
+        "PAR-1",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Archived task <ID-1>"
+        ]
+      }
+    },
+    {
+      "args": [
+        "plan",
+        "PAR-1"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "# Plan",
+          "",
+          "## Approach",
+          "",
+          "- Do the work in one careful pass.",
+          ""
+        ]
+      }
+    },
+    {
+      "args": [
+        "plan"
+      ],
+      "exit_code": 2,
+      "stderr": {
+        "lines": [
+          "Usage: cli plan [OPTIONS] TASK_ID",
+          "Try 'cli plan --help' for help.",
+          "",
+          "Error: Missing argument 'TASK_ID'."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    }
+  ]
+}

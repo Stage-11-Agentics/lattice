@@ -255,6 +255,28 @@ PLAN_INTEGRITY = Scenario(
     ),
 )
 
+PLAN_READ = Scenario(
+    name="plan_read",
+    description="the legacy plan read (lattice plan <task>), recorded before plan became a group",
+    steps=(
+        c("create", "Planned task", "--description", "Why it matters.", *H),
+        c("plan", "PAR-1"),
+        plan("PAR-1"),
+        c("plan", "PAR-1"),
+        c("plan", "<<task:PAR-1>>"),
+        c("plan", "par-1"),
+        c("plan", "--json", "PAR-1", plain_only=True),
+        c("plan", "NOPE-1"),
+        c("plan", "not-an-id!"),
+        c("create", "Planless task", *H),
+        DeleteFile(".lattice/plans/<<task:PAR-2>>.md"),
+        c("plan", "PAR-2"),
+        c("archive", "PAR-1", *H),
+        c("plan", "PAR-1"),
+        c("plan"),
+    ),
+)
+
 COMMENTS = Scenario(
     name="comments",
     description="comment, threads, roles, comment-edit/delete, react/unreact",
@@ -892,6 +914,7 @@ SCENARIOS: tuple[Scenario, ...] = (
     LIFECYCLE,
     REVIEW_CYCLES,
     PLAN_INTEGRITY,
+    PLAN_READ,
     COMMENTS,
     FLAGS,
     LINKS,
