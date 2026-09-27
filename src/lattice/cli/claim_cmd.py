@@ -92,7 +92,7 @@ def claim_cmd(
         )
         return TaskMutationDecision(events=[event])
 
-    updated_snapshot = mutate_task(lattice_dir, task_id, decide, config).snapshot
+    updated_snapshot = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True).snapshot
 
     # Rename tab if inside c11
     if c11_available():
@@ -162,7 +162,7 @@ def unclaim_cmd(
         )
         return TaskMutationDecision(events=[event], value=old_surface)
 
-    result = mutate_task(lattice_dir, task_id, decide, config)
+    result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
     updated_snapshot = result.snapshot
     old_surface = result.callback_value
 

@@ -58,6 +58,10 @@ _DEFAULT_STATUS_RANK: dict[str, int] = {
 }
 
 
+class FromMismatchError(ValueError):
+    """A proposed event's ``from`` does not match the task's replayed state."""
+
+
 def is_backward_status_transition(
     from_status: str | None,
     to_status: str | None,
@@ -240,7 +244,7 @@ def _mut_status_changed(snap: dict, event: dict) -> None:
     data = event["data"]
     from_status = data.get("from")
     if "from" in data and from_status != snap.get("status"):
-        raise ValueError(
+        raise FromMismatchError(
             "status_changed from value does not match authoritative state: "
             f"expected {snap.get('status')!r}, got {from_status!r}"
         )
@@ -276,7 +280,7 @@ def _mut_needs_human_cleared(snap: dict, event: dict) -> None:
 def _mut_assignment_changed(snap: dict, event: dict) -> None:
     data = event["data"]
     if "from" in data and data["from"] != snap.get("assigned_to"):
-        raise ValueError(
+        raise FromMismatchError(
             "assignment_changed from value does not match authoritative state: "
             f"expected {snap.get('assigned_to')!r}, got {data['from']!r}"
         )
@@ -306,7 +310,7 @@ def _mut_field_updated(snap: dict, event: dict) -> None:
         key = field[len("custom_fields.") :]
         current = (snap.get("custom_fields") or {}).get(key)
         if "from" in data and not _from_matches(data["from"], current):
-            raise ValueError(
+            raise FromMismatchError(
                 "field_updated from value does not match authoritative state: "
                 f"expected {current!r}, got {data['from']!r}"
             )
@@ -320,7 +324,7 @@ def _mut_field_updated(snap: dict, event: dict) -> None:
         )
     else:
         if "from" in data and not _from_matches(data["from"], snap.get(field)):
-            raise ValueError(
+            raise FromMismatchError(
                 "field_updated from value does not match authoritative state: "
                 f"expected {snap.get(field)!r}, got {data['from']!r}"
             )

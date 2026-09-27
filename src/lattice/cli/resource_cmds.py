@@ -148,6 +148,7 @@ def resource_create(
             snapshot,
             config,
             _caller_holds_lock=True,
+            run_hooks=True,
         )
 
     output_result(
@@ -278,6 +279,7 @@ def resource_acquire(
                         snapshot,
                         config,
                         _caller_holds_lock=True,
+                        run_hooks=True,
                     )
 
                 output_result(
@@ -338,6 +340,7 @@ def resource_acquire(
                     snapshot,
                     config,
                     _caller_holds_lock=True,
+                    run_hooks=True,
                 )
 
                 output_result(
@@ -359,6 +362,7 @@ def resource_acquire(
                     snapshot,
                     config,
                     _caller_holds_lock=True,
+                    run_hooks=True,
                 )
 
             # Capture holder info for error message (while still under lock)
@@ -466,6 +470,7 @@ def resource_release(
             snapshot,
             config,
             _caller_holds_lock=True,
+            run_hooks=True,
         )
 
     output_result(
@@ -552,6 +557,7 @@ def resource_heartbeat(
             snapshot,
             config,
             _caller_holds_lock=True,
+            run_hooks=True,
         )
 
     output_result(
@@ -672,6 +678,7 @@ def _auto_create_resource(
         snapshot,
         config,
         _caller_holds_lock=True,
+        run_hooks=True,
     )
     return resource_id, resource_name, snapshot
 

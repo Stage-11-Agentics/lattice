@@ -901,7 +901,7 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                     )
                     return TaskMutationDecision(events=[event])
 
-                result = mutate_task(ld, task_id, decide, config)
+                result = mutate_task(ld, task_id, decide, config, run_hooks=True)
                 updated_snapshot = result.snapshot
                 if result.idempotent:
                     self._send_json(200, _ok({"message": f"Already at status {new_status}"}))
@@ -1301,6 +1301,7 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                     source="absent",
                     may_emit_lifecycle=True,
                     project_prefix=prefix,
+                    run_hooks=True,
                 ).snapshot
             except Exception as exc:
                 self._send_json(500, _err("WRITE_ERROR", f"Failed to create task: {exc}"))
@@ -1364,7 +1365,9 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                     )
                     return TaskMutationDecision(events=[event])
 
-                updated_snapshot = mutate_task(ld, task_id, decide, config).snapshot
+                updated_snapshot = mutate_task(
+                    ld, task_id, decide, config, run_hooks=True
+                ).snapshot
             except Exception as exc:
                 self._send_json(500, _err("WRITE_ERROR", f"Failed to assign task: {exc}"))
                 return
@@ -1422,7 +1425,9 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                     )
                     return TaskMutationDecision(events=[event])
 
-                updated_snapshot = mutate_task(ld, task_id, decide, config).snapshot
+                updated_snapshot = mutate_task(
+                    ld, task_id, decide, config, run_hooks=True
+                ).snapshot
             except ValueError as exc:
                 self._send_json(400, _err("VALIDATION_ERROR", str(exc)))
                 return
@@ -1554,7 +1559,9 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                         snapshot = apply_event_to_snapshot(snapshot, event)
                     return TaskMutationDecision(events=events, idempotent=not events)
 
-                updated_snapshot = mutate_task(ld, task_id, decide, config).snapshot
+                updated_snapshot = mutate_task(
+                    ld, task_id, decide, config, run_hooks=True
+                ).snapshot
             except Exception as exc:
                 self._send_json(500, _err("WRITE_ERROR", f"Failed to update task: {exc}"))
                 return
@@ -1615,6 +1622,7 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                     source="either",
                     destination="archived",
                     may_emit_lifecycle=True,
+                    run_hooks=True,
                 )
             except Exception as exc:
                 self._send_json(500, _err("WRITE_ERROR", f"Failed to archive task: {exc}"))
@@ -1720,7 +1728,9 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                     )
                     return TaskMutationDecision(events=[event])
 
-                updated_snapshot = mutate_task(ld, task_id, decide, config).snapshot
+                updated_snapshot = mutate_task(
+                    ld, task_id, decide, config, run_hooks=True
+                ).snapshot
             except ValueError as exc:
                 self._send_json(400, _err("VALIDATION_ERROR", str(exc)))
                 return
@@ -1777,7 +1787,9 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                     )
                     return TaskMutationDecision(events=[event])
 
-                updated_snapshot = mutate_task(ld, task_id, decide, config).snapshot
+                updated_snapshot = mutate_task(
+                    ld, task_id, decide, config, run_hooks=True
+                ).snapshot
             except ValueError as exc:
                 self._send_json(400, _err("VALIDATION_ERROR", str(exc)))
                 return
@@ -1858,7 +1870,9 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                     )
                     return TaskMutationDecision(events=[event])
 
-                updated_snapshot = mutate_task(ld, task_id, decide, config).snapshot
+                updated_snapshot = mutate_task(
+                    ld, task_id, decide, config, run_hooks=True
+                ).snapshot
             except ValueError as exc:
                 self._send_json(400, _err("VALIDATION_ERROR", str(exc)))
                 return
@@ -1941,7 +1955,9 @@ def _make_handler_class(lattice_dir: Path, *, readonly: bool = False) -> type:
                     )
                     return TaskMutationDecision(events=[event])
 
-                updated_snapshot = mutate_task(ld, task_id, decide, config).snapshot
+                updated_snapshot = mutate_task(
+                    ld, task_id, decide, config, run_hooks=True
+                ).snapshot
             except ValueError as exc:
                 self._send_json(404, _err("NOT_FOUND", str(exc)))
                 return

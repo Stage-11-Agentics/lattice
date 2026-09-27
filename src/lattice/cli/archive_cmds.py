@@ -77,6 +77,7 @@ def _archive_one(
             source="either",
             destination="archived",
             may_emit_lifecycle=True,
+            run_hooks=True,
         ).callback_value
     except ValueError as exc:
         return str(exc)
@@ -389,6 +390,7 @@ def _unarchive_one(
             source="either",
             destination="active",
             may_emit_lifecycle=True,
+            run_hooks=True,
         ).callback_value
     except ValueError as exc:
         return str(exc)

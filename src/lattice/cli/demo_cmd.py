@@ -1369,6 +1369,7 @@ def _seed_demo(target_dir: Path, quiet: bool = False) -> None:
             source="absent",
             may_emit_lifecycle=True,
             project_prefix="LGHT",
+            run_hooks=True,
         ).snapshot
         sid = snapshot["short_id"]
         short_ids.append(sid)
@@ -1453,7 +1454,7 @@ def _add_relationship(
         )
         return TaskMutationDecision(events=[event])
 
-    mutate_task(lattice_dir, source_id, decide, config)
+    mutate_task(lattice_dir, source_id, decide, config, run_hooks=True)
 
 
 # ---------------------------------------------------------------------------

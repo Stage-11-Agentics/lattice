@@ -846,7 +846,7 @@ def _report_review_failure(
         return TaskMutationDecision(events=[event])
 
     try:
-        mutate_task(lattice_dir, task_id, decide_comment, config)
+        mutate_task(lattice_dir, task_id, decide_comment, config, run_hooks=True)
     except Exception:  # noqa: BLE001 — never mask the review failure
         click.echo("Warning: could not record the review failure as a comment.", err=True)
 
@@ -876,7 +876,7 @@ def _report_review_failure(
         return TaskMutationDecision(events=[event])
 
     try:
-        mutate_task(lattice_dir, task_id, decide_flag, config)
+        mutate_task(lattice_dir, task_id, decide_flag, config, run_hooks=True)
     except Exception:  # noqa: BLE001 — never mask the review failure
         click.echo("Warning: could not flag the task for human attention.", err=True)
 

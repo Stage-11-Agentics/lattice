@@ -1,0 +1,91 @@
+"""Typed business-rule errors raised by operations and the write path.
+
+``OpError`` lives in ``core`` (not ``lattice.ops``) because ``storage`` raises
+it too, and ``storage`` must not import the ``lattice.ops`` package.
+``lattice.ops`` re-exports both names; that is the public spelling.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+# SPEC §3.1: the HTTP status each code maps to on a server. The CLI exits 1
+# for every error, as it always has.
+HTTP_STATUS: dict[str, int] = {
+    "VALIDATION_ERROR": 400,
+    "MISSING_ARGS": 400,
+    "INVALID_ID": 400,
+    "INVALID_ROLE": 400,
+    "INVALID_ACTOR": 400,
+    "MISSING_ACTOR": 400,
+    "LOCAL_ONLY": 400,
+    "PROTOCOL_MISMATCH": 400,
+    "UNSUPPORTED_PARAM": 400,
+    "CLIENT_TOO_OLD": 400,
+    "UNAUTHENTICATED": 401,
+    "FORBIDDEN": 403,
+    "ACTOR_NOT_PERMITTED": 403,
+    "NOT_FOUND": 404,
+    "NOT_INITIALIZED": 404,
+    "PLAN_NOT_FOUND": 404,
+    "SESSION_NOT_FOUND": 404,
+    "UNKNOWN_OP": 404,
+    "CONFLICT": 409,
+    "ALREADY_CLAIMED": 409,
+    "RESOURCE_HELD": 409,
+    "NOT_HELD": 409,
+    "EXPIRED": 409,
+    "FLAG_ALREADY_SET": 409,
+    "FLAG_NOT_SET": 409,
+    "STALE_VERSION": 412,
+    "PAYLOAD_TOO_LARGE": 413,
+    "INVALID_TRANSITION": 422,
+    "PLAN_REQUIRED": 422,
+    "COMPLETION_BLOCKED": 422,
+    "REVIEW_CYCLE_LIMIT": 422,
+    "TASK_ERASED": 422,
+    "RATE_LIMITED": 429,
+    "INTEGRITY_ERROR": 500,
+    "BOARD_BUSY": 503,
+    "BOARD_UNAVAILABLE": 503,
+    "STORAGE_LOW": 507,
+}
+
+
+class OpError(Exception):
+    """A business-rule rejection: a stable ``code``, the message users see, and details.
+
+    ``details`` is structured context for machine callers (the server puts it
+    in the error envelope); the CLI prints only ``code`` and ``message``.
+    """
+
+    def __init__(self, code: str, message: str, details: dict[str, Any] | None = None):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.details = details or {}
+
+    @property
+    def http_status(self) -> int:
+        return HTTP_STATUS.get(self.code, 400)
+
+    def to_dict(self) -> dict[str, Any]:
+        error: dict[str, Any] = {"code": self.code, "message": self.message}
+        if self.details:
+            error["details"] = self.details
+        return error
+
+    def __repr__(self) -> str:
+        return f"OpError({self.code!r}, {self.message!r})"
+
+
+class StateConflict(OpError, ValueError):
+    """``CONFLICT`` raised by the write path itself (a ``from`` mismatch or a
+    failed ``expect_last_event_id``).
+
+    Also a ``ValueError`` so callers not yet converted to operations, which
+    catch ``ValueError`` and show ``str(exc)``, keep today's behavior.
+    """
+
+    def __init__(self, message: str, details: dict[str, Any] | None = None):
+        super().__init__("CONFLICT", message, details)

@@ -134,7 +134,7 @@ def attach(
         return TaskMutationDecision(idempotent=True)
 
     try:
-        mutate_task(lattice_dir, task_id, validate_target, config)
+        mutate_task(lattice_dir, task_id, validate_target, config, run_hooks=True)
     except AuthoritativeLogError as exc:
         message = str(exc)
         if "no authoritative event log exists" in message or message.endswith(" is archived."):
@@ -324,7 +324,7 @@ def attach(
             return TaskMutationDecision(events=[event])
 
         try:
-            result = mutate_task(lattice_dir, task_id, decide, config)
+            result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
         except ValueError as exc:
             output_error(str(exc), "CONFLICT", is_json)
         # Output

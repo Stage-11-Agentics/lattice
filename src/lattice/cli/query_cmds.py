@@ -249,7 +249,7 @@ def event_cmd(
         )
         return TaskMutationDecision(events=[event], value=event)
 
-    result = mutate_task(lattice_dir, task_id, decide, config)
+    result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
     event = result.callback_value
     if result.idempotent:
         output_result(
@@ -576,7 +576,7 @@ def next_cmd(
 
             return TaskMutationDecision(events=events)
 
-        selected = mutate_task(lattice_dir, task_id, decide, config).snapshot
+        selected = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True).snapshot
 
     display_id = selected.get("short_id") or task_id
     result_data = selected

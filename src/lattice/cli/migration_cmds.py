@@ -140,6 +140,7 @@ def backfill_ids(
             source="archived" if is_archived else "active",
             project_prefix=prefix,
             allow_short_id_backfill=True,
+            run_hooks=True,
         )
         if not result.idempotent:
             assigned.append(result.callback_value)
@@ -306,7 +307,7 @@ def migrate_needs_human(
             )
             return TaskMutationDecision(events=new_events)
 
-        mutate_task(lattice_dir, task_id, decide, config)
+        mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
 
     # ---- Phase 2: strip needs_human from the workflow config ---------------
     workflow = config.get("workflow", {})

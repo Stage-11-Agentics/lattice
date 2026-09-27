@@ -74,6 +74,11 @@ def generate_instance_id() -> str:
     return f"inst_{ULID()}"
 
 
+def generate_op_id() -> str:
+    """Generate a new operation ID with the op_ prefix (one per operation call)."""
+    return f"op_{ULID()}"
+
+
 def generate_task_id() -> str:
     """Generate a new task ID with the task_ prefix."""
     return f"task_{ULID()}"

@@ -10,48 +10,40 @@ from pathlib import Path
 import click
 
 from lattice.cli.helpers import (
-    check_plan_gate,
     common_options,
     load_project_config,
     output_error,
     output_result,
-    read_snapshot_or_exit,
     require_root,
     resolve_body,
     resolve_task_id,
     require_actor,
     validate_actor_format_or_exit,
-    mutate_task_events,
 )
-from lattice.storage.operations import TaskMutationDecision, mutate_task, scaffold_plan
+from lattice.storage.operations import TaskMutationDecision, mutate_task
 from lattice.cli.main import cli
+from lattice.cli.ops_bridge import run_operation
 from lattice.core.comments import (
     materialize_comments,
     validate_comment_body,
     validate_comment_for_delete,
     validate_comment_for_edit,
     validate_comment_for_react,
-    validate_comment_for_reply,
     validate_emoji,
 )
-from lattice.core.acceptance_criteria import normalize_criterion_ids
 from lattice.core.config import (
     VALID_COMPLEXITIES,
     VALID_PRIORITIES,
     VALID_URGENCIES,
-    configured_event_prefix,
     get_configured_roles,
-    get_review_cycle_limit,
     get_valid_transitions,
     validate_completion_policy,
-    validate_status,
     validate_task_type,
     validate_transition,
 )
-from lattice.core.events import count_review_rework_cycles, create_event, utc_now
-from lattice.core.ids import generate_task_id, validate_actor, validate_id
-from lattice.core.tasks import apply_event_to_snapshot, is_backward_status_transition
-from lattice.storage.readers import read_task_events
+from lattice.core.events import create_event, utc_now
+from lattice.core.ids import validate_actor
+from lattice.core.tasks import apply_event_to_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -65,21 +57,21 @@ def _caller_git_worktree() -> Path | None:
     return None
 
 
-# ---------------------------------------------------------------------------
-# Idempotency comparison fields for create
-# ---------------------------------------------------------------------------
-
-_CREATE_COMPARE_FIELDS = (
-    "title",
-    "type",
-    "priority",
-    "urgency",
-    "complexity",
-    "status",
-    "description",
-    "tags",
-    "assigned_to",
-)
+def _provenance(
+    model: str | None,
+    session: str | None,
+    triggered_by: str | None,
+    on_behalf_of: str | None,
+    reason: str | None,
+) -> dict:
+    """The ``common_options`` provenance flags as operation params."""
+    return {
+        "model": model,
+        "session": session,
+        "triggered_by": triggered_by,
+        "on_behalf_of": on_behalf_of,
+        "reason": reason,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -127,131 +119,31 @@ def create(
 ) -> None:
     """Create a new task."""
     is_json = output_json
-
-    lattice_dir = require_root(is_json)
-    config = load_project_config(lattice_dir)
-
-    actor = require_actor(is_json)
-    if on_behalf_of is not None:
-        validate_actor_format_or_exit(on_behalf_of, is_json)
-
-    # Apply defaults
-    if status is None:
-        status = config.get("default_status", "backlog")
-    if priority is None:
-        priority = config.get("default_priority", "medium")
-    if task_type is None:
-        task_type = "task"
-
-    # Validate inputs
-    if not validate_status(config, status):
-        valid = ", ".join(config.get("workflow", {}).get("statuses", []))
-        output_error(
-            f"Invalid status: '{status}'. Valid statuses: {valid}.", "VALIDATION_ERROR", is_json
-        )
-    if not validate_task_type(config, task_type):
-        valid = ", ".join(config.get("task_types", []))
-        output_error(
-            f"Invalid task type: '{task_type}'. Valid types: {valid}.", "VALIDATION_ERROR", is_json
-        )
-    if priority not in VALID_PRIORITIES:
-        valid = ", ".join(VALID_PRIORITIES)
-        output_error(
-            f"Invalid priority: '{priority}'. Valid priorities: {valid}.",
-            "VALIDATION_ERROR",
-            is_json,
-        )
-    if urgency is not None and urgency not in VALID_URGENCIES:
-        valid = ", ".join(VALID_URGENCIES)
-        output_error(
-            f"Invalid urgency: '{urgency}'. Valid urgencies: {valid}.", "VALIDATION_ERROR", is_json
-        )
-    if complexity is not None and complexity not in VALID_COMPLEXITIES:
-        valid = ", ".join(VALID_COMPLEXITIES)
-        output_error(
-            f"Invalid complexity: '{complexity}'. Valid complexities: {valid}.",
-            "VALIDATION_ERROR",
-            is_json,
-        )
-    if assigned_to is not None and not validate_actor(assigned_to):
-        output_error(f"Invalid assigned-to format: '{assigned_to}'.", "INVALID_ACTOR", is_json)
-
-    # Parse tags
-    tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
-    # --tag is pure sugar: its values follow --tags in argv order. No dedupe,
-    # matching how --tags a,a has always behaved.
-    tag_list += [t.strip() for t in tag_values if t.strip()]
-
-    # Generate or validate task ID
-    if task_id is not None:
-        if not validate_id(task_id, "task"):
-            output_error(f"Invalid task ID format: '{task_id}'.", "INVALID_ID", is_json)
-    else:
-        task_id = generate_task_id()
-
-    prefix = configured_event_prefix(config)
-
-    requested_data: dict = {
-        "title": title,
-        "status": status,
-        "type": task_type,
-        "priority": priority,
-    }
-    if urgency is not None:
-        requested_data["urgency"] = urgency
-    if complexity is not None:
-        requested_data["complexity"] = complexity
-    if description is not None:
-        requested_data["description"] = description
-    if tag_list:
-        requested_data["tags"] = tag_list
-    if assigned_to is not None:
-        requested_data["assigned_to"] = assigned_to
-
-    def decide_create(context):  # noqa: ANN001, ANN202
-        if context.snapshot is not None:
-            created_data = context.events[0]["data"]
-            existing = {field: created_data.get(field) for field in _CREATE_COMPARE_FIELDS}
-            new = {field: requested_data.get(field) for field in _CREATE_COMPARE_FIELDS}
-            existing["tags"] = existing.get("tags") or []
-            new["tags"] = new.get("tags") or []
-            if existing != new:
-                raise ValueError(f"Conflict: task {task_id} exists with different data.")
-            return TaskMutationDecision(value=created_data.get("short_id"), idempotent=True)
-
-        event_data = dict(requested_data)
-        if context.reserved_short_id is not None:
-            event_data["short_id"] = context.reserved_short_id
-        event = create_event(
-            type="task_created",
-            task_id=task_id,
-            actor=actor,
-            data=event_data,
-            model=model,
-            session=session,
-            triggered_by=triggered_by,
-            on_behalf_of=on_behalf_of,
-            reason=provenance_reason,
-        )
-        return TaskMutationDecision(events=[event], value=context.reserved_short_id)
-
-    try:
-        result = mutate_task(
-            lattice_dir,
-            task_id,
-            decide_create,
-            config,
-            source="absent",
-            may_emit_lifecycle=True,
-            project_prefix=prefix,
-        )
-    except ValueError as exc:
-        output_error(str(exc), "CONFLICT", is_json)
-    snapshot = result.snapshot
+    result = run_operation(
+        "task.create",
+        {
+            "title": title,
+            "type": task_type,
+            "priority": priority,
+            "urgency": urgency,
+            "complexity": complexity,
+            "status": status,
+            "description": description,
+            "tags": tags,
+            "tag": list(tag_values),
+            "assigned_to": assigned_to,
+            "id": task_id,
+            **_provenance(model, session, triggered_by, on_behalf_of, provenance_reason),
+        },
+        is_json,
+    )
+    snapshot = result.value
+    task_id = snapshot["id"]
     short_id = snapshot.get("short_id")
-
-    # Scaffold plan file (notes are created lazily, not on task creation)
-    scaffold_plan(lattice_dir, task_id, title, short_id, description)
+    status_line = (
+        f"  status: {snapshot['status']}  priority: {snapshot['priority']}  "
+        f"type: {snapshot['type']}"
+    )
 
     # Output: prefer short_id when available
     display_id = short_id if short_id else task_id
@@ -260,11 +152,9 @@ def create(
         human_message=(
             f"Task {display_id} already exists (idempotent)."
             if result.idempotent
-            else f'Created task {display_id} ({task_id}) "{title}"\n'
-            f"  status: {status}  priority: {priority}  type: {task_type}"
+            else f'Created task {display_id} ({task_id}) "{title}"\n{status_line}'
             if short_id
-            else f'Created task {task_id} "{title}"\n'
-            f"  status: {status}  priority: {priority}  type: {task_type}"
+            else f'Created task {task_id} "{title}"\n{status_line}'
         ),
         quiet_value=display_id,
         is_json=is_json,
@@ -435,7 +325,7 @@ def update(
             idempotent=not events,
         )
 
-    result = mutate_task(lattice_dir, task_id, decide, config)
+    result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
     field_names = result.callback_value
     if not field_names:
         if is_json:
@@ -518,7 +408,7 @@ def edit_description(
         )
         return TaskMutationDecision(events=[event])
 
-    result = mutate_task(lattice_dir, task_id, decide, config)
+    result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
     if result.idempotent:
         if is_json:
             click.echo(
@@ -691,34 +581,6 @@ def compute_next_steps(
 # ---------------------------------------------------------------------------
 
 
-def _status_rank_from_config(config: dict) -> dict[str, int] | None:
-    statuses = config.get("workflow", {}).get("statuses", [])
-    if not isinstance(statuses, list):
-        return None
-    rank = {status: idx for idx, status in enumerate(statuses) if isinstance(status, str)}
-    return rank or None
-
-
-def _append_plan_reset_section(
-    lattice_dir,
-    task_id: str,
-    actor: str,
-    event_ts: str | None,
-) -> None:
-    plan_path = lattice_dir / "plans" / f"{task_id}.md"
-    if not plan_path.exists():
-        return
-
-    date = "unknown-date"
-    if isinstance(event_ts, str) and event_ts:
-        date = event_ts.split("T", 1)[0]
-
-    content = plan_path.read_text(encoding="utf-8")
-    separator = "" if content.endswith("\n") else "\n"
-    reset_heading = f"## Reset {date} by {actor}"
-    plan_path.write_text(f"{content}{separator}\n{reset_heading}\n", encoding="utf-8")
-
-
 @cli.command("status")
 @click.argument("task_id")
 @click.argument("new_status")
@@ -747,169 +609,39 @@ def status_cmd(
 ) -> None:
     """Change a task's status."""
     is_json = output_json
-
-    lattice_dir = require_root(is_json)
-    config = load_project_config(lattice_dir)
-    actor = require_actor(is_json)
-    if on_behalf_of is not None:
-        validate_actor_format_or_exit(on_behalf_of, is_json)
-
-    task_id = resolve_task_id(lattice_dir, task_id, is_json)
-    read_snapshot_or_exit(lattice_dir, task_id, is_json)
-
-    # Resolve display name to slug (e.g. "on it" → "in_progress")
-    from lattice.core.config import resolve_status_input
-
-    new_status = resolve_status_input(config, new_status)
-
-    # Validate new_status is a known status
-    if not validate_status(config, new_status):
-        if new_status == "needs_human":
-            # Only reached when needs_human is absent from this instance's
-            # config — instances that still carry the status validate above.
-            display_id = task_id
-            output_error(
-                "needs_human is a flag, not a status. Use: "
-                f'lattice needs-human {display_id} "<what you need>" '
-                "(the task keeps its current status).",
-                "VALIDATION_ERROR",
-                is_json,
-            )
-        valid = ", ".join(config.get("workflow", {}).get("statuses", []))
-        output_error(
-            f"Invalid status: '{new_status}'. Valid statuses: {valid}.",
-            "VALIDATION_ERROR",
-            is_json,
-        )
-
-    ACTIVE_WORK_STATUSES = frozenset({"in_planning", "in_progress"})
-
-    def decide(context):  # noqa: ANN001, ANN202
-        snapshot = context.snapshot
-        assert snapshot is not None
-        current_status = snapshot["status"]
-        if current_status == new_status:
-            return TaskMutationDecision(
-                value=(current_status, False, False, None), idempotent=True
-            )
-        is_backward = is_backward_status_transition(
-            current_status, new_status, _status_rank_from_config(config)
-        )
-        if not validate_transition(config, current_status, new_status):
-            if not force:
-                valid_targets = get_valid_transitions(config, current_status)
-                valid_list = ", ".join(valid_targets) if valid_targets else "(none)"
-                output_error(
-                    f"Invalid transition from {current_status} to {new_status}. "
-                    f"Valid transitions from {current_status}: {valid_list}. "
-                    "Use --force --reason to override.",
-                    "INVALID_TRANSITION",
-                    is_json,
-                )
-            if not provenance_reason:
-                output_error("--reason is required with --force.", "VALIDATION_ERROR", is_json)
-        if (
-            current_status in ("review", "in_validation", "pr_open")
-            and new_status in ("in_progress", "in_planning")
-            and not force
-        ):
-            cycle_count = count_review_rework_cycles(list(context.events))
-            cycle_limit = get_review_cycle_limit(config)
-            if cycle_count >= cycle_limit:
-                output_error(
-                    f"Review cycle limit reached ({cycle_count}/{cycle_limit}). "
-                    f"This task has been sent back from review {cycle_count} time(s). "
-                    "Flag it for a human instead of cycling further: "
-                    'lattice needs-human <task> "<what you need>". '
-                    "Override with --force --reason.",
-                    "REVIEW_CYCLE_LIMIT",
-                    is_json,
-                )
-        # Check completion policies (evidence gating). The reachable-review-commit
-        # policy needs the invoking checkout, not the board root.
-        target_policy = (
-            config.get("workflow", {}).get("completion_policies", {}).get(new_status, {})
-        )
-        policy_context = (
-            {"lattice_dir": lattice_dir, "repo_root": _caller_git_worktree()}
-            if target_policy.get("require_reachable_review_commit")
-            else {}
-        )
-        policy_ok, policy_failures = validate_completion_policy(
-            config, snapshot, new_status, **policy_context
-        )
-        if not policy_ok:
-            if not force:
-                output_error(
-                    "Completion policy not satisfied: "
-                    f"{'; '.join(policy_failures)}. Override with --force --reason.",
-                    "COMPLETION_BLOCKED",
-                    is_json,
-                )
-            if not provenance_reason:
-                output_error("--reason is required with --force.", "VALIDATION_ERROR", is_json)
-        check_plan_gate(
-            lattice_dir,
-            task_id,
-            new_status,
-            is_json,
-            config,
-            force=force,
-            reason=provenance_reason,
-            authoritative_snapshot=snapshot,
-            authoritative_location=context.location,
-        )
-        events: list[dict] = []
-        auto_assigned = new_status in ACTIVE_WORK_STATUSES and snapshot.get("assigned_to") is None
-        if auto_assigned:
-            events.append(
-                create_event(
-                    type="assignment_changed",
-                    task_id=task_id,
-                    actor=actor,
-                    data={"from": None, "to": actor},
-                    model=model,
-                    session=session,
-                    triggered_by=triggered_by,
-                    on_behalf_of=on_behalf_of,
-                )
-            )
-        event_data: dict = {"from": current_status, "to": new_status}
-        if force:
-            event_data["force"] = True
-            event_data["reason"] = provenance_reason
-        status_event = create_event(
-            type="status_changed",
-            task_id=task_id,
-            actor=actor,
-            data=event_data,
-            model=model,
-            session=session,
-            triggered_by=triggered_by,
-            on_behalf_of=on_behalf_of,
-            reason=provenance_reason,
-        )
-        events.append(status_event)
-        return TaskMutationDecision(
-            events=events,
-            value=(current_status, is_backward, auto_assigned, status_event),
-        )
-
-    result = mutate_task(lattice_dir, task_id, decide, config)
-    updated_snapshot = result.snapshot
-    current_status, is_backward_transition, auto_assigned, event = result.callback_value
+    result = run_operation(
+        "task.status",
+        {
+            "task": task_id,
+            "new_status": new_status,
+            "force": force,
+            "no_auto_review": no_auto_review,
+            **_provenance(model, session, triggered_by, on_behalf_of, provenance_reason),
+        },
+        is_json,
+    )
+    updated_snapshot = result.value
+    task_id = updated_snapshot["id"]
     if result.idempotent:
         output_result(
             data=updated_snapshot,
-            human_message=f"Already at status {new_status}",
+            human_message=f"Already at status {updated_snapshot['status']}",
             quiet_value="ok",
             is_json=is_json,
             is_quiet=quiet,
         )
         return
-    assert event is not None
-    if is_backward_transition:
-        _append_plan_reset_section(lattice_dir, task_id, actor, event.get("ts"))
+    event = result.events[-1]
+    current_status = event["data"]["from"]
+    new_status = event["data"]["to"]
+    auto_assigned_to = next(
+        (e["data"]["to"] for e in result.events if e["type"] == "assignment_changed"), None
+    )
+
+    from lattice.boards import resolve_board
+
+    lattice_dir = resolve_board().lattice_dir
+    config = load_project_config(lattice_dir)
 
     # c11 integration: update tab title / sidebar / flash when task is surface-bound
     from lattice.cli.c11_bridge import c11_available, on_status_changed
@@ -951,38 +683,30 @@ def status_cmd(
                 exc_info=True,
             )
 
-        # Emit the auto_review_spawned audit event when (and only when)
-        # we actually spawned. Skip reasons surface in CLI output instead.
+        # Record the auto_review_spawned audit event when (and only when)
+        # we actually spawned, as its own operation. Skip reasons surface in
+        # CLI output instead.
         if auto_review_result and auto_review_result.get("fired"):
             try:
                 from lattice.core.auto_review import AUTO_REVIEW_ACTOR
+                from lattice.ops import Caller
 
-                auto_event = create_event(
-                    type="auto_review_spawned",
-                    task_id=task_id,
-                    actor=AUTO_REVIEW_ACTOR,
-                    data={
-                        "review_type": auto_review_result["review_type"],
-                        "mode": auto_review_result["mode"],
-                        "log_path": auto_review_result["log_path"],
-                        "spawned_at": auto_review_result["spawned_at"],
-                        # PIDs are short-lived debug aids; the durable signal is
-                        # ``log_path`` plus the eventual review artifact.
-                        "pid": auto_review_result["pid"],
-                        "trigger_status_event_id": event["id"],
-                        **(
-                            {"reviewed_worktree": auto_review_result["reviewed_worktree"]}
-                            if "reviewed_worktree" in auto_review_result
-                            else {}
-                        ),
-                    },
+                params = {
+                    "task": task_id,
+                    "review_type": auto_review_result["review_type"],
+                    "mode": auto_review_result["mode"],
+                    "log_path": auto_review_result["log_path"],
+                    "spawned_at": auto_review_result["spawned_at"],
+                    "pid": auto_review_result["pid"],
+                    "trigger_status_event_id": event["id"],
+                }
+                if "reviewed_worktree" in auto_review_result:
+                    params["reviewed_worktree"] = auto_review_result["reviewed_worktree"]
+                updated_snapshot = (
+                    resolve_board()
+                    .execute("task.record_auto_review", params, Caller(actor=AUTO_REVIEW_ACTOR))
+                    .value
                 )
-                updated_snapshot = mutate_task_events(
-                    lattice_dir,
-                    task_id,
-                    [auto_event],
-                    config,
-                ).snapshot
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "auto_review_spawned event write failed: %s",
@@ -1009,7 +733,7 @@ def status_cmd(
     if auto_review_result is not None:
         json_data["auto_review"] = auto_review_result
 
-    assign_msg = f"  (auto-assigned to {actor})" if auto_assigned else ""
+    assign_msg = f"  (auto-assigned to {auto_assigned_to})" if auto_assigned_to else ""
     human_msg = f"Status: {current_status} -> {new_status} ({display_id}){assign_msg}"
     if hint and not quiet:
         human_msg += f"\n  {hint}"
@@ -1090,7 +814,7 @@ def assign(
         )
         return TaskMutationDecision(events=[event], value=current_assigned)
 
-    result = mutate_task(lattice_dir, task_id, decide, config)
+    result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
     current_assigned = result.callback_value
     if result.idempotent:
         if is_unassign:
@@ -1168,82 +892,23 @@ def comment(
 ) -> None:
     """Add a comment to a task."""
     is_json = output_json
-
-    text = resolve_body(
-        text,
-        file_path,
+    result = run_operation(
+        "task.comment",
+        {
+            "task": task_id,
+            "text": text,
+            "file": Path(file_path).read_text(encoding="utf-8") if file_path is not None else None,
+            "reply_to": reply_to,
+            "role": role,
+            "criterion": list(criterion_ids),
+            **_provenance(model, session, triggered_by, on_behalf_of, provenance_reason),
+        },
         is_json,
-        what="comment text",
-        arg_label="TEXT",
     )
-
-    lattice_dir = require_root(is_json)
-    config = load_project_config(lattice_dir)
-    actor = require_actor(is_json)
-    if on_behalf_of is not None:
-        validate_actor_format_or_exit(on_behalf_of, is_json)
-
-    task_id = resolve_task_id(lattice_dir, task_id, is_json)
-
-    read_snapshot_or_exit(lattice_dir, task_id, is_json)
-
-    # Validate reply-to if provided
-    if reply_to is not None:
-        events = read_task_events(lattice_dir, task_id)
-        try:
-            validate_comment_for_reply(events, reply_to)
-        except ValueError as exc:
-            output_error(str(exc), "VALIDATION_ERROR", is_json)
-
-    # Validate and normalize body
-    try:
-        text = validate_comment_body(text)
-    except ValueError as exc:
-        output_error(str(exc), "VALIDATION_ERROR", is_json)
-
-    # Validate role against configured completion policy roles
-    if role is not None:
-        configured_roles = get_configured_roles(config)
-        if configured_roles and role not in configured_roles:
-            output_error(
-                f"Unknown role: '{role}'. Valid roles: {', '.join(sorted(configured_roles))}.",
-                "INVALID_ROLE",
-                is_json,
-            )
-
-    def decide(context):  # noqa: ANN001, ANN202
-        snapshot = context.snapshot
-        assert snapshot is not None
-        normalized_ids = normalize_criterion_ids(criterion_ids, snapshot=snapshot)
-        event_data: dict = {"body": text}
-        if reply_to is not None:
-            validate_comment_for_reply(list(context.events), reply_to)
-            event_data["parent_id"] = reply_to
-        if role is not None:
-            event_data["role"] = role
-        if normalized_ids:
-            event_data["criterion_ids"] = normalized_ids
-        event = create_event(
-            type="comment_added",
-            task_id=task_id,
-            actor=actor,
-            data=event_data,
-            model=model,
-            session=session,
-            triggered_by=triggered_by,
-            on_behalf_of=on_behalf_of,
-            reason=provenance_reason,
-        )
-        return TaskMutationDecision(events=[event])
-
-    try:
-        updated_snapshot = mutate_task(lattice_dir, task_id, decide, config).snapshot
-    except ValueError as exc:
-        output_error(str(exc), "VALIDATION_ERROR", is_json)
-
+    task_id = result.value["id"]
     msg = f"Reply added to {task_id}" if reply_to else f"Comment added to {task_id}"
     output_result(
-        data=updated_snapshot,
+        data=result.value,
         human_message=msg,
         quiet_value="ok",
         is_json=is_json,
@@ -1358,7 +1023,7 @@ def comment_edit(
         return TaskMutationDecision(events=[event])
 
     try:
-        result = mutate_task(lattice_dir, task_id, decide, config)
+        result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
     except ValueError as exc:
         output_error(str(exc), "VALIDATION_ERROR", is_json)
 
@@ -1418,7 +1083,7 @@ def comment_delete(
         return TaskMutationDecision(events=[event])
 
     try:
-        result = mutate_task(lattice_dir, task_id, decide, config)
+        result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
     except ValueError as exc:
         output_error(str(exc), "VALIDATION_ERROR", is_json)
 
@@ -1494,7 +1159,7 @@ def react(
         return TaskMutationDecision(events=[event])
 
     try:
-        result = mutate_task(lattice_dir, task_id, decide, config)
+        result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
     except ValueError as exc:
         output_error(str(exc), "VALIDATION_ERROR", is_json)
 
@@ -1575,7 +1240,7 @@ def unreact(
         return TaskMutationDecision(events=[event])
 
     try:
-        result = mutate_task(lattice_dir, task_id, decide, config)
+        result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
     except ValueError as exc:
         output_error(str(exc), "NOT_FOUND", is_json)
 
@@ -1642,9 +1307,6 @@ def complete_cmd(
     from lattice.core.comments import validate_comment_body
     from lattice.core.config import (
         get_configured_roles,
-        get_valid_transitions,
-        validate_completion_policy,
-        validate_transition,
     )
     from lattice.core.ids import generate_artifact_id
     from lattice.storage.fs import atomic_write, ensure_artifact_dirs
@@ -1839,7 +1501,7 @@ def complete_cmd(
     # them, so a refused completion must not leave them behind. Nothing was
     # appended when the mutation raises, so the artifact is unreferenced.
     try:
-        result = mutate_task(lattice_dir, task_id, decide, config)
+        result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
     except BaseException:
         dest_path.unlink(missing_ok=True)
         meta_path.unlink(missing_ok=True)

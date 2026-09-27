@@ -161,6 +161,7 @@ def _seed_example_tasks(lattice_dir: Path, config: dict) -> None:
         source="absent",
         may_emit_lifecycle=True,
         project_prefix=project_code,
+        run_hooks=True,
     ).snapshot
     parent_sid = parent_snapshot["short_id"]
     scaffold_plan(
@@ -251,6 +252,7 @@ def _seed_example_tasks(lattice_dir: Path, config: dict) -> None:
             source="absent",
             may_emit_lifecycle=True,
             project_prefix=project_code,
+            run_hooks=True,
         ).snapshot
         sid = snapshot["short_id"]
         scaffold_plan(lattice_dir, task_id, ex["title"], sid, ex["description"])
@@ -270,7 +272,7 @@ def _seed_example_tasks(lattice_dir: Path, config: dict) -> None:
             )
             return TaskMutationDecision(events=[rel_ev])
 
-        mutate_task(lattice_dir, source_id, relationship_decision, config)
+        mutate_task(lattice_dir, source_id, relationship_decision, config, run_hooks=True)
 
 
 @click.group(invoke_without_command=True)
