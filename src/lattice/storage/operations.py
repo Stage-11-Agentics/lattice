@@ -926,16 +926,10 @@ def scaffold_plan(
     if plan_path.exists():
         return
 
+    from lattice.core.plans import scaffold_plan_text
+
     ensure_dir(plan_path.parent)
-
-    heading = f"# {short_id}: {title}" if short_id else f"# {title}"
-    lines = [heading, ""]
-
-    if description:
-        lines.append(description)
-        lines.append("")
-
-    atomic_write(plan_path, "\n".join(lines))
+    atomic_write(plan_path, scaffold_plan_text(title, short_id, description))
 
 
 def scaffold_notes(

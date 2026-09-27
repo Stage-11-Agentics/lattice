@@ -3,6 +3,15 @@
 from __future__ import annotations
 
 
+def scaffold_plan_text(title: str, short_id: str | None, description: str | None) -> str:
+    """The initial plan a new task gets: ``# <short id>: <title>``, then the
+    description as a paragraph when there is one. No prescribed sections."""
+    lines = [f"# {short_id}: {title}" if short_id else f"# {title}", ""]
+    if description:
+        lines.extend([description, ""])
+    return "\n".join(lines)
+
+
 def is_scaffold_plan(content: str, *, description: str | None = None) -> bool:
     """Return True when plan content still matches the default scaffold placeholders.
 

@@ -507,7 +507,10 @@ def _dashboard_post(lattice_dir: Path, path: str, body: Any, env: dict) -> dict[
                 f"http://127.0.0.1:{port}{path}",
                 data=data,
                 method="POST",
-                headers={"Content-Type": "application/json"},
+                headers={
+                    "Content-Type": "application/json",
+                    "Origin": f"http://127.0.0.1:{port}",
+                },
             )
             try:
                 with urllib.request.urlopen(req, timeout=10) as resp:

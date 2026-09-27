@@ -1399,7 +1399,10 @@ def test_production_dashboard_update_callbacks_race_across_servers(
             request = Request(
                 f"http://127.0.0.1:{servers[index].server_port}/api/tasks/{task_id}/update",
                 data=payload,
-                headers={"Content-Type": "application/json"},
+                headers={
+                    "Content-Type": "application/json",
+                    "Origin": f"http://127.0.0.1:{servers[index].server_port}",
+                },
                 method="POST",
             )
             with urlopen(request) as response:

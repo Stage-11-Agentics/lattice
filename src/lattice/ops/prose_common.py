@@ -100,7 +100,8 @@ def write_task_prose(ctx, p, kind: str):  # noqa: ANN001, ANN201
     """``task.plan_write`` / ``task.notes_write``: replace the task's plan or notes.
 
     Under the task's locks: the file at its current placement (active or
-    archived) is checked against ``expect_sha256``, written with
+    archived) is checked against ``expect_sha256`` (or, with ``if_absent``,
+    must not exist yet: ``CONFLICT``, reason ``ALREADY_EXISTS``), written with
     ``atomic_write``, and a ``plan_written`` / ``notes_written`` event
     ``{sha256, bytes}`` is appended. Content equal to the file's is idempotent:
     nothing is written or appended.
@@ -133,6 +134,14 @@ def write_task_prose(ctx, p, kind: str):  # noqa: ANN001, ANN201
             found = check_expectation(path, p.expect_sha256, f"{label} for {display_id}")
         except OpError as exc:
             raise OpError.task_state(exc.code, exc.message, context.snapshot) from exc
+        if getattr(p, "if_absent", False) and found is not None:
+            exists = OpError.task_state(
+                "CONFLICT",
+                f"{label} for {display_id} already exists; it was not replaced.",
+                context.snapshot,
+            )
+            exists.details.update(reason="ALREADY_EXISTS", sha256=found)
+            raise exists
         value = {"task_id": task_id, **written_value(relative, data)}
         if found == value["sha256"]:
             return TaskMutationDecision(value=value, idempotent=True)
