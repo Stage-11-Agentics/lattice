@@ -39,8 +39,9 @@ from pathlib import Path
 from typing import Any
 
 from lattice.server import admin, tokens
-from lattice.server.testing import ServerHandle, make_root, running_server
+from lattice.server.testing import make_root, running_server
 from tests.parity.corpus import Scenario
+from tests.parity.fixture_op import FIXTURE_OP
 from tests.test_remote import sync_shim
 from tests.parity.record import (
     DURABLE_DIRS,
@@ -50,7 +51,6 @@ from tests.parity.record import (
 )
 
 REMOTE = "parity"
-FIXTURE_OP = "xtest.parity_fixture"
 RUNTIME_DIRS = ("locks", "review_state", "tmp-prompts", ".daemon")
 
 
@@ -164,11 +164,14 @@ def recording_mutations() -> Iterator[MutationLog]:
 
 @dataclass
 class ParityServer:
+    """A server the replay talks to over HTTP: in this process (with the write
+    recorder) or a ``lattice server serve`` subprocess (G-5)."""
+
     root: Path
-    handle: ServerHandle
+    url: str
     token: str
     strict_token: str
-    mutations: MutationLog
+    mutations: MutationLog | None = None
     _count: int = 0
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -190,46 +193,22 @@ class ParityServer:
         _patch_config(self.board(slug), patch, checkout)
 
     def fixture(self, slug: str, rel: str, text: str | None) -> None:
-        """Write (or, with ``text=None``, delete) one durable path as a journaled
-        server transaction, so sync carries it like any change."""
-        from lattice.core.ids import generate_op_id
-        from lattice.ops.base import OpResult
-        from lattice.server.project import MutationTracker
-        from lattice.storage.fs import atomic_write, ensure_dir, recording, unlink_path
+        """Write (or, with ``text=None``, delete) one durable path as the
+        ``xtest.parity_fixture`` operation: a journaled server transaction, so sync
+        carries it like any change."""
+        from lattice.server.testing import http_request
 
-        project = self.handle.project(slug)
-        assert project is not None
-        board = self.board(slug)
-        target = board / rel
-
-        def work(txn: Any) -> OpResult:
-            with recording(txn.before_mutation) as recorder:
-                if text is None:
-                    unlink_path(target)
-                else:
-                    ensure_dir(target.parent)
-                    atomic_write(target, text)
-            paths = recorder.relative_paths(board)
-            return OpResult(value={"paths": paths}, paths=tuple(paths))
-
-        with project.locked():
-            if project.state != "loaded":
-                project._load()
-            project.admit()
-            project._transact(
-                op=FIXTURE_OP,
-                op_id=generate_op_id(),
-                token_id=None,
-                fp=None,
-                tracker=MutationTracker(board, FIXTURE_OP),
-                work=work,
-            )
+        status, _, body = http_request(
+            "POST",
+            f"{self.url}/v1/projects/{slug}/ops/{FIXTURE_OP}",
+            token=self.token,
+            body={"params": {"path": rel, "text": text}},
+        )
+        assert status == 200, body
 
 
-@contextmanager
-def parity_server(base: Path) -> Iterator[ParityServer]:
-    """One server for a worker's scenarios, with two tokens (see :func:`token_for`)."""
-    root = make_root(base)
+def _mint(root: Path) -> tuple[str, str]:
+    """A person token (default actor ``human:parity``) and a token with no default."""
     person = tokens.create_token(root, user="human:parity", machine="parity", all_projects=True)
     strict = tokens.create_token(
         root,
@@ -238,15 +217,19 @@ def parity_server(base: Path) -> Iterator[ParityServer]:
         actors=["human:*", "agent:*"],
         all_projects=True,
     )
+    return person["token"], strict["token"]
+
+
+@contextmanager
+def parity_server(base: Path) -> Iterator[ParityServer]:
+    """One in-process server for a worker's scenarios, recording every mutation."""
+    root = make_root(base)
+    person, strict = _mint(root)
     with recording_mutations() as mutations, running_server(root) as handle:
         # TODO(rebase onto v2): H-10a's real sync route replaces the shim.
         sync_shim.install(handle.app)
         yield ParityServer(
-            root=root,
-            handle=handle,
-            token=person["token"],
-            strict_token=strict["token"],
-            mutations=mutations,
+            root=root, url=handle.url, token=person, strict_token=strict, mutations=mutations
         )
 
 
@@ -335,7 +318,7 @@ class HostedTarget(LocalTarget):
         home = root / "home"
         path = home / ".config" / "lattice" / "remotes.json"
         path.parent.mkdir(parents=True, exist_ok=True)
-        entry = {"url": self.server.handle.url, "token": {"env": TOKEN_ENV}, "retry_seconds": 1}
+        entry = {"url": self.server.url, "token": {"env": TOKEN_ENV}, "retry_seconds": 1}
         entry.update(self.settings)
         path.write_text(json.dumps({"remotes": {REMOTE: entry}}, indent=2) + "\n")
         path.chmod(0o600)

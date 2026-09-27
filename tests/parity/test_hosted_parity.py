@@ -114,6 +114,7 @@ def test_scenario_matches_golden_through_the_server(
     _assert_reads_match(checkout, board.parent, cache, target.env(checkout))
 
     # G-2: no removal of board data except a permitted relocation.
+    assert server.mutations is not None
     mutations = server.mutations.of(target.slug)
     assert mutations, "the recorder saw the scenario's writes"
     assert forbidden_removals(mutations, board) == []
@@ -131,7 +132,9 @@ def test_actorless_commands_are_the_no_actor_operations() -> None:
     from lattice.ops.base import registered_operations
 
     no_actor = {
-        name for name, cls in registered_operations().items() if getattr(cls, "no_actor", False)
+        name
+        for name, cls in registered_operations().items()
+        if getattr(cls, "no_actor", False) and not name.startswith("xtest.")
     }
     assert set(ACTORLESS_COMMANDS.values()) == no_actor
 

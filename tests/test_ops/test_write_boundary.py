@@ -77,21 +77,22 @@ BOARD_OWNERS: dict[str, str] = {
     "lattice.server.transactions": "the owning server: rollback from the undo log (SPEC §8.6)",
     "lattice.server.journal": "the owning server: journal and epoch rotation (SPEC §8.6)",
     "lattice.server.admin": "project create and offline maintenance on the server host (§8.2)",
-    "lattice.server.registry": "the owning server: server_status.json in the server root",
-    "lattice.server.tokens": "tokens.json in the server root (outside any board)",
+    "lattice.server.registry": "the owning server: server_status.json in the server root (SPEC §8.2)",
+    "lattice.server.tokens": "tokens.json in the server root, outside any board (SPEC §8.3)",
     "lattice.remote.cache": "the cache syncer, the only writer of a cache (SPEC §6.2, §9.4)",
     "lattice.cli.main": "init and its example tasks (LOCAL_ONLY, SPEC §3.5)",
     "lattice.cli.demo_cmd": "demo init (LOCAL_ONLY, SPEC §3.5)",
     "lattice.cli.integrity_cmds": "rebuild, doctor --fix, backfill-ids (LOCAL_ONLY, SPEC §3.5)",
     "lattice.cli.migration_cmds": "migrate needs-human (LOCAL_ONLY, SPEC §3.5)",
-    "lattice.cli.helpers": "require_actor's session touch on a local board, as today; skipped "
-    "on a cache (SPEC §9.5), refused on a server-owned board by the markers",
+    "lattice.cli.helpers": "require_actor's session touch on a local board, as today (SPEC §3.7); "
+    "skipped on a cache (§9.5), refused on a server-owned board by the markers (§6.2)",
 }
 
-#: Board writers that still bypass operations, each removed by the named ticket.
+#: Board writers that still bypass operations, each removed by the named ticket
+#: (operator ruling on PR #82): the converting ticket deletes its own entry.
 AWAITING_CONVERSION: dict[str, str] = {
-    "lattice.dashboard.server": "H-13a: the dashboard's POSTs call operations",
-    "lattice.mcp.tools": "H-21: the MCP tools call operations",
+    "lattice.dashboard.server": "H-13a (LAT-313): the dashboard's POSTs call operations",
+    "lattice.mcp.tools": "H-21 (LAT-315): the MCP tools call operations",
 }
 
 #: ``Path`` / file-object methods that change the filesystem.
