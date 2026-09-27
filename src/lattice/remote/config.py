@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import math
 import os
 import re
 import stat
@@ -31,6 +32,8 @@ from lattice.core.errors import OpError
 from lattice.remote.http import Remote
 
 DEFAULT_RETRY_SECONDS = 30.0
+#: The longest one operation may retry (SPEC §8.6: retries are bounded).
+MAX_RETRY_SECONDS = 3600.0
 
 
 def remotes_path() -> Path:
@@ -150,8 +153,17 @@ def _flag(value: Any, alias: str, key: str, default: bool) -> bool:
 def _retry_seconds(value: Any, alias: str) -> float:
     if value is None:
         return DEFAULT_RETRY_SECONDS
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
-        raise OpError("VALIDATION_ERROR", f"remote '{alias}': retry_seconds must be a number >= 0")
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or not 0 <= value <= MAX_RETRY_SECONDS
+    ):
+        raise OpError(
+            "VALIDATION_ERROR",
+            f"remote '{alias}': retry_seconds must be a number from 0 to "
+            f"{MAX_RETRY_SECONDS:g} (seconds)",
+        )
     return float(value)
 
 

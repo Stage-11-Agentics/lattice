@@ -109,3 +109,52 @@ def test_cli_refuses_on_a_bound_checkout(
         assert f"'lattice {command}' is a local-only maintenance command" in result.output
     assert not (tmp_path / ".lattice").exists()
     assert hosted_binding(tmp_path) == "home/proj"
+
+
+@pytest.mark.parametrize(("command", "argv"), HOSTED_COMMANDS)
+def test_cli_refuses_on_a_bound_checkout_off_posix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: str, argv: list[str]
+) -> None:
+    """A bound checkout is recognized without fcntl (SPEC §6.2): off POSIX the
+    maintenance commands are still refused and create no local board."""
+    import json
+
+    from click.testing import CliRunner
+
+    from lattice.cli.main import cli
+    from lattice.remote import binding
+
+    monkeypatch.setattr(binding, "hosted_supported", lambda: False)
+    (tmp_path / ".lattice-remote.json").write_text(
+        json.dumps({"remote": "home", "project": "proj"})
+    )
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(cli, argv)
+    assert result.exit_code == 1, result.output
+    assert "'home/proj'" in result.output
+    assert not (tmp_path / ".lattice").exists()
+    assert not (tmp_path / "lattice-demo").exists()
+
+
+@pytest.mark.parametrize(("command", "argv"), HOSTED_COMMANDS)
+def test_cli_refuses_a_binding_beside_a_local_board(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: str, argv: list[str]
+) -> None:
+    """``BINDING_CONFLICT`` is never swallowed into "local"."""
+    import json
+
+    from click.testing import CliRunner
+
+    from lattice.cli.main import cli
+    from lattice.storage.board_init import create_board
+
+    create_board(tmp_path, project_code="LOC", actor="human:a")
+    (tmp_path / ".lattice-remote.json").write_text(
+        json.dumps({"remote": "home", "project": "proj"})
+    )
+    monkeypatch.chdir(tmp_path)
+    before = sorted(p.name for p in (tmp_path / ".lattice").iterdir())
+    result = CliRunner().invoke(cli, argv)
+    assert result.exit_code == 1, result.output
+    assert "Moving a board" in result.output
+    assert sorted(p.name for p in (tmp_path / ".lattice").iterdir()) == before

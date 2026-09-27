@@ -25,6 +25,7 @@ from __future__ import annotations
 import contextlib
 import http.client
 import json
+import math
 import socket
 import sys
 import threading
@@ -510,18 +511,30 @@ def _check(
     if envelope["ok"] or not isinstance(error, dict):
         raise _not_lattice(remote, what, status, content_type)
     details = error.get("details") if isinstance(error.get("details"), dict) else None
-    retry_after: float | None
-    try:
-        retry_after = float(headers.get("retry-after", ""))
-    except ValueError:
-        retry_after = None
     raise ServerError(
         str(error.get("code") or "INTEGRITY_ERROR"),
         str(error.get("message") or f"HTTP {status}"),
         details,
         status=status,
-        retry_after=retry_after,
+        retry_after=parse_retry_after(headers.get("retry-after")),
     )
+
+
+#: The longest ``Retry-After`` the client honors; the retry budget still bounds it.
+MAX_RETRY_AFTER_SECONDS = 60.0
+
+
+def parse_retry_after(value: str | None) -> float | None:
+    """``Retry-After`` in seconds, or ``None`` when absent or unusable (negative,
+    NaN, infinite, not a number): the caller then backs off as usual. Values
+    above :data:`MAX_RETRY_AFTER_SECONDS` are capped."""
+    try:
+        seconds = float(value) if value is not None else None
+    except ValueError:
+        return None
+    if seconds is None or not math.isfinite(seconds) or seconds < 0:
+        return None
+    return min(seconds, MAX_RETRY_AFTER_SECONDS)
 
 
 def _parse_envelope(payload: bytes) -> dict | None:

@@ -24,11 +24,24 @@ def caller_from_context(**overrides: Any) -> Caller:
 
 
 def board_or_exit(is_json: bool) -> LocalBoard | HostedBoard:
-    """The board the cwd belongs to, or today's ``NOT_INITIALIZED`` error."""
+    """The board the cwd belongs to, or today's ``NOT_INITIALIZED`` error.
+
+    On a hosted checkout, plain output shows other people's control characters
+    as U+FFFD from here on (SPEC §4), whatever the command prints."""
     try:
-        return resolve_board()
+        board = resolve_board()
     except OpError as exc:
         output_error(exc.message, exc.code, is_json)
+    if isinstance(board, HostedBoard):
+        from lattice.remote.session import scrub_stdout
+
+        scrub_stdout()
+    return board
+
+
+def is_hosted(board: object) -> bool:
+    """Whether *board* is a hosted checkout's board (writes go to a server)."""
+    return isinstance(board, HostedBoard)
 
 
 def run_operation(

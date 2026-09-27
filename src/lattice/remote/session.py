@@ -29,7 +29,6 @@ import json
 import os
 import sys
 import time
-from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -46,6 +45,9 @@ _fresh: set[Path] = set()
 _locks: dict[Path, contextlib.ExitStack] = {}
 #: Roots whose version lines this process already printed.
 _announced: set[Path] = set()
+#: The offline-window file as it was before this command first opened it, by
+#: root (``None``: absent), so a refused write can put it back.
+_window_before: dict[Path, bytes | None] = {}
 #: Whether this process filters unknown-event warnings by the server's types.
 _filtering_types = False
 
@@ -56,6 +58,7 @@ def reset_process_state() -> None:
         release_read_lock(root)
     _fresh.clear()
     _announced.clear()
+    _window_before.clear()
     _restore_stdout()
     global _filtering_types
     if _filtering_types:
@@ -98,6 +101,12 @@ def open_unreachable_window(hosted: Hosted) -> None:
     path = _window_path(hosted)
     if not path.parent.is_dir():
         return
+    key = hosted.root.resolve()
+    if key not in _window_before:
+        try:
+            _window_before[key] = path.read_bytes()
+        except OSError:
+            _window_before[key] = None
     tmp = path.with_name(f".{UNREACHABLE_FILE}.{os.getpid()}.tmp")
     try:
         tmp.write_text(f"{time.time() + UNREACHABLE_WINDOW_SECONDS:.3f}\n", encoding="utf-8")
@@ -105,6 +114,26 @@ def open_unreachable_window(hosted: Hosted) -> None:
     except OSError:
         with contextlib.suppress(OSError):
             tmp.unlink()
+
+
+def restore_unreachable_window(hosted: Hosted) -> None:
+    """Undo this command's change to the offline window.
+
+    A write refused with ``SERVER_UNREACHABLE`` leaves the checkout exactly as
+    it was (G-8), including the window its own read phase opened.
+    """
+    key = hosted.root.resolve()
+    if key not in _window_before:
+        return
+    before = _window_before.pop(key)
+    path = _window_path(hosted)
+    with contextlib.suppress(OSError):
+        if before is None:
+            path.unlink()
+        else:
+            tmp = path.with_name(f".{UNREACHABLE_FILE}.{os.getpid()}.tmp")
+            tmp.write_bytes(before)
+            os.replace(tmp, path)
 
 
 def close_unreachable_window(hosted: Hosted) -> None:
@@ -334,19 +363,6 @@ def release_read_lock(root: Path) -> None:
     stack = _locks.pop(Path(root).resolve(), None)
     if stack is not None:
         stack.close()
-
-
-@contextlib.contextmanager
-def reading(hosted: Hosted) -> Iterator[Path]:
-    """Hold the read lock for one bounded read inside a write command."""
-    from lattice.remote.cache import read_lock
-
-    key = hosted.root.resolve()
-    if key in _locks:
-        yield hosted.lattice_dir
-        return
-    with read_lock(hosted.root) as lattice_dir:
-        yield lattice_dir
 
 
 # ---------------------------------------------------------------------------

@@ -12,6 +12,7 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -171,3 +172,48 @@ def test_never_connecting_is_server_unreachable(clock: list[float]) -> None:
     assert exc.value.code == "SERVER_UNREACHABLE"
     assert "Nothing was written" in exc.value.message
     assert clock == [0.5, 1.0]
+
+
+@pytest.mark.parametrize("header", ["-1", "NaN", "Infinity", "-Infinity", "1e309", "soon"])
+def test_an_unusable_retry_after_falls_back_to_backoff(clock: list[float], header: str) -> None:
+    with scripted([_error(503, "BOARD_BUSY", retry_after=header), OK]) as server:
+        _post(server["url"])
+    assert clock == [0.5]
+
+
+def test_a_huge_retry_after_is_capped(clock: list[float]) -> None:
+    with scripted([_error(429, "RATE_LIMITED", retry_after="100000"), OK]) as server:
+        _post(server["url"], retry_seconds=120)
+    assert clock == [http.MAX_RETRY_AFTER_SECONDS]
+
+
+@pytest.mark.parametrize("value", ["NaN", "Infinity", "1e309", "-1", "3601", "true", '"5"'])
+def test_retry_seconds_must_be_finite_and_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    from lattice.remote.config import resolve_remote
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    path = tmp_path / "lattice" / "remotes.json"
+    path.parent.mkdir()
+    path.write_text(
+        '{"remotes": {"team": {"url": "https://h.example.com", "retry_seconds": ' + value + "}}}"
+    )
+    path.chmod(0o600)
+    with pytest.raises(OpError) as exc:
+        resolve_remote("team")
+    assert exc.value.code == "VALIDATION_ERROR"
+    assert "retry_seconds" in exc.value.message
+
+
+def test_retry_seconds_within_bounds_is_accepted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lattice.remote.config import resolve_remote
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    path = tmp_path / "lattice" / "remotes.json"
+    path.parent.mkdir()
+    path.write_text('{"remotes": {"team": {"url": "https://h.example.com", "retry_seconds": 0}}}')
+    path.chmod(0o600)
+    assert resolve_remote("team").retry_seconds == 0.0

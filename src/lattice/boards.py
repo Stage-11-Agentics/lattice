@@ -208,26 +208,40 @@ class HostedBoard:
         self.remote = remote
 
     @property
-    def lattice_dir(self) -> Path:
+    def cache_dir(self) -> Path:
+        """The cache's ``.lattice/`` as a path, without reading it."""
         return self.root / LATTICE_DIR
+
+    @property
+    def lattice_dir(self) -> Path:
+        """The cache's ``.lattice/``, ready to read: caught up (once per command)
+        and under the cache's shared read lock, which stays held until
+        :meth:`execute` sends its request or the command ends (SPEC §9.4, §9.5).
+        Every read a write command makes goes through here."""
+        from lattice.core.errors import HostedReadError
+        from lattice.remote import session
+
+        try:
+            session.ensure_fresh(self.hosted)
+            session.hold_read_lock(self.hosted)
+        except OpError as exc:
+            raise HostedReadError(exc.code, exc.message, exc.details) from exc
+        return self.cache_dir
 
     @property
     def label(self) -> str:
         return self.hosted.label
 
     def load_config(self) -> dict:
-        """The project's ``config.json`` from the cache, caught up first (the read
-        phase of a write command, SPEC §9.5)."""
+        """The project's ``config.json`` from the cache (the read phase of a write
+        command, SPEC §9.5)."""
         import json
 
-        from lattice.remote import session
-
-        session.ensure_fresh(self.hosted)
-        with session.reading(self.hosted) as lattice_dir:
-            return json.loads((lattice_dir / "config.json").read_text())
+        return json.loads((self.lattice_dir / "config.json").read_text())
 
     def refresh(self) -> None:
-        """Catch the cache up before a retry (a stale attestation, SPEC §3.4)."""
+        """Catch the cache up before a retry (a stale attestation, SPEC §3.4); the
+        next read takes the read lock again."""
         from lattice.remote import session
 
         session.catch_up_and_report(self.hosted, after_write=True)
@@ -262,9 +276,17 @@ class HostedBoard:
             body["attestations"] = caller.attestations
         if caller.expect_last_event_id is not None:
             body["expect"] = {"last_event_id": caller.expect_last_event_id}
+        # The read phase ends here: never hold the read lock across the network
+        # call or the post-write sync (which takes it exclusively).
         session.release_read_lock(self.root)
         session.check_protocol(self.hosted)
-        data = post_operation(self.remote, self.hosted.project, op_name, body)
+        try:
+            data = post_operation(self.remote, self.hosted.project, op_name, body)
+        except OpError as exc:
+            if exc.code == "SERVER_UNREACHABLE":
+                # Nothing was sent: leave the checkout exactly as it was (G-8).
+                session.restore_unreachable_window(self.hosted)
+            raise
         session.close_unreachable_window(self.hosted)
         result = result_from_json(data.get("result") or {})
         session.catch_up_and_report(self.hosted, after_write=True)
@@ -280,18 +302,22 @@ class HostedBoard:
 
         if config is None:
             try:
-                config = json.loads((self.lattice_dir / "config.json").read_text())
+                config = json.loads((self.cache_dir / "config.json").read_text())
             except (OSError, ValueError):
                 return
         if not config.get("hooks"):
             return
+        # A hook may run lattice itself; its post-write sync needs the lock free.
+        from lattice.remote import session
+
+        session.release_read_lock(self.root)
         for event in result.events:
             if result.resource_id and result.resource_name:
                 execute_resource_hooks(
-                    config, self.lattice_dir, result.resource_id, result.resource_name, event
+                    config, self.cache_dir, result.resource_id, result.resource_name, event
                 )
             elif event.get("task_id"):
-                execute_hooks(config, self.lattice_dir, event["task_id"], event)
+                execute_hooks(config, self.cache_dir, event["task_id"], event)
 
 
 def resolve_board(start: Path | None = None) -> LocalBoard | HostedBoard:
@@ -340,14 +366,21 @@ LOCAL_ONLY_COMMANDS: tuple[str, ...] = (
 
 def hosted_binding(start: Path) -> str | None:
     """The ``<alias>/<project>`` a checkout at *start* is bound to, or ``None``
-    (a local board, no board, or a conflicted binding beside a local board,
-    whose maintenance stays local)."""
-    from lattice.remote.binding import hosted_root
+    for a local board or no board.
+
+    Classification needs no network and no ``fcntl``, so a bound checkout is
+    recognized on every platform. ``BINDING_CONFLICT`` propagates: a binding
+    beside a local board is refused, never treated as local.
+    """
+    from lattice.remote.binding import classify
 
     try:
-        hosted = hosted_root(start)
-    except OpError:
+        root = find_root(Path(start))
+    except LatticeRootError:
         return None
+    if root is None:
+        return None
+    hosted = classify(root)
     return hosted.label if hosted is not None else None
 
 

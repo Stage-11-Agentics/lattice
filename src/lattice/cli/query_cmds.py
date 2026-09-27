@@ -20,7 +20,7 @@ from lattice.cli.helpers import (
     resolve_task_id,
 )
 from lattice.cli.main import cli
-from lattice.cli.ops_bridge import board_or_exit, caller_from_context, run_operation
+from lattice.cli.ops_bridge import board_or_exit, caller_from_context, is_hosted, run_operation
 from lattice.core.comments import materialize_comments
 from lattice.core.config import get_valid_transitions, validate_status
 from lattice.core.events import get_actor_display
@@ -442,7 +442,8 @@ def next_cmd(
     if claim:
         board = board_or_exit(is_json)
         caller = caller_from_context()
-        if caller.actor is None and caller.actor_name is None:
+        # On a hosted checkout the server defaults the actor (SPEC §9.5).
+        if caller.actor is None and caller.actor_name is None and not is_hosted(board):
             output_error("--claim requires --actor or --name.", "VALIDATION_ERROR", is_json)
         selected = run_operation(
             "board.next_claim", {"status": status_csv}, is_json, caller=caller, board=board
