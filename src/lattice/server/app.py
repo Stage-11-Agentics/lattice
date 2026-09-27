@@ -46,6 +46,7 @@ from lattice.core.errors import OpError
 from lattice.core.events import BUILTIN_EVENT_TYPES
 from lattice.core.ids import generate_op_id, validate_actor
 from lattice.ops.base import (
+    MISSING_ACTOR_MESSAGE,
     Caller,
     check_op_id,
     check_path_component,
@@ -499,10 +500,7 @@ def _resolve_request_actor(body: dict, token: TokenRecord) -> tuple[str | None, 
     if actor is None:
         actor = token.default_actor
         if actor is None:
-            raise OpError(
-                "MISSING_ACTOR",
-                f"no actor given, and token {token.id} has no single default actor; pass --actor.",
-            )
+            raise OpError("MISSING_ACTOR", MISSING_ACTOR_MESSAGE)
     if not validate_actor(actor):
         raise OpError(
             "INVALID_ACTOR",

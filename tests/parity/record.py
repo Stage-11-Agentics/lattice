@@ -386,14 +386,39 @@ def init_args(root: Path) -> list[str]:
     ]
 
 
-def run_scenario(scenario: Scenario, root: Path, *, mode: str) -> dict[str, Any]:
+class LocalTarget:
+    """Where a scenario runs: a local board at the scenario root (the goldens).
+
+    ``tests/parity/hosted.py`` supplies a bound checkout instead. A target
+    creates the board (step 0), adds to the environment, and may take over
+    fixture writes and deletes (``WriteFile`` / ``DeleteFile``) by returning
+    ``True`` from :meth:`fixture`.
+    """
+
+    def env(self, root: Path) -> dict[str, str]:
+        return {}
+
+    def setup(self, scenario: Scenario, root: Path, invoke: Any) -> dict[str, Any]:
+        step = invoke(init_args(root))
+        _patch_config(root / ".lattice", scenario.config, root)
+        return step
+
+    def fixture(self, root: Path, rel: str, text: str | None, executable: bool) -> bool:
+        return False
+
+
+def run_scenario(
+    scenario: Scenario, root: Path, *, mode: str, target: LocalTarget | None = None
+) -> dict[str, Any]:
     """Run *scenario* on a fresh board at *root*; return the normalized capture."""
     from lattice.cli.main import cli
 
     assert mode in MODES
+    target = target if target is not None else LocalTarget()
     root.mkdir(parents=True, exist_ok=True)
     runner = _runner()
     env = _base_env(root)
+    env.update(target.env(root))
     board = _Board(root)
     raw_steps: list[dict[str, Any]] = []
 
@@ -416,10 +441,9 @@ def run_scenario(scenario: Scenario, root: Path, *, mode: str) -> dict[str, Any]
 
     with _frozen_clock():
         # Step 0: a fresh board, then the scenario's config patch (auto-review off always).
-        raw_steps.append(invoke(init_args(root)))
-        _patch_config(board.lattice_dir, scenario.config, root)
+        raw_steps.append(target.setup(scenario, root, invoke))
         for step in scenario.steps:
-            raw_steps.extend(_run_step(step, mode, root, board, env, invoke))
+            raw_steps.extend(_run_step(step, mode, root, board, env, invoke, target))
     return _normalize_capture(scenario, mode, root, raw_steps)
 
 
@@ -433,7 +457,7 @@ def _frozen_clock() -> Iterator[None]:
         yield
 
 
-def _run_step(step, mode, root, board, env, invoke) -> list[dict[str, Any]]:  # noqa: ANN001
+def _run_step(step, mode, root, board, env, invoke, target) -> list[dict[str, Any]]:  # noqa: ANN001
     if isinstance(step, Cli):
         if mode == "json" and step.plain_only:
             return []
@@ -443,15 +467,19 @@ def _run_step(step, mode, root, board, env, invoke) -> list[dict[str, Any]]:  # 
         step_env = {k: board.expand(v) for k, v in step.env.items()} if step.env else None
         return [invoke(args, stdin=step.stdin, step_env=step_env)]
     if isinstance(step, WriteFile):
-        path = root / board.expand(step.path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(board.expand(step.text), encoding="utf-8")
-        if step.executable:
-            path.chmod(0o755)
-        return [{"write_file": board.expand(step.path)}]
+        rel, text = board.expand(step.path), board.expand(step.text)
+        if not target.fixture(root, rel, text, step.executable):
+            path = root / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+            if step.executable:
+                path.chmod(0o755)
+        return [{"write_file": rel}]
     if isinstance(step, DeleteFile):
-        (root / board.expand(step.path)).unlink()
-        return [{"delete_file": board.expand(step.path)}]
+        rel = board.expand(step.path)
+        if not target.fixture(root, rel, None, False):
+            (root / rel).unlink()
+        return [{"delete_file": rel}]
     if isinstance(step, Git):
         args = [board.expand(a) for a in step.args]
         git_env = {k: v for k, v in {**os.environ, **env, **GIT_ENV}.items() if v is not None}

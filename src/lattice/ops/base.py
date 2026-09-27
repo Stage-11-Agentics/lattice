@@ -506,6 +506,11 @@ def _invalid_actor(actor: Any) -> OpError:
     )
 
 
+#: The ``MISSING_ACTOR`` text, locally and on a server (AC-5: a bound checkout
+#: prints what the local CLI prints).
+MISSING_ACTOR_MESSAGE = "Either --name (session) or --actor (legacy) is required."
+
+
 def resolve_actor(lattice_dir: Path, caller: Caller) -> str | dict:
     """SPEC §3.7 step 1: the caller's actor, resolved without writing anything.
 
@@ -529,7 +534,7 @@ def resolve_actor(lattice_dir: Path, caller: Caller) -> str | dict:
         if not validate_actor(caller.actor):
             raise _invalid_actor(caller.actor)
         return caller.actor
-    raise OpError("MISSING_ACTOR", "Either --name (session) or --actor (legacy) is required.")
+    raise OpError("MISSING_ACTOR", MISSING_ACTOR_MESSAGE)
 
 
 def permission_identity(actor: str | dict) -> str:
