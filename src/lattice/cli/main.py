@@ -273,7 +273,36 @@ def _seed_example_tasks(lattice_dir: Path, config: dict) -> None:
         mutate_task(lattice_dir, source_id, relationship_decision, config)
 
 
-@click.group(invoke_without_command=True)
+_ARGV_META_KEY = "lattice.argv"
+
+
+class _LatticeGroup(click.Group):
+    """The root group; keeps its raw tokens so the bound-checkout guard can
+    answer in the subcommand's ``--json`` shape before the subcommand parses."""
+
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        ctx.meta[_ARGV_META_KEY] = list(args)
+        return super().parse_args(ctx, args)
+
+
+def _refuse_bound_checkout(ctx: click.Context) -> None:
+    """Exit before any command reads or writes a checkout bound to a Lattice
+    server: its ``.lattice/`` is Lattice v2's read-only cache, not a v1 board."""
+    from lattice.cli.helpers import output_error
+    from lattice.storage.fs import BoundCheckoutError, LatticeRootError, find_root
+
+    tokens = ctx.meta.get(_ARGV_META_KEY, [])
+    if "--help" in tokens:
+        return
+    try:
+        find_root()
+    except BoundCheckoutError as exc:
+        output_error(str(exc), exc.code, "--json" in tokens)
+    except LatticeRootError:
+        pass  # a bad LATTICE_ROOT is reported by the command that needs a root
+
+
+@click.group(cls=_LatticeGroup, invoke_without_command=True)
 @click.version_option(package_name="lattice-tracker")
 @click.pass_context
 def cli(ctx: click.Context) -> None:
@@ -287,6 +316,8 @@ def cli(ctx: click.Context) -> None:
 
         os.environ["PYTHONUTF8"] = "1"
         sys.exit(subprocess.call([sys.executable, "-X", "utf8"] + sys.argv))
+
+    _refuse_bound_checkout(ctx)
 
     from lattice.update_check import maybe_print_update_notice
 
@@ -474,6 +505,10 @@ def init(
     """Initialize a new Lattice project."""
     root = Path(target_path)
     lattice_dir = root / LATTICE_DIR
+
+    from lattice.cli.helpers import refuse_bound_target_or_exit
+
+    refuse_bound_target_or_exit(root)
 
     # Idempotency: if .lattice/ already exists as a directory, skip
     if lattice_dir.is_dir():
@@ -1328,7 +1363,10 @@ def set_subproject_code(code: str, force: bool) -> None:
 @click.option("--force", is_flag=True, help="Replace existing Lattice block if present.")
 def setup_claude(target_path: str, force: bool) -> None:
     """Add or update Lattice agent integration in CLAUDE.md."""
+    from lattice.cli.helpers import refuse_bound_target_or_exit
+
     root = Path(target_path)
+    refuse_bound_target_or_exit(root)
     marker, composed_block = _compose_claude_md_blocks(_load_instance_config(root))
     claude_md = root / "CLAUDE.md"
 
@@ -1398,6 +1436,10 @@ def setup_openclaw(target_path: str, install_global: bool, force: bool) -> None:
     # --global and --path are mutually exclusive
     if install_global and target_path != str(Path(".").resolve()):
         raise click.ClickException("Cannot use --global and --path together.")
+    if not install_global:
+        from lattice.cli.helpers import refuse_bound_target_or_exit
+
+        refuse_bound_target_or_exit(Path(target_path))
 
     # Locate bundled skill files
     skill_src = Path(__file__).resolve().parent.parent / "skills" / "lattice"

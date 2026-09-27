@@ -1496,6 +1496,10 @@ def demo_init(target_path: str | None, quiet: bool, no_dashboard: bool) -> None:
     else:
         target_dir = Path(target_path)
 
+    from lattice.cli.helpers import refuse_bound_target_or_exit
+
+    refuse_bound_target_or_exit(target_dir)
+
     # Check if already exists
     if (target_dir / LATTICE_DIR).is_dir():
         raise click.ClickException(
