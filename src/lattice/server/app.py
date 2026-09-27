@@ -58,7 +58,7 @@ from lattice.server.config import ServerConfig
 from lattice.server.journal import fingerprint
 from lattice.server.limits import DiskFloor, TokenLimits, check_event_data_cap
 from lattice.server.log import ServerLog, exception_fields
-from lattice.server.project import Project, WriteRequest
+from lattice.server.project import LOADED, Project, WriteRequest
 from lattice.server.protocol import (
     HEADER_CLIENT_VERSION,
     HEADER_MIN_CLIENT_VERSION,
@@ -561,6 +561,14 @@ async def projects(request: Request, state: ServerState) -> Response:
     any request does (SPEC §8.5)."""
 
     def row_for(project: Project) -> dict:
+        if project.state == LOADED:
+            # The admission checks every request runs: hand edits are journaled
+            # and queued control requests applied before the row is captured.
+            # A check that quarantines the project leaves it listed as unavailable.
+            try:
+                project.admit()
+            except OpError:
+                pass
         code = None
         try:
             config = json.loads((project.board / "config.json").read_text(encoding="utf-8"))

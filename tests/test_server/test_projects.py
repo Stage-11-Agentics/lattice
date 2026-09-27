@@ -104,3 +104,22 @@ def test_listing_waits_for_a_write_in_progress(server: ServerHandle, root: Path)
     assert waited > 0.3
     # whichever request admission let in first, the row is a settled state
     assert (alpha["project_code"], alpha["head_seq"]) in {("ALP", 1), ("NEW", 2)}
+
+
+def test_listing_journals_a_hand_edit_first(server: ServerHandle, root: Path) -> None:
+    """Review round 2: /v1/projects runs the admission checks, so a hand edit of
+    config.json is journaled as ``external`` before the row is read."""
+    import json
+
+    token = mint(root)
+    create_task(server, token, "alpha")
+    board = root / "projects" / "alpha" / ".lattice"
+    config = json.loads((board / "config.json").read_text())
+    config["project_code"] = "NEW"
+    (board / "config.json").write_text(json.dumps(config, sort_keys=True, indent=2) + "\n")
+    _, _, body = server.request("GET", "/v1/projects", token=token)
+    alpha = next(r for r in body["data"]["projects"] if r["slug"] == "alpha")
+    assert alpha["project_code"] == "NEW" and alpha["head_seq"] == 2
+    journal = board / "hosted" / "journal.jsonl"
+    last = json.loads(journal.read_text().splitlines()[-1])
+    assert last["seq"] == 2 and last["op"] == "external" and last["paths"] == ["config.json"]
