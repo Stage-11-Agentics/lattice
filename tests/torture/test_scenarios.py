@@ -432,10 +432,10 @@ def test_t(tmp_path: Path) -> None:
             )
             for user, host in TEAM
         ]
-        _origin, repo = tracked_board_repo(people[0], tmp_path)
+        bare, repo = tracked_board_repo(people[0], tmp_path)
         # host-b cloned the tracked board before the move and has used it locally.
         clone_b = tmp_path / "clone-b"
-        git(tmp_path, "clone", "-q", str(_origin), str(clone_b))
+        git(tmp_path, "clone", "-q", str(bare), str(clone_b))
         assert len(lattice_json(people[2], clone_b, "list")) == 3
 
         move_board(server, people[0], repo, tmp_path)
@@ -444,12 +444,18 @@ def test_t(tmp_path: Path) -> None:
         # adopts what is left as an empty cache (SPEC §9.3). host-c clones afterwards.
         git(clone_b, "pull", "-q", "--no-rebase")
         assert git(clone_b, "ls-files", ".lattice") == ""
+        leftovers = sorted(p.name for p in (clone_b / ".lattice").iterdir())
+        assert leftovers, "the pull left no runtime leftovers to adopt"
         clone_c = tmp_path / "clone-c"
-        git(tmp_path, "clone", "-q", str(_origin), str(clone_c))
+        git(tmp_path, "clone", "-q", str(bare), str(clone_c))
         checkouts = {"host-a": repo, "host-b": clone_b, "host-c": clone_c}
         for host, checkout in checkouts.items():
             who = people[[h for _, h in TEAM].index(host)]
             assert_matches_server(who, checkout, server)
+        assert (
+            not (clone_b / ".lattice" / "config.json").exists()
+            or (clone_b / ".lattice" / "cache" / "state.json").exists()
+        ), leftovers  # adopted as a cache, not a local board
 
         worktrees = {}
         for user, host in TEAM:
