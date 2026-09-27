@@ -67,12 +67,23 @@ def _check_actor_first(board: LocalBoard, provenance: dict, is_json: bool) -> No
         validate_actor_format_or_exit(provenance["on_behalf_of"], is_json)
 
 
-def _move_one(board: LocalBoard, op_name: str, raw_id: str, provenance: dict) -> dict | str:
-    """Run one archive/unarchive: the event on success, the error message on failure."""
+def _move_one(
+    board: LocalBoard, op_name: str, raw_id: str, provenance: dict, config: dict
+) -> dict | str:
+    """Run one archive/unarchive: the event on success, the error message on failure.
+
+    *config* is the command's one configuration, read before its first write,
+    so a hook that edits ``config.json`` cannot change the later tasks' hooks.
+    An ID that does not resolve prints today's ``Error:`` line to stderr (in
+    every output mode) before it is counted as a failure.
+    """
     try:
-        return board.execute(op_name, {"task": raw_id, **provenance}, caller_from_context()).value
+        return board.execute(
+            op_name, {"task": raw_id, **provenance}, caller_from_context(), config=config
+        ).value
     except OpError as exc:
         if exc.details.get("reason") == UNRESOLVED_TASK:
+            click.echo(f"Error: {exc.message}", err=True)
             return f"Invalid or unresolvable task ID: {raw_id}"
         return exc.message
 
@@ -149,10 +160,12 @@ def archive(
     provenance = _provenance(model, session, triggered_by, on_behalf_of, provenance_reason)
 
     board = board_or_exit(is_json)
+    # One configuration, read before any write, governs every task's hooks.
+    config = board.load_config()
     _check_actor_first(board, provenance, is_json)
 
     if stale:
-        _archive_stale(board, provenance, is_json=is_json, is_quiet=quiet)
+        _archive_stale(board, provenance, config, is_json=is_json, is_quiet=quiet)
         return
 
     if not task_ids:
@@ -167,7 +180,11 @@ def archive(
     # Single task: preserve original behavior (errors exit immediately)
     if len(parsed_ids) == 1:
         event = run_operation(
-            "task.archive", {"task": parsed_ids[0], **provenance}, is_json, board=board
+            "task.archive",
+            {"task": parsed_ids[0], **provenance},
+            is_json,
+            board=board,
+            config=config,
         ).value
         output_result(
             data=event,
@@ -182,7 +199,7 @@ def archive(
     succeeded: list[str] = []
     failed: list[tuple[str, str]] = []
     for raw_id in parsed_ids:
-        result = _move_one(board, "task.archive", raw_id, provenance)
+        result = _move_one(board, "task.archive", raw_id, provenance, config)
         if isinstance(result, str):
             failed.append((raw_id, result))
         else:
@@ -198,7 +215,9 @@ def archive(
     )
 
 
-def _archive_stale(board: LocalBoard, provenance: dict, *, is_json: bool, is_quiet: bool) -> None:
+def _archive_stale(
+    board: LocalBoard, provenance: dict, config: dict, *, is_json: bool, is_quiet: bool
+) -> None:
     """Archive all done tasks where done_at (or updated_at) is before yesterday."""
     now = datetime.now(timezone.utc)
     # "Before yesterday" means done_at date < today - 1 day (i.e., 2+ days ago)
@@ -240,7 +259,7 @@ def _archive_stale(board: LocalBoard, provenance: dict, *, is_json: bool, is_qui
     succeeded: list[str] = []
     failed: list[tuple[str, str]] = []
     for task_id in candidates:
-        result = _move_one(board, "task.archive", task_id, provenance)
+        result = _move_one(board, "task.archive", task_id, provenance, config)
         if isinstance(result, str):
             failed.append((task_id, result))
         else:
@@ -281,6 +300,8 @@ def unarchive(
     provenance = _provenance(model, session, triggered_by, on_behalf_of, provenance_reason)
 
     board = board_or_exit(is_json)
+    # One configuration, read before any write, governs every task's hooks.
+    config = board.load_config()
     _check_actor_first(board, provenance, is_json)
 
     parsed_ids = _parse_task_ids(task_ids)
@@ -288,7 +309,11 @@ def unarchive(
     # Single task: preserve original behavior
     if len(parsed_ids) == 1:
         event = run_operation(
-            "task.unarchive", {"task": parsed_ids[0], **provenance}, is_json, board=board
+            "task.unarchive",
+            {"task": parsed_ids[0], **provenance},
+            is_json,
+            board=board,
+            config=config,
         ).value
         output_result(
             data=event,
@@ -303,7 +328,7 @@ def unarchive(
     succeeded: list[str] = []
     failed: list[tuple[str, str]] = []
     for raw_id in parsed_ids:
-        result = _move_one(board, "task.unarchive", raw_id, provenance)
+        result = _move_one(board, "task.unarchive", raw_id, provenance, config)
         if isinstance(result, str):
             failed.append((raw_id, result))
         else:

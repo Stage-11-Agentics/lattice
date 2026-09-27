@@ -6,9 +6,11 @@ from pathlib import Path
 
 import click
 
-from lattice.cli.helpers import common_options, output_result
+from lattice.cli.helpers import common_options, output_error, output_result
 from lattice.cli.main import cli
-from lattice.cli.ops_bridge import run_operation
+from lattice.cli.ops_bridge import board_or_exit, caller_from_context, run_operation
+from lattice.ops import OpError
+from lattice.ops.task_needs_human import REASON_REQUIRED
 
 
 def _notify_c11(snapshot: dict, *, flagged: bool) -> None:
@@ -17,6 +19,27 @@ def _notify_c11(snapshot: dict, *, flagged: bool) -> None:
 
     if c11_available():
         on_needs_human_changed(snapshot, flagged)
+
+
+def _reject_before_unreadable_file(task_id: str, on_behalf_of: str | None, is_json: bool) -> None:
+    """Report any rejection today's order puts ahead of reading --file.
+
+    Runs the operation with an empty reason: an actor, task, or argument error
+    is printed as always; the empty reason's own rejection (``REASON_REQUIRED``,
+    reached only when everything before it passed) writes nothing and returns,
+    so the caller re-raises the read error at the point it always surfaced.
+    """
+    board = board_or_exit(is_json)
+    try:
+        board.execute(
+            "task.needs_human",
+            {"task": task_id, "file": "", "on_behalf_of": on_behalf_of},
+            caller_from_context(),
+        )
+    except OpError as exc:
+        if exc.code == "VALIDATION_ERROR" and exc.message == REASON_REQUIRED:
+            return
+        output_error(exc.message, exc.code, is_json)
 
 
 @cli.command("needs-human")
@@ -59,9 +82,19 @@ def needs_human_cmd(
         lattice needs-human LAT-42 --clear --note "chose google" --actor human:atin
     """
     is_json = output_json
-    # The file is read here (its text is the operation's input); both, neither
-    # and the clear/set mix are checked by the operation, in today's order.
-    file_text = Path(file_path).read_text(encoding="utf-8") if file_path is not None else None
+    # The operation checks the actor, the task, and then the argument mix
+    # (--clear with a reason, --note when setting, REASON with --file), in
+    # today's order. The file is read only when its text becomes the reason;
+    # in every other combination the operation rejects --file before using it,
+    # so it gets an empty stand-in and the path is never opened.
+    file_text: str | None = None
+    if file_path is not None:
+        file_used = not clear_flag and note is None and reason is None
+        try:
+            file_text = Path(file_path).read_text(encoding="utf-8") if file_used else ""
+        except (OSError, UnicodeDecodeError):
+            _reject_before_unreadable_file(task_id, on_behalf_of, is_json)
+            raise
     result = run_operation(
         "task.needs_human",
         {
