@@ -15,7 +15,7 @@ from pathlib import PurePosixPath
 
 from lattice.core.ids import validate_id
 from lattice.ops.base import OpContext, OpError, OpResult, operation
-from lattice.ops.prose_common import ContentParams, check_expectation, written_value
+from lattice.ops.prose_common import ContentParams, check_expectation, confine, written_value
 from lattice.storage.fs import atomic_write, ensure_dir
 from lattice.storage.locks import lattice_lock
 
@@ -101,6 +101,8 @@ class FileWrite:
                     "write')",
                 )
         target = lattice_dir.joinpath(*parts)
+        # Resolve and confine before any read or idempotency decision.
+        confine(target)
         for depth in range(1, len(parts)):
             ancestor = lattice_dir.joinpath(*parts[:depth])
             if ancestor.exists() and not ancestor.is_dir():
@@ -110,6 +112,7 @@ class FileWrite:
         data = p.content.encode("utf-8")
         value = written_value(p.path, data)
         with lattice_lock(lattice_dir / "locks", "board_files"):
+            confine(target)  # again under the lock: the path may have changed
             found = check_expectation(target, p.expect_sha256, f".lattice/{p.path}")
             if found == value["sha256"]:
                 return OpResult(value=value, idempotent=True)

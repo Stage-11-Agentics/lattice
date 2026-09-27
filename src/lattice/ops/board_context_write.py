@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from lattice.ops.base import OpContext, OpResult, operation
-from lattice.ops.prose_common import ContentParams, current_sha256, written_value
+from lattice.ops.prose_common import ContentParams, confine, current_sha256, written_value
 from lattice.storage.fs import atomic_write
 from lattice.storage.locks import lattice_lock
 
@@ -27,6 +27,7 @@ class ContextWrite:
         path = ctx.lattice_dir / "context.md"
         value = written_value("context.md", data)
         with lattice_lock(ctx.lattice_dir / "locks", "board_files"):
+            confine(path)  # before the idempotency read
             if current_sha256(path) == value["sha256"]:
                 return OpResult(value=value, idempotent=True)
             atomic_write(path, data)

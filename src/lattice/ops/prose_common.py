@@ -54,6 +54,15 @@ class ContentParams:
         return text
 
 
+def confine(path: Path) -> None:
+    """Refuse a target that resolves outside the board (``BoardPathError``,
+    ``VALIDATION_ERROR``), before it is read or judged idempotent: a symlink
+    must not let a prose write read, or report success on, a file elsewhere."""
+    from lattice.storage.ownership import locate
+
+    locate(path)
+
+
 def sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -118,6 +127,7 @@ def write_task_prose(ctx, p, kind: str):  # noqa: ANN001, ANN201
                 f"Both active and archived {kind} files exist for {task_id}; "
                 "manual recovery is required.",
             )
+        confine(path)
         display_id = context.snapshot.get("short_id") or task_id
         try:
             found = check_expectation(path, p.expect_sha256, f"{label} for {display_id}")
