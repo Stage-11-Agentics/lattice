@@ -33,10 +33,6 @@ class GateState:
     #: Position of the spawn event in the task's log.
     index: int
 
-    @property
-    def in_flight(self) -> bool:
-        return self.state in (LOCAL, RUNNING)
-
     def message(self) -> str:
         host = self.host or "an unknown host"
         if self.state == FAILED:
