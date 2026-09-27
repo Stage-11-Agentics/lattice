@@ -225,3 +225,48 @@ def test_help_states_the_rule() -> None:
     assert "at least one event" in text
     assert "--machine" in text and "--user" in text and "--worktree" in text
     assert "before v2" in text
+
+
+def test_filters_use_the_replayed_history_not_a_second_read(
+    board: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail(*_args: object, **_kwargs: object) -> list[dict]:
+        raise AssertionError("list re-read a task log")
+
+    import lattice.cli.query_cmds as query_cmds
+    import lattice.storage.readers as readers
+
+    monkeypatch.setattr(query_cmds, "read_task_events", fail)
+    monkeypatch.setattr(readers, "read_task_events", fail)
+    assert _ids(board, "--user", "human:alice", "--include-archived") == sorted(
+        [board["served"], board["archived"]]
+    )
+    assert _ids(board, "--worktree", ".") == [board["local"]]
+
+
+def _erase(board: dict, task_id: str) -> None:
+    result = CliRunner().invoke(
+        cli, ["erase", task_id, "--reason", "gone", "--actor", ACTOR], env=board["env"]
+    )
+    assert result.exit_code == 0, result.output
+
+
+def test_erased_task_hidden_unless_included(board: dict) -> None:
+    _erase(board, board["served"])
+    assert _ids(board, "--user", "human:alice") == []
+    assert _ids(board, "--user", "human:alice", "--include-tombstoned") == [board["served"]]
+
+
+def test_erased_pre_v2_task_never_matches(board: dict) -> None:
+    lattice_dir = Path(board["env"]["LATTICE_ROOT"]) / ".lattice"
+    legacy = board["legacy"]
+    event = create_event("task_tombstoned", legacy, "human:old", {"reason": "old"})
+    mutate_task_events(lattice_dir, legacy, [event], run_hooks=False)
+    assert legacy in _ids(board, "--include-tombstoned")
+    for args in (
+        ("--machine", socket.gethostname()),
+        ("--user", getpass.getuser()),
+        ("--worktree", "."),
+        ("--user", "human:old"),
+    ):
+        assert legacy not in _ids(board, *args, "--include-tombstoned")

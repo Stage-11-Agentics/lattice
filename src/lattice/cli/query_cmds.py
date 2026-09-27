@@ -281,11 +281,14 @@ def list_cmd(
         status_warning = f"'{status}' is not a configured status. Valid statuses: {valid}."
 
     snapshots: list[dict] = []
+    # The replayed history each snapshot came from, for the origin filters.
+    events_by_task: dict[str, tuple[dict, ...]] = {}
     for authority in discover_task_authorities(lattice_dir, include_archived=include_archived):
         snap = dict(authority.snapshot)
         if authority.location == "archived":
             snap["_archived"] = True
         snapshots.append(snap)
+        events_by_task[authority.task_id] = authority.events
     snapshots = visible(snapshots, include_tombstoned=include_tombstoned)
 
     # Apply filters (AND combination)
@@ -307,9 +310,7 @@ def list_cmd(
             continue
         if origin_filtered and not any(
             origin_matches(event, user=origin_user, machine=machine, worktrees=worktrees)
-            for event in read_task_events(
-                lattice_dir, snap.get("id", ""), is_archived=bool(snap.get("_archived"))
-            )
+            for event in events_by_task.get(snap.get("id", ""), ())
         ):
             continue
         filtered.append(snap)
