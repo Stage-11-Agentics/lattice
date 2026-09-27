@@ -25,12 +25,16 @@ never lost. A write can land before the checkout's first sync (a fresh clone
 whose first command writes without reading), so taking the lock first creates
 ``.lattice/`` and ``cache/`` with the cache's private mode (SPEC §9.4). Neither
 is a cache marker nor synced, so the next catch-up still bootstraps the cache
-with a reset.
+with a reset. Both must be real directories: each is opened without following
+a symlink, and everything under it is reached through that descriptor, so a
+file or a symlink there fails the record before anything is changed or written
+through it.
 """
 
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
 import os
 from collections.abc import Callable, Iterator
@@ -64,28 +68,58 @@ def _parse(stamp: Any) -> datetime | None:
         return None
 
 
-def _ensure_cache_dir(cache_dir: Path) -> None:
-    """Create the cache's ``.lattice/`` and ``cache/`` where missing, and set
-    both to 0700 whatever the umask. An existing ``.lattice/`` may be a fresh
-    clone's runtime leftovers (SPEC §9.3), made with a looser mode."""
-    for directory in (cache_dir.parent, cache_dir):
-        with contextlib.suppress(FileExistsError):
-            os.mkdir(directory, PRIVATE_DIR_MODE)
-        if not os.path.islink(directory):
-            os.chmod(directory, PRIVATE_DIR_MODE)
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+
+
+def _private_dir(name: str, parent_fd: int, path: Path) -> int:
+    """Open *name* under *parent_fd* as a real directory, creating it where
+    missing, and set it to 0700 whatever the umask (an existing ``.lattice/``
+    may be a fresh clone's runtime leftovers, SPEC §9.3, made with a looser
+    mode). A symlink or a non-directory there is refused unchanged."""
+    with contextlib.suppress(FileExistsError):
+        os.mkdir(name, PRIVATE_DIR_MODE, dir_fd=parent_fd)
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | _NOFOLLOW, dir_fd=parent_fd)
+    except OSError as exc:
+        if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+            raise NotADirectoryError(
+                errno.ENOTDIR,
+                "not a real directory (a symlink or a file); left untouched",
+                str(path),
+            ) from exc
+        raise
+    try:
+        os.fchmod(fd, PRIVATE_DIR_MODE)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
 
 
 @contextlib.contextmanager
-def _locked(cache_dir: Path) -> Iterator[None]:
+def _locked(cache_dir: Path) -> Iterator[int]:
+    """Hold ``acked.lock``; yields a descriptor of *cache_dir* (``.lattice/cache``),
+    through which the ledger is written."""
     import fcntl
 
-    _ensure_cache_dir(cache_dir)
-    fd = os.open(cache_dir / LOCK_FILE, os.O_RDWR | os.O_CREAT, 0o600)
+    root_fd = os.open(cache_dir.parent.parent, os.O_RDONLY | os.O_DIRECTORY)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        yield
+        lattice_fd = _private_dir(cache_dir.parent.name, root_fd, cache_dir.parent)
     finally:
-        os.close(fd)  # releases the flock
+        os.close(root_fd)
+    try:
+        dir_fd = _private_dir(cache_dir.name, lattice_fd, cache_dir)
+    finally:
+        os.close(lattice_fd)
+    try:
+        fd = os.open(LOCK_FILE, os.O_RDWR | os.O_CREAT | _NOFOLLOW, 0o600, dir_fd=dir_fd)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield dir_fd
+        finally:
+            os.close(fd)  # releases the flock
+    finally:
+        os.close(dir_fd)
 
 
 def record(cache_dir: Path, *, op_id: str, project: str, epoch: str | None, seq: Any) -> None:
@@ -98,8 +132,9 @@ def record(cache_dir: Path, *, op_id: str, project: str, epoch: str | None, seq:
         "at": _stamp(_now()),
     }
     data = (json.dumps(line, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
-    with _locked(cache_dir):
-        fd = os.open(cache_dir / ACKED_FILE, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o600)
+    with _locked(cache_dir) as dir_fd:
+        flags = os.O_RDWR | os.O_APPEND | os.O_CREAT | _NOFOLLOW
+        fd = os.open(ACKED_FILE, flags, 0o600, dir_fd=dir_fd)
         try:
             _cut_torn_tail(fd)
             view = memoryview(data)
@@ -183,7 +218,7 @@ def verify(cache_dir: Path, status: Callable[[str], dict]) -> Report:
         if at is not None and at < cutoff:
             continue
         verdicts[_key(number, entry)] = status(entry["op_id"]).get("state") == "committed"
-    with _locked(cache_dir):
+    with _locked(cache_dir) as dir_fd:
         kept: list[dict] = []
         for number, entry in enumerate(read(cache_dir)):
             at = _parse(entry.get("at"))
@@ -201,7 +236,7 @@ def verify(cache_dir: Path, status: Callable[[str], dict]) -> Report:
             else:
                 report.missing.append(entry)
             kept.append(entry)
-        _rewrite(cache_dir, kept)
+        _rewrite(dir_fd, kept)
     return report
 
 
@@ -211,13 +246,17 @@ def _key(number: int, entry: dict) -> tuple[int, str]:
     return number, json.dumps(entry, sort_keys=True)
 
 
-def _rewrite(cache_dir: Path, lines: list[dict]) -> None:
-    path = cache_dir / ACKED_FILE
-    if not lines and not path.exists():
-        return
+def _rewrite(dir_fd: int, lines: list[dict]) -> None:
+    """Replace the ledger in the cache directory *dir_fd* with *lines*."""
+    try:
+        os.stat(ACKED_FILE, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        if not lines:
+            return
     body = "".join(json.dumps(x, sort_keys=True, separators=(",", ":")) + "\n" for x in lines)
-    tmp = path.with_name(f".{ACKED_FILE}.{os.getpid()}.tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    tmp = f".{ACKED_FILE}.{os.getpid()}.tmp"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _NOFOLLOW
+    fd = os.open(tmp, flags, 0o600, dir_fd=dir_fd)
     try:
         view = memoryview(body.encode("utf-8"))
         while view:
@@ -225,4 +264,4 @@ def _rewrite(cache_dir: Path, lines: list[dict]) -> None:
         os.fsync(fd)
     finally:
         os.close(fd)
-    os.replace(tmp, path)
+    os.replace(tmp, ACKED_FILE, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
