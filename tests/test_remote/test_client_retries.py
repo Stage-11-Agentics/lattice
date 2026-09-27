@@ -298,13 +298,20 @@ def test_retry_seconds_within_bounds_is_accepted(
     assert resolve_remote("team").retry_seconds == 0.0
 
 
-def test_progress_keeps_coming_while_a_retry_blocks(
+def _progress_threads() -> list[threading.Thread]:
+    return [t for t in threading.enumerate() if t.name == "lattice-write-progress"]
+
+
+def test_progress_keeps_coming_while_a_request_blocks_past_the_window(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
     """SPEC §8.6 "No silent wait": a retry the server took and never answers
-    still gets a progress line per interval (real clock, a 0.2 s interval)."""
+    gets a line per interval for as long as it is in flight, past the retry
+    window up to its read timeout, worded so the numbers stay true; the ticker
+    stops with the call and nothing prints after it returns (real clock, a
+    0.2 s interval, a 0.6 s window, a 1.5 s read timeout)."""
     monkeypatch.setattr(client, "PROGRESS_SECONDS", 0.2)
-    monkeypatch.setattr(client, "OP_POLICY", http.Policy(1.0, 1.0))
+    monkeypatch.setattr(client, "OP_POLICY", http.Policy(1.0, 1.5))
     times: list[float] = []
     write = client._progress
     monkeypatch.setattr(
@@ -312,15 +319,43 @@ def test_progress_keeps_coming_while_a_retry_blocks(
     )
     with scripted([_error(503, "BOARD_BUSY"), "hang"]) as server, pytest.raises(OpError) as exc:
         started = time.monotonic()
-        _post(server["url"], retry_seconds=1.5)
+        _post(server["url"], retry_seconds=0.6)
     ended = time.monotonic()
     assert exc.value.code == "OUTCOME_UNKNOWN"
-    assert len(server["bodies"]) == 2  # the second attempt blocked until the deadline
+    assert len(server["bodies"]) == 2  # the retry blocked for its whole read timeout
+    assert ended - started >= 1.9  # 0.5 s backoff + 1.5 s read timeout, past the window
+    assert not _progress_threads()
     lines = capsys.readouterr().err.splitlines()
-    assert lines[0].endswith("is busy; retrying for up to 1.5 s")
-    assert len(lines) >= 5 and all("still busy" in line for line in lines[1:])
+    assert lines[0].endswith("is busy; retrying for up to 0.6 s")
+    within = [line for line in lines if "still busy" in line]
+    waiting = [line for line in lines if "still waiting for team to answer" in line]
+    assert within and len(waiting) >= 5
+    assert lines == [lines[0], *within, *waiting]  # the window's lines, then the waiting ones
+    assert all(
+        line.endswith("if the request reached it, the write may have applied") for line in waiting
+    )
+    assert all("op_" not in line and "errno" not in line.lower() for line in lines)
     marks = [started, *times, ended]
     assert max(b - a for a, b in zip(marks, marks[1:], strict=False)) < 0.5
+    time.sleep(0.5)  # a ticker left behind would print here
+    assert capsys.readouterr().err == ""
+    assert not _progress_threads()
+
+
+def test_a_first_attempt_in_flight_is_not_silent(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    """Before any failure the write is not retrying yet, but a request the
+    server took and has not answered still gets the waiting line."""
+    monkeypatch.setattr(client, "PROGRESS_SECONDS", 0.2)
+    monkeypatch.setattr(client, "OP_POLICY", http.Policy(1.0, 0.7))
+    with scripted(["hang"]) as server, pytest.raises(OpError) as exc:
+        _post(server["url"], retry_seconds=0.3)
+    assert exc.value.code == "OUTCOME_UNKNOWN"
+    lines = capsys.readouterr().err.splitlines()
+    assert len(lines) >= 2
+    assert all(line.startswith("lattice: still waiting for team to answer (") for line in lines)
+    assert not _progress_threads()
 
 
 def test_a_slow_first_attempt_does_not_print_two_lines_at_once(

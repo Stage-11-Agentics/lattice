@@ -342,6 +342,28 @@ def test_long_running_commands_read_without_holding_the_lock(
         os.chdir(previous)
 
 
+def test_a_hung_server_gets_progress_on_stderr_and_clean_json(
+    hosted_env: HostedEnv, repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SPEC §8.6 "No silent wait" through the CLI: a server that takes the
+    request and never answers gets a waiting line per interval until the read
+    timeout, past the retry window; ``--json`` stdout is the envelope alone."""
+    monkeypatch.setattr(client, "PROGRESS_SECONDS", 0.2)
+    monkeypatch.setattr(client, "OP_POLICY", http.Policy(1.0, 1.0))
+    with silent_listener() as listener:
+        hosted_env.write_remote(url=listener["url"], retry_seconds=0.3)
+        (repo / WINDOW).write_text(f"{time.time() + 60:.3f}\n")  # reads skip the network
+        result = run_cli(repo, "create", "Hung", "--actor", "human:alice", "--json")
+    assert result.exit_code == 1
+    error = json.loads(result.stdout)["error"]  # stdout parses: nothing else on it
+    assert error["code"] == "OUTCOME_UNKNOWN"
+    waiting = [
+        line for line in _notices(result.stderr) if "still waiting for team to answer" in line
+    ]
+    assert len(waiting) >= 3
+    assert all("op_" not in line for line in waiting)
+
+
 def test_a_binding_only_checkout_waits_once_per_outage(
     hosted_env: HostedEnv, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

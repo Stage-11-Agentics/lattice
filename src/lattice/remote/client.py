@@ -129,13 +129,15 @@ def _progress(line: str) -> None:
 
 
 class _Progress:
-    """The progress lines of one retrying write (SPEC §8.6 "No silent wait").
+    """The progress lines of one write (SPEC §8.6 "No silent wait").
 
-    The first line comes after the first failed attempt; then one line every
-    ``PROGRESS_SECONDS`` until the deadline, each scheduled from the previous
-    one. The retry loop ticks while it sleeps; while a retry's request blocks
-    (a connect, or a server that took the request and has not answered), a
-    ticker thread does, so the cadence holds for the whole window.
+    While the write retries: the first line after the first failed attempt,
+    then one line every ``PROGRESS_SECONDS``, each scheduled from the previous
+    one. The retry loop ticks while it sleeps; a ticker thread ticks while any
+    request is in flight (a connect, or a server that took the request and has
+    not answered), for as long as it is, so the cadence holds past the retry
+    window too, until the request's own read timeout. A request in flight
+    before the first failure, or after the window, gets the waiting line.
     """
 
     def __init__(self, remote: http.Remote, started: float, deadline: float):
@@ -143,29 +145,40 @@ class _Progress:
         self.started = started
         self.deadline = deadline
         self.state = "not available"
-        self.next: float | None = None
+        self.retrying = False
+        self.next = started + PROGRESS_SECONDS
         self._lock = threading.Lock()
 
     def begin(self, now: float) -> None:
-        if self.next is not None:
-            return
-        _progress(
-            f"server {self.remote.alias} ({self.remote.url}) is {self.state}; retrying "
-            f"for up to {self.remote.retry_seconds:g} s"
-        )
-        self.next = now + PROGRESS_SECONDS
+        with self._lock:
+            if self.retrying:
+                return
+            self.retrying = True
+            _progress(
+                f"server {self.remote.alias} ({self.remote.url}) is {self.state}; retrying "
+                f"for up to {self.remote.retry_seconds:g} s"
+            )
+            self.next = now + PROGRESS_SECONDS
 
-    def tick(self) -> None:
+    def tick(self, *, in_flight: bool = False) -> None:
         with self._lock:
             now = _now()
-            if self.next is None or now < self.next:
+            if now < self.next:
                 return
-            if now < self.deadline:  # at the deadline the error line follows at once
+            self.next = now + PROGRESS_SECONDS
+            if self.retrying and now < self.deadline:
                 _progress(
                     f"{self.remote.alias} still {self.state} ({now - self.started:.0f} s of "
                     f"{self.remote.retry_seconds:g} s)"
                 )
-            self.next = now + PROGRESS_SECONDS
+            elif in_flight:
+                _progress(
+                    f"still waiting for {self.remote.alias} to answer "
+                    f"({now - self.started:.0f} s); if the request reached it, the write "
+                    "may have applied"
+                )
+            # Otherwise the deadline has passed between attempts: the error
+            # line follows at once.
 
     def sleep(self, seconds: float) -> None:
         """Sleep *seconds*, in slices so each progress line lands on time."""
@@ -175,19 +188,17 @@ class _Progress:
             now = _now()
             if now >= until:
                 return
-            _sleep(min(until, self.next or until) - now)
+            _sleep(min(until, self.next) - now)
 
     @contextlib.contextmanager
-    def blocking(self) -> Iterator[None]:
-        """Keep the lines coming while one request blocks (none before the first)."""
-        if self.next is None:
-            yield
-            return
+    def in_flight(self) -> Iterator[None]:
+        """Keep the lines coming while one request is in flight; the ticker
+        stops (and is joined) before this returns, so nothing prints after."""
         stop = threading.Event()
 
         def run() -> None:
-            while not stop.wait(max(0.01, (self.next or 0.0) - _now())):
-                self.tick()
+            while not stop.wait(max(0.01, self.next - _now())):
+                self.tick(in_flight=True)
 
         ticker = threading.Thread(target=run, name="lattice-write-progress", daemon=True)
         ticker.start()
@@ -211,9 +222,9 @@ def post_operation(
 
     *offline*: the offline window was already open when the command started, so
     a first attempt that cannot connect gives up at once (no repeated wait).
-    While it retries it writes progress lines to stderr (SPEC §8.6): at once,
-    then every 5 seconds, also while a retry's request blocks; they name no
-    operation ID and no raw OS error.
+    It writes progress lines to stderr (SPEC §8.6): once retrying, at once and
+    then every 5 seconds; and every 5 seconds while any request is in flight,
+    past the retry window too. They name no operation ID and no raw OS error.
     """
     op_id = body["op_id"]
     path = (
@@ -229,7 +240,7 @@ def post_operation(
     while True:
         wait: float | None = None
         try:
-            with progress.blocking():
+            with progress.in_flight():
                 response = http.request(
                     remote,
                     "POST",
