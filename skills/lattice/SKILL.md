@@ -200,15 +200,18 @@ lattice list --json
 
 Returns `{"ok": true, "data": [...]}` on success or `{"ok": false, "error": {"code": "...", "message": "..."}}` on failure.
 
-## Notes Files
+## Plans and Notes
 
-Every task has a notes file at `.lattice/notes/<task_id>.md`. Write plans, decisions, and context there for future reference:
+Every task has a plan at `.lattice/plans/<task_id>.md` (scaffolded on creation) and may have notes at `.lattice/notes/<task_id>.md`. Read them there; write them with a command, which works on every board, including a hosted checkout whose `.lattice/` is a read-only mirror:
 
 ```bash
-cat .lattice/notes/task_01HQ*.md  # Read a task's notes
+lattice plan LAT-42                                             # Read the plan (--json for structured)
+lattice plan write LAT-42 --file plan.md --actor agent:claude   # Replace the plan
+lattice notes write LAT-42 --stdin --actor agent:claude < notes.md
+lattice plan write LAT-42 --file plan.md --expect-sha256 <hex> --actor agent:claude  # Refuse if it changed
 ```
 
-These are free-form markdown — edit directly.
+Each write records a `plan_written` / `notes_written` event with the content's SHA-256 and size. Orchestrator working files go through `lattice board write orchestration/<path> --file <path>`, and the board's `context.md` through `lattice context write --file <path>`.
 
 ## Multi-Agent Coordination
 

@@ -257,6 +257,9 @@ def _json_capable(args: list[str]) -> bool:
         if sub is None:
             break
         cmd = sub
+    # A group that runs a legacy command when not given a subcommand
+    # (``lattice plan <task>``) supports what that command supports.
+    cmd = getattr(cmd, "legacy", cmd)
     if cmd is cli:
         return False
     return any("--json" in getattr(p, "opts", ()) for p in cmd.params)

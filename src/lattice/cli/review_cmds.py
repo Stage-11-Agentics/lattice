@@ -831,9 +831,9 @@ def _report_review_failure(
     Best-effort by construction: reporting a failure must never raise over the
     top of the failure it is reporting, so every step is guarded.
     """
+    from lattice.boards import LocalBoard
     from lattice.cli.auto_review import log_path_for
-    from lattice.core.events import create_event
-    from lattice.storage.operations import TaskMutationDecision, mutate_task
+    from lattice.ops import Caller, OpError
 
     log_path = log_path_for(lattice_dir, review_type, task_id)
     body_lines = [
@@ -846,47 +846,40 @@ def _report_review_failure(
         body_lines.append(f"Spawn log: {log_path}")
     body = "\n".join(body_lines)
 
-    def decide_comment(context):  # noqa: ANN001, ANN202
-        event = create_event(
-            type="comment_added",
-            task_id=task_id,
-            actor=actor,
-            data={"body": body},
-        )
-        return TaskMutationDecision(events=[event])
+    # Both writes are operations on this board, as the reviewer's identity.
+    board = LocalBoard(root=lattice_dir.parent, start=Path.cwd())
+    caller = (
+        Caller(actor_name=actor.get("name") or actor.get("base_name"))
+        if isinstance(actor, dict)
+        else Caller(actor=actor)
+    )
 
     try:
-        mutate_task(lattice_dir, task_id, decide_comment, config, run_hooks=True)
+        board.execute("task.comment", {"task": task_id, "text": body}, caller, config=config)
     except Exception:  # noqa: BLE001 — never mask the review failure
         click.echo("Warning: could not record the review failure as a comment.", err=True)
 
     if not auto_fired:
         return
 
-    def decide_flag(context):  # noqa: ANN001, ANN202
-        snapshot = context.snapshot
-        assert snapshot is not None
-        if snapshot.get("needs_human"):
-            return TaskMutationDecision(events=[])
-        event = create_event(
-            type="needs_human_flagged",
-            task_id=task_id,
-            actor=actor,
-            # The flag is read from a queue, in seconds: name the code, not the paragraph.
-            # The full message is already on the task comment and in `review-status`.
-            data={
-                "reason": (
-                    f"Auto-fired {review_type} failed ({error_code}) — task is unreviewed; "
-                    f"see 'lattice review-status {task_id}'."
-                    if error_code
-                    else f"Auto-fired {review_type} failed ({message}) — task is unreviewed."
-                )
-            },
-        )
-        return TaskMutationDecision(events=[event])
-
+    # The flag is read from a queue, in seconds: name the code, not the paragraph.
+    # The full message is already on the task comment and in `review-status`.
+    flag_reason = (
+        f"Auto-fired {review_type} failed ({error_code}) — task is unreviewed; "
+        f"see 'lattice review-status {task_id}'."
+        if error_code
+        else f"Auto-fired {review_type} failed ({message}) — task is unreviewed."
+    )
     try:
-        mutate_task(lattice_dir, task_id, decide_flag, config, run_hooks=True)
+        board.execute(
+            "task.needs_human",
+            {"task": task_id, "flag_reason": flag_reason},
+            caller,
+            config=config,
+        )
+    except OpError as exc:
+        if exc.code != "FLAG_ALREADY_SET":  # already flagged: human attention is requested
+            click.echo("Warning: could not flag the task for human attention.", err=True)
     except Exception:  # noqa: BLE001 — never mask the review failure
         click.echo("Warning: could not flag the task for human attention.", err=True)
 

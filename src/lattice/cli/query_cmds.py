@@ -1167,38 +1167,3 @@ def _event_summary(event: dict, full: bool) -> str:
         return ""
     else:
         return ""
-
-
-# ---------------------------------------------------------------------------
-# lattice plan
-# ---------------------------------------------------------------------------
-
-
-@cli.command()
-@click.argument("task_id")
-@click.option("--json", "output_json", is_flag=True, help="Output as JSON.")
-def plan(task_id: str, output_json: bool) -> None:
-    """Show or open the plan file for a task.
-
-    Prints the plan file path. If the plan file doesn't exist, reports that.
-    """
-    is_json = output_json
-    lattice_dir = require_root(is_json)
-    task_id = resolve_task_id(lattice_dir, task_id, is_json)
-
-    plan_path, authority = resolve_task_prose_path(lattice_dir, task_id, "plan")
-    is_archived = authority.location == "archived"
-    if plan_path is None:
-        output_error(f"No plan file found for task {task_id}.", "NOT_FOUND", is_json)
-
-    if is_json:
-        data = {
-            "task_id": task_id,
-            "plan_path": str(plan_path),
-            "archived": is_archived,
-            "content": plan_path.read_text(encoding="utf-8"),
-        }
-        click.echo(json_envelope(True, data=data))
-    else:
-        # Print content to stdout
-        click.echo(plan_path.read_text(encoding="utf-8"))

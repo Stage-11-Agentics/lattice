@@ -163,6 +163,13 @@ class LocalBoard:
 
         return json.loads((self.lattice_dir / "config.json").read_text())
 
+    def refresh(self) -> None:
+        """Bring this client's view of the board up to date before a retry.
+
+        A local board is its own source of truth, so there is nothing to do;
+        a hosted board catches its cache up with the server here (H-11).
+        """
+
     def execute(
         self, op_name: str, params: Any, caller: Any = None, *, config: dict | None = None
     ) -> Any:

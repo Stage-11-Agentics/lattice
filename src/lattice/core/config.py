@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import re
-import subprocess
 from pathlib import Path
 from typing import Literal, TypedDict
 
@@ -611,8 +610,13 @@ def validate_completion_policy(
     lattice_dir: Path | None = None,
     repo_root: Path | None = None,
     prospective_review_payloads: list[str] | None = None,
+    reachable_review_commits: list[dict] | None = None,
 ) -> tuple[bool, list[str]]:
     """Check whether a transition into *to_status* satisfies completion policies.
+
+    ``require_reachable_review_commit`` is judged from the caller's
+    ``reachable_review_commits`` attestation (SPEC §3.4) when one is given,
+    else by checking *repo_root* directly.
 
     Returns ``(True, [])`` if no policy exists or all requirements are met.
     Returns ``(False, [reason, ...])`` if one or more requirements are not met.
@@ -653,7 +657,15 @@ def validate_completion_policy(
         failures.append("Task must be assigned")
 
     if policy.get("require_reachable_review_commit"):
-        if lattice_dir is None or repo_root is None:
+        from lattice.core.attestations import attested_reachable, latest_branch
+
+        if reachable_review_commits is not None:
+            if latest_branch(snapshot) is None or not attested_reachable(reachable_review_commits):
+                failures.append(
+                    "No qualifying review artifact has a Lattice-Reviewed-Commit marker "
+                    "reachable from the linked branch"
+                )
+        elif lattice_dir is None or repo_root is None:
             failures.append("Reachable review commit check requires repository context")
         elif not _has_reachable_review_commit(
             snapshot, lattice_dir, repo_root, prospective_review_payloads or []
@@ -666,58 +678,26 @@ def validate_completion_policy(
     return (len(failures) == 0, failures)
 
 
-_REVIEW_MARKER = re.compile(r"\ALattice-Reviewed-Commit: ([0-9a-f]{40})\n")
+# The review marker pattern lives with the attestations; the old private name
+# stays importable for callers that parse review headers with it.
+from lattice.core.attestations import REVIEW_MARKER_RE as _REVIEW_MARKER  # noqa: E402, F401
 
 
 def _has_reachable_review_commit(
     snapshot: dict, lattice_dir: Path, repo_root: Path, prospective: list[str]
 ) -> bool:
     """Return whether one review artifact names a commit reachable from the linked branch."""
-    branches = snapshot.get("branch_links", [])
-    branch = branches[-1].get("branch") if branches else None
-    if not isinstance(branch, str) or not branch:
+    from lattice.core.attestations import (
+        attested_reachable,
+        compute_reachable_review_commits,
+        latest_branch,
+    )
+
+    if latest_branch(snapshot) is None:
         return False
-    payloads = list(prospective)
-    for ref in snapshot.get("evidence_refs", []):
-        if ref.get("source_type") != "artifact" or ref.get("role") != "review":
-            continue
-        artifact_id = ref.get("id")
-        if not isinstance(artifact_id, str):
-            continue
-        meta_path = lattice_dir / "artifacts" / "meta" / f"{artifact_id}.json"
-        try:
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            payload_name = meta.get("payload", {}).get("file")
-            if isinstance(payload_name, str):
-                payloads.append(
-                    (lattice_dir / "artifacts" / "payload" / payload_name).read_text(
-                        encoding="utf-8"
-                    )
-                )
-        except (OSError, json.JSONDecodeError):
-            continue
-    for payload in payloads:
-        marker = _REVIEW_MARKER.match(payload)
-        if marker is None:
-            continue
-        sha = marker.group(1)
-        exists = (
-            subprocess.run(
-                ["git", "-C", str(repo_root), "cat-file", "-e", f"{sha}^{{commit}}"],
-                capture_output=True,
-            ).returncode
-            == 0
-        )
-        reachable = (
-            subprocess.run(
-                ["git", "-C", str(repo_root), "merge-base", "--is-ancestor", sha, branch],
-                capture_output=True,
-            ).returncode
-            == 0
-        )
-        if exists and reachable:
-            return True
-    return False
+    return attested_reachable(
+        compute_reachable_review_commits(snapshot, lattice_dir, repo_root, prospective)
+    )
 
 
 def get_configured_roles(config: LatticeConfig) -> set[str]:

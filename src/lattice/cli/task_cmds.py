@@ -11,30 +11,18 @@ import click
 
 from lattice.cli.helpers import (
     common_options,
-    load_project_config,
-    output_error,
     output_result,
-    require_root,
     resolve_body,
-    resolve_task_id,
-    require_actor,
-    validate_actor_format_or_exit,
 )
-from lattice.storage.operations import TaskMutationDecision, mutate_task
 from lattice.cli.main import cli
-from lattice.cli.ops_bridge import board_or_exit, check_or_exit, params_or_exit, run_operation
-from lattice.core.comments import (
-    validate_comment_body,
+from lattice.cli.ops_bridge import (
+    board_or_exit,
+    check_or_exit,
+    params_or_exit,
+    run_attested_operation,
+    run_operation,
 )
 from lattice.ops.task_comment_edit import check_role_flags
-from lattice.core.config import (
-    get_configured_roles,
-    get_valid_transitions,
-    validate_completion_policy,
-    validate_transition,
-)
-from lattice.core.events import create_event, utc_now
-from lattice.core.tasks import apply_event_to_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -444,7 +432,11 @@ def status_cmd(
     board = board_or_exit(is_json)
     config = board.load_config()
     lattice_dir = board.lattice_dir
-    result = run_operation(
+    from lattice.cli.attestations import completion_attestations
+    from lattice.core.config import resolve_status_input
+
+    target_status = resolve_status_input(config, new_status)
+    result = run_attested_operation(
         "task.status",
         {
             "task": task_id,
@@ -456,6 +448,7 @@ def status_cmd(
         is_json,
         board=board,
         config=config,
+        attest=lambda: completion_attestations(board, config, task_id, target_status),
     )
     updated_snapshot = result.value
     task_id = updated_snapshot["id"]
@@ -934,16 +927,12 @@ def complete_cmd(
     comment_added (role=review), status_changed -> review,
     artifact_attached (role=review), status_changed -> done.
     """
-    import tempfile
-    from pathlib import Path
-
-    from lattice.core.artifacts import create_artifact_metadata, serialize_artifact
-    from lattice.core.ids import generate_artifact_id
-    from lattice.storage.fs import atomic_write, ensure_artifact_dirs, unlink_path
+    from lattice.cli.attestations import caller_worktree, completion_attestations
+    from lattice.ops.task_complete import prior_status
 
     is_json = output_json
-
-    review_text = resolve_body(
+    # The body is resolved first, before the board, exactly as always.
+    review_body = resolve_body(
         review_text,
         review_file,
         is_json,
@@ -951,200 +940,56 @@ def complete_cmd(
         arg_label="--review",
         file_label="--review-file",
     )
+    board = board_or_exit(is_json)
+    config = board.load_config()
 
-    lattice_dir = require_root(is_json)
-    config = load_project_config(lattice_dir)
-    actor = require_actor(is_json)
-    if on_behalf_of is not None:
-        validate_actor_format_or_exit(on_behalf_of, is_json)
-
-    task_id = resolve_task_id(lattice_dir, task_id, is_json)
-    # Validate review -> done transition exists
-    if not validate_transition(config, "review", "done"):
-        output_error(
-            "Cannot complete: no transition from review to done in workflow.",
-            "INVALID_TRANSITION",
-            is_json,
-        )
-
-    # Validate role is accepted
-    configured_roles = get_configured_roles(config)
-    if configured_roles and "review" not in configured_roles:
-        output_error(
-            f"Unknown role: 'review'. Valid roles: {', '.join(sorted(configured_roles))}.",
-            "INVALID_ROLE",
-            is_json,
-        )
-
-    # Validate review text
-    try:
-        review_text = validate_comment_body(review_text)
-    except ValueError as exc:
-        output_error(str(exc), "VALIDATION_ERROR", is_json)
-
-    shared_ts = utc_now()
-    art_id = generate_artifact_id()
-
-    review_payload = review_text
-    # The opt-in gate is Lattice-owned. Capture the invoking checkout rather
-    # than the board root, which can legitimately be a different worktree.
+    # The reachable-review-commit gate is Lattice-owned and reads the invoking
+    # checkout, not the board root, which can be a different worktree. Its
+    # HEAD becomes the review payload's marker (the operation refuses the
+    # completion when there is none).
+    review_head: str | None = None
     policy = config.get("workflow", {}).get("completion_policies", {}).get("done", {})
     if policy.get("require_reachable_review_commit"):
-        worktree = _caller_git_worktree()
-        if worktree is None:
-            output_error("Not inside a git worktree.", "COMPLETION_BLOCKED", is_json)
-        sha = subprocess.check_output(
-            ["git", "-C", str(worktree), "rev-parse", "HEAD"], text=True
-        ).strip()
-        review_payload = f"Lattice-Reviewed-Commit: {sha}\n\n{review_text}"
+        worktree = caller_worktree()
+        if worktree is not None:
+            review_head = subprocess.check_output(
+                ["git", "-C", str(worktree), "rev-parse", "HEAD"], text=True
+            ).strip()
 
-    # --- Write artifact metadata ---
-    # Write inline review text as artifact payload
-    tmp = tempfile.NamedTemporaryFile(
-        mode="w",
-        suffix=".md",
-        delete=False,
-        prefix="lattice-review-",
+    def attest() -> dict:
+        if review_head is None:
+            return {}
+        return {
+            "review_head": review_head,
+            **completion_attestations(
+                board,
+                config,
+                task_id,
+                "done",
+                prospective=[f"Lattice-Reviewed-Commit: {review_head}\n"],
+            ),
+        }
+
+    result = run_attested_operation(
+        "task.complete",
+        {
+            "task": task_id,
+            "review": review_body if review_file is None else None,
+            "review_file": review_body if review_file is not None else None,
+            **_provenance(model, session, triggered_by, on_behalf_of, provenance_reason),
+        },
+        is_json,
+        board=board,
+        config=config,
+        attest=attest,
     )
-    tmp.write(review_payload)
-    tmp.close()
-    tmp_path = Path(tmp.name)
-
-    # meta/ and payload/ are scaffolded at init but empty dirs aren't
-    # git-tracked, so cloned installs may lack them (LAT-239).
-    ensure_artifact_dirs(lattice_dir)
-    try:
-        payload_file = f"{art_id}.md"
-        dest_path = lattice_dir / "artifacts" / "payload" / payload_file
-        atomic_write(dest_path, tmp_path.read_bytes())
-    finally:
-        tmp_path.unlink(missing_ok=True)
-
-    actor_str = actor if isinstance(actor, str) else actor.get("name", "unknown")
-    metadata = create_artifact_metadata(
-        art_id,
-        "note",
-        "Review findings",
-        created_by=actor_str,
-        created_at=shared_ts,
-        summary=review_text[:200] if len(review_text) > 200 else review_text,
-        model=model,
-        payload_file=payload_file,
-        content_type="text/markdown",
-        size_bytes=len(review_payload.encode("utf-8")),
-    )
-
-    meta_path = lattice_dir / "artifacts" / "meta" / f"{art_id}.json"
-    atomic_write(meta_path, serialize_artifact(metadata))
-
-    def decide(context):  # noqa: ANN001, ANN202
-        snapshot = context.snapshot
-        assert snapshot is not None
-        current_status = snapshot["status"]
-        already_in_review = current_status == "review"
-        if not already_in_review and not validate_transition(config, current_status, "review"):
-            valid_targets = get_valid_transitions(config, current_status)
-            valid_list = ", ".join(valid_targets) if valid_targets else "(none)"
-            output_error(
-                f"Cannot complete: task is in '{current_status}' which cannot "
-                f"transition to review. Valid transitions: {valid_list}.",
-                "INVALID_TRANSITION",
-                is_json,
-            )
-        events: list[dict] = []
-        comment_event = create_event(
-            type="comment_added",
-            task_id=task_id,
-            actor=actor,
-            data={"body": review_text, "role": "review"},
-            ts=shared_ts,
-            model=model,
-            session=session,
-            triggered_by=triggered_by,
-            on_behalf_of=on_behalf_of,
-            reason=provenance_reason,
-        )
-        events.append(comment_event)
-        working = apply_event_to_snapshot(snapshot, comment_event)
-        if not already_in_review:
-            review_status_event = create_event(
-                type="status_changed",
-                task_id=task_id,
-                actor=actor,
-                data={"from": current_status, "to": "review"},
-                ts=shared_ts,
-                model=model,
-                session=session,
-                triggered_by=triggered_by,
-                on_behalf_of=on_behalf_of,
-                reason=provenance_reason,
-            )
-            events.append(review_status_event)
-            working = apply_event_to_snapshot(working, review_status_event)
-        artifact_event = create_event(
-            type="artifact_attached",
-            task_id=task_id,
-            actor=actor,
-            data={"artifact_id": art_id, "role": "review"},
-            ts=shared_ts,
-            model=model,
-            session=session,
-            triggered_by=triggered_by,
-            on_behalf_of=on_behalf_of,
-            reason=provenance_reason,
-        )
-        events.append(artifact_event)
-        working = apply_event_to_snapshot(working, artifact_event)
-        # Validate the completion policy against the prospective post-transition
-        # snapshot. The reachable-review-commit gate is bound to the invoking
-        # checkout, and the payload it inspects is the one written above.
-        policy_ok, policy_failures = validate_completion_policy(
-            config,
-            working,
-            "done",
-            lattice_dir=lattice_dir,
-            repo_root=_caller_git_worktree(),
-            prospective_review_payloads=[review_payload],
-        )
-        if not policy_ok:
-            output_error(
-                f"Completion policy not satisfied: {'; '.join(policy_failures)}.",
-                "COMPLETION_BLOCKED",
-                is_json,
-            )
-        done_status_event = create_event(
-            type="status_changed",
-            task_id=task_id,
-            actor=actor,
-            data={"from": "review", "to": "done"},
-            ts=shared_ts,
-            model=model,
-            session=session,
-            triggered_by=triggered_by,
-            on_behalf_of=on_behalf_of,
-            reason=provenance_reason,
-        )
-        events.append(done_status_event)
-        return TaskMutationDecision(events=events, value=current_status)
-
-    # The artifact files above are written before the events that reference
-    # them, so a refused completion must not leave them behind. Nothing was
-    # appended when the mutation raises, so the artifact is unreferenced.
-    try:
-        result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
-    except BaseException:
-        unlink_path(dest_path, missing_ok=True)
-        unlink_path(meta_path, missing_ok=True)
-        raise
-    snapshot = result.snapshot
-    current_status = result.callback_value
-
-    display_id = snapshot.get("short_id") or task_id
-    event_count = len(result.appended_events)
+    snapshot = result.value
+    display_id = snapshot.get("short_id") or snapshot["id"]
     output_result(
         data=snapshot,
         human_message=(
-            f"Completed {display_id}: {event_count} events ({current_status} -> review -> done)"
+            f"Completed {display_id}: {len(result.events)} events "
+            f"({prior_status(result)} -> review -> done)"
         ),
         quiet_value="ok",
         is_json=is_json,

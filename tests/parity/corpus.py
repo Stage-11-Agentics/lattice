@@ -255,6 +255,66 @@ PLAN_INTEGRITY = Scenario(
     ),
 )
 
+PLAN_READ = Scenario(
+    name="plan_read",
+    description="the legacy plan read (lattice plan <task>), recorded before plan became a group",
+    steps=(
+        c("create", "Planned task", "--description", "Why it matters.", *H),
+        c("plan", "PAR-1"),
+        plan("PAR-1"),
+        c("plan", "PAR-1"),
+        c("plan", "<<task:PAR-1>>"),
+        c("plan", "par-1"),
+        c("plan", "--json", "PAR-1", plain_only=True),
+        c("plan", "NOPE-1"),
+        c("plan", "not-an-id!"),
+        c("create", "Planless task", *H),
+        DeleteFile(".lattice/plans/<<task:PAR-2>>.md"),
+        c("plan", "PAR-2"),
+        c("archive", "PAR-1", *H),
+        c("plan", "PAR-1"),
+        c("plan"),
+    ),
+)
+
+PROSE_WRITES = Scenario(
+    name="prose_writes",
+    description="v2-only: plan write, notes write, context write, board write, and rejections",
+    steps=(
+        c("create", "Planned task", *H),
+        WriteFile("plan-src.md", PLAN),
+        c("plan", "write", "PAR-1", "--file", "<<root>>/plan-src.md", *A),
+        c("plan", "write", "PAR-1", "--file", "<<root>>/plan-src.md", *A),
+        c("plan", "PAR-1"),
+        Cli(("plan", "write", "PAR-1", "--stdin", *A), stdin="# Plan v2\n\nFrom stdin.\n"),
+        c(
+            "plan",
+            "write",
+            "PAR-1",
+            "--file",
+            "<<root>>/plan-src.md",
+            "--expect-sha256",
+            "0" * 64,
+            *A,
+        ),
+        c("plan", "write", "PAR-1", "--file", "<<root>>", *A),
+        c("plan", "write", "PAR-1", "--file", "<<root>>/plan-src.md", "--stdin", *A),
+        c("plan", "write", "PAR-1", *A),
+        c("plan", "write", "NOPE-1", "--file", "<<root>>/plan-src.md", *A),
+        c("plan", "write", "PAR-1", "--file", "<<root>>/plan-src.md"),
+        Cli(("notes", "write", "PAR-1", "--stdin", *A), stdin="Scratch.\n"),
+        c("archive", "PAR-1", *H),
+        Cli(("notes", "write", "PAR-1", "--stdin", *A), stdin="After archive.\n"),
+        Cli(("context", "write", "--stdin"), stdin="# Context\n\nWhy.\n"),
+        c("context", "write", "--file", "<<root>>"),
+        c("board", "write", "orchestration/run-state.md", "--file", "<<root>>/plan-src.md"),
+        Cli(("board", "write", "plans/review-pack.md", "--stdin"), stdin="Pack.\n"),
+        c("board", "write", "plans/<<task:PAR-1>>.md", "--file", "<<root>>/plan-src.md"),
+        c("board", "write", "locks/x.lock", "--file", "<<root>>/plan-src.md"),
+        c("board", "write", "../escape.md", "--file", "<<root>>/plan-src.md"),
+    ),
+)
+
 COMMENTS = Scenario(
     name="comments",
     description="comment, threads, roles, comment-edit/delete, react/unreact",
@@ -892,6 +952,8 @@ SCENARIOS: tuple[Scenario, ...] = (
     LIFECYCLE,
     REVIEW_CYCLES,
     PLAN_INTEGRITY,
+    PLAN_READ,
+    PROSE_WRITES,
     COMMENTS,
     FLAGS,
     LINKS,
@@ -993,5 +1055,9 @@ REQUIRED_COMMANDS = frozenset(
         "session end",
         "erase",
         "unerase",
+        "plan write",
+        "notes write",
+        "context write",
+        "board write",
     }
 )

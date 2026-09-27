@@ -1,0 +1,900 @@
+{
+  "board": {
+    ".gitignore": {
+      "lines": [
+        "# Ephemeral Lattice runtime state — not part of the durable board.",
+        "# The board (tasks/ events/ plans/ artifacts/ ids.json config.json)",
+        "# stays tracked: it is the audit log and cross-machine coordination",
+        "# state. The paths below are mutated constantly and must never",
+        "# diverge per-worktree or collide on merge.",
+        "review_state/",
+        "tmp-prompts/",
+        ".daemon/",
+        "locks/"
+      ]
+    },
+    "archive/events/<ID-1>.jsonl": {
+      "jsonl": [
+        {
+          "actor": "human:parity",
+          "data": {
+            "priority": "medium",
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "title": "Planned task",
+            "type": "task"
+          },
+          "id": "<ID-2>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "task_created"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "bytes": 56,
+            "sha256": "853c3eabfce000fcff81f72e7f89b8e855aed324326a0a84e05269b31a0c1cdd"
+          },
+          "id": "<ID-4>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "plan_written"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "bytes": 23,
+            "sha256": "f018f512d7cfe46f5eb7b6b97e0f2179dc386537bf70b3fbafa6f268449fddba"
+          },
+          "id": "<ID-5>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "plan_written"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "bytes": 9,
+            "sha256": "835ef931d85534b9ee6cfa88d3df1b0fd60eec6413e2b7d11a0b58d387f06b76"
+          },
+          "id": "<ID-6>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "notes_written"
+        },
+        {
+          "actor": "human:parity",
+          "data": {},
+          "id": "<ID-3>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "task_archived"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "bytes": 15,
+            "sha256": "e413aecff742fca7428e87253ea72434a9095108f126bf76cdbe519f6ba61bcd"
+          },
+          "id": "<ID-7>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "notes_written"
+        }
+      ]
+    },
+    "archive/notes/<ID-1>.md": {
+      "lines": [
+        "After archive."
+      ]
+    },
+    "archive/plans/<ID-1>.md": {
+      "lines": [
+        "# Plan v2",
+        "",
+        "From stdin."
+      ]
+    },
+    "archive/tasks/<ID-1>.json": {
+      "json": {
+        "acceptance_criteria": [],
+        "assigned_to": null,
+        "branch_links": [],
+        "comment_count": 0,
+        "complexity": null,
+        "created_at": "<TS>",
+        "created_by": "human:parity",
+        "custom_fields": {},
+        "description": null,
+        "done_at": null,
+        "evidence_refs": [],
+        "id": "<ID-1>",
+        "last_event_id": "<ID-7>",
+        "last_status_changed_at": "<TS>",
+        "linked_files": [],
+        "priority": "medium",
+        "relationships_out": [],
+        "reopened_count": 0,
+        "schema_version": 1,
+        "short_id": "PAR-1",
+        "status": "backlog",
+        "tags": null,
+        "title": "Planned task",
+        "type": "task",
+        "updated_at": "<TS>",
+        "urgency": null
+      }
+    },
+    "config.json": {
+      "json": {
+        "auto_code_review_on_transition": false,
+        "auto_plan_review_on_transition": false,
+        "default_actor": "human:parity",
+        "default_priority": "medium",
+        "default_status": "backlog",
+        "done_display": "grouped",
+        "instance_id": "<ID-8>",
+        "plan_approval": "auto",
+        "plan_review_mode": "single",
+        "project_code": "PAR",
+        "review_max_diff_chars": 120000,
+        "review_max_diff_lines": 5000,
+        "review_mode": "single",
+        "review_timeout_seconds": 600,
+        "schema_version": 1,
+        "status_preset": "stage11",
+        "task_types": [
+          "task",
+          "bug",
+          "spike",
+          "chore"
+        ],
+        "workflow": {
+          "completion_policies": {
+            "done": {
+              "require_roles": [
+                "review"
+              ]
+            },
+            "pr_open": {
+              "require_roles": [
+                "validation"
+              ]
+            }
+          },
+          "descriptions": {
+            "backlog": "Task is captured but no work has started. No planning, no implementation.",
+            "blocked": "Work cannot proceed due to an external dependency or unresolved issue.",
+            "cancelled": "Work has been abandoned. No further action will be taken.",
+            "done": "Work is reviewed, merged, and shipped. No further action needed.",
+            "in_planning": "Design, dialogue, and scoping underway. No implementation code should be written yet.",
+            "in_progress": "Implementation is actively underway. Code is being written, tested, or integrated.",
+            "in_validation": "End-to-end validation is underway. The change is being exercised against a running system — browser automation, simulator flows, curl — before the PR opens. The bar: 'I saw it work,' not 'I think it should work.'",
+            "planned": "Plan is written and approved. Ready for implementation but work has not started.",
+            "pr_open": "PR is open and awaiting human review, CI, or merge. Local review and validation artifacts are recorded.",
+            "review": "Local review is underway. A review sub-agent is examining the diff before validation begins."
+          },
+          "roles": [
+            "review",
+            "plan-review",
+            "review-individual",
+            "validation"
+          ],
+          "statuses": [
+            "backlog",
+            "in_planning",
+            "planned",
+            "in_progress",
+            "review",
+            "in_validation",
+            "pr_open",
+            "done",
+            "blocked",
+            "cancelled"
+          ],
+          "transitions": {
+            "backlog": [
+              "in_planning",
+              "planned",
+              "cancelled"
+            ],
+            "blocked": [
+              "in_planning",
+              "planned",
+              "in_progress",
+              "in_validation",
+              "pr_open",
+              "cancelled"
+            ],
+            "cancelled": [],
+            "done": [],
+            "in_planning": [
+              "planned",
+              "cancelled"
+            ],
+            "in_progress": [
+              "review",
+              "blocked",
+              "cancelled"
+            ],
+            "in_validation": [
+              "pr_open",
+              "in_progress",
+              "in_planning",
+              "blocked",
+              "cancelled"
+            ],
+            "planned": [
+              "in_progress",
+              "review",
+              "blocked",
+              "cancelled"
+            ],
+            "pr_open": [
+              "done",
+              "in_progress",
+              "review",
+              "blocked",
+              "cancelled"
+            ],
+            "review": [
+              "in_validation",
+              "pr_open",
+              "done",
+              "in_progress",
+              "in_planning",
+              "cancelled"
+            ]
+          },
+          "universal_targets": [
+            "cancelled"
+          ],
+          "wip_limits": {
+            "in_progress": 10,
+            "in_validation": 5,
+            "pr_open": 10,
+            "review": 5
+          }
+        },
+        "workflow_preset": "classic"
+      }
+    },
+    "context.md": {
+      "lines": [
+        "# Context",
+        "",
+        "Why."
+      ]
+    },
+    "events/_lifecycle.jsonl": {
+      "jsonl": [
+        {
+          "actor": "human:parity",
+          "data": {
+            "priority": "medium",
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "title": "Planned task",
+            "type": "task"
+          },
+          "id": "<ID-2>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "task_created"
+        },
+        {
+          "actor": "human:parity",
+          "data": {},
+          "id": "<ID-3>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "task_archived"
+        }
+      ]
+    },
+    "ids.json": {
+      "json": {
+        "map": {
+          "PAR-1": "<ID-1>"
+        },
+        "next_seqs": {
+          "PAR": 2
+        },
+        "schema_version": 2
+      }
+    },
+    "orchestration/run-state.md": {
+      "lines": [
+        "# Plan",
+        "",
+        "## Approach",
+        "",
+        "- Do the work in one careful pass."
+      ]
+    },
+    "plans/review-pack.md": {
+      "lines": [
+        "Pack."
+      ]
+    }
+  },
+  "description": "v2-only: plan write, notes write, context write, board write, and rejections",
+  "mode": "json",
+  "scenario": "prose_writes",
+  "steps": [
+    {
+      "args": [
+        "init",
+        "--path",
+        "<ROOT>",
+        "--actor",
+        "human:parity",
+        "--project-code",
+        "PAR",
+        "--no-setup-claude",
+        "--no-setup-agents",
+        "--no-seed"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "",
+          ".lattice/ created — a mind now has a place to remember.",
+          "Default actor: human:parity",
+          "Project code: PAR",
+          "Workflow statuses: stage11 (10 statuses)"
+        ]
+      }
+    },
+    {
+      "args": [
+        "create",
+        "Planned task",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "acceptance_criteria": [],
+            "assigned_to": null,
+            "branch_links": [],
+            "comment_count": 0,
+            "complexity": null,
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "custom_fields": {},
+            "description": null,
+            "done_at": null,
+            "evidence_refs": [],
+            "id": "<ID-1>",
+            "last_event_id": "<ID-2>",
+            "last_status_changed_at": "<TS>",
+            "linked_files": [],
+            "priority": "medium",
+            "relationships_out": [],
+            "reopened_count": 0,
+            "schema_version": 1,
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "tags": null,
+            "title": "Planned task",
+            "type": "task",
+            "updated_at": "<TS>",
+            "urgency": null
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "write_file": "plan-src.md"
+    },
+    {
+      "args": [
+        "plan",
+        "write",
+        "PAR-1",
+        "--file",
+        "<ROOT>/plan-src.md",
+        "--actor",
+        "agent:worker",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "bytes": 56,
+            "path": "plans/<ID-1>.md",
+            "sha256": "853c3eabfce000fcff81f72e7f89b8e855aed324326a0a84e05269b31a0c1cdd",
+            "task_id": "<ID-1>"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "plan",
+        "write",
+        "PAR-1",
+        "--file",
+        "<ROOT>/plan-src.md",
+        "--actor",
+        "agent:worker",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "bytes": 56,
+            "path": "plans/<ID-1>.md",
+            "sha256": "853c3eabfce000fcff81f72e7f89b8e855aed324326a0a84e05269b31a0c1cdd",
+            "task_id": "<ID-1>"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "plan",
+        "PAR-1",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "archived": false,
+            "content": "# Plan\n\n## Approach\n\n- Do the work in one careful pass.\n",
+            "plan_path": "<ROOT>/.lattice/plans/<ID-1>.md",
+            "task_id": "<ID-1>"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "plan",
+        "write",
+        "PAR-1",
+        "--stdin",
+        "--actor",
+        "agent:worker",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "bytes": 23,
+            "path": "plans/<ID-1>.md",
+            "sha256": "f018f512d7cfe46f5eb7b6b97e0f2179dc386537bf70b3fbafa6f268449fddba",
+            "task_id": "<ID-1>"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "plan",
+        "write",
+        "PAR-1",
+        "--file",
+        "<ROOT>/plan-src.md",
+        "--expect-sha256",
+        "0000000000000000000000000000000000000000000000000000000000000000",
+        "--actor",
+        "agent:worker",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "CONFLICT",
+            "message": "Plan for PAR-1 changed: expected sha256 0000000000000000000000000000000000000000000000000000000000000000, found f018f512d7cfe46f5eb7b6b97e0f2179dc386537bf70b3fbafa6f268449fddba."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "plan",
+        "write",
+        "PAR-1",
+        "--file",
+        "<ROOT>",
+        "--actor",
+        "agent:worker",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "VALIDATION_ERROR",
+            "message": "Cannot read --file '<ROOT>': Is a directory."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "plan",
+        "write",
+        "PAR-1",
+        "--file",
+        "<ROOT>/plan-src.md",
+        "--stdin",
+        "--actor",
+        "agent:worker",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "VALIDATION_ERROR",
+            "message": "Provide either --file or --stdin, not both."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "plan",
+        "write",
+        "PAR-1",
+        "--actor",
+        "agent:worker",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "VALIDATION_ERROR",
+            "message": "Provide the plan as --file PATH or --stdin."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "plan",
+        "write",
+        "NOPE-1",
+        "--file",
+        "<ROOT>/plan-src.md",
+        "--actor",
+        "agent:worker",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "NOT_FOUND",
+            "message": "Short ID 'NOPE-1' not found."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "plan",
+        "write",
+        "PAR-1",
+        "--file",
+        "<ROOT>/plan-src.md",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "MISSING_ACTOR",
+            "message": "Either --name (session) or --actor (legacy) is required."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "notes",
+        "write",
+        "PAR-1",
+        "--stdin",
+        "--actor",
+        "agent:worker",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "bytes": 9,
+            "path": "notes/<ID-1>.md",
+            "sha256": "835ef931d85534b9ee6cfa88d3df1b0fd60eec6413e2b7d11a0b58d387f06b76",
+            "task_id": "<ID-1>"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "archive",
+        "PAR-1",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "actor": "human:parity",
+            "data": {},
+            "id": "<ID-3>",
+            "schema_version": 1,
+            "task_id": "<ID-1>",
+            "ts": "<TS>",
+            "type": "task_archived"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "notes",
+        "write",
+        "PAR-1",
+        "--stdin",
+        "--actor",
+        "agent:worker",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "bytes": 15,
+            "path": "archive/notes/<ID-1>.md",
+            "sha256": "e413aecff742fca7428e87253ea72434a9095108f126bf76cdbe519f6ba61bcd",
+            "task_id": "<ID-1>"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "context",
+        "write",
+        "--stdin",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "bytes": 16,
+            "path": "context.md",
+            "sha256": "e3b0fcc35d246ea5079638115d7cc6e4d53886ba114abe2ccee8a6f9b8ff3ec8"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "context",
+        "write",
+        "--file",
+        "<ROOT>",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "VALIDATION_ERROR",
+            "message": "Cannot read --file '<ROOT>': Is a directory."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "board",
+        "write",
+        "orchestration/run-state.md",
+        "--file",
+        "<ROOT>/plan-src.md",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "bytes": 56,
+            "path": "orchestration/run-state.md",
+            "sha256": "853c3eabfce000fcff81f72e7f89b8e855aed324326a0a84e05269b31a0c1cdd"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "board",
+        "write",
+        "plans/review-pack.md",
+        "--stdin",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "bytes": 6,
+            "path": "plans/review-pack.md",
+            "sha256": "860dd08f07b63ac62f7e9cd7a1d0517673fce31bad55072ee460055d37261c7e"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "board",
+        "write",
+        "plans/<ID-1>.md",
+        "--file",
+        "<ROOT>/plan-src.md",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "VALIDATION_ERROR",
+            "message": "Invalid board path 'plans/<ID-1>.md': it is the plan file of task <ID-1> (use 'lattice plan write'); a board write path must be under orchestration/, or a loose file directly under plans/ or notes/ that is not a task's <task_id>.md."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "board",
+        "write",
+        "locks/x.lock",
+        "--file",
+        "<ROOT>/plan-src.md",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "VALIDATION_ERROR",
+            "message": "Invalid board path 'locks/x.lock': outside the workspace; a board write path must be under orchestration/, or a loose file directly under plans/ or notes/ that is not a task's <task_id>.md."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "board",
+        "write",
+        "../escape.md",
+        "--file",
+        "<ROOT>/plan-src.md",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "VALIDATION_ERROR",
+            "message": "Invalid board path '../escape.md': empty, '.' or '..' component; a board write path must be under orchestration/, or a loose file directly under plans/ or notes/ that is not a task's <task_id>.md."
+          },
+          "ok": false
+        }
+      }
+    }
+  ]
+}

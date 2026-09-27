@@ -21,7 +21,7 @@ lattice next --actor agent:claude-cli --claim --json
 
 # 2. If the task needs planning (empty plan file), plan first
 lattice status <task_id> in_planning --actor agent:claude-cli
-# ... write the plan to .lattice/plans/<task_id>.md ...
+lattice plan write <task_id> --file plan.md --actor agent:claude-cli   # or --stdin
 lattice status <task_id> planned --actor agent:claude-cli
 lattice status <task_id> in_progress --actor agent:claude-cli
 
@@ -73,7 +73,7 @@ The `--review` text is your breadcrumb for every future agent and human who read
 
 Between opening and closing:
 
-1. **Read before writing.** `lattice show <task_id> --json`. Check `.lattice/plans/<task_id>.md` and `.lattice/notes/<task_id>.md` for context from previous minds.
+1. **Read before writing.** `lattice show <task_id> --json`. Check `.lattice/plans/<task_id>.md` and `.lattice/notes/<task_id>.md` for context from previous minds. Write them with `lattice plan write` / `lattice notes write <task_id> --file <path>`, never by editing the files: the commands work on every board, including a hosted checkout whose `.lattice/` is a read-only mirror.
 2. **Check previous work.** If the task has prior events, investigate what happened. `git log --oneline --grep="<short_id>"` for prior commits.
 3. **Baseline tests.** Run the test suite before changing anything. You own new failures, not pre-existing ones.
 4. **Commit as you go.** Each meaningful unit of progress gets a commit.
