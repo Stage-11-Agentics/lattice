@@ -6,7 +6,9 @@ exactly as that handler does; a ``None`` (or, for ``background_image``, an
 empty string) removes a setting. A key naming board configuration (workflow,
 review, policy, hook, or any other top-level config key) is refused with
 ``FORBIDDEN``; any other unknown key with ``VALIDATION_ERROR``, as the POST
-has always answered. Takes no actor: the POST never had one.
+has always answered. Unlike ``set-project-code``, it resolves and authorizes
+an actor like any operation (SPEC §3.7, §8.3, §10): the caller supplies it
+(the local dashboard ``dashboard:web``, a hosted one the browser actor).
 """
 
 from __future__ import annotations
@@ -171,7 +173,6 @@ def merge_settings(dashboard: dict, settings: dict) -> dict:
 @operation("board.set_dashboard_config")
 class SetDashboardConfig:
     Params = SetDashboardConfigParams
-    no_actor = True
 
     def run(self, ctx: OpContext, p: SetDashboardConfigParams) -> OpResult:
         check_settings(p.settings, ctx.config)

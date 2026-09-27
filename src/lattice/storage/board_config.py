@@ -21,7 +21,7 @@ from typing import Any
 
 from lattice.core.config import serialize_config
 from lattice.core.errors import OpError
-from lattice.storage.fs import atomic_write
+from lattice.storage.fs import atomic_write, ensure_dir
 from lattice.storage.locks import multi_lock
 
 OPERATION_CONFIG_KEYS = frozenset({"project_code", "subproject_code", "dashboard"})
@@ -57,7 +57,7 @@ def update_config_key(
         raise forbidden_config_key(key)
     config_path = lattice_dir / "config.json"
     locks_dir = lattice_dir / "locks"
-    locks_dir.mkdir(parents=True, exist_ok=True)
+    ensure_dir(locks_dir)
     with multi_lock(locks_dir, ["config"]):
         config = json.loads(config_path.read_text())
         value = decide(json.loads(json.dumps(config)))

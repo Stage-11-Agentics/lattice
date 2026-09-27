@@ -12,12 +12,16 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
 from lattice.boards import LocalBoard, resolve_board
-from lattice.ops import Caller, OpError, registered_operations
+from lattice.ops import Caller, OpError, OpResult, execute, registered_operations
 from lattice.storage.board_config import OPERATION_CONFIG_KEYS, update_config_key
+
+OP_ID = "op_01J9ZABCDEFGHJKMNPQRSTVWXY"
+WEB = Caller(actor="dashboard:web")
 
 # A workflow, review, policy, and hook key, each with a plausible new value.
 ADMIN_KEYS = {
@@ -70,7 +74,7 @@ class TestOwnKeyOnly:
         result = board.execute(
             "board.set_dashboard_config",
             {"settings": {"theme": "dark", "lane_colors": {"done": "#0f0"}}},
-            Caller(),
+            WEB,
         )
         after = _config(board)
         assert after["dashboard"] == {"theme": "dark", "lane_colors": {"done": "#0f0"}}
@@ -78,14 +82,77 @@ class TestOwnKeyOnly:
         assert _without(after, "dashboard") == _without(before, "dashboard")
 
     def test_dashboard_null_removes_and_empty_drops_the_key(self, board: LocalBoard) -> None:
-        board.execute("board.set_dashboard_config", {"settings": {"theme": "dark"}}, Caller())
-        board.execute("board.set_dashboard_config", {"settings": {"theme": None}}, Caller())
+        board.execute("board.set_dashboard_config", {"settings": {"theme": "dark"}}, WEB)
+        board.execute("board.set_dashboard_config", {"settings": {"theme": None}}, WEB)
         assert "dashboard" not in _config(board)
 
-    def test_board_ops_take_no_actor(self, board: LocalBoard) -> None:
-        for name in ("board.set_project_code", "board.set_subproject_code"):
-            assert getattr(registered_operations()[name], "no_actor", False)
-        assert getattr(registered_operations()["board.set_dashboard_config"], "no_actor", False)
+    def test_only_the_code_ops_take_no_actor(self) -> None:
+        ops = registered_operations()
+        assert getattr(ops["board.set_project_code"], "no_actor", False)
+        assert getattr(ops["board.set_subproject_code"], "no_actor", False)
+        assert not getattr(ops["board.set_dashboard_config"], "no_actor", False)
+
+
+class TestDashboardActor:
+    """``board.set_dashboard_config`` resolves and authorizes its actor (SPEC §3.7)."""
+
+    SETTINGS: ClassVar[dict] = {"settings": {"theme": "dark"}}
+
+    def _execute(self, board: LocalBoard, caller: Caller, authorize) -> OpResult:  # noqa: ANN001
+        caller = Caller(actor=caller.actor, actor_name=caller.actor_name, origin={"op_id": OP_ID})
+        return execute(
+            board.lattice_dir,
+            "board.set_dashboard_config",
+            self.SETTINGS,
+            caller,
+            run_hooks=False,
+            authorize=authorize,
+        )
+
+    def test_rejected_actor_leaves_config_unchanged(self, board: LocalBoard) -> None:
+        before = _config_bytes(board)
+        seen: list[str] = []
+
+        def refuse(identity: str, caller: Caller) -> None:
+            seen.append(identity)
+            raise OpError("ACTOR_NOT_PERMITTED", f"actor {identity} is not permitted")
+
+        with pytest.raises(OpError) as exc:
+            self._execute(board, Caller(actor="dashboard:web"), refuse)
+        assert exc.value.code == "ACTOR_NOT_PERMITTED"
+        assert seen == ["dashboard:web"]
+        assert _config_bytes(board) == before
+
+    def test_permitted_actor_succeeds_and_is_recorded(self, board: LocalBoard) -> None:
+        seen: list[str] = []
+        result = self._execute(
+            board, Caller(actor="dashboard:web"), lambda identity, caller: seen.append(identity)
+        )
+        assert seen == ["dashboard:web"]
+        assert result.value == {"theme": "dark"}
+        assert _config(board)["dashboard"] == {"theme": "dark"}
+
+    def test_session_actor_authorized_by_base_name(self, board: LocalBoard) -> None:
+        board.execute("session.start", {"name": "Argus", "model": "human"}, Caller())
+        seen: list[str] = []
+        self._execute(
+            board, Caller(actor_name="Argus-1"), lambda identity, caller: seen.append(identity)
+        )
+        assert seen == ["agent:Argus"]
+
+    def test_missing_actor_refused_and_config_unchanged(self, board: LocalBoard) -> None:
+        before = _config_bytes(board)
+        with pytest.raises(OpError) as exc:
+            board.execute("board.set_dashboard_config", self.SETTINGS, Caller())
+        assert exc.value.code == "MISSING_ACTOR"
+        assert _config_bytes(board) == before
+
+    def test_invalid_actor_refused(self, board: LocalBoard) -> None:
+        before = _config_bytes(board)
+        with pytest.raises(OpError) as exc:
+            board.execute("board.set_dashboard_config", self.SETTINGS, Caller(actor="nope"))
+        assert exc.value.code == "INVALID_ACTOR"
+        assert _config_bytes(board) == before
 
 
 class TestAdminKeysRefused:
@@ -95,9 +162,7 @@ class TestAdminKeysRefused:
     ) -> None:
         before = _config_bytes(board)
         with pytest.raises(OpError) as exc:
-            board.execute(
-                "board.set_dashboard_config", {"settings": {key: ADMIN_KEYS[key]}}, Caller()
-            )
+            board.execute("board.set_dashboard_config", {"settings": {key: ADMIN_KEYS[key]}}, WEB)
         assert exc.value.code == "FORBIDDEN"
         assert exc.value.http_status == 403
         assert exc.value.details == {"key": key}
@@ -109,7 +174,7 @@ class TestAdminKeysRefused:
             board.execute(
                 "board.set_dashboard_config",
                 {"settings": {"theme": "dark", "hooks": {"post_event": "x"}}},
-                Caller(),
+                WEB,
             )
         assert exc.value.code == "FORBIDDEN"
         assert _config_bytes(board) == before
@@ -119,14 +184,12 @@ class TestAdminKeysRefused:
         config["custom_policy"] = {"x": 1}
         (board.lattice_dir / "config.json").write_text(json.dumps(config))
         with pytest.raises(OpError) as exc:
-            board.execute(
-                "board.set_dashboard_config", {"settings": {"custom_policy": {}}}, Caller()
-            )
+            board.execute("board.set_dashboard_config", {"settings": {"custom_policy": {}}}, WEB)
         assert exc.value.code == "FORBIDDEN"
 
     def test_unknown_non_config_key_keeps_the_posts_error(self, board: LocalBoard) -> None:
         with pytest.raises(OpError) as exc:
-            board.execute("board.set_dashboard_config", {"settings": {"unknown_key": 1}}, Caller())
+            board.execute("board.set_dashboard_config", {"settings": {"unknown_key": 1}}, WEB)
         assert exc.value.code == "VALIDATION_ERROR"
         assert exc.value.message == "Unknown keys: unknown_key"
 
@@ -194,5 +257,5 @@ class TestRules:
     )
     def test_dashboard_validation(self, board: LocalBoard, settings: dict, message: str) -> None:
         with pytest.raises(OpError) as exc:
-            board.execute("board.set_dashboard_config", {"settings": settings}, Caller())
+            board.execute("board.set_dashboard_config", {"settings": settings}, WEB)
         assert (exc.value.code, exc.value.message) == ("VALIDATION_ERROR", message)
