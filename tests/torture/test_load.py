@@ -8,10 +8,13 @@ with H-13b's ``test_with_dashboards``.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
+from tests.torture import harness, load
 from tests.torture.load import (
     LoadRig,
     assert_separate_filesystems,
@@ -58,13 +61,70 @@ def test_readers_writers(tmp_path: Path) -> None:
     assert p95(latencies) < P95_LIMIT_SECONDS
 
 
+class FakeMount:
+    """A mount provider for the policy tests: a plain directory under ``tmp_path``
+    (so on the server's filesystem), recording when it is entered and left."""
+
+    def __init__(self, base: Path) -> None:
+        self.point = base / "fake-mount"
+        self.entered = self.exited = 0
+
+    @contextmanager
+    def __call__(self) -> Iterator[Path]:
+        self.point.mkdir(exist_ok=True)
+        self.entered += 1
+        try:
+            yield self.point
+        finally:
+            self.exited += 1
+
+
+@pytest.fixture()
+def no_allocator(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The per-PR guard tests never allocate: no ``hdiutil``, no ``/dev/shm``."""
+
+    def refuse(*args: object, **kwargs: object) -> None:
+        raise AssertionError(f"the per-PR guard test tried to allocate: {args}")
+
+    monkeypatch.setattr(load.subprocess, "run", refuse)
+    monkeypatch.setattr(load, "platform_mount", refuse)
+
+
 @pytest.mark.timeout(60)
-def test_the_rig_never_measures_clients_on_the_server_filesystem(tmp_path: Path) -> None:
-    """The guard behind every load verdict: one filesystem fails, and the separate
-    client filesystem is a different device that is gone afterwards."""
+def test_the_device_policy_refuses_one_filesystem(tmp_path: Path, no_allocator: None) -> None:
     with pytest.raises(AssertionError, match="on one filesystem"):
         assert_separate_filesystems(tmp_path, tmp_path)
-    with separate_client_filesystem() as client_dir:
-        assert_separate_filesystems(client_dir, tmp_path)
+    devices = {tmp_path / "client": 1, tmp_path / "server": 1}
+    with pytest.raises(AssertionError, match="on one filesystem"):
+        assert_separate_filesystems(tmp_path / "client", tmp_path / "server", device=devices.get)
+    devices[tmp_path / "server"] = 2
+    assert_separate_filesystems(tmp_path / "client", tmp_path / "server", device=devices.get)
+
+
+@pytest.mark.timeout(60)
+def test_the_client_directory_is_removed_however_the_block_ends(
+    tmp_path: Path, no_allocator: None
+) -> None:
+    mount = FakeMount(tmp_path)
+    with separate_client_filesystem(mount) as client_dir:
+        assert client_dir.parent == mount.point
         (client_dir / "cache").mkdir()
-    assert not client_dir.exists()
+    assert not client_dir.exists() and mount.exited == 1
+    with pytest.raises(RuntimeError), separate_client_filesystem(mount) as client_dir:
+        (client_dir / "cache").mkdir()
+        raise RuntimeError("the load run failed")
+    assert not client_dir.exists() and mount.exited == 2
+
+
+@pytest.mark.timeout(60)
+def test_the_rig_never_measures_clients_on_the_server_filesystem(
+    tmp_path: Path, no_allocator: None
+) -> None:
+    """With clients on the server root's filesystem, the rig fails before any
+    server or client exists, and leaves nothing behind."""
+    mount = FakeMount(tmp_path)
+    with pytest.raises(AssertionError, match="on one filesystem"):
+        LoadRig.build(tmp_path / "work", tasks=1, mount=mount)
+    assert harness.SERVERS == [] and harness.CHILDREN == []
+    assert mount.entered == mount.exited == 1
+    assert list(mount.point.iterdir()) == []

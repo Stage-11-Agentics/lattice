@@ -53,9 +53,9 @@ import subprocess
 import tempfile
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import ExitStack, contextmanager
+from contextlib import AbstractContextManager, ExitStack, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -82,17 +82,19 @@ WRITE_INTERVAL_SECONDS = 0.2
 RAM_DISK_BYTES = 2 * 1024**3
 
 
+#: Provides a mount point on a filesystem other than the server root's, for the
+#: duration of the ``with``. The real one allocates; tests of the policy inject a fake.
+MountProvider = Callable[[], AbstractContextManager[Path]]
+
+
 @contextmanager
-def separate_client_filesystem() -> Iterator[Path]:
-    """A fresh directory on a filesystem other than the test's temp directory's,
-    removed afterwards: ``/dev/shm`` on Linux, a RAM disk created (and always
-    detached) on macOS. Raises ``AssertionError`` naming the reason when neither
-    is possible: the load verdict is never given with clients on the server's
-    filesystem."""
+def platform_mount() -> Iterator[Path]:
+    """The real allocator: ``/dev/shm`` on Linux; on macOS a RAM disk created for
+    the block and always detached. Raises ``AssertionError`` naming the reason when
+    neither is possible. Only the envelope load tests reach it."""
     if sys.platform == "darwin":
         with _mac_ram_disk() as mount:
-            path = Path(tempfile.mkdtemp(prefix="lattice-load-", dir=mount))
-            yield path
+            yield mount
         return
     shm = Path("/dev/shm")
     if not (shm.is_dir() and os.access(shm, os.W_OK)):
@@ -100,12 +102,24 @@ def separate_client_filesystem() -> Iterator[Path]:
             "AC-42 needs the clients on a filesystem separate from the server's; "
             f"/dev/shm is not a writable directory on this {sys.platform} host"
         )
-    path = Path(tempfile.mkdtemp(prefix="lattice-load-", dir=shm))
-    try:
-        yield path
-    finally:
-        chmod_tree_writable(path)
-        shutil.rmtree(path, ignore_errors=True)
+    yield shm
+
+
+@contextmanager
+def separate_client_filesystem(mount: MountProvider | None = None) -> Iterator[Path]:
+    """A fresh directory under *mount*'s mount point, removed afterwards however the
+    block ends. *mount* defaults to :func:`platform_mount`, looked up at call
+    time. The device check against the server root is
+    :func:`assert_separate_filesystems`, which :meth:`LoadRig.build` runs before
+    any client exists: the load verdict is never given with clients on the
+    server's filesystem."""
+    with (mount or platform_mount)() as mount_point:
+        path = Path(tempfile.mkdtemp(prefix="lattice-load-", dir=mount_point))
+        try:
+            yield path
+        finally:
+            chmod_tree_writable(path)
+            shutil.rmtree(path, ignore_errors=True)
 
 
 @contextmanager
@@ -135,8 +149,13 @@ def _mac_ram_disk() -> Iterator[Path]:
         subprocess.run(["hdiutil", "detach", device, "-force"], capture_output=True, timeout=60)
 
 
-def assert_separate_filesystems(client_dir: Path, server_root: Path) -> None:
-    client_dev, server_dev = os.stat(client_dir).st_dev, os.stat(server_root).st_dev
+def assert_separate_filesystems(
+    client_dir: Path, server_root: Path, *, device: Callable[[Path], int] | None = None
+) -> None:
+    """Fail unless the two paths are on different devices (``st_dev``); *device*
+    replaces the ``os.stat`` lookup in tests of the policy."""
+    device = device or (lambda path: os.stat(path).st_dev)
+    client_dev, server_dev = device(client_dir), device(server_root)
     assert client_dev != server_dev, (
         f"client dir {client_dir} and server root {server_root} are on one filesystem "
         f"(st_dev {client_dev}); AC-42's clients stand in for separate machines"
@@ -172,12 +191,14 @@ class LoadRig:
     cleanup: ExitStack = field(default_factory=ExitStack)
 
     @classmethod
-    def build(cls, work: Path, *, tasks: int = 1000) -> LoadRig:
+    def build(
+        cls, work: Path, *, tasks: int = 1000, mount: MountProvider | None = None
+    ) -> LoadRig:
         """Arrange the separate client filesystem, start a server, and fill project
         ``demo`` with *tasks* tasks over HTTP. Everything is undone if any step fails."""
         cleanup = ExitStack()
         try:
-            client_dir = cleanup.enter_context(separate_client_filesystem())
+            client_dir = cleanup.enter_context(separate_client_filesystem(mount))
             server = ServerProcess(make_root(work, projects={PROJECT: {"code": "DEM"}}))
             assert_separate_filesystems(client_dir, server.root)
             server.start()
@@ -210,11 +231,13 @@ class LoadRig:
 
     @classmethod
     @contextmanager
-    def running(cls, work: Path, *, tasks: int = 1000) -> Iterator[LoadRig]:
+    def running(
+        cls, work: Path, *, tasks: int = 1000, mount: MountProvider | None = None
+    ) -> Iterator[LoadRig]:
         """:meth:`build`, then :meth:`close` however the block ends. Enter it inside
         the test body, so a rig that cannot be arranged (no separate client
         filesystem) FAILS the test rather than erroring a fixture."""
-        rig = cls.build(work, tasks=tasks)
+        rig = cls.build(work, tasks=tasks, mount=mount)
         try:
             yield rig
         finally:
