@@ -1126,3 +1126,32 @@ Additionally, `lattice advance N` processed multiple tasks in a single context w
   dashboard moves start no review, and `review-status` reads other machines'
   reviews from the board. Each hosted project keeps its own review workflow,
   set by the admin with `lattice server project config`.
+
+---
+
+## 2026-09-27: Whole-board task locking takes one exclusive gate, not two locks per task (LAT-339)
+
+- **Decision:** every task lock sits under a board-wide gate,
+  `locks/task_gate.lock`. `task_locks` (read, mutate, prose resolution) holds
+  it with a shared `flock`, then the task's `events_<id>` and `tasks_<id>`
+  keys as before. `all_task_locks` (`rebuild --all`, the `ids.json` rebuild,
+  doctor's authority inspection, import's derived-file repair) holds it
+  exclusively, plus only `events__lifecycle` and `ids_json`, so it holds at
+  most three descriptors on any board.
+- **Why:** the whole-board paths held two descriptors per task. At the stock
+  macOS limit of 256 (a default Terminal, a launchd service), a board of about
+  120 tasks failed with `EMFILE` (the envelope lane, `test_sigkill_loop_full`).
+  Striping the per-task keys would also bound descriptors, but an operation
+  that nests a second task's lock would then deadlock by chance against
+  another process's stripe. The gate adds no lock-order cycle: it is always
+  taken first, and its shared holders never block each other.
+- **Semantics:** holders of one task still exclude each other; holders of
+  different tasks still run concurrently; a whole-board holder still excludes
+  every task holder, and now also a task created mid-rebuild (the old key list
+  was collected before locking). The gate is reentrant per thread; taking
+  `all_task_locks` under `task_locks` raises rather than deadlocking itself.
+  Without `fcntl` (Windows) the gate is exclusive for both: coarser, still
+  safe.
+- **Server:** `lattice server serve` raises its soft `RLIMIT_NOFILE` to
+  `min(hard, 65536)` (10240 if macOS refuses), never lowering it, and logs
+  `fd_limit` on the startup line.
