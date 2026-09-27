@@ -328,6 +328,8 @@ def project_rotate_epoch(slug: str, root: str | None, is_json: bool) -> None:
         return f"Rotated {slug} to epoch {data['epoch']}{how}; every cache resyncs."
 
     _run(is_json, lambda: admin.rotate_project_epoch(_root(root), slug), render)
+
+
 def _lifecycle_command(action: str, summary: str) -> Callable:
     @project_group.command(action, help=summary)
     @click.argument("slug")

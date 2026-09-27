@@ -400,27 +400,15 @@ def write_meta(journal: Journal, clean_shutdown: dict | None) -> None:
 # ---------------------------------------------------------------------------
 
 
-def last_known_lengths(journal: Journal) -> dict[str, int]:
-    """Each log's last known length: ``baseline``, updated by every line's
-    ``lengths``. A log a line changed some other way (created whole, replaced,
-    unlinked, relocated: in ``paths`` but not ``lengths``) has no known length
-    until a later append records one."""
-    known = dict(journal.baseline)
-    for line in journal.read_entries():
-        lengths = line.get("lengths") or {}
-        for path in line.get("paths") or ():
-            if path not in lengths:
-                known.pop(path, None)
-        known.update(lengths)
-    return known
-
-
 def foreign_appends(board: Path, journal: Journal) -> dict[str, int]:
-    """Logs longer than their last known length, with their current length."""
-    known = last_known_lengths(journal)
-    current = log_lengths(board)
-    return {
-        path: size
-        for path, size in sorted(current.items())
-        if path in known and size > known[path]
-    }
+    """Logs longer than their last known length, with their current length. The
+    last known length is the journal's length history at the head (``baseline``
+    and every ``lengths``); a log a line changed some other way (created whole,
+    replaced, relocated) has none until a later append records one."""
+    head = journal.head_seq
+    out: dict[str, int] = {}
+    for path, size in sorted(log_lengths(board).items()):
+        known = journal.length_at(path, head) if journal.is_log(path) else None
+        if known is not None and size > known:
+            out[path] = size
+    return out

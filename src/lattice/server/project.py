@@ -25,7 +25,7 @@ import socket
 import threading
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager, nullcontext
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
 from types import MappingProxyType
@@ -480,6 +480,13 @@ class Project:
         journal.bind(self._published_index)
         self.journal = journal
 
+    def remember_watched(self, names: Iterable[str]) -> None:
+        """Re-baseline the watched files among *names* (a rollback restored them: not
+        a hand edit). One assignment, like every change to the finalized state."""
+        state = self._state
+        if state is not None:
+            self._state = replace(state, watched=_watched_after(self.board, state.watched, names))
+
     def _mark_unavailable(self, reason: str) -> None:
         self._set_state(UNAVAILABLE, reason)
         self.journal = None
@@ -512,6 +519,7 @@ class Project:
             except Exception as exc:  # noqa: BLE001 - the lease is released regardless
                 self.log.warning("close_streams_failed", project=self.slug, error=repr(exc))
         self.journal = None
+        self._state = None
         self.held_unloaded = True
         self.release()
         self._set_state(UNLOADED, UNLOADED_REASON)
