@@ -338,15 +338,19 @@ def _read_task_authority_locked(
 
 
 class AuthorityCache:
-    """Strict replays kept across reads, each valid while both of its task's
-    event logs keep the ``(size, mtime_ns, ino)`` it was read at.
+    """Strict replays reused by a process that serializes every write of the
+    board against its reads: the server's hosted dashboard, whose reads run
+    under the project's work lock (SPEC §8.5, §10). Callers must treat cached
+    authorities as read-only, and must call :meth:`begin` with the board's
+    current scope before each read under the lock.
 
-    An authority is determined by its task's two event logs alone, so an
-    unchanged pair means an unchanged replay. Only a process that serializes
-    every write of the board against its reads may use one: the server's
-    hosted dashboard, whose reads run under the project's work lock (SPEC §8.5,
-    §10). Callers must treat cached authorities as read-only. The cache holds at
-    most *max_bytes* of event-log bytes, least recently used first out.
+    Two layers. Within one *scope* (the server passes ``(epoch, head_seq)``;
+    a new load starts a new cache) nothing changes the board, so a replay made
+    in that scope is reused as is. In a later scope an entry is reused only
+    if the task's two event logs are byte-for-byte the ones it was replayed
+    from: a replay is a pure function of those bytes, so this is as strict as
+    replaying again, whatever the files' size, mtime, or inode say. The cache
+    holds at most *max_bytes* of log bytes, least recently used first out.
     """
 
     def __init__(self, max_bytes: int = 64 * 1024 * 1024) -> None:
@@ -354,44 +358,58 @@ class AuthorityCache:
 
         self.max_bytes = max_bytes
         self.bytes = 0
-        self._entries: OrderedDict[tuple[str, bool], tuple[tuple, ResolvedTaskAuthority]] = (
-            OrderedDict()
-        )
+        self.scope: object = None
+        self._fresh: set[tuple[str, bool]] = set()
+        self._entries: OrderedDict[
+            tuple[str, bool], tuple[tuple[bytes | None, bytes | None], ResolvedTaskAuthority]
+        ] = OrderedDict()
+
+    def begin(self, scope: object) -> None:
+        """Enter *scope*; on a change, every entry must be revalidated before use."""
+        if scope != self.scope:
+            self.scope = scope
+            self._fresh = set()
 
     @staticmethod
-    def _key(lattice_dir: Path, task_id: str) -> tuple:
-        out = []
+    def _sources(lattice_dir: Path, task_id: str) -> tuple[bytes | None, bytes | None]:
+        out: list[bytes | None] = []
         for location in ("active", "archived"):
             try:
-                st = _location_paths(lattice_dir, task_id, location)["event"].stat()
+                out.append(_location_paths(lattice_dir, task_id, location)["event"].read_bytes())
             except FileNotFoundError:
                 out.append(None)
-                continue
-            out.append((st.st_size, st.st_mtime_ns, st.st_ino))
-        return tuple(out)
+        return out[0], out[1]
 
     def read(
         self, lattice_dir: Path, task_id: str, allow_missing: bool
     ) -> ResolvedTaskAuthority | None:
         slot = (task_id, allow_missing)
-        key = self._key(lattice_dir, task_id)
         hit = self._entries.get(slot)
-        if hit is not None and hit[0] == key:
+        if hit is not None and slot in self._fresh:
             self._entries.move_to_end(slot)
             return hit[1]
-        authority = _read_task_authority_locked(lattice_dir, task_id, allow_missing=allow_missing)
+        sources = self._sources(lattice_dir, task_id)
+        if hit is not None and hit[0] == sources:
+            self._entries.move_to_end(slot)
+            self._fresh.add(slot)
+            return hit[1]
+        # The caller holds the board's single work lock, so the per-task read
+        # locks guard nothing more here.
+        authority = resolve_task_authority(lattice_dir, task_id, allow_missing=allow_missing)
         self._drop(slot)
-        if authority is not None and key == self._key(lattice_dir, task_id):
-            self._entries[slot] = (key, authority)
-            self.bytes += len(authority.event_bytes)
+        if authority is not None and sources == self._sources(lattice_dir, task_id):
+            self._entries[slot] = (sources, authority)
+            self._fresh.add(slot)
+            self.bytes += sum(len(b) for b in sources if b is not None)
             while self.bytes > self.max_bytes and self._entries:
                 self._drop(next(iter(self._entries)))
         return authority
 
     def _drop(self, slot: tuple[str, bool]) -> None:
         old = self._entries.pop(slot, None)
+        self._fresh.discard(slot)
         if old is not None:
-            self.bytes -= len(old[1].event_bytes)
+            self.bytes -= sum(len(b) for b in old[0] if b is not None)
 
     def __len__(self) -> int:
         return len(self._entries)

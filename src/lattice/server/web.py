@@ -24,13 +24,14 @@ import html
 import re
 import urllib.parse
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse, Response
 
 from lattice.core.errors import OpError
 from lattice.dashboard.server import STATIC_DIR
+from lattice.server.project import LOADED
 from lattice.server.registry import in_worker
 from lattice.server.sessions import COOKIE_NAME, SESSION_SECONDS, Session, unauthenticated
 from lattice.server.tokens import TokenRecord
@@ -172,9 +173,23 @@ def session_cookie(request: Request) -> str | None:
     return request.cookies.get(COOKIE_NAME)
 
 
+#: Set on a request whose session cookie failed; the headers middleware then
+#: answers with a clearing ``Set-Cookie`` whatever the response is.
+CLEAR_COOKIE = "lattice_clear_session"
+
+
 def session_auth(request: Request, state: ServerState) -> tuple[Session, TokenRecord]:
-    """The request's session and its live token, or ``UNAUTHENTICATED``."""
-    session, token = state.sessions.authenticate(session_cookie(request))
+    """The request's session and its live token, or ``UNAUTHENTICATED``. A cookie
+    that names no live session (expired, revoked, deleted, malformed) is
+    cleared on the response."""
+    cookie = session_cookie(request)
+    try:
+        session, token = state.sessions.authenticate(cookie)
+    except OpError:
+        if cookie is not None:
+            secure = request_scheme(request, state) == "https"
+            request.scope["state"][CLEAR_COOKIE] = _cookie_header("", secure=secure, max_age=0)
+        raise
     request.scope["state"]["log"]["token_id"] = token.id
     return session, token
 
@@ -264,7 +279,8 @@ async def login(request: Request, state: ServerState) -> Response:
         raw.extend(chunk)
         if len(raw) > _LOGIN_BODY_LIMIT:
             raise OpError("PAYLOAD_TOO_LARGE", "login form is too large")
-    form = urllib.parse.parse_qs(raw.decode("utf-8", errors="replace"), max_num_fields=4)
+    # The 4 KiB cap above bounds the parse; a field-count cap would raise.
+    form = urllib.parse.parse_qs(raw.decode("utf-8", errors="replace"))
     submitted = (form.get("token") or [""])[0].strip()
     next_path = _safe_next((form.get("next") or ["/"])[0])
     try:
@@ -298,28 +314,40 @@ async def index(request: Request, state: ServerState) -> Response:
     except OpError:
         return RedirectResponse("/login", status_code=303)
 
-    def rows() -> list[tuple[str, str | None]]:
+    def project_code(project: Any) -> str | None:
+        """Under the project's work lock, as every board read (SPEC §8.5)."""
         import json
 
-        out = []
-        for slug in state.registry.slugs():
-            if not token.permits_project(slug):
-                continue
-            code = None
+        if project.state == LOADED:
             try:
-                config = json.loads(
-                    (state.root / "projects" / slug / ".lattice" / "config.json").read_text(
-                        encoding="utf-8"
-                    )
-                )
-                code = config.get("project_code")
-            except (OSError, ValueError):
+                project.admit()  # hand edits journaled first, as /v1/projects does
+            except OpError:
                 pass
-            out.append((slug, code if isinstance(code, str) else None))
-        return out
+        try:
+            config = json.loads((project.board / "config.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        code = config.get("project_code")
+        return code if isinstance(code, str) else None
+
+    listed: list[tuple[str, str | None]] = []
+    slugs = await in_worker(state.registry.slugs)
+    for slug in slugs:
+        if not token.permits_project(slug):
+            continue
+        project = state.registry.get(slug)
+        if project is None:
+            continue
+        try:
+            code = await state.registry.run_locked(
+                project, lambda p=project: project_code(p), admit=False
+            )
+        except OpError:
+            code = None
+        listed.append((slug, code))
 
     items = []
-    for slug, code in await in_worker(rows):
+    for slug, code in listed:
         label = html.escape(slug) + (
             f' <span class="web-muted">{html.escape(code)}</span>' if code else ""
         )

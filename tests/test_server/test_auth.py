@@ -176,3 +176,18 @@ def test_index_requires_a_session(server: ServerHandle, root: Path) -> None:
     # A bearer token is not a browser session.
     bearer = WebClient(server).get("/", Authorization=f"Bearer {mint(root)}")
     assert bearer.status == 303 and bearer.headers["location"] == "/login"
+
+
+def test_login_with_many_form_fields_is_an_ordinary_failure(
+    server: ServerHandle, root: Path
+) -> None:
+    """A2 (H-13b review): extra fields under the 4 KiB cap never become a 500."""
+    body = b"token=bad&a=1&b=1&c=1&d=1&e=1"
+    headers = {"Content-Type": "application/x-www-form-urlencoded", "Origin": server.url}
+    bad = WebClient(server).request("POST", "/login", body=body, headers=headers)
+    assert bad.status == 401
+    assert _sessions(root) == []
+    good = f"token={mint(root)}&a=1&b=1&c=1&d=1&e=1".encode()
+    web = WebClient(server)
+    assert web.request("POST", "/login", body=good, headers=headers).status == 303
+    assert web.session

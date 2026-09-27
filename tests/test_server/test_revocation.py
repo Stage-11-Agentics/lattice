@@ -139,3 +139,86 @@ def test_a_session_cannot_reach_another_project_after_ungrant(root: Path) -> Non
         assert web.get("/p/alpha/api/tasks").status == 200
         tokens.ungrant(root, data["record"]["id"], projects=("alpha",))
         assert web.get("/p/alpha/api/tasks").status == 403
+
+
+# ---------------------------------------------------------------------------
+# A1 (H-13b review): a dead session cookie is cleared on every answer
+# ---------------------------------------------------------------------------
+
+
+def _clears(response) -> bool:
+    return any(
+        c.startswith("lattice_session=;") and "max-age=0" in c.lower()
+        for c in response.set_cookies()
+    )
+
+
+def _kill(kind: str, root: Path, token_id: str, web: WebClient) -> None:
+    import json
+
+    path = root / "web_sessions.json"
+    if kind == "expired":
+        body = json.loads(path.read_text())
+        for session in body["sessions"]:
+            session["expires_at"] = "2000-01-01T00:00:00Z"
+        path.write_text(json.dumps(body))
+    elif kind == "revoked":
+        tokens.revoke_token(root, token_id)
+    elif kind == "deleted":
+        path.write_text(json.dumps({"sessions": []}))
+    elif kind == "malformed":
+        web.cookies["lattice_session"] = "not-a-session!"
+
+
+@pytest.mark.parametrize("kind", ["expired", "revoked", "deleted", "malformed"])
+def test_a_dead_session_cookie_is_cleared_everywhere(root: Path, kind: str) -> None:
+    data = tokens.create_token(root, user="human:alice", machine="m", all_projects=True)
+    with running_server(root) as server:
+        web = WebClient(server)
+        assert web.login(data["token"]).status == 303
+        _kill(kind, root, data["record"]["id"], web)
+        cookie = web.session
+        responses = {
+            "api": web.request(
+                "GET",
+                "/p/alpha/api/tasks",
+                headers={"Cookie": f"lattice_session={cookie}"},
+                send_cookies=False,
+            ),
+            "page": web.request(
+                "GET",
+                "/p/alpha/",
+                headers={"Cookie": f"lattice_session={cookie}"},
+                send_cookies=False,
+            ),
+            "index": web.request(
+                "GET", "/", headers={"Cookie": f"lattice_session={cookie}"}, send_cookies=False
+            ),
+        }
+        assert responses["api"].status == 401
+        assert responses["page"].status == 303 and responses["index"].status == 303
+        for where, response in responses.items():
+            assert _clears(response), (kind, where)
+        stream = open_stream(
+            server.url, "alpha", None, headers={"Cookie": f"lattice_session={cookie}"}
+        )
+        assert stream.status == 401
+        assert any(
+            v.startswith("lattice_session=;")
+            for k, v in stream.response.getheaders()
+            if k.lower() == "set-cookie"
+        ), kind
+        stream.close()
+
+
+def test_no_cookie_and_bearer_failures_set_no_cookie(root: Path) -> None:
+    with running_server(root) as server:
+        anon = WebClient(server)
+        assert not anon.get("/p/alpha/api/tasks").set_cookies()
+        bearer = anon.request(
+            "GET",
+            "/p/alpha/api/tasks",
+            headers={"Authorization": "Bearer nope", "Cookie": "lattice_session=x"},
+            send_cookies=False,
+        )
+        assert bearer.status == 401 and not bearer.set_cookies()

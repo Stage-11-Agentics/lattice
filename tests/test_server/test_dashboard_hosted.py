@@ -13,7 +13,7 @@ import pytest
 
 from lattice.dashboard import api
 from lattice.dashboard.server import STATIC_DIR
-from lattice.server.testing import ServerHandle, running_server
+from lattice.server.testing import ServerHandle, running_server, wait_for
 from tests.test_server.conftest import board_hash, create_task, mint
 from tests.test_server.web_client import WebClient
 
@@ -533,3 +533,103 @@ class TestCookieBoundary:
         bad = open_stream(server.url, "alpha", "lat_nope", headers=cookie)
         assert bad.status == 401
         bad.close()
+
+
+# ---------------------------------------------------------------------------
+# B2 (H-13b review): the replay cache is scoped and never trusts file stats
+# ---------------------------------------------------------------------------
+
+
+class TestReplayCache:
+    def test_a_same_size_rewrite_is_never_served_stale(self, server, root, web) -> None:
+        import os
+
+        token = mint(root)
+        task = create_task(server, token, title="aaaa")
+        other = create_task(server, token, title="other")
+        titles = {t["id"]: t["title"] for t in web.get("/p/alpha/api/tasks").json["data"]}
+        assert titles[task["id"]] == "aaaa"
+        path = root / "projects" / "alpha" / ".lattice" / "events" / f"{task['id']}.jsonl"
+        st = path.stat()
+        data = path.read_bytes()
+        with open(path, "r+b") as handle:
+            handle.write(data.replace(b'"aaaa"', b'"bbbb"'))
+        os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+        assert (path.stat().st_size, path.stat().st_mtime_ns, path.stat().st_ino) == (
+            st.st_size,
+            st.st_mtime_ns,
+            st.st_ino,
+        )
+        # The head moves through a real write and admission; the rewritten log
+        # is replayed again, never served from the cache.
+        server.op("alpha", "task.comment", {"task": other["id"], "text": "x"}, token=token)
+        titles = {t["id"]: t["title"] for t in web.get("/p/alpha/api/tasks").json["data"]}
+        assert titles[task["id"]] == "bbbb"
+
+    def test_scope_follows_head_epoch_and_load(self, server, root, web) -> None:
+        token = mint(root)
+        web.get("/p/alpha/api/tasks")
+        memo = server.state.dashboard_memos.for_project("alpha")
+        first = memo.authorities
+        head = first.scope
+        create_task(server, token)
+        web.get("/p/alpha/api/tasks")
+        assert memo.authorities is first and first.scope != head  # new head: new scope
+        _admin(root, "rotate-epoch", "alpha")
+        web.get("/p/alpha/api/tasks")
+        assert memo.authorities is not first  # new epoch: emptied
+        second = memo.authorities
+        project = server.project("alpha")
+        with project.locked():
+            project.release()
+        web.get("/p/alpha/api/tasks")
+        assert memo.authorities is not second  # new load: emptied
+
+
+# ---------------------------------------------------------------------------
+# B4 (H-13b review): a retry after a dropped connection applies once
+# ---------------------------------------------------------------------------
+
+
+def _send_and_drop(server: ServerHandle, web: WebClient, path: str, data: dict, op_id: str):
+    """Send a POST in full, then close the connection without reading a byte."""
+    import socket
+
+    body = json.dumps(data).encode()
+    head = (
+        f"POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{server.port}\r\n"
+        f"Origin: {web.origin}\r\nContent-Type: application/json\r\n"
+        f"Cookie: lattice_session={web.session}\r\nLattice-Op-Id: {op_id}\r\n"
+        f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n"
+    ).encode()
+    sock = socket.create_connection(("127.0.0.1", server.port))
+    sock.sendall(head + body)
+    sock.close()
+
+
+class TestDroppedRetries:
+    def test_create(self, server, root, web: WebClient) -> None:
+        op_id = "op_01J9Z0000000000000000000EE"
+        _send_and_drop(server, web, "/p/alpha/api/tasks", {"title": "dropped"}, op_id)
+        # The dropped request commits; its response was never read.
+        assert wait_for(lambda: len(web.get("/p/alpha/api/tasks").json["data"]) == 1)
+        retry = web.post_json(
+            "/p/alpha/api/tasks", {"title": "dropped"}, **{"Lattice-Op-Id": op_id}
+        )
+        assert retry.status == 201, retry.text
+        tasks = web.get("/p/alpha/api/tasks").json["data"]
+        assert [t["title"] for t in tasks] == ["dropped"]
+        assert retry.json["data"]["id"] == tasks[0]["id"]  # the original result
+
+    def test_comment(self, server, root, web: WebClient) -> None:
+        task_id = web.post_json("/p/alpha/api/tasks", {"title": "t"}).json["data"]["id"]
+        op_id = "op_01J9Z0000000000000000000FF"
+        path = f"/p/alpha/api/tasks/{task_id}/comment"
+        _send_and_drop(server, web, path, {"body": "only once"}, op_id)
+        comments_url = f"/p/alpha/api/tasks/{task_id}/comments"
+        assert wait_for(lambda: len(web.get(comments_url).json["data"]) == 1)
+        retry = web.post_json(path, {"body": "only once"}, **{"Lattice-Op-Id": op_id})
+        assert retry.status == 200, retry.text
+        comments = web.get(f"/p/alpha/api/tasks/{task_id}/comments").json["data"]
+        assert [c["body"] for c in comments] == ["only once"]
+        assert retry.json["data"]["comment_count"] == 1

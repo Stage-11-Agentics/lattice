@@ -86,8 +86,10 @@ class ReadMemo:
         self.journal: object | None = None
         self.head: tuple[str | None, int] | None = None
         self.entries: OrderedDict[tuple[str, str], CachedRead] = OrderedDict()
-        #: Replays reused across heads while their event logs are unchanged, so
-        #: a write costs the next read one replay, not one per task (AC-42).
+        #: Replays reused within one head, and across heads only while their
+        #: event logs are byte-for-byte unchanged, so a write costs the next
+        #: read one replay, not one per task (AC-42). Scoped to one load and
+        #: epoch; every read begins it at the current ``(epoch, head_seq)``.
         self.authorities = AuthorityCache()
 
     def get(
@@ -97,8 +99,9 @@ class ReadMemo:
         key: tuple[str, str],
         compute: Callable[[], CachedRead],
     ) -> CachedRead:
-        if journal is not self.journal:
-            self.authorities = AuthorityCache()  # a new load: nothing carries over
+        if journal is not self.journal or (self.head and head[0] != self.head[0]):
+            self.authorities = AuthorityCache()  # a new load or epoch: nothing carries over
+        self.authorities.begin(head)
         if journal is not self.journal or head != self.head:
             self.entries.clear()
             self.journal, self.head = journal, head

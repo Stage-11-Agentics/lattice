@@ -93,6 +93,7 @@ from lattice.server.syncstate import (
 from lattice.server.sessions import SessionStore
 from lattice.server.tokens import TokenRecord, TokenStore
 from lattice.server.web import (
+    CLEAR_COOKIE,
     WebAssets,
     page_headers,
     require_origin,
@@ -229,6 +230,9 @@ class HeadersMiddleware:
                 headers = [
                     (k, v) for k, v in message.get("headers", []) if k.lower() != b"cache-control"
                 ]
+                clear = scope["state"].get(CLEAR_COOKIE)
+                if clear:  # a dead session cookie is cleared on any answer (SPEC §10)
+                    headers.append((b"set-cookie", clear.encode("latin-1")))
                 message = {**message, "headers": headers + extra}
             await send(message)
 

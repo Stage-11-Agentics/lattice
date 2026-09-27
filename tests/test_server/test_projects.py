@@ -173,3 +173,37 @@ def test_index_lists_exactly_the_sessions_projects(server: ServerHandle, root: P
     assert "ALP" in page.text
     assert "<script>" not in page.text  # no inline script: logout is /web/logout.js
     assert '<script src="/web/logout.js"></script>' in page.text
+
+
+def test_index_waits_for_a_write_in_progress(server: ServerHandle, root: Path) -> None:
+    """B1 (H-13b review): ``GET /`` reads each project's config under admission and
+    the work lock, so it never sees a config mid-transaction."""
+    import threading
+    import time
+
+    from lattice.server.testing import wait_for
+    from tests.test_server.web_client import WebClient
+
+    token = mint(root)
+    web = WebClient(server)
+    assert web.login(token).status == 303
+    slow = threading.Thread(
+        target=server.op, args=("alpha", "xtest.sleep", {"ms": 600}), kwargs={"token": token}
+    )
+    slow.start()
+    assert wait_for(lambda: server.project("alpha").work.locked())
+    change = threading.Thread(
+        target=server.op,
+        args=("alpha", "board.set_project_code", {"code": "NEW", "force": True}),
+        kwargs={"token": token},
+    )
+    change.start()
+    time.sleep(0.05)
+    started = time.monotonic()
+    page = web.get("/")
+    waited = time.monotonic() - started
+    slow.join()
+    change.join()
+    assert page.status == 200
+    assert waited > 0.3
+    assert ("ALP" in page.text) != ("NEW" in page.text)  # one settled state
