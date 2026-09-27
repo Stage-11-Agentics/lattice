@@ -105,9 +105,7 @@ BOARD_OWNERS: dict[str, str] = {
 
 #: Board writers that still bypass operations, each removed by the named ticket
 #: (operator ruling on PR #82): the converting ticket deletes its own entry.
-AWAITING_CONVERSION: dict[str, str] = {
-    "lattice.dashboard.server": "H-13a (LAT-313): the dashboard's POSTs call operations",
-}
+AWAITING_CONVERSION: dict[str, str] = {}
 
 #: Methods that change the filesystem when the receiver is a path whose type the
 #: scan cannot see (``p.unlink()`` on a local variable).

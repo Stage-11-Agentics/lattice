@@ -409,6 +409,10 @@ class LocalTarget:
     def finish(self, root: Path, invoke: Any) -> None:
         """After the last step, before the board is captured."""
 
+    def dashboard(self, root: Path) -> Any:
+        """A context manager yielding the dashboard's board (``None``: local)."""
+        return contextlib.nullcontext(None)
+
     def fixture(self, root: Path, rel: str, text: str | None, executable: bool) -> bool:
         return False
 
@@ -499,7 +503,7 @@ def _run_step(step, mode, root, board, env, invoke, target) -> list[dict[str, An
             raise RuntimeError(f"git {' '.join(args)} failed: {proc.stderr}")
         return [{"git": " ".join(args)}]
     if isinstance(step, DashboardPost):
-        return [_dashboard_post(board.lattice_dir, step.path, step.body, env)]
+        return [_dashboard_post(board.lattice_dir, step.path, step.body, env, target)]
     raise TypeError(f"unknown step {step!r}")  # pragma: no cover - corpus authoring error
 
 
@@ -527,12 +531,14 @@ def _deep_merge(base: dict, patch: dict) -> None:
             base[key] = value
 
 
-def _dashboard_post(lattice_dir: Path, path: str, body: Any, env: dict) -> dict[str, Any]:
+def _dashboard_post(
+    lattice_dir: Path, path: str, body: Any, env: dict, target: LocalTarget
+) -> dict[str, Any]:
     """POST through the in-process dashboard server (as ``tests/test_dashboard`` does)."""
     from lattice.dashboard.server import create_server
 
-    with _process_env(env):
-        server = create_server(lattice_dir, "127.0.0.1", 0)
+    with _process_env(env), target.dashboard(lattice_dir.parent) as dashboard_board:
+        server = create_server(lattice_dir, "127.0.0.1", 0, board=dashboard_board)
         thread = threading.Thread(
             target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
         )

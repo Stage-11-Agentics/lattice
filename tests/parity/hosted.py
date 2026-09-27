@@ -352,6 +352,16 @@ class HostedTarget(LocalTarget):
         )
         return dict(SETUP)
 
+    @contextmanager
+    def dashboard(self, root: Path) -> Iterator[Any]:
+        """The bound checkout's dashboard, as ``lattice dashboard`` serves it: writes
+        through the server as the browser actor (SPEC §8.3, §9.6)."""
+        from lattice.boards import resolve_board
+        from lattice.dashboard.bound import bound_dashboard
+
+        with bound_dashboard(resolve_board(root)) as board:
+            yield board
+
     @property
     def binding(self) -> str:
         """The checkout's ``<alias>/<project>``, as hosted messages name it."""
@@ -470,14 +480,9 @@ def hosted_target(server: ParityServer, scenario: Scenario) -> HostedTarget:
 # The replay check
 # ---------------------------------------------------------------------------
 
-#: Scenarios the hosted replay leaves out, each with the ticket that owns the gap.
-NOT_HOSTED = {
-    # The settings POST goes through the in-process *local* dashboard, which
-    # H-13a converts to board.set_dashboard_config and gives a hosted
-    # checkout's dashboard its follower (dashboard/server.py is H-13a's file,
-    # BUILDPLAN §4). Until then a bound checkout's dashboard does not write.
-    "dashboard_settings": "H-13a",
-}
+#: Scenarios the hosted replay leaves out, each with the ticket that owns the gap
+#: (none since H-13a: the settings POST goes through the bound dashboard).
+NOT_HOSTED: dict[str, str] = {}
 
 #: The hosted replays, in three groups of about equal time, one test file each
 #: (``test_hosted_parity.py``, ``_2``, ``_3``), so no file exceeds the per-file budget.
@@ -492,7 +497,16 @@ HOSTED_GROUPS: tuple[tuple[str, ...], ...] = (
         "completion_git_policy",
         "maintenance",
     ),
-    ("claims", "links", "sessions", "resources", "criteria", "plan_integrity", "flags"),
+    (
+        "claims",
+        "links",
+        "sessions",
+        "resources",
+        "criteria",
+        "plan_integrity",
+        "flags",
+        "dashboard_settings",
+    ),
 )
 
 
