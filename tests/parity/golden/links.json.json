@@ -1,0 +1,1512 @@
+{
+  "board": {
+    ".gitignore": {
+      "lines": [
+        "# Ephemeral Lattice runtime state — not part of the durable board.",
+        "# The board (tasks/ events/ plans/ artifacts/ ids.json config.json)",
+        "# stays tracked: it is the audit log and cross-machine coordination",
+        "# state. The paths below are mutated constantly and must never",
+        "# diverge per-worktree or collide on merge.",
+        "review_state/",
+        "tmp-prompts/",
+        ".daemon/",
+        "locks/"
+      ]
+    },
+    "config.json": {
+      "json": {
+        "auto_code_review_on_transition": false,
+        "auto_plan_review_on_transition": false,
+        "default_actor": "human:parity",
+        "default_priority": "medium",
+        "default_status": "backlog",
+        "done_display": "grouped",
+        "instance_id": "<ID-16>",
+        "plan_approval": "auto",
+        "plan_review_mode": "single",
+        "project_code": "PAR",
+        "review_max_diff_chars": 120000,
+        "review_max_diff_lines": 5000,
+        "review_mode": "single",
+        "review_timeout_seconds": 600,
+        "schema_version": 1,
+        "status_preset": "stage11",
+        "task_types": [
+          "task",
+          "bug",
+          "spike",
+          "chore"
+        ],
+        "workflow": {
+          "completion_policies": {
+            "done": {
+              "require_roles": [
+                "review"
+              ]
+            },
+            "pr_open": {
+              "require_roles": [
+                "validation"
+              ]
+            }
+          },
+          "descriptions": {
+            "backlog": "Task is captured but no work has started. No planning, no implementation.",
+            "blocked": "Work cannot proceed due to an external dependency or unresolved issue.",
+            "cancelled": "Work has been abandoned. No further action will be taken.",
+            "done": "Work is reviewed, merged, and shipped. No further action needed.",
+            "in_planning": "Design, dialogue, and scoping underway. No implementation code should be written yet.",
+            "in_progress": "Implementation is actively underway. Code is being written, tested, or integrated.",
+            "in_validation": "End-to-end validation is underway. The change is being exercised against a running system — browser automation, simulator flows, curl — before the PR opens. The bar: 'I saw it work,' not 'I think it should work.'",
+            "planned": "Plan is written and approved. Ready for implementation but work has not started.",
+            "pr_open": "PR is open and awaiting human review, CI, or merge. Local review and validation artifacts are recorded.",
+            "review": "Local review is underway. A review sub-agent is examining the diff before validation begins."
+          },
+          "roles": [
+            "review",
+            "plan-review",
+            "review-individual",
+            "validation"
+          ],
+          "statuses": [
+            "backlog",
+            "in_planning",
+            "planned",
+            "in_progress",
+            "review",
+            "in_validation",
+            "pr_open",
+            "done",
+            "blocked",
+            "cancelled"
+          ],
+          "transitions": {
+            "backlog": [
+              "in_planning",
+              "planned",
+              "cancelled"
+            ],
+            "blocked": [
+              "in_planning",
+              "planned",
+              "in_progress",
+              "in_validation",
+              "pr_open",
+              "cancelled"
+            ],
+            "cancelled": [],
+            "done": [],
+            "in_planning": [
+              "planned",
+              "cancelled"
+            ],
+            "in_progress": [
+              "review",
+              "blocked",
+              "cancelled"
+            ],
+            "in_validation": [
+              "pr_open",
+              "in_progress",
+              "in_planning",
+              "blocked",
+              "cancelled"
+            ],
+            "planned": [
+              "in_progress",
+              "review",
+              "blocked",
+              "cancelled"
+            ],
+            "pr_open": [
+              "done",
+              "in_progress",
+              "review",
+              "blocked",
+              "cancelled"
+            ],
+            "review": [
+              "in_validation",
+              "pr_open",
+              "done",
+              "in_progress",
+              "in_planning",
+              "cancelled"
+            ]
+          },
+          "universal_targets": [
+            "cancelled"
+          ],
+          "wip_limits": {
+            "in_progress": 10,
+            "in_validation": 5,
+            "pr_open": 10,
+            "review": 5
+          }
+        },
+        "workflow_preset": "classic"
+      }
+    },
+    "context.md": {
+      "lines": [
+        "# Instance Context",
+        "",
+        "<!-- Every lattice instance exists for a reason — a convergence of intention",
+        "     and infrastructure. This file declares that reason. Agents and humans",
+        "     read it to understand the purpose, conventions, and relationships",
+        "     of this particular node in the lattice. -->",
+        "",
+        "## Purpose",
+        "",
+        "<!-- What does this instance observe? What project, team, or domain",
+        "     does it serve? Declare the scope of attention. -->",
+        "",
+        "## Related Instances",
+        "",
+        "<!-- If this node coordinates with other lattice instances, name them here.",
+        "     Include instance_id, instance_name, and the nature of the relationship.",
+        "     The lattice is stronger when its nodes are aware of each other. -->",
+        "",
+        "## Conventions",
+        "",
+        "<!-- Every instance develops its own rhythms — workflow conventions,",
+        "     naming patterns, status meanings that diverge from defaults.",
+        "     Record them here so that new minds arriving in this context",
+        "     can orient immediately. -->"
+      ]
+    },
+    "events/<ID-1>.jsonl": {
+      "jsonl": [
+        {
+          "actor": "human:parity",
+          "data": {
+            "priority": "medium",
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "title": "Source",
+            "type": "task"
+          },
+          "id": "<ID-2>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "task_created"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "note": "because",
+            "target_task_id": "<ID-3>",
+            "type": "blocks"
+          },
+          "id": "<ID-7>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "relationship_added"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "target_task_id": "<ID-5>",
+            "type": "subtask_of"
+          },
+          "id": "<ID-8>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "relationship_added"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "target_task_id": "<ID-3>",
+            "type": "blocks"
+          },
+          "id": "<ID-10>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "relationship_removed"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "branch": "feat/PAR-1-thing",
+            "repo": "origin"
+          },
+          "id": "<ID-11>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "branch_linked"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "branch": "feat/other"
+          },
+          "id": "<ID-12>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "branch_linked"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "branch": "feat/PAR-1-thing",
+            "repo": "origin"
+          },
+          "id": "<ID-13>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "branch_unlinked"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "paths": [
+              "src/a.py",
+              "src/b.py"
+            ]
+          },
+          "id": "<ID-14>",
+          "provenance": {
+            "reason": "decision"
+          },
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "file_linked"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "paths": [
+              "src/a.py"
+            ]
+          },
+          "id": "<ID-15>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "file_unlinked"
+        }
+      ]
+    },
+    "events/<ID-3>.jsonl": {
+      "jsonl": [
+        {
+          "actor": "human:parity",
+          "data": {
+            "priority": "medium",
+            "short_id": "PAR-2",
+            "status": "backlog",
+            "title": "Target",
+            "type": "task"
+          },
+          "id": "<ID-4>",
+          "schema_version": 1,
+          "task_id": "<ID-3>",
+          "ts": "<TS>",
+          "type": "task_created"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "target_task_id": "<ID-5>",
+            "type": "depends_on"
+          },
+          "id": "<ID-9>",
+          "schema_version": 1,
+          "task_id": "<ID-3>",
+          "ts": "<TS>",
+          "type": "relationship_added"
+        }
+      ]
+    },
+    "events/<ID-5>.jsonl": {
+      "jsonl": [
+        {
+          "actor": "human:parity",
+          "data": {
+            "priority": "medium",
+            "short_id": "PAR-3",
+            "status": "backlog",
+            "title": "Parent",
+            "type": "task"
+          },
+          "id": "<ID-6>",
+          "schema_version": 1,
+          "task_id": "<ID-5>",
+          "ts": "<TS>",
+          "type": "task_created"
+        }
+      ]
+    },
+    "events/_lifecycle.jsonl": {
+      "jsonl": [
+        {
+          "actor": "human:parity",
+          "data": {
+            "priority": "medium",
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "title": "Source",
+            "type": "task"
+          },
+          "id": "<ID-2>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "task_created"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "priority": "medium",
+            "short_id": "PAR-2",
+            "status": "backlog",
+            "title": "Target",
+            "type": "task"
+          },
+          "id": "<ID-4>",
+          "schema_version": 1,
+          "task_id": "<ID-3>",
+          "ts": "<TS>",
+          "type": "task_created"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "priority": "medium",
+            "short_id": "PAR-3",
+            "status": "backlog",
+            "title": "Parent",
+            "type": "task"
+          },
+          "id": "<ID-6>",
+          "schema_version": 1,
+          "task_id": "<ID-5>",
+          "ts": "<TS>",
+          "type": "task_created"
+        }
+      ]
+    },
+    "ids.json": {
+      "json": {
+        "map": {
+          "PAR-1": "<ID-1>",
+          "PAR-2": "<ID-3>",
+          "PAR-3": "<ID-5>"
+        },
+        "next_seqs": {
+          "PAR": 4
+        },
+        "schema_version": 2
+      }
+    },
+    "plans/<ID-1>.md": {
+      "lines": [
+        "# PAR-1: Source"
+      ]
+    },
+    "plans/<ID-3>.md": {
+      "lines": [
+        "# PAR-2: Target"
+      ]
+    },
+    "plans/<ID-5>.md": {
+      "lines": [
+        "# PAR-3: Parent"
+      ]
+    },
+    "tasks/<ID-1>.json": {
+      "json": {
+        "acceptance_criteria": [],
+        "assigned_to": null,
+        "branch_links": [
+          {
+            "branch": "feat/other",
+            "linked_at": "<TS>",
+            "linked_by": "human:parity",
+            "repo": null
+          }
+        ],
+        "comment_count": 0,
+        "complexity": null,
+        "created_at": "<TS>",
+        "created_by": "human:parity",
+        "custom_fields": {},
+        "description": null,
+        "done_at": null,
+        "evidence_refs": [],
+        "id": "<ID-1>",
+        "last_event_id": "<ID-15>",
+        "last_status_changed_at": "<TS>",
+        "linked_files": [
+          "src/b.py"
+        ],
+        "priority": "medium",
+        "relationships_out": [
+          {
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "note": null,
+            "target_task_id": "<ID-5>",
+            "type": "subtask_of"
+          }
+        ],
+        "reopened_count": 0,
+        "schema_version": 1,
+        "short_id": "PAR-1",
+        "status": "backlog",
+        "tags": null,
+        "title": "Source",
+        "type": "task",
+        "updated_at": "<TS>",
+        "urgency": null
+      }
+    },
+    "tasks/<ID-3>.json": {
+      "json": {
+        "acceptance_criteria": [],
+        "assigned_to": null,
+        "branch_links": [],
+        "comment_count": 0,
+        "complexity": null,
+        "created_at": "<TS>",
+        "created_by": "human:parity",
+        "custom_fields": {},
+        "description": null,
+        "done_at": null,
+        "evidence_refs": [],
+        "id": "<ID-3>",
+        "last_event_id": "<ID-9>",
+        "last_status_changed_at": "<TS>",
+        "linked_files": [],
+        "priority": "medium",
+        "relationships_out": [
+          {
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "note": null,
+            "target_task_id": "<ID-5>",
+            "type": "depends_on"
+          }
+        ],
+        "reopened_count": 0,
+        "schema_version": 1,
+        "short_id": "PAR-2",
+        "status": "backlog",
+        "tags": null,
+        "title": "Target",
+        "type": "task",
+        "updated_at": "<TS>",
+        "urgency": null
+      }
+    },
+    "tasks/<ID-5>.json": {
+      "json": {
+        "acceptance_criteria": [],
+        "assigned_to": null,
+        "branch_links": [],
+        "comment_count": 0,
+        "complexity": null,
+        "created_at": "<TS>",
+        "created_by": "human:parity",
+        "custom_fields": {},
+        "description": null,
+        "done_at": null,
+        "evidence_refs": [],
+        "id": "<ID-5>",
+        "last_event_id": "<ID-6>",
+        "last_status_changed_at": "<TS>",
+        "linked_files": [],
+        "priority": "medium",
+        "relationships_out": [],
+        "reopened_count": 0,
+        "schema_version": 1,
+        "short_id": "PAR-3",
+        "status": "backlog",
+        "tags": null,
+        "title": "Parent",
+        "type": "task",
+        "updated_at": "<TS>",
+        "urgency": null
+      }
+    }
+  },
+  "description": "link/unlink, branch-link/unlink, file-link/unlink",
+  "mode": "json",
+  "scenario": "links",
+  "steps": [
+    {
+      "args": [
+        "init",
+        "--path",
+        "<ROOT>",
+        "--actor",
+        "human:parity",
+        "--project-code",
+        "PAR",
+        "--no-setup-claude",
+        "--no-setup-agents",
+        "--no-seed"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "",
+          ".lattice/ created — a mind now has a place to remember.",
+          "Default actor: human:parity",
+          "Project code: PAR",
+          "Workflow statuses: stage11 (10 statuses)"
+        ]
+      }
+    },
+    {
+      "args": [
+        "create",
+        "Source",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "acceptance_criteria": [],
+            "assigned_to": null,
+            "branch_links": [],
+            "comment_count": 0,
+            "complexity": null,
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "custom_fields": {},
+            "description": null,
+            "done_at": null,
+            "evidence_refs": [],
+            "id": "<ID-1>",
+            "last_event_id": "<ID-2>",
+            "last_status_changed_at": "<TS>",
+            "linked_files": [],
+            "priority": "medium",
+            "relationships_out": [],
+            "reopened_count": 0,
+            "schema_version": 1,
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "tags": null,
+            "title": "Source",
+            "type": "task",
+            "updated_at": "<TS>",
+            "urgency": null
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "create",
+        "Target",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "acceptance_criteria": [],
+            "assigned_to": null,
+            "branch_links": [],
+            "comment_count": 0,
+            "complexity": null,
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "custom_fields": {},
+            "description": null,
+            "done_at": null,
+            "evidence_refs": [],
+            "id": "<ID-3>",
+            "last_event_id": "<ID-4>",
+            "last_status_changed_at": "<TS>",
+            "linked_files": [],
+            "priority": "medium",
+            "relationships_out": [],
+            "reopened_count": 0,
+            "schema_version": 1,
+            "short_id": "PAR-2",
+            "status": "backlog",
+            "tags": null,
+            "title": "Target",
+            "type": "task",
+            "updated_at": "<TS>",
+            "urgency": null
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "create",
+        "Parent",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "acceptance_criteria": [],
+            "assigned_to": null,
+            "branch_links": [],
+            "comment_count": 0,
+            "complexity": null,
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "custom_fields": {},
+            "description": null,
+            "done_at": null,
+            "evidence_refs": [],
+            "id": "<ID-5>",
+            "last_event_id": "<ID-6>",
+            "last_status_changed_at": "<TS>",
+            "linked_files": [],
+            "priority": "medium",
+            "relationships_out": [],
+            "reopened_count": 0,
+            "schema_version": 1,
+            "short_id": "PAR-3",
+            "status": "backlog",
+            "tags": null,
+            "title": "Parent",
+            "type": "task",
+            "updated_at": "<TS>",
+            "urgency": null
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "link",
+        "PAR-1",
+        "blocks",
+        "PAR-2",
+        "--note",
+        "because",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "acceptance_criteria": [],
+            "assigned_to": null,
+            "branch_links": [],
+            "comment_count": 0,
+            "complexity": null,
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "custom_fields": {},
+            "description": null,
+            "done_at": null,
+            "evidence_refs": [],
+            "id": "<ID-1>",
+            "last_event_id": "<ID-7>",
+            "last_status_changed_at": "<TS>",
+            "linked_files": [],
+            "priority": "medium",
+            "relationships_out": [
+              {
+                "created_at": "<TS>",
+                "created_by": "human:parity",
+                "note": "because",
+                "target_task_id": "<ID-3>",
+                "type": "blocks"
+              }
+            ],
+            "reopened_count": 0,
+            "schema_version": 1,
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "tags": null,
+            "title": "Source",
+            "type": "task",
+            "updated_at": "<TS>",
+            "urgency": null
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "link",
+        "PAR-1",
+        "blocks",
+        "PAR-2",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "CONFLICT",
+            "message": "Duplicate: blocks relationship to <ID-3> already exists."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "link",
+        "PAR-1",
+        "subtask_of",
+        "PAR-3",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "acceptance_criteria": [],
+            "assigned_to": null,
+            "branch_links": [],
+            "comment_count": 0,
+            "complexity": null,
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "custom_fields": {},
+            "description": null,
+            "done_at": null,
+            "evidence_refs": [],
+            "id": "<ID-1>",
+            "last_event_id": "<ID-8>",
+            "last_status_changed_at": "<TS>",
+            "linked_files": [],
+            "priority": "medium",
+            "relationships_out": [
+              {
+                "created_at": "<TS>",
+                "created_by": "human:parity",
+                "note": "because",
+                "target_task_id": "<ID-3>",
+                "type": "blocks"
+              },
+              {
+                "created_at": "<TS>",
+                "created_by": "human:parity",
+                "note": null,
+                "target_task_id": "<ID-5>",
+                "type": "subtask_of"
+              }
+            ],
+            "reopened_count": 0,
+            "schema_version": 1,
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "tags": null,
+            "title": "Source",
+            "type": "task",
+            "updated_at": "<TS>",
+            "urgency": null
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "link",
+        "PAR-2",
+        "depends_on",
+        "<ID-5>",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "acceptance_criteria": [],
+            "assigned_to": null,
+            "branch_links": [],
+            "comment_count": 0,
+            "complexity": null,
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "custom_fields": {},
+            "description": null,
+            "done_at": null,
+            "evidence_refs": [],
+            "id": "<ID-3>",
+            "last_event_id": "<ID-9>",
+            "last_status_changed_at": "<TS>",
+            "linked_files": [],
+            "priority": "medium",
+            "relationships_out": [
+              {
+                "created_at": "<TS>",
+                "created_by": "human:parity",
+                "note": null,
+                "target_task_id": "<ID-5>",
+                "type": "depends_on"
+              }
+            ],
+            "reopened_count": 0,
+            "schema_version": 1,
+            "short_id": "PAR-2",
+            "status": "backlog",
+            "tags": null,
+            "title": "Target",
+            "type": "task",
+            "updated_at": "<TS>",
+            "urgency": null
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "link",
+        "PAR-1",
+        "related_to",
+        "PAR-1",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "VALIDATION_ERROR",
+            "message": "Cannot create a relationship from a task to itself."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "link",
+        "PAR-1",
+        "bogus",
+        "PAR-2",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "VALIDATION_ERROR",
+            "message": "Invalid relationship type: 'bogus'. Valid types: blocks, depends_on, duplicate_of, related_to, spawned_by, subtask_of, supersedes."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "link",
+        "PAR-1",
+        "blocks",
+        "NOPE-9",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "NOT_FOUND",
+            "message": "Short ID 'NOPE-9' not found."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "unlink",
+        "PAR-1",
+        "blocks",
+        "PAR-2",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "acceptance_criteria": [],
+            "assigned_to": null,
+            "branch_links": [],
+            "comment_count": 0,
+            "complexity": null,
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "custom_fields": {},
+            "description": null,
+            "done_at": null,
+            "evidence_refs": [],
+            "id": "<ID-1>",
+            "last_event_id": "<ID-10>",
+            "last_status_changed_at": "<TS>",
+            "linked_files": [],
+            "priority": "medium",
+            "relationships_out": [
+              {
+                "created_at": "<TS>",
+                "created_by": "human:parity",
+                "note": null,
+                "target_task_id": "<ID-5>",
+                "type": "subtask_of"
+              }
+            ],
+            "reopened_count": 0,
+            "schema_version": 1,
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "tags": null,
+            "title": "Source",
+            "type": "task",
+            "updated_at": "<TS>",
+            "urgency": null
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "unlink",
+        "PAR-1",
+        "blocks",
+        "PAR-2",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "NOT_FOUND",
+            "message": "No blocks relationship to <ID-3>."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "branch-link",
+        "PAR-1",
+        "feat/PAR-1-thing",
+        "--repo",
+        "origin",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "acceptance_criteria": [],
+            "assigned_to": null,
+            "branch_links": [
+              {
+                "branch": "feat/PAR-1-thing",
+                "linked_at": "<TS>",
+                "linked_by": "human:parity",
+                "repo": "origin"
+              }
+            ],
+            "comment_count": 0,
+            "complexity": null,
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "custom_fields": {},
+            "description": null,
+            "done_at": null,
+            "evidence_refs": [],
+            "id": "<ID-1>",
+            "last_event_id": "<ID-11>",
+            "last_status_changed_at": "<TS>",
+            "linked_files": [],
+            "priority": "medium",
+            "relationships_out": [
+              {
+                "created_at": "<TS>",
+                "created_by": "human:parity",
+                "note": null,
+                "target_task_id": "<ID-5>",
+                "type": "subtask_of"
+              }
+            ],
+            "reopened_count": 0,
+            "schema_version": 1,
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "tags": null,
+            "title": "Source",
+            "type": "task",
+            "updated_at": "<TS>",
+            "urgency": null
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "branch-link",
+        "PAR-1",
+        "feat/PAR-1-thing",
+        "--repo",
+        "origin",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "CONFLICT",
+            "message": "Duplicate: branch 'feat/PAR-1-thing' (repo: origin) already linked to <ID-1>."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "branch-link",
+        "PAR-1",
+        "feat/other",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "acceptance_criteria": [],
+            "assigned_to": null,
+            "branch_links": [
+              {
+                "branch": "feat/PAR-1-thing",
+                "linked_at": "<TS>",
+                "linked_by": "human:parity",
+                "repo": "origin"
+              },
+              {
+                "branch": "feat/other",
+                "linked_at": "<TS>",
+                "linked_by": "human:parity",
+                "repo": null
+              }
+            ],
+            "comment_count": 0,
+            "complexity": null,
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "custom_fields": {},
+            "description": null,
+            "done_at": null,
+            "evidence_refs": [],
+            "id": "<ID-1>",
+            "last_event_id": "<ID-12>",
+            "last_status_changed_at": "<TS>",
+            "linked_files": [],
+            "priority": "medium",
+            "relationships_out": [
+              {
+                "created_at": "<TS>",
+                "created_by": "human:parity",
+                "note": null,
+                "target_task_id": "<ID-5>",
+                "type": "subtask_of"
+              }
+            ],
+            "reopened_count": 0,
+            "schema_version": 1,
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "tags": null,
+            "title": "Source",
+            "type": "task",
+            "updated_at": "<TS>",
+            "urgency": null
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "branch-unlink",
+        "PAR-1",
+        "feat/PAR-1-thing",
+        "--repo",
+        "origin",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "acceptance_criteria": [],
+            "assigned_to": null,
+            "branch_links": [
+              {
+                "branch": "feat/other",
+                "linked_at": "<TS>",
+                "linked_by": "human:parity",
+                "repo": null
+              }
+            ],
+            "comment_count": 0,
+            "complexity": null,
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "custom_fields": {},
+            "description": null,
+            "done_at": null,
+            "evidence_refs": [],
+            "id": "<ID-1>",
+            "last_event_id": "<ID-13>",
+            "last_status_changed_at": "<TS>",
+            "linked_files": [],
+            "priority": "medium",
+            "relationships_out": [
+              {
+                "created_at": "<TS>",
+                "created_by": "human:parity",
+                "note": null,
+                "target_task_id": "<ID-5>",
+                "type": "subtask_of"
+              }
+            ],
+            "reopened_count": 0,
+            "schema_version": 1,
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "tags": null,
+            "title": "Source",
+            "type": "task",
+            "updated_at": "<TS>",
+            "urgency": null
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "branch-unlink",
+        "PAR-1",
+        "feat/PAR-1-thing",
+        "--repo",
+        "origin",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "NOT_FOUND",
+            "message": "No branch link 'feat/PAR-1-thing' (repo: origin) on <ID-1>."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "file-link",
+        "PAR-1",
+        "src/a.py",
+        "src/b.py",
+        "--reason",
+        "decision",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "acceptance_criteria": [],
+            "assigned_to": null,
+            "branch_links": [
+              {
+                "branch": "feat/other",
+                "linked_at": "<TS>",
+                "linked_by": "human:parity",
+                "repo": null
+              }
+            ],
+            "comment_count": 0,
+            "complexity": null,
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "custom_fields": {},
+            "description": null,
+            "done_at": null,
+            "evidence_refs": [],
+            "id": "<ID-1>",
+            "last_event_id": "<ID-14>",
+            "last_status_changed_at": "<TS>",
+            "linked_files": [
+              "src/a.py",
+              "src/b.py"
+            ],
+            "priority": "medium",
+            "relationships_out": [
+              {
+                "created_at": "<TS>",
+                "created_by": "human:parity",
+                "note": null,
+                "target_task_id": "<ID-5>",
+                "type": "subtask_of"
+              }
+            ],
+            "reopened_count": 0,
+            "schema_version": 1,
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "tags": null,
+            "title": "Source",
+            "type": "task",
+            "updated_at": "<TS>",
+            "urgency": null
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "file-link",
+        "PAR-1",
+        "src/a.py",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "CONFLICT",
+            "message": "All specified files are already linked to this task."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "file-unlink",
+        "PAR-1",
+        "src/a.py",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "acceptance_criteria": [],
+            "assigned_to": null,
+            "branch_links": [
+              {
+                "branch": "feat/other",
+                "linked_at": "<TS>",
+                "linked_by": "human:parity",
+                "repo": null
+              }
+            ],
+            "comment_count": 0,
+            "complexity": null,
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "custom_fields": {},
+            "description": null,
+            "done_at": null,
+            "evidence_refs": [],
+            "id": "<ID-1>",
+            "last_event_id": "<ID-15>",
+            "last_status_changed_at": "<TS>",
+            "linked_files": [
+              "src/b.py"
+            ],
+            "priority": "medium",
+            "relationships_out": [
+              {
+                "created_at": "<TS>",
+                "created_by": "human:parity",
+                "note": null,
+                "target_task_id": "<ID-5>",
+                "type": "subtask_of"
+              }
+            ],
+            "reopened_count": 0,
+            "schema_version": 1,
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "tags": null,
+            "title": "Source",
+            "type": "task",
+            "updated_at": "<TS>",
+            "urgency": null
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "file-unlink",
+        "PAR-1",
+        "src/a.py",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "NOT_FOUND",
+            "message": "None of the specified files are linked to this task."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "file-link",
+        "PAR-1",
+        "../outside.py",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "VALIDATION_ERROR",
+            "message": "Path '../outside.py' escapes the project root."
+          },
+          "ok": false
+        }
+      }
+    }
+  ]
+}

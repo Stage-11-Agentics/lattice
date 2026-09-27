@@ -1,0 +1,1432 @@
+{
+  "board": {
+    ".gitignore": {
+      "lines": [
+        "# Ephemeral Lattice runtime state — not part of the durable board.",
+        "# The board (tasks/ events/ plans/ artifacts/ ids.json config.json)",
+        "# stays tracked: it is the audit log and cross-machine coordination",
+        "# state. The paths below are mutated constantly and must never",
+        "# diverge per-worktree or collide on merge.",
+        "review_state/",
+        "tmp-prompts/",
+        ".daemon/",
+        "locks/"
+      ]
+    },
+    "config.json": {
+      "json": {
+        "auto_code_review_on_transition": false,
+        "auto_plan_review_on_transition": false,
+        "default_actor": "human:parity",
+        "default_priority": "medium",
+        "default_status": "backlog",
+        "done_display": "grouped",
+        "instance_id": "<ID-19>",
+        "plan_approval": "auto",
+        "plan_review_mode": "single",
+        "project_code": "PAR",
+        "resources": {
+          "stale-lock": {
+            "description": "always stale",
+            "ttl_seconds": -3600
+          }
+        },
+        "review_max_diff_chars": 120000,
+        "review_max_diff_lines": 5000,
+        "review_mode": "single",
+        "review_timeout_seconds": 600,
+        "schema_version": 1,
+        "status_preset": "stage11",
+        "task_types": [
+          "task",
+          "bug",
+          "spike",
+          "chore"
+        ],
+        "workflow": {
+          "completion_policies": {
+            "done": {
+              "require_roles": [
+                "review"
+              ]
+            },
+            "pr_open": {
+              "require_roles": [
+                "validation"
+              ]
+            }
+          },
+          "descriptions": {
+            "backlog": "Task is captured but no work has started. No planning, no implementation.",
+            "blocked": "Work cannot proceed due to an external dependency or unresolved issue.",
+            "cancelled": "Work has been abandoned. No further action will be taken.",
+            "done": "Work is reviewed, merged, and shipped. No further action needed.",
+            "in_planning": "Design, dialogue, and scoping underway. No implementation code should be written yet.",
+            "in_progress": "Implementation is actively underway. Code is being written, tested, or integrated.",
+            "in_validation": "End-to-end validation is underway. The change is being exercised against a running system — browser automation, simulator flows, curl — before the PR opens. The bar: 'I saw it work,' not 'I think it should work.'",
+            "planned": "Plan is written and approved. Ready for implementation but work has not started.",
+            "pr_open": "PR is open and awaiting human review, CI, or merge. Local review and validation artifacts are recorded.",
+            "review": "Local review is underway. A review sub-agent is examining the diff before validation begins."
+          },
+          "roles": [
+            "review",
+            "plan-review",
+            "review-individual",
+            "validation"
+          ],
+          "statuses": [
+            "backlog",
+            "in_planning",
+            "planned",
+            "in_progress",
+            "review",
+            "in_validation",
+            "pr_open",
+            "done",
+            "blocked",
+            "cancelled"
+          ],
+          "transitions": {
+            "backlog": [
+              "in_planning",
+              "planned",
+              "cancelled"
+            ],
+            "blocked": [
+              "in_planning",
+              "planned",
+              "in_progress",
+              "in_validation",
+              "pr_open",
+              "cancelled"
+            ],
+            "cancelled": [],
+            "done": [],
+            "in_planning": [
+              "planned",
+              "cancelled"
+            ],
+            "in_progress": [
+              "review",
+              "blocked",
+              "cancelled"
+            ],
+            "in_validation": [
+              "pr_open",
+              "in_progress",
+              "in_planning",
+              "blocked",
+              "cancelled"
+            ],
+            "planned": [
+              "in_progress",
+              "review",
+              "blocked",
+              "cancelled"
+            ],
+            "pr_open": [
+              "done",
+              "in_progress",
+              "review",
+              "blocked",
+              "cancelled"
+            ],
+            "review": [
+              "in_validation",
+              "pr_open",
+              "done",
+              "in_progress",
+              "in_planning",
+              "cancelled"
+            ]
+          },
+          "universal_targets": [
+            "cancelled"
+          ],
+          "wip_limits": {
+            "in_progress": 10,
+            "in_validation": 5,
+            "pr_open": 10,
+            "review": 5
+          }
+        },
+        "workflow_preset": "classic"
+      }
+    },
+    "context.md": {
+      "lines": [
+        "# Instance Context",
+        "",
+        "<!-- Every lattice instance exists for a reason — a convergence of intention",
+        "     and infrastructure. This file declares that reason. Agents and humans",
+        "     read it to understand the purpose, conventions, and relationships",
+        "     of this particular node in the lattice. -->",
+        "",
+        "## Purpose",
+        "",
+        "<!-- What does this instance observe? What project, team, or domain",
+        "     does it serve? Declare the scope of attention. -->",
+        "",
+        "## Related Instances",
+        "",
+        "<!-- If this node coordinates with other lattice instances, name them here.",
+        "     Include instance_id, instance_name, and the nature of the relationship.",
+        "     The lattice is stronger when its nodes are aware of each other. -->",
+        "",
+        "## Conventions",
+        "",
+        "<!-- Every instance develops its own rhythms — workflow conventions,",
+        "     naming patterns, status meanings that diverge from defaults.",
+        "     Record them here so that new minds arriving in this context",
+        "     can orient immediately. -->"
+      ]
+    },
+    "events/<ID-13>.jsonl": {
+      "jsonl": [
+        {
+          "actor": "human:parity",
+          "data": {
+            "max_holders": 1,
+            "name": "lock-b",
+            "ttl_seconds": 300
+          },
+          "id": "<ID-14>",
+          "resource_id": "<ID-13>",
+          "schema_version": 1,
+          "ts": "<TS>",
+          "type": "resource_created"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "expires_at": "<TS>",
+            "holder": "agent:worker"
+          },
+          "id": "<ID-15>",
+          "resource_id": "<ID-13>",
+          "schema_version": 1,
+          "ts": "<TS>",
+          "type": "resource_acquired"
+        }
+      ]
+    },
+    "events/<ID-16>.jsonl": {
+      "jsonl": [
+        {
+          "actor": "agent:worker",
+          "data": {
+            "description": "always stale",
+            "max_holders": 1,
+            "name": "stale-lock",
+            "ttl_seconds": -3600
+          },
+          "id": "<ID-21>",
+          "resource_id": "<ID-16>",
+          "schema_version": 1,
+          "ts": "<TS>",
+          "type": "resource_created"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "expires_at": "<TS>",
+            "holder": "agent:worker"
+          },
+          "id": "<ID-17>",
+          "resource_id": "<ID-16>",
+          "schema_version": 1,
+          "ts": "<TS>",
+          "type": "resource_acquired"
+        },
+        {
+          "actor": "agent:other",
+          "data": {
+            "expired_at": "<TS>",
+            "holder": "agent:worker",
+            "reclaimed_by": "agent:other"
+          },
+          "id": "<ID-22>",
+          "resource_id": "<ID-16>",
+          "schema_version": 1,
+          "ts": "<TS>",
+          "type": "resource_expired"
+        },
+        {
+          "actor": "agent:other",
+          "data": {
+            "expires_at": "<TS>",
+            "holder": "agent:other"
+          },
+          "id": "<ID-18>",
+          "resource_id": "<ID-16>",
+          "schema_version": 1,
+          "ts": "<TS>",
+          "type": "resource_acquired"
+        }
+      ]
+    },
+    "events/<ID-1>.jsonl": {
+      "jsonl": [
+        {
+          "actor": "human:parity",
+          "data": {
+            "priority": "medium",
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "title": "Resource user",
+            "type": "task"
+          },
+          "id": "<ID-2>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "task_created"
+        }
+      ]
+    },
+    "events/<ID-3>.jsonl": {
+      "jsonl": [
+        {
+          "actor": "human:parity",
+          "data": {
+            "description": "Shared lock",
+            "max_holders": 2,
+            "name": "lock-a",
+            "ttl_seconds": 600
+          },
+          "id": "<ID-4>",
+          "resource_id": "<ID-3>",
+          "schema_version": 1,
+          "ts": "<TS>",
+          "type": "resource_created"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "expires_at": "<TS>",
+            "holder": "agent:worker",
+            "reason": "deploying",
+            "task_id": "<ID-1>"
+          },
+          "id": "<ID-7>",
+          "provenance": {
+            "reason": "deploying"
+          },
+          "resource_id": "<ID-3>",
+          "schema_version": 1,
+          "ts": "<TS>",
+          "type": "resource_acquired"
+        },
+        {
+          "actor": "agent:other",
+          "data": {
+            "expires_at": "<TS>",
+            "holder": "agent:other"
+          },
+          "id": "<ID-8>",
+          "resource_id": "<ID-3>",
+          "schema_version": 1,
+          "ts": "<TS>",
+          "type": "resource_acquired"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "expires_at": "<TS>",
+            "holder": "agent:worker"
+          },
+          "id": "<ID-9>",
+          "resource_id": "<ID-3>",
+          "schema_version": 1,
+          "ts": "<TS>",
+          "type": "resource_heartbeat"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "expires_at": "<TS>",
+            "holder": "agent:worker"
+          },
+          "id": "<ID-10>",
+          "resource_id": "<ID-3>",
+          "schema_version": 1,
+          "ts": "<TS>",
+          "type": "resource_heartbeat"
+        },
+        {
+          "actor": "agent:other",
+          "data": {
+            "holder": "agent:other"
+          },
+          "id": "<ID-11>",
+          "resource_id": "<ID-3>",
+          "schema_version": 1,
+          "ts": "<TS>",
+          "type": "resource_released"
+        },
+        {
+          "actor": "agent:third",
+          "data": {
+            "expired_at": "<TS>",
+            "holder": "agent:worker",
+            "reclaimed_by": "agent:third"
+          },
+          "id": "<ID-20>",
+          "resource_id": "<ID-3>",
+          "schema_version": 1,
+          "ts": "<TS>",
+          "type": "resource_expired"
+        },
+        {
+          "actor": "agent:third",
+          "data": {
+            "expires_at": "<TS>",
+            "holder": "agent:third"
+          },
+          "id": "<ID-12>",
+          "resource_id": "<ID-3>",
+          "schema_version": 1,
+          "ts": "<TS>",
+          "type": "resource_acquired"
+        }
+      ]
+    },
+    "events/<ID-5>.jsonl": {
+      "jsonl": [
+        {
+          "actor": "human:parity",
+          "data": {
+            "max_holders": 1,
+            "name": "lock-x",
+            "ttl_seconds": 300
+          },
+          "id": "<ID-6>",
+          "resource_id": "<ID-5>",
+          "schema_version": 1,
+          "ts": "<TS>",
+          "type": "resource_created"
+        }
+      ]
+    },
+    "events/_lifecycle.jsonl": {
+      "jsonl": [
+        {
+          "actor": "human:parity",
+          "data": {
+            "priority": "medium",
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "title": "Resource user",
+            "type": "task"
+          },
+          "id": "<ID-2>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "task_created"
+        }
+      ]
+    },
+    "ids.json": {
+      "json": {
+        "map": {
+          "PAR-1": "<ID-1>"
+        },
+        "next_seqs": {
+          "PAR": 2
+        },
+        "schema_version": 2
+      }
+    },
+    "plans/<ID-1>.md": {
+      "lines": [
+        "# PAR-1: Resource user"
+      ]
+    },
+    "resources/lock-a/resource.json": {
+      "json": {
+        "created_at": "<TS>",
+        "created_by": "human:parity",
+        "description": "Shared lock",
+        "holders": [
+          {
+            "acquired_at": "<TS>",
+            "actor": "agent:third",
+            "expires_at": "<TS>",
+            "last_heartbeat": "<TS>"
+          }
+        ],
+        "id": "<ID-3>",
+        "last_event_id": "<ID-12>",
+        "max_holders": 2,
+        "name": "lock-a",
+        "schema_version": 1,
+        "ttl_seconds": 600,
+        "updated_at": "<TS>"
+      }
+    },
+    "resources/lock-b/resource.json": {
+      "json": {
+        "created_at": "<TS>",
+        "created_by": "human:parity",
+        "description": null,
+        "holders": [
+          {
+            "acquired_at": "<TS>",
+            "actor": "agent:worker",
+            "expires_at": "<TS>",
+            "last_heartbeat": "<TS>"
+          }
+        ],
+        "id": "<ID-13>",
+        "last_event_id": "<ID-15>",
+        "max_holders": 1,
+        "name": "lock-b",
+        "schema_version": 1,
+        "ttl_seconds": 300,
+        "updated_at": "<TS>"
+      }
+    },
+    "resources/lock-x/resource.json": {
+      "json": {
+        "created_at": "<TS>",
+        "created_by": "human:parity",
+        "description": null,
+        "holders": [],
+        "id": "<ID-5>",
+        "last_event_id": "<ID-6>",
+        "max_holders": 1,
+        "name": "lock-x",
+        "schema_version": 1,
+        "ttl_seconds": 300,
+        "updated_at": "<TS>"
+      }
+    },
+    "resources/stale-lock/resource.json": {
+      "json": {
+        "created_at": "<TS>",
+        "created_by": "agent:worker",
+        "description": "always stale",
+        "holders": [
+          {
+            "acquired_at": "<TS>",
+            "actor": "agent:other",
+            "expires_at": "<TS>",
+            "last_heartbeat": "<TS>"
+          }
+        ],
+        "id": "<ID-16>",
+        "last_event_id": "<ID-18>",
+        "max_holders": 1,
+        "name": "stale-lock",
+        "schema_version": 1,
+        "ttl_seconds": -3600,
+        "updated_at": "<TS>"
+      }
+    },
+    "tasks/<ID-1>.json": {
+      "json": {
+        "acceptance_criteria": [],
+        "assigned_to": null,
+        "branch_links": [],
+        "comment_count": 0,
+        "complexity": null,
+        "created_at": "<TS>",
+        "created_by": "human:parity",
+        "custom_fields": {},
+        "description": null,
+        "done_at": null,
+        "evidence_refs": [],
+        "id": "<ID-1>",
+        "last_event_id": "<ID-2>",
+        "last_status_changed_at": "<TS>",
+        "linked_files": [],
+        "priority": "medium",
+        "relationships_out": [],
+        "reopened_count": 0,
+        "schema_version": 1,
+        "short_id": "PAR-1",
+        "status": "backlog",
+        "tags": null,
+        "title": "Resource user",
+        "type": "task",
+        "updated_at": "<TS>",
+        "urgency": null
+      }
+    }
+  },
+  "description": "resource create/acquire/heartbeat/release, holders, eviction, expiry",
+  "mode": "json",
+  "scenario": "resources",
+  "steps": [
+    {
+      "args": [
+        "init",
+        "--path",
+        "<ROOT>",
+        "--actor",
+        "human:parity",
+        "--project-code",
+        "PAR",
+        "--no-setup-claude",
+        "--no-setup-agents",
+        "--no-seed"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "",
+          ".lattice/ created — a mind now has a place to remember.",
+          "Default actor: human:parity",
+          "Project code: PAR",
+          "Workflow statuses: stage11 (10 statuses)"
+        ]
+      }
+    },
+    {
+      "args": [
+        "create",
+        "Resource user",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "acceptance_criteria": [],
+            "assigned_to": null,
+            "branch_links": [],
+            "comment_count": 0,
+            "complexity": null,
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "custom_fields": {},
+            "description": null,
+            "done_at": null,
+            "evidence_refs": [],
+            "id": "<ID-1>",
+            "last_event_id": "<ID-2>",
+            "last_status_changed_at": "<TS>",
+            "linked_files": [],
+            "priority": "medium",
+            "relationships_out": [],
+            "reopened_count": 0,
+            "schema_version": 1,
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "tags": null,
+            "title": "Resource user",
+            "type": "task",
+            "updated_at": "<TS>",
+            "urgency": null
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "resource",
+        "create",
+        "lock-a",
+        "--description",
+        "Shared lock",
+        "--max-holders",
+        "2",
+        "--ttl",
+        "600",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "description": "Shared lock",
+            "holders": [],
+            "id": "<ID-3>",
+            "last_event_id": "<ID-4>",
+            "max_holders": 2,
+            "name": "lock-a",
+            "schema_version": 1,
+            "ttl_seconds": 600,
+            "updated_at": "<TS>"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "resource",
+        "create",
+        "lock-a",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "CONFLICT",
+            "message": "Resource 'lock-a' already exists (<ID-3>)."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "resource",
+        "create",
+        "lock-z",
+        "--ttl",
+        "0",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "VALIDATION_ERROR",
+            "message": "--ttl must be at least 1 second."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "resource",
+        "create",
+        "lock-y",
+        "--max-holders",
+        "0",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "VALIDATION_ERROR",
+            "message": "--max-holders must be at least 1."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "resource",
+        "create",
+        "lock-x",
+        "--id",
+        "<ID-5>",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "description": null,
+            "holders": [],
+            "id": "<ID-5>",
+            "last_event_id": "<ID-6>",
+            "max_holders": 1,
+            "name": "lock-x",
+            "schema_version": 1,
+            "ttl_seconds": 300,
+            "updated_at": "<TS>"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "resource",
+        "create",
+        "lock-w",
+        "--id",
+        "bogus",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "INVALID_ID",
+            "message": "Invalid resource ID format: 'bogus'."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "resource",
+        "acquire",
+        "lock-a",
+        "--task",
+        "PAR-1",
+        "--reason",
+        "deploying",
+        "--actor",
+        "agent:worker",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "description": "Shared lock",
+            "holders": [
+              {
+                "acquired_at": "<TS>",
+                "actor": "agent:worker",
+                "expires_at": "<TS>",
+                "last_heartbeat": "<TS>",
+                "task_id": "<ID-1>"
+              }
+            ],
+            "id": "<ID-3>",
+            "last_event_id": "<ID-7>",
+            "max_holders": 2,
+            "name": "lock-a",
+            "schema_version": 1,
+            "ttl_seconds": 600,
+            "updated_at": "<TS>"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "resource",
+        "acquire",
+        "lock-a",
+        "--actor",
+        "agent:other",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "description": "Shared lock",
+            "holders": [
+              {
+                "acquired_at": "<TS>",
+                "actor": "agent:worker",
+                "expires_at": "<TS>",
+                "last_heartbeat": "<TS>",
+                "task_id": "<ID-1>"
+              },
+              {
+                "acquired_at": "<TS>",
+                "actor": "agent:other",
+                "expires_at": "<TS>",
+                "last_heartbeat": "<TS>"
+              }
+            ],
+            "id": "<ID-3>",
+            "last_event_id": "<ID-8>",
+            "max_holders": 2,
+            "name": "lock-a",
+            "schema_version": 1,
+            "ttl_seconds": 600,
+            "updated_at": "<TS>"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "resource",
+        "acquire",
+        "lock-a",
+        "--actor",
+        "agent:third",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "RESOURCE_HELD",
+            "message": "Resource 'lock-a' is not available. Held by agent:worker (<ID-1>) since <AGO>, expires <REMAINING>"
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "resource",
+        "acquire",
+        "lock-a",
+        "--actor",
+        "agent:worker",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "description": "Shared lock",
+            "holders": [
+              {
+                "acquired_at": "<TS>",
+                "actor": "agent:worker",
+                "expires_at": "<TS>",
+                "last_heartbeat": "<TS>",
+                "task_id": "<ID-1>"
+              },
+              {
+                "acquired_at": "<TS>",
+                "actor": "agent:other",
+                "expires_at": "<TS>",
+                "last_heartbeat": "<TS>"
+              }
+            ],
+            "id": "<ID-3>",
+            "last_event_id": "<ID-9>",
+            "max_holders": 2,
+            "name": "lock-a",
+            "schema_version": 1,
+            "ttl_seconds": 600,
+            "updated_at": "<TS>"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "resource",
+        "heartbeat",
+        "lock-a",
+        "--actor",
+        "agent:worker",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "description": "Shared lock",
+            "holders": [
+              {
+                "acquired_at": "<TS>",
+                "actor": "agent:worker",
+                "expires_at": "<TS>",
+                "last_heartbeat": "<TS>",
+                "task_id": "<ID-1>"
+              },
+              {
+                "acquired_at": "<TS>",
+                "actor": "agent:other",
+                "expires_at": "<TS>",
+                "last_heartbeat": "<TS>"
+              }
+            ],
+            "id": "<ID-3>",
+            "last_event_id": "<ID-10>",
+            "max_holders": 2,
+            "name": "lock-a",
+            "schema_version": 1,
+            "ttl_seconds": 600,
+            "updated_at": "<TS>"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "resource",
+        "heartbeat",
+        "lock-a",
+        "--actor",
+        "agent:third",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "NOT_HELD",
+            "message": "You (agent:third) do not hold resource 'lock-a'."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "resource",
+        "release",
+        "lock-a",
+        "--actor",
+        "agent:other",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "description": "Shared lock",
+            "holders": [
+              {
+                "acquired_at": "<TS>",
+                "actor": "agent:worker",
+                "expires_at": "<TS>",
+                "last_heartbeat": "<TS>",
+                "task_id": "<ID-1>"
+              }
+            ],
+            "id": "<ID-3>",
+            "last_event_id": "<ID-11>",
+            "max_holders": 2,
+            "name": "lock-a",
+            "schema_version": 1,
+            "ttl_seconds": 600,
+            "updated_at": "<TS>"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "resource",
+        "release",
+        "lock-a",
+        "--actor",
+        "agent:other",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "NOT_HELD",
+            "message": "You (agent:other) do not hold resource 'lock-a'."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "resource",
+        "acquire",
+        "lock-a",
+        "--force",
+        "--actor",
+        "agent:third",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "description": "Shared lock",
+            "holders": [
+              {
+                "acquired_at": "<TS>",
+                "actor": "agent:third",
+                "expires_at": "<TS>",
+                "last_heartbeat": "<TS>"
+              }
+            ],
+            "id": "<ID-3>",
+            "last_event_id": "<ID-12>",
+            "max_holders": 2,
+            "name": "lock-a",
+            "schema_version": 1,
+            "ttl_seconds": 600,
+            "updated_at": "<TS>"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "resource",
+        "acquire",
+        "auto-made",
+        "--actor",
+        "agent:worker",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "NOT_FOUND",
+            "message": "Resource 'auto-made' not found. Create it with 'lattice resource create auto-made'."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "resource",
+        "acquire",
+        "auto-made",
+        "--wait",
+        "--timeout",
+        "1",
+        "--actor",
+        "agent:worker",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "NOT_FOUND",
+            "message": "Resource 'auto-made' not found. Create it with 'lattice resource create auto-made'."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "resource",
+        "create",
+        "lock-b",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "description": null,
+            "holders": [],
+            "id": "<ID-13>",
+            "last_event_id": "<ID-14>",
+            "max_holders": 1,
+            "name": "lock-b",
+            "schema_version": 1,
+            "ttl_seconds": 300,
+            "updated_at": "<TS>"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "resource",
+        "acquire",
+        "lock-b",
+        "--wait",
+        "--timeout",
+        "1",
+        "--actor",
+        "agent:worker",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "description": null,
+            "holders": [
+              {
+                "acquired_at": "<TS>",
+                "actor": "agent:worker",
+                "expires_at": "<TS>",
+                "last_heartbeat": "<TS>"
+              }
+            ],
+            "id": "<ID-13>",
+            "last_event_id": "<ID-15>",
+            "max_holders": 1,
+            "name": "lock-b",
+            "schema_version": 1,
+            "ttl_seconds": 300,
+            "updated_at": "<TS>"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "resource",
+        "acquire",
+        "stale-lock",
+        "--actor",
+        "agent:worker",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "created_at": "<TS>",
+            "created_by": "agent:worker",
+            "description": "always stale",
+            "holders": [
+              {
+                "acquired_at": "<TS>",
+                "actor": "agent:worker",
+                "expires_at": "<TS>",
+                "last_heartbeat": "<TS>"
+              }
+            ],
+            "id": "<ID-16>",
+            "last_event_id": "<ID-17>",
+            "max_holders": 1,
+            "name": "stale-lock",
+            "schema_version": 1,
+            "ttl_seconds": -3600,
+            "updated_at": "<TS>"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "resource",
+        "heartbeat",
+        "stale-lock",
+        "--actor",
+        "agent:worker",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "EXPIRED",
+            "message": "Your hold on 'stale-lock' has expired. Use 'lattice resource acquire' to re-acquire."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "resource",
+        "acquire",
+        "stale-lock",
+        "--actor",
+        "agent:other",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "created_at": "<TS>",
+            "created_by": "agent:worker",
+            "description": "always stale",
+            "holders": [
+              {
+                "acquired_at": "<TS>",
+                "actor": "agent:other",
+                "expires_at": "<TS>",
+                "last_heartbeat": "<TS>"
+              }
+            ],
+            "id": "<ID-16>",
+            "last_event_id": "<ID-18>",
+            "max_holders": 1,
+            "name": "stale-lock",
+            "schema_version": 1,
+            "ttl_seconds": -3600,
+            "updated_at": "<TS>"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "resource",
+        "heartbeat",
+        "nowhere",
+        "--actor",
+        "agent:worker",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "NOT_FOUND",
+            "message": "Resource 'nowhere' not found. Create it with 'lattice resource create nowhere'."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "resource",
+        "release",
+        "nowhere",
+        "--actor",
+        "agent:worker",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "NOT_FOUND",
+            "message": "Resource 'nowhere' not found. Create it with 'lattice resource create nowhere'."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "resource",
+        "acquire",
+        "lock-a",
+        "--task",
+        "NOPE-1",
+        "--actor",
+        "agent:other",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "NOT_FOUND",
+            "message": "Short ID 'NOPE-1' not found."
+          },
+          "ok": false
+        }
+      }
+    }
+  ]
+}

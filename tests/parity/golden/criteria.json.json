@@ -1,0 +1,1504 @@
+{
+  "board": {
+    ".gitignore": {
+      "lines": [
+        "# Ephemeral Lattice runtime state — not part of the durable board.",
+        "# The board (tasks/ events/ plans/ artifacts/ ids.json config.json)",
+        "# stays tracked: it is the audit log and cross-machine coordination",
+        "# state. The paths below are mutated constantly and must never",
+        "# diverge per-worktree or collide on merge.",
+        "review_state/",
+        "tmp-prompts/",
+        ".daemon/",
+        "locks/"
+      ]
+    },
+    "config.json": {
+      "json": {
+        "auto_code_review_on_transition": false,
+        "auto_plan_review_on_transition": false,
+        "default_actor": "human:parity",
+        "default_priority": "medium",
+        "default_status": "backlog",
+        "done_display": "grouped",
+        "instance_id": "<ID-9>",
+        "plan_approval": "auto",
+        "plan_review_mode": "single",
+        "project_code": "PAR",
+        "review_max_diff_chars": 120000,
+        "review_max_diff_lines": 5000,
+        "review_mode": "single",
+        "review_timeout_seconds": 600,
+        "schema_version": 1,
+        "status_preset": "stage11",
+        "task_types": [
+          "task",
+          "bug",
+          "spike",
+          "chore"
+        ],
+        "workflow": {
+          "completion_policies": {
+            "done": {
+              "require_roles": [
+                "review"
+              ]
+            },
+            "pr_open": {
+              "require_roles": [
+                "validation"
+              ]
+            }
+          },
+          "descriptions": {
+            "backlog": "Task is captured but no work has started. No planning, no implementation.",
+            "blocked": "Work cannot proceed due to an external dependency or unresolved issue.",
+            "cancelled": "Work has been abandoned. No further action will be taken.",
+            "done": "Work is reviewed, merged, and shipped. No further action needed.",
+            "in_planning": "Design, dialogue, and scoping underway. No implementation code should be written yet.",
+            "in_progress": "Implementation is actively underway. Code is being written, tested, or integrated.",
+            "in_validation": "End-to-end validation is underway. The change is being exercised against a running system — browser automation, simulator flows, curl — before the PR opens. The bar: 'I saw it work,' not 'I think it should work.'",
+            "planned": "Plan is written and approved. Ready for implementation but work has not started.",
+            "pr_open": "PR is open and awaiting human review, CI, or merge. Local review and validation artifacts are recorded.",
+            "review": "Local review is underway. A review sub-agent is examining the diff before validation begins."
+          },
+          "roles": [
+            "review",
+            "plan-review",
+            "review-individual",
+            "validation"
+          ],
+          "statuses": [
+            "backlog",
+            "in_planning",
+            "planned",
+            "in_progress",
+            "review",
+            "in_validation",
+            "pr_open",
+            "done",
+            "blocked",
+            "cancelled"
+          ],
+          "transitions": {
+            "backlog": [
+              "in_planning",
+              "planned",
+              "cancelled"
+            ],
+            "blocked": [
+              "in_planning",
+              "planned",
+              "in_progress",
+              "in_validation",
+              "pr_open",
+              "cancelled"
+            ],
+            "cancelled": [],
+            "done": [],
+            "in_planning": [
+              "planned",
+              "cancelled"
+            ],
+            "in_progress": [
+              "review",
+              "blocked",
+              "cancelled"
+            ],
+            "in_validation": [
+              "pr_open",
+              "in_progress",
+              "in_planning",
+              "blocked",
+              "cancelled"
+            ],
+            "planned": [
+              "in_progress",
+              "review",
+              "blocked",
+              "cancelled"
+            ],
+            "pr_open": [
+              "done",
+              "in_progress",
+              "review",
+              "blocked",
+              "cancelled"
+            ],
+            "review": [
+              "in_validation",
+              "pr_open",
+              "done",
+              "in_progress",
+              "in_planning",
+              "cancelled"
+            ]
+          },
+          "universal_targets": [
+            "cancelled"
+          ],
+          "wip_limits": {
+            "in_progress": 10,
+            "in_validation": 5,
+            "pr_open": 10,
+            "review": 5
+          }
+        },
+        "workflow_preset": "classic"
+      }
+    },
+    "context.md": {
+      "lines": [
+        "# Instance Context",
+        "",
+        "<!-- Every lattice instance exists for a reason — a convergence of intention",
+        "     and infrastructure. This file declares that reason. Agents and humans",
+        "     read it to understand the purpose, conventions, and relationships",
+        "     of this particular node in the lattice. -->",
+        "",
+        "## Purpose",
+        "",
+        "<!-- What does this instance observe? What project, team, or domain",
+        "     does it serve? Declare the scope of attention. -->",
+        "",
+        "## Related Instances",
+        "",
+        "<!-- If this node coordinates with other lattice instances, name them here.",
+        "     Include instance_id, instance_name, and the nature of the relationship.",
+        "     The lattice is stronger when its nodes are aware of each other. -->",
+        "",
+        "## Conventions",
+        "",
+        "<!-- Every instance develops its own rhythms — workflow conventions,",
+        "     naming patterns, status meanings that diverge from defaults.",
+        "     Record them here so that new minds arriving in this context",
+        "     can orient immediately. -->"
+      ]
+    },
+    "events/<ID-1>.jsonl": {
+      "jsonl": [
+        {
+          "actor": "human:parity",
+          "data": {
+            "priority": "medium",
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "title": "Criteria task",
+            "type": "task"
+          },
+          "id": "<ID-2>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "task_created"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "criterion_id": "c-one",
+            "outcome": "Outcome one holds",
+            "revision": 1
+          },
+          "id": "<ID-3>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "acceptance_criterion_added"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "criterion_id": "AC-1",
+            "outcome": "Outcome two, from a file.",
+            "revision": 1
+          },
+          "id": "<ID-4>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "acceptance_criterion_added"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "criterion_id": "c-one",
+            "from_outcome": "Outcome one holds",
+            "outcome": "Outcome one holds, edited",
+            "revision": 2
+          },
+          "id": "<ID-5>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "acceptance_criterion_edited"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "body": "Observed outcome one.",
+            "criterion_ids": [
+              "c-one"
+            ]
+          },
+          "id": "<ID-6>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "comment_added"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "criterion_id": "c-one",
+            "revision": 2
+          },
+          "id": "<ID-7>",
+          "provenance": {
+            "reason": "superseded"
+          },
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "acceptance_criterion_retired"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "body": "Evidence for retired.",
+            "criterion_ids": [
+              "c-one"
+            ]
+          },
+          "id": "<ID-8>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "comment_added"
+        }
+      ]
+    },
+    "events/_lifecycle.jsonl": {
+      "jsonl": [
+        {
+          "actor": "human:parity",
+          "data": {
+            "priority": "medium",
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "title": "Criteria task",
+            "type": "task"
+          },
+          "id": "<ID-2>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "task_created"
+        }
+      ]
+    },
+    "ids.json": {
+      "json": {
+        "map": {
+          "PAR-1": "<ID-1>"
+        },
+        "next_seqs": {
+          "PAR": 2
+        },
+        "schema_version": 2
+      }
+    },
+    "plans/<ID-1>.md": {
+      "lines": [
+        "# PAR-1: Criteria task"
+      ]
+    },
+    "tasks/<ID-1>.json": {
+      "json": {
+        "acceptance_criteria": [
+          {
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "id": "c-one",
+            "outcome": "Outcome one holds, edited",
+            "retired": true,
+            "retired_at": "<TS>",
+            "retired_by": "human:parity",
+            "revision": 2,
+            "revisions": [
+              {
+                "changed_at": "<TS>",
+                "changed_by": "human:parity",
+                "event_id": "<ID-3>",
+                "outcome": "Outcome one holds",
+                "revision": 1
+              },
+              {
+                "changed_at": "<TS>",
+                "changed_by": "human:parity",
+                "event_id": "<ID-5>",
+                "outcome": "Outcome one holds, edited",
+                "revision": 2
+              }
+            ],
+            "updated_at": "<TS>",
+            "updated_by": "human:parity"
+          },
+          {
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "id": "AC-1",
+            "outcome": "Outcome two, from a file.",
+            "retired": false,
+            "retired_at": null,
+            "retired_by": null,
+            "revision": 1,
+            "revisions": [
+              {
+                "changed_at": "<TS>",
+                "changed_by": "human:parity",
+                "event_id": "<ID-4>",
+                "outcome": "Outcome two, from a file.",
+                "revision": 1
+              }
+            ],
+            "updated_at": "<TS>",
+            "updated_by": "human:parity"
+          }
+        ],
+        "assigned_to": null,
+        "branch_links": [],
+        "comment_count": 2,
+        "complexity": null,
+        "created_at": "<TS>",
+        "created_by": "human:parity",
+        "custom_fields": {},
+        "description": null,
+        "done_at": null,
+        "evidence_refs": [
+          {
+            "criterion_ids": [
+              "c-one"
+            ],
+            "id": "<ID-6>",
+            "role": null,
+            "source_type": "comment"
+          },
+          {
+            "criterion_ids": [
+              "c-one"
+            ],
+            "id": "<ID-8>",
+            "role": null,
+            "source_type": "comment"
+          }
+        ],
+        "id": "<ID-1>",
+        "last_event_id": "<ID-8>",
+        "last_status_changed_at": "<TS>",
+        "linked_files": [],
+        "priority": "medium",
+        "relationships_out": [],
+        "reopened_count": 0,
+        "schema_version": 1,
+        "short_id": "PAR-1",
+        "status": "backlog",
+        "tags": null,
+        "title": "Criteria task",
+        "type": "task",
+        "updated_at": "<TS>",
+        "urgency": null
+      }
+    }
+  },
+  "description": "criterion add/edit/retire and criterion-linked evidence",
+  "mode": "json",
+  "scenario": "criteria",
+  "steps": [
+    {
+      "args": [
+        "init",
+        "--path",
+        "<ROOT>",
+        "--actor",
+        "human:parity",
+        "--project-code",
+        "PAR",
+        "--no-setup-claude",
+        "--no-setup-agents",
+        "--no-seed"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "",
+          ".lattice/ created — a mind now has a place to remember.",
+          "Default actor: human:parity",
+          "Project code: PAR",
+          "Workflow statuses: stage11 (10 statuses)"
+        ]
+      }
+    },
+    {
+      "args": [
+        "create",
+        "Criteria task",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "acceptance_criteria": [],
+            "assigned_to": null,
+            "branch_links": [],
+            "comment_count": 0,
+            "complexity": null,
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "custom_fields": {},
+            "description": null,
+            "done_at": null,
+            "evidence_refs": [],
+            "id": "<ID-1>",
+            "last_event_id": "<ID-2>",
+            "last_status_changed_at": "<TS>",
+            "linked_files": [],
+            "priority": "medium",
+            "relationships_out": [],
+            "reopened_count": 0,
+            "schema_version": 1,
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "tags": null,
+            "title": "Criteria task",
+            "type": "task",
+            "updated_at": "<TS>",
+            "urgency": null
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "criterion",
+        "add",
+        "PAR-1",
+        "Outcome one holds",
+        "--id",
+        "c-one",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "criterion": {
+              "created_at": "<TS>",
+              "created_by": "human:parity",
+              "id": "c-one",
+              "outcome": "Outcome one holds",
+              "retired": false,
+              "retired_at": null,
+              "retired_by": null,
+              "revision": 1,
+              "revisions": [
+                {
+                  "changed_at": "<TS>",
+                  "changed_by": "human:parity",
+                  "event_id": "<ID-3>",
+                  "outcome": "Outcome one holds",
+                  "revision": 1
+                }
+              ],
+              "updated_at": "<TS>",
+              "updated_by": "human:parity"
+            },
+            "snapshot": {
+              "acceptance_criteria": [
+                {
+                  "created_at": "<TS>",
+                  "created_by": "human:parity",
+                  "id": "c-one",
+                  "outcome": "Outcome one holds",
+                  "retired": false,
+                  "retired_at": null,
+                  "retired_by": null,
+                  "revision": 1,
+                  "revisions": [
+                    {
+                      "changed_at": "<TS>",
+                      "changed_by": "human:parity",
+                      "event_id": "<ID-3>",
+                      "outcome": "Outcome one holds",
+                      "revision": 1
+                    }
+                  ],
+                  "updated_at": "<TS>",
+                  "updated_by": "human:parity"
+                }
+              ],
+              "assigned_to": null,
+              "branch_links": [],
+              "comment_count": 0,
+              "complexity": null,
+              "created_at": "<TS>",
+              "created_by": "human:parity",
+              "custom_fields": {},
+              "description": null,
+              "done_at": null,
+              "evidence_refs": [],
+              "id": "<ID-1>",
+              "last_event_id": "<ID-3>",
+              "last_status_changed_at": "<TS>",
+              "linked_files": [],
+              "priority": "medium",
+              "relationships_out": [],
+              "reopened_count": 0,
+              "schema_version": 1,
+              "short_id": "PAR-1",
+              "status": "backlog",
+              "tags": null,
+              "title": "Criteria task",
+              "type": "task",
+              "updated_at": "<TS>",
+              "urgency": null
+            },
+            "task_id": "<ID-1>"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "write_file": "criterion.md"
+    },
+    {
+      "args": [
+        "criterion",
+        "add",
+        "PAR-1",
+        "--file",
+        "<ROOT>/criterion.md",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "criterion": {
+              "created_at": "<TS>",
+              "created_by": "human:parity",
+              "id": "AC-1",
+              "outcome": "Outcome two, from a file.",
+              "retired": false,
+              "retired_at": null,
+              "retired_by": null,
+              "revision": 1,
+              "revisions": [
+                {
+                  "changed_at": "<TS>",
+                  "changed_by": "human:parity",
+                  "event_id": "<ID-4>",
+                  "outcome": "Outcome two, from a file.",
+                  "revision": 1
+                }
+              ],
+              "updated_at": "<TS>",
+              "updated_by": "human:parity"
+            },
+            "snapshot": {
+              "acceptance_criteria": [
+                {
+                  "created_at": "<TS>",
+                  "created_by": "human:parity",
+                  "id": "c-one",
+                  "outcome": "Outcome one holds",
+                  "retired": false,
+                  "retired_at": null,
+                  "retired_by": null,
+                  "revision": 1,
+                  "revisions": [
+                    {
+                      "changed_at": "<TS>",
+                      "changed_by": "human:parity",
+                      "event_id": "<ID-3>",
+                      "outcome": "Outcome one holds",
+                      "revision": 1
+                    }
+                  ],
+                  "updated_at": "<TS>",
+                  "updated_by": "human:parity"
+                },
+                {
+                  "created_at": "<TS>",
+                  "created_by": "human:parity",
+                  "id": "AC-1",
+                  "outcome": "Outcome two, from a file.",
+                  "retired": false,
+                  "retired_at": null,
+                  "retired_by": null,
+                  "revision": 1,
+                  "revisions": [
+                    {
+                      "changed_at": "<TS>",
+                      "changed_by": "human:parity",
+                      "event_id": "<ID-4>",
+                      "outcome": "Outcome two, from a file.",
+                      "revision": 1
+                    }
+                  ],
+                  "updated_at": "<TS>",
+                  "updated_by": "human:parity"
+                }
+              ],
+              "assigned_to": null,
+              "branch_links": [],
+              "comment_count": 0,
+              "complexity": null,
+              "created_at": "<TS>",
+              "created_by": "human:parity",
+              "custom_fields": {},
+              "description": null,
+              "done_at": null,
+              "evidence_refs": [],
+              "id": "<ID-1>",
+              "last_event_id": "<ID-4>",
+              "last_status_changed_at": "<TS>",
+              "linked_files": [],
+              "priority": "medium",
+              "relationships_out": [],
+              "reopened_count": 0,
+              "schema_version": 1,
+              "short_id": "PAR-1",
+              "status": "backlog",
+              "tags": null,
+              "title": "Criteria task",
+              "type": "task",
+              "updated_at": "<TS>",
+              "urgency": null
+            },
+            "task_id": "<ID-1>"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "criterion",
+        "add",
+        "PAR-1",
+        "Duplicate id",
+        "--id",
+        "c-one",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "VALIDATION_ERROR",
+            "message": "Acceptance criterion c-one already exists with different initial prose."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "criterion",
+        "add",
+        "PAR-1",
+        "Bad id",
+        "--id",
+        "Bad Id!",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "VALIDATION_ERROR",
+            "message": "Criterion ID must match ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "criterion",
+        "add",
+        "PAR-1",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "VALIDATION_ERROR",
+            "message": "Provide acceptance-criterion outcome as OUTCOME or via --file."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "criterion",
+        "edit",
+        "PAR-1",
+        "c-one",
+        "Outcome one holds, edited",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "criterion": {
+              "created_at": "<TS>",
+              "created_by": "human:parity",
+              "id": "c-one",
+              "outcome": "Outcome one holds, edited",
+              "retired": false,
+              "retired_at": null,
+              "retired_by": null,
+              "revision": 2,
+              "revisions": [
+                {
+                  "changed_at": "<TS>",
+                  "changed_by": "human:parity",
+                  "event_id": "<ID-3>",
+                  "outcome": "Outcome one holds",
+                  "revision": 1
+                },
+                {
+                  "changed_at": "<TS>",
+                  "changed_by": "human:parity",
+                  "event_id": "<ID-5>",
+                  "outcome": "Outcome one holds, edited",
+                  "revision": 2
+                }
+              ],
+              "updated_at": "<TS>",
+              "updated_by": "human:parity"
+            },
+            "snapshot": {
+              "acceptance_criteria": [
+                {
+                  "created_at": "<TS>",
+                  "created_by": "human:parity",
+                  "id": "c-one",
+                  "outcome": "Outcome one holds, edited",
+                  "retired": false,
+                  "retired_at": null,
+                  "retired_by": null,
+                  "revision": 2,
+                  "revisions": [
+                    {
+                      "changed_at": "<TS>",
+                      "changed_by": "human:parity",
+                      "event_id": "<ID-3>",
+                      "outcome": "Outcome one holds",
+                      "revision": 1
+                    },
+                    {
+                      "changed_at": "<TS>",
+                      "changed_by": "human:parity",
+                      "event_id": "<ID-5>",
+                      "outcome": "Outcome one holds, edited",
+                      "revision": 2
+                    }
+                  ],
+                  "updated_at": "<TS>",
+                  "updated_by": "human:parity"
+                },
+                {
+                  "created_at": "<TS>",
+                  "created_by": "human:parity",
+                  "id": "AC-1",
+                  "outcome": "Outcome two, from a file.",
+                  "retired": false,
+                  "retired_at": null,
+                  "retired_by": null,
+                  "revision": 1,
+                  "revisions": [
+                    {
+                      "changed_at": "<TS>",
+                      "changed_by": "human:parity",
+                      "event_id": "<ID-4>",
+                      "outcome": "Outcome two, from a file.",
+                      "revision": 1
+                    }
+                  ],
+                  "updated_at": "<TS>",
+                  "updated_by": "human:parity"
+                }
+              ],
+              "assigned_to": null,
+              "branch_links": [],
+              "comment_count": 0,
+              "complexity": null,
+              "created_at": "<TS>",
+              "created_by": "human:parity",
+              "custom_fields": {},
+              "description": null,
+              "done_at": null,
+              "evidence_refs": [],
+              "id": "<ID-1>",
+              "last_event_id": "<ID-5>",
+              "last_status_changed_at": "<TS>",
+              "linked_files": [],
+              "priority": "medium",
+              "relationships_out": [],
+              "reopened_count": 0,
+              "schema_version": 1,
+              "short_id": "PAR-1",
+              "status": "backlog",
+              "tags": null,
+              "title": "Criteria task",
+              "type": "task",
+              "updated_at": "<TS>",
+              "urgency": null
+            },
+            "task_id": "<ID-1>"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "criterion",
+        "edit",
+        "PAR-1",
+        "c-one",
+        "Outcome one holds, edited",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "criterion": {
+              "created_at": "<TS>",
+              "created_by": "human:parity",
+              "id": "c-one",
+              "outcome": "Outcome one holds, edited",
+              "retired": false,
+              "retired_at": null,
+              "retired_by": null,
+              "revision": 2,
+              "revisions": [
+                {
+                  "changed_at": "<TS>",
+                  "changed_by": "human:parity",
+                  "event_id": "<ID-3>",
+                  "outcome": "Outcome one holds",
+                  "revision": 1
+                },
+                {
+                  "changed_at": "<TS>",
+                  "changed_by": "human:parity",
+                  "event_id": "<ID-5>",
+                  "outcome": "Outcome one holds, edited",
+                  "revision": 2
+                }
+              ],
+              "updated_at": "<TS>",
+              "updated_by": "human:parity"
+            },
+            "snapshot": {
+              "acceptance_criteria": [
+                {
+                  "created_at": "<TS>",
+                  "created_by": "human:parity",
+                  "id": "c-one",
+                  "outcome": "Outcome one holds, edited",
+                  "retired": false,
+                  "retired_at": null,
+                  "retired_by": null,
+                  "revision": 2,
+                  "revisions": [
+                    {
+                      "changed_at": "<TS>",
+                      "changed_by": "human:parity",
+                      "event_id": "<ID-3>",
+                      "outcome": "Outcome one holds",
+                      "revision": 1
+                    },
+                    {
+                      "changed_at": "<TS>",
+                      "changed_by": "human:parity",
+                      "event_id": "<ID-5>",
+                      "outcome": "Outcome one holds, edited",
+                      "revision": 2
+                    }
+                  ],
+                  "updated_at": "<TS>",
+                  "updated_by": "human:parity"
+                },
+                {
+                  "created_at": "<TS>",
+                  "created_by": "human:parity",
+                  "id": "AC-1",
+                  "outcome": "Outcome two, from a file.",
+                  "retired": false,
+                  "retired_at": null,
+                  "retired_by": null,
+                  "revision": 1,
+                  "revisions": [
+                    {
+                      "changed_at": "<TS>",
+                      "changed_by": "human:parity",
+                      "event_id": "<ID-4>",
+                      "outcome": "Outcome two, from a file.",
+                      "revision": 1
+                    }
+                  ],
+                  "updated_at": "<TS>",
+                  "updated_by": "human:parity"
+                }
+              ],
+              "assigned_to": null,
+              "branch_links": [],
+              "comment_count": 0,
+              "complexity": null,
+              "created_at": "<TS>",
+              "created_by": "human:parity",
+              "custom_fields": {},
+              "description": null,
+              "done_at": null,
+              "evidence_refs": [],
+              "id": "<ID-1>",
+              "last_event_id": "<ID-5>",
+              "last_status_changed_at": "<TS>",
+              "linked_files": [],
+              "priority": "medium",
+              "relationships_out": [],
+              "reopened_count": 0,
+              "schema_version": 1,
+              "short_id": "PAR-1",
+              "status": "backlog",
+              "tags": null,
+              "title": "Criteria task",
+              "type": "task",
+              "updated_at": "<TS>",
+              "urgency": null
+            },
+            "task_id": "<ID-1>"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "criterion",
+        "edit",
+        "PAR-1",
+        "c-missing",
+        "Nope",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "VALIDATION_ERROR",
+            "message": "Acceptance criterion c-missing not found."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "comment",
+        "PAR-1",
+        "Observed outcome one.",
+        "--criterion",
+        "c-one",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "acceptance_criteria": [
+              {
+                "created_at": "<TS>",
+                "created_by": "human:parity",
+                "id": "c-one",
+                "outcome": "Outcome one holds, edited",
+                "retired": false,
+                "retired_at": null,
+                "retired_by": null,
+                "revision": 2,
+                "revisions": [
+                  {
+                    "changed_at": "<TS>",
+                    "changed_by": "human:parity",
+                    "event_id": "<ID-3>",
+                    "outcome": "Outcome one holds",
+                    "revision": 1
+                  },
+                  {
+                    "changed_at": "<TS>",
+                    "changed_by": "human:parity",
+                    "event_id": "<ID-5>",
+                    "outcome": "Outcome one holds, edited",
+                    "revision": 2
+                  }
+                ],
+                "updated_at": "<TS>",
+                "updated_by": "human:parity"
+              },
+              {
+                "created_at": "<TS>",
+                "created_by": "human:parity",
+                "id": "AC-1",
+                "outcome": "Outcome two, from a file.",
+                "retired": false,
+                "retired_at": null,
+                "retired_by": null,
+                "revision": 1,
+                "revisions": [
+                  {
+                    "changed_at": "<TS>",
+                    "changed_by": "human:parity",
+                    "event_id": "<ID-4>",
+                    "outcome": "Outcome two, from a file.",
+                    "revision": 1
+                  }
+                ],
+                "updated_at": "<TS>",
+                "updated_by": "human:parity"
+              }
+            ],
+            "assigned_to": null,
+            "branch_links": [],
+            "comment_count": 1,
+            "complexity": null,
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "custom_fields": {},
+            "description": null,
+            "done_at": null,
+            "evidence_refs": [
+              {
+                "criterion_ids": [
+                  "c-one"
+                ],
+                "id": "<ID-6>",
+                "role": null,
+                "source_type": "comment"
+              }
+            ],
+            "id": "<ID-1>",
+            "last_event_id": "<ID-6>",
+            "last_status_changed_at": "<TS>",
+            "linked_files": [],
+            "priority": "medium",
+            "relationships_out": [],
+            "reopened_count": 0,
+            "schema_version": 1,
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "tags": null,
+            "title": "Criteria task",
+            "type": "task",
+            "updated_at": "<TS>",
+            "urgency": null
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "comment",
+        "PAR-1",
+        "Unknown criterion.",
+        "--criterion",
+        "c-missing",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "VALIDATION_ERROR",
+            "message": "Acceptance criterion c-missing not found on this task."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "criterion",
+        "retire",
+        "PAR-1",
+        "c-one",
+        "--reason",
+        "superseded",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "criterion": {
+              "created_at": "<TS>",
+              "created_by": "human:parity",
+              "id": "c-one",
+              "outcome": "Outcome one holds, edited",
+              "retired": true,
+              "retired_at": "<TS>",
+              "retired_by": "human:parity",
+              "revision": 2,
+              "revisions": [
+                {
+                  "changed_at": "<TS>",
+                  "changed_by": "human:parity",
+                  "event_id": "<ID-3>",
+                  "outcome": "Outcome one holds",
+                  "revision": 1
+                },
+                {
+                  "changed_at": "<TS>",
+                  "changed_by": "human:parity",
+                  "event_id": "<ID-5>",
+                  "outcome": "Outcome one holds, edited",
+                  "revision": 2
+                }
+              ],
+              "updated_at": "<TS>",
+              "updated_by": "human:parity"
+            },
+            "snapshot": {
+              "acceptance_criteria": [
+                {
+                  "created_at": "<TS>",
+                  "created_by": "human:parity",
+                  "id": "c-one",
+                  "outcome": "Outcome one holds, edited",
+                  "retired": true,
+                  "retired_at": "<TS>",
+                  "retired_by": "human:parity",
+                  "revision": 2,
+                  "revisions": [
+                    {
+                      "changed_at": "<TS>",
+                      "changed_by": "human:parity",
+                      "event_id": "<ID-3>",
+                      "outcome": "Outcome one holds",
+                      "revision": 1
+                    },
+                    {
+                      "changed_at": "<TS>",
+                      "changed_by": "human:parity",
+                      "event_id": "<ID-5>",
+                      "outcome": "Outcome one holds, edited",
+                      "revision": 2
+                    }
+                  ],
+                  "updated_at": "<TS>",
+                  "updated_by": "human:parity"
+                },
+                {
+                  "created_at": "<TS>",
+                  "created_by": "human:parity",
+                  "id": "AC-1",
+                  "outcome": "Outcome two, from a file.",
+                  "retired": false,
+                  "retired_at": null,
+                  "retired_by": null,
+                  "revision": 1,
+                  "revisions": [
+                    {
+                      "changed_at": "<TS>",
+                      "changed_by": "human:parity",
+                      "event_id": "<ID-4>",
+                      "outcome": "Outcome two, from a file.",
+                      "revision": 1
+                    }
+                  ],
+                  "updated_at": "<TS>",
+                  "updated_by": "human:parity"
+                }
+              ],
+              "assigned_to": null,
+              "branch_links": [],
+              "comment_count": 1,
+              "complexity": null,
+              "created_at": "<TS>",
+              "created_by": "human:parity",
+              "custom_fields": {},
+              "description": null,
+              "done_at": null,
+              "evidence_refs": [
+                {
+                  "criterion_ids": [
+                    "c-one"
+                  ],
+                  "id": "<ID-6>",
+                  "role": null,
+                  "source_type": "comment"
+                }
+              ],
+              "id": "<ID-1>",
+              "last_event_id": "<ID-7>",
+              "last_status_changed_at": "<TS>",
+              "linked_files": [],
+              "priority": "medium",
+              "relationships_out": [],
+              "reopened_count": 0,
+              "schema_version": 1,
+              "short_id": "PAR-1",
+              "status": "backlog",
+              "tags": null,
+              "title": "Criteria task",
+              "type": "task",
+              "updated_at": "<TS>",
+              "urgency": null
+            },
+            "task_id": "<ID-1>"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "criterion",
+        "retire",
+        "PAR-1",
+        "c-one",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "VALIDATION_ERROR",
+            "message": "Acceptance criterion c-one is already retired."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "criterion",
+        "edit",
+        "PAR-1",
+        "c-one",
+        "Edit a retired one",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "VALIDATION_ERROR",
+            "message": "Acceptance criterion c-one is retired."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "comment",
+        "PAR-1",
+        "Evidence for retired.",
+        "--criterion",
+        "c-one",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "acceptance_criteria": [
+              {
+                "created_at": "<TS>",
+                "created_by": "human:parity",
+                "id": "c-one",
+                "outcome": "Outcome one holds, edited",
+                "retired": true,
+                "retired_at": "<TS>",
+                "retired_by": "human:parity",
+                "revision": 2,
+                "revisions": [
+                  {
+                    "changed_at": "<TS>",
+                    "changed_by": "human:parity",
+                    "event_id": "<ID-3>",
+                    "outcome": "Outcome one holds",
+                    "revision": 1
+                  },
+                  {
+                    "changed_at": "<TS>",
+                    "changed_by": "human:parity",
+                    "event_id": "<ID-5>",
+                    "outcome": "Outcome one holds, edited",
+                    "revision": 2
+                  }
+                ],
+                "updated_at": "<TS>",
+                "updated_by": "human:parity"
+              },
+              {
+                "created_at": "<TS>",
+                "created_by": "human:parity",
+                "id": "AC-1",
+                "outcome": "Outcome two, from a file.",
+                "retired": false,
+                "retired_at": null,
+                "retired_by": null,
+                "revision": 1,
+                "revisions": [
+                  {
+                    "changed_at": "<TS>",
+                    "changed_by": "human:parity",
+                    "event_id": "<ID-4>",
+                    "outcome": "Outcome two, from a file.",
+                    "revision": 1
+                  }
+                ],
+                "updated_at": "<TS>",
+                "updated_by": "human:parity"
+              }
+            ],
+            "assigned_to": null,
+            "branch_links": [],
+            "comment_count": 2,
+            "complexity": null,
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "custom_fields": {},
+            "description": null,
+            "done_at": null,
+            "evidence_refs": [
+              {
+                "criterion_ids": [
+                  "c-one"
+                ],
+                "id": "<ID-6>",
+                "role": null,
+                "source_type": "comment"
+              },
+              {
+                "criterion_ids": [
+                  "c-one"
+                ],
+                "id": "<ID-8>",
+                "role": null,
+                "source_type": "comment"
+              }
+            ],
+            "id": "<ID-1>",
+            "last_event_id": "<ID-8>",
+            "last_status_changed_at": "<TS>",
+            "linked_files": [],
+            "priority": "medium",
+            "relationships_out": [],
+            "reopened_count": 0,
+            "schema_version": 1,
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "tags": null,
+            "title": "Criteria task",
+            "type": "task",
+            "updated_at": "<TS>",
+            "urgency": null
+          },
+          "ok": true
+        }
+      }
+    }
+  ]
+}

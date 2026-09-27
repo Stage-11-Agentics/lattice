@@ -1,0 +1,818 @@
+{
+  "board": {
+    ".gitignore": {
+      "lines": [
+        "# Ephemeral Lattice runtime state — not part of the durable board.",
+        "# The board (tasks/ events/ plans/ artifacts/ ids.json config.json)",
+        "# stays tracked: it is the audit log and cross-machine coordination",
+        "# state. The paths below are mutated constantly and must never",
+        "# diverge per-worktree or collide on merge.",
+        "review_state/",
+        "tmp-prompts/",
+        ".daemon/",
+        "locks/"
+      ]
+    },
+    "config.json": {
+      "json": {
+        "auto_code_review_on_transition": false,
+        "auto_plan_review_on_transition": false,
+        "default_actor": "human:parity",
+        "default_priority": "medium",
+        "default_status": "backlog",
+        "done_display": "grouped",
+        "instance_id": "<ID-2>",
+        "plan_approval": "auto",
+        "plan_review_mode": "single",
+        "project_code": "PAR",
+        "review_max_diff_chars": 120000,
+        "review_max_diff_lines": 5000,
+        "review_mode": "single",
+        "review_timeout_seconds": 600,
+        "schema_version": 1,
+        "status_preset": "stage11",
+        "task_types": [
+          "task",
+          "bug",
+          "spike",
+          "chore"
+        ],
+        "workflow": {
+          "completion_policies": {
+            "done": {
+              "require_roles": [
+                "review"
+              ]
+            },
+            "pr_open": {
+              "require_roles": [
+                "validation"
+              ]
+            }
+          },
+          "descriptions": {
+            "backlog": "Task is captured but no work has started. No planning, no implementation.",
+            "blocked": "Work cannot proceed due to an external dependency or unresolved issue.",
+            "cancelled": "Work has been abandoned. No further action will be taken.",
+            "done": "Work is reviewed, merged, and shipped. No further action needed.",
+            "in_planning": "Design, dialogue, and scoping underway. No implementation code should be written yet.",
+            "in_progress": "Implementation is actively underway. Code is being written, tested, or integrated.",
+            "in_validation": "End-to-end validation is underway. The change is being exercised against a running system — browser automation, simulator flows, curl — before the PR opens. The bar: 'I saw it work,' not 'I think it should work.'",
+            "planned": "Plan is written and approved. Ready for implementation but work has not started.",
+            "pr_open": "PR is open and awaiting human review, CI, or merge. Local review and validation artifacts are recorded.",
+            "review": "Local review is underway. A review sub-agent is examining the diff before validation begins."
+          },
+          "review_cycle_limit": 1,
+          "roles": [
+            "review",
+            "plan-review",
+            "review-individual",
+            "validation"
+          ],
+          "statuses": [
+            "backlog",
+            "in_planning",
+            "planned",
+            "in_progress",
+            "review",
+            "in_validation",
+            "pr_open",
+            "done",
+            "blocked",
+            "cancelled"
+          ],
+          "transitions": {
+            "backlog": [
+              "in_planning",
+              "planned",
+              "cancelled"
+            ],
+            "blocked": [
+              "in_planning",
+              "planned",
+              "in_progress",
+              "in_validation",
+              "pr_open",
+              "cancelled"
+            ],
+            "cancelled": [],
+            "done": [],
+            "in_planning": [
+              "planned",
+              "cancelled"
+            ],
+            "in_progress": [
+              "review",
+              "blocked",
+              "cancelled"
+            ],
+            "in_validation": [
+              "pr_open",
+              "in_progress",
+              "in_planning",
+              "blocked",
+              "cancelled"
+            ],
+            "planned": [
+              "in_progress",
+              "review",
+              "blocked",
+              "cancelled"
+            ],
+            "pr_open": [
+              "done",
+              "in_progress",
+              "review",
+              "blocked",
+              "cancelled"
+            ],
+            "review": [
+              "in_validation",
+              "pr_open",
+              "done",
+              "in_progress",
+              "in_planning",
+              "cancelled"
+            ]
+          },
+          "universal_targets": [
+            "cancelled"
+          ],
+          "wip_limits": {
+            "in_progress": 10,
+            "in_validation": 5,
+            "pr_open": 10,
+            "review": 5
+          }
+        },
+        "workflow_preset": "classic"
+      }
+    },
+    "context.md": {
+      "lines": [
+        "# Instance Context",
+        "",
+        "<!-- Every lattice instance exists for a reason — a convergence of intention",
+        "     and infrastructure. This file declares that reason. Agents and humans",
+        "     read it to understand the purpose, conventions, and relationships",
+        "     of this particular node in the lattice. -->",
+        "",
+        "## Purpose",
+        "",
+        "<!-- What does this instance observe? What project, team, or domain",
+        "     does it serve? Declare the scope of attention. -->",
+        "",
+        "## Related Instances",
+        "",
+        "<!-- If this node coordinates with other lattice instances, name them here.",
+        "     Include instance_id, instance_name, and the nature of the relationship.",
+        "     The lattice is stronger when its nodes are aware of each other. -->",
+        "",
+        "## Conventions",
+        "",
+        "<!-- Every instance develops its own rhythms — workflow conventions,",
+        "     naming patterns, status meanings that diverge from defaults.",
+        "     Record them here so that new minds arriving in this context",
+        "     can orient immediately. -->"
+      ]
+    },
+    "events/<ID-1>.jsonl": {
+      "jsonl": [
+        {
+          "actor": "human:parity",
+          "data": {
+            "priority": "medium",
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "title": "Cycling task",
+            "type": "task"
+          },
+          "id": "<ID-3>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "task_created"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "from": null,
+            "to": "human:parity"
+          },
+          "id": "<ID-4>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "assignment_changed"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "force": true,
+            "from": "backlog",
+            "reason": "straight to work",
+            "to": "in_progress"
+          },
+          "id": "<ID-5>",
+          "provenance": {
+            "reason": "straight to work"
+          },
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "status_changed"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "from": "in_progress",
+            "to": "review"
+          },
+          "id": "<ID-6>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "status_changed"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "from": "review",
+            "to": "in_progress"
+          },
+          "id": "<ID-7>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "status_changed"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "from": "in_progress",
+            "to": "review"
+          },
+          "id": "<ID-8>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "status_changed"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "force": true,
+            "from": "review",
+            "reason": "exceptional",
+            "to": "in_progress"
+          },
+          "id": "<ID-9>",
+          "provenance": {
+            "reason": "exceptional"
+          },
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "status_changed"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "from": "in_progress",
+            "to": "review"
+          },
+          "id": "<ID-10>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "status_changed"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "body": "Reviewed: fine.",
+            "role": "review"
+          },
+          "id": "<ID-11>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "comment_added"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "from": "review",
+            "to": "in_validation"
+          },
+          "id": "<ID-12>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "status_changed"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "body": "Saw it work.",
+            "role": "validation"
+          },
+          "id": "<ID-13>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "comment_added"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "from": "in_validation",
+            "to": "pr_open"
+          },
+          "id": "<ID-14>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "status_changed"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "from": "pr_open",
+            "to": "done"
+          },
+          "id": "<ID-15>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "status_changed"
+        }
+      ]
+    },
+    "events/_lifecycle.jsonl": {
+      "jsonl": [
+        {
+          "actor": "human:parity",
+          "data": {
+            "priority": "medium",
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "title": "Cycling task",
+            "type": "task"
+          },
+          "id": "<ID-3>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "task_created"
+        }
+      ]
+    },
+    "ids.json": {
+      "json": {
+        "map": {
+          "PAR-1": "<ID-1>"
+        },
+        "next_seqs": {
+          "PAR": 2
+        },
+        "schema_version": 2
+      }
+    },
+    "plans/<ID-1>.md": {
+      "lines": [
+        "# Plan",
+        "",
+        "## Approach",
+        "",
+        "- Do the work in one careful pass.",
+        "",
+        "## Reset 2026-09-27 by human:parity",
+        "",
+        "## Reset 2026-09-27 by human:parity"
+      ]
+    },
+    "tasks/<ID-1>.json": {
+      "json": {
+        "acceptance_criteria": [],
+        "assigned_to": "human:parity",
+        "branch_links": [],
+        "comment_count": 2,
+        "complexity": null,
+        "created_at": "<TS>",
+        "created_by": "human:parity",
+        "custom_fields": {},
+        "description": null,
+        "done_at": "<TS>",
+        "evidence_refs": [
+          {
+            "id": "<ID-11>",
+            "role": "review",
+            "source_type": "comment"
+          },
+          {
+            "id": "<ID-13>",
+            "role": "validation",
+            "source_type": "comment"
+          }
+        ],
+        "id": "<ID-1>",
+        "last_event_id": "<ID-15>",
+        "last_status_changed_at": "<TS>",
+        "linked_files": [],
+        "priority": "medium",
+        "relationships_out": [],
+        "reopened_count": 2,
+        "schema_version": 1,
+        "short_id": "PAR-1",
+        "status": "done",
+        "tags": null,
+        "title": "Cycling task",
+        "type": "task",
+        "updated_at": "<TS>",
+        "urgency": null
+      }
+    }
+  },
+  "description": "the review-cycle safety valve and completion policy gates on status",
+  "mode": "plain",
+  "scenario": "review_cycles",
+  "steps": [
+    {
+      "args": [
+        "init",
+        "--path",
+        "<ROOT>",
+        "--actor",
+        "human:parity",
+        "--project-code",
+        "PAR",
+        "--no-setup-claude",
+        "--no-setup-agents",
+        "--no-seed"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "",
+          ".lattice/ created — a mind now has a place to remember.",
+          "Default actor: human:parity",
+          "Project code: PAR",
+          "Workflow statuses: stage11 (10 statuses)"
+        ]
+      }
+    },
+    {
+      "args": [
+        "create",
+        "Cycling task",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Created task PAR-1 (<ID-1>) \"Cycling task\"",
+          "  status: backlog  priority: medium  type: task"
+        ]
+      }
+    },
+    {
+      "args": [
+        "status",
+        "PAR-1",
+        "in_progress",
+        "--force",
+        "--reason",
+        "straight to work",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Status: backlog -> in_progress (PAR-1)  (auto-assigned to human:parity)",
+          "  Next: implement the plan, then move to review."
+        ]
+      }
+    },
+    {
+      "args": [
+        "status",
+        "PAR-1",
+        "review",
+        "--no-auto-review",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Status: in_progress -> review (PAR-1)",
+          "  Next: run 'lattice code-review PAR-1' (review_mode: single) before moving to in_validation. (auto-review skipped (reviewed_worktree_unavailable))"
+        ]
+      }
+    },
+    {
+      "args": [
+        "status",
+        "PAR-1",
+        "in_progress",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Plan for <ID-1> is still scaffold. Write the plan (even one line) before moving to in_progress. Override with --force --reason."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "write_file": ".lattice/plans/<ID-1>.md"
+    },
+    {
+      "args": [
+        "status",
+        "PAR-1",
+        "review",
+        "--no-auto-review",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Already at status review"
+        ]
+      }
+    },
+    {
+      "args": [
+        "status",
+        "PAR-1",
+        "done",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Completion policy not satisfied: Missing role: review. Satisfy with: lattice attach --role review or lattice comment --role review. Override with --force --reason."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "status",
+        "PAR-1",
+        "in_progress",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Status: review -> in_progress (PAR-1)",
+          "  Next: implement the plan, then move to review."
+        ]
+      }
+    },
+    {
+      "args": [
+        "status",
+        "PAR-1",
+        "review",
+        "--no-auto-review",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Status: in_progress -> review (PAR-1)",
+          "  Next: run 'lattice code-review PAR-1' (review_mode: single) before moving to in_validation. (auto-review skipped (reviewed_worktree_unavailable))"
+        ]
+      }
+    },
+    {
+      "args": [
+        "status",
+        "PAR-1",
+        "in_progress",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Review cycle limit reached (1/1). This task has been sent back from review 1 time(s). Flag it for a human instead of cycling further: lattice needs-human <task> \"<what you need>\". Override with --force --reason."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "status",
+        "PAR-1",
+        "in_planning",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Review cycle limit reached (1/1). This task has been sent back from review 1 time(s). Flag it for a human instead of cycling further: lattice needs-human <task> \"<what you need>\". Override with --force --reason."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "status",
+        "PAR-1",
+        "in_progress",
+        "--force",
+        "--reason",
+        "exceptional",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Status: review -> in_progress (PAR-1)",
+          "  Next: implement the plan, then move to review."
+        ]
+      }
+    },
+    {
+      "args": [
+        "status",
+        "PAR-1",
+        "review",
+        "--no-auto-review",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Status: in_progress -> review (PAR-1)",
+          "  Next: run 'lattice code-review PAR-1' (review_mode: single) before moving to in_validation. (auto-review skipped (reviewed_worktree_unavailable))"
+        ]
+      }
+    },
+    {
+      "args": [
+        "comment",
+        "PAR-1",
+        "Reviewed: fine.",
+        "--role",
+        "review",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Comment added to <ID-1>"
+        ]
+      }
+    },
+    {
+      "args": [
+        "status",
+        "PAR-1",
+        "in_validation",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Status: review -> in_validation (PAR-1)",
+          "  Next: validate end-to-end against a running system — browser automation for web, simulator MCP for mobile, curl for APIs. Exercise the actual flow this task touched, then record evidence: lattice attach PAR-1 --role validation (or lattice comment PAR-1 --role validation). On pass move to pr_open; on fail route back to in_progress (impl-level) or in_planning (plan-level). The bar: 'I saw it work,' not 'I think it should work.'"
+        ]
+      }
+    },
+    {
+      "args": [
+        "status",
+        "PAR-1",
+        "pr_open",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Completion policy not satisfied: Missing role: validation. Satisfy with: lattice attach --role validation or lattice comment --role validation. Override with --force --reason."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "comment",
+        "PAR-1",
+        "Saw it work.",
+        "--role",
+        "validation",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Comment added to <ID-1>"
+        ]
+      }
+    },
+    {
+      "args": [
+        "status",
+        "PAR-1",
+        "pr_open",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Status: in_validation -> pr_open (PAR-1)",
+          "  Next: open the PR (or confirm it is open). Move to done after merge, or back to in_progress if PR feedback requires more changes."
+        ]
+      }
+    },
+    {
+      "args": [
+        "status",
+        "PAR-1",
+        "done",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Status: pr_open -> done (PAR-1)"
+        ]
+      }
+    }
+  ]
+}

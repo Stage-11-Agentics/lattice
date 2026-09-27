@@ -1,0 +1,1619 @@
+{
+  "board": {
+    ".gitignore": {
+      "lines": [
+        "# Ephemeral Lattice runtime state — not part of the durable board.",
+        "# The board (tasks/ events/ plans/ artifacts/ ids.json config.json)",
+        "# stays tracked: it is the audit log and cross-machine coordination",
+        "# state. The paths below are mutated constantly and must never",
+        "# diverge per-worktree or collide on merge.",
+        "review_state/",
+        "tmp-prompts/",
+        ".daemon/",
+        "locks/"
+      ]
+    },
+    "artifacts/meta/<ID-11>.json": {
+      "json": {
+        "created_at": "<TS>",
+        "created_by": "agent:worker",
+        "custom_fields": {},
+        "id": "<ID-11>",
+        "model": null,
+        "payload": {
+          "content_type": "text/markdown",
+          "file": "<ID-11>.md",
+          "size_bytes": 19
+        },
+        "schema_version": 1,
+        "sensitive": false,
+        "summary": "Reviewed: all good.",
+        "tags": [],
+        "title": "Review findings",
+        "token_usage": null,
+        "type": "note"
+      }
+    },
+    "artifacts/meta/<ID-12>.json": {
+      "json": {
+        "created_at": "<TS>",
+        "created_by": "agent:worker",
+        "custom_fields": {},
+        "id": "<ID-12>",
+        "model": null,
+        "payload": {
+          "content_type": "text/markdown",
+          "file": "<ID-12>.md",
+          "size_bytes": 54
+        },
+        "schema_version": 1,
+        "sensitive": false,
+        "summary": "Multi-paragraph review.\n\nSecond paragraph with `code`.",
+        "tags": [],
+        "title": "Review findings",
+        "token_usage": null,
+        "type": "note"
+      }
+    },
+    "artifacts/meta/<ID-2>.json": {
+      "json": {
+        "created_at": "<TS>",
+        "created_by": "human:parity",
+        "custom_fields": {},
+        "id": "<ID-2>",
+        "model": null,
+        "payload": {
+          "content_type": "text/markdown",
+          "file": "<ID-2>.md",
+          "size_bytes": 20
+        },
+        "schema_version": 1,
+        "sensitive": false,
+        "summary": "A summary",
+        "tags": [],
+        "title": "Report",
+        "token_usage": null,
+        "type": "file"
+      }
+    },
+    "artifacts/meta/<ID-3>.json": {
+      "json": {
+        "created_at": "<TS>",
+        "created_by": "agent:worker",
+        "custom_fields": {},
+        "id": "<ID-3>",
+        "model": null,
+        "payload": {
+          "content_type": "text/markdown",
+          "file": "<ID-3>.md",
+          "size_bytes": 20
+        },
+        "schema_version": 1,
+        "sensitive": false,
+        "summary": null,
+        "tags": [],
+        "title": "Inline",
+        "token_usage": null,
+        "type": "note"
+      }
+    },
+    "artifacts/meta/<ID-4>.json": {
+      "json": {
+        "created_at": "<TS>",
+        "created_by": "agent:worker",
+        "custom_fields": {
+          "url": "https://example.com/build/1"
+        },
+        "id": "<ID-4>",
+        "model": null,
+        "payload": {
+          "content_type": null,
+          "file": null,
+          "size_bytes": null
+        },
+        "schema_version": 1,
+        "sensitive": true,
+        "summary": null,
+        "tags": [],
+        "title": "Build",
+        "token_usage": null,
+        "type": "reference"
+      }
+    },
+    "artifacts/meta/<ID-5>.json": {
+      "json": {
+        "created_at": "<TS>",
+        "created_by": "agent:worker",
+        "custom_fields": {},
+        "id": "<ID-5>",
+        "model": null,
+        "payload": {
+          "content_type": "text/markdown",
+          "file": "<ID-5>.md",
+          "size_bytes": 9
+        },
+        "schema_version": 1,
+        "sensitive": false,
+        "summary": null,
+        "tags": [],
+        "title": "inline attachment",
+        "token_usage": null,
+        "type": "note"
+      }
+    },
+    "artifacts/meta/<ID-6>.json": {
+      "json": {
+        "created_at": "<TS>",
+        "created_by": "agent:worker",
+        "custom_fields": {},
+        "id": "<ID-6>",
+        "model": null,
+        "payload": {
+          "content_type": "text/markdown",
+          "file": "<ID-6>.md",
+          "size_bytes": 8
+        },
+        "schema_version": 1,
+        "sensitive": false,
+        "summary": null,
+        "tags": [],
+        "title": "inline attachment",
+        "token_usage": null,
+        "type": "note"
+      }
+    },
+    "artifacts/payload/<ID-11>.md": {
+      "lines": [
+        "Reviewed: all good."
+      ]
+    },
+    "artifacts/payload/<ID-12>.md": {
+      "lines": [
+        "Multi-paragraph review.",
+        "",
+        "Second paragraph with `code`."
+      ]
+    },
+    "artifacts/payload/<ID-2>.md": {
+      "lines": [
+        "# Report",
+        "",
+        "All good."
+      ]
+    },
+    "artifacts/payload/<ID-3>.md": {
+      "lines": [
+        "Inline evidence text"
+      ]
+    },
+    "artifacts/payload/<ID-5>.md": {
+      "lines": [
+        "Caller id"
+      ]
+    },
+    "artifacts/payload/<ID-6>.md": {
+      "lines": [
+        "evidence"
+      ]
+    },
+    "config.json": {
+      "json": {
+        "auto_code_review_on_transition": false,
+        "auto_plan_review_on_transition": false,
+        "default_actor": "human:parity",
+        "default_priority": "medium",
+        "default_status": "backlog",
+        "done_display": "grouped",
+        "instance_id": "<ID-13>",
+        "plan_approval": "auto",
+        "plan_review_mode": "single",
+        "project_code": "PAR",
+        "review_max_diff_chars": 120000,
+        "review_max_diff_lines": 5000,
+        "review_mode": "single",
+        "review_timeout_seconds": 600,
+        "schema_version": 1,
+        "status_preset": "stage11",
+        "task_types": [
+          "task",
+          "bug",
+          "spike",
+          "chore"
+        ],
+        "workflow": {
+          "completion_policies": {
+            "done": {
+              "require_roles": [
+                "review"
+              ]
+            },
+            "pr_open": {
+              "require_roles": [
+                "validation"
+              ]
+            }
+          },
+          "descriptions": {
+            "backlog": "Task is captured but no work has started. No planning, no implementation.",
+            "blocked": "Work cannot proceed due to an external dependency or unresolved issue.",
+            "cancelled": "Work has been abandoned. No further action will be taken.",
+            "done": "Work is reviewed, merged, and shipped. No further action needed.",
+            "in_planning": "Design, dialogue, and scoping underway. No implementation code should be written yet.",
+            "in_progress": "Implementation is actively underway. Code is being written, tested, or integrated.",
+            "in_validation": "End-to-end validation is underway. The change is being exercised against a running system — browser automation, simulator flows, curl — before the PR opens. The bar: 'I saw it work,' not 'I think it should work.'",
+            "planned": "Plan is written and approved. Ready for implementation but work has not started.",
+            "pr_open": "PR is open and awaiting human review, CI, or merge. Local review and validation artifacts are recorded.",
+            "review": "Local review is underway. A review sub-agent is examining the diff before validation begins."
+          },
+          "roles": [
+            "review",
+            "plan-review",
+            "review-individual",
+            "validation"
+          ],
+          "statuses": [
+            "backlog",
+            "in_planning",
+            "planned",
+            "in_progress",
+            "review",
+            "in_validation",
+            "pr_open",
+            "done",
+            "blocked",
+            "cancelled"
+          ],
+          "transitions": {
+            "backlog": [
+              "in_planning",
+              "planned",
+              "cancelled"
+            ],
+            "blocked": [
+              "in_planning",
+              "planned",
+              "in_progress",
+              "in_validation",
+              "pr_open",
+              "cancelled"
+            ],
+            "cancelled": [],
+            "done": [],
+            "in_planning": [
+              "planned",
+              "cancelled"
+            ],
+            "in_progress": [
+              "review",
+              "blocked",
+              "cancelled"
+            ],
+            "in_validation": [
+              "pr_open",
+              "in_progress",
+              "in_planning",
+              "blocked",
+              "cancelled"
+            ],
+            "planned": [
+              "in_progress",
+              "review",
+              "blocked",
+              "cancelled"
+            ],
+            "pr_open": [
+              "done",
+              "in_progress",
+              "review",
+              "blocked",
+              "cancelled"
+            ],
+            "review": [
+              "in_validation",
+              "pr_open",
+              "done",
+              "in_progress",
+              "in_planning",
+              "cancelled"
+            ]
+          },
+          "universal_targets": [
+            "cancelled"
+          ],
+          "wip_limits": {
+            "in_progress": 10,
+            "in_validation": 5,
+            "pr_open": 10,
+            "review": 5
+          }
+        },
+        "workflow_preset": "classic"
+      }
+    },
+    "context.md": {
+      "lines": [
+        "# Instance Context",
+        "",
+        "<!-- Every lattice instance exists for a reason — a convergence of intention",
+        "     and infrastructure. This file declares that reason. Agents and humans",
+        "     read it to understand the purpose, conventions, and relationships",
+        "     of this particular node in the lattice. -->",
+        "",
+        "## Purpose",
+        "",
+        "<!-- What does this instance observe? What project, team, or domain",
+        "     does it serve? Declare the scope of attention. -->",
+        "",
+        "## Related Instances",
+        "",
+        "<!-- If this node coordinates with other lattice instances, name them here.",
+        "     Include instance_id, instance_name, and the nature of the relationship.",
+        "     The lattice is stronger when its nodes are aware of each other. -->",
+        "",
+        "## Conventions",
+        "",
+        "<!-- Every instance develops its own rhythms — workflow conventions,",
+        "     naming patterns, status meanings that diverge from defaults.",
+        "     Record them here so that new minds arriving in this context",
+        "     can orient immediately. -->"
+      ]
+    },
+    "events/<ID-10>.jsonl": {
+      "jsonl": [
+        {
+          "actor": "human:parity",
+          "data": {
+            "priority": "medium",
+            "short_id": "PAR-4",
+            "status": "backlog",
+            "title": "Complete without review",
+            "type": "task"
+          },
+          "id": "<ID-17>",
+          "schema_version": 1,
+          "task_id": "<ID-10>",
+          "ts": "<TS>",
+          "type": "task_created"
+        }
+      ]
+    },
+    "events/<ID-1>.jsonl": {
+      "jsonl": [
+        {
+          "actor": "human:parity",
+          "data": {
+            "priority": "medium",
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "title": "Artifact task",
+            "type": "task"
+          },
+          "id": "<ID-14>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "task_created"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "artifact_id": "<ID-2>",
+            "role": "review"
+          },
+          "id": "<ID-18>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "artifact_attached"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "artifact_id": "<ID-3>"
+          },
+          "id": "<ID-19>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "artifact_attached"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "artifact_id": "<ID-4>",
+            "role": "validation"
+          },
+          "id": "<ID-20>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "artifact_attached"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "artifact_id": "<ID-5>"
+          },
+          "id": "<ID-21>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "artifact_attached"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "criterion_id": "report",
+            "outcome": "Report exists",
+            "revision": 1
+          },
+          "id": "<ID-22>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "acceptance_criterion_added"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "artifact_id": "<ID-6>",
+            "criterion_ids": [
+              "report"
+            ]
+          },
+          "id": "<ID-23>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "artifact_attached"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "env": "staging",
+            "n": 1
+          },
+          "id": "<ID-24>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "x_deploy"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {},
+          "id": "<ID-7>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "x_deploy"
+        }
+      ]
+    },
+    "events/<ID-8>.jsonl": {
+      "jsonl": [
+        {
+          "actor": "human:parity",
+          "data": {
+            "priority": "medium",
+            "short_id": "PAR-2",
+            "status": "backlog",
+            "title": "Complete me",
+            "type": "task"
+          },
+          "id": "<ID-15>",
+          "schema_version": 1,
+          "task_id": "<ID-8>",
+          "ts": "<TS>",
+          "type": "task_created"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "from": null,
+            "to": "human:parity"
+          },
+          "id": "<ID-25>",
+          "schema_version": 1,
+          "task_id": "<ID-8>",
+          "ts": "<TS>",
+          "type": "assignment_changed"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "force": true,
+            "from": "backlog",
+            "reason": "straight to work",
+            "to": "in_progress"
+          },
+          "id": "<ID-26>",
+          "provenance": {
+            "reason": "straight to work"
+          },
+          "schema_version": 1,
+          "task_id": "<ID-8>",
+          "ts": "<TS>",
+          "type": "status_changed"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "body": "Reviewed: all good.",
+            "role": "review"
+          },
+          "id": "<ID-27>",
+          "schema_version": 1,
+          "task_id": "<ID-8>",
+          "ts": "<TS>",
+          "type": "comment_added"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "from": "in_progress",
+            "to": "review"
+          },
+          "id": "<ID-28>",
+          "schema_version": 1,
+          "task_id": "<ID-8>",
+          "ts": "<TS>",
+          "type": "status_changed"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "artifact_id": "<ID-11>",
+            "role": "review"
+          },
+          "id": "<ID-29>",
+          "schema_version": 1,
+          "task_id": "<ID-8>",
+          "ts": "<TS>",
+          "type": "artifact_attached"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "from": "review",
+            "to": "done"
+          },
+          "id": "<ID-30>",
+          "schema_version": 1,
+          "task_id": "<ID-8>",
+          "ts": "<TS>",
+          "type": "status_changed"
+        }
+      ]
+    },
+    "events/<ID-9>.jsonl": {
+      "jsonl": [
+        {
+          "actor": "human:parity",
+          "data": {
+            "priority": "medium",
+            "short_id": "PAR-3",
+            "status": "backlog",
+            "title": "Complete from file",
+            "type": "task"
+          },
+          "id": "<ID-16>",
+          "schema_version": 1,
+          "task_id": "<ID-9>",
+          "ts": "<TS>",
+          "type": "task_created"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "from": null,
+            "to": "human:parity"
+          },
+          "id": "<ID-31>",
+          "schema_version": 1,
+          "task_id": "<ID-9>",
+          "ts": "<TS>",
+          "type": "assignment_changed"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "force": true,
+            "from": "backlog",
+            "reason": "straight to work",
+            "to": "in_progress"
+          },
+          "id": "<ID-32>",
+          "provenance": {
+            "reason": "straight to work"
+          },
+          "schema_version": 1,
+          "task_id": "<ID-9>",
+          "ts": "<TS>",
+          "type": "status_changed"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "body": "Multi-paragraph review.\n\nSecond paragraph with `code`.",
+            "role": "review"
+          },
+          "id": "<ID-33>",
+          "schema_version": 1,
+          "task_id": "<ID-9>",
+          "ts": "<TS>",
+          "type": "comment_added"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "from": "in_progress",
+            "to": "review"
+          },
+          "id": "<ID-34>",
+          "schema_version": 1,
+          "task_id": "<ID-9>",
+          "ts": "<TS>",
+          "type": "status_changed"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "artifact_id": "<ID-12>",
+            "role": "review"
+          },
+          "id": "<ID-35>",
+          "schema_version": 1,
+          "task_id": "<ID-9>",
+          "ts": "<TS>",
+          "type": "artifact_attached"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "from": "review",
+            "to": "done"
+          },
+          "id": "<ID-36>",
+          "schema_version": 1,
+          "task_id": "<ID-9>",
+          "ts": "<TS>",
+          "type": "status_changed"
+        }
+      ]
+    },
+    "events/_lifecycle.jsonl": {
+      "jsonl": [
+        {
+          "actor": "human:parity",
+          "data": {
+            "priority": "medium",
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "title": "Artifact task",
+            "type": "task"
+          },
+          "id": "<ID-14>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "task_created"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "priority": "medium",
+            "short_id": "PAR-2",
+            "status": "backlog",
+            "title": "Complete me",
+            "type": "task"
+          },
+          "id": "<ID-15>",
+          "schema_version": 1,
+          "task_id": "<ID-8>",
+          "ts": "<TS>",
+          "type": "task_created"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "priority": "medium",
+            "short_id": "PAR-3",
+            "status": "backlog",
+            "title": "Complete from file",
+            "type": "task"
+          },
+          "id": "<ID-16>",
+          "schema_version": 1,
+          "task_id": "<ID-9>",
+          "ts": "<TS>",
+          "type": "task_created"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "priority": "medium",
+            "short_id": "PAR-4",
+            "status": "backlog",
+            "title": "Complete without review",
+            "type": "task"
+          },
+          "id": "<ID-17>",
+          "schema_version": 1,
+          "task_id": "<ID-10>",
+          "ts": "<TS>",
+          "type": "task_created"
+        }
+      ]
+    },
+    "ids.json": {
+      "json": {
+        "map": {
+          "PAR-1": "<ID-1>",
+          "PAR-2": "<ID-8>",
+          "PAR-3": "<ID-9>",
+          "PAR-4": "<ID-10>"
+        },
+        "next_seqs": {
+          "PAR": 5
+        },
+        "schema_version": 2
+      }
+    },
+    "plans/<ID-10>.md": {
+      "lines": [
+        "# PAR-4: Complete without review"
+      ]
+    },
+    "plans/<ID-1>.md": {
+      "lines": [
+        "# PAR-1: Artifact task"
+      ]
+    },
+    "plans/<ID-8>.md": {
+      "lines": [
+        "# PAR-2: Complete me"
+      ]
+    },
+    "plans/<ID-9>.md": {
+      "lines": [
+        "# PAR-3: Complete from file"
+      ]
+    },
+    "tasks/<ID-10>.json": {
+      "json": {
+        "acceptance_criteria": [],
+        "assigned_to": null,
+        "branch_links": [],
+        "comment_count": 0,
+        "complexity": null,
+        "created_at": "<TS>",
+        "created_by": "human:parity",
+        "custom_fields": {},
+        "description": null,
+        "done_at": null,
+        "evidence_refs": [],
+        "id": "<ID-10>",
+        "last_event_id": "<ID-17>",
+        "last_status_changed_at": "<TS>",
+        "linked_files": [],
+        "priority": "medium",
+        "relationships_out": [],
+        "reopened_count": 0,
+        "schema_version": 1,
+        "short_id": "PAR-4",
+        "status": "backlog",
+        "tags": null,
+        "title": "Complete without review",
+        "type": "task",
+        "updated_at": "<TS>",
+        "urgency": null
+      }
+    },
+    "tasks/<ID-1>.json": {
+      "json": {
+        "acceptance_criteria": [
+          {
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "id": "report",
+            "outcome": "Report exists",
+            "retired": false,
+            "retired_at": null,
+            "retired_by": null,
+            "revision": 1,
+            "revisions": [
+              {
+                "changed_at": "<TS>",
+                "changed_by": "human:parity",
+                "event_id": "<ID-22>",
+                "outcome": "Report exists",
+                "revision": 1
+              }
+            ],
+            "updated_at": "<TS>",
+            "updated_by": "human:parity"
+          }
+        ],
+        "assigned_to": null,
+        "branch_links": [],
+        "comment_count": 0,
+        "complexity": null,
+        "created_at": "<TS>",
+        "created_by": "human:parity",
+        "custom_fields": {},
+        "description": null,
+        "done_at": null,
+        "evidence_refs": [
+          {
+            "id": "<ID-2>",
+            "role": "review",
+            "source_type": "artifact"
+          },
+          {
+            "id": "<ID-3>",
+            "role": null,
+            "source_type": "artifact"
+          },
+          {
+            "id": "<ID-4>",
+            "role": "validation",
+            "source_type": "artifact"
+          },
+          {
+            "id": "<ID-5>",
+            "role": null,
+            "source_type": "artifact"
+          },
+          {
+            "criterion_ids": [
+              "report"
+            ],
+            "id": "<ID-6>",
+            "role": null,
+            "source_type": "artifact"
+          }
+        ],
+        "id": "<ID-1>",
+        "last_event_id": "<ID-7>",
+        "last_status_changed_at": "<TS>",
+        "linked_files": [],
+        "priority": "medium",
+        "relationships_out": [],
+        "reopened_count": 0,
+        "schema_version": 1,
+        "short_id": "PAR-1",
+        "status": "backlog",
+        "tags": null,
+        "title": "Artifact task",
+        "type": "task",
+        "updated_at": "<TS>",
+        "urgency": null
+      }
+    },
+    "tasks/<ID-8>.json": {
+      "json": {
+        "acceptance_criteria": [],
+        "assigned_to": "human:parity",
+        "branch_links": [],
+        "comment_count": 1,
+        "complexity": null,
+        "created_at": "<TS>",
+        "created_by": "human:parity",
+        "custom_fields": {},
+        "description": null,
+        "done_at": "<TS>",
+        "evidence_refs": [
+          {
+            "id": "<ID-27>",
+            "role": "review",
+            "source_type": "comment"
+          },
+          {
+            "id": "<ID-11>",
+            "role": "review",
+            "source_type": "artifact"
+          }
+        ],
+        "id": "<ID-8>",
+        "last_event_id": "<ID-30>",
+        "last_status_changed_at": "<TS>",
+        "linked_files": [],
+        "priority": "medium",
+        "relationships_out": [],
+        "reopened_count": 0,
+        "schema_version": 1,
+        "short_id": "PAR-2",
+        "status": "done",
+        "tags": null,
+        "title": "Complete me",
+        "type": "task",
+        "updated_at": "<TS>",
+        "urgency": null
+      }
+    },
+    "tasks/<ID-9>.json": {
+      "json": {
+        "acceptance_criteria": [],
+        "assigned_to": "human:parity",
+        "branch_links": [],
+        "comment_count": 1,
+        "complexity": null,
+        "created_at": "<TS>",
+        "created_by": "human:parity",
+        "custom_fields": {},
+        "description": null,
+        "done_at": "<TS>",
+        "evidence_refs": [
+          {
+            "id": "<ID-33>",
+            "role": "review",
+            "source_type": "comment"
+          },
+          {
+            "id": "<ID-12>",
+            "role": "review",
+            "source_type": "artifact"
+          }
+        ],
+        "id": "<ID-9>",
+        "last_event_id": "<ID-36>",
+        "last_status_changed_at": "<TS>",
+        "linked_files": [],
+        "priority": "medium",
+        "relationships_out": [],
+        "reopened_count": 0,
+        "schema_version": 1,
+        "short_id": "PAR-3",
+        "status": "done",
+        "tags": null,
+        "title": "Complete from file",
+        "type": "task",
+        "updated_at": "<TS>",
+        "urgency": null
+      }
+    }
+  },
+  "description": "attach (file, inline, url), complete, custom events",
+  "mode": "plain",
+  "scenario": "artifacts",
+  "steps": [
+    {
+      "args": [
+        "init",
+        "--path",
+        "<ROOT>",
+        "--actor",
+        "human:parity",
+        "--project-code",
+        "PAR",
+        "--no-setup-claude",
+        "--no-setup-agents",
+        "--no-seed"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "",
+          ".lattice/ created — a mind now has a place to remember.",
+          "Default actor: human:parity",
+          "Project code: PAR",
+          "Workflow statuses: stage11 (10 statuses)"
+        ]
+      }
+    },
+    {
+      "args": [
+        "create",
+        "Artifact task",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Created task PAR-1 (<ID-1>) \"Artifact task\"",
+          "  status: backlog  priority: medium  type: task"
+        ]
+      }
+    },
+    {
+      "write_file": "report.md"
+    },
+    {
+      "args": [
+        "attach",
+        "PAR-1",
+        "<ROOT>/report.md",
+        "--title",
+        "Report",
+        "--summary",
+        "A summary",
+        "--type",
+        "file",
+        "--role",
+        "review",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Attached artifact <ID-2> \"Report\" to task <ID-1>",
+          "  type: file  sensitive: False"
+        ]
+      }
+    },
+    {
+      "args": [
+        "attach",
+        "PAR-1",
+        "--inline",
+        "Inline evidence text",
+        "--title",
+        "Inline",
+        "--actor",
+        "agent:worker"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Attached artifact <ID-3> \"Inline\" to task <ID-1>",
+          "  type: note  sensitive: False"
+        ]
+      }
+    },
+    {
+      "args": [
+        "attach",
+        "PAR-1",
+        "https://example.com/build/1",
+        "--title",
+        "Build",
+        "--role",
+        "validation",
+        "--sensitive",
+        "--actor",
+        "agent:worker"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Attached artifact <ID-4> \"Build\" to task <ID-1>",
+          "  type: reference  sensitive: True"
+        ]
+      }
+    },
+    {
+      "args": [
+        "attach",
+        "PAR-1",
+        "--inline",
+        "Caller id",
+        "--id",
+        "<ID-5>",
+        "--actor",
+        "agent:worker"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Attached artifact <ID-5> \"inline attachment\" to task <ID-1>",
+          "  type: note  sensitive: False"
+        ]
+      }
+    },
+    {
+      "args": [
+        "attach",
+        "PAR-1",
+        "--inline",
+        "Caller id again",
+        "--id",
+        "<ID-5>",
+        "--actor",
+        "agent:worker"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Attached artifact <ID-5> \"inline attachment\" to task <ID-1>",
+          "  type: note  sensitive: False  (idempotent task attachment)"
+        ]
+      }
+    },
+    {
+      "args": [
+        "attach",
+        "PAR-1",
+        "--inline",
+        "x",
+        "--id",
+        "nonsense",
+        "--actor",
+        "agent:worker"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Invalid artifact ID format: 'nonsense'."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "attach",
+        "PAR-1",
+        "--inline",
+        "x",
+        "--role",
+        "bogus",
+        "--actor",
+        "agent:worker"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Unknown role: 'bogus'. Valid roles: plan-review, review, review-individual, validation."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "attach",
+        "PAR-1",
+        "<ROOT>/missing.md",
+        "--actor",
+        "agent:worker"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Source file not found: '<ROOT>/missing.md'."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "attach",
+        "PAR-1",
+        "--actor",
+        "agent:worker"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Provide either a SOURCE (file/URL) or --inline text."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "criterion",
+        "add",
+        "PAR-1",
+        "Report exists",
+        "--id",
+        "report",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Added acceptance criterion report to <ID-1> (revision 1)."
+        ]
+      }
+    },
+    {
+      "args": [
+        "attach",
+        "PAR-1",
+        "--inline",
+        "evidence",
+        "--criterion",
+        "report",
+        "--actor",
+        "agent:worker"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Attached artifact <ID-6> \"inline attachment\" to task <ID-1>",
+          "  type: note  sensitive: False"
+        ]
+      }
+    },
+    {
+      "args": [
+        "event",
+        "PAR-1",
+        "x_deploy",
+        "--data",
+        "{\"env\": \"staging\", \"n\": 1}",
+        "--actor",
+        "agent:worker"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Recorded x_deploy on <ID-1>"
+        ]
+      }
+    },
+    {
+      "args": [
+        "event",
+        "PAR-1",
+        "x_deploy",
+        "--id",
+        "<ID-7>",
+        "--actor",
+        "agent:worker"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Recorded x_deploy on <ID-1>"
+        ]
+      }
+    },
+    {
+      "args": [
+        "event",
+        "PAR-1",
+        "x_deploy",
+        "--id",
+        "<ID-7>",
+        "--actor",
+        "agent:worker"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Event <ID-7> already exists (idempotent)."
+        ]
+      }
+    },
+    {
+      "args": [
+        "event",
+        "PAR-1",
+        "status_changed",
+        "--actor",
+        "agent:worker"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Event type 'status_changed' is reserved. Custom types must start with 'x_'."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "event",
+        "PAR-1",
+        "x_bad",
+        "--data",
+        "not json",
+        "--actor",
+        "agent:worker"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Invalid JSON in --data: Expecting value: line 1 column 1 (char 0)"
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "event",
+        "PAR-1",
+        "x_bad",
+        "--data",
+        "[1, 2]",
+        "--actor",
+        "agent:worker"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: --data must be a JSON object."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "create",
+        "Complete me",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Created task PAR-2 (<ID-8>) \"Complete me\"",
+          "  status: backlog  priority: medium  type: task"
+        ]
+      }
+    },
+    {
+      "args": [
+        "status",
+        "PAR-2",
+        "in_progress",
+        "--force",
+        "--reason",
+        "straight to work",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Status: backlog -> in_progress (PAR-2)  (auto-assigned to human:parity)",
+          "  Next: implement the plan, then move to review."
+        ]
+      }
+    },
+    {
+      "args": [
+        "complete",
+        "PAR-2",
+        "--review",
+        "Reviewed: all good.",
+        "--actor",
+        "agent:worker"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Completed PAR-2: 4 events (in_progress -> review -> done)"
+        ]
+      }
+    },
+    {
+      "args": [
+        "complete",
+        "PAR-2",
+        "--review",
+        "Again.",
+        "--actor",
+        "agent:worker"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Cannot complete: task is in 'done' which cannot transition to review. Valid transitions: cancelled."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "create",
+        "Complete from file",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Created task PAR-3 (<ID-9>) \"Complete from file\"",
+          "  status: backlog  priority: medium  type: task"
+        ]
+      }
+    },
+    {
+      "args": [
+        "status",
+        "PAR-3",
+        "in_progress",
+        "--force",
+        "--reason",
+        "straight to work",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Status: backlog -> in_progress (PAR-3)  (auto-assigned to human:parity)",
+          "  Next: implement the plan, then move to review."
+        ]
+      }
+    },
+    {
+      "write_file": "review.md"
+    },
+    {
+      "args": [
+        "complete",
+        "PAR-3",
+        "--review-file",
+        "<ROOT>/review.md",
+        "--actor",
+        "agent:worker"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Completed PAR-3: 4 events (in_progress -> review -> done)"
+        ]
+      }
+    },
+    {
+      "args": [
+        "create",
+        "Complete without review",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Created task PAR-4 (<ID-10>) \"Complete without review\"",
+          "  status: backlog  priority: medium  type: task"
+        ]
+      }
+    },
+    {
+      "args": [
+        "complete",
+        "PAR-4",
+        "--actor",
+        "agent:worker"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Provide review findings as --review or via --review-file."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "complete",
+        "PAR-4",
+        "--review",
+        "x",
+        "--review-file",
+        "<ROOT>/review.md",
+        "--actor",
+        "agent:worker"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Provide either --review or --review-file, not both."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "complete",
+        "PAR-4",
+        "--review",
+        "From backlog.",
+        "--actor",
+        "agent:worker"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Cannot complete: task is in 'backlog' which cannot transition to review. Valid transitions: in_planning, planned, cancelled."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "complete",
+        "NOPE-4",
+        "--review",
+        "Nowhere.",
+        "--actor",
+        "agent:worker"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Short ID 'NOPE-4' not found."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    }
+  ]
+}

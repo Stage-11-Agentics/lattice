@@ -1,0 +1,1093 @@
+{
+  "board": {
+    ".gitignore": {
+      "lines": [
+        "# Ephemeral Lattice runtime state — not part of the durable board.",
+        "# The board (tasks/ events/ plans/ artifacts/ ids.json config.json)",
+        "# stays tracked: it is the audit log and cross-machine coordination",
+        "# state. The paths below are mutated constantly and must never",
+        "# diverge per-worktree or collide on merge.",
+        "review_state/",
+        "tmp-prompts/",
+        ".daemon/",
+        "locks/"
+      ]
+    },
+    "config.json": {
+      "json": {
+        "auto_code_review_on_transition": false,
+        "auto_plan_review_on_transition": false,
+        "default_actor": "human:parity",
+        "default_priority": "medium",
+        "default_status": "backlog",
+        "done_display": "grouped",
+        "instance_id": "<ID-7>",
+        "plan_approval": "auto",
+        "plan_review_mode": "single",
+        "project_code": "PAR",
+        "review_max_diff_chars": 120000,
+        "review_max_diff_lines": 5000,
+        "review_mode": "single",
+        "review_timeout_seconds": 600,
+        "schema_version": 1,
+        "status_preset": "stage11",
+        "task_types": [
+          "task",
+          "bug",
+          "spike",
+          "chore"
+        ],
+        "workflow": {
+          "completion_policies": {
+            "done": {
+              "require_roles": [
+                "review"
+              ]
+            },
+            "pr_open": {
+              "require_roles": [
+                "validation"
+              ]
+            }
+          },
+          "descriptions": {
+            "backlog": "Task is captured but no work has started. No planning, no implementation.",
+            "blocked": "Work cannot proceed due to an external dependency or unresolved issue.",
+            "cancelled": "Work has been abandoned. No further action will be taken.",
+            "done": "Work is reviewed, merged, and shipped. No further action needed.",
+            "in_planning": "Design, dialogue, and scoping underway. No implementation code should be written yet.",
+            "in_progress": "Implementation is actively underway. Code is being written, tested, or integrated.",
+            "in_validation": "End-to-end validation is underway. The change is being exercised against a running system — browser automation, simulator flows, curl — before the PR opens. The bar: 'I saw it work,' not 'I think it should work.'",
+            "planned": "Plan is written and approved. Ready for implementation but work has not started.",
+            "pr_open": "PR is open and awaiting human review, CI, or merge. Local review and validation artifacts are recorded.",
+            "review": "Local review is underway. A review sub-agent is examining the diff before validation begins."
+          },
+          "roles": [
+            "review",
+            "plan-review",
+            "review-individual",
+            "validation"
+          ],
+          "statuses": [
+            "backlog",
+            "in_planning",
+            "planned",
+            "in_progress",
+            "review",
+            "in_validation",
+            "pr_open",
+            "done",
+            "blocked",
+            "cancelled"
+          ],
+          "transitions": {
+            "backlog": [
+              "in_planning",
+              "planned",
+              "cancelled"
+            ],
+            "blocked": [
+              "in_planning",
+              "planned",
+              "in_progress",
+              "in_validation",
+              "pr_open",
+              "cancelled"
+            ],
+            "cancelled": [],
+            "done": [],
+            "in_planning": [
+              "planned",
+              "cancelled"
+            ],
+            "in_progress": [
+              "review",
+              "blocked",
+              "cancelled"
+            ],
+            "in_validation": [
+              "pr_open",
+              "in_progress",
+              "in_planning",
+              "blocked",
+              "cancelled"
+            ],
+            "planned": [
+              "in_progress",
+              "review",
+              "blocked",
+              "cancelled"
+            ],
+            "pr_open": [
+              "done",
+              "in_progress",
+              "review",
+              "blocked",
+              "cancelled"
+            ],
+            "review": [
+              "in_validation",
+              "pr_open",
+              "done",
+              "in_progress",
+              "in_planning",
+              "cancelled"
+            ]
+          },
+          "universal_targets": [
+            "cancelled"
+          ],
+          "wip_limits": {
+            "in_progress": 10,
+            "in_validation": 5,
+            "pr_open": 10,
+            "review": 5
+          }
+        },
+        "workflow_preset": "classic"
+      }
+    },
+    "context.md": {
+      "lines": [
+        "# Instance Context",
+        "",
+        "<!-- Every lattice instance exists for a reason — a convergence of intention",
+        "     and infrastructure. This file declares that reason. Agents and humans",
+        "     read it to understand the purpose, conventions, and relationships",
+        "     of this particular node in the lattice. -->",
+        "",
+        "## Purpose",
+        "",
+        "<!-- What does this instance observe? What project, team, or domain",
+        "     does it serve? Declare the scope of attention. -->",
+        "",
+        "## Related Instances",
+        "",
+        "<!-- If this node coordinates with other lattice instances, name them here.",
+        "     Include instance_id, instance_name, and the nature of the relationship.",
+        "     The lattice is stronger when its nodes are aware of each other. -->",
+        "",
+        "## Conventions",
+        "",
+        "<!-- Every instance develops its own rhythms — workflow conventions,",
+        "     naming patterns, status meanings that diverge from defaults.",
+        "     Record them here so that new minds arriving in this context",
+        "     can orient immediately. -->"
+      ]
+    },
+    "events/<ID-1>.jsonl": {
+      "jsonl": [
+        {
+          "actor": "human:parity",
+          "data": {
+            "priority": "medium",
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "title": "Discussed task",
+            "type": "task"
+          },
+          "id": "<ID-8>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "task_created"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "body": "First comment"
+          },
+          "id": "<ID-2>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "comment_added"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "body": "A comment from a file.\n\nWith `backticks` and $(dollars)."
+          },
+          "id": "<ID-4>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "comment_added"
+        },
+        {
+          "actor": "agent:other",
+          "data": {
+            "body": "A reply",
+            "parent_id": "<ID-2>"
+          },
+          "id": "<ID-6>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "comment_added"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "body": "Review findings",
+            "role": "review"
+          },
+          "id": "<ID-5>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "comment_added"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "body": "Provenance"
+          },
+          "id": "<ID-9>",
+          "provenance": {
+            "on_behalf_of": "human:boss",
+            "reason": "why"
+          },
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "comment_added"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "body": "First, edited",
+            "comment_id": "<ID-2>",
+            "previous_body": "First comment"
+          },
+          "id": "<ID-10>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "comment_edited"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "body": "Findings",
+            "comment_id": "<ID-5>",
+            "previous_body": "Review findings",
+            "previous_role": "review",
+            "role": null
+          },
+          "id": "<ID-11>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "comment_edited"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "body": "Seen",
+            "comment_id": "<ID-2>",
+            "previous_body": "First, edited",
+            "previous_role": null,
+            "role": "validation"
+          },
+          "id": "<ID-12>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "comment_edited"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "comment_id": "<ID-2>",
+            "emoji": "thumbsup"
+          },
+          "id": "<ID-13>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "reaction_added"
+        },
+        {
+          "actor": "agent:other",
+          "data": {
+            "comment_id": "<ID-2>",
+            "emoji": "rocket"
+          },
+          "id": "<ID-14>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "reaction_added"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "comment_id": "<ID-2>",
+            "emoji": "thumbsup"
+          },
+          "id": "<ID-15>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "reaction_removed"
+        },
+        {
+          "actor": "agent:other",
+          "data": {
+            "comment_id": "<ID-6>"
+          },
+          "id": "<ID-16>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "comment_deleted"
+        }
+      ]
+    },
+    "events/_lifecycle.jsonl": {
+      "jsonl": [
+        {
+          "actor": "human:parity",
+          "data": {
+            "priority": "medium",
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "title": "Discussed task",
+            "type": "task"
+          },
+          "id": "<ID-8>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "task_created"
+        }
+      ]
+    },
+    "ids.json": {
+      "json": {
+        "map": {
+          "PAR-1": "<ID-1>"
+        },
+        "next_seqs": {
+          "PAR": 2
+        },
+        "schema_version": 2
+      }
+    },
+    "plans/<ID-1>.md": {
+      "lines": [
+        "# PAR-1: Discussed task"
+      ]
+    },
+    "tasks/<ID-1>.json": {
+      "json": {
+        "acceptance_criteria": [],
+        "assigned_to": null,
+        "branch_links": [],
+        "comment_count": 4,
+        "complexity": null,
+        "created_at": "<TS>",
+        "created_by": "human:parity",
+        "custom_fields": {},
+        "description": null,
+        "done_at": null,
+        "evidence_refs": [
+          {
+            "id": "<ID-2>",
+            "role": "validation",
+            "source_type": "comment"
+          }
+        ],
+        "id": "<ID-1>",
+        "last_event_id": "<ID-16>",
+        "last_status_changed_at": "<TS>",
+        "linked_files": [],
+        "priority": "medium",
+        "relationships_out": [],
+        "reopened_count": 0,
+        "schema_version": 1,
+        "short_id": "PAR-1",
+        "status": "backlog",
+        "tags": null,
+        "title": "Discussed task",
+        "type": "task",
+        "updated_at": "<TS>",
+        "urgency": null
+      }
+    }
+  },
+  "description": "comment, threads, roles, comment-edit/delete, react/unreact",
+  "mode": "plain",
+  "scenario": "comments",
+  "steps": [
+    {
+      "args": [
+        "init",
+        "--path",
+        "<ROOT>",
+        "--actor",
+        "human:parity",
+        "--project-code",
+        "PAR",
+        "--no-setup-claude",
+        "--no-setup-agents",
+        "--no-seed"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "",
+          ".lattice/ created — a mind now has a place to remember.",
+          "Default actor: human:parity",
+          "Project code: PAR",
+          "Workflow statuses: stage11 (10 statuses)"
+        ]
+      }
+    },
+    {
+      "args": [
+        "create",
+        "Discussed task",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Created task PAR-1 (<ID-1>) \"Discussed task\"",
+          "  status: backlog  priority: medium  type: task"
+        ]
+      }
+    },
+    {
+      "args": [
+        "comment",
+        "PAR-1",
+        "First comment",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Comment added to <ID-1>"
+        ]
+      }
+    },
+    {
+      "write_file": "comment.md"
+    },
+    {
+      "args": [
+        "comment",
+        "PAR-1",
+        "--file",
+        "<ROOT>/comment.md",
+        "--actor",
+        "agent:worker"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Comment added to <ID-1>"
+        ]
+      }
+    },
+    {
+      "args": [
+        "comment",
+        "PAR-1",
+        "A reply",
+        "--reply-to",
+        "<ID-2>",
+        "--actor",
+        "agent:other"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Reply added to <ID-1>"
+        ]
+      }
+    },
+    {
+      "args": [
+        "comment",
+        "PAR-1",
+        "Review findings",
+        "--role",
+        "review",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Comment added to <ID-1>"
+        ]
+      }
+    },
+    {
+      "args": [
+        "comment",
+        "PAR-1",
+        "Bad role",
+        "--role",
+        "bogus",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Unknown role: 'bogus'. Valid roles: plan-review, review, review-individual, validation."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "comment",
+        "PAR-1",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Provide comment text as TEXT or via --file."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "comment",
+        "PAR-1",
+        "Both",
+        "--file",
+        "<ROOT>/comment.md",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Provide either TEXT or --file, not both."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "comment",
+        "PAR-1",
+        "--file",
+        "<ROOT>/missing.md",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 2,
+      "stderr": {
+        "lines": [
+          "Usage: cli comment [OPTIONS] TASK_ID [TEXT]",
+          "Try 'cli comment --help' for help.",
+          "",
+          "Error: Invalid value for '--file': Path '<ROOT>/missing.md' does not exist."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "comment",
+        "PAR-1",
+        "Orphan reply",
+        "--reply-to",
+        "<ID-3>",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Comment <ID-3> not found."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "comment",
+        "NOPE-1",
+        "Nowhere",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Short ID 'NOPE-1' not found."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "comment",
+        "PAR-1",
+        "Provenance",
+        "--reason",
+        "why",
+        "--on-behalf-of",
+        "human:boss",
+        "--actor",
+        "agent:worker"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Comment added to <ID-1>"
+        ]
+      }
+    },
+    {
+      "args": [
+        "comment-edit",
+        "PAR-1",
+        "<ID-2>",
+        "First, edited",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Comment <ID-2> edited on <ID-1>"
+        ]
+      }
+    },
+    {
+      "args": [
+        "comment-edit",
+        "PAR-1",
+        "<ID-2>",
+        "First, edited",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Comment <ID-2> edited on <ID-1>"
+        ]
+      }
+    },
+    {
+      "args": [
+        "comment-edit",
+        "PAR-1",
+        "<ID-4>",
+        "--file",
+        "<ROOT>/comment.md",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Comment <ID-4> edited on <ID-1>"
+        ]
+      }
+    },
+    {
+      "args": [
+        "comment-edit",
+        "PAR-1",
+        "<ID-5>",
+        "--clear-role",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Provide the new comment text as NEW_TEXT or via --file."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "comment-edit",
+        "PAR-1",
+        "<ID-5>",
+        "Findings",
+        "--clear-role",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Comment <ID-5> edited on <ID-1>"
+        ]
+      }
+    },
+    {
+      "args": [
+        "comment-edit",
+        "PAR-1",
+        "<ID-2>",
+        "Seen",
+        "--role",
+        "validation",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Comment <ID-2> edited on <ID-1>"
+        ]
+      }
+    },
+    {
+      "args": [
+        "comment-edit",
+        "PAR-1",
+        "<ID-2>",
+        "x",
+        "--role",
+        "v",
+        "--clear-role",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: --role and --clear-role are mutually exclusive."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "comment-edit",
+        "PAR-1",
+        "<ID-2>",
+        "Seen",
+        "--role",
+        "bogus",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Unknown role: 'bogus'. Valid roles: plan-review, review, review-individual, validation."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "comment-edit",
+        "PAR-1",
+        "<ID-3>",
+        "Missing",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Comment <ID-3> not found."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "comment-edit",
+        "PAR-1",
+        "<ID-2>",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Provide the new comment text as NEW_TEXT or via --file."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "react",
+        "PAR-1",
+        "<ID-2>",
+        "thumbsup",
+        "--actor",
+        "agent:worker"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Reaction :thumbsup: added to <ID-2>"
+        ]
+      }
+    },
+    {
+      "args": [
+        "react",
+        "PAR-1",
+        "<ID-2>",
+        "thumbsup",
+        "--actor",
+        "agent:worker"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Reaction :thumbsup: already exists on <ID-2> (idempotent)."
+        ]
+      }
+    },
+    {
+      "args": [
+        "react",
+        "PAR-1",
+        "<ID-2>",
+        "rocket",
+        "--actor",
+        "agent:other"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Reaction :rocket: added to <ID-2>"
+        ]
+      }
+    },
+    {
+      "args": [
+        "react",
+        "PAR-1",
+        "<ID-3>",
+        "rocket",
+        "--actor",
+        "agent:other"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Comment <ID-3> not found."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "unreact",
+        "PAR-1",
+        "<ID-2>",
+        "thumbsup",
+        "--actor",
+        "agent:worker"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Reaction :thumbsup: removed from <ID-2>"
+        ]
+      }
+    },
+    {
+      "args": [
+        "unreact",
+        "PAR-1",
+        "<ID-2>",
+        "thumbsup",
+        "--actor",
+        "agent:worker"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Reaction :thumbsup: by agent:worker not found on comment <ID-2>."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "comment-delete",
+        "PAR-1",
+        "<ID-6>",
+        "--actor",
+        "agent:other"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Comment <ID-6> deleted from <ID-1>"
+        ]
+      }
+    },
+    {
+      "args": [
+        "comment-delete",
+        "PAR-1",
+        "<ID-6>",
+        "--actor",
+        "agent:other"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Comment <ID-6> is already deleted."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "comment-edit",
+        "PAR-1",
+        "<ID-6>",
+        "Revive",
+        "--actor",
+        "agent:other"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Cannot edit deleted comment <ID-6>."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "react",
+        "PAR-1",
+        "<ID-6>",
+        "rocket",
+        "--actor",
+        "agent:other"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Cannot react to deleted comment <ID-6>."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "comment-delete",
+        "PAR-1",
+        "<ID-3>",
+        "--actor",
+        "agent:other"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Comment <ID-3> not found."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    }
+  ]
+}
