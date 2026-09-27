@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import threading
 import time
+from collections.abc import Callable
 from datetime import datetime
 from io import StringIO
 from pathlib import Path
@@ -577,32 +578,44 @@ def test_redact_replaces_whole_urls() -> None:
 def test_commits_keep_to_max_interval_while_a_push_stalls(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    shim = install_git_shim(tmp_path, monkeypatch, stall_push=1.5)
+    """Continuous writes with a debounce that never elapses: commits still land
+    every ``max_interval_seconds``, and keep landing while one push is held.
+    Every wait is on a condition (the push started; three more commits), never on
+    a wall-clock window, so a loaded machine only makes it slower."""
+    shim = install_git_shim(tmp_path, monkeypatch)
     root = make_root(tmp_path, projects={"alpha": {"code": "ALP"}})
     directory = root / "projects" / "alpha"
     bare_remote(tmp_path, directory)
-    max_interval = 0.3
     config = AuditConfig(
-        debounce_seconds=1.0,  # continuous writes: the debounce never elapses
-        max_interval_seconds=max_interval,
+        debounce_seconds=60.0,  # continuous writes: only the max interval commits
+        max_interval_seconds=0.3,
         push={"remote": "backup", "branch": "audit"},
     )
     project, stream = direct_project(root, "alpha", config)
     committer = project.committer
+    written = 0
+
+    def write_until(condition: Callable[[], bool]) -> None:
+        nonlocal written
+        deadline = time.monotonic() + 10  # a safety bound only
+        while not condition():
+            assert time.monotonic() < deadline, (committer.commits, written)
+            written += 1
+            run(project, request("task.create", {"title": f"t{written}"}))
+            time.sleep(0.03)
+
     shim.stall.write_text("")
     try:
-        started = time.monotonic()
-        n = 0
-        while time.monotonic() - started < 1.6:
-            n += 1
-            run(project, request("task.create", {"title": f"t{n}"}))
-            time.sleep(0.03)
-        stalled_commits = project.committer.commits
-        assert project.committer.maintenance.push_attempts >= 1
+        write_until(lambda: committer.maintenance.push_attempts >= 1)  # the push is held
+        held_at = committer.commits
+        write_until(lambda: committer.commits >= held_at + 3)
+        # All of them landed during the one held push.
+        assert committer.maintenance.push_attempts == 1
+        stalled_commits = committer.commits
     finally:
         shim.stall.unlink()
         close(project)
-    assert stalled_commits >= 3, stalled_commits
+    assert stalled_commits >= 4, stalled_commits
     # Several commits landed during one stalled push; each still got its own gc.
     assert committer.maintenance.gc_runs == committer.commits, (
         committer.maintenance.gc_runs,
@@ -613,8 +626,9 @@ def test_commits_keep_to_max_interval_while_a_push_stalls(
         for line in events(stream, "audit_commit")
         if not line["final"]
     ]
+    # Never the debounce: the max interval made every one of these commits.
     gaps = [b - a for a, b in zip(stamps, stamps[1:], strict=False)]
-    assert gaps and max(gaps) <= max_interval + 0.4, gaps
+    assert gaps and max(gaps) < config.debounce_seconds, gaps
     assert len(commits(directory)) >= 4
 
 

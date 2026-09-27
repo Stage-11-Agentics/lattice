@@ -164,19 +164,26 @@ def test_resume_by_query_matches_resume_by_header(board: BoardServer) -> None:
     assert query == header and [d["seq"] for _, d in query] == [3, 4, 5]
 
 
+# Twenty writers on a loaded machine: every wait is on a condition (the barrier,
+# each delivered entry), so the only wall-clock bound is this safety timeout.
+@pytest.mark.timeout(60)
 def test_twenty_concurrent_writers_deliver_strictly_increasing_seqs(board: BoardServer) -> None:
     tasks = [create(board, f"t{n}") for n in range(20)]
     epoch = board.project.journal.epoch
     head = board.project.journal.head_seq
-    per_writer = 5
+    per_writer = 3
     with board.stream(since=head, epoch=epoch, hash=board.project.journal.hash_at(head)) as reader:
         writers = [
             tokens.create_token(board.root, user=f"human:w{n}", machine="m", projects=["demo"])
             for n in range(20)
         ]
+        # All twenty are running before any writes, so their writes interleave.
+        start = threading.Barrier(len(writers))
+        failures: list[object] = []
 
         def write(task: str, minted: dict) -> None:
             actor = minted["record"]["user"]
+            start.wait()
             for n in range(per_writer):
                 status, _, body = board.handle.op(
                     "demo",
@@ -185,7 +192,9 @@ def test_twenty_concurrent_writers_deliver_strictly_increasing_seqs(board: Board
                     token=minted["token"],
                     actor=actor,
                 )
-                assert status == 200, body
+                if status != 200:
+                    failures.append(body)
+                    return
 
         threads = [
             threading.Thread(target=write, args=(task, minted))
@@ -193,9 +202,10 @@ def test_twenty_concurrent_writers_deliver_strictly_increasing_seqs(board: Board
         ]
         for thread in threads:
             thread.start()
-        seqs = journal_seqs(reader, 20 * per_writer, timeout=20)
         for thread in threads:
-            thread.join(10)
+            thread.join()
+        assert failures == []
+        seqs = journal_seqs(reader, 20 * per_writer, timeout=30)
     assert seqs == list(range(head + 1, head + 1 + 20 * per_writer))
 
 

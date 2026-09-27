@@ -325,11 +325,24 @@ def test_a_status_that_records_an_auto_review_uses_two_op_ids(
 
 
 def test_outcome_unknown_names_the_op_and_op_status_finds_it(
-    hosted_env: HostedEnv, repo: Path
+    hosted_env: HostedEnv, repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The request is sent and committed, then the server goes down (in place of
     its answer) and stays down past retry_seconds: OUTCOME_UNKNOWN naming the
-    op_id. With the server back, op-status reports it committed, once."""
+    op_id. With the server back, op-status reports it committed, once.
+
+    The client's retry window runs on a fake clock that only its backoff sleeps
+    advance, so the retries it makes (one, at 0.5 s of the 1 s window) do not
+    depend on how long a loaded machine takes to stop the server."""
+    from lattice.remote import client
+
+    now = [1000.0]
+
+    def sleep(seconds: float) -> None:
+        now[0] += seconds
+
+    monkeypatch.setattr(client, "_now", lambda: now[0])
+    monkeypatch.setattr(client, "_sleep", sleep)
     with dropping_proxy(hosted_env) as dropper:
         hosted_env.write_remote(url=dropper.url, retry_seconds=1)
         dropper.drops = 1

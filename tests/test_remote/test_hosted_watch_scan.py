@@ -7,7 +7,7 @@ import contextlib
 import json
 import threading
 
-from lattice.remote.hosted_watch import hosted_stream_events
+from lattice.remote.hosted_watch import _cache_epoch, hosted_stream_events
 from lattice.storage.fs import LATTICE_DIR
 from tests.test_remote.stream_stub import SLUG, StubSyncer, stub_remote, wait_for
 
@@ -81,14 +81,24 @@ def test_shorter_log_after_reset_does_not_suppress_later_events(tmp_path, stream
     long_log = b"".join(_line(n) for n in range(1, 11))
     stream_stub.files["events/T1.jsonl"] = long_log
     (tmp_path / LATTICE_DIR).mkdir()
+    # The cache epoch each of the watch loop's scans saw, recorded once the scan is
+    # done: the loop has taken its offsets from the reset cache when one saw it.
+    scanned: list[str | None] = []
+
+    @contextlib.contextmanager
+    def recording_lock(root):
+        epoch = _cache_epoch(root)
+        yield root / LATTICE_DIR
+        scanned.append(epoch)
+
     events: list[dict] = []
     gen = hosted_stream_events(
         tmp_path,
         stub_remote(stream_stub.url),
         SLUG,
         catch_up=syncer,
-        read_lock=_lock,
-        timeout=8,
+        read_lock=recording_lock,
+        timeout=12,
         heartbeat_seconds=0.2,
     )
     thread = _collect(gen, events, 1)
@@ -96,7 +106,7 @@ def test_shorter_log_after_reset_does_not_suppress_later_events(tmp_path, stream
 
     # The history is rebuilt: T1's log is now one line, far shorter than before.
     stream_stub.rotate_epoch({"config.json": b"{}\n", "events/T1.jsonl": _line(50)})
-    assert wait_for(lambda: syncer.state(tmp_path).get("epoch") == stream_stub.epoch, 5)
+    assert wait_for(lambda: stream_stub.epoch in scanned, 5), scanned
     # A later append must be printed, though the log is still shorter than before.
     stream_stub.write({"events/T1.jsonl": _line(50) + _line(51)})
     assert wait_for(lambda: [e["id"] for e in events] == ["ev_51"], 5), events
