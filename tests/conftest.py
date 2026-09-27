@@ -68,6 +68,30 @@ def _hermetic_env(
     monkeypatch.setenv("LATTICE_NO_UPDATE_CHECK", "1")
 
 
+#: Markers whose tests keep the real ``os.fsync`` (see :func:`_no_fsync`).
+_REAL_FSYNC_MARKERS = ("real_fsync", "torture", "perf")
+
+
+def _checked_no_fsync(fd: int) -> None:
+    os.fstat(fd)  # a bad descriptor still raises, as fsync would
+
+
+@pytest.fixture(autouse=True)
+def _no_fsync(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Skip the ``os.fsync`` syscall in the default suite (G-9's speed budget).
+
+    Durability is not observable in a test process: no test cuts power. What the
+    tests prove about durable writes goes through seams above the syscall
+    (``transactions._fault``, ``fs._fsync_directory``, the fault injectors), which
+    this leaves in place, and a test that patches ``os.fsync`` itself still wins.
+    On Linux the syscall was half of the default suite's serial time. Torture and
+    perf tests, and any test marked ``real_fsync``, keep the real one. The server
+    under test shares the process, so its writes skip it too."""
+    if any(request.node.get_closest_marker(name) for name in _REAL_FSYNC_MARKERS):
+        return
+    monkeypatch.setattr(os, "fsync", _checked_no_fsync)
+
+
 @pytest.fixture()
 def lattice_root(tmp_path: Path) -> Path:
     """Return a temporary directory suitable for initializing .lattice/ in."""

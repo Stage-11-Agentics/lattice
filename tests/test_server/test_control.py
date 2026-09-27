@@ -14,8 +14,20 @@ from lattice.cli.main import cli
 from lattice.core.errors import OpError
 from lattice.server import admin, control
 from lattice.server.journal import Journal
-from lattice.server.testing import running_server, wait_for
+from lattice.server.testing import make_root, running_server, wait_for
 from tests.test_server.conftest import create_task, mint
+
+
+@pytest.fixture()
+def root(tmp_path: Path) -> Path:
+    """The shared ``root`` without audit: control, unload, and doctor are the subject
+    here, the shutdown phases run either way, and each stop's audit commit and
+    ``git gc`` were most of these tests' time."""
+    return make_root(
+        tmp_path,
+        projects={"alpha": {"code": "ALP"}, "beta": {"code": "BET"}},
+        config={"audit": {"enabled": False}},
+    )
 
 
 def _journal(root: Path, slug: str = "alpha") -> list[dict]:
@@ -204,22 +216,34 @@ def test_a_hand_edit_during_an_operation_is_not_adopted(root: Path) -> None:
     """B1: a commit re-baselines only the watched files it journaled."""
     import threading
 
+    from tests.test_server.server_ops import Gate
+
     token = mint(root)
+    Gate.reset()
     with running_server(root) as server:
         board = root / "projects" / "alpha" / ".lattice"
-        slow = threading.Thread(
-            target=server.op, args=("alpha", "xtest.sleep", {"ms": 400}), kwargs={"token": token}
-        )
+        outcome: list[object] = []
+
+        def gated() -> None:
+            try:
+                outcome.append(server.op("alpha", "xtest.gate", {}, token=token)[0])
+            except BaseException as exc:  # noqa: BLE001 - surfaced by the assert below
+                outcome.append(repr(exc))
+
+        slow = threading.Thread(target=gated)
         slow.start()
-        assert wait_for(lambda: server.project("alpha").work.locked())
-        # The lock is taken just before the op's own admission check runs; let that
-        # check pass (the op sleeps 400 ms) so the edit lands during the operation.
-        time.sleep(0.1)
-        (board / "context.md").write_text("# Edited while the op ran\n")
-        slow.join()
+        try:
+            # Inside the operation, past its admission check: the edit lands during it.
+            assert Gate.entered.wait(10)
+            (board / "context.md").write_text("# Edited while the op ran\n")
+        finally:
+            Gate.released.set()
+            slow.join(timeout=30)  # a safety bound only
+        assert not slow.is_alive(), "the gated operation never finished"
+        assert outcome == [200]
         create_task(server, token)
         entries = [(x["op"], x["paths"]) for x in _journal(root)]
-        assert entries[0][0] == "xtest.sleep"
+        assert entries[0][0] == "xtest.gate"
         assert ("external", ["context.md"]) in entries
         assert entries.index(("external", ["context.md"])) == 1
 
@@ -241,16 +265,20 @@ def _lease_free(root: Path, slug: str) -> bool:
 
 
 def _steady_writer(server, token: str, slug: str, stop):  # noqa: ANN001, ANN202
-    """Write to *slug* until *stop* is set; returns (statuses, slowest seconds)."""
-    statuses: list[int] = []
+    """Write to *slug* until *stop* is set; returns (statuses, slowest seconds). An
+    exception in the writer lands in *statuses* as its ``repr``."""
+    statuses: list[int | str] = []
     slowest = [0.0]
 
     def loop() -> None:
-        while not stop.is_set():
-            started = time.monotonic()
-            status, _, _ = server.op(slug, "task.create", {"title": "steady"}, token=token)
-            slowest[0] = max(slowest[0], time.monotonic() - started)
-            statuses.append(status)
+        try:
+            while not stop.is_set():
+                started = time.monotonic()
+                status, _, _ = server.op(slug, "task.create", {"title": "steady"}, token=token)
+                slowest[0] = max(slowest[0], time.monotonic() - started)
+                statuses.append(status)
+        except BaseException as exc:  # noqa: BLE001 - surfaced by the caller's assert
+            statuses.append(repr(exc))
 
     return loop, statuses, slowest
 
@@ -298,7 +326,8 @@ def test_unload_offline_maintenance_then_load_while_others_serve(root: Path) -> 
             create_task(server, token, "alpha")
         finally:
             stop.set()
-            writer.join()
+            writer.join(timeout=30)  # a safety bound only
+    assert not writer.is_alive(), "the background writer never stopped"
     assert statuses and set(statuses) == {200}
     assert slowest[0] < 1.0
 
@@ -474,7 +503,9 @@ def test_a_half_written_request_waits_until_it_is_complete(root: Path) -> None:
         request = json.dumps({"action": "set-config", "set": {"review_mode": "triple"}})
         partial = board / "hosted" / "control" / "01J9Z0000000000000000000AB.json"
         partial.write_text(request[:20])  # half written
-        time.sleep(0.3)  # several poll periods (0.05 s in tests)
+        # The server has seen it unparseable, and polled a few more times (10 ms each).
+        assert wait_for(lambda: partial in control._first_seen_incomplete, timeout=5)
+        time.sleep(0.05)
         assert not partial.with_suffix(".done").exists()
         assert control.pending_requests(board) == []
         partial.write_text(request)  # the writer finishes
@@ -488,10 +519,14 @@ def test_a_malformed_request_expires_however_its_mtime_moves(
     """Review round 2 (push 2): the grace runs on this process's monotonic clock
     from first sight. A malformed oldest request with a far-future mtime, touched
     again and again, is still answered once the grace passes, and a later valid
-    request is processed at once meanwhile."""
+    request is processed at once meanwhile.
+
+    The grace is held open until the valid request is answered, then shortened
+    to 0.3 s: touching every 0.05 s would keep a grace that restarted on a touch
+    (or ran from the mtime) from ever passing."""
     import os
 
-    monkeypatch.setattr(control, "INCOMPLETE_GRACE_SECONDS", 1.0)
+    monkeypatch.setattr(control, "INCOMPLETE_GRACE_SECONDS", 1e9)
     with running_server(root):
         folder = root / "projects" / "alpha" / ".lattice" / "hosted" / "control"
         folder.mkdir(exist_ok=True)
@@ -503,15 +538,16 @@ def test_a_malformed_request_expires_however_its_mtime_moves(
         control._write_private(
             good, json.dumps({"action": "set-config", "set": {"review_mode": "triple"}}).encode()
         )
-        assert wait_for(lambda: good.with_suffix(".done").exists(), timeout=2)
+        assert wait_for(lambda: good.with_suffix(".done").exists(), timeout=5)
         assert json.loads(good.with_suffix(".done").read_text())["ok"] is True
         assert not bad.with_suffix(".done").exists()  # still within its grace
 
-        started = time.monotonic()
-        while not bad.with_suffix(".done").exists() and time.monotonic() - started < 5:
+        monkeypatch.setattr(control, "INCOMPLETE_GRACE_SECONDS", 0.3)
+        deadline = time.monotonic() + 10  # a safety bound only
+        while not bad.with_suffix(".done").exists():
+            assert time.monotonic() < deadline, "the malformed request was never answered"
             if bad.exists():
                 os.utime(bad, (future + 1, time.time() + 3600))  # touched: no extension
             time.sleep(0.05)
         answer = json.loads(bad.with_suffix(".done").read_text())
         assert answer["ok"] is False and answer["error"]["code"] == "VALIDATION_ERROR"
-        assert time.monotonic() - started < 3  # the 1 s grace, plus poll periods

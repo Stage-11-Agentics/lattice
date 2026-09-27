@@ -1385,7 +1385,7 @@ def test_production_dashboard_update_callbacks_race_across_servers(
         create_server(ld, "127.0.0.1", 0),
     ]
     with ThreadPoolExecutor(max_workers=2) as server_pool:
-        futures = [server_pool.submit(server.serve_forever) for server in servers]
+        futures = [server_pool.submit(server.serve_forever, 0.01) for server in servers]
         barrier = Barrier(2)
 
         def update(index: int) -> int:

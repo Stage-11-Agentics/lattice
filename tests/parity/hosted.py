@@ -229,8 +229,12 @@ def _mint(root: Path) -> tuple[str, str]:
 
 @contextmanager
 def parity_server(base: Path) -> Iterator[ParityServer]:
-    """One in-process server for a worker's scenarios, recording every mutation."""
-    root = make_root(base)
+    """One in-process server for a worker's scenarios, recording every mutation.
+
+    Audit is off: parity is about outputs and boards, and this server outlives the
+    parity tests, so its committer's debounced ``git`` calls would otherwise land
+    inside whichever test the worker runs next (one that mocks ``subprocess``, say)."""
+    root = make_root(base, config={"audit": {"enabled": False}})
     person, strict = _mint(root)
     from lattice.core.tasks import set_unknown_type_reporter
 

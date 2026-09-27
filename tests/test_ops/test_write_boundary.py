@@ -25,6 +25,7 @@ Every durable write goes through a recorded, marker-checked primitive of
 from __future__ import annotations
 
 import ast
+import functools
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -230,7 +231,10 @@ def load_module(name: str, path: Path, tree: ast.Module) -> Module:
     return module
 
 
-def _modules() -> dict[str, Module]:
+@functools.cache
+def modules() -> dict[str, Module]:
+    """Every module of the package, parsed once, on first use: parsing at import
+    would cost every xdist worker the parse during collection."""
     found: dict[str, Module] = {}
     for path in sorted(PACKAGE.rglob("*.py")):
         parts = path.relative_to(SRC).with_suffix("").parts
@@ -259,9 +263,6 @@ def resolve(module: Module, expr: ast.expr) -> str | None:
             if base is not None:
                 return f"{base}.{expr.attr}"
     return None
-
-
-MODULES = _modules()
 
 
 def _loads(tree: ast.AST) -> list[ast.expr]:
@@ -346,7 +347,7 @@ def storage_writers() -> set[str]:
     name: a primitive of storage/fs.py, mutate_task, or anything that uses one,
     directly, through a nested helper or a method, or through another such writer."""
     definitions: dict[str, tuple[Module, ast.AST]] = {}
-    for module in MODULES.values():
+    for module in modules().values():
         if module.name.startswith("lattice.storage"):
             for name, node in _definitions(module).items():
                 definitions[f"{module.name}.{name}"] = (module, node)
@@ -373,13 +374,18 @@ def _writer_uses(module: Module, tree: ast.AST, writers: set[str]) -> list[tuple
     return sorted(found)
 
 
-WRITERS = storage_writers()
+@functools.cache
+def writers() -> frozenset[str]:
+    """:func:`storage_writers` of the real package, computed once, on first use."""
+    return frozenset(storage_writers())
 
 
-def cache_writers() -> set[str]:
+@functools.cache
+def cache_writers() -> frozenset[str]:
     """The cache_paths writer primitives and every cache_paths function that uses
-    one (``opened_dir`` through ``open_dir`` through ``open_child``)."""
-    module = MODULES[CACHE_PATHS_MODULE]
+    one (``opened_dir`` through ``open_dir`` through ``open_child``), computed
+    once, on first use."""
+    module = modules()[CACHE_PATHS_MODULE]
     definitions = {f"{module.name}.{name}": node for name, node in _definitions(module).items()}
     writers = {f"{CACHE_PATHS_MODULE}.{name}" for name in CACHE_PRIMITIVES}
     changed = True
@@ -389,23 +395,20 @@ def cache_writers() -> set[str]:
             if key not in writers and _writer_uses(module, node, writers):
                 writers.add(key)
                 changed = True
-    return writers
-
-
-CACHE_WRITERS = cache_writers()
+    return frozenset(writers)
 
 
 def cache_writer_calls(module: Module) -> list[str]:
     return [
         f"{module.name}:{line}: {writer}"
-        for line, writer in _writer_uses(module, module.tree, CACHE_WRITERS)
+        for line, writer in _writer_uses(module, module.tree, cache_writers())
     ]
 
 
 def board_writer_calls(module: Module) -> list[str]:
     return [
         f"{module.name}:{line}: {writer}"
-        for line, writer in _writer_uses(module, module.tree, WRITERS)
+        for line, writer in _writer_uses(module, module.tree, writers())
     ]
 
 
@@ -413,16 +416,16 @@ def board_writer_calls(module: Module) -> list[str]:
 
 
 def test_the_scan_sees_the_package() -> None:
-    assert "lattice.storage.fs" in MODULES and "lattice.ops.base" in MODULES
-    assert "lattice.storage.operations.mutate_task" in WRITERS
+    assert "lattice.storage.fs" in modules() and "lattice.ops.base" in modules()
+    assert "lattice.storage.operations.mutate_task" in writers()
     # Transitive storage writers are found (a session file is written through atomic_write).
-    assert "lattice.storage.sessions.create_session" in WRITERS
+    assert "lattice.storage.sessions.create_session" in writers()
 
 
 def test_no_raw_file_writes_outside_storage_fs() -> None:
     offenders = [
         hit
-        for module in MODULES.values()
+        for module in modules().values()
         if module.name != FS_MODULE and module.name not in RAW_WRITERS
         for hit in raw_writes(module)
     ]
@@ -437,7 +440,7 @@ def test_board_writers_are_called_only_behind_operations() -> None:
     allowed = set(BOARD_OWNERS) | set(AWAITING_CONVERSION)
     offenders = [
         hit
-        for module in MODULES.values()
+        for module in modules().values()
         if not module.inside_boundary and module.name not in allowed
         for hit in board_writer_calls(module)
     ]
@@ -450,7 +453,7 @@ def test_board_writers_are_called_only_behind_operations() -> None:
 def test_cache_writers_are_called_only_by_the_client_cache() -> None:
     offenders = [
         hit
-        for module in MODULES.values()
+        for module in modules().values()
         if module.name != CACHE_PATHS_MODULE and module.name not in CACHE_OWNERS
         for hit in cache_writer_calls(module)
     ]
@@ -462,8 +465,8 @@ def test_cache_writers_are_called_only_by_the_client_cache() -> None:
 
 
 def test_the_scan_sees_the_cache_writers() -> None:
-    assert f"{CACHE_PATHS_MODULE}.opened_dir" in CACHE_WRITERS  # through open_dir
-    assert f"{CACHE_PATHS_MODULE}.read_file" not in CACHE_WRITERS
+    assert f"{CACHE_PATHS_MODULE}.opened_dir" in cache_writers()  # through open_dir
+    assert f"{CACHE_PATHS_MODULE}.read_file" not in cache_writers()
     module = load_module(
         "lattice.cli.example",
         Path("example.py"),
@@ -490,16 +493,16 @@ def f(fd):
 
 def test_every_listed_module_still_needs_its_entry() -> None:
     for name in RAW_WRITERS:
-        assert name in MODULES, f"RAW_WRITERS names a missing module {name}"
-        assert raw_writes(MODULES[name]), f"{name} no longer writes raw files; remove it"
+        assert name in modules(), f"RAW_WRITERS names a missing module {name}"
+        assert raw_writes(modules()[name]), f"{name} no longer writes raw files; remove it"
     for name in (*BOARD_OWNERS, *AWAITING_CONVERSION):
-        assert name in MODULES, f"missing module {name}"
-        assert board_writer_calls(MODULES[name]), f"{name} no longer writes a board; remove it"
-        assert not MODULES[name].inside_boundary
+        assert name in modules(), f"missing module {name}"
+        assert board_writer_calls(modules()[name]), f"{name} no longer writes a board; remove it"
+        assert not modules()[name].inside_boundary
     assert not set(BOARD_OWNERS) & set(AWAITING_CONVERSION)
     for name in CACHE_OWNERS:
-        assert name in MODULES, f"CACHE_OWNERS names a missing module {name}"
-        assert cache_writer_calls(MODULES[name]), f"{name} no longer writes the cache; remove it"
+        assert name in modules(), f"CACHE_OWNERS names a missing module {name}"
+        assert cache_writer_calls(modules()[name]), f"{name} no longer writes the cache; remove it"
 
 
 def _scan(source: str, name: str = "lattice.cli.example") -> tuple[list[str], list[str]]:
@@ -631,12 +634,12 @@ def reader(p):
 """
         ),
     )
-    MODULES[storage.name] = storage
+    modules()[storage.name] = storage
     try:
-        writers = storage_writers()
-        assert "lattice.storage.example.Saver" in writers
-        assert "lattice.storage.example.outer" in writers
-        assert "lattice.storage.example.reader" not in writers
+        found = storage_writers()
+        assert "lattice.storage.example.Saver" in found
+        assert "lattice.storage.example.outer" in found
+        assert "lattice.storage.example.reader" not in found
         caller = load_module(
             "lattice.cli.example",
             Path("caller.py"),
@@ -654,11 +657,11 @@ def f(p):
 """
             ),
         )
-        used = [writer for _, writer in _writer_uses(caller, caller.tree, writers)]
+        used = [writer for _, writer in _writer_uses(caller, caller.tree, found)]
         assert sorted(set(used)) == [
             "lattice.storage.example.Saver",
             "lattice.storage.example.outer",
         ]
         assert len(used) == 4  # the alias line, the two Saver calls' line each, outer
     finally:
-        del MODULES[storage.name]
+        del modules()[storage.name]

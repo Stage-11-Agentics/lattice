@@ -132,7 +132,7 @@ class StubServer:
     @contextlib.contextmanager
     def running(self) -> Iterator[StubServer]:
         self._httpd = _Server(("127.0.0.1", 0), _make_handler(self))
-        thread = threading.Thread(target=self._httpd.serve_forever, args=(0.05,), daemon=True)
+        thread = threading.Thread(target=self._httpd.serve_forever, args=(0.01,), daemon=True)
         thread.start()
         try:
             yield self
@@ -522,7 +522,7 @@ class TestProxy:
     @contextlib.contextmanager
     def running(self) -> Iterator[TestProxy]:
         self._httpd = _Server(("127.0.0.1", 0), _make_proxy_handler(self))
-        thread = threading.Thread(target=self._httpd.serve_forever, args=(0.05,), daemon=True)
+        thread = threading.Thread(target=self._httpd.serve_forever, args=(0.01,), daemon=True)
         thread.start()
         try:
             yield self
@@ -636,7 +636,7 @@ class RecordingListener:
                 self.end_headers()
 
         self._httpd = _Server(("127.0.0.1", 0), Handler)
-        thread = threading.Thread(target=self._httpd.serve_forever, args=(0.05,), daemon=True)
+        thread = threading.Thread(target=self._httpd.serve_forever, args=(0.01,), daemon=True)
         thread.start()
         try:
             yield self
@@ -676,7 +676,7 @@ class OneShotServer:
                 self.wfile.write(server.body)
 
         self._httpd = _Server(("127.0.0.1", 0), Handler)
-        thread = threading.Thread(target=self._httpd.serve_forever, args=(0.05,), daemon=True)
+        thread = threading.Thread(target=self._httpd.serve_forever, args=(0.01,), daemon=True)
         thread.start()
         try:
             yield self

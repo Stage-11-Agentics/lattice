@@ -1497,7 +1497,7 @@ class TestReadonlyMode:
         server = create_server(ld, "127.0.0.1", port, readonly=True)
         thread = threading.Thread(
             target=server.serve_forever,
-            kwargs={"poll_interval": 0.05},
+            kwargs={"poll_interval": 0.01},
             daemon=True,
         )
         thread.start()

@@ -123,8 +123,8 @@ def remote_head(bare: Path, branch: str = "audit") -> str | None:
 
 @dataclass
 class GitShim:
-    """A ``git`` first on ``PATH`` that logs each call's arguments, sleeps
-    ``stall_push`` seconds before a push while ``stall`` exists, and fails a
+    """A ``git`` first on ``PATH`` that logs each call's arguments, holds a push
+    for as long as ``stall`` exists, and fails a
     ``<subcommand>`` once for each ``fail-<subcommand>`` file (consumed)."""
 
     directory: Path
@@ -147,9 +147,7 @@ class GitShim:
         return out
 
 
-def install_git_shim(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, stall_push: float = 0
-) -> GitShim:
+def install_git_shim(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> GitShim:
     real_git = shutil.which("git")
     assert real_git
     directory = tmp_path / "shim"
@@ -167,7 +165,9 @@ for arg in "$@"; do
     *) sub="$arg"; break ;;
   esac
 done
-if [ "$sub" = push ] && [ -e "{directory}/stall" ]; then sleep {stall_push}; fi
+if [ "$sub" = push ]; then
+  while [ -e "{directory}/stall" ]; do sleep 0.02; done
+fi
 if [ -n "$sub" ] && [ -e "{directory}/fail-$sub" ]; then
   rm -f "{directory}/fail-$sub"
   echo "fatal: injected failure of $sub" >&2

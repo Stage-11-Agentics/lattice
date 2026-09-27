@@ -6,6 +6,7 @@ this module.
 
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass
 
@@ -28,6 +29,32 @@ class Sleep:
     def run(self, ctx: OpContext, p: SleepParams) -> OpResult:
         time.sleep(p.ms / 1000)
         return OpResult(value={"slept_ms": p.ms}, idempotent=True)
+
+
+class Gate:
+    """``xtest.gate``'s signals: ``entered`` is set once the operation runs (the
+    work lock held, its admission checks passed); it returns when ``released``."""
+
+    entered = threading.Event()
+    released = threading.Event()
+
+    @classmethod
+    def reset(cls) -> None:
+        cls.entered.clear()
+        cls.released.clear()
+
+
+@operation("xtest.gate")
+class GateOp:
+    """Holds the project's work lock until the test sets ``Gate.released``, writes nothing."""
+
+    Params = CommonParams
+
+    def run(self, ctx: OpContext, p: CommonParams) -> OpResult:
+        Gate.entered.set()
+        if not Gate.released.wait(30):  # a safety bound only
+            raise RuntimeError("xtest.gate was never released")
+        return OpResult(value={}, idempotent=True)
 
 
 @dataclass(frozen=True, kw_only=True)

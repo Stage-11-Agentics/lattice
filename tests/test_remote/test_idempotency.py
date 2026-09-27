@@ -111,6 +111,19 @@ def pinned_op_id(monkeypatch: pytest.MonkeyPatch, op_id: str) -> Iterator[None]:
 
 @contextmanager
 def dropping_proxy(env: HostedEnv) -> Iterator[Dropper]:
+    """A :class:`Dropper` in front of *env*'s server. The client's retry window
+    runs on a fake clock that only its backoff sleeps advance: ``meanwhile`` runs
+    before the drop, so the retry has nothing to wait for, and the retries it
+    makes do not depend on how fast a loaded machine is."""
+    from lattice.remote import client
+
+    now = [1000.0]
+
+    def sleep(seconds: float) -> None:
+        now[0] += seconds
+
+    env.monkeypatch.setattr(client, "_now", lambda: now[0])
+    env.monkeypatch.setattr(client, "_sleep", sleep)
     dropper = Dropper(env.url)
 
     class Handler(BaseHTTPRequestHandler):
@@ -329,7 +342,8 @@ def test_outcome_unknown_names_the_op_and_op_status_finds_it(
 ) -> None:
     """The request is sent and committed, then the server goes down (in place of
     its answer) and stays down past retry_seconds: OUTCOME_UNKNOWN naming the
-    op_id. With the server back, op-status reports it committed, once."""
+    op_id. With the server back, op-status reports it committed, once. On the
+    proxy's fake clock the client retries once, at 0.5 s of its 1 s window."""
     with dropping_proxy(hosted_env) as dropper:
         hosted_env.write_remote(url=dropper.url, retry_seconds=1)
         dropper.drops = 1

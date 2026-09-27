@@ -92,12 +92,16 @@ class TestHeadlessBackendEndToEnd:
         assert sentinel_path(req.output_file).exists()
 
     def test_fake_agent_timeout(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A timed-out spawn fails, writes its sentinel, and carries the resolved
+        command on the result: the diagnostic the failure record needs (the
+        timeout path previously discarded everything but a bare 'timed out')."""
         _patch_command(monkeypatch, behavior="sleep:5")
         req = _make_request(tmp_path, "claude", timeout=1)
         result = spawn_one(req, workspace_label="test", backend=HeadlessBackend())
         assert not result.success
         assert "timed out" in result.error
         assert sentinel_path(req.output_file).exists()
+        assert result.command and "fake_agent" in result.command
 
     def test_spawn_many_concurrent_fake_agents(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -109,20 +113,6 @@ class TestHeadlessBackendEndToEnd:
         assert all(r.success for r in results), [r.error for r in results]
         for req in reqs:
             assert sentinel_path(req.output_file).exists()
-
-    def test_timeout_records_command_for_diagnostics(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A timed-out spawn carries the resolved command on the result.
-
-        This is the diagnostic the failure record needs — the timeout path
-        previously discarded everything but a bare 'timed out' string.
-        """
-        _patch_command(monkeypatch, behavior="sleep:5")
-        req = _make_request(tmp_path, "claude", timeout=1)
-        result = spawn_one(req, workspace_label="test", backend=HeadlessBackend())
-        assert not result.success
-        assert result.command and "fake_agent" in result.command
 
     def test_failure_records_returncode_and_stderr_tail(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

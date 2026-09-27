@@ -44,8 +44,6 @@ from tests.parity.hosted import (
 )
 from tests.parity.record import _base_env, _chdir, _process_env, _runner
 
-pytestmark = pytest.mark.usefixtures("no_fsync")
-
 
 @pytest.mark.parametrize(("scenario", "mode"), hosted_cases(0))
 def test_scenario_matches_golden_through_the_server(

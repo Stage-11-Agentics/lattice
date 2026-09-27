@@ -71,8 +71,10 @@ def client_root(tmp_path: Path, stub: StubServer, monkeypatch: pytest.MonkeyPatc
 
 @pytest.fixture(scope="module")
 def live_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[ServerHandle]:
-    """One real server for the module; tests add their own projects to it."""
-    root = make_root(tmp_path_factory.mktemp("live-server"))
+    """One real server for the module; tests add their own projects to it. Audit
+    is off: it is not the subject here, and this server outlives each test, so its
+    committer's debounced ``git`` calls would land inside a later test."""
+    root = make_root(tmp_path_factory.mktemp("live-server"), config={"audit": {"enabled": False}})
     with running_server(root) as handle:
         yield handle
 

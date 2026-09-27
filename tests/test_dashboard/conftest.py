@@ -238,7 +238,7 @@ def dashboard_server(populated_lattice_dir: tuple[Path, dict[str, str]]):
     server = create_server(ld, host, port)
 
     thread = threading.Thread(
-        target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
+        target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
     )
     thread.start()
 
