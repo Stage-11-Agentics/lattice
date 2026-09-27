@@ -710,3 +710,14 @@ class TestForce:
         assert status == 400
         assert body["error"]["code"] == "VALIDATION_ERROR"
         assert board_bytes(ld) == before
+
+
+def test_a_local_board_reports_no_head(dash) -> None:
+    """``GET /api/head`` (H-13b): only a bound checkout's cache has a head; a local
+    board answers ``null`` and the page keeps its 5-second poll."""
+    import json as _json
+    import urllib.request
+
+    port = dash[0]
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/head", timeout=10) as response:
+        assert _json.loads(response.read()) == {"data": {"head": None}, "ok": True}

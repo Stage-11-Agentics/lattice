@@ -91,10 +91,15 @@ def test_assets_and_api_calls_use_the_base_path() -> None:
     assert not re.search(r"""(?:src|href)=["']/(?!/)""", html), (
         "asset references must be relative, so the page works at / and at /p/<slug>/"
     )
-    assert "fetch(apiUrl(BASE_PATH, path), opts)" in html
-    assert (
-        re.search(r"fetch\(", html.replace("fetch(apiUrl(BASE_PATH, path), opts)", "")) is None
-    ), "every fetch goes through api()/apiPost(), which resolve against the base path"
+    reads = "fetch(apiUrl(BASE_PATH, path), opts)"  # api()
+    writes = (  # apiPost()'s writer (static/live.js), which fetches only url(path)
+        "fetch: function(url, opts) { return fetch(url, opts); },\n"
+        "  url: function(path) { return apiUrl(BASE_PATH, path); },"
+    )
+    assert reads in html and writes in html
+    assert re.search(r"fetch\(", html.replace(reads, "").replace(writes, "")) is None, (
+        "every fetch goes through api()/apiPost(), which resolve against the base path"
+    )
 
 
 def test_status_and_legend_markup_goes_through_the_tested_helpers() -> None:

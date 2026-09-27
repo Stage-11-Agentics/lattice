@@ -1,13 +1,16 @@
-"""AC-42 (load, without dashboards): on a 1,000-task board, 20 readers (catch-up
-plus ``list``), 5 writers, and 5 followers for 60 s; write latency p95 under
-500 ms. The clients' checkouts and caches live on a filesystem separate from the
-server root's (EVALUATION AC-42); client read latency is reported, not bounded.
-The workload is fixed here; the rig lives in ``tests/torture/load.py``, shared
-with H-13b's ``test_with_dashboards``.
+"""AC-42 (load): on a 1,000-task board, 20 readers (catch-up plus ``list``),
+5 writers, and 5 followers for 60 s; write latency p95 under 500 ms, without
+dashboards (``test_readers_writers``, H-15) and with 5 hosted-dashboard viewers
+added (``test_with_dashboards``, H-13b). The clients' checkouts and caches live
+on a filesystem separate from the server root's (EVALUATION AC-42); client read
+latency is reported, not bounded. The workloads are fixed here; the rig lives in
+``tests/torture/load.py``.
 """
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -17,6 +20,7 @@ import pytest
 from tests.torture import harness, load
 from tests.torture.load import (
     LoadRig,
+    viewer_report,
     assert_separate_filesystems,
     p95,
     read_latencies,
@@ -30,6 +34,7 @@ SECONDS = 60.0
 READERS = 20
 WRITERS = 5
 FOLLOWERS = 5
+VIEWERS = 5
 P95_LIMIT_SECONDS = 0.5
 
 
@@ -59,6 +64,59 @@ def test_readers_writers(tmp_path: Path) -> None:
         f"p95={p95(read_times) * 1000:.0f}ms max={read_times[-1] * 1000:.0f}ms (reported, LAT-330)"
     )
     assert p95(latencies) < P95_LIMIT_SECONDS
+
+
+@pytest.mark.envelope
+@pytest.mark.timeout(2400)
+def test_with_dashboards(tmp_path: Path) -> None:
+    """The same load plus 5 hosted-dashboard viewers, each refetching the page's
+    panels once per journal entry it receives (no coalescing). Every viewer is
+    live before the writers start and drains through the final entry after they
+    stop: it receives exactly the entries written after it became ready, and
+    refetches once for each (one journal entry per write)."""
+    with LoadRig.running(tmp_path, tasks=TASKS) as rig:
+        followers = rig.start_followers(FOLLOWERS)
+        readers = rig.start_readers(READERS)
+        viewers = rig.start_viewers(VIEWERS)
+        latencies = rig.run_writers(WRITERS, seconds=SECONDS)
+        reads = rig.stop_readers(readers)
+        final, views = rig.stop_viewers(viewers)
+        assert all(proc.poll() is None for proc in followers), "a follower died under load"
+
+    bad = [r for r in reads if "error" in r or "notice" in r]
+    assert not bad, bad[:3]
+    assert min(r["count"] for r in reads) >= TASKS
+    writes, read_times = sorted(latencies), sorted(read_latencies(reads))
+    print(
+        f"load with {VIEWERS} viewers: {len(writes)} writes, "
+        f"p50={writes[len(writes) // 2] * 1000:.0f}ms p95={p95(writes) * 1000:.0f}ms "
+        f"max={writes[-1] * 1000:.0f}ms; client reads p95={p95(read_times) * 1000:.0f}ms "
+        f"(reported); final seq {final}; viewers (ready seq, received, refetched) "
+        f"{[(v['ready_seq'], v['received'], v['refetched']) for v in views]}"
+    )
+    for view in views:
+        # Ready before the first write: every write since is one journal entry.
+        assert final - view["ready_seq"] == len(writes), (final, len(writes), view)
+        assert view["received"] == view["refetched"] == len(writes), (final, view)
+        assert view["last_seq"] == final, (final, view)
+    assert p95(latencies) < P95_LIMIT_SECONDS
+
+
+@pytest.mark.timeout(60)
+def test_a_viewer_that_dies_without_its_report_fails_the_run(tmp_path: Path) -> None:
+    """However late a viewer dies (even just before the window closes), the run
+    fails: a viewer must exit 0 with its ``done`` report."""
+    out = tmp_path / "viewer.json"
+    died = subprocess.Popen([sys.executable, "-c", "raise SystemExit(3)"])
+    with pytest.raises(AssertionError):
+        viewer_report(died, out, timeout=30)
+    out.write_text('{"crashed": "viewer stream closed", "received": 4, "refetched": 3}\n')
+    crashed = subprocess.Popen([sys.executable, "-c", "raise SystemExit(1)"])
+    with pytest.raises(AssertionError):
+        viewer_report(crashed, out, timeout=30)
+    out.write_text('{"done": true, "received": 4, "refetched": 4}\n')
+    finished = subprocess.Popen([sys.executable, "-c", "pass"])
+    assert viewer_report(finished, out, timeout=30)["refetched"] == 4
 
 
 class FakeMount:

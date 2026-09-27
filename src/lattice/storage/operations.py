@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import json
+import os
 import sys
 from collections.abc import Generator, Mapping
 from dataclasses import dataclass, field
@@ -316,9 +318,142 @@ def read_task_authority(
     This is the canonical read path for callers that care whether a task is
     active or archived.  It never selects placement from snapshot presence and
     returns the replayed snapshot, so a stale cache cannot resurrect a task.
+
+    Inside :func:`authority_cache` (a server's hosted dashboard read, under the
+    project's work lock) a replay whose event logs are unchanged is reused.
     """
+    cache = _AUTHORITY_CACHE.get()
+    if cache is not None:
+        return cache.read(lattice_dir, task_id, allow_missing)
+    return _read_task_authority_locked(lattice_dir, task_id, allow_missing=allow_missing)
+
+
+def _read_task_authority_locked(
+    lattice_dir: Path,
+    task_id: str,
+    *,
+    allow_missing: bool = False,
+) -> ResolvedTaskAuthority | None:
     with task_locks(lattice_dir / "locks", [task_id]):
         return resolve_task_authority(lattice_dir, task_id, allow_missing=allow_missing)
+
+
+class AuthorityCache:
+    """Strict replays reused by a process that serializes every write of the
+    board against its reads: the server's hosted dashboard, whose reads run
+    under the project's work lock (SPEC §8.5, §10). Callers must treat cached
+    authorities as read-only, and must call :meth:`begin` with the board's
+    current scope before each read under the lock.
+
+    Two layers. Within one *scope* (the server passes ``(epoch, head_seq)``;
+    a new load starts a new cache) nothing changes the board, so a replay made
+    in that scope is reused as is. In a later scope an entry is reused only
+    if the task's two event logs are byte-for-byte the ones it was replayed
+    from: a replay is a pure function of those bytes, so this is as strict as
+    replaying again, whatever the files' size, mtime, or inode say. The cache
+    holds at most *max_bytes* of log bytes, least recently used first out.
+    """
+
+    def __init__(self, max_bytes: int = 64 * 1024 * 1024) -> None:
+        from collections import OrderedDict
+
+        self.max_bytes = max_bytes
+        self.bytes = 0
+        self.scope: object = None
+        self._fresh: set[tuple[str, bool]] = set()
+        #: Discovery results of the current scope, by ``(lattice_dir, include_archived)``.
+        self._discovered: dict[tuple[str, bool], list[ResolvedTaskAuthority]] = {}
+        self._entries: OrderedDict[
+            tuple[str, bool], tuple[tuple[bytes | None, bytes | None], ResolvedTaskAuthority]
+        ] = OrderedDict()
+
+    def begin(self, scope: object) -> None:
+        """Enter *scope*; on a change, every entry must be revalidated before use."""
+        if scope != self.scope:
+            self.scope = scope
+            self._fresh = set()
+            self._discovered = {}
+
+    @staticmethod
+    def _sources(lattice_dir: Path, task_id: str) -> tuple[bytes | None, bytes | None]:
+        """Both event logs' bytes (``None`` when absent); plain ``os`` calls, since
+        this runs for every task of every scope."""
+        base = os.fspath(lattice_dir)
+        out: list[bytes | None] = []
+        for directory in ("events", "archive/events"):
+            try:
+                fd = os.open(f"{base}/{directory}/{task_id}.jsonl", os.O_RDONLY)
+            except FileNotFoundError:
+                out.append(None)
+                continue
+            try:
+                chunks = []
+                while chunk := os.read(fd, 1 << 20):
+                    chunks.append(chunk)
+            finally:
+                os.close(fd)
+            out.append(b"".join(chunks))
+        return out[0], out[1]
+
+    def discovered(
+        self, lattice_dir: Path, include_archived: bool, discover: Callable[[], list]
+    ) -> list[ResolvedTaskAuthority]:
+        """One discovery per scope and argument set (nothing changes within a scope)."""
+        key = (os.fspath(lattice_dir), include_archived)
+        found = self._discovered.get(key)
+        if found is None:
+            found = self._discovered[key] = discover()
+        return list(found)
+
+    def read(
+        self, lattice_dir: Path, task_id: str, allow_missing: bool
+    ) -> ResolvedTaskAuthority | None:
+        slot = (task_id, allow_missing)
+        hit = self._entries.get(slot)
+        if hit is not None and slot in self._fresh:
+            self._entries.move_to_end(slot)
+            return hit[1]
+        sources = self._sources(lattice_dir, task_id)
+        if hit is not None and hit[0] == sources:
+            self._entries.move_to_end(slot)
+            self._fresh.add(slot)
+            return hit[1]
+        # The caller holds the board's single work lock, so the per-task read
+        # locks guard nothing more here.
+        authority = resolve_task_authority(lattice_dir, task_id, allow_missing=allow_missing)
+        self._drop(slot)
+        if authority is not None and sources == self._sources(lattice_dir, task_id):
+            self._entries[slot] = (sources, authority)
+            self._fresh.add(slot)
+            self.bytes += sum(len(b) for b in sources if b is not None)
+            while self.bytes > self.max_bytes and self._entries:
+                self._drop(next(iter(self._entries)))
+        return authority
+
+    def _drop(self, slot: tuple[str, bool]) -> None:
+        old = self._entries.pop(slot, None)
+        self._fresh.discard(slot)
+        if old is not None:
+            self.bytes -= sum(len(b) for b in old[0] if b is not None)
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+
+_AUTHORITY_CACHE: contextvars.ContextVar[AuthorityCache | None] = contextvars.ContextVar(
+    "lattice_authority_cache", default=None
+)
+
+
+@contextlib.contextmanager
+def authority_cache(cache: AuthorityCache) -> Generator[None, None, None]:
+    """Reuse *cache* for :func:`read_task_authority` in this context (see
+    :class:`AuthorityCache` for who may)."""
+    token = _AUTHORITY_CACHE.set(cache)
+    try:
+        yield
+    finally:
+        _AUTHORITY_CACHE.reset(token)
 
 
 def resolve_task_prose_path(
@@ -360,7 +495,27 @@ def discover_task_authorities(
     IDs are collected from both placements first, then each task is resolved
     through :func:`read_task_authority`. Split copies therefore yield one
     logical task at the placement selected by immutable history.
+
+    Inside :func:`authority_cache`, one scope discovers once per argument set.
     """
+    cache = _AUTHORITY_CACHE.get()
+    if cache is not None:
+        # Discovery without archived tasks resolves the same IDs and keeps the
+        # active placements, so it is the full discovery filtered.
+        found = cache.discovered(
+            lattice_dir,
+            True,
+            lambda: _discover_task_authorities(lattice_dir, include_archived=True),
+        )
+        return found if include_archived else [a for a in found if a.location == "active"]
+    return _discover_task_authorities(lattice_dir, include_archived=include_archived)
+
+
+def _discover_task_authorities(
+    lattice_dir: Path,
+    *,
+    include_archived: bool = True,
+) -> list[ResolvedTaskAuthority]:
     active_task_ids: set[str] = set()
     archived_task_ids: set[str] = set()
     event_dirs = [

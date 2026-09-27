@@ -1442,6 +1442,7 @@ select.form-control{cursor:pointer}
     <span id="stats-badges"></span>
     <button type="button" class="btn btn-new-task" id="new-task-btn" title="Create new task">+ New Task</button>
     <button type="button" class="btn btn-with-icon" id="filters-btn" title="Filters" aria-pressed="false" aria-expanded="false"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg> <span id="filters-btn-label">Filters</span><span id="filters-btn-count" class="is-idle" aria-hidden="true">· 0</span></button><button type="button" class="btn filters-clear-btn is-idle" id="filters-clear-btn" aria-hidden="true" aria-label="Clear all filters">✕</button>
+    <button type="button" class="btn" id="logout" hidden>Log out</button>
     <button type="button" class="btn btn-with-icon" id="settings-btn" title="Dashboard Settings"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg> Settings</button>
     <button type="button" class="btn btn-with-icon" id="help-btn" title="User Guide"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> Help</button>
     <button type="button" class="btn btn-with-icon" id="refresh-btn" title="Refresh"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10"/><path d="M20.49 15a9 9 0 01-14.85 3.36L1 14"/></svg> Refresh</button>
@@ -1631,12 +1632,16 @@ select.form-control{cursor:pointer}
   </div>
 </div>
 
-<script src="https://unpkg.com/d3@7"></script>
-<script src="https://unpkg.com/d3-binarytree@1"></script>
-<script src="https://unpkg.com/d3-octree@1"></script>
-<script src="https://unpkg.com/d3-force-3d@3"></script>
-<script src="https://unpkg.com/force-graph@1/dist/force-graph.min.js"></script>
-<script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+<!-- Third-party graph libraries, vendored with their licenses (static/vendor/,
+     pinned in VERSIONS.json by scripts/vendor-dashboard-js.sh): the page loads
+     nothing from another origin, so the hosted CSP holds and a local dashboard
+     works offline. -->
+<script src="static/vendor/d3/d3.min.js"></script>
+<script src="static/vendor/d3-binarytree/d3-binarytree.min.js"></script>
+<script src="static/vendor/d3-octree/d3-octree.min.js"></script>
+<script src="static/vendor/d3-force-3d/d3-force-3d.min.js"></script>
+<script src="static/vendor/force-graph/force-graph.min.js"></script>
+<script src="static/vendor/three/three.min.js"></script>
 <link rel="stylesheet" href="static/cube3d.css">
 <script src="static/cube3d.js" defer></script>
 <link rel="stylesheet" href="static/cube-v2.css">
@@ -1654,6 +1659,9 @@ select.form-control{cursor:pointer}
 <script src="static/escape.js"></script>
 <!-- Origin filter query for /api/tasks, tested in tests/js/origin-filter.test.js -->
 <script src="static/origin-filter.js"></script>
+<!-- newOpId, hostedSlug, retryDelay, createLiveRefresh: stream refresh and retry-safe
+     writes on a hosted dashboard (SPEC §8.6, §10), tested in tests/js/live.test.js -->
+<script src="static/live.js"></script>
 <script>
 (function(){
 "use strict";
@@ -2308,12 +2316,35 @@ async function loadTasks() {
   return true;
 }
 
-async function apiPost(path, data) {
-  return api(path, {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify(data)
-  });
+// A hosted page (/p/<slug>/) follows the project's change stream and names
+// each write with one op_id, kept across retries (static/live.js).
+var HOSTED_SLUG = hostedSlug(location.pathname);
+
+function _randomBytes(n) {
+  var bytes = new Uint8Array(n);
+  window.crypto.getRandomValues(bytes);
+  return bytes;
+}
+
+function _sleep(ms) {
+  return new Promise(function(resolve) { setTimeout(resolve, ms); });
+}
+
+// Every write goes through one writer (static/live.js): hosted, one
+// Lattice-Op-Id per logical write for all its attempts, retried on a lost or
+// unreadable answer or a transient refusal, so the server applies it once (SPEC
+// §8.6); locally sent once, as before. A write identical to one still in flight
+// joins it, so a double click applies once.
+var pageWriter = createWriter({
+  fetch: function(url, opts) { return fetch(url, opts); },
+  url: function(path) { return apiUrl(BASE_PATH, path); },
+  hosted: !!HOSTED_SLUG,
+  newOpId: function() { return newOpId(Date.now(), _randomBytes); },
+  sleep: _sleep
+});
+
+function apiPost(path, data) {
+  return pageWriter.post(path, data);
 }
 
 // --- Delegated page actions ---
@@ -7421,9 +7452,58 @@ document.getElementById("refresh-btn").addEventListener("click", async function(
 var autoRefreshInterval = null;
 var AUTO_REFRESH_MS = 5000;
 
+// Locally the page polls every AUTO_REFRESH_MS and, on a bound checkout, also
+// watches the cache's head every second (GET /api/head). Hosted, it refetches on
+// every change-stream entry and polls only while the stream is down. All three
+// go through one refresh scheduler, so refreshes never overlap (static/live.js).
+var liveRefresh = null;
+var headWatch = null;
+var HEAD_WATCH_MS = 1000;
+var refreshScheduler = createRefreshScheduler(refreshCurrentView);
+
 function startAutoRefresh() {
   stopAutoRefresh();
-  autoRefreshInterval = setInterval(async function() {
+  if (HOSTED_SLUG && typeof EventSource !== "undefined") {
+    if (!liveRefresh) {
+      liveRefresh = createLiveRefresh({
+        url: streamUrl(HOSTED_SLUG),
+        EventSource: EventSource,
+        schedule: refreshScheduler.trigger,
+        startPoll: startPolling,
+        stopPoll: stopPolling
+      });
+    }
+    liveRefresh.connect();
+    return;
+  }
+  startPolling();
+  // Local: on a bound checkout, refetch as soon as the follower moves the cache.
+  if (!headWatch) {
+    headWatch = createHeadWatch({
+      fetchHead: function() { return api("/api/head").then(function(d) { return d.head; }); },
+      schedule: refreshScheduler.trigger,
+      intervalMs: HEAD_WATCH_MS,
+      setInterval: function(fn, ms) { return setInterval(fn, ms); },
+      clearInterval: function(id) { clearInterval(id); }
+    });
+  }
+  headWatch.start();
+}
+
+function startPolling() {
+  if (autoRefreshInterval) return;
+  autoRefreshInterval = setInterval(refreshScheduler.trigger, AUTO_REFRESH_MS);
+}
+
+function stopPolling() {
+  if (autoRefreshInterval) {
+    clearInterval(autoRefreshInterval);
+    autoRefreshInterval = null;
+  }
+}
+
+// Refetch whatever the current view shows.
+async function refreshCurrentView() {
     if (currentView !== "board" && currentView !== "list" && currentView !== "activity" && currentView !== "stats" && currentView !== "cube" && currentView !== "cube2" && currentView !== "web" && currentView !== "structure") return;
 
     // Structure: fetch structure.json + events.jsonl tail, re-render frame.
@@ -7529,14 +7609,22 @@ function startAutoRefresh() {
     } catch(e) {
       // Silently ignore refresh errors — server may be restarting
     }
-  }, AUTO_REFRESH_MS);
 }
 
 function stopAutoRefresh() {
-  if (autoRefreshInterval) {
-    clearInterval(autoRefreshInterval);
-    autoRefreshInterval = null;
-  }
+  stopPolling();
+  if (liveRefresh) liveRefresh.close();
+  if (headWatch) headWatch.stop();
+}
+
+// Hosted: a log-out button, driven by the server's /web/logout.js (a JSON POST
+// to /logout, SPEC §10). The local dashboard has no session to end.
+if (HOSTED_SLUG) {
+  var logoutButton = document.getElementById("logout");
+  if (logoutButton) logoutButton.hidden = false;
+  var logoutScript = document.createElement("script");
+  logoutScript.src = "/web/logout.js";
+  document.head.appendChild(logoutScript);
 }
 
 // --- Heat bar tick: lightweight DOM-only update between data fetches ---

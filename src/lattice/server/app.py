@@ -54,7 +54,8 @@ from lattice.ops.base import (
     parse_params,
 )
 from lattice.ops.base import registered_operations as _registered_operations
-from lattice.server import admin
+from lattice.server import admin, dashboard, web
+from lattice.server.dashboard import ReadMemos
 from lattice.server.config import ServerConfig
 from lattice.server.journal import fingerprint
 from lattice.server.limits import DiskFloor, TokenLimits, check_event_data_cap
@@ -89,7 +90,16 @@ from lattice.server.syncstate import (
     read_board_file,
     reset_body,
 )
+from lattice.server.sessions import SessionStore
 from lattice.server.tokens import TokenRecord, TokenStore
+from lattice.server.web import (
+    CLEAR_COOKIE,
+    WebAssets,
+    page_headers,
+    require_origin,
+    session_auth,
+    session_cookie,
+)
 from lattice.storage.locks import LockTimeout
 
 _ENVELOPE_KEYS = {"op_id", "params", "actor", "actor_name", "origin", "attestations", "expect"}
@@ -116,6 +126,10 @@ class ServerState:
         self.server_id = "srv_" + generate_instance_id().removeprefix("inst_")
         self.registry = ProjectRegistry(self.root, config, log, self.server_id)
         self.tokens = TokenStore(self.root, on_reload=self._tokens_reloaded)
+        #: Dashboard sessions, the page and its CSP, and the read memos (SPEC §10).
+        self.sessions = SessionStore(self.root, self.tokens, on_error=self._sessions_failed)
+        self.web = WebAssets()
+        self.dashboard_memos = ReadMemos()
         self.limits = TokenLimits(config.limits)
         self.disk = DiskFloor(self.root, config.limits.min_free_disk_bytes)
         #: The stream heartbeat period; ``server.json`` sets it, and in-process
@@ -133,6 +147,9 @@ class ServerState:
         #: The descriptor limit ``serve`` set at startup (``before``, ``soft``,
         #: ``hard``), logged on the startup line; ``None`` in an in-process server.
         self.fd_limit: dict[str, int | None] | None = None
+
+    def _sessions_failed(self, **fields: Any) -> None:
+        self.log.emit("error", "config_reload", file="web_sessions.json", ok=False, **fields)
 
     def _tokens_reloaded(self, **fields: Any) -> None:
         level = "info" if fields.get("ok") else "error"
@@ -181,7 +198,9 @@ def internal_error() -> JSONResponse:
 
 
 class HeadersMiddleware:
-    """The ``Lattice-*`` headers on every response; ``no-store`` on ``/v1``; request logs."""
+    """The ``Lattice-*`` headers on every response; ``no-store`` on ``/v1``; outside
+    ``/v1``, SPEC §10's ``nosniff`` and CSP (and ``no-store`` on hosted dashboard
+    API responses); request logs. The one header policy, outermost."""
 
     def __init__(self, app: ASGIApp, state: ServerState) -> None:
         self.app = app
@@ -203,6 +222,7 @@ class HeadersMiddleware:
         ]
         if path.startswith("/v1"):
             extra.append((b"cache-control", b"no-store"))
+        extra.extend(page_headers(path, self.state.web.csp))
 
         async def send_with_headers(message: Message) -> None:
             if message["type"] == "http.response.start":
@@ -210,6 +230,9 @@ class HeadersMiddleware:
                 headers = [
                     (k, v) for k, v in message.get("headers", []) if k.lower() != b"cache-control"
                 ]
+                clear = scope["state"].get(CLEAR_COOKIE)
+                if clear:  # a dead session cookie is cleared on any answer (SPEC §10)
+                    headers.append((b"set-cookie", clear.encode("latin-1")))
                 message = {**message, "headers": headers + extra}
             await send(message)
 
@@ -992,7 +1015,16 @@ async def stream(request: Request, state: ServerState) -> Response:
     request.scope["state"]["log"]["project"] = slug
     check_protocol(request)
     authorization = request.headers.get("authorization")
-    token = authenticate(request, state)  # open streams are not in the in-flight limit
+    cookie = session_cookie(request) if authorization is None else None
+    if cookie is not None:
+        # A browser's EventSource (SPEC §10): the session authenticates the
+        # stream only when no Authorization header is sent; an Origin, when a
+        # browser sends one, must be this server's.
+        if request.headers.get("origin") is not None:
+            require_origin(request, state)
+        _session, token = session_auth(request, state)
+    else:
+        token = authenticate(request, state)  # open streams are not in the in-flight limit
     project = resolve_project(state, token, slug)
     resume = _resume_point(request)
     limits = state.config.limits
@@ -1005,7 +1037,10 @@ async def stream(request: Request, state: ServerState) -> Response:
 
     def alive() -> bool:
         try:
-            current = state.tokens.authenticate(authorization)
+            if cookie is not None:
+                _session, current = state.sessions.authenticate(cookie)
+            else:
+                current = state.tokens.authenticate(authorization)
         except OpError:
             return False
         return current.permits_project(slug) and project.state == LOADED
@@ -1085,6 +1120,29 @@ def create_app(root: Path, *, config: ServerConfig, log: ServerLog | None = None
         Route("/v1/projects/{slug}/files/{path:path}", endpoint(board_file), methods=["GET"]),
         Route("/v1/projects/{slug}/tasks", endpoint(task_list), methods=["GET"]),
         Route("/v1/projects/{slug}/tasks/{task_id}", endpoint(task_read), methods=["GET"]),
+        Route("/", endpoint(web.index), methods=["GET"]),
+        Route("/login", endpoint(web.login_page), methods=["GET"]),
+        Route("/login", endpoint(web.login), methods=["POST"]),
+        Route("/logout", endpoint(web.logout), methods=["POST"]),
+        Route("/web/{name}", endpoint(web.web_asset), methods=["GET"]),
+        Route("/p/{slug}", endpoint(dashboard.bare_slug), methods=["GET"]),
+        Route("/p/{slug}/", endpoint(dashboard.page), methods=["GET"]),
+        Route("/p/{slug}/favicon.ico", endpoint(dashboard.static), methods=["GET"]),
+        Route(
+            "/p/{slug}/static/{path:path}",
+            endpoint(dashboard.dashboard_endpoint(dashboard.static)),
+            methods=["GET"],
+        ),
+        Route(
+            "/p/{slug}/api/{path:path}",
+            endpoint(dashboard.dashboard_endpoint(dashboard.api_get)),
+            methods=["GET"],
+        ),
+        Route(
+            "/p/{slug}/api/{path:path}",
+            endpoint(dashboard.dashboard_endpoint(dashboard.api_post)),
+            methods=["POST"],
+        ),
         Route(
             "/{path:path}", endpoint(not_found), methods=["GET", "POST", "PUT", "DELETE", "PATCH"]
         ),
