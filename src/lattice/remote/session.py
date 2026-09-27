@@ -17,9 +17,9 @@ Before a command reads a hosted checkout's cache it calls :func:`prepare_read`:
    command ends, so a sync is never seen half-applied. A write in the same
    process releases it first (:func:`release_read_lock`): its post-write sync
    takes the lock exclusively, and ``flock`` does not let one process hold both.
-4. **Terminal safety.** Plain output on a hosted checkout shows every control
-   character except newline and tab as U+FFFD, because other people's text
-   reaches this terminal (SPEC §4).
+4. **Terminal safety.** Plain output (stdout and stderr) on a hosted checkout
+   shows every control character except newline and tab as U+FFFD, because
+   other people's text reaches this terminal (SPEC §4).
 """
 
 from __future__ import annotations
@@ -59,7 +59,7 @@ def reset_process_state() -> None:
     _fresh.clear()
     _announced.clear()
     _window_before.clear()
-    _restore_stdout()
+    _restore_output()
     global _filtering_types
     if _filtering_types:
         from lattice.core.tasks import set_unknown_type_reporter
@@ -426,22 +426,31 @@ class _ScrubbingStream:
         return getattr(self._inner, name)
 
 
-_original_stdout: TextIO | None = None
+_originals: dict[str, TextIO] = {}
 
 
-def scrub_stdout() -> None:
-    global _original_stdout
-    if isinstance(sys.stdout, _ScrubbingStream):
-        return
-    _original_stdout = sys.stdout
-    sys.stdout = _ScrubbingStream(sys.stdout)  # type: ignore[assignment]
+def scrub_output() -> None:
+    """Scrub this command's plain stdout **and** stderr (SPEC §4): a
+    server-derived error message can carry other people's text too.
+
+    Called by every path that routes a command to a hosted checkout, as soon as
+    it knows (``prepare_read``, ``board_or_exit``, ``lattice sync``, ``lattice
+    remote ...``, ``lattice cache clear``), and before a routing error about a
+    binding is printed (it quotes the committed binding, other people's text).
+    Undone at command end by :func:`reset_process_state`."""
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name)
+        if isinstance(stream, _ScrubbingStream):
+            continue
+        _originals[name] = stream
+        setattr(sys, name, _ScrubbingStream(stream))
 
 
-def _restore_stdout() -> None:
-    global _original_stdout
-    if isinstance(sys.stdout, _ScrubbingStream) and _original_stdout is not None:
-        sys.stdout = _original_stdout
-    _original_stdout = None
+def _restore_output() -> None:
+    for name, original in list(_originals.items()):
+        if isinstance(getattr(sys, name), _ScrubbingStream):
+            setattr(sys, name, original)
+    _originals.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -459,7 +468,7 @@ def prepare_read(hosted: Hosted, *, lock: bool = True) -> Path:
     its own reads take the lock around each read. It does not queue behind a
     sync already in flight (see :func:`ensure_fresh`).
     """
-    scrub_stdout()
+    scrub_output()
     ensure_fresh(hosted, defer_to_running_sync=not lock)
     announce_versions(hosted)
     if lock:

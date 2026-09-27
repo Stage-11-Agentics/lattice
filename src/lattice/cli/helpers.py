@@ -90,8 +90,15 @@ def hosted_or_exit(root: Path, is_json: bool) -> Hosted | None:
         if hosted is not None:
             require_supported()
     except OpError as exc:
+        _scrub_hosted_output()  # the message quotes the binding (SPEC §4)
         output_error(exc.message, exc.code, is_json)
     return hosted
+
+
+def _scrub_hosted_output() -> None:
+    from lattice.remote.session import scrub_output
+
+    scrub_output()
 
 
 def load_project_config(lattice_dir: Path) -> dict:

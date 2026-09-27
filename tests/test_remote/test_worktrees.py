@@ -209,3 +209,25 @@ def test_sync_routes_like_every_command(hosted_env: HostedEnv, tmp_path: Path) -
     assert refused.exit_code == 1
     assert json.loads(refused.stdout)["error"]["code"] == "BINDING_CONFLICT"
     assert hosted_root_of(tmp_path / "nowhere") is None
+
+
+def test_attach_from_a_worktree_prints_a_commit_command_for_the_primary(
+    hosted_env: HostedEnv, tmp_path: Path
+) -> None:
+    """The printed commit command works from the worktree it is run in: it
+    names the primary checkout, where attach wrote the files."""
+    import shlex
+
+    repo = make_repo(tmp_path / "repo")
+    wt = add_worktree(repo, tmp_path / "wt", "feat")
+    result = run_cli(wt, "remote", "attach", "team", "demo")
+    assert result.exit_code == 0, result.output
+    line = next(ln for ln in result.stdout.splitlines() if ln.startswith("Commit: "))
+    for part in line.removeprefix("Commit: ").split(" && "):
+        subprocess.run(shlex.split(part), cwd=wt, check=True, capture_output=True)
+    assert git(repo, "log", "-1", "--format=%s") == "Bind the board to team/demo"
+    assert git(repo, "show", "--name-only", "--format=", "HEAD").splitlines() == [
+        ".gitignore",
+        ".lattice-remote.json",
+    ]
+    assert git(wt, "log", "-1", "--format=%s") != "Bind the board to team/demo"

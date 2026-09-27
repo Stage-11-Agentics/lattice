@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -226,6 +227,8 @@ def remote_attach(alias: str, project: str, output_json: bool) -> None:
     from lattice.remote.config import resolve_remote
 
     is_json = output_json
+    # attach talks to a server and prints what it answers (SPEC §4).
+    session.scrub_output()
     try:
         require_supported("lattice remote attach")
         remote = resolve_remote(alias)
@@ -280,8 +283,11 @@ def remote_attach(alias: str, project: str, output_json: bool) -> None:
     to_commit = [BINDING_FILE] + ([".gitignore"] if changed_gitignore else [])
     lines = [
         f"Attached {primary} to {alias}/{project} (cache at seq {outcome.head_seq}).",
-        f"Commit: git add {' '.join(to_commit)} && git commit -m 'Bind the board to "
-        f"{alias}/{project}'",
+        # The files live in the primary checkout, which may not be the cwd (a
+        # linked worktree): name it, so the command stages the right files.
+        f"Commit: git -C {shlex.quote(str(primary))} add {' '.join(to_commit)} && "
+        f"git -C {shlex.quote(str(primary))} commit -m "
+        f"{shlex.quote(f'Bind the board to {alias}/{project}')}",
         "Refresh agent instructions installed before v2 (they tell agents to write plan "
         "files directly, which a cache refuses):",
         *(f"  {command}" for command in REFRESH_COMMANDS),
@@ -307,11 +313,16 @@ def remote_attach(alias: str, project: str, output_json: bool) -> None:
 
 def _hosted_or_exit(is_json: bool):  # noqa: ANN202 - Hosted
     from lattice.remote.binding import hosted_root
+    from lattice.remote.session import scrub_output
 
     try:
         hosted = hosted_root(Path.cwd())
     except OpError as exc:
+        scrub_output()  # the message quotes the binding (SPEC §4)
         _fail(exc, is_json)
+    if hosted is not None:
+        # From here on this command prints server-supplied text (SPEC §4).
+        scrub_output()
     if hosted is None:
         output_error(
             "This checkout is not bound to a Lattice server. Bind it with "
@@ -446,11 +457,19 @@ def remote_op_status(op_id: str, output_json: bool) -> None:
         data = op_status(resolve_remote(hosted.remote), hosted.project, op_id)
     except OpError as exc:
         _fail(exc, is_json)
-    if data.get("state") == "committed":
+    state = data.get("state")
+    if state == "committed":
         line = f"{op_id}: committed (epoch {data.get('epoch')}, seq {data.get('seq')})"
+    elif state == "in_flight":
+        # Never advise a rerun here: the pending write can still commit (SPEC §9.2).
+        line = (
+            f"{op_id}: in flight. The server is still applying this write; check again "
+            f"in a moment with: lattice remote op-status {op_id}"
+        )
     else:
         line = (
-            f"{op_id}: not found. It never committed, or it belongs to another token; "
-            "running the command again applies it once."
+            f"{op_id}: not found. The write did not apply (or belongs to another token); "
+            "running the command again applies it once, as a new operation with a new "
+            "op_id."
         )
     _emit(is_json, {"op_id": op_id, **data}, [line])

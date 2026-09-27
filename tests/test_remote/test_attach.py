@@ -21,7 +21,10 @@ def test_binding_has_exactly_remote_and_project(hosted_env: HostedEnv, tmp_path:
     text = (repo / ".lattice-remote.json").read_text()
     assert hosted_env.url not in text and hosted_env.token not in text
     # What to commit, and the refresh commands for pre-v2 agent instructions.
-    assert "git add .lattice-remote.json .gitignore" in result.stdout
+    assert (
+        f"git -C {repo} add .lattice-remote.json .gitignore && git -C {repo} commit -m "
+        "'Bind the board to team/demo'" in result.stdout
+    )
     assert "lattice setup-claude --force" in result.stdout
     assert "lattice setup-claude-skill --force" in result.stdout
     # The initial sync made the cache: private and read-only.

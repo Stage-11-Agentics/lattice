@@ -35,13 +35,17 @@ def _hosted_root_or_exit(is_json: bool) -> Path:
     """The hosted root the cwd routes to (SPEC §9.3: ``LATTICE_ROOT``, the
     worktree jump, then walking up), or the routing error, or ``NOT_HOSTED``."""
     from lattice.remote.binding import hosted_root
+    from lattice.remote.session import scrub_output
 
     try:
         hosted = hosted_root(Path.cwd())
     except OpError as exc:
+        scrub_output()  # the message quotes the binding (SPEC §4)
         output_error(exc.message, exc.code, is_json)
     if hosted is None:
         output_error(NOT_HOSTED_MESSAGE, "NOT_HOSTED", is_json)
+    # From here on this command prints server-supplied text (SPEC §4).
+    scrub_output()
     return hosted.root
 
 
