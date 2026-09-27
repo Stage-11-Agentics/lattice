@@ -13,16 +13,22 @@ index from that listing alone (``read-tree --empty``, ``update-index
 hide nothing, and ``hosted/``, runtime, temporary, and unmanaged paths can
 never enter. The project directory's ``.gitignore`` is still the SPEC's
 allowlist, for a human running ``git status``; the committer does not depend
-on it. A stat cache means only changed files are rehashed.
+on it. A stat cache means only changed files are rehashed. The listing and
+hashing run in a stage worker process (:class:`Stager`), never on a server
+thread, where each file's syscalls would wait behind the request threads for
+the GIL while the work lock is held.
 
 **The committer.** One :class:`AuditCommitter` per loaded project:
 
 - :meth:`AuditCommitter.notify` is called under the project's work lock for
   every journaled line;
 - ``debounce_seconds`` after the last write, and at most
-  ``max_interval_seconds`` after the first uncommitted one, its thread takes
-  the work lock and stages. An operation holds that lock for its whole
-  transaction, so staging never sees a partial one;
+  ``max_interval_seconds`` after the first uncommitted one, its thread
+  prehashes the changed files with the board still live, then takes the work
+  lock and stages, hashing only what changed since the prehash. An operation
+  holds that lock for its whole transaction, so staging never sees a partial
+  one. ``audit_commit`` reports ``prehash_ms``, ``lock_wait_ms``, ``stage_ms``
+  (the lock hold), and ``commit_ms``;
 - outside the lock it commits (``audit: seq <a>-<b> (<n> ops)``, with
   ``Lattice-Epoch`` and ``Lattice-Seq`` trailers naming the last journaled
   line it covers). A failed stage or commit is requeued and retried with
@@ -49,11 +55,13 @@ is bounded by a timeout. URLs never reach the log.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
 import stat
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Iterator
@@ -90,6 +98,10 @@ MAX_BACKOFF_SECONDS = 60.0
 
 #: Paths per ``hash-object`` call (keeps the argument list far below ARG_MAX).
 HASH_BATCH = 256
+#: How long :meth:`Stager.close` lets the stage worker finish before killing it.
+WORKER_STOP_SECONDS = 5.0
+#: :meth:`AuditCommitter.abandon` never waits on work it will throw away.
+ABANDON_STOP_SECONDS = 0.5
 
 EPOCH_TRAILER = "Lattice-Epoch"
 SEQ_TRAILER = "Lattice-Seq"
@@ -271,16 +283,112 @@ def _stat_key(st: os.stat_result) -> tuple[int, int, int, int]:
 
 class Stager:
     """Builds a tree of exactly the board's durable files and bytes, rehashing only
-    files whose stat changed since the last stage."""
+    files whose stat changed since the last stage.
+
+    :meth:`stage` runs in a worker process that lives as long as this object
+    (:func:`_stage_worker`, started on first use and again if it dies) and keeps
+    the stat cache. The walk makes one GIL-releasing syscall per file, and inside
+    a busy server each one waits behind the request threads to get the GIL back:
+    on Atlas under AC-42 a 0.15 s stage of 3,700 files took 9 s, all of it under
+    the work lock, so every write queued and readers' catch-ups timed out
+    (LAT-340). The worker has its own GIL; the calling thread only waits for its
+    reply. :meth:`stage_here` does the same work in this process.
+    """
 
     def __init__(self, directory: Path) -> None:
         self.directory = Path(directory)
         self.board = self.directory / ".lattice"
         self._cache: dict[str, tuple[tuple[int, int, int, int], str]] = {}
+        #: Serializes requests to the worker (the committer thread's prehash and
+        #: shutdown's stage can overlap).
+        self._lock = threading.Lock()
+        #: Guards ``_worker`` and ``_closed``; never held across a request, so
+        #: :meth:`close` never waits behind one.
+        self._state = threading.Lock()
+        self._worker: subprocess.Popen[bytes] | None = None
+        self._closed = False
 
     def stage(self) -> str:
         """Rebuild the index from the board and return its tree id. Call with the
         board quiescent (under the project's work lock)."""
+        return self._ask(b"stage")["tree"]
+
+    def prehash(self) -> None:
+        """Hash the files changed since the last stage into the worker's cache,
+        with the board still changing (outside the work lock), so the stage
+        under the lock hashes only what changed after this. A file that changes
+        or vanishes meanwhile is simply hashed again by the stage."""
+        self._ask(b"prehash")
+
+    def _ask(self, command: bytes) -> dict[str, Any]:
+        with self._lock:
+            with self._state:
+                if self._closed:
+                    raise GitError(["stage"], None, "the stage worker is closed")
+                worker = self._worker
+                if worker is None or worker.poll() is not None:
+                    worker = self._worker = self._start_worker()
+            assert worker.stdin is not None and worker.stdout is not None
+            try:
+                worker.stdin.write(command + b"\n")
+                worker.stdin.flush()
+                line = worker.stdout.readline()
+            except (OSError, ValueError):  # ValueError: close() closed a pipe
+                line = b""
+            try:
+                reply = json.loads(line) if line else None
+            except ValueError:
+                reply = None
+            if not isinstance(reply, dict):
+                with self._state:
+                    if self._worker is worker:
+                        self._worker = None
+                _reap(worker, WORKER_STOP_SECONDS)
+                raise GitError(
+                    ["stage"], worker.returncode, "the stage process ended without a reply"
+                )
+            if "error" in reply:
+                error = reply["error"]
+                raise GitError(error["args"], error["returncode"], error["stderr"])
+            return reply
+
+    def close(self, timeout: float = WORKER_STOP_SECONDS) -> None:
+        """End and reap the worker; no later call starts another. End of input
+        ends an idle worker at once; one still busy after *timeout* is killed.
+        A request in flight on another thread fails as a :class:`GitError`."""
+        with self._state:
+            self._closed = True
+            worker, self._worker = self._worker, None
+        if worker is not None:
+            _reap(worker, timeout)
+
+    def _start_worker(self) -> subprocess.Popen[bytes]:
+        try:
+            return subprocess.Popen(
+                [sys.executable, "-c", _STAGE_WORKER, str(self.directory)],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+            )
+        except OSError as exc:
+            raise GitError(["stage"], None, str(exc)) from exc
+
+    def stage_here(self) -> str:
+        """:meth:`stage`'s work in this process (the worker runs it)."""
+        listing = self._hash_changed(settled=True)
+        index_info = b"".join(
+            b"100644 " + sha.encode() + b"\t" + os.fsencode(".lattice/" + rel) + b"\0"
+            for rel, sha in sorted(listing)
+        )
+        git(self.directory, "read-tree", "--empty")
+        git(self.directory, "update-index", "-z", "--index-info", input=index_info)
+        return git_text(self.directory, "write-tree")
+
+    def _hash_changed(self, *, settled: bool) -> list[tuple[str, str]]:
+        """Hash every file whose stat changed since it was cached; return the
+        ``(rel, sha)`` listing. Each cache key is the stat taken before hashing,
+        so a file that changes while it is hashed never matches it again.
+        Unless *settled* (the board may be changing), a failed batch is left
+        for the next call."""
         listing: list[tuple[str, str]] = []
         to_hash: list[tuple[str, Path, tuple[int, int, int, int]]] = []
         for rel, path, st in durable_files(self.board):
@@ -294,30 +402,72 @@ class Stager:
             batch = to_hash[start : start + HASH_BATCH]
             # Paths as arguments after "--": any name a POSIX file may have (a
             # newline, a leading "-") passes intact; --stdin-paths is newline-delimited.
-            out = git(
-                self.directory,
-                "hash-object",
-                "-w",
-                "--no-filters",
-                "--",
-                *(str(path) for _, path, _ in batch),
-            )
+            try:
+                out = git(
+                    self.directory,
+                    "hash-object",
+                    "-w",
+                    "--no-filters",
+                    "--",
+                    *(str(path) for _, path, _ in batch),
+                )
+            except GitError:
+                if settled:
+                    raise
+                continue
             shas = _text(out.stdout).split()
             if len(shas) != len(batch):
+                if not settled:
+                    continue
                 raise GitError(["hash-object"], 0, "hash-object returned a short listing")
             for (rel, _path, key), sha in zip(batch, shas, strict=True):
                 self._cache[rel] = (key, sha)
                 listing.append((rel, sha))
-        present = {rel for rel, _ in listing}
-        for rel in [r for r in self._cache if r not in present]:
-            del self._cache[rel]
-        index_info = b"".join(
-            b"100644 " + sha.encode() + b"\t" + os.fsencode(".lattice/" + rel) + b"\0"
-            for rel, sha in sorted(listing)
-        )
-        git(self.directory, "read-tree", "--empty")
-        git(self.directory, "update-index", "-z", "--index-info", input=index_info)
-        return git_text(self.directory, "write-tree")
+        if settled:
+            present = {rel for rel, _ in listing}
+            for rel in [r for r in self._cache if r not in present]:
+                del self._cache[rel]
+        return listing
+
+
+def _reap(worker: subprocess.Popen[bytes], timeout: float) -> None:
+    """Close the worker's input, wait up to *timeout* for it to exit, else kill
+    it; wait for it and close its pipes, so no child outlives the call."""
+    with contextlib.suppress(OSError, ValueError):
+        assert worker.stdin is not None
+        worker.stdin.close()  # end of input: the worker exits
+    try:
+        worker.wait(timeout)
+    except subprocess.TimeoutExpired:
+        worker.kill()
+        worker.wait()
+    with contextlib.suppress(OSError, ValueError):
+        assert worker.stdout is not None
+        worker.stdout.close()
+
+
+_STAGE_WORKER = "from lattice.server.audit import _stage_worker; _stage_worker()"
+
+
+def _stage_worker() -> None:
+    """The stage worker (``sys.argv[1]`` is the directory): each input line is
+    ``stage`` or ``prehash`` and gets one JSON line back, ``{"tree"}`` (``null``
+    for a prehash) or ``{"error"}`` (a :class:`GitError`). It exits at end of
+    input."""
+    stager = Stager(Path(sys.argv[1]))
+    for request in sys.stdin.buffer:
+        try:
+            if request.strip() == b"prehash":
+                stager._hash_changed(settled=False)
+                reply: dict[str, Any] = {"tree": None}
+            else:
+                reply = {"tree": stager.stage_here()}
+        except GitError as exc:
+            reply = {
+                "error": {"args": exc.git_args, "returncode": exc.returncode, "stderr": exc.stderr}
+            }
+        sys.stdout.write(json.dumps(reply) + "\n")
+        sys.stdout.flush()
 
 
 def head_commit(directory: Path) -> str | None:
@@ -385,7 +535,7 @@ def init_repo(
         git(directory, "init", "--quiet", f"--initial-branch={BRANCH}")
     _write_gitignore(directory)
     if created:
-        tree = Stager(directory).stage()
+        tree = Stager(directory).stage_here()  # once, before the project serves
         _commit_on_head(directory, tree, commit_message(message, epoch, head_seq))
         if gc:
             git(directory, "gc", "--auto", "--quiet")
@@ -605,14 +755,17 @@ class AuditCommitter:
         thread = self._thread
         if join and thread is not None and thread is not threading.current_thread():
             thread.join(10)
+        self.stager.close()
         self.maintenance.stop(flush=True, timeout=FINAL_MAINTENANCE_SECONDS)
 
     def abandon(self) -> None:
-        """Stop without committing (a quarantined board is not trusted). Never waits."""
+        """Stop without committing (a quarantined board is not trusted). Waits only
+        to reap the stage worker (``ABANDON_STOP_SECONDS``, then it is killed)."""
         with self._cond:
             self._stopping = True
             self._pending = None
             self._cond.notify_all()
+        self.stager.close(ABANDON_STOP_SECONDS)
         self.maintenance.stop(flush=False, timeout=0)
 
     # -- the thread ------------------------------------------------------------
@@ -643,12 +796,20 @@ class AuditCommitter:
             self._cond.wait(remaining)
 
     def _cycle(self) -> None:
-        """Stage under the work lock, then commit outside it; requeue on failure."""
+        """Prehash, stage under the work lock, then commit outside it; requeue on
+        failure."""
+        prehash_started = time.monotonic()
+        try:
+            self.stager.prehash()
+        except Exception as exc:  # noqa: BLE001 - the stage hashes whatever this missed
+            self.log.debug("audit_prehash_failed", project=self.slug, error=redact(str(exc)))
         self.waiting_for_lock = True
+        started = time.monotonic()
         try:
             self.lock.acquire()
         finally:
             self.waiting_for_lock = False
+        locked_at = time.monotonic()
         pending = None
         try:
             with self._cond:
@@ -664,8 +825,24 @@ class AuditCommitter:
             return
         finally:
             self.lock.release()
+        held = time.monotonic() - locked_at
+        timings = {
+            "prehash_ms": round((started - prehash_started) * 1000, 1),
+            "lock_wait_ms": round((locked_at - started) * 1000, 1),
+            "stage_ms": round(held * 1000, 1),
+        }
+        from lattice.server.project import SLOW_WORK_LOCK_SECONDS
+
+        if held >= SLOW_WORK_LOCK_SECONDS:  # as Project.locked logs every other hold
+            self.log.warning(
+                "work_lock_slow",
+                project=self.slug,
+                thread=threading.current_thread().name,
+                wait_ms=timings["lock_wait_ms"],
+                held_ms=timings["stage_ms"],
+            )
         try:
-            self._commit(tree, pending)
+            self._commit(tree, pending, timings=timings)
         except Exception as exc:  # noqa: BLE001
             self._failed(pending, "commit", exc)
             return
@@ -695,10 +872,21 @@ class AuditCommitter:
             self._active = False
             self._cond.notify_all()
 
-    def _commit(self, tree: str, pending: _Pending | None, *, final: bool = False) -> bool:
-        """Commit *tree*; ``False`` when it matches ``HEAD`` (nothing changed)."""
+    def _commit(
+        self,
+        tree: str,
+        pending: _Pending | None,
+        *,
+        final: bool = False,
+        timings: dict[str, float] | None = None,
+    ) -> bool:
+        """Commit *tree*; ``False`` when it matches ``HEAD`` (nothing changed).
+        *timings* (the cycle's ``prehash_ms``, ``lock_wait_ms``, and
+        ``stage_ms``, the time it held the work lock) join ``commit_ms`` on the
+        ``audit_commit`` line."""
         if pending is None:
             pending = _Pending(0, 0, 0, 0.0, 0.0, None)
+        started = time.monotonic()
         commit = commit_tree(self.directory, tree, pending.message())
         if commit is None:
             self.log.debug(
@@ -716,6 +904,8 @@ class AuditCommitter:
             last_seq=pending.last_seq,
             ops=pending.ops,
             final=final,
+            **(timings or {}),
+            commit_ms=round((time.monotonic() - started) * 1000, 1),
         )
         self.maintenance.request()
         return True
