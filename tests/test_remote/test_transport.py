@@ -1,5 +1,6 @@
-"""AC-20 (sync and files): the client transport never follows a redirect, never
-hands credentials to another listener, and accepts only a Lattice server's answer."""
+"""AC-20 (sync, files, and the stream): the client transport never follows a
+redirect, never hands credentials to another listener, and accepts only a Lattice
+server's answer."""
 
 from __future__ import annotations
 
@@ -10,10 +11,12 @@ import time
 from pathlib import Path
 
 from lattice.core.errors import OpError
-from lattice.remote import cache, http
+from lattice.remote import cache, http, stream
 from lattice.remote.http import Remote
 from tests.test_remote.conftest import bind
+from tests.test_remote.follower_support import following
 from tests.test_remote.proxies import fixed_answer, recording_listener, scripted_tcp
+from tests.test_remote.stream_stub import StubSyncer, wait_for
 from tests.test_remote.stub_sync_server import StubServer
 
 TOKEN = "transport-test-bearer-secret"
@@ -305,3 +308,108 @@ def test_a_stalled_body_fails_at_its_deadline(monkeypatch: pytest.MonkeyPatch) -
         with pytest.raises(http.Unreachable):
             http.request(_remote(url), "GET", SYNC)
         assert time.monotonic() - started < 2.0
+
+
+# ---------------------------------------------------------------------------
+# AC-20 (stream part, H-10c): the change stream rides the same transport
+# ---------------------------------------------------------------------------
+
+STREAM = "/v1/projects/demo/stream"
+
+
+@pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
+def test_redirecting_proxy_fails_the_stream_with_proxy_rejected(status) -> None:
+    with recording_listener() as second:
+        location = second.url + "/login?next=" + STREAM
+        with fixed_answer(status, {"Location": location}) as proxy:
+            with pytest.raises(OpError) as err:
+                stream.open_stream(
+                    _remote(proxy.url), "demo", last_event_id="ep_1:3:" + "0" * 32, timeout=2
+                )
+            assert err.value.code == "PROXY_REJECTED"
+            assert str(status) in err.value.message and "127.0.0.1" in err.value.message
+            # The proxy is the configured URL, so it saw the credentials ...
+            assert proxy.requests and TOKEN in proxy.requests[0]["headers"].get(
+                "Authorization", ""
+            )
+        # ... and the second listener received nothing at all.
+        assert second.requests == []
+        assert not _credential_leaked(second.requests)
+
+
+def test_redirect_on_info_is_rejected_too() -> None:
+    with recording_listener() as second:
+        with fixed_answer(302, {"Location": second.url + "/"}) as proxy:
+            with pytest.raises(OpError) as err:
+                stream.get_info(_remote(proxy.url))
+            assert err.value.code == "PROXY_REJECTED"
+        assert second.requests == []
+
+
+@pytest.mark.parametrize(
+    ("status", "headers", "body", "code", "fragments"),
+    [
+        (
+            200,
+            {"Content-Type": "text/html"},
+            b"<html>Sign in</html>",
+            "PROXY_REJECTED",
+            ["200", "text/html"],
+        ),
+        (
+            502,
+            {"Content-Type": "text/html"},
+            b"<html>Bad gateway</html>",
+            "PROXY_REJECTED",
+            ["502"],
+        ),
+        (
+            200,
+            {"Content-Type": "application/json", "Lattice-Protocol": "1"},
+            b'{"ok": true, "data": {}}',
+            "PROXY_REJECTED",
+            ["application/json"],
+        ),
+        (200, {"Content-Type": "text/event-stream"}, b"", "PROXY_REJECTED", ["200"]),
+        (
+            200,
+            {"Content-Type": "text/event-stream", "Lattice-Protocol": "2"},
+            b"",
+            "PROTOCOL_MISMATCH",
+            [],
+        ),
+        (
+            401,
+            {"Content-Type": "application/json", "Lattice-Protocol": "1"},
+            b'{"ok": false, "error": {"code": "UNAUTHENTICATED", "message": "bad token"}}',
+            "UNAUTHENTICATED",
+            ["bad token"],
+        ),
+    ],
+)
+def test_only_a_lattice_event_stream_counts(status, headers, body, code, fragments) -> None:
+    with fixed_answer(status, headers, body) as proxy:
+        with pytest.raises(OpError) as err:
+            stream.open_stream(_remote(proxy.url), "demo", last_event_id=None, timeout=2)
+    assert err.value.code == code
+    for fragment in fragments:
+        assert fragment in err.value.message
+
+
+def test_stream_connection_refused_is_unreachable() -> None:
+    with fixed_answer(200, {}) as server:
+        url = server.url
+    with pytest.raises(OpError) as err:
+        stream.open_stream(_remote(url), "demo", last_event_id=None, timeout=1)
+    assert err.value.code == "SERVER_UNREACHABLE"
+
+
+def test_follower_behind_a_redirecting_proxy_reports_proxy_rejected(tmp_path, stream_stub) -> None:
+    with recording_listener() as second:
+        with fixed_answer(302, {"Location": second.url + "/login"}) as proxy:
+            syncer = StubSyncer(stream_stub.url)
+            with following(tmp_path, proxy.url, syncer, heartbeat_seconds=0.2) as follower:
+                assert wait_for(lambda: follower.last_stream_error is not None, 2)
+                assert follower.last_stream_error.code == "PROXY_REJECTED"
+                assert follower.stream_live_until is None
+        assert second.requests == []

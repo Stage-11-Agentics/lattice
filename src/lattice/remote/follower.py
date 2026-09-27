@@ -4,7 +4,8 @@ A reusable component: ``lattice sync --follow`` runs one in the foreground,
 hosted ``watch`` / ``wait`` run one in a thread, and ``lattice dashboard``
 embeds one for its lifetime (H-13a)::
 
-    follower = Follower(hosted_root, endpoint, catch_up=catch_up)
+    remote, project = follow_target(hosted_root)
+    follower = Follower(hosted_root, remote, project)
     thread = threading.Thread(target=follower.run)
     thread.start()
     ...
@@ -54,7 +55,8 @@ from typing import Any
 
 from lattice.core.errors import OpError
 from lattice.remote.cache import SyncOutcome
-from lattice.remote.endpoint import RemoteEndpoint
+from lattice.remote import cache, config
+from lattice.remote.http import Remote
 from lattice.remote.stream import StreamConnection, get_info, open_stream
 from lattice.storage.fs import LATTICE_DIR, atomic_write, ensure_dir
 
@@ -156,6 +158,42 @@ def live_follower(hosted_root: Path, *, now: datetime | None = None) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Which checkout is hosted, and where its server is
+# ---------------------------------------------------------------------------
+
+
+def hosted_root_of(root: Path | None) -> Path | None:
+    """*root* if it is a hosted checkout whose cache :func:`cache.catch_up` would
+    sync, else ``None``: it names a remote and project (the cache marker or the
+    committed binding), and it is not a local board beside a binding (which
+    ``catch_up`` refuses with ``BINDING_CONFLICT``). H-11's routing replaces this.
+    """
+    if root is None or cache.cache_identity(root) is None:
+        return None
+    lattice_dir = Path(root) / LATTICE_DIR
+    if (
+        lattice_dir.is_dir()
+        and not cache.has_cache_marker(lattice_dir)
+        and cache.synced_files(lattice_dir)
+    ):
+        return None
+    return Path(root)
+
+
+def follow_target(hosted_root: Path) -> tuple[Remote, str]:
+    """The :class:`Remote` and project slug *hosted_root*'s cache is bound to.
+
+    Raises ``NOT_HOSTED``, or the remote's first-contact errors
+    (``REMOTE_NOT_CONFIGURED``, ``TOKEN_ENV_UNSET``).
+    """
+    identity = cache.cache_identity(hosted_root)
+    if identity is None:
+        raise cache.not_hosted(Path(hosted_root))
+    alias, project = identity
+    return config.resolve_remote(alias), project
+
+
+# ---------------------------------------------------------------------------
 # Messages from the reader to the control loop
 # ---------------------------------------------------------------------------
 
@@ -233,9 +271,10 @@ StreamOpener = Callable[..., StreamConnection]
 
 
 class Follower:
-    """Hold *endpoint*'s stream and keep *hosted_root*'s cache caught up.
+    """Hold *project*'s stream on *remote* and keep *hosted_root*'s cache caught up.
 
-    *catch_up* is the cache syncer's one-sync function (H-10b's ``catch_up``).
+    *catch_up* is the cache syncer's one-sync function (default: H-10b's
+    :func:`lattice.remote.cache.catch_up`).
     *on_sync* runs in the control loop after every sync, with its outcome.
     *on_reset* runs when the follower learns of a reset or a new epoch, before
     the full resync it triggers.
@@ -247,9 +286,10 @@ class Follower:
     def __init__(
         self,
         hosted_root: Path,
-        endpoint: RemoteEndpoint,
+        remote: Remote,
+        project: str,
         *,
-        catch_up: CatchUp,
+        catch_up: CatchUp | None = None,
         on_sync: Callable[[SyncOutcome], None] | None = None,
         on_reset: Callable[[], None] | None = None,
         on_notice: Callable[[str], None] | None = None,
@@ -260,8 +300,9 @@ class Follower:
         initial_sync: bool = True,
     ) -> None:
         self.hosted_root = Path(hosted_root)
-        self.endpoint = endpoint
-        self._catch_up = catch_up
+        self.remote = remote
+        self.project = project
+        self._catch_up = catch_up if catch_up is not None else cache.catch_up
         self._on_sync = on_sync
         self._on_reset = on_reset
         self._on_notice = on_notice
@@ -341,11 +382,11 @@ class Follower:
         if self._heartbeat_override:
             return
         try:
-            info = self._get_info(self.endpoint)
+            info = self._get_info(self.remote)
         except OpError as exc:
             if exc.code != "SERVER_UNREACHABLE":
                 raise
-            self._notice(f"lattice: cannot reach {self.endpoint.alias}; will keep trying")
+            self._notice(f"lattice: cannot reach {self.remote.alias}; will keep trying")
             return
         value = info.get("stream_heartbeat_seconds")
         if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
@@ -488,7 +529,7 @@ class Follower:
             self._clear()
             if was_ok or self.syncs == 1:
                 self._notice(
-                    f"lattice: sync from {self.endpoint.alias} failed ({self.last_sync_error}); "
+                    f"lattice: sync from {self.remote.alias} failed ({self.last_sync_error}); "
                     "reads on this machine catch up on their own until it recovers"
                 )
         if self._on_sync is not None:
@@ -550,7 +591,8 @@ class Follower:
             delivered = False
             try:
                 conn = self._open_stream(
-                    self.endpoint,
+                    self.remote,
+                    self.project,
                     last_event_id=last_event_id,
                     timeout=self.silence_seconds + 1.0,
                 )
@@ -566,7 +608,7 @@ class Follower:
                         if event.event == "journal":
                             self.ignored_entries += 1
                             self._notice(
-                                f"lattice: ignored a stream entry from {self.endpoint.alias} "
+                                f"lattice: ignored a stream entry from {self.remote.alias} "
                                 f"without a valid id ({event.id!r}); syncing covers it"
                             )
                         continue
@@ -574,7 +616,7 @@ class Follower:
                         delivered = True
                         backoff = initial
                         self.last_stream_error = None
-                        self._notice(f"lattice: following {self.endpoint.alias}")
+                        self._notice(f"lattice: following {self.remote.alias}")
                     self.deliveries[event.event] += 1
                     if isinstance(message, _Reset):
                         last_event_id = None
@@ -596,7 +638,7 @@ class Follower:
             self.last_stream_error = error
             self._queue.put(_Down(error))
             self._notice(
-                f"lattice: stream from {self.endpoint.alias} unavailable ({error.code}); polling"
+                f"lattice: stream from {self.remote.alias} unavailable ({error.code}); polling"
             )
             if self._stop.wait(backoff):
                 return

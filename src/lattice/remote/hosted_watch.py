@@ -23,10 +23,16 @@ from pathlib import Path
 
 from lattice.core.event_stream import _matches_filters, _parse_jsonl_file
 from lattice.remote import cache
-from lattice.remote import endpoint as remote_endpoint
 from lattice.remote.cache import SyncOutcome
-from lattice.remote.endpoint import RemoteEndpoint
-from lattice.remote.follower import CatchUp, Follower, ReadLock, succeeded
+from lattice.remote.http import Remote
+from lattice.remote.follower import (
+    CatchUp,
+    Follower,
+    ReadLock,
+    follow_target,
+    hosted_root_of,
+    succeeded,
+)
 from lattice.storage.fs import LATTICE_DIR
 
 FollowerFactory = Callable[..., Follower]
@@ -83,7 +89,8 @@ def _scan(events_dir: Path, offsets: dict[Path, int]) -> list[dict]:
 
 def hosted_stream_events(
     hosted_root: Path,
-    endpoint: RemoteEndpoint,
+    remote: Remote,
+    project: str,
     *,
     catch_up: CatchUp,
     read_lock: ReadLock,
@@ -139,7 +146,8 @@ def hosted_stream_events(
 
     follower = follower_factory(
         root,
-        endpoint,
+        remote,
+        project,
         catch_up=catch_up,
         on_sync=on_sync,
         on_reset=on_reset,
@@ -194,7 +202,7 @@ def hosted_stream_events(
 
 def is_hosted(lattice_dir: Path) -> bool:
     """Whether the board at *lattice_dir* is a hosted checkout's cache."""
-    return remote_endpoint.hosted_root(Path(lattice_dir).parent) is not None
+    return hosted_root_of(Path(lattice_dir).parent) is not None
 
 
 def event_source(
@@ -209,7 +217,7 @@ def event_source(
 ) -> Iterator[dict]:
     """The events ``watch`` / ``wait`` consume: *local_stream* on a local board,
     :func:`hosted_stream_events` on a hosted checkout (*ready* is hosted-only)."""
-    root = remote_endpoint.hosted_root(Path(lattice_dir).parent)
+    root = hosted_root_of(Path(lattice_dir).parent)
     if root is None:
         return local_stream(
             lattice_dir,
@@ -218,9 +226,11 @@ def event_source(
             poll_interval=poll_interval,
             timeout=timeout,
         )
+    remote, project = follow_target(root)
     return hosted_stream_events(
         root,
-        remote_endpoint.endpoint_for(root),
+        remote,
+        project,
         catch_up=cache.catch_up,
         read_lock=cache.read_lock,
         task_filter=task_filter,

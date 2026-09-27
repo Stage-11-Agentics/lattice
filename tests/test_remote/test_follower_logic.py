@@ -24,7 +24,7 @@ from lattice.remote.follower import (
     read_follower,
 )
 from lattice.remote.sse import SSEEvent, SSEParser
-from tests.test_remote.stream_stub import endpoint, wait_for
+from tests.test_remote.stream_stub import SLUG, stub_remote, wait_for
 
 
 def _feed(parser: SSEParser, text: str) -> list[SSEEvent]:
@@ -167,7 +167,8 @@ def _follower(tmp_path, cache, stream, **kwargs) -> Follower:
     (tmp_path / ".lattice").mkdir(exist_ok=True)
     return Follower(
         tmp_path,
-        endpoint("http://127.0.0.1:1"),
+        stub_remote("http://127.0.0.1:1"),
+        SLUG,
         catch_up=cache,
         heartbeat_seconds=kwargs.pop("heartbeat_seconds", 0.5),
         stream_opener=lambda *a, **k: stream,
@@ -280,7 +281,8 @@ def test_reconnect_backoff_doubles_and_caps_at_60s(tmp_path) -> None:
 
     follower = Follower(
         tmp_path,
-        endpoint("http://127.0.0.1:1"),
+        stub_remote("http://127.0.0.1:1"),
+        SLUG,
         catch_up=FakeCache(),
         heartbeat_seconds=2.0,
         stream_opener=refuse,
@@ -301,7 +303,8 @@ def test_reconnect_backoff_doubles_and_caps_at_60s(tmp_path) -> None:
 def test_info_sets_heartbeat_seconds_and_rejection_is_fatal(tmp_path) -> None:
     follower = Follower(
         tmp_path,
-        endpoint("http://127.0.0.1:1"),
+        stub_remote("http://127.0.0.1:1"),
+        SLUG,
         catch_up=FakeCache(),
         info_getter=lambda ep: {"stream_heartbeat_seconds": 3},
     )
@@ -312,7 +315,11 @@ def test_info_sets_heartbeat_seconds_and_rejection_is_fatal(tmp_path) -> None:
         raise OpError("PROXY_REJECTED", "login page")
 
     follower = Follower(
-        tmp_path, endpoint("http://127.0.0.1:1"), catch_up=FakeCache(), info_getter=rejected
+        tmp_path,
+        stub_remote("http://127.0.0.1:1"),
+        SLUG,
+        catch_up=FakeCache(),
+        info_getter=rejected,
     )
     try:
         follower.run()
@@ -477,7 +484,7 @@ def test_journal_entries_without_a_valid_id_are_ignored_and_logged(tmp_path) -> 
     resumes: list[object] = []
     streams = [first]
 
-    def opener(endpoint, *, last_event_id, timeout):
+    def opener(remote, project, *, last_event_id, timeout):
         resumes.append(last_event_id)
         if streams:
             return streams.pop(0)
@@ -487,7 +494,8 @@ def test_journal_entries_without_a_valid_id_are_ignored_and_logged(tmp_path) -> 
     (tmp_path / ".lattice").mkdir()
     follower = Follower(
         tmp_path,
-        endpoint("http://127.0.0.1:1"),
+        stub_remote("http://127.0.0.1:1"),
+        SLUG,
         catch_up=FakeCache(),
         heartbeat_seconds=0.05,
         stream_opener=opener,

@@ -1,27 +1,100 @@
-"""A real board on the stub server, and a hosted checkout routed to it.
+"""Hosted checkouts for the H-10c command tests.
 
-``A`` is a local board the tests write with the real CLI; after each write
-:func:`publish` sends the files that changed to the stub as one journal entry,
-as the server would after running the operation. ``B`` is the hosted
-checkout: its cache is synced by :class:`StubSyncer`, and the H-11 routing
-stubs (``hosted_root``, ``endpoint_for``) and H-10b stubs (``catch_up``,
-``read_lock``) are patched to point at it.
+:class:`RealHostedBoard` is the happy path: H-10a's real server
+(:func:`lattice.server.testing.serve_board`) and a checkout bound to it the way
+H-10b's own tests bind one (``.lattice-remote.json`` plus
+``LATTICE_REMOTE_TEAM_*``), synced by H-10b's real ``catch_up`` and read under
+its real ``read_lock``. Nothing is patched: the commands route to it because
+the cache marker names its remote.
+
+:class:`StubHostedBoard` is for forced failures the real server cannot be made
+to give (malformed answers, a given status on every sync): the stream stub,
+with the stub syncer patched in as ``cache.catch_up``.
 """
 
 from __future__ import annotations
 
 import contextlib
 import json
+import threading
+from collections.abc import Iterator
 from pathlib import Path
 
 from click.testing import CliRunner
 
 from lattice.cli.main import cli
-from lattice.core.config import default_config, serialize_config
 from lattice.remote import cache
-from lattice.remote import endpoint as remote_endpoint
-from lattice.storage.fs import LATTICE_DIR, atomic_write, ensure_lattice_dirs
-from tests.test_remote.stream_stub import StubServer, StubSyncer, endpoint
+from lattice.server.testing import BoardServer, serve_board
+from lattice.storage.fs import LATTICE_DIR
+from tests.test_remote.conftest import bind
+from tests.test_remote.stream_stub import TOKEN, StubServer, StubSyncer
+from lattice.core.config import default_config, serialize_config
+from lattice.storage.fs import atomic_write, ensure_lattice_dirs
+
+
+class RealHostedBoard:
+    def __init__(self, server: BoardServer, client: Path) -> None:
+        self.server = server
+        self.b = client
+
+    def op(self, name: str, params: dict) -> dict:
+        return self.server.op(name, params)
+
+    def create(self, title: str) -> dict:
+        return self.op("task.create", {"title": title})["task"]
+
+    def status(self, task_id: str, new_status: str) -> dict:
+        return self.op("task.status", {"task": task_id, "new_status": new_status})
+
+    def server_events(self, task_id: str) -> list[dict]:
+        """The task's events on the server, as local ``watch`` yields them."""
+        path = self.server.board / "events" / f"{task_id}.jsonl"
+        events = []
+        for line in path.read_text("utf-8").splitlines():
+            event = json.loads(line)
+            event["task_id"] = task_id
+            events.append(event)
+        return events
+
+    def cli(self, *args: str):
+        return CliRunner().invoke(cli, list(args), env={"LATTICE_ROOT": str(self.b)})
+
+
+@contextlib.contextmanager
+def real_hosted_board(
+    tmp_path: Path, monkeypatch, heartbeat: float = 0.2
+) -> Iterator[RealHostedBoard]:
+    with serve_board(tmp_path / "server", heartbeat_seconds=heartbeat) as server:
+        client = bind(tmp_path / "client", server.url, server.token, monkeypatch)
+        outcome = cache.catch_up(client, bulk=True)
+        assert outcome.kind == "applied", outcome
+        yield RealHostedBoard(server, client)
+
+
+def watch_while_the_server_changes(board: RealHostedBoard, *flags: str) -> tuple[str, list[dict]]:
+    """Run ``lattice watch`` on the checkout while the server changes its task:
+    (watch stdout, the events the server appended meanwhile)."""
+    task_id = board.task["id"]
+    before = len(board.server_events(task_id))
+
+    failures: list[BaseException] = []
+
+    def write() -> None:
+        try:
+            board.status(task_id, "in_planning")
+            board.op("task.comment", {"task": task_id, "text": "hello from A"})
+        except BaseException as exc:  # noqa: BLE001 - surfaced below
+            failures.append(exc)
+
+    timer = threading.Timer(0.3, write)
+    timer.start()
+    try:
+        result = board.cli("watch", "--timeout", "2", *flags)
+    finally:
+        timer.cancel()
+    assert not failures, failures
+    assert result.exit_code == 0, result.output
+    return result.stdout, board.server_events(task_id)[before:]
 
 
 def durable_files(root: Path) -> dict[str, bytes]:
@@ -48,8 +121,11 @@ def durable_files(root: Path) -> dict[str, bytes]:
     return out
 
 
-class HostedBoard:
-    def __init__(self, tmp_path: Path, stream_stub: StubServer, monkeypatch) -> None:
+class StubHostedBoard:
+    """A real local board A published to the stream stub; checkout B bound to it
+    (alias ``stub``), synced by the stub syncer patched in as ``cache.catch_up``."""
+
+    def __init__(self, tmp_path: Path, stub: StubServer, monkeypatch) -> None:
         self.a = tmp_path / "a"
         self.b = tmp_path / "b"
         self.a.mkdir()
@@ -61,20 +137,13 @@ class HostedBoard:
         cfg["auto_plan_review_on_transition"] = False
         atomic_write(self.a / LATTICE_DIR / "config.json", serialize_config(cfg))
         (self.a / LATTICE_DIR / "events" / "_lifecycle.jsonl").touch()
-        self.stream_stub = stream_stub
+        self.stub = stub
         self.runner = CliRunner()
         self._published = durable_files(self.a)
-        stream_stub.files = dict(self._published)
-        self.syncer = StubSyncer(stream_stub.url)
-        b = self.b.resolve()
-        monkeypatch.setattr(
-            remote_endpoint,
-            "hosted_root",
-            lambda start: b if Path(start).resolve() == b else None,
-        )
-        monkeypatch.setattr(
-            remote_endpoint, "endpoint_for", lambda root: endpoint(stream_stub.url)
-        )
+        stub.files = dict(self._published)
+        self.syncer = StubSyncer(stub.url)
+        monkeypatch.setenv("LATTICE_REMOTE_STUB_URL", stub.url)
+        monkeypatch.setenv("LATTICE_REMOTE_STUB_TOKEN", TOKEN)
         monkeypatch.setattr(cache, "catch_up", self.syncer)
         monkeypatch.setattr(
             cache, "read_lock", lambda root: contextlib.nullcontext(root / LATTICE_DIR)
@@ -90,7 +159,7 @@ class HostedBoard:
         current = durable_files(self.a)
         changed = {p: c for p, c in current.items() if self._published.get(p) != c}
         self._published = current
-        return self.stream_stub.write(changed, [])
+        return self.stub.write(changed, [])
 
     def create(self, title: str) -> dict:
         out = self.a_cli("create", title, "--actor", "human:test", "--json")

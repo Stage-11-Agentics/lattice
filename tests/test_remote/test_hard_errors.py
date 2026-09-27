@@ -9,7 +9,7 @@ import pytest
 from click.testing import CliRunner
 
 from lattice.cli.main import cli
-from tests.test_remote.hosted_board import HostedBoard
+from tests.test_remote.hosted_board import StubHostedBoard
 
 HTML = (200, {"Content-Type": "text/html"}, b"<html>login</html>")
 UNAUTH = (
@@ -44,18 +44,18 @@ CASES = [
 
 
 @pytest.fixture
-def board(tmp_path, stream_stub, monkeypatch) -> HostedBoard:
-    board = HostedBoard(tmp_path, stream_stub, monkeypatch)
+def board(tmp_path, stream_stub, monkeypatch) -> StubHostedBoard:
+    board = StubHostedBoard(tmp_path, stream_stub, monkeypatch)
     board.task = board.create("Task")
     board.syncer(board.b)
     return board
 
 
-def _run(board: HostedBoard, *args: str):
+def _run(board: StubHostedBoard, *args: str):
     return CliRunner().invoke(cli, list(args), env={"LATTICE_ROOT": str(board.b)})
 
 
-def _commands(board: HostedBoard) -> list[list[str]]:
+def _commands(board: StubHostedBoard) -> list[list[str]]:
     short = board.task.get("short_id") or board.task["id"]
     return [
         ["sync"],

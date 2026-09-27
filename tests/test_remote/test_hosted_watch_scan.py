@@ -9,7 +9,7 @@ import threading
 
 from lattice.remote.hosted_watch import hosted_stream_events
 from lattice.storage.fs import LATTICE_DIR
-from tests.test_remote.stream_stub import StubSyncer, endpoint, wait_for
+from tests.test_remote.stream_stub import SLUG, StubSyncer, stub_remote, wait_for
 
 
 def _line(n: int, kind: str = "comment_added") -> bytes:
@@ -54,7 +54,8 @@ def test_event_applied_by_another_process_is_still_printed(tmp_path, stream_stub
     events: list[dict] = []
     gen = hosted_stream_events(
         tmp_path,
-        endpoint(stream_stub.url),
+        stub_remote(stream_stub.url),
+        SLUG,
         catch_up=catch_up,
         read_lock=_lock,
         timeout=8,
@@ -83,7 +84,8 @@ def test_shorter_log_after_reset_does_not_suppress_later_events(tmp_path, stream
     events: list[dict] = []
     gen = hosted_stream_events(
         tmp_path,
-        endpoint(stream_stub.url),
+        stub_remote(stream_stub.url),
+        SLUG,
         catch_up=syncer,
         read_lock=_lock,
         timeout=8,
@@ -138,7 +140,8 @@ def test_unannounced_reset_while_polling_with_a_longer_log(tmp_path, stream_stub
         events: list[dict] = []
         gen = hosted_stream_events(
             tmp_path,
-            endpoint(proxy.url),
+            stub_remote(proxy.url),
+            SLUG,
             catch_up=syncer,
             read_lock=_lock,
             timeout=8,

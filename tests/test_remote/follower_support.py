@@ -8,15 +8,19 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from lattice.remote.follower import Follower
-from tests.test_remote.stream_stub import StubSyncer, endpoint
+from tests.test_remote.stream_stub import SLUG, StubSyncer, stub_remote
 
 HEARTBEAT = 0.2
 
 
 @contextlib.contextmanager
-def following(root: Path, url: str, syncer: StubSyncer, **kwargs) -> Iterator[Follower]:
+def following(
+    root: Path, url: str, syncer: StubSyncer, *, max_backoff: float = 1.0, **kwargs
+) -> Iterator[Follower]:
     """Run a follower on *url* in a thread; stop and join it on exit."""
-    follower = Follower(root, endpoint(url), catch_up=syncer, max_backoff=1.0, **kwargs)
+    follower = Follower(
+        root, stub_remote(url), SLUG, catch_up=syncer, max_backoff=max_backoff, **kwargs
+    )
     thread = threading.Thread(target=follower.run, daemon=True)
     thread.start()
     try:

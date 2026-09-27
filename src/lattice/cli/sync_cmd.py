@@ -12,8 +12,7 @@ from lattice.cli.helpers import json_envelope, output_error
 from lattice.cli.main import cli
 from lattice.core.errors import OpError
 from lattice.remote import cache
-from lattice.remote import endpoint as remote_endpoint
-from lattice.remote.follower import Follower, succeeded
+from lattice.remote.follower import Follower, follow_target, hosted_root_of, succeeded
 
 NOT_HOSTED_MESSAGE = (
     "This checkout is not bound to a Lattice server; 'lattice sync' works only on a "
@@ -33,17 +32,23 @@ _FAILURES = {
 
 
 def _hosted_root_or_exit(is_json: bool) -> Path:
-    root = remote_endpoint.hosted_root(Path.cwd())
+    """``find_root``'s checkout (``LATTICE_ROOT``, the worktree jump, walking up),
+    or the cwd when it holds only a binding, if it is hosted (H-11 replaces this)."""
+    from lattice.storage.fs import LatticeRootError, find_root
+
+    try:
+        found = find_root()
+    except LatticeRootError:
+        found = None
+    root = hosted_root_of(found if found is not None else Path.cwd())
     if root is None:
         output_error(NOT_HOSTED_MESSAGE, "NOT_HOSTED", is_json)
     return root
 
 
 def _alias(root: Path) -> str:
-    try:
-        return remote_endpoint.endpoint_for(root).alias
-    except (OpError, NotImplementedError):
-        return "the server"
+    identity = cache.cache_identity(root)
+    return identity[0] if identity else "the server"
 
 
 def _sync_once(root: Path, is_json: bool) -> None:
@@ -105,14 +110,15 @@ def sync_cmd(follow: bool, output_json: bool) -> None:
         _sync_once(root, is_json)
         return
     try:
-        endpoint = remote_endpoint.endpoint_for(root)
+        remote, project = follow_target(root)
         follower = Follower(
             root,
-            endpoint,
+            remote,
+            project,
             catch_up=cache.catch_up,
             on_notice=lambda line: click.echo(line, err=True),
         )
-        click.echo(f"Following {endpoint.alias}/{endpoint.project}... (Ctrl-C to stop)", err=True)
+        click.echo(f"Following {remote.alias}/{project}... (Ctrl-C to stop)", err=True)
         run_foreground(follower)
     except OpError as exc:
         output_error(exc.message, exc.code, is_json)

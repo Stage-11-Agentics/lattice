@@ -41,7 +41,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from lattice.core.errors import OpError
 from lattice.remote.cache import SyncOutcome
-from lattice.remote.endpoint import RemoteEndpoint
+from lattice.remote.http import Remote
 from lattice.storage.fs import LATTICE_DIR, atomic_write, ensure_dir, unlink_path
 from lattice.storage.ownership import syncing_board
 
@@ -483,8 +483,9 @@ def cache_files(root: Path) -> dict[str, bytes]:
     return out
 
 
-def endpoint(url: str, **headers: str) -> RemoteEndpoint:
-    return RemoteEndpoint(alias="stub", url=url, project=SLUG, token=TOKEN, headers=headers)
+def stub_remote(url: str, **headers: str) -> Remote:
+    """H-10b's :class:`Remote` for the stub (alias ``stub``); the project is :data:`SLUG`."""
+    return Remote(alias="stub", url=url, token=TOKEN, headers=headers)
 
 
 # ---------------------------------------------------------------------------

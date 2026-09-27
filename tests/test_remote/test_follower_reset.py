@@ -2,41 +2,65 @@
 
 from __future__ import annotations
 
-from lattice.remote.follower import live_follower
+import hashlib
+import json
+import threading
+from pathlib import Path
+
+from lattice.remote import cache
+from lattice.remote.follower import Follower, live_follower
+from lattice.remote.http import Remote
+from lattice.server.testing import serve_board
+from tests.test_remote.conftest import bind
 from tests.test_remote.follower_support import following
 from tests.test_remote.stream_stub import StubSyncer, cache_files, wait_for
 
 
-def test_reset_triggers_a_full_resync_and_ends_byte_identical(tmp_path, stream_stub) -> None:
-    syncer = StubSyncer(stream_stub.url)
-    with following(tmp_path, stream_stub.url, syncer) as follower:
-        assert wait_for(lambda: live_follower(tmp_path), 5)
-        stream_stub.write({"events/T1.jsonl": b'{"id":"ev_1"}\n'})
-        assert wait_for(lambda: cache_files(tmp_path) == stream_stub.files, 5)
-        resets_before = syncer.resets
+def _hashes(lattice_dir: Path) -> dict[str, str]:
+    return {
+        rel: hashlib.sha256((lattice_dir / rel).read_bytes()).hexdigest()
+        for rel in cache.synced_files(lattice_dir)
+    }
 
-        # The server's history is rebuilt: new epoch, different files, seq back to 0.
-        stream_stub.rotate_epoch(
-            {"config.json": b'{"project_code": "DEM", "v": 2}\n', "events/T2.jsonl": b"x\n"}
-        )
-        stream_stub.write({"events/T2.jsonl": b"x\ny\n"})
 
-        # state.json is written last, so waiting on it too never sees a half-apply.
-        def converged() -> bool:
-            state = syncer.state(tmp_path)
-            return (
-                state.get("epoch") == stream_stub.epoch
-                and state.get("head_seq") == stream_stub.head_seq
-                and cache_files(tmp_path) == stream_stub.files
-            )
+def _epoch(root: Path) -> str | None:
+    try:
+        return json.loads((root / ".lattice" / "cache" / "state.json").read_text())["epoch"]
+    except (OSError, ValueError, KeyError):
+        return None
 
-        assert wait_for(converged, 5), cache_files(tmp_path)
 
-        assert follower.deliveries["reset"] >= 1
-        assert syncer.resets == resets_before + 1
-        assert "events/T1.jsonl" not in cache_files(tmp_path)  # a full resync, not a delta
-        assert syncer.state(tmp_path)["epoch"] == stream_stub.epoch
-        assert wait_for(lambda: live_follower(tmp_path), 5)
+def test_reset_triggers_a_full_resync_and_ends_byte_identical(tmp_path, monkeypatch) -> None:
+    """H-10a's real ``rotate-epoch`` broadcasts ``reset``; the follower resyncs in
+    full with H-10b's real ``catch_up`` and ends byte-identical with the server."""
+    with serve_board(tmp_path / "server", heartbeat_seconds=0.2) as srv:
+        root = bind(tmp_path / "b", srv.url, srv.token, monkeypatch)
+        remote = Remote(alias="team", url=srv.url, token=srv.token)
+        follower = Follower(root, remote, srv.slug, catch_up=cache.catch_up)
+        thread = threading.Thread(target=follower.run, daemon=True)
+        thread.start()
+        try:
+            assert wait_for(lambda: live_follower(root), 5)
+            srv.op("task.create", {"title": "before rotation"})
+            assert wait_for(lambda: _hashes(root / ".lattice") == _hashes(srv.board), 5)
+            old_epoch = _epoch(root)
+
+            srv.rotate_epoch()
+            srv.op("task.create", {"title": "after rotation"})
+
+            def converged() -> bool:
+                return (
+                    _epoch(root) not in (None, old_epoch)
+                    and follower.cache_head == srv.sync()["head_seq"]
+                    and _hashes(root / ".lattice") == _hashes(srv.board)
+                )
+
+            assert wait_for(converged, 5)
+            assert follower.deliveries["reset"] >= 1
+            assert wait_for(lambda: live_follower(root), 5)
+        finally:
+            follower.stop()
+            thread.join(5)
 
 
 def test_stale_resume_point_gets_reset_and_resyncs(tmp_path, stream_stub) -> None:

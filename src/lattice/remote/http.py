@@ -527,3 +527,108 @@ def _parse_envelope(payload: bytes) -> dict | None:
     if data["ok"] and "data" not in data:
         return None
     return data
+
+
+# ---------------------------------------------------------------------------
+# Streaming responses (the change stream, SPEC §8.9)
+# ---------------------------------------------------------------------------
+
+
+class StreamResponse:
+    """An open streaming response (``text/event-stream``), read line by line.
+
+    Every read waits at most the *read_timeout* given to :func:`open_stream`;
+    :meth:`close` shuts the socket down, so a reader blocked in
+    :meth:`readline` on another thread returns at once.
+    """
+
+    def __init__(self, response: Any, holder: _Socket, headers: dict[str, str]):
+        self._response = response
+        self._holder = holder
+        self.headers = headers  # lowercased names
+
+    def readline(self) -> bytes:
+        """One line (with its terminator), or ``b""`` when the server closed the
+        stream. Raises :class:`Unreachable` when a read times out or breaks."""
+        try:
+            return self._response.readline()
+        except (OSError, http.client.HTTPException, ValueError) as exc:
+            raise Unreachable(_reason(exc), sent=True) from None
+
+    def close(self) -> None:
+        sock = self._holder.sock
+        if sock is not None:
+            with contextlib.suppress(OSError):
+                sock.shutdown(socket.SHUT_RDWR)
+        with contextlib.suppress(OSError, ValueError):
+            self._response.close()
+
+
+def open_stream(
+    remote: Remote,
+    path: str,
+    *,
+    headers: Mapping[str, str] | None = None,
+    policy: Policy = PROBE,
+    read_timeout: float,
+    what: str | None = None,
+) -> StreamResponse:
+    """Open a streaming ``GET`` under the same policy as :func:`request`.
+
+    The response must be a Lattice server's ``text/event-stream``: a redirect,
+    a missing ``Lattice-Protocol``, or any other content type is
+    ``PROXY_REJECTED`` (a different protocol is ``PROTOCOL_MISMATCH``), and a
+    Lattice error envelope raises :class:`ServerError`. *policy* bounds the
+    connect and the wait for the headers; after that each read waits at most
+    *read_timeout* (the stream is endless, so it has no body deadline).
+    """
+    url = remote.url + path
+    what = what or f"GET {path.split('?', 1)[0]}"
+    req = build_request(remote, "GET", url)
+    req.add_header("Accept", "text/event-stream")
+    for name, value in (headers or {}).items():
+        req.add_header(name, value)
+    holder = _Socket(time.monotonic(), policy.response_seconds)
+    opener = urllib.request.build_opener(
+        _NoRedirect(), _HTTPHandler(holder), _HTTPSHandler(holder)
+    )
+    holder.arm()
+    try:
+        try:
+            response = opener.open(
+                req, timeout=max(0.05, min(policy.connect_seconds, holder.remaining()))
+            )
+        except urllib.error.HTTPError as exc:
+            response = exc
+    except _Redirected as exc:
+        holder.stop()
+        raise _redirect_error(remote, what, exc.status, exc.location) from None
+    except (urllib.error.URLError, OSError, http.client.HTTPException, ValueError) as exc:
+        holder.stop()
+        reason = holder.expiry_reason() if holder.expired else _reason(exc)
+        raise Unreachable(reason, sent=holder.connected) from None
+    holder.stop()
+    if holder.expired:
+        response.close()
+        raise Unreachable(holder.expiry_reason(), sent=True)
+    status = response.status if hasattr(response, "status") else response.code
+    response_headers = {k.lower(): v for k, v in response.headers.items()}
+    content_type = (response_headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+    if 300 <= status < 400:
+        response.close()
+        raise _redirect_error(remote, what, status, response_headers.get("location"))
+    if not (200 <= status < 300) or content_type != "text/event-stream":
+        # Not an event stream: read what is there (bounded) and let the one
+        # response check name it (an error envelope, a proxy page, a mismatch).
+        with response:
+            payload = _read_body(
+                response, holder, response_headers, policy, sink=None, limit=_ERROR_BODY_LIMIT
+            )
+        _check(remote, what, status, response_headers, payload, expect="json", streamed=None)
+        raise _not_lattice(remote, what, status, response_headers.get("content-type"))
+    protocol = response_headers.get(HEADER_PROTOCOL.lower())
+    if protocol is None or protocol.strip() != str(PROTOCOL):
+        response.close()
+        _check(remote, what, status, response_headers, b"", expect="bytes", streamed=None)
+    holder.body_timeout(read_timeout)
+    return StreamResponse(response, holder, response_headers)
