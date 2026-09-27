@@ -215,7 +215,10 @@ Each write records a `plan_written` / `notes_written` event with the content's S
 
 A checkout with a committed `.lattice-remote.json` is bound to a Lattice server (Lattice v2, optional). Its board lives on the server; `.lattice/` is a read-only mirror, refreshed before every read.
 
-- Every command works the same, with the same output and error codes. Writes go to the server; reading `.lattice/` files still works.
+- Every command works the same, with the same output and error codes. Writes go to the server; reading `.lattice/` files still works. A linked worktree has only `.lattice-remote.json`; the read-only mirror is the primary checkout's `.lattice/`.
+- `lattice remote status` shows the token's person; you still pass `--actor agent:<your-id>`. Every event records both your actor and the token's user and machine (`lattice show <task> --full`).
+- Whether a status change fires an automatic review depends on the board's config; the `lattice status` output says what happened. `plan-review` and `code-review` run by hand need `--actor`.
+- Work not merged through a PR goes `review -> done` with `lattice complete`; say in the review how it was integrated (commit SHA and branch).
 - **Never edit files under `.lattice/`.** Write plans and notes with `lattice plan write` / `lattice notes write`, the board's context with `lattice context write`, and orchestration files with `lattice board write orchestration/<path>`.
 - **`OUTCOME_UNKNOWN`** means the server may have applied the write. Run `lattice remote op-status <op_id>` (the message names it) before retrying: `committed` means do not run it again.
 - `SERVER_UNREACHABLE` means nothing was written; there is no offline queue. Reads keep working from the cache with a one-line notice.

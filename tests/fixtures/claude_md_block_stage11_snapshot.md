@@ -1,7 +1,7 @@
 
 ## Lattice
 
-> **MANDATORY: This project has Lattice initialized (`.lattice/` exists). You MUST use Lattice to track all work. Creating tasks, updating statuses, and following the workflow below is not optional — it is a hard requirement. Failure to track work in Lattice is a coordination failure: other agents and humans cannot see, build on, or trust untracked work. If you are about to write code and no Lattice task exists for it, stop and create one first.**
+> **MANDATORY: This project has Lattice initialized (`.lattice/` exists, or `.lattice-remote.json` on a checkout bound to a Lattice server). You MUST use Lattice to track all work. Creating tasks, updating statuses, and following the workflow below is not optional — it is a hard requirement. Failure to track work in Lattice is a coordination failure: other agents and humans cannot see, build on, or trust untracked work. If you are about to write code and no Lattice task exists for it, stop and create one first.**
 
 Lattice is file-based, event-sourced task tracking built for minds that think in tokens and act in tool calls. The `.lattice/` directory is the coordination state — it lives alongside the code, not behind an API.
 
@@ -103,7 +103,7 @@ This is the **planning sub-agent's** job. Spawn a sub-agent whose sole purpose i
 
 **The test:** If you moved to `planned` and the plan file is still empty scaffold, you didn't plan. Every task gets a plan — even trivial tasks get a one-line plan. The CLI enforces this: transitioning to `in_progress` is blocked when the plan is still scaffold.
 
-**Plan review (default: single, fires automatically).** Moving the task to `planned` automatically spawns a detached `lattice plan-review <task>` in the background. Tail progress with `lattice review-status <task>` or `.lattice/.daemon/auto-plan-review-<task>.log`. Disable per-call with `--no-auto-review` on `lattice status`, or project-wide with `auto_plan_review_on_transition: false`. **If you opt into `plan_review_mode: triple`, every transition into `planned` spends three agent runs plus a merge — disable auto-fire or use `--no-auto-review` when cost matters.**
+**Plan review (default: single, fires automatically when the board enables it).** Moving the task to `planned` spawns a detached `lattice plan-review <task> --actor agent:<your-id>` in the background when the board's config has `auto_plan_review_on_transition` on; the `lattice status` output says whether it fired or why it did not. Run by hand, `plan-review` and `code-review` need `--actor` (or `--name`). Tail progress with `lattice review-status <task>` or `.lattice/.daemon/auto-plan-review-<task>.log`. Disable per-call with `--no-auto-review` on `lattice status`, or project-wide with `auto_plan_review_on_transition: false`. **If you opt into `plan_review_mode: triple`, every transition into `planned` spends three agent runs plus a merge — disable auto-fire or use `--no-auto-review` when cost matters.**
 
 The mode controls *how* the review runs:
 
@@ -306,9 +306,13 @@ When you discover something important about how this project works — a pattern
 
 Lattice has no epics, by design. Never create an umbrella task to stand in for one. Group related tasks with a shared tag (`--tags auth,v2` on `create` or `update`; find them with `lattice list --tag auth`) and order them with `lattice link <later> depends_on <earlier>`.
 
+### Finishing Work Without a PR
+
+When the work is not merged through a pull request (committed straight to a branch, a docs or config change, work outside git), close the task with `lattice complete`, skipping any PR status. The completion review must say how the work was integrated: the commit SHA and the branch it was pushed to, or where the change lives.
+
 ### Hosted Boards
 
-A checkout with a committed `.lattice-remote.json` is bound to a Lattice server: its board lives on the server and `.lattice/` is a read-only mirror. Every command above works the same; writes go to the server. Never edit files under `.lattice/` there: write plans and notes with `lattice plan write` / `lattice notes write`, and orchestration files with `lattice board write`. If a write fails with `OUTCOME_UNKNOWN`, check `lattice remote op-status <op_id>` before retrying, or it may apply twice. Setup, moving a board to a server and back, and troubleshooting: follow `docs/hosted/guide.md` in the Lattice repository step by step; it is written for agents.
+A checkout with a committed `.lattice-remote.json` is bound to a Lattice server: its board lives on the server, and the primary checkout's `.lattice/` is a read-only mirror. A linked worktree has only `.lattice-remote.json`; `lattice` finds the mirror in the primary checkout, so run commands from the worktree as usual. Every command above works the same; writes go to the server. Never edit files under `.lattice/` there: write plans and notes with `lattice plan write` / `lattice notes write`, and orchestration files with `lattice board write`. Whether a status change fires an automatic review depends on the board's config, set on the server; the `lattice status` output says what happened. `lattice remote status` shows the token's person (for example `human:alice`); you still act as `--actor agent:<your-id>`, and every event records both: your actor, and the token's user and machine (`lattice show <task>` prints `actor · user@machine`, `--full` the whole origin). If a write fails with `OUTCOME_UNKNOWN`, check `lattice remote op-status <op_id>` before retrying, or it may apply twice. Setup, moving a board to a server and back, and troubleshooting: follow `docs/hosted/guide.md` in the Lattice repository step by step; it is written for agents.
 
 ### Quick Reference
 
