@@ -264,7 +264,7 @@ def test_import_plain_output_names_both_lists_and_the_move(root: Path, source: P
     assert "  reviews/r1.md  (unmanaged)" in out
     assert "  plans/review-pack.md" in out
     assert "lattice remote attach <alias> imp" in out
-    assert "git rm -r --cached -q .lattice" in out
+    assert "git rm -r --cached -q --ignore-unmatch .lattice" in out
 
 
 def test_imported_project_serves_and_allocates_above_the_floor(root: Path, source: Path) -> None:
@@ -379,6 +379,8 @@ def test_a_board_that_fails_doctor_is_refused_with_its_findings(
     else:
         assert "fails lattice doctor" in result.output
         assert f"Invalid JSON at line 2 in {name}" in result.output
+        assert f"{source / '.lattice' / 'events' / name}:" in result.output
+        assert ".importing-" not in result.output
     _assert_nothing_created(root)
     assert _tree(source) == before
 

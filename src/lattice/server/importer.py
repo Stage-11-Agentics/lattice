@@ -309,7 +309,7 @@ def _move_steps(slug: str) -> list[dict]:
             "commands": [
                 "mv .lattice .lattice.pre-hosted-$(date -u +%Y%m%d-%H%M%S)",
                 "echo '/.lattice.pre-hosted-*/' >> .gitignore",
-                "git rm -r --cached -q .lattice",
+                "git rm -r --cached -q --ignore-unmatch .lattice",
             ],
         },
         {
@@ -361,13 +361,15 @@ def import_project(root: Path, slug: str, source: Path) -> dict:
                 if rescan.copied != scan.copied:
                     raise _changed(_first_difference(scan, rescan))
                 report = check_board(board)
+                findings = [_clean(f, board, source / LATTICE_DIR) for f in report.findings]
                 if report.errors:
-                    raise _doctor_refusal(report)
+                    raise _doctor_refusal(report, findings)
                 try:
                     repair_task_derived_files(board, reconcile_placement=False)
                 except AuthoritativeLogError as exc:
+                    message = _as_source(str(exc), board, source / LATTICE_DIR)
                     raise OpError(
-                        "INTEGRITY_ERROR", f"Import refused: short-ID repair failed: {exc}"
+                        "INTEGRITY_ERROR", f"Import refused: short-ID repair failed: {message}"
                     ) from exc
                 journal = seal_new_board(board)
             finally:
@@ -394,7 +396,7 @@ def import_project(root: Path, slug: str, source: Path) -> dict:
         "not_copied": [{"path": p, "class": c} for p, c in scan.not_copied],
         "non_canonical": _non_canonical(scan),
         "doctor": {
-            "findings": [_clean(f) for f in report.findings],
+            "findings": findings,
             "summary": _summary(report),
         },
         "move_steps": _move_steps(slug),
@@ -415,11 +417,19 @@ def _project_code(board: Path) -> str | None:
         return None
 
 
-def _clean(finding: dict) -> dict:
+def _as_source(text: str, staged: Path, source: Path) -> str:
+    """Name the source board, not the staging copy that doctor read (and that is removed)."""
+    for form in {str(staged.resolve()), str(staged)}:
+        text = text.replace(form, str(source))
+    return text
+
+
+def _clean(finding: dict, staged: Path, source: Path) -> dict:
+    """A doctor finding as ``lattice doctor --json`` prints it, with source paths."""
     return {
         "level": finding["level"],
         "check": finding["check"],
-        "message": finding["message"],
+        "message": _as_source(finding["message"], staged, source),
         "task_id": finding.get("task_id"),
     }
 
@@ -435,12 +445,12 @@ def _summary(report: DoctorReport) -> dict:
     }
 
 
-def _doctor_refusal(report: DoctorReport) -> OpError:
-    lines = [f"  {f['level']}: {f['message']}" for f in report.findings]
+def _doctor_refusal(report: DoctorReport, findings: list[dict]) -> OpError:
+    lines = [f"  {f['level']}: {f['message']}" for f in findings]
     noun = "error" if report.errors == 1 else "errors"
     return OpError(
         "INTEGRITY_ERROR",
         f"Import refused: the board fails lattice doctor ({report.errors} {noun}); "
         "nothing was created. Findings:\n" + "\n".join(lines),
-        {"findings": [_clean(f) for f in report.findings], "summary": _summary(report)},
+        {"findings": findings, "summary": _summary(report)},
     )
