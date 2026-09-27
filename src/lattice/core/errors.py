@@ -65,6 +65,12 @@ class OpError(Exception):
         self.message = message
         self.details = details or {}
 
+    @classmethod
+    def task_state(cls, code: str, message: str, snapshot: dict | None) -> OpError:
+        """A rejection about a task's state, carrying the task's current compact
+        snapshot in ``details.snapshot`` (SPEC §3.1) so a caller can re-decide."""
+        return cls(code, message, {"snapshot": task_state_snapshot(snapshot)})
+
     @property
     def http_status(self) -> int:
         return HTTP_STATUS.get(self.code, 400)
@@ -79,6 +85,15 @@ class OpError(Exception):
         return f"OpError({self.code!r}, {self.message!r})"
 
 
+def task_state_snapshot(snapshot: dict | None) -> dict | None:
+    """The compact snapshot a task-state rejection carries, plus ``last_event_id``."""
+    if snapshot is None:
+        return None
+    from lattice.core.tasks import compact_snapshot
+
+    return {**compact_snapshot(snapshot), "last_event_id": snapshot.get("last_event_id")}
+
+
 class StateConflict(OpError, ValueError):
     """``CONFLICT`` raised by the write path itself (a ``from`` mismatch or a
     failed ``expect_last_event_id``).
@@ -87,5 +102,5 @@ class StateConflict(OpError, ValueError):
     catch ``ValueError`` and show ``str(exc)``, keep today's behavior.
     """
 
-    def __init__(self, message: str, details: dict[str, Any] | None = None):
-        super().__init__("CONFLICT", message, details)
+    def __init__(self, message: str, snapshot: dict | None):
+        super().__init__("CONFLICT", message, {"snapshot": task_state_snapshot(snapshot)})

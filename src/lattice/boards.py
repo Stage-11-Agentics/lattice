@@ -162,11 +162,13 @@ class LocalBoard:
 
         return json.loads((self.lattice_dir / "config.json").read_text())
 
-    def execute(self, op_name: str, params: Any, caller: Any = None) -> Any:
+    def execute(
+        self, op_name: str, params: Any, caller: Any = None, *, config: dict | None = None
+    ) -> Any:
         """Run *op_name* here with hooks in-process, stamping this client's origin.
 
         Each call is one operation with a fresh ``op_id`` unless the caller
-        supplied one.
+        supplied one. *config*: see ``lattice.ops.execute``.
         """
         from lattice.ops import Caller, execute
 
@@ -180,6 +182,7 @@ class LocalBoard:
             params,
             replace(caller, origin=origin),
             run_hooks=True,
+            config=config,
         )
 
 

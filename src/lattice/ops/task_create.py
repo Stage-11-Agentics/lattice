@@ -122,8 +122,10 @@ class Create:
                 existing["tags"] = existing.get("tags") or []
                 new["tags"] = new.get("tags") or []
                 if existing != new:
-                    raise OpError(
-                        "CONFLICT", f"Conflict: task {task_id} exists with different data."
+                    raise OpError.task_state(
+                        "CONFLICT",
+                        f"Conflict: task {task_id} exists with different data.",
+                        context.snapshot,
                     )
                 return TaskMutationDecision(idempotent=True)
             data = dict(requested)

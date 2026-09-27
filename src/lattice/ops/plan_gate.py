@@ -54,11 +54,12 @@ def check_plan_gate(
             )
         plan_path = target if target.exists() else other if other.exists() else None
     if plan_path is None:
-        raise OpError(
+        raise OpError.task_state(
             "PLAN_REQUIRED",
             f"Plan file missing for {task_id}. "
             "Write a plan before moving to in_progress. "
             "Override with --force --reason.",
+            authoritative_snapshot,
         )
 
     try:
@@ -70,9 +71,10 @@ def check_plan_gate(
     # description" from "plan has real content".
     description = authoritative_snapshot.get("description")
     if is_scaffold_plan(content, description=description):
-        raise OpError(
+        raise OpError.task_state(
             "PLAN_REQUIRED",
             f"Plan for {task_id} is still scaffold. "
             "Write the plan (even one line) before moving to in_progress. "
             "Override with --force --reason.",
+            authoritative_snapshot,
         )

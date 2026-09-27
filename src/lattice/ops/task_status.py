@@ -91,11 +91,12 @@ class Status:
                 if not p.force:
                     targets = get_valid_transitions(config, current)
                     valid_list = ", ".join(targets) if targets else "(none)"
-                    raise OpError(
+                    raise OpError.task_state(
                         "INVALID_TRANSITION",
                         f"Invalid transition from {current} to {new_status}. "
                         f"Valid transitions from {current}: {valid_list}. "
                         "Use --force --reason to override.",
+                        snapshot,
                     )
                 if not p.reason:
                     raise OpError("VALIDATION_ERROR", "--reason is required with --force.")
@@ -103,13 +104,14 @@ class Status:
                 cycles = count_review_rework_cycles(list(context.events))
                 limit = get_review_cycle_limit(config)
                 if cycles >= limit:
-                    raise OpError(
+                    raise OpError.task_state(
                         "REVIEW_CYCLE_LIMIT",
                         f"Review cycle limit reached ({cycles}/{limit}). "
                         f"This task has been sent back from review {cycles} time(s). "
                         "Flag it for a human instead of cycling further: "
                         'lattice needs-human <task> "<what you need>". '
                         "Override with --force --reason.",
+                        snapshot,
                     )
             # The reachable-review-commit policy inspects the checkout the
             # operation started in (H-4 replaces this with an attestation).
@@ -124,10 +126,11 @@ class Status:
             )
             if not policy_ok:
                 if not p.force:
-                    raise OpError(
+                    raise OpError.task_state(
                         "COMPLETION_BLOCKED",
                         "Completion policy not satisfied: "
                         f"{'; '.join(failures)}. Override with --force --reason.",
+                        snapshot,
                     )
                 if not p.reason:
                     raise OpError("VALIDATION_ERROR", "--reason is required with --force.")

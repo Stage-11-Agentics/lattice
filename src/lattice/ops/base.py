@@ -375,11 +375,13 @@ class OpContext:
         raise OpError("INVALID_ID", f"Invalid task ID format: '{raw_id}'.")
 
     def require_active(self, task_id: str) -> dict:
-        """Return the active task's snapshot, or raise ``NOT_FOUND``."""
-        try:
-            authority = read_task_authority(self.lattice_dir, task_id, allow_missing=True)
-        except AuthoritativeLogError:
-            authority = None
+        """Return the active task's snapshot.
+
+        ``NOT_FOUND`` when the task is absent or archived; a log that cannot be
+        replayed raises ``AuthoritativeLogError``, which ``execute`` reports as
+        ``INTEGRITY_ERROR``.
+        """
+        authority = read_task_authority(self.lattice_dir, task_id, allow_missing=True)
         if authority is None or authority.location != "active":
             raise OpError("NOT_FOUND", f"Task {task_id} not found.")
         return authority.snapshot
@@ -500,11 +502,17 @@ def execute(
     caller: Caller,
     *,
     run_hooks: bool,
+    config: dict | None = None,
 ) -> OpResult:
     """Run one operation against the board at *board_dir* (its ``.lattice/``).
 
     ``run_hooks``: run the board's hooks in-process after each write, as local
     Lattice always has (``LocalBoard`` passes ``True``; a server ``False``).
+    ``config``: the board configuration the caller already loaded. A client
+    that runs its own effects afterwards (auto-review, hints) passes the object
+    it will use for them, so one pre-write config governs the rules, the hooks,
+    and the effects even if a hook edits ``config.json``. Loaded from the board
+    when omitted.
     """
     board_dir = Path(board_dir)
     # 1. Only the board's owner writes it.
@@ -518,7 +526,8 @@ def execute(
         check_path_component(caller.actor_name, "session name")
 
     # 3. The actor, resolved before anything is written.
-    config = _load_config(board_dir)
+    if config is None:
+        config = _load_config(board_dir)
     actor: str | dict | None = None
     if not getattr(op_cls, "no_actor", False):
         actor = resolve_actor(board_dir, caller)

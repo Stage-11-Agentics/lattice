@@ -15,12 +15,7 @@ from lattice.core.events import LIFECYCLE_EVENT_TYPES, serialize_event
 from lattice.core.origin import stamp_origin
 from lattice.core.comments import materialize_comments, validate_comment_for_delete
 from lattice.core.comments import validate_comment_for_edit, validate_comment_for_react
-from lattice.core.tasks import (
-    FromMismatchError,
-    apply_event_to_snapshot,
-    compact_snapshot,
-    serialize_snapshot,
-)
+from lattice.core.tasks import FromMismatchError, apply_event_to_snapshot, serialize_snapshot
 from lattice.storage.fs import atomic_write, jsonl_append
 from lattice.storage.hooks import execute_hooks
 from lattice.storage.locks import lattice_lock, multi_lock
@@ -645,13 +640,6 @@ def _reserve_or_reconcile_short_id(
     return short_id, True
 
 
-def _conflict_snapshot(snapshot: dict | None) -> dict | None:
-    """The current state a ``CONFLICT`` carries, so a caller can re-decide."""
-    if snapshot is None:
-        return None
-    return {**compact_snapshot(snapshot), "last_event_id": snapshot.get("last_event_id")}
-
-
 def mutate_task(
     lattice_dir: Path,
     task_id: str,
@@ -707,7 +695,7 @@ def mutate_task(
                 raise StateConflict(
                     f"Task {task_id} changed: expected last event {expect_last_event_id}, "
                     f"found {found}.",
-                    {"snapshot": _conflict_snapshot(authority.snapshot if authority else None)},
+                    authority.snapshot if authority is not None else None,
                 )
 
         preexisting_snapshot_drift = False
@@ -764,7 +752,7 @@ def mutate_task(
             except FromMismatchError as exc:
                 raise StateConflict(
                     str(exc),
-                    {"snapshot": _conflict_snapshot(authority.snapshot if authority else None)},
+                    authority.snapshot if authority is not None else None,
                 ) from exc
             validation_events.append(event)
             seen_ids.add(event["id"])

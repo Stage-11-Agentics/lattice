@@ -22,7 +22,7 @@ from lattice.cli.helpers import (
 )
 from lattice.storage.operations import TaskMutationDecision, mutate_task
 from lattice.cli.main import cli
-from lattice.cli.ops_bridge import run_operation
+from lattice.cli.ops_bridge import board_or_exit, run_operation
 from lattice.core.comments import (
     materialize_comments,
     validate_comment_body,
@@ -609,6 +609,11 @@ def status_cmd(
 ) -> None:
     """Change a task's status."""
     is_json = output_json
+    # One configuration, read before the write, governs the transition rules,
+    # the hooks, auto-review, and the hints, even if a hook edits config.json.
+    board = board_or_exit(is_json)
+    config = board.load_config()
+    lattice_dir = board.lattice_dir
     result = run_operation(
         "task.status",
         {
@@ -619,6 +624,8 @@ def status_cmd(
             **_provenance(model, session, triggered_by, on_behalf_of, provenance_reason),
         },
         is_json,
+        board=board,
+        config=config,
     )
     updated_snapshot = result.value
     task_id = updated_snapshot["id"]
@@ -637,11 +644,6 @@ def status_cmd(
     auto_assigned_to = next(
         (e["data"]["to"] for e in result.events if e["type"] == "assignment_changed"), None
     )
-
-    from lattice.boards import resolve_board
-
-    lattice_dir = resolve_board().lattice_dir
-    config = load_project_config(lattice_dir)
 
     # c11 integration: update tab title / sidebar / flash when task is surface-bound
     from lattice.cli.c11_bridge import c11_available, on_status_changed
@@ -702,11 +704,12 @@ def status_cmd(
                 }
                 if "reviewed_worktree" in auto_review_result:
                     params["reviewed_worktree"] = auto_review_result["reviewed_worktree"]
-                updated_snapshot = (
-                    resolve_board()
-                    .execute("task.record_auto_review", params, Caller(actor=AUTO_REVIEW_ACTOR))
-                    .value
-                )
+                updated_snapshot = board.execute(
+                    "task.record_auto_review",
+                    params,
+                    Caller(actor=AUTO_REVIEW_ACTOR),
+                    config=config,
+                ).value
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "auto_review_spawned event write failed: %s",
@@ -892,12 +895,15 @@ def comment(
 ) -> None:
     """Add a comment to a task."""
     is_json = output_json
+    # The body is resolved first, before the board, exactly as always: both,
+    # neither, and the file's text are argument problems, not board state.
+    body = resolve_body(text, file_path, is_json, what="comment text", arg_label="TEXT")
     result = run_operation(
         "task.comment",
         {
             "task": task_id,
-            "text": text,
-            "file": Path(file_path).read_text(encoding="utf-8") if file_path is not None else None,
+            "text": body if file_path is None else None,
+            "file": body if file_path is not None else None,
             "reply_to": reply_to,
             "role": role,
             "criterion": list(criterion_ids),

@@ -179,19 +179,134 @@ class TestStorageMapping:
             _run(board, "task.comment", {"task": task_id, "text": "x"})
         assert (exc.value.code, exc.value.message) == ("NOT_FOUND", f"Task {task_id} is archived.")
 
+    @pytest.mark.parametrize(
+        ("op", "params"),
+        [
+            ("task.status", {"new_status": "in_planning"}),
+            ("task.comment", {"text": "x"}),
+        ],
+    )
     def test_corrupt_log_is_integrity_error(
-        self, board: LocalBoard, monkeypatch: pytest.MonkeyPatch
+        self, board: LocalBoard, op: str, params: dict
     ) -> None:
+        # No seam patched: the real pre-check and mutation read a log that
+        # cannot be replayed.
         task_id = self._task(board)
-        from lattice.ops.base import OpContext
-
-        monkeypatch.setattr(OpContext, "require_active", lambda self, tid: {})
         log = board.lattice_dir / "events" / f"{task_id}.jsonl"
         log.write_bytes(log.read_bytes() + b"{not json\n")
         with pytest.raises(OpError) as exc:
-            _run(board, "task.comment", {"task": task_id, "text": "x"})
+            _run(board, op, {"task": task_id, **params})
         assert exc.value.code == "INTEGRITY_ERROR"
         assert "invalid JSONL record" in exc.value.message
+
+    def test_archived_task_is_not_found_with_todays_message(self, board: LocalBoard) -> None:
+        from lattice.core.events import create_event
+        from lattice.storage.operations import mutate_task_events
+
+        task_id = self._task(board)
+        mutate_task_events(
+            board.lattice_dir,
+            task_id,
+            [create_event("task_archived", task_id, "agent:t", {})],
+            destination="archived",
+            may_emit_lifecycle=True,
+            run_hooks=False,
+        )
+        for op, params in [
+            ("task.status", {"new_status": "in_planning"}),
+            ("task.comment", {"text": "x"}),
+        ]:
+            with pytest.raises(OpError) as exc:
+                _run(board, op, {"task": task_id, **params})
+            assert (exc.value.code, exc.value.message) == (
+                "NOT_FOUND",
+                f"Task {task_id} not found.",
+            )
+
+
+class TestTaskStateRejectionsCarryTheSnapshot:
+    """SPEC §3.1: every rejection about a task's state carries ``details.snapshot``."""
+
+    def _assert_snapshot(self, exc: OpError, task_id: str, status: str) -> None:
+        snapshot = exc.details["snapshot"]
+        assert snapshot["id"] == task_id
+        assert snapshot["status"] == status
+        assert snapshot["last_event_id"].startswith("ev_")
+
+    def _task(self, board: LocalBoard, *statuses: str) -> str:
+        task_id = _run(board, "task.create", {"title": "t"}).value["id"]
+        for status in statuses:
+            _run(
+                board,
+                "task.status",
+                {"task": task_id, "new_status": status, "force": True, "reason": "r"},
+            )
+        return task_id
+
+    def _reject(self, board: LocalBoard, op: str, params: dict, **caller) -> OpError:  # noqa: ANN003
+        with pytest.raises(OpError) as exc:
+            board.execute(op, params, Caller(actor="agent:t", **caller))
+        return exc.value
+
+    def test_invalid_transition(self, board: LocalBoard) -> None:
+        task_id = self._task(board)
+        exc = self._reject(board, "task.status", {"task": task_id, "new_status": "done"})
+        assert exc.code == "INVALID_TRANSITION"
+        self._assert_snapshot(exc, task_id, "backlog")
+
+    def test_plan_required(self, board: LocalBoard) -> None:
+        task_id = self._task(board, "in_planning", "planned")
+        exc = self._reject(board, "task.status", {"task": task_id, "new_status": "in_progress"})
+        assert exc.code == "PLAN_REQUIRED"
+        self._assert_snapshot(exc, task_id, "planned")
+        (board.lattice_dir / "plans" / f"{task_id}.md").unlink()
+        exc = self._reject(board, "task.status", {"task": task_id, "new_status": "in_progress"})
+        assert exc.code == "PLAN_REQUIRED" and "missing" in exc.message
+        self._assert_snapshot(exc, task_id, "planned")
+
+    def test_review_cycle_limit(self, board: LocalBoard) -> None:
+        config = board.load_config()
+        config.setdefault("workflow", {})["review_cycle_limit"] = 1
+        (board.lattice_dir / "config.json").write_text(json.dumps(config))
+        task_id = self._task(board, "in_progress", "review", "in_progress", "review")
+        exc = self._reject(board, "task.status", {"task": task_id, "new_status": "in_progress"})
+        assert exc.code == "REVIEW_CYCLE_LIMIT"
+        self._assert_snapshot(exc, task_id, "review")
+
+    def test_completion_blocked(self, board: LocalBoard) -> None:
+        task_id = self._task(board, "in_progress", "review")
+        exc = self._reject(board, "task.status", {"task": task_id, "new_status": "done"})
+        assert exc.code == "COMPLETION_BLOCKED"
+        self._assert_snapshot(exc, task_id, "review")
+
+    def test_conflicts(self, board: LocalBoard) -> None:
+        task_id = "task_01J9ZABCDEFGHJKMNPQRSTVWXY"
+        _run(board, "task.create", {"title": "t", "id": task_id})
+        exc = self._reject(board, "task.create", {"title": "other", "id": task_id})
+        assert exc.code == "CONFLICT"
+        self._assert_snapshot(exc, task_id, "backlog")
+        exc = self._reject(
+            board,
+            "task.comment",
+            {"task": task_id, "text": "x"},
+            expect_last_event_id="ev_01J9ZABCDEFGHJKMNPQRSTVWXZ",
+        )
+        assert exc.code == "CONFLICT"
+        self._assert_snapshot(exc, task_id, "backlog")
+
+    def test_cli_envelope_is_unchanged(self, board: LocalBoard) -> None:
+        """The snapshot is for the server's HTTP envelope; the CLI prints today's."""
+        from click.testing import CliRunner
+
+        from lattice.cli.main import cli
+
+        task_id = self._task(board)
+        env = {"LATTICE_ROOT": str(board.root)}
+        out = CliRunner().invoke(
+            cli, ["status", task_id, "done", "--actor", "agent:t", "--json"], env=env
+        )
+        assert out.exit_code == 1
+        assert set(json.loads(out.output)["error"]) == {"code", "message"}
 
 
 class TestFirstSlice:
