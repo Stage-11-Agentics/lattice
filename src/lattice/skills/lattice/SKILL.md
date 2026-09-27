@@ -136,7 +136,7 @@ lattice archive PROJ-1 --actor agent:claude-cli
 
 Options for `create`: `--priority` (critical/high/medium/low/none), `--type` (task/bug/chore), `--description "..."`, `--assign agent:claude-cli`
 
-**No `epic` or `spike` types — just items of work with a dependency graph.** Lattice intentionally rejects umbrella/exploratory ticket types. Express multi-phase or umbrella work as a plain `task` with `subtask_of` links from its children. Express exploratory/investigation work as a plain `task` whose deliverable is a concrete artifact (plan doc, prototype, decision). The subtask + dependency graph (`subtask_of`, `blocks`, `depends_on`) gives you epic-shape and spike-shape without dedicated types. Every ticket is a chunk of work with a real output, not a bucket or a question.
+**No epics, and never a fake one.** Lattice has no `epic` or `spike` type by design, and you must not create an umbrella task to stand in for one. Group related tasks with a shared tag (`lattice create "..." --tags auth,v2`, then `lattice list --tag auth`), and order them with dependencies (`lattice link <later> depends_on <earlier>`). Express exploratory work as a plain `task` whose deliverable is a concrete artifact (plan doc, prototype, decision). Every ticket is a chunk of work with a real output, not a bucket or a question.
 
 **Task description depth:** Match description detail to task ambiguity. Bug fixes and chores can be one-liners ("Add regex validation to frequency names"). Features and integration tasks should include: (1) what it does, (2) acceptance criteria, (3) architectural context, (4) what the user/operator experiences when done. Structured task-local criterion records are optional; add them when stable IDs and evidence traceability help, not as a universal task or workflow requirement.
 
@@ -202,7 +202,7 @@ A checkout with a committed `.lattice-remote.json` is bound to a Lattice server 
 - **`OUTCOME_UNKNOWN`** means the server may have applied the write. Run `lattice remote op-status <op_id>` (the message names it) before retrying: `committed` means do not run it again.
 - `SERVER_UNREACHABLE` means nothing was written; there is no offline queue. Reads keep working from the cache with a one-line notice.
 - `LOCAL_ONLY` (from `rebuild`, `doctor --fix`, and similar) means the command runs on the server host, not here.
-- Setup, moving a board to a server and back, and every error code: `docs/hosted/guide.md` in the Lattice repository.
+- Setting up a server, binding a checkout, or moving a board to a server and back: follow `docs/hosted/guide.md` in the Lattice repository step by step. It is written for you, the agent: run its command blocks in order and check each result. Ask the human only for what the guide says only they have (the server URL, a token, which project).
 
 ## Rules
 

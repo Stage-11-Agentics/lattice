@@ -302,9 +302,13 @@ This applies to uncommitted changes in the working tree, unexpected commits on t
 
 When you discover something important about how this project works — a pattern, a gotcha, a convention — **do not save it to auto-memory**. Memory is per-session and per-user; future Lattice agents in other installations will never see it. Instead, add it to this project's `CLAUDE.md` (for project-specific conventions) or propose updating the Lattice template (for universal patterns that should ship with every `lattice init`). The goal: every future agent, in every future installation, benefits from what you learned.
 
+### Grouping Work
+
+Lattice has no epics, by design. Never create an umbrella task to stand in for one. Group related tasks with a shared tag (`--tags auth,v2` on `create` or `update`; find them with `lattice list --tag auth`) and order them with `lattice link <later> depends_on <earlier>`.
+
 ### Hosted Boards
 
-A checkout with a committed `.lattice-remote.json` is bound to a Lattice server: its board lives on the server and `.lattice/` is a read-only mirror. Every command above works the same; writes go to the server. Never edit files under `.lattice/` there: write plans and notes with `lattice plan write` / `lattice notes write`, and orchestration files with `lattice board write`. If a write fails with `OUTCOME_UNKNOWN`, check `lattice remote op-status <op_id>` before retrying, or it may apply twice. Setup and troubleshooting: `docs/hosted/guide.md` in the Lattice repository.
+A checkout with a committed `.lattice-remote.json` is bound to a Lattice server: its board lives on the server and `.lattice/` is a read-only mirror. Every command above works the same; writes go to the server. Never edit files under `.lattice/` there: write plans and notes with `lattice plan write` / `lattice notes write`, and orchestration files with `lattice board write`. If a write fails with `OUTCOME_UNKNOWN`, check `lattice remote op-status <op_id>` before retrying, or it may apply twice. Setup, moving a board to a server and back, and troubleshooting: follow `docs/hosted/guide.md` in the Lattice repository step by step; it is written for agents.
 
 ### Quick Reference
 
@@ -329,6 +333,6 @@ lattice list
 - `--quiet` — prints only the task ID (scripting: `TASK=$(lattice create "..." --quiet)`)
 - `--json` — structured output: `{"ok": true, "data": ...}` or `{"ok": false, "error": ...}`
 - `lattice list --status in_progress` / `--assigned agent:<id>` / `--tag <tag>` — filters
-- `lattice link <task> subtask_of|depends_on|blocks <target>` — task relationships
+- `lattice link <task> depends_on|blocks|subtask_of <target>` — task relationships (group with tags, not an epic task)
 
 For the full CLI reference, see the `/lattice` skill.

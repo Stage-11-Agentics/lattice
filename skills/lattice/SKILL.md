@@ -45,16 +45,14 @@ lattice create "Fix the login bug" --actor agent:openclaw --priority high
 
 Options: `--priority` (critical/high/medium/low/none), `--type` (task/bug/chore), `--description "details"`, `--assign agent:openclaw`
 
-**No `epic` or `spike` types — just items of work with a dependency
-graph.** Lattice intentionally rejects umbrella/exploratory ticket
-types. Multi-phase or umbrella work is expressed by creating a plain
-`task` and linking children via `lattice link <child> subtask_of
-<parent>`. Exploratory or investigation work is expressed as a plain
-`task` whose deliverable is a concrete artifact (plan doc, prototype,
-decision). The subtask + dependency graph (`subtask_of`, `blocks`,
-`depends_on`) gives you epic-shape and spike-shape without dedicated
-types. Every ticket is a chunk of work with a real output, not a
-bucket or an open question.
+**No epics, and never a fake one.** Lattice has no `epic` or `spike`
+type by design, and you must not create an umbrella task to stand in for
+one. Group related tasks with a shared tag (`lattice create "..." --tags
+auth,v2`, then `lattice list --tag auth`), and order them with
+dependencies (`lattice link <later> depends_on <earlier>`). Exploratory
+work is a plain `task` whose deliverable is a concrete artifact (plan
+doc, prototype, decision). Every ticket is a chunk of work with a real
+output, not a bucket or an open question.
 
 ### List tasks
 
@@ -222,7 +220,7 @@ A checkout with a committed `.lattice-remote.json` is bound to a Lattice server 
 - **`OUTCOME_UNKNOWN`** means the server may have applied the write. Run `lattice remote op-status <op_id>` (the message names it) before retrying: `committed` means do not run it again.
 - `SERVER_UNREACHABLE` means nothing was written; there is no offline queue. Reads keep working from the cache with a one-line notice.
 - `LOCAL_ONLY` (from `rebuild`, `doctor --fix`, and similar) means the command runs on the server host, not here.
-- Setup, moving a board to a server and back, and every error code: `docs/hosted/guide.md` in the Lattice repository.
+- Setting up a server, binding a checkout, or moving a board to a server and back: follow `docs/hosted/guide.md` in the Lattice repository step by step. It is written for you, the agent: run its command blocks in order and check each result. Ask the human only for what the guide says only they have (the server URL, a token, which project).
 
 ## Multi-Agent Coordination
 

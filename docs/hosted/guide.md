@@ -4,7 +4,14 @@ Local Lattice is the default and stays the default. A board is a `.lattice/` dir
 
 Lattice v2 adds an optional server. One server process per host owns every board it hosts and is the only process that writes them. Your checkouts send every write to it and keep a read-only copy of the board (the cache) in `.lattice/`, so `cat .lattice/...`, `lattice list`, and the dashboard work as before.
 
-This guide is written so a person or an agent can follow it step by step. Every command block is meant to be run as written, in order, unless its text says it is for a different machine or it shows a file to create. Blocks share one shell: a variable exported in one block is used by later ones.
+**This guide is written for agents first.** A person using Lattice usually asks their agent: "set up a Lattice server", "bind this repository to our server", "move this board to the server". The agent follows this guide. If you are that agent:
+
+- Run the command blocks in order, as written, unless the text says a block is for a different machine or shows a file to create. Blocks share one shell: a variable exported in one block is used by later ones.
+- Check each result against what the text says you should see before going on. Stop and report when something differs; do not improvise around a failure.
+- Ask your human only for what only they have: the server URL, a token (or shell access to the server host to mint one), which project, and approval before anything that touches a teammate's machine or a shared branch.
+- Never delete a board. Every step that retires one moves it aside.
+
+A person can run every block by hand too.
 
 **Contents**
 
@@ -543,6 +550,14 @@ Everything you and your agents do locally works the same: `create`, `status`, `c
 - **Maintenance commands** (`init`, `rebuild`, `doctor --fix`, `backfill-ids`, `migrate`) refuse with `LOCAL_ONLY`; they run on the server host (section 7). `lattice doctor` without `--fix` runs on the cache and also compares every file with the server's copy.
 - **Hooks** configured on the board run on your machine only if your remote sets `run_board_hooks: true`. The server runs no hooks and spawns no agents.
 - **Plugins.** An operation from a plugin package runs on a hosted board only if the plugin is installed on the server (section 19).
+- **Grouping work.** Lattice has no epics, hosted or local, and an agent must never create an umbrella task to stand in for one. Group related tasks with a shared tag (`--tags`) and order them with `depends_on` links:
+
+  ```bash
+  lattice create "Hosted trial: write the runbook" --tags hosted-trial --actor human:alice
+  lattice create "Hosted trial: invite the team" --tags hosted-trial --actor human:alice
+  lattice link DEMO-3 depends_on DEMO-2 --actor human:alice
+  lattice list --tag hosted-trial
+  ```
 - **Other people's text** reaches your terminal. Plain output replaces control characters from the board with `�`; `--json` is unchanged.
 
 ## 13. Auto-review on hosted boards
