@@ -5,19 +5,9 @@ from __future__ import annotations
 import click
 
 from lattice.cli.c11_bridge import c11_available, get_surface, get_workspace, rename_tab
-from lattice.cli.helpers import (
-    common_options,
-    load_project_config,
-    output_error,
-    output_result,
-    read_snapshot_or_exit,
-    require_actor,
-    require_root,
-    resolve_task_id,
-)
+from lattice.cli.helpers import common_options, output_result
 from lattice.cli.main import cli
-from lattice.core.events import create_event
-from lattice.storage.operations import TaskMutationDecision, mutate_task
+from lattice.cli.ops_bridge import run_operation
 
 
 @cli.command("claim")
@@ -55,60 +45,32 @@ def claim_cmd(
         lattice claim LAT-55 --surface surface:153 --actor agent:chef
     """
     is_json = output_json
-    lattice_dir = require_root(is_json)
-    config = load_project_config(lattice_dir)
-    actor = require_actor(is_json)
-
-    task_id = resolve_task_id(lattice_dir, task_id, is_json)
-    read_snapshot_or_exit(lattice_dir, task_id, is_json)
-
-    # Resolve surface
-    resolved_surface = surface_id or get_surface()
-    if not resolved_surface:
-        output_error(
-            "No surface specified. Provide --surface or run inside c11 "
-            "(C11_SURFACE_ID must be set).",
-            "MISSING_SURFACE",
-            is_json,
-        )
-
-    workspace = get_workspace()
-
-    event_data: dict = {"surface": resolved_surface}
-    if workspace:
-        event_data["workspace"] = workspace
-
-    def decide(context):  # noqa: ANN001, ANN202
-        event = create_event(
-            type="surface_bound",
-            task_id=task_id,
-            actor=actor,
-            data=event_data,
-            model=model,
-            session=session,
-            triggered_by=triggered_by,
-            on_behalf_of=on_behalf_of,
-            reason=provenance_reason,
-        )
-        return TaskMutationDecision(events=[event])
-
-    updated_snapshot = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True).snapshot
+    # The surface and workspace are this machine's c11 environment.
+    result = run_operation(
+        "task.claim",
+        {
+            "task": task_id,
+            "surface": surface_id or get_surface(),
+            "workspace": get_workspace(),
+            "model": model,
+            "session": session,
+            "triggered_by": triggered_by,
+            "on_behalf_of": on_behalf_of,
+            "reason": provenance_reason,
+        },
+        is_json,
+    )
+    data = result.value
+    display_id = data["short_id"]
 
     # Rename tab if inside c11
     if c11_available():
-        short_id = updated_snapshot.get("short_id") or task_id
-        title = updated_snapshot.get("title") or ""
-        rename_tab(resolved_surface, f"{short_id}: {title}")
+        title = result.task.get("title") or ""
+        rename_tab(data["surface"], f"{display_id}: {title}")
 
-    display_id = updated_snapshot.get("short_id") or task_id
     output_result(
-        data={
-            "task_id": task_id,
-            "short_id": display_id,
-            "surface": resolved_surface,
-            "workspace": workspace,
-        },
-        human_message=f"Bound {display_id} to {resolved_surface}",
+        data=data,
+        human_message=f"Bound {display_id} to {data['surface']}",
         quiet_value=display_id,
         is_json=is_json,
         is_quiet=quiet,
@@ -138,42 +100,23 @@ def unclaim_cmd(
         lattice unclaim LAT-55 --actor agent:chef
     """
     is_json = output_json
-    lattice_dir = require_root(is_json)
-    config = load_project_config(lattice_dir)
-    actor = require_actor(is_json)
-
-    task_id = resolve_task_id(lattice_dir, task_id, is_json)
-    read_snapshot_or_exit(lattice_dir, task_id, is_json)
-
-    def decide(context):  # noqa: ANN001, ANN202
-        snapshot = context.snapshot
-        assert snapshot is not None
-        old_surface = snapshot.get("c11_surface")
-        event = create_event(
-            type="surface_unbound",
-            task_id=task_id,
-            actor=actor,
-            data={"surface": old_surface},
-            model=model,
-            session=session,
-            triggered_by=triggered_by,
-            on_behalf_of=on_behalf_of,
-            reason=provenance_reason,
-        )
-        return TaskMutationDecision(events=[event], value=old_surface)
-
-    result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
-    updated_snapshot = result.snapshot
-    old_surface = result.callback_value
-
-    display_id = updated_snapshot.get("short_id") or task_id
-    output_result(
-        data={
-            "task_id": task_id,
-            "short_id": display_id,
-            "surface": old_surface,
+    result = run_operation(
+        "task.unclaim",
+        {
+            "task": task_id,
+            "model": model,
+            "session": session,
+            "triggered_by": triggered_by,
+            "on_behalf_of": on_behalf_of,
+            "reason": provenance_reason,
         },
-        human_message=f"Unbound {display_id} from {old_surface or '(no surface)'}",
+        is_json,
+    )
+    data = result.value
+    display_id = data["short_id"]
+    output_result(
+        data=data,
+        human_message=f"Unbound {display_id} from {data['surface'] or '(no surface)'}",
         quiet_value=display_id,
         is_json=is_json,
         is_quiet=quiet,
