@@ -624,7 +624,7 @@ class _Syncer:
             and delta.epoch == state.get("epoch")
             and delta.head_seq == state.get("head_seq")
         ):
-            self._mark_unchanged(state)
+            self._mark_unchanged(state, delta.server_version)
             return self.outcome("unchanged")
         contents = self._resolve(delta)
         self._apply(delta, contents)
@@ -728,9 +728,12 @@ class _Syncer:
 
     # -- apply ----------------------------------------------------------------
 
-    def _mark_unchanged(self, state: dict) -> None:
+    def _mark_unchanged(self, state: dict, server_version: str | None) -> None:
+        state = {**state, "synced_at": _utc_now()}
+        if server_version:
+            state["server_version"] = server_version
         with syncing_board(self.lattice_dir):
-            self._write_state({**state, "synced_at": _utc_now()})
+            self._write_state(state)
         self._clear_unreachable()
 
     def _write_state(self, state: dict) -> None:
