@@ -143,15 +143,37 @@ class TestStatusAttestation:
             )
         assert exc.value.code == "VALIDATION_ERROR"
 
-    def test_force_skips_the_staleness_check(self, board: LocalBoard) -> None:
+    def test_force_does_not_skip_the_staleness_check(self, board: LocalBoard) -> None:
+        """--force bypasses the policy verdict, never the attestation's freshness."""
         task_id = _reviewed_task(board)
-        result = _run(
+        _stale(
             board,
             "task.status",
             {"task": task_id, "new_status": "done", "force": True, "reason": "override"},
             {"reachable_review_commits": [_entry(SHA_A, branch="main")]},
         )
+
+    def test_force_bypasses_the_verdict_of_a_fresh_attestation(self, board: LocalBoard) -> None:
+        task_id = _reviewed_task(board)
+        entries = [_entry(SHA_A, ok=False)]
+        result = _run(
+            board,
+            "task.status",
+            {"task": task_id, "new_status": "done", "force": True, "reason": "override"},
+            {"reachable_review_commits": entries},
+        )
         assert result.value["status"] == "done"
+        assert result.events[-1]["data"]["attestations"] == {"reachable_review_commits": entries}
+
+    def test_duplicate_entries_are_stale(self, board: LocalBoard) -> None:
+        task_id = _reviewed_task(board)
+        err = _stale(
+            board,
+            "task.status",
+            {"task": task_id, "new_status": "done"},
+            {"reachable_review_commits": [_entry(SHA_A), _entry(SHA_A)]},
+        )
+        assert "more than once" in err.message
 
 
 class TestCompleteAttestation:
@@ -198,15 +220,29 @@ class TestClientRetry:
 
     @pytest.fixture()
     def cli(self, board: LocalBoard, invoke, monkeypatch: pytest.MonkeyPatch):  # noqa: ANN001, ANN201
+        """Script the computed attestations and log compute / refresh / execute."""
         import lattice.cli.attestations as client
+        import lattice.ops as ops
 
         monkeypatch.setattr(client, "caller_worktree", lambda: board.root)
         self.calls = 0
+        self.log: list[tuple[str, str | None]] = []
+        real_execute = ops.execute
+
+        def execute(board_dir, op_name, params, caller, **kwargs):  # noqa: ANN001, ANN003, ANN202
+            self.log.append(("execute", caller.origin["op_id"]))
+            return real_execute(board_dir, op_name, params, caller, **kwargs)
+
+        monkeypatch.setattr(ops, "execute", execute)
+        monkeypatch.setattr(
+            LocalBoard, "refresh", lambda _self: self.log.append(("refresh", None))
+        )
 
         def install(*answers: list[dict]) -> None:
             def compute(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
                 answer = answers[min(self.calls, len(answers) - 1)]
                 self.calls += 1
+                self.log.append(("compute", None))
                 return answer
 
             monkeypatch.setattr(client, "compute_reachable_review_commits", compute)
@@ -216,15 +252,31 @@ class TestClientRetry:
     def test_stale_then_fresh_succeeds_on_the_retry(self, board: LocalBoard, invoke, cli) -> None:  # noqa: ANN001
         task_id = _reviewed_task(board)
         cli([_entry(SHA_A, branch="main")], [_entry(SHA_A)])
+        self.log.clear()
         result = invoke("status", task_id, "done", "--actor", "agent:t", "--json")
         assert result.exit_code == 0, result.output
         assert json.loads(result.output)["data"]["status"] == "done"
         assert self.calls == 2
+        # compute, attempt, re-sync, recompute, a new attempt with a new op_id
+        assert [kind for kind, _ in self.log] == [
+            "compute",
+            "execute",
+            "refresh",
+            "compute",
+            "execute",
+        ]
+        first, second = (op_id for kind, op_id in self.log if kind == "execute")
+        assert first != second
         log = (board.lattice_dir / "events" / f"{task_id}.jsonl").read_text().splitlines()
         done = json.loads(log[-1])
-        op_ids = {json.loads(line)["origin"]["op_id"] for line in log}
+        assert done["origin"]["op_id"] == second
         assert done["data"]["attestations"]["reachable_review_commits"] == [_entry(SHA_A)]
-        assert len(op_ids) == len(log)  # each call had its own op_id
+
+    def test_no_refresh_without_a_stale_refusal(self, board: LocalBoard, invoke, cli) -> None:  # noqa: ANN001
+        task_id = _reviewed_task(board)
+        cli([_entry(SHA_A)])
+        assert invoke("status", task_id, "done", "--actor", "agent:t").exit_code == 0
+        assert ("refresh", None) not in self.log
 
     def test_stale_twice_reports_the_second_refusal(self, board: LocalBoard, invoke, cli) -> None:  # noqa: ANN001
         task_id = _reviewed_task(board)

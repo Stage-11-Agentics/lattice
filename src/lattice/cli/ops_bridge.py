@@ -111,12 +111,15 @@ def run_attested_operation(
 
     A stale attestation (``COMPLETION_BLOCKED`` with ``details.reason``
     ``STALE_ATTESTATION``) means the task changed between computing and
-    writing: recompute and retry once, as a new operation call with its own
-    ``op_id``. Any other error prints as ``run_operation`` prints it.
+    writing: re-sync the board (``board.refresh()``), recompute, and retry
+    once, as a new operation call with its own ``op_id``. Any other error
+    prints as ``run_operation`` prints it.
     """
     from lattice.core.attestations import STALE_ATTESTATION
 
     for attempt in range(2):
+        if attempt:
+            board.refresh()
         caller = caller_from_context(attestations=attest())
         try:
             return board.execute(op_name, params, caller, config=config)
