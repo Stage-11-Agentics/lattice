@@ -163,7 +163,7 @@ def test_offline_write_says_so_plainly_with_progress(
     assert set(details) == {"remote", "url", "os_error", "waited_seconds"}
     assert (details["remote"], details["url"]) == ("team", url)
     assert "refused" in details["os_error"].lower()
-    assert 0 < details["waited_seconds"] <= 1
+    assert 0.9 <= details["waited_seconds"] < 2  # the full 1 s budget, then one last try
 
 
 def test_a_second_write_in_the_window_does_not_wait_again(

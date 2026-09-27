@@ -179,11 +179,13 @@ def post_operation(
             state = "busy"
             wait = exc.retry_after
         first = False
-        if wait is None:
-            wait = backoff
-            backoff = min(backoff * 2, MAX_BACKOFF_SECONDS)
         now = _now()
-        if now + wait > deadline:
+        if wait is None:
+            # The last backoff ends at the deadline, so the retries fill the
+            # whole budget; a server's Retry-After past it is honored by giving up.
+            wait = min(backoff, max(0.0, deadline - now))
+            backoff = min(backoff * 2, MAX_BACKOFF_SECONDS)
+        if now >= deadline or now + wait > deadline:
             if reached:
                 raise outcome_unknown(remote, op_id, detail)
             raise write_unreachable(remote, detail, now - started)
@@ -199,10 +201,11 @@ def post_operation(
         while True:
             now = _now()
             if now >= next_progress:
-                _progress(
-                    f"{remote.alias} still {state} ({now - started:.0f} s of "
-                    f"{remote.retry_seconds:g} s)"
-                )
+                if now < deadline:  # at the deadline the error line follows at once
+                    _progress(
+                        f"{remote.alias} still {state} ({now - started:.0f} s of "
+                        f"{remote.retry_seconds:g} s)"
+                    )
                 while next_progress <= now:
                     next_progress += PROGRESS_SECONDS
             if now >= until:
