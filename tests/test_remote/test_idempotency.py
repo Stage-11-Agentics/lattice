@@ -501,3 +501,165 @@ def test_verify_asks_op_status_once_per_ledger_line(tmp_path: Path) -> None:
     report = acked.verify(cache, status)
     assert asked == [op, op, "op_01J9Z0000000000000000000FF"]
     assert report.checked == report.confirmed == 3
+
+
+# ---------------------------------------------------------------------------
+# The first write from a checkout that has never synced (LAT-335)
+# ---------------------------------------------------------------------------
+
+
+def _assert_bootstrapped_and_clean(repo: Path) -> None:
+    lattice_dir = repo / ".lattice"
+    state = json.loads((lattice_dir / "cache" / "state.json").read_text())
+    assert state["epoch"] and not (lattice_dir / "cache" / "applying").exists()
+    for directory in (lattice_dir, lattice_dir / "cache"):
+        assert directory.stat().st_mode & 0o777 == 0o700
+    doctor = run_cli(repo, "doctor", "--json")
+    assert doctor.exit_code == 0, doctor.output
+    findings = json.loads(doctor.stdout)["data"]["findings"]
+    assert [f for f in findings if f["check"].startswith("cache_")] == []
+
+
+def test_the_first_write_from_an_unsynced_checkout_is_recorded(
+    hosted_env: HostedEnv, tmp_path: Path
+) -> None:
+    """A fresh clone's first command is a write (no read catches the cache up
+    first): the ledger creates the cache directory, so the ack is recorded
+    before the post-write sync bootstraps the cache."""
+    repo = hosted_env.bind(make_repo(tmp_path / "fresh"))
+    assert not (repo / ".lattice").exists()
+    result = run_cli(repo, "create", "First", "--actor", "agent:dev")
+    assert result.exit_code == 0, result.output
+    assert result.stderr == ""
+    lines = acked.read(repo / ".lattice" / "cache")
+    assert [x["op_id"] for x in lines] == [journal(hosted_env)[-1]["op_id"]]
+    assert lines[0]["epoch"] is None  # acknowledged before any sync
+    _assert_bootstrapped_and_clean(repo)
+    data = json.loads(run_cli(repo, "remote", "verify", "--json").stdout)["data"]
+    assert data == {"checked": 1, "confirmed": 1, "dropped": 0, "missing": []}
+
+
+def test_a_ledger_only_cache_is_still_bootstrapped_by_the_next_command(
+    hosted_env: HostedEnv, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A client that dies in the post-write sync of its first write leaves a
+    ``.lattice/`` holding only the ledger: not a cache marker, not board data.
+    The next command bootstraps the cache with a reset, as for a fresh clone."""
+    repo = hosted_env.bind(make_repo(tmp_path / "fresh"))
+    _first_write_dies_syncing(hosted_env, repo, monkeypatch)
+    lattice_dir = repo / ".lattice"
+    left = sorted(p.relative_to(lattice_dir).as_posix() for p in lattice_dir.rglob("*"))
+    assert left == ["cache", "cache/acked.jsonl", "cache/acked.lock"]
+    _assert_next_command_bootstraps(repo)
+
+
+def test_runtime_leftovers_are_made_private_by_the_first_write(
+    hosted_env: HostedEnv, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A teammate's clone after the move keeps ignored runtime leftovers in a
+    0755 ``.lattice/`` (SPEC §9.3). A first write that dies in its post-write
+    sync still leaves ``.lattice/`` and ``cache/`` 0700 (SPEC §9.4)."""
+    repo = hosted_env.bind(make_repo(tmp_path / "fresh"))
+    lattice_dir = repo / ".lattice"
+    for leftover in (lattice_dir, lattice_dir / "locks", lattice_dir / ".daemon"):
+        leftover.mkdir()
+        leftover.chmod(0o755)
+    (lattice_dir / ".daemon" / "dashboard.log").write_text("old\n")
+    _first_write_dies_syncing(hosted_env, repo, monkeypatch)
+    for directory in (lattice_dir, lattice_dir / "cache"):
+        assert directory.stat().st_mode & 0o777 == 0o700
+    _assert_next_command_bootstraps(repo)
+
+
+def _first_write_dies_syncing(env: HostedEnv, repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``create`` as the checkout's first command, killed in its post-write
+    sync; the acknowledged write is in the ledger all the same."""
+    from lattice.remote import session
+
+    class Died(BaseException):
+        pass
+
+    def die(*_args: Any, **_kwargs: Any) -> bool:
+        raise Died("killed during the post-write sync")
+
+    with monkeypatch.context() as m:
+        m.setattr(session, "catch_up_and_report", die)
+        with pytest.raises(Died):
+            run_cli(repo, "create", "Dies syncing", "--actor", "agent:dev")
+    lines = acked.read(repo / ".lattice" / "cache")
+    assert [x["op_id"] for x in lines] == [journal(env)[-1]["op_id"]]
+    session.reset_process_state()
+
+
+def _assert_next_command_bootstraps(repo: Path) -> None:
+    listed = run_cli(repo, "list", "--json")
+    assert listed.exit_code == 0, listed.output
+    assert [t["title"] for t in json.loads(listed.stdout)["data"]] == ["Dies syncing"]
+    _assert_bootstrapped_and_clean(repo)
+    data = json.loads(run_cli(repo, "remote", "verify", "--json").stdout)["data"]
+    assert data == {"checked": 1, "confirmed": 1, "dropped": 0, "missing": []}
+
+
+def test_the_ledger_creates_missing_directories_private(tmp_path: Path) -> None:
+    cache = tmp_path / "checkout" / ".lattice" / "cache"
+    (tmp_path / "checkout").mkdir()
+    acked.record(cache, op_id="op_01J9Z0000000000000000000GG", project="p", epoch=None, seq=1)
+    assert [x["op_id"] for x in acked.read(cache)] == ["op_01J9Z0000000000000000000GG"]
+    for directory in (cache.parent, cache):
+        assert directory.stat().st_mode & 0o777 == 0o700
+        directory.chmod(0o755)
+    acked.record(cache, op_id="op_01J9Z0000000000000000000HH", project="p", epoch=None, seq=2)
+    for directory in (cache.parent, cache):
+        assert directory.stat().st_mode & 0o777 == 0o700
+
+
+def _snapshot(path: Path) -> dict[str, tuple[int, bytes | None]]:
+    """Mode and bytes of *path* and everything under it (links not followed)."""
+    found = {}
+    for entry in [path, *sorted(path.rglob("*"))] if path.is_dir() else [path]:
+        info = entry.lstat()
+        found[entry.relative_to(path).as_posix()] = (
+            info.st_mode,
+            entry.read_bytes() if entry.is_file() else None,
+        )
+    return found
+
+
+@pytest.mark.parametrize("shape", ["lattice_file", "lattice_symlink", "cache_symlink"])
+def test_the_ledger_never_writes_through_a_file_or_symlink(
+    shape: str, hosted_env: HostedEnv, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``.lattice`` or ``cache`` that is not a real directory fails the record
+    with the one-line notice: nothing is changed or created through it, and the
+    write itself succeeds."""
+    from lattice.remote import session
+
+    repo = hosted_env.bind(make_repo(tmp_path / "fresh"))
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("outside\n")
+    outside.chmod(0o755)
+    lattice = repo / ".lattice"
+    if shape == "lattice_file":
+        lattice.write_text("not a directory\n")
+        lattice.chmod(0o644)
+        target = lattice
+    elif shape == "lattice_symlink":
+        lattice.symlink_to(outside)
+        target = outside
+    else:
+        lattice.mkdir(mode=0o700)
+        (lattice / "cache").symlink_to(outside)
+        target = outside
+    before = _snapshot(target)
+    with monkeypatch.context() as m:
+        # Only the ledger is under test: the post-write sync and the server
+        # info refresh are other cache writers with their own path handling.
+        m.setattr(session, "catch_up_and_report", lambda *_a, **_k: True)
+        m.setattr(session, "refresh_server_info", lambda *_a, **_k: {})
+        result = run_cli(repo, "create", "Written anyway", "--actor", "agent:dev")
+    assert result.exit_code == 0, result.output
+    assert journal(hosted_env)[-1]["op"] == "task.create"
+    warnings = [x for x in result.stderr.splitlines() if "cache/acked.jsonl" in x]
+    assert len(warnings) == 1 and "not a real directory" in warnings[0]
+    assert _snapshot(target) == before
