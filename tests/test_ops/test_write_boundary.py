@@ -99,6 +99,8 @@ BOARD_OWNERS: dict[str, str] = {
     "lattice.server.importer": "project import on the server host, doctor-gated, into its "
     "staging board (SPEC §11)",
     "lattice.server.tokens": "tokens.json in the server root, outside any board (SPEC §8.3)",
+    "lattice.server.sessions": "web_sessions.json in the server root, outside any board "
+    "(SPEC §10)",
     "lattice.remote.cache": "the cache syncer, the only writer of a cache (SPEC §6.2, §9.4)",
     "lattice.server.testing": "test helper: a server project built from a fixture board, as "
     "the owning server's import would (SPEC §11)",
@@ -291,6 +293,16 @@ def _writes_mode(mode: object) -> bool:
     return isinstance(mode, str) and bool(WRITE_MODE_CHARS & set(mode))
 
 
+def _read_only_flags(module: Module, call: ast.Call) -> bool:
+    """Whether an ``os.open`` call's flags argument is exactly ``os.O_RDONLY``; any
+    other flags (combined, computed, or absent) count as a write."""
+    flags = call.args[1] if len(call.args) > 1 else None
+    for keyword in call.keywords:
+        if keyword.arg == "flags":
+            flags = keyword.value
+    return isinstance(flags, (ast.Name, ast.Attribute)) and resolve(module, flags) == "os.O_RDONLY"
+
+
 def raw_writes(module: Module) -> list[str]:
     """Each direct filesystem change in *module*, as ``line: what``: any reference to
     a raw writer (a call, an alias, a callback), an opener called in a write mode,
@@ -308,6 +320,8 @@ def raw_writes(module: Module) -> list[str]:
                     hits.append(f"{where}: open(<mode>)")
                 elif _writes_mode(mode):
                     hits.append(f"{where}: open({mode!r})")
+        elif target == "os.open" and call is not None and _read_only_flags(module, call):
+            pass  # os.open(path, os.O_RDONLY): a read
         elif target in RAW_NAMES:
             hits.append(f"{where}: {target}")
         elif isinstance(node, ast.Attribute) and call is not None:
@@ -534,6 +548,26 @@ def f(p: Path):
     )
     assert raw == [".write_text()", "open('a')", "os.replace", "shutil.rmtree", ".replace(target)"]
     assert board == ["lattice.storage.fs.atomic_write", "lattice.storage.operations.mutate_task"]
+
+
+def test_os_open_is_a_read_only_with_exactly_o_rdonly() -> None:
+    raw, _ = _scan(
+        """
+import os
+from os import O_RDONLY
+
+def f(p, flags):
+    os.open(p, os.O_RDONLY)
+    os.open(p, O_RDONLY)
+    os.open(p, flags=os.O_RDONLY)
+    os.open(p, os.O_WRONLY | os.O_CREAT)
+    os.open(p, os.O_RDONLY | os.O_CREAT)
+    os.open(p, flags)
+    os.open(p, os.O_RDWR)
+    schedule(os.open)
+"""
+    )
+    assert raw == ["os.open", "os.open", "os.open", "os.open", "os.open"]
 
 
 def test_the_scan_sees_through_aliases_and_imported_functions() -> None:
