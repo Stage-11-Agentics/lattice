@@ -554,7 +554,7 @@ async def info(request: Request, state: ServerState) -> Response:
             name: sorted(f.name for f in dataclasses.fields(cls.Params) if f.init)
             for name, cls in _registered_operations().items()
         }
-        audit = state.config.audit
+        registry = state.registry
         return envelope_ok(
             {
                 "version": state.version,
@@ -573,9 +573,9 @@ async def info(request: Request, state: ServerState) -> Response:
                 "ops": ops,
                 "event_types": sorted(BUILTIN_EVENT_TYPES),
                 "audit": {
-                    "configured": audit.enabled,
-                    "active": False,
-                    "reason": "audit history is not available in this server version",
+                    "configured": state.config.audit.enabled,
+                    "active": registry.audit_active,
+                    "reason": registry.audit_reason,
                 },
             }
         )

@@ -8,7 +8,9 @@ when the server starts, so a typo never silently falls back to a default.
 from __future__ import annotations
 
 import json
+import math
 import os
+import re
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any
@@ -61,8 +63,9 @@ class Limits:
 @dataclass(frozen=True)
 class AuditConfig:
     enabled: bool = True
-    debounce_seconds: int = 5
-    max_interval_seconds: int = 60
+    #: Seconds; fractions are allowed (tests use short ones).
+    debounce_seconds: float = 5.0
+    max_interval_seconds: float = 60.0
     push: dict | None = None
 
 
@@ -85,6 +88,45 @@ class ServerConfig:
     def with_limits(self, **changes: Any) -> ServerConfig:
         """A copy with some limits changed (tests and callers that tune one knob)."""
         return replace(self, limits=replace(self.limits, **changes))
+
+
+_REMOTE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
+_BRANCH_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}")
+
+
+def _valid_branch(branch: str) -> bool:
+    """``git check-ref-format refs/heads/<branch>``'s rules, over a character set
+    that already excludes space, controls, ``~^:?*[\\`` and ``@``: no empty
+    component (so no leading, trailing, or doubled ``/``), no component that
+    starts with ``.`` or ends with ``.lock``, no ``..``, no trailing ``.``, and
+    (stricter than git) a first character that is a letter or digit."""
+    if not _BRANCH_RE.fullmatch(branch) or ".." in branch or branch.endswith("."):
+        return False
+    return all(
+        part and not part.startswith(".") and not part.endswith(".lock")
+        for part in branch.split("/")
+    )
+
+
+def check_push(push: Any) -> dict:
+    """Validate an audit push target ``{"remote": NAME, "branch": B}`` (SPEC §8.1).
+
+    The one validator for ``server.json``'s ``audit.push``, ``lattice server
+    project audit``, and a project's ``hosted/audit.json``. A remote name is a
+    plain git remote name and a branch a plain ref name, so neither can be read
+    as a git option, a URL, or a refspec. Raises ``ValueError``.
+    """
+    if not isinstance(push, dict) or set(push) != {"remote", "branch"}:
+        raise ValueError('must be null or {"remote": NAME, "branch": BRANCH}')
+    remote, branch = push["remote"], push["branch"]
+    if not isinstance(remote, str) or not _REMOTE_RE.fullmatch(remote):
+        raise ValueError(
+            f"invalid git remote name {remote!r} (letters, digits, '.', '_', '-'; "
+            "starting with a letter or digit)"
+        )
+    if not isinstance(branch, str) or not _valid_branch(branch):
+        raise ValueError(f"invalid branch name {branch!r}")
+    return {"remote": remote, "branch": branch}
 
 
 def _check_int(section: str, key: str, value: Any, *, minimum: int = 0) -> int:
@@ -110,6 +152,15 @@ def _section(cls: type, section: str, raw: Any) -> Any:
             kwargs[key] = value
         elif isinstance(default, int):
             kwargs[key] = _check_int(f"{section}.", key, value, minimum=0)
+        elif isinstance(default, float):
+            if (
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not math.isfinite(value)
+                or value < 0
+            ):
+                raise ServerConfigError(f"{section}.{key} must be a number >= 0, got {value!r}")
+            kwargs[key] = float(value)
         else:
             kwargs[key] = value
     return cls(**kwargs)
@@ -149,13 +200,10 @@ def parse_config(raw: Any) -> ServerConfig:
         kwargs["log_level"] = raw["log_level"]
     audit = _section(AuditConfig, "audit", raw.get("audit"))
     if audit.push is not None:
-        push = audit.push
-        if (
-            not isinstance(push, dict)
-            or set(push) != {"remote", "branch"}
-            or not all(isinstance(v, str) and v for v in push.values())
-        ):
-            raise ServerConfigError('audit.push must be null or {"remote": ..., "branch": ...}')
+        try:
+            check_push(audit.push)
+        except ValueError as exc:
+            raise ServerConfigError(f"audit.push: {exc}") from exc
     kwargs["audit"] = audit
     limits = _section(Limits, "limits", raw.get("limits"))
     if limits.lock_timeout_seconds > MAX_LOCK_TIMEOUT_SECONDS:

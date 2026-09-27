@@ -22,7 +22,7 @@ import anyio.to_thread
 
 from lattice.core.errors import OpError
 from lattice.core.tasks import set_unknown_type_reporter
-from lattice.server import admin, control
+from lattice.server import admin, audit, control
 from lattice.server.config import STATUS_JSON, ServerConfig
 from lattice.server.journal import now_ms
 from lattice.server.log import ServerLog
@@ -74,6 +74,8 @@ class ProjectRegistry:
         self.prewarm_done = asyncio.Event()
         self.control_poll_seconds = CONTROL_POLL_SECONDS
         self._status_lock = threading.Lock()
+        #: Whether this server keeps audit histories, and why not (SPEC §8.10).
+        self.audit_active, self.audit_reason = audit.availability(config.audit)
 
     # -- lookup --------------------------------------------------------------
 
@@ -94,6 +96,7 @@ class ProjectRegistry:
             self.log,
             self.server_id,
             on_state_change=self.write_status,
+            audit_config=self.config.audit if self.audit_active else None,
         )
         self._projects[slug] = project
         return project
@@ -153,6 +156,12 @@ class ProjectRegistry:
     def start(self) -> None:
         """Start the prewarm and the control-request poller (call on the loop)."""
         set_unknown_type_reporter(self._report_unknown_type)
+        if not self.audit_active:
+            if self.config.audit.enabled:
+                # One warning per server start (SPEC §8.10); /v1/info says the same.
+                self.log.warning("audit_disabled", reason=self.audit_reason)
+            else:
+                self.log.info("audit_disabled", reason=self.audit_reason)
         self._tasks.append(asyncio.create_task(self._prewarm()))
         self._tasks.append(asyncio.create_task(self._poll_control()))
         self.write_status()
@@ -371,12 +380,14 @@ class ProjectRegistry:
 
 
 def stage_audit(registry: ProjectRegistry, project: Project) -> None:
-    """Stage the final audit commit (SPEC §8.10), under the work lock: H-16's hook."""
+    """Stage the final audit commit (SPEC §8.10), under the work lock, after drain."""
+    project.audit_stage()
 
 
 def commit_audit(registry: ProjectRegistry, project: Project) -> None:
     """Commit the staged audit and stop the project's committer, outside the work
-    lock (the committer takes it): H-16's hook."""
+    lock (the committer takes it), before ``clean_shutdown`` and the lease."""
+    project.audit_commit_and_stop()
 
 
 def clean_shutdown(registry: ProjectRegistry, project: Project) -> None:
