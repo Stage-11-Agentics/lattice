@@ -43,6 +43,7 @@ dev = [
     "mypy>=1.10",
     "pytest>=8.0",
     "pytest-timeout>=2.3",
+    "pytest-xdist>=3.5",
     "ruff>=0.4",
 ]
 
@@ -60,7 +61,7 @@ packages = ["src/lattice"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-m 'not torture and not perf'"
+addopts = "-m 'not torture and not perf' -n auto"
 timeout = 15
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",

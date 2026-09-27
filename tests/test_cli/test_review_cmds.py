@@ -6,11 +6,15 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from click.testing import CliRunner
 
 from lattice.cli.main import cli
 from lattice.core.config import default_config, serialize_config
 from lattice.storage.fs import LATTICE_DIR, ensure_lattice_dirs, atomic_write
+
+# These commands resolve the caller's git worktree from cwd.
+pytestmark = pytest.mark.usefixtures("caller_git_worktree")
 
 
 # ---------------------------------------------------------------------------

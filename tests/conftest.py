@@ -3,10 +3,69 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
+
+
+# Ambient variables the code under test reads. A developer running the suite
+# inside a c11 or cmux pane, a Lattice hook, or a review agent has some of
+# these set; left alone they change backend selection, board discovery, and
+# agent behaviour (``LATTICE_FAKE_BEHAVIOR`` flips the fake agent). Every test
+# starts with the whole families removed by prefix, so a variable added later
+# is covered too. Tests that need one set it.
+_AMBIENT_ENV_PREFIXES = ("LATTICE_", "C11_", "CMUX_")
+_AMBIENT_ENV = ("CI",)
+
+
+@pytest.fixture(scope="session")
+def _worker_home(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A throwaway home directory, one per xdist worker (or per serial run)."""
+    home = tmp_path_factory.mktemp("home")
+    for sub in (".config", ".cache", ".local/share", ".local/state"):
+        (home / sub).mkdir(parents=True)
+    return home
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path_factory: pytest.TempPathFactory,
+    _worker_home: Path,
+) -> None:
+    """Keep every test off the developer's real home, temp dir and environment.
+
+    The suite runs in parallel (pytest-xdist), so anything a test reads from or
+    writes to ``~``, ``~/.config``, ``~/.cache``, ``~/.gitconfig`` or the system
+    temp dir is shared between workers and with the developer's own machine.
+
+    * ``HOME`` and the XDG base directories point at a per-worker temp dir.
+    * The system temp dir (``TMPDIR``/``TMP``/``TEMP`` and the value
+      ``tempfile`` caches) is a fresh, empty dir per test, so
+      ``cleanup_temp_files()`` in one test cannot delete another test's
+      ``lattice-review-*`` file and leak checks see only their own files.
+    * Git ignores global and system config; the PyPI update check is off.
+    * Every ``LATTICE_*``, ``C11_*`` and ``CMUX_*`` variable is removed before
+      the intentional values are set.
+    """
+    for name in list(os.environ):
+        if name.startswith(_AMBIENT_ENV_PREFIXES) or name in _AMBIENT_ENV:
+            monkeypatch.delenv(name)
+    sys_tmp = str(tmp_path_factory.mktemp("systmp"))
+    for name in ("TMPDIR", "TMP", "TEMP"):
+        monkeypatch.setenv(name, sys_tmp)
+    monkeypatch.setattr(tempfile, "tempdir", sys_tmp)
+    monkeypatch.setenv("HOME", str(_worker_home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(_worker_home / ".config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(_worker_home / ".cache"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(_worker_home / ".local/share"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(_worker_home / ".local/state"))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("LATTICE_NO_UPDATE_CHECK", "1")
 
 
 @pytest.fixture()
@@ -200,6 +259,21 @@ def git(cwd: Path, *args: str) -> str:
     return subprocess.run(
         ["git", *args], cwd=str(cwd), capture_output=True, text=True, check=True, env=env
     ).stdout
+
+
+@pytest.fixture()
+def caller_git_worktree(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch):
+    """Run the test from an empty git worktree of its own.
+
+    ``code-review``, ``plan-review`` and the auto-fire path resolve the
+    caller's git worktree from the current directory. Without this the tests
+    silently use whatever checkout pytest was started from, and fail when that
+    is not a git worktree (an sdist, a copied tree, ``cd /tmp``).
+    """
+    worktree = tmp_path_factory.mktemp("caller-wt")
+    git(worktree, "init", "-q", "-b", "main")
+    monkeypatch.chdir(worktree)
+    return worktree
 
 
 @pytest.fixture()
