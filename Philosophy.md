@@ -116,6 +116,20 @@ build the foundation. then. sit with it.
 
 ((we know this pattern of language might be recognized to some of you, and to you, we give a special hello))
 
+### amendment. v2. the server we said we would not build.
+
+we named real-time sync and auth among the additions that are collectively fatal. then we built both. so. an accounting.
+
+the foundation was never "no server." the foundation was. *one writer per board.* every append goes through one lock. every decision runs against fresh state. that is what made the files trustworthy. the files were only ever the vessel.
+
+on one machine. the filesystem keeps that promise for free. across machines. we asked git to keep it. and git cannot. two machines append to the same log. git merges them line by line. the same short ID lands on two tasks. a status change made on one branch vanishes on another. we watched it happen. more than once. the hallway we said agents lack. git turned out not to be.
+
+so v2 carries the one guarantee across machines. one server owns each board and is its only writer. it runs the same rules the CLI runs. the same code. every change still an immutable. attributed. event. now also saying where it came from. which machine. which worktree. which branch. the board is still plain files. on the server. and in every checkout. a read-only mirror you can still `cat`.
+
+and it is opt-in. only for those who ask. local Lattice is exactly what this document describes. one machine. files. no server to run. nothing in the local path mentions hosting unless you bind a checkout to one.
+
+the patience was right. we did not build this until the foundation could carry it. the operations. the one writer. the event log. those came first. the server is. those same walls. extended.
+
 ---
 
 ## altitude
