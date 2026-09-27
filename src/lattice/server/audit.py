@@ -49,11 +49,13 @@ is bounded by a timeout. URLs never reach the log.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
 import stat
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Iterator
@@ -271,16 +273,82 @@ def _stat_key(st: os.stat_result) -> tuple[int, int, int, int]:
 
 class Stager:
     """Builds a tree of exactly the board's durable files and bytes, rehashing only
-    files whose stat changed since the last stage."""
+    files whose stat changed since the last stage.
+
+    :meth:`stage` runs in a worker process that lives as long as this object
+    (:func:`_stage_worker`, started on first use and again if it dies) and keeps
+    the stat cache. The walk makes one GIL-releasing syscall per file, and inside
+    a busy server each one waits behind the request threads to get the GIL back:
+    on Atlas under AC-42 a 0.15 s stage of 3,700 files took 9 s, all of it under
+    the work lock, so every write queued and readers' catch-ups timed out
+    (LAT-340). The worker has its own GIL; the calling thread only waits for its
+    reply. :meth:`stage_here` does the same work in this process.
+    """
 
     def __init__(self, directory: Path) -> None:
         self.directory = Path(directory)
         self.board = self.directory / ".lattice"
         self._cache: dict[str, tuple[tuple[int, int, int, int], str]] = {}
+        self._lock = threading.Lock()
+        self._worker: subprocess.Popen[bytes] | None = None
 
     def stage(self) -> str:
         """Rebuild the index from the board and return its tree id. Call with the
         board quiescent (under the project's work lock)."""
+        with self._lock:
+            worker = self._worker
+            if worker is None or worker.poll() is not None:
+                worker = self._worker = self._start_worker()
+            assert worker.stdin is not None and worker.stdout is not None
+            try:
+                worker.stdin.write(b"stage\n")
+                worker.stdin.flush()
+                line = worker.stdout.readline()
+            except OSError:
+                line = b""
+            try:
+                reply = json.loads(line) if line else None
+            except ValueError:
+                reply = None
+            if not isinstance(reply, dict):
+                self._stop_worker(wait=True)
+                raise GitError(["stage"], worker.poll(), "the stage process ended without a reply")
+            if "error" in reply:
+                error = reply["error"]
+                raise GitError(error["args"], error["returncode"], error["stderr"])
+            return reply["tree"]
+
+    def close(self) -> None:
+        """End the worker (it also ends when this process does). Never waits."""
+        with self._lock:
+            self._stop_worker(wait=False)
+
+    def _start_worker(self) -> subprocess.Popen[bytes]:
+        try:
+            return subprocess.Popen(
+                [sys.executable, "-c", _STAGE_WORKER, str(self.directory)],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+            )
+        except OSError as exc:
+            raise GitError(["stage"], None, str(exc)) from exc
+
+    def _stop_worker(self, *, wait: bool) -> None:
+        worker, self._worker = self._worker, None
+        if worker is None:
+            return
+        with contextlib.suppress(OSError):
+            assert worker.stdin is not None
+            worker.stdin.close()  # end of input: the worker exits
+        if wait:
+            try:
+                worker.wait(5)
+            except subprocess.TimeoutExpired:
+                worker.kill()
+                worker.wait()
+
+    def stage_here(self) -> str:
+        """:meth:`stage`'s work in this process (the child runs it)."""
         listing: list[tuple[str, str]] = []
         to_hash: list[tuple[str, Path, tuple[int, int, int, int]]] = []
         for rel, path, st in durable_files(self.board):
@@ -318,6 +386,25 @@ class Stager:
         git(self.directory, "read-tree", "--empty")
         git(self.directory, "update-index", "-z", "--index-info", input=index_info)
         return git_text(self.directory, "write-tree")
+
+
+_STAGE_WORKER = "from lattice.server.audit import _stage_worker; _stage_worker()"
+
+
+def _stage_worker() -> None:
+    """The stage worker (``sys.argv[1]`` is the directory): each input line asks
+    for one stage and gets one JSON line back, ``{"tree"}`` or ``{"error"}`` (a
+    :class:`GitError`). It exits at end of input."""
+    stager = Stager(Path(sys.argv[1]))
+    for _request in sys.stdin.buffer:
+        try:
+            reply: dict[str, Any] = {"tree": stager.stage_here()}
+        except GitError as exc:
+            reply = {
+                "error": {"args": exc.git_args, "returncode": exc.returncode, "stderr": exc.stderr}
+            }
+        sys.stdout.write(json.dumps(reply) + "\n")
+        sys.stdout.flush()
 
 
 def head_commit(directory: Path) -> str | None:
@@ -385,7 +472,7 @@ def init_repo(
         git(directory, "init", "--quiet", f"--initial-branch={BRANCH}")
     _write_gitignore(directory)
     if created:
-        tree = Stager(directory).stage()
+        tree = Stager(directory).stage_here()  # once, before the project serves
         _commit_on_head(directory, tree, commit_message(message, epoch, head_seq))
         if gc:
             git(directory, "gc", "--auto", "--quiet")
@@ -605,6 +692,7 @@ class AuditCommitter:
         thread = self._thread
         if join and thread is not None and thread is not threading.current_thread():
             thread.join(10)
+        self.stager.close()
         self.maintenance.stop(flush=True, timeout=FINAL_MAINTENANCE_SECONDS)
 
     def abandon(self) -> None:
@@ -613,6 +701,7 @@ class AuditCommitter:
             self._stopping = True
             self._pending = None
             self._cond.notify_all()
+        self.stager.close()
         self.maintenance.stop(flush=False, timeout=0)
 
     # -- the thread ------------------------------------------------------------
