@@ -112,6 +112,54 @@ function createLiveRefresh(opts) {
   };
 }
 
+// Watch a local dashboard's head (GET /api/head, answered by `lattice dashboard`):
+// on a bound checkout it is the cache's {epoch, seq}, moved by the embedded
+// follower, so the page refetches within a second of any write anywhere. A
+// local board answers {head: null}: the watch stops and the 5-second poll
+// carries on alone. opts: {fetchHead, refresh, intervalMs, setInterval,
+// clearInterval}; fetchHead() resolves to the head object, null, or throws.
+function createHeadWatch(opts) {
+  var timer = null;
+  var last;          // undefined until the first answer
+  var running = false;
+  var pending = false;
+
+  function trigger() {
+    if (running) { pending = true; return; }
+    running = true;
+    var done = function() {
+      running = false;
+      if (pending) { pending = false; trigger(); }
+    };
+    var result;
+    try { result = opts.refresh(); } catch (e) { result = null; }
+    Promise.resolve(result).then(done, done);
+  }
+
+  function check() {
+    var answer;
+    try { answer = opts.fetchHead(); } catch (e) { return Promise.resolve(); }
+    return Promise.resolve(answer).then(function(head) {
+      if (head === null) { stop(); return; } // not a bound checkout
+      var key = head.epoch + ":" + head.seq;
+      if (last !== undefined && key !== last) trigger();
+      last = key;
+    }, function() { /* the dashboard may be restarting; the poll covers it */ });
+  }
+
+  function start() {
+    if (timer !== null) return;
+    timer = opts.setInterval(check, opts.intervalMs);
+    check();
+  }
+
+  function stop() {
+    if (timer !== null) { opts.clearInterval(timer); timer = null; }
+  }
+
+  return { start: start, stop: stop, check: check, isRunning: function() { return timer !== null; } };
+}
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     newOpId: newOpId,
@@ -119,6 +167,7 @@ if (typeof module !== "undefined" && module.exports) {
     streamUrl: streamUrl,
     retryDelay: retryDelay,
     createLiveRefresh: createLiveRefresh,
+    createHeadWatch: createHeadWatch,
     WRITE_ATTEMPTS: WRITE_ATTEMPTS,
   };
 }

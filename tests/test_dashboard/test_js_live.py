@@ -95,3 +95,13 @@ def test_the_log_out_button_is_hosted_only() -> None:
     inline = _inline_script()
     block = inline[inline.index("if (HOSTED_SLUG) {\n  var logoutButton") :]
     assert '"/web/logout.js"' in block[:400]
+
+
+def test_a_local_page_watches_the_bound_cache_head() -> None:
+    inline = _inline_script()
+    start = _function_body(inline, "startAutoRefresh")
+    local = start[start.index("startPolling();") :]
+    assert "createHeadWatch(" in local and 'api("/api/head")' in local
+    assert "refresh: refreshCurrentView" in local and "intervalMs: HEAD_WATCH_MS" in local
+    assert "var HEAD_WATCH_MS = 1000;" in inline
+    assert "headWatch.stop()" in _function_body(inline, "stopAutoRefresh")

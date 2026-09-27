@@ -180,3 +180,53 @@ test("close ends the stream and the poll; a failing refresh never wedges it", as
   assert.equal(source.closed, true);
   assert.equal(live.isOpen(), false);
 });
+
+// --- createHeadWatch: the local dashboard on a bound checkout ---
+
+const { createHeadWatch } = require("../../src/lattice/dashboard/static/live.js");
+
+function headRig(heads) {
+  const log = [];
+  let answer = 0;
+  const timers = [];
+  const watch = createHeadWatch({
+    fetchHead: () => {
+      const next = heads[Math.min(answer++, heads.length - 1)];
+      if (next instanceof Error) return Promise.reject(next);
+      return Promise.resolve(next);
+    },
+    refresh: () => { log.push("refresh"); },
+    intervalMs: 1000,
+    setInterval: (fn) => { timers.push(fn); return timers.length; },
+    clearInterval: () => log.push("stopped"),
+  });
+  return { watch, log };
+}
+
+test("a moved head refetches once; an unchanged head does nothing", async () => {
+  const h = (seq) => ({ epoch: "ep_1", seq });
+  const { watch, log } = headRig([h(3), h(3), h(4), h(4), { epoch: "ep_2", seq: 1 }]);
+  watch.start(); // first answer: the baseline, no refetch
+  await tick();
+  for (let i = 0; i < 4; i++) { await watch.check(); await tick(); }
+  assert.deepEqual(log, ["refresh", "refresh"]); // seq 3 -> 4, then the new epoch
+  assert.equal(watch.isRunning(), true);
+});
+
+test("a plain local board (head null) stops the watch; the poll carries on", async () => {
+  const { watch, log } = headRig([null]);
+  watch.start();
+  await tick();
+  assert.equal(watch.isRunning(), false);
+  assert.deepEqual(log, ["stopped"]);
+});
+
+test("a failed head request never refetches or stops the watch", async () => {
+  const { watch, log } = headRig([{ epoch: "e", seq: 1 }, new Error("down"), { epoch: "e", seq: 1 }]);
+  watch.start();
+  await tick();
+  await watch.check();
+  await watch.check();
+  assert.deepEqual(log, []);
+  assert.equal(watch.isRunning(), true);
+});

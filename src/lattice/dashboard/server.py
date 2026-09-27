@@ -147,6 +147,8 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
                 self._serve_static("favicon.ico", "image/png")
             elif path == "/stats-demo":
                 self._serve_notes_file("stats-demo/demo.html", "text/html")
+            elif path == "/api/head":
+                self._send_head()
             elif path.startswith("/api/"):
                 try:
                     with self._target.read() as ld:
@@ -209,6 +211,29 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
                 self._send(ApiResponse(exc.status, exc.envelope()))
                 return
             self._execute(request)
+
+        def _send_head(self) -> None:
+            """``GET /api/head``: the bound cache's ``{"epoch", "seq"}``, which the page
+            polls every second to refetch as soon as the embedded follower moves
+            the cache (SPEC §10). A local board has no journal: ``{"head": null}``,
+            and the page keeps its 5-second poll."""
+            if not self._target.hosted:
+                self._send(api.ok({"head": None}))
+                return
+            try:
+                with self._target.read() as ld:
+                    try:
+                        state = json.loads((ld / "cache" / "state.json").read_text())
+                    except (OSError, ValueError):
+                        state = {}
+            except OpError as exc:
+                refused = ApiError.from_op_error(exc)
+                self._send(ApiResponse(refused.status, refused.envelope()))
+                return
+            head = None
+            if state.get("epoch") is not None and isinstance(state.get("head_seq"), int):
+                head = {"epoch": state["epoch"], "seq": state["head_seq"]}
+            self._send(api.ok({"head": head}))
 
         # ---------------------------------------------------------------
         # Responses

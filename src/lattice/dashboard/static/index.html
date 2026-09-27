@@ -7459,9 +7459,12 @@ document.getElementById("refresh-btn").addEventListener("click", async function(
 var autoRefreshInterval = null;
 var AUTO_REFRESH_MS = 5000;
 
-// Locally the page polls every AUTO_REFRESH_MS. Hosted, it refetches on every
-// change-stream entry and polls only while the stream is down (static/live.js).
+// Locally the page polls every AUTO_REFRESH_MS and, on a bound checkout, also
+// watches the cache's head every second (GET /api/head). Hosted, it refetches on
+// every change-stream entry and polls only while the stream is down (static/live.js).
 var liveRefresh = null;
+var headWatch = null;
+var HEAD_WATCH_MS = 1000;
 
 function startAutoRefresh() {
   stopAutoRefresh();
@@ -7479,6 +7482,17 @@ function startAutoRefresh() {
     return;
   }
   startPolling();
+  // Local: on a bound checkout, refetch as soon as the follower moves the cache.
+  if (!headWatch) {
+    headWatch = createHeadWatch({
+      fetchHead: function() { return api("/api/head").then(function(d) { return d.head; }); },
+      refresh: refreshCurrentView,
+      intervalMs: HEAD_WATCH_MS,
+      setInterval: function(fn, ms) { return setInterval(fn, ms); },
+      clearInterval: function(id) { clearInterval(id); }
+    });
+  }
+  headWatch.start();
 }
 
 function startPolling() {
@@ -7605,6 +7619,7 @@ async function refreshCurrentView() {
 function stopAutoRefresh() {
   stopPolling();
   if (liveRefresh) liveRefresh.close();
+  if (headWatch) headWatch.stop();
 }
 
 // Hosted: a log-out button, driven by the server's /web/logout.js (a JSON POST
