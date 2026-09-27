@@ -25,7 +25,8 @@ import socket
 import threading
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager, nullcontext
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import date
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, TypeVar
@@ -34,7 +35,7 @@ from lattice.core.config import serialize_config
 from lattice.core.errors import OpError
 from lattice.core.ids import generate_op_id
 from lattice.ops.base import Authorizer, Caller, OpResult, execute
-from lattice.server import control, transactions
+from lattice.server import control, recovery, transactions
 from lattice.server.floors import ShortIdFloors
 from lattice.server.journal import (
     HOSTED_DIR,
@@ -77,6 +78,7 @@ from lattice.storage.ownership import (
 T = TypeVar("T")
 
 LOADED, LOADING, UNLOADED, UNAVAILABLE = "loaded", "loading", "unloaded", "unavailable"
+UNLOADED_REASON = "unloaded by an admin"
 STATES = (LOADED, LOADING, UNLOADED, UNAVAILABLE)
 
 #: The only operations that may rewrite ``config.json`` over the op path
@@ -226,10 +228,22 @@ class Project:
         self.journal: Journal | None = None
         self._lease_fd: int | None = None
         self._reported_types: set[str] = set()
+        #: Set by ``project unload``: the project stays unloaded (503) until
+        #: ``project load``, and neither a request nor the prewarm loads it.
+        self.held_unloaded = False
+        #: The UTC day receipt files and index entries were last checked for
+        #: retention (SPEC §8.6); the index check runs before every replay.
+        self._receipt_day: date | None = None
+        self._index_day: date | None = None
         #: The idempotency index, ``(token_id, op_id) -> IndexEntry``, and the
         #: current epoch's op-status map, ``(token_id, op_id) -> seq`` (SPEC §8.6).
-        #: Filled as operations commit; rebuilt from disk at load by H-22.
+        #: Filled as operations commit, and rebuilt from disk at every load.
         self.index: dict[tuple[str | None, str], IndexEntry] = {}
+        #: Guards every change to ``index`` (a commit's insert, expiry, the load's
+        #: rebuild). Never the work lock: op status reads without admission.
+        #: The index is only ever changed in place under it, never replaced from
+        #: a lock-free path, so no committed entry can be lost (AC-46).
+        self.index_lock = threading.Lock()
         self.op_seqs: dict[tuple[str | None, str], int] = {}
         #: The finalized memory (journal index, manifest, floors, watched baselines),
         #: published by one assignment per committed line; ``None`` until loaded.
@@ -267,7 +281,7 @@ class Project:
             self._reported_types.add(etype)
             self.log.warning("unknown_event_type", project=self.slug, type=etype)
 
-    # -- load (SPEC §8.7; transactions and foreign appends are H-22's) ------
+    # -- load (SPEC §8.7; the recovery steps are in lattice.server.recovery) --
 
     def load(self) -> None:
         """Take the lease and bring the project to ``loaded`` or ``unavailable``.
@@ -317,33 +331,15 @@ class Project:
             )
             + "\n",
         )
-        if (board / HOSTED_DIR / ROTATION).exists():
+        # SPEC §8.7, in order (see lattice.server.recovery).
+        if (board / HOSTED_DIR / ROTATION).exists():  # 1. an interrupted rotation
             finish_rotation(board)
             self.log.info("epoch_rotation_completed", project=self.slug)
-        try:
-            journal = Journal.load(board)
-        except JournalError as exc:
-            journal = rotate_epoch(board, old_epoch=None)
-            self.log.warning(
-                "journal_missing", project=self.slug, reason=str(exc), epoch=journal.epoch
-            )
-        maintenance = board / HOSTED_DIR / "maintenance.json"
-        if maintenance.exists():
-            record = _read_json(maintenance)
-            journal = journal.rotate()
-            unlink_path(maintenance)
-            self.log.info(
-                "maintenance_rotation",
-                project=self.slug,
-                command=record.get("command"),
-                epoch=journal.epoch,
-            )
-        if self.journal is None or self.journal.epoch != journal.epoch:
-            self.op_seqs = {}  # the op-status map covers the current epoch only
-        # TODO(H-22): undo logs a crash or a quarantine left in hosted/undo/ are
-        # recovered here, in SPEC §8.7's order (torn tails, the missing-journal
-        # quarantine, then each transaction), with the idempotency index and the
-        # op-status map rebuilt from disk. H-22a recovers only in process.
+        with strict_durability():
+            journal = self._recover_on_disk(board)
+        if journal is None:
+            return
+        self.journal = journal
         try:
             discover_task_authorities(board)
         except AuthoritativeLogError as exc:
@@ -366,6 +362,84 @@ class Project:
         self.log.info(
             "project_load", project=self.slug, epoch=journal.epoch, head_seq=journal.head_seq
         )
+
+    def _recover_on_disk(self, board: Path) -> Journal | None:
+        """SPEC §8.7 steps 2 to 6. Returns the journal to serve, or ``None`` after
+        marking the project unavailable."""
+        recovery.drop_torn_tails(board)  # 2 (Journal.load drops the journal's own)
+        rotated = False
+        try:
+            journal: Journal | None = Journal.load(board)
+        except JournalError as exc:  # 3. a missing journal
+            journal = None
+            if recovery.undo_log_paths(board):
+                self._mark_unavailable(
+                    f"the journal is missing or unreadable ({exc}) and undo logs remain; "
+                    + recovery.recover_hint(self.slug)
+                )
+                return None
+            journal = rotate_epoch(board, old_epoch=None)
+            rotated = True
+            self.log.warning(
+                "journal_missing", project=self.slug, reason=str(exc), epoch=journal.epoch
+            )
+        try:  # 4. transactions
+            settled = recovery.settle_undo_logs(board, journal, log=self.log, slug=self.slug)
+        except recovery.NeedsRecover as exc:
+            self._mark_unavailable(f"{exc}; " + recovery.recover_hint(self.slug))
+            return None
+        index, op_seqs, orphans = recovery.rebuild_index(board, journal)
+        with self.index_lock:
+            self.index.clear()
+            self.index.update(index)
+        self._receipt_day = self._index_day = recovery.utc_today()
+        if settled.committed or settled.rolled_back or orphans:
+            self.log.info(
+                "recovery",
+                project=self.slug,
+                committed=len(settled.committed),
+                rolled_back=len(settled.rolled_back),
+                orphan_receipts=orphans,
+            )
+        maintenance = board / HOSTED_DIR / "maintenance.json"  # 5.
+        if maintenance.exists():
+            record = _read_json(maintenance)
+            journal = journal.rotate()
+            rotated = True
+            unlink_path(maintenance)
+            self.log.info(
+                "maintenance_rotation",
+                project=self.slug,
+                command=record.get("command"),
+                epoch=journal.epoch,
+            )
+        elif isinstance(journal.clean_shutdown, dict):
+            if journal.clean_shutdown.get("tree_fingerprint") != recovery.tree_fingerprint(board):
+                journal = journal.rotate()
+                rotated = True
+                self.log.info("restore_rotation", project=self.slug, epoch=journal.epoch)
+        if journal.clean_shutdown is not None:
+            recovery.write_meta(journal, None)
+        self.op_seqs = {} if rotated else op_seqs
+        if not rotated:  # 6. foreign appends
+            foreign = recovery.foreign_appends(board, journal)
+            if foreign:
+                seq, _ = journal.append(
+                    {
+                        "op": "external",
+                        "op_id": None,
+                        "fp": None,
+                        "token_id": None,
+                        "task_id": None,
+                        "event_ids": [],
+                        "paths": sorted(foreign),
+                        "lengths": foreign,
+                    }
+                )
+                self.log.warning(
+                    "external_change", project=self.slug, paths=sorted(foreign), seq=seq
+                )
+        return journal
 
     def _set_state(self, state: str, reason: str | None) -> None:
         """Change state and publish it (``server_status.json``, read by
@@ -406,6 +480,13 @@ class Project:
         journal.bind(self._published_index)
         self.journal = journal
 
+    def remember_watched(self, names: Iterable[str]) -> None:
+        """Re-baseline the watched files among *names* (a rollback restored them: not
+        a hand edit). One assignment, like every change to the finalized state."""
+        state = self._state
+        if state is not None:
+            self._state = replace(state, watched=_watched_after(self.board, state.watched, names))
+
     def _mark_unavailable(self, reason: str) -> None:
         self._set_state(UNAVAILABLE, reason)
         self.journal = None
@@ -424,12 +505,54 @@ class Project:
             self._lease_fd = None
         self._set_state(UNLOADED, None)
 
+    @property
+    def holds_lease(self) -> bool:
+        return self._lease_fd is not None
+
+    def unload(self) -> None:
+        """``project unload`` (SPEC §8.2): close the streams, release the lease, and
+        stay unloaded until ``project load``. Call under the work lock, after
+        admission, so no operation is in flight."""
+        if self.close_streams is not None:
+            try:
+                self.close_streams()
+            except Exception as exc:  # noqa: BLE001 - the lease is released regardless
+                self.log.warning("close_streams_failed", project=self.slug, error=repr(exc))
+        self.journal = None
+        self._state = None
+        self.held_unloaded = True
+        self.release()
+        self._set_state(UNLOADED, UNLOADED_REASON)
+        self.log.info("project_unload", project=self.slug)
+
+    def write_clean_shutdown(self) -> None:
+        """Record ``clean_shutdown`` (SPEC §8.7) for a project this server holds.
+        Call under the work lock with no operation in flight."""
+        journal = self.journal
+        if journal is None or self.state != LOADED or self._lease_fd is None:
+            return
+        with owning_board(self.board), strict_durability():
+            recovery.write_meta(
+                journal,
+                {
+                    "head_seq": journal.head_seq,
+                    "tree_fingerprint": recovery.tree_fingerprint(self.board),
+                },
+            )
+
     def require_loaded(self) -> None:
         if self.state == UNAVAILABLE:
             raise OpError(
                 "BOARD_UNAVAILABLE",
                 f"project {self.slug} is unavailable: {self.reason}",
                 {"reason": self.reason},
+            )
+        if self.held_unloaded:
+            raise OpError(
+                "BOARD_UNAVAILABLE",
+                f"project {self.slug} is unloaded; an admin runs "
+                f"'lattice server project load {self.slug}' to serve it again",
+                {"reason": "unloaded"},
             )
         if self.state != LOADED:
             raise OpError("BOARD_UNAVAILABLE", f"project {self.slug} is not loaded")
@@ -478,7 +601,9 @@ class Project:
             self.publication_failed(seq)
 
     def run_control_requests(self) -> int:
-        """Run every pending control request; returns how many ran.
+        """Run pending control requests, oldest first, up to the first lifecycle
+        request (``unload``, ``load``, ``reload``, ``doctor``), which only the
+        registry runs, outside the work lock; returns how many ran.
 
         Pending hand edits are journaled first, on every path that gets here
         (admission and the background poller alike).
@@ -488,6 +613,8 @@ class Project:
         if pending and self.state == LOADED and self.journal is not None:
             self.check_external_changes()
         for path in pending:
+            if control.request_action(path) in control.LIFECYCLE_ACTIONS:
+                break
             if self.state != LOADED or self._lease_fd is None or self.journal is None:
                 # Never act on a board this server does not hold: answer, write nothing.
                 answer = {
@@ -527,6 +654,7 @@ class Project:
         :meth:`admit`, so the idempotency check sees every earlier attempt."""
         op_id = request.caller.origin.get("op_id")
         if not request.minted:
+            self.expire_index()  # past retention, a retry runs again (SPEC §8.6)
             known = self.index.get((request.token_id, op_id))
             if known is not None:
                 return self._replay(known, request, op_id)
@@ -584,6 +712,7 @@ class Project:
         txn = Transaction(self, op=op, op_id=op_id, token_id=token_id, fp=fp, tracker=tracker)
         quarantine: Quarantine | None = None
         with board_scope(self.board), strict_durability():
+            self._retain_receipts()
             try:
                 txn.begin()
                 result = work(txn)
@@ -619,6 +748,48 @@ class Project:
         return WriteOutcome(
             result_data=result_data, seq=txn.seq, result=result, journal_line=txn.line
         )
+
+    def expire_index(self) -> None:
+        """Forget index entries whose receipt is past retention (SPEC §8.6), decided
+        by date alone, so a receipt file that could not be deleted never lets an
+        expired operation replay. Runs before every replay lookup (under the work
+        lock); deletes the expired keys in place under :attr:`index_lock`, so an
+        entry a commit inserts meanwhile is never lost."""
+        today = recovery.utc_today()
+        if today == self._index_day:
+            return
+        with self.index_lock:
+            expired = [
+                key
+                for key, entry in self.index.items()
+                if recovery.receipt_expired(entry.receipt, today)
+            ]
+            for key in expired:
+                del self.index[key]
+            self._index_day = today
+        if expired:
+            self.log.info("receipts_expired_from_index", project=self.slug, entries=len(expired))
+
+    def _retain_receipts(self) -> None:
+        """Receipt retention (SPEC §8.6): on the first write of each UTC day, delete
+        receipt files past the window. A failure is logged and retried on the
+        next write; it never fails this one, and the index has already
+        forgotten those receipts (:meth:`expire_index`)."""
+        self.expire_index()
+        today = recovery.utc_today()
+        if today == self._receipt_day:
+            return
+        try:
+            expired = recovery.expired_receipt_files(self.board, today)
+            for path in expired:
+                unlink_path(path)
+            if expired:
+                self.log.info(
+                    "receipts_expired", project=self.slug, files=sorted(p.name for p in expired)
+                )
+            self._receipt_day = today
+        except Exception as exc:  # noqa: BLE001 - retention never blocks a write
+            self.log.warning("receipt_retention_failed", project=self.slug, error=repr(exc))
 
     def _recover(self, txn: Transaction, exc: BaseException) -> Quarantine | None:
         """Transaction recovery before the project admits another request (SPEC §8.6).
@@ -748,9 +919,12 @@ class Project:
     def op_status(self, token_id: str | None, op_id: str) -> dict:
         """The outcome of one of *token_id*'s operations. Reads only memory, the
         committed receipt line, and retained epoch journals (which never change),
-        so it needs no lock."""
+        so it needs no lock, and it changes nothing: an entry past retention is
+        simply not used (its result is gone; the journals still say committed)."""
         key = (token_id, op_id)
         known = self.index.get(key)
+        if known is not None and recovery.receipt_expired(known.receipt):
+            known = None
         if known is not None:
             data: dict[str, Any] = {"state": "committed", "epoch": known.epoch, "seq": known.seq}
             try:

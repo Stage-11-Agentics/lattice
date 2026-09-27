@@ -101,3 +101,43 @@ def test_oversize_bodies_are_refused_unread(root: Path) -> None:
         results = [p.result() for p in posts]
     assert all(status == 413 for status, _ in results)
     assert all(sent < 50_000_000 for _, sent in results)
+
+
+def test_a_failed_project_is_repaired_and_reloaded_without_a_restart(root: Path) -> None:
+    """AC-15 (H-22): project A unavailable (corrupt log) while B serves reads and
+    writes; A's log is repaired offline; 'project reload A' serves A again."""
+    import json
+
+    from click.testing import CliRunner
+
+    from lattice.cli.main import cli
+
+    token = mint(root)
+    with running_server(root) as server:
+        status, _, body = server.op("alpha", "task.create", {"title": "a"}, token=token)
+        task = body["data"]["result"]["task"]["id"]
+    log = root / "projects" / "alpha" / ".lattice" / "events" / f"{task}.jsonl"
+    log.write_bytes(log.read_bytes() + b'{"truncated": ')
+    with running_server(root) as server:
+        assert server.project("alpha").state == "unavailable"
+        status, _, body = server.op("alpha", "task.create", {"title": "x"}, token=token)
+        assert status == 503 and body["error"]["code"] == "BOARD_UNAVAILABLE"
+        assert _timed_create(server, token, "beta") < 1.0
+        status, _, _ = server.request("GET", "/v1/projects/beta/tasks", token=token)
+        assert status == 200
+
+        repaired = CliRunner().invoke(
+            cli,
+            ["doctor", "--fix", "--offline-maintenance", "--json"],
+            env={"LATTICE_ROOT": str(root / "projects" / "alpha")},
+        )
+        assert repaired.exit_code == 0, repaired.output
+        assert server.project("alpha").state == "unavailable"  # until reloaded
+        reloaded = CliRunner().invoke(
+            cli, ["server", "project", "reload", "alpha", "--root", str(root), "--json"]
+        )
+        assert reloaded.exit_code == 0, reloaded.output
+        assert json.loads(reloaded.output)["data"]["state"] == "loaded"
+        assert _timed_create(server, token, "alpha") < 1.0
+        status, _, body = server.request("GET", f"/v1/projects/alpha/tasks/{task}", token=token)
+        assert status == 200 and body["data"]["snapshot"]["title"] == "a"

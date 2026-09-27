@@ -23,9 +23,11 @@ worker does; a few HTTP cases cover what a client sees.
 
 from __future__ import annotations
 
+import asyncio
 import errno
 import json
 import shutil
+from types import SimpleNamespace
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,6 +40,7 @@ from lattice.core.errors import OpError
 from lattice.core.ids import generate_op_id
 from lattice.server import transactions
 from lattice.server.project import Project
+from lattice.server.stream import JOURNAL, Subscriber
 from lattice.server.testing import make_root
 from lattice.server.transactions import read_undo_log
 from lattice.storage import fs
@@ -177,11 +180,62 @@ def _setup_archive(root: Path, project: Project) -> Callable[[], object]:
     return lambda: request("task.archive", {"task": task})
 
 
+def _task_in(project: Project, status: str) -> str:
+    """A task walked to *status* (with a real plan, so the plan gate passes)."""
+    task = create(project)["task"]["id"]
+    path = ["in_planning", "planned", "in_progress", "review", "done"]
+    for step in path[: path.index(status) + 1]:
+        if step == "planned":
+            run(project, request("task.plan_write", {"task": task, "stdin": "# Plan\n\nDo it.\n"}))
+        run(project, request("task.status", {"task": task, "new_status": step}))
+    return task
+
+
+def _setup_complete(root: Path, project: Project) -> Callable[[], object]:
+    task = _task_in(project, "in_progress")
+    return lambda: request("task.complete", {"task": task, "review": "Verified; LGTM."})
+
+
+def _setup_plan_write(root: Path, project: Project) -> Callable[[], object]:
+    task = create(project)["task"]["id"]
+    return lambda: request("task.plan_write", {"task": task, "stdin": "# Plan\n\nSteps.\n"})
+
+
+def _setup_unarchive(root: Path, project: Project) -> Callable[[], object]:
+    task = create(project)["task"]["id"]
+    (board_of(root) / "notes" / f"{task}.md").write_text("working notes\n")
+    run(project, request("task.archive", {"task": task}))
+    return lambda: request("task.unarchive", {"task": task})
+
+
+def _setup_acquire(root: Path, project: Project) -> Callable[[], object]:
+    run(project, request("resource.create", {"name": "db"}))
+    return lambda: request("resource.acquire", {"name": "db"})
+
+
+def _setup_session_start(root: Path, project: Project) -> Callable[[], object]:
+    params = {"model": "opus", "framework": "claude-code", "name": "Worker"}
+    return lambda: request("session.start", params, actor=None)
+
+
+def _setup_set_project_code(root: Path, project: Project) -> Callable[[], object]:
+    # No tasks: doctor rightly flags existing short IDs outside a changed code.
+    return lambda: request("board.set_project_code", {"code": "ALQ", "force": True}, actor=None)
+
+
 SCENARIOS = [
     Scenario("task.create", _setup_create),
     Scenario("task.status", _setup_status),
     Scenario("task.archive", _setup_archive),
+    # H-22: the remaining operation families (EVALUATION AC-4, second row).
+    Scenario("task.complete", _setup_complete),
+    Scenario("task.plan_write", _setup_plan_write),
+    Scenario("task.unarchive", _setup_unarchive),
+    Scenario("resource.acquire", _setup_acquire),
+    Scenario("session.start", _setup_session_start),
+    Scenario("board.set_project_code", _setup_set_project_code),
 ]
+SCENARIO = {s.name: s for s in SCENARIOS}
 
 
 def _prepared(fresh: Fresh, projects: list[Project], scenario: Scenario):  # noqa: ANN202
@@ -201,12 +255,90 @@ def _prepared(fresh: Fresh, projects: list[Project], scenario: Scenario):  # noq
 
 
 def wire_publication(project: Project) -> list[int]:
-    """Point the publication hook at the ``publication`` fault seam; returns the
-    seqs whose failed publication closed the project's streams."""
+    """Put the ``publication`` fault seam in front of the real publication hook;
+    returns the seqs whose failed publication closed the project's streams."""
     closed: list[int] = []
-    project.publish = lambda line: transactions._fault("publication", seq=line["seq"])
-    project.close_streams = lambda: closed.append(project.journal.head_seq)
+    real_publish = project._publish
+
+    def publish(line: dict) -> None:
+        transactions._fault("publication", seq=line["seq"])
+        real_publish(line)
+
+    def close_streams() -> None:
+        closed.append(project.journal.head_seq)
+        project.broadcaster.close_all()
+
+    project.publish = publish
+    project.close_streams = close_streams
     return closed
+
+
+class Follower:
+    """A connected follower of *project*, without HTTP: a broadcaster subscriber
+    whose every accepted entry counts as delivered (``abort()`` clears only the
+    undelivered queue), and which, once its stream is ended, reconnects from
+    its ``Last-Event-ID`` through the stream endpoint's own resume path
+    (``app._stream_start``: subscribe, then replay under the work lock)."""
+
+    LIMITS = SimpleNamespace(max_stream_subscribers_per_project=64, replay_reset_entries=1000)
+
+    def __init__(self, project: Project) -> None:
+        self.project = project
+        #: The head when it connected: it follows from here.
+        self.start = project.journal.head_seq if project.journal else 0
+        self.loop = asyncio.new_event_loop()
+        self.delivered: list[int] = []
+        self.reconnects = 0
+        self.subscriber = self._subscribe()
+
+    def _new_subscriber(self) -> Subscriber:
+        follower = self
+
+        class Recording(Subscriber):
+            def offer(self, item: tuple[str, int, bytes]) -> bool:
+                accepted = super().offer(item)
+                if accepted and item[0] == JOURNAL:
+                    follower.delivered.append(item[1])
+                return accepted
+
+        return Recording(self.loop, 1000)
+
+    def _subscribe(self) -> Subscriber:
+        subscriber = self._new_subscriber()
+        assert self.project.broadcaster.subscribe(subscriber, 64)
+        return subscriber
+
+    def reconnect_if_ended(self) -> None:
+        """Resume from the last delivered entry, as a real follower would."""
+        if not self.subscriber.aborted:
+            return
+        from lattice.server.app import _stream_start
+
+        self.reconnects += 1
+        project = self.project
+        journal = project.journal
+        since = self.delivered[-1] if self.delivered else self.start
+        subscriber = self._new_subscriber()
+        with project.locked():
+            resume = (True, journal.epoch, since, journal.hash_at(since))
+            frames, _head = _stream_start(project, self.LIMITS, subscriber, resume)
+        for frame in frames:
+            text = frame.decode()
+            assert "event: reset" not in text, "a resume inside the epoch must replay"
+            ident = next(x for x in text.splitlines() if x.startswith("id: "))
+            self.delivered.append(int(ident.split(":")[2]))
+        self.subscriber = subscriber
+
+    def close(self) -> None:
+        self.project.broadcaster.unsubscribe(self.subscriber)
+        self.loop.close()
+
+
+def assert_follower_missed_no_seq(follower: Follower, head: int, case: str) -> None:
+    """Every committed seq after the follower connected reached it, in order, with
+    no gap and no duplicate, through the final head, reconnecting after any
+    ended stream (SPEC §8.9, AC-4)."""
+    assert follower.delivered == list(range(follower.start + 1, head + 1)), case
 
 
 # Every-boundary fault walk with real fsyncs: slow CI runners need more than the 15 s default.
@@ -246,7 +378,7 @@ def test_every_boundary_leaves_the_operation_wholly_present_or_absent(
         "publication",
     ):
         assert required in points, (scenario.name, required)
-    if scenario.name == "task.archive":
+    if scenario.name in ("task.archive", "task.unarchive"):
         assert "placement.source_event_removed" in points
     commit_at = boundaries.index(("journal.fsync", 1))
 
@@ -257,6 +389,7 @@ def test_every_boundary_leaves_the_operation_wholly_present_or_absent(
         before = state(root)
         write = build()
         error: BaseException | None = None
+        stream = Follower(project)
         with monkeypatch.context() as m:
             injector = install(m, Injector(point, occurrence, short=point.endswith(".write")))
             try:
@@ -275,6 +408,7 @@ def test_every_boundary_leaves_the_operation_wholly_present_or_absent(
                 run(project, request("task.create", {"title": "blocked"}))
             assert again.value.code == "BOARD_UNAVAILABLE"
             assert state(root) == after, case
+            stream.close()
             continue
 
         assert error is not None, case
@@ -293,15 +427,22 @@ def test_every_boundary_leaves_the_operation_wholly_present_or_absent(
             assert after["board"] != before["board"], case
             # A failed publication closes the streams so followers replay.
             assert closed == ([lines[-1]["seq"]] if point == "publication" else []), case
+        # A follower whose stream a failed publication ended reconnects now.
+        stream.reconnect_if_ended()
+        assert stream.reconnects == (1 if point == "publication" else 0), case
         discover_task_authorities(board_of(root))
         doctor_clean(root)
         assert_next_write_commits_and_replays(root, project)
+        # In the in-process branch a connected follower misses no seq (AC-4, H-22).
+        assert_follower_missed_no_seq(stream, project.journal.head_seq, case)
+        stream.close()
 
 
-def test_archive_failing_right_after_the_source_log_unlink_rolls_back(
-    fresh: Fresh, projects: list[Project], monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("name", ["task.archive", "task.unarchive"])
+def test_placement_failing_right_after_the_source_log_unlink_rolls_back(
+    name: str, fresh: Fresh, projects: list[Project], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    root, project, build = _prepared(fresh, projects, SCENARIOS[2])
+    root, project, build = _prepared(fresh, projects, SCENARIO[name])
     before = state(root)
     with monkeypatch.context() as m:
         install(m, Injector("placement.source_event_removed"))
@@ -310,7 +451,7 @@ def test_archive_failing_right_after_the_source_log_unlink_rolls_back(
     assert state(root) == before
     assert undo_logs(root) == []
     doctor_clean(root)
-    run(project, build())  # the archive itself now commits
+    run(project, build())  # the placement itself now commits
     doctor_clean(root)
 
 

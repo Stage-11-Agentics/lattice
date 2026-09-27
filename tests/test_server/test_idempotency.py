@@ -181,7 +181,11 @@ def test_op_status_finds_an_operation_from_a_retained_epoch(root: Path) -> None:
         assert _journal_epoch(root) != old_epoch
         status, body = op_status(server, alice, op_id)
         assert status == 200
-        assert body["data"] == {"state": "committed", "epoch": old_epoch, "seq": 1}
+        data = body["data"]
+        # The index is rebuilt from the retained receipt at load (H-22), so the
+        # result comes along (SPEC §8.6 "Op status").
+        assert data.pop("result")["task"]["title"] == "old epoch"
+        assert data == {"state": "committed", "epoch": old_epoch, "seq": 1}
 
 
 def _journal_epoch(root: Path) -> str:

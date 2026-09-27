@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -138,9 +139,24 @@ def send_request(
 # Server side
 # ---------------------------------------------------------------------------
 
-#: action name -> handler(project, request) -> result. Later tickets add
-#: ``rotate-epoch`` (H-10a) and ``unload``, ``load``, ``reload``, ``doctor`` (H-22).
+#: action name -> handler(project, request) -> result, run under the project's
+#: work lock. ``rotate-epoch`` is H-10a's.
 ACTIONS: dict[str, Callable[[Any, dict], Any]] = {}
+
+#: Actions that change whether the server holds the project (or, for
+#: ``doctor``, may need to take its lease): the registry runs them at the
+#: admission layer, never inside a held work lock (``ProjectRegistry``).
+LIFECYCLE_ACTIONS = frozenset({"unload", "load", "reload", "doctor"})
+
+
+def request_action(path: Path) -> str | None:
+    """The ``action`` a request file names, or ``None`` if it cannot be read."""
+    try:
+        request = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    action_name = request.get("action") if isinstance(request, dict) else None
+    return action_name if isinstance(action_name, str) else None
 
 
 def action(name: str) -> Callable[[Callable[[Any, dict], Any]], Callable[[Any, dict], Any]]:
@@ -151,25 +167,72 @@ def action(name: str) -> Callable[[Callable[[Any, dict], Any]], Callable[[Any, d
     return register
 
 
+#: A request file that does not yet parse as a JSON object is taken to be still
+#: being written for this long after this process first saw it so, and left
+#: alone; after it, the server answers it as malformed, so it never wedges the
+#: queue. The clock is this process's monotonic one, started at first sight:
+#: touching the file, or giving it a future mtime, cannot extend it.
+INCOMPLETE_GRACE_SECONDS = 5.0
+
+#: Unparseable request files -> ``time.monotonic()`` when first seen so.
+_first_seen_incomplete: dict[Path, float] = {}
+_first_seen_lock = threading.Lock()
+
+
+def request_complete(path: Path, now: float | None = None) -> bool:
+    """Whether the server may act on *path*: it parses as a JSON object, or it has
+    been unparseable for :data:`INCOMPLETE_GRACE_SECONDS` since this process
+    first saw it (then it is malformed, and answered so). The admin writes
+    requests atomically (a dot-named temp file, then a rename), so this matters
+    only for a writer that does not: a half-written file is never answered as
+    malformed while it is being written."""
+    path = Path(path)
+    try:
+        request = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        request = None
+    now = time.monotonic() if now is None else now
+    with _first_seen_lock:
+        if isinstance(request, dict):
+            _first_seen_incomplete.pop(path, None)
+            return True
+        if not path.exists():
+            _first_seen_incomplete.pop(path, None)
+            return False
+        first = _first_seen_incomplete.setdefault(path, now)
+    return now - first >= INCOMPLETE_GRACE_SECONDS
+
+
 def pending_requests(board: Path) -> list[Path]:
-    """Request files not yet answered, oldest first (ULIDs sort by time)."""
+    """Complete request files not yet answered, oldest first (ULIDs sort by time).
+
+    Only ``<name>.json`` counts: the admin's temp files (``.tmp.<name>.<pid>``)
+    are dot-named and never match, and a request still being written by a
+    non-atomic writer waits (:func:`request_complete`).
+    """
     control = Path(board) / "hosted" / CONTROL_DIR
     try:
         names = os.listdir(control)
     except OSError:
         return []
-    return [
+    requests = [
         control / name
         for name in sorted(names)
         if name.endswith(".json")
         and not name.startswith(".")
         and not (control / (name[: -len(".json")] + ".done")).exists()
     ]
+    with _first_seen_lock:  # forget files answered or removed meanwhile
+        for seen in [p for p in _first_seen_incomplete if p.parent == control]:
+            if seen not in requests:
+                del _first_seen_incomplete[seen]
+    return [path for path in requests if request_complete(path)]
 
 
 def answer_unowned(path: Path, answer: dict) -> None:
-    """Answer a request for a project this server does not hold, touching nothing
-    else: the ``.done`` goes through the same private writer the admin uses."""
+    """Answer a request through the same private writer the admin uses, touching
+    nothing else: for a project this server does not hold, and for lifecycle
+    requests, whose answer may land after the lease is released."""
     _write_private(path.with_suffix(".done"), (json.dumps(answer, sort_keys=True) + "\n").encode())
     _remove(path)
 

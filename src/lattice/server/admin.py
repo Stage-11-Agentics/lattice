@@ -41,6 +41,7 @@ from lattice.server.journal import (
     JOURNAL_META,
     ROTATION,
     Journal,
+    JournalError,
     finish_rotation,
     now_ms,
     rotate_epoch,
@@ -527,3 +528,176 @@ def set_project_config(
         config.update(typed)
         atomic_write(board / "config.json", serialize_config(config))
     return {"via": "offline", "project": slug, "set": typed, "maintenance": True}
+
+
+# ---------------------------------------------------------------------------
+# Project lifecycle, doctor, and recover (SPEC §8.2)
+# ---------------------------------------------------------------------------
+
+#: How long a direct ``project doctor`` subprocess may run.
+DOCTOR_TIMEOUT_SECONDS = 300.0
+
+
+def _control_answer(answer: dict) -> dict:
+    if not answer.get("ok"):
+        error = answer.get("error") or {}
+        raise OpError(
+            error.get("code", "INTERNAL_ERROR"),
+            error.get("message", "rejected"),
+            error.get("details"),
+        )
+    return answer.get("result") or {}
+
+
+def project_lifecycle(root: Path, slug: str, action: str, *, wait_seconds: float = 30.0) -> dict:
+    """``project unload | load | reload``: a control request to the running server.
+
+    With no server holding ``server.lock`` they fail: there is no lease to
+    release or take (SPEC §8.2).
+    """
+    root = Path(root)
+    board = existing_project(root, slug) / ".lattice"
+    if action not in ("unload", "load", "reload"):
+        raise OpError("VALIDATION_ERROR", f"unknown lifecycle action {action!r}")
+    if not control.server_running(root):
+        raise OpError(
+            "CONFLICT",
+            f"no Lattice server is running on {root}; 'project {action}' acts on a "
+            "running server only (start it with 'lattice server serve').",
+            {"reason": "SERVER_NOT_RUNNING"},
+        )
+    answer = control.send_request(board, action, {}, wait_seconds=wait_seconds)
+    return {"via": "server", **_control_answer(answer)}
+
+
+def run_doctor(board: Path) -> dict:
+    """``lattice doctor --json`` (read-only) on *board*, in a subprocess of this
+    interpreter, so its output never mixes with a server's. The caller holds
+    the project's work lock or owner flock. Returns doctor's ``data``."""
+    import subprocess
+    import sys
+
+    project = Path(board).parent
+    env = {k: v for k, v in os.environ.items() if not k.startswith("LATTICE_")}
+    env["LATTICE_ROOT"] = str(project)
+    try:
+        done = subprocess.run(
+            [sys.executable, "-c", "from lattice.cli.main import cli; cli()", "doctor", "--json"],
+            cwd=project,
+            env=env,
+            capture_output=True,
+            timeout=DOCTOR_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise OpError(
+            "INTEGRITY_ERROR", f"doctor did not finish within {DOCTOR_TIMEOUT_SECONDS:g} s"
+        ) from exc
+    try:
+        payload = json.loads(done.stdout)
+    except ValueError as exc:
+        stderr = done.stderr.decode("utf-8", "replace").strip()[-500:]
+        raise OpError(
+            "INTEGRITY_ERROR", f"doctor failed (exit {done.returncode}): {stderr}"
+        ) from exc
+    if not payload.get("ok"):
+        error = payload.get("error") or {}
+        raise OpError(error.get("code", "INTEGRITY_ERROR"), error.get("message", "doctor failed"))
+    return payload.get("data") or {}
+
+
+def project_doctor(root: Path, slug: str, *, wait_seconds: float = 120.0) -> dict:
+    """``project doctor``: doctor's read-only checks, never racing a transaction.
+
+    Through the running server (under the project's work lock, or its owner
+    flock when the server does not hold the project); with no server, directly,
+    holding the owner flock so a starting server cannot race it.
+    """
+    root = Path(root)
+    board = existing_project(root, slug) / ".lattice"
+    if control.server_running(root):
+        answer = control.send_request(board, "doctor", {}, wait_seconds=wait_seconds)
+        return {"via": "server", **_control_answer(answer)}
+    fd = try_owner_flock(board)
+    if fd is None:
+        raise OpError(
+            "BOARD_BUSY",
+            f"another process holds project '{slug}' (offline maintenance?); retry when it ends.",
+        )
+    try:
+        data = run_doctor(board)
+    finally:
+        release_owner_flock(fd)
+    return {"via": "offline", "project": slug, **data}
+
+
+def recover_project(root: Path, slug: str, mode: str | None) -> dict:
+    """``project recover <slug> --rollback | --keep`` (SPEC §8.2, §8.7 step 3).
+
+    Needs the owner flock free (a server holds it only for a loaded project; a
+    quarantined one has released it). Every undo log the journal can classify
+    is settled exactly as startup recovery would, whatever the flag: committed
+    ones are deleted, uncommitted ones rolled back. *mode* decides only the
+    logs it cannot classify (a missing journal, or a log without ``seq``):
+    ``rollback`` restores their pre-images, ``keep`` leaves the files as they
+    are and deletes the logs. Writes ``hosted/maintenance.json``, so the next
+    load rotates the epoch and every cache resyncs.
+    """
+    from lattice.server import recovery
+
+    if mode not in (None, "rollback", "keep"):
+        raise OpError("VALIDATION_ERROR", f"unknown recover mode {mode!r}")
+    root = Path(root)
+    board = existing_project(root, slug) / ".lattice"
+    with admin_lock(root):
+        if try_owner_flock_free(board) is False:
+            raise OpError(
+                "BOARD_BUSY",
+                f"a running process holds project '{slug}'; unload it "
+                f"('lattice server project unload {slug}') or stop the server first.",
+            )
+        if not recovery.undo_log_paths(board):
+            return {
+                "project": slug,
+                "committed": [],
+                "rolled_back": [],
+                "kept": [],
+                "undo_logs": 0,
+            }
+        with (
+            offline_maintenance(board, f"project recover --{mode or 'auto'}"),
+            strict_durability(),
+        ):
+            if (board / HOSTED_DIR / ROTATION).exists():
+                finish_rotation(board)
+            recovery.drop_torn_tails(board)
+            try:
+                journal: Journal | None = Journal.load(board)
+            except JournalError:
+                journal = None
+            try:
+                settled = recovery.settle_undo_logs(board, journal, unclassified=mode)
+            except recovery.NeedsRecover as exc:
+                raise OpError(
+                    "VALIDATION_ERROR",
+                    f"{exc}; choose --rollback (restore what they changed) or --keep "
+                    "(keep the files as they are).",
+                    {"reason": "RECOVER_MODE_REQUIRED"},
+                ) from exc
+    return {
+        "project": slug,
+        "committed": settled.committed,
+        "rolled_back": settled.rolled_back,
+        "kept": settled.kept,
+        "undo_logs": len(settled.committed) + len(settled.rolled_back) + len(settled.kept),
+        "maintenance": True,
+    }
+
+
+def try_owner_flock_free(board: Path) -> bool:
+    """Whether the project's owner flock is free right now (probe and release)."""
+    fd = try_owner_flock(board)
+    if fd is None:
+        return False
+    release_owner_flock(fd)
+    return True

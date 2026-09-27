@@ -22,7 +22,8 @@ a journal fsync that failed (durability unknown) or a recovery step that
 failed quarantines the project (``BOARD_UNAVAILABLE``).
 
 Undo logs live at ``hosted/undo/<token_id>--<op_id>.jsonl`` (``server`` for a
-server-started write); the first line is ``{"epoch", "token_id", "op_id"}``,
+server-started write); the first line is ``{"epoch", "seq", "token_id", "op_id"}`` (``seq``: the
+line it will commit at),
 then one entry per guarded change:
 
 - ``{"path", "kind": "length", "existed", "length"}`` before the first append
@@ -32,7 +33,8 @@ then one entry per guarded change:
   content (``content_b64`` is ``null`` when the path did not exist).
 
 Paths are relative to ``.lattice/``. Startup recovery of undo logs a crash
-left behind is H-22's (SPEC §8.7).
+left behind is :mod:`lattice.server.recovery` (SPEC §8.7); every rollback goes
+through :func:`roll_back`.
 
 :func:`_fault` is a no-op test seam at every step (``tests/test_server/faults.py``).
 """
@@ -57,7 +59,7 @@ from lattice.storage.fs import (
     truncate_file,
     unlink_path,
 )
-from lattice.storage.ownership import check_write, locate
+from lattice.storage.ownership import board_scope, check_write, locate
 
 if TYPE_CHECKING:
     from lattice.server.project import MutationTracker, Project
@@ -131,7 +133,7 @@ class ControlFile:
 
     def write(self, data: bytes) -> None:
         assert self.fd is not None
-        _fault(f"{self.point}.write", fd=self.fd, data=data)
+        _fault(f"{self.point}.write", fd=self.fd, data=data, path=self.path)
         view = memoryview(data)
         while view:
             view = view[os.write(self.fd, view) :]
@@ -258,8 +260,18 @@ class Transaction:
         # O_EXCL: never adopt (and later delete) an undo log another attempt left.
         self.undo = ControlFile(self.undo_path, "undo", exclusive=True)
         self.undo.sync_created()
+        # The header names the seq this operation will commit at, so startup
+        # recovery matches it to exactly one journal line (SPEC §8.7 step 4).
+        self.seq = journal.head_seq + 1
         self.undo.append(
-            _dumps({"epoch": self.epoch, "token_id": self.token_id, "op_id": self.op_id})
+            _dumps(
+                {
+                    "epoch": self.epoch,
+                    "seq": self.seq,
+                    "token_id": self.token_id,
+                    "op_id": self.op_id,
+                }
+            )
         )
 
     # -- 2. undo entries (the write recorder's callback) --------------------
@@ -348,7 +360,7 @@ class Transaction:
             _fault("finish.index")
             assert self.receipt_path is not None
             key = (self.token_id, self.op_id)
-            project.index[key] = IndexEntry(
+            entry = IndexEntry(
                 fp=self.fp,
                 epoch=self.epoch,
                 seq=self.seq,
@@ -356,6 +368,8 @@ class Transaction:
                 offset=self.receipt_len,
                 length=len(self._receipt_bytes),
             )
+            with project.index_lock:
+                project.index[key] = entry
             project.op_seqs[key] = self.seq
             self.done.add("index")
         if "undo_delete" not in self.done:
@@ -424,29 +438,68 @@ class Transaction:
             return  # the undo log was never created: nothing was changed
         self.undo.close()
         assert self.undo_path is not None
-        entries = read_undo_log(self.undo_path)
+        restored = roll_back(self.board, self.undo_path)
+        # A restored watched file (config.json) is not a hand edit: re-baseline it.
+        self.project.remember_watched(restored)
+
+
+def roll_back(board: Path, undo_path: Path) -> list[str]:
+    """Undo one operation from its undo log, then delete the log (SPEC §8.6).
+
+    Shared by in-process recovery, startup recovery, and ``project recover``.
+    Strictly durable on its own: every restoration and the fsync of every
+    directory it touched must succeed before the log is deleted, so a crash or
+    a failure part-way leaves the log for the next attempt. Replaying the whole
+    log again is idempotent: each entry restores a state it fully describes.
+    Returns the paths it restored. The caller holds the board's owner lease
+    (or offline maintenance).
+    """
+    board = Path(board)
+    with board_scope(board), fs.strict_durability():
+        entries = read_undo_log(undo_path)
+        parents: dict[Path, None] = {}
         for entry in reversed(entries):
             _fault("recover.rollback", path=entry["path"])
-            self._undo(entry)
+            path = _board_path(board, entry["path"])
+            _undo_entry(path, entry)
+            parents[path.parent] = None
+        for parent in parents:
+            if parent.is_dir():
+                fs._fsync_directory(parent, strict=True)
         _fault("recover.undo_delete")
-        unlink_path(self.undo_path)
+        unlink_path(undo_path)
+    return [entry["path"] for entry in entries]
 
-    def _undo(self, entry: dict) -> None:
-        path = _board_path(self.board, entry["path"])
-        if entry["kind"] == "content":
-            if entry["existed"]:
-                atomic_write(path, base64.b64decode(entry["content_b64"]))
-            elif path.is_dir() and not path.is_symlink():
-                remove_dir(path)
-            elif os.path.lexists(path):
-                unlink_path(path)
-        elif entry["kind"] == "length":
-            if not entry["existed"]:
-                unlink_path(path, missing_ok=True)
-            elif (_size(path) or 0) != entry["length"]:
-                truncate_file(path, entry["length"])
-        else:
-            raise ValueError(f"unknown undo entry kind {entry['kind']!r}")
+
+def _undo_entry(path: Path, entry: dict) -> None:
+    if entry["kind"] == "content":
+        if entry["existed"]:
+            atomic_write(path, base64.b64decode(entry["content_b64"]))
+        elif path.is_dir() and not path.is_symlink():
+            remove_dir(path)
+        elif os.path.lexists(path):
+            unlink_path(path)
+    elif entry["kind"] == "length":
+        if not entry["existed"]:
+            unlink_path(path, missing_ok=True)
+        elif (_size(path) or 0) != entry["length"]:
+            truncate_file(path, entry["length"])
+    else:
+        raise ValueError(f"unknown undo entry kind {entry['kind']!r}")
+
+
+def read_undo_header(path: Path) -> dict | None:
+    """An undo log's first line, or ``None`` when it is missing or torn (the log
+    then guards nothing: no change is made before the header is fsynced)."""
+    data = path.read_bytes()
+    end = data.find(b"\n")
+    if end < 0:
+        return None
+    try:
+        header = json.loads(data[:end])
+    except ValueError:
+        return None
+    return header if isinstance(header, dict) else None
 
 
 def read_undo_log(path: Path) -> list[dict]:
@@ -458,7 +511,7 @@ def read_undo_log(path: Path) -> list[dict]:
     entries: list[dict] = []
     for number, raw in enumerate(lines):
         if number == 0:
-            continue  # the header: {"epoch", "token_id", "op_id"}
+            continue  # the header: {"epoch", "seq", "token_id", "op_id"}
         entry = json.loads(raw)
         entries.append(entry)
     return entries

@@ -6,6 +6,8 @@
   and branches that still track ``.lattice/``.
 - ``op-status`` asks the server whether an operation committed (after
   ``OUTCOME_UNKNOWN``).
+- ``verify`` checks every write this checkout had acknowledged
+  (``cache/acked.jsonl``) against the server (SPEC §9.2).
 """
 
 from __future__ import annotations
@@ -473,3 +475,41 @@ def remote_op_status(op_id: str, output_json: bool) -> None:
             "op_id."
         )
     _emit(is_json, {"op_id": op_id, **data}, [line])
+
+
+# ---------------------------------------------------------------------------
+# verify
+# ---------------------------------------------------------------------------
+
+
+@remote_group.command("verify")
+@click.option("--json", "output_json", is_flag=True, help="Output structured JSON.")
+def remote_verify(output_json: bool) -> None:
+    """Check that the server still holds every write this checkout had acknowledged."""
+    from lattice.remote import acked
+    from lattice.remote.client import op_status
+    from lattice.remote.config import resolve_remote
+
+    is_json = output_json
+    hosted = _hosted_or_exit(is_json)
+    cache = hosted.root / LATTICE_DIR / "cache"
+    try:
+        remote = resolve_remote(hosted.remote)
+        report = acked.verify(cache, lambda op_id: op_status(remote, hosted.project, op_id))
+    except OpError as exc:
+        _fail(exc, is_json)
+    lines = [
+        f"MISSING {m['op_id']} (project {m.get('project')}, seq {m.get('seq')}, "
+        f"epoch {m.get('epoch')}, acknowledged {m.get('at')})"
+        for m in report.missing
+    ]
+    if report.missing:
+        lines.append(
+            f"{len(report.missing)} of {report.checked} acknowledged write(s) are not on the "
+            "server (a restored backup lost them?). Re-apply them, then run verify again."
+        )
+    else:
+        lines.append(f"{report.checked} acknowledged write(s) checked; the server holds all.")
+    _emit(is_json, report.as_dict(), lines)
+    if report.missing:
+        raise SystemExit(1)
