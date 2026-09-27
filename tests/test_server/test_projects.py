@@ -171,4 +171,5 @@ def test_index_lists_exactly_the_sessions_projects(server: ServerHandle, root: P
     assert 'href="/p/alpha/"' in page.text and 'href="/p/gamma/"' in page.text
     assert "/p/beta/" not in page.text
     assert "ALP" in page.text
-    assert "<script" not in page.text
+    assert "<script>" not in page.text  # no inline script: logout is /web/logout.js
+    assert '<script src="/web/logout.js"></script>' in page.text

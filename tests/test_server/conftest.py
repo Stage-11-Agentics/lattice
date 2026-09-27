@@ -63,22 +63,3 @@ def board_hash(root: Path, slug: str) -> dict[str, str]:
         for k, v in tree_hash(board).items()
         if not k.startswith(("hosted/", "locks/")) and ".tmp." not in k
     }
-
-
-def pytest_collection_modifyitems(config, items) -> None:  # noqa: ARG001
-    """TEMPORARY (LAT-314, removed with the implementation): the hosted-dashboard
-    tests are scaffolded while the plan is under risk review; they skip until
-    ``lattice.server.web`` exists."""
-    import importlib.util
-    import inspect
-
-    if importlib.util.find_spec("lattice.server.web") is not None:
-        return
-    skip = pytest.mark.skip(reason="LAT-314: hosted dashboard pending risk review")
-    for item in items:
-        fn = getattr(item, "function", None)
-        if fn is not None and (
-            item.module.__name__.endswith("test_dashboard_hosted")
-            or "WebClient" in inspect.getsource(fn)
-        ):
-            item.add_marker(skip)

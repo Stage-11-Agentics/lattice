@@ -312,3 +312,216 @@ class TestHeaders:
         assert seen  # the hostile strings reach the page only inside JSON
         page = web.get("/p/alpha/")
         assert "alert(1)" not in page.text and "\x1b" not in page.text
+
+
+# ---------------------------------------------------------------------------
+# Amendment 1: every read passes authorization and admission, warm memo or not
+# ---------------------------------------------------------------------------
+
+
+def _admin(root: Path, *args: str):
+    from click.testing import CliRunner
+
+    from lattice.cli.main import cli
+
+    result = CliRunner().invoke(cli, ["server", "project", *args, "--root", str(root)])
+    assert result.exit_code == 0, result.output
+    return result
+
+
+class TestWarmMemo:
+    def _warm(self, web: WebClient) -> dict:
+        first = web.get("/p/alpha/api/config")
+        assert first.status == 200
+        return first.json
+
+    def test_release_and_reload(self, server, root, web: WebClient) -> None:
+        """A released project reloads at the next read's admission, and the read
+        reflects the board as reloaded, not the warm memo. (``project unload`` and
+        ``reload`` are not on v2 yet; ``release()`` is the lease they drop.)"""
+        self._warm(web)
+        project = server.project("alpha")
+        with project.locked():
+            project.release()
+        config_path = root / "projects" / "alpha" / ".lattice" / "config.json"
+        config = json.loads(config_path.read_text())
+        config["dashboard"] = {"title": "edited while unloaded"}
+        config_path.write_text(json.dumps(config, sort_keys=True, indent=2) + "\n")
+        response = web.get("/p/alpha/api/config")
+        assert response.status == 200
+        assert response.json["data"]["dashboard"] == {"title": "edited while unloaded"}
+
+    def test_quarantine(self, server, root, web: WebClient) -> None:
+        self._warm(web)
+        project = server.project("alpha")
+        with project.locked():
+            project._mark_unavailable("test quarantine")
+        response = web.get("/p/alpha/api/config")
+        assert response.status == 503
+        assert response.json["error"]["code"] == "BOARD_UNAVAILABLE"
+        with project.locked():
+            project.release()  # what a reload does first
+        assert web.get("/p/alpha/api/config").status == 200
+
+    def test_rotation_recomputes(self, server, root, web: WebClient, monkeypatch) -> None:
+        self._warm(web)
+        calls: list[str] = []
+        original = api.route_get
+        monkeypatch.setattr(
+            api, "route_get", lambda ld, p, *a, **k: calls.append(p) or original(ld, p, *a, **k)
+        )
+        _admin(root, "rotate-epoch", "alpha")
+        assert web.get("/p/alpha/api/config").status == 200
+        assert calls == ["/api/config"]
+
+    def test_external_modification_is_seen(self, server, root, web: WebClient) -> None:
+        self._warm(web)
+        config_path = root / "projects" / "alpha" / ".lattice" / "config.json"
+        config = json.loads(config_path.read_text())
+        config["dashboard"] = {"title": "edited by hand"}
+        config_path.write_text(json.dumps(config, sort_keys=True, indent=2) + "\n")
+        seen = web.get("/p/alpha/api/config").json["data"]
+        assert seen["dashboard"] == {"title": "edited by hand"}
+
+    def test_authorization_runs_before_the_memo(self, server, root) -> None:
+        from lattice.server import tokens as token_admin
+
+        narrow = mint(root, projects=["alpha", "ghost"])
+        web = _logged_in(server, narrow)
+        self._warm(web)
+        wide = _logged_in(server, mint(root))
+        assert wide.get("/p/alpha/api/config").status == 200
+        assert web.get("/p/beta/api/config").status == 403  # existing, not granted
+        assert web.get("/p/other/api/config").status == 403  # absent, not granted
+        assert web.get("/p/ghost/api/config").status == 404  # absent, granted
+        token_admin.revoke_token(root, token_admin.parse_token(narrow)[0])
+        assert web.get("/p/alpha/api/config").status == 401
+
+    def test_invalid_authorization_never_falls_back_to_the_cookie(self, web: WebClient) -> None:
+        for header in ("Bearer nope", "Basic abc", ""):
+            response = web.request("GET", "/p/alpha/api/config", headers={"Authorization": header})
+            assert response.status == 401, header
+
+
+# ---------------------------------------------------------------------------
+# Amendment 2: browser writes are retry-safe with a page-chosen op_id
+# ---------------------------------------------------------------------------
+
+
+class TestRetries:
+    def test_a_retried_create_applies_once(self, server, root, web: WebClient) -> None:
+        op_id = "op_01J9Z0000000000000000000AA"
+        first = web.post_json("/p/alpha/api/tasks", {"title": "once"}, **{"Lattice-Op-Id": op_id})
+        again = web.post_json("/p/alpha/api/tasks", {"title": "once"}, **{"Lattice-Op-Id": op_id})
+        assert first.status == again.status == 201, again.text
+        assert first.json["data"]["id"] == again.json["data"]["id"]
+        titles = [t["title"] for t in web.get("/p/alpha/api/tasks").json["data"]]
+        assert titles == ["once"]
+
+    def test_a_retried_comment_applies_once(self, server, root, web: WebClient) -> None:
+        task_id = web.post_json("/p/alpha/api/tasks", {"title": "t"}).json["data"]["id"]
+        op_id = "op_01J9Z0000000000000000000BB"
+        for _ in range(2):
+            response = web.post_json(
+                f"/p/alpha/api/tasks/{task_id}/comment",
+                {"body": "just once"},
+                **{"Lattice-Op-Id": op_id},
+            )
+            assert response.status == 200, response.text
+        comments = web.get(f"/p/alpha/api/tasks/{task_id}/comments").json["data"]
+        assert [c["body"] for c in comments] == ["just once"]
+
+    def test_a_reused_op_id_with_other_arguments_is_refused(self, web: WebClient) -> None:
+        op_id = "op_01J9Z0000000000000000000CC"
+        web.post_json("/p/alpha/api/tasks", {"title": "a"}, **{"Lattice-Op-Id": op_id})
+        other = web.post_json("/p/alpha/api/tasks", {"title": "b"}, **{"Lattice-Op-Id": op_id})
+        assert other.status == 409
+        assert other.json["error"]["details"]["reason"] == "OP_ID_REUSED"
+
+    def test_a_malformed_op_id_is_refused(self, root, web: WebClient) -> None:
+        before = board_hash(root, "alpha")
+        bad = web.post_json("/p/alpha/api/tasks", {"title": "a"}, **{"Lattice-Op-Id": "op_../x"})
+        assert bad.status == 400
+        assert board_hash(root, "alpha") == before
+
+    def test_without_an_op_id_each_post_applies(self, web: WebClient) -> None:
+        for _ in range(2):
+            assert web.post_json("/p/alpha/api/tasks", {"title": "twice"}).status == 201
+        assert len(web.get("/p/alpha/api/tasks").json["data"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# Amendment 5: one header policy, on every status
+# ---------------------------------------------------------------------------
+
+
+class TestHeaderPolicy:
+    def test_every_status_carries_the_policy(self, server, root, web, monkeypatch) -> None:
+        anon = WebClient(server)
+        responses = {
+            "200 api": web.get("/p/alpha/api/tasks"),
+            "308 bare slug": web.get("/p/alpha"),
+            "303 page": anon.get("/p/alpha/"),
+            "401 api": anon.get("/p/alpha/api/tasks"),
+            "403 api": web.get("/p/beta/api/tasks"),
+            "404 api": web.get("/p/alpha/api/nope"),
+        }
+
+        def boom(*_a, **_k):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(api, "route_get", boom)
+        responses["500 api"] = web.get("/p/alpha/api/stats?fresh=1")
+        assert responses["500 api"].status == 500
+        for where, response in responses.items():
+            assert str(response.status) == where.split()[0], where
+            _assert_headers(response, where)
+            if "api" in where:
+                assert response.headers.get("cache-control") == "no-store", where
+
+    def test_v1_keeps_its_own_headers(self, server, root) -> None:
+        status, headers, _ = server.request("GET", "/v1/info", token=mint(root))
+        assert status == 200
+        assert headers["cache-control"] == "no-store"
+        assert "content-security-policy" not in headers
+
+
+# ---------------------------------------------------------------------------
+# The session cookie never reaches /v1, except the stream
+# ---------------------------------------------------------------------------
+
+
+class TestCookieBoundary:
+    def test_full_v1_matrix(self, server, root, web: WebClient) -> None:
+        task = create_task(server, mint(root))
+        for path in (
+            "/v1/projects/alpha/ops/op_01J9Z0000000000000000000DD",
+            f"/v1/projects/alpha/tasks/{task['id']}",
+            "/v1/projects/alpha/tasks",
+            "/v1/nope",
+            "/v1/projects/alpha/stream/nope",
+        ):
+            assert web.get(path).status == 401, path
+
+    def test_session_stream_boundary(self, server, root, web: WebClient) -> None:
+        from lattice.server.testing import open_stream
+
+        cookie = {"Cookie": f"lattice_session={web.session}"}
+        ok = open_stream(server.url, "alpha", None, headers=cookie)
+        assert ok.status == 200
+        ok.close()
+        same = open_stream(server.url, "alpha", None, headers={**cookie, "Origin": server.url})
+        assert same.status == 200
+        same.close()
+        foreign = open_stream(
+            server.url, "alpha", None, headers={**cookie, "Origin": "http://evil.example"}
+        )
+        assert foreign.status == 403
+        foreign.close()
+        other = open_stream(server.url, "beta", None, headers=cookie)
+        assert other.status == 403
+        other.close()
+        # A present Authorization header decides alone, even when invalid.
+        bad = open_stream(server.url, "alpha", "lat_nope", headers=cookie)
+        assert bad.status == 401
+        bad.close()

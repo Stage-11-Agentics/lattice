@@ -106,7 +106,7 @@ def test_logout_ends_the_session_and_its_stream(root: Path) -> None:
         assert web.logout(origin="http://evil.example").status == 403
         assert web.get("/p/alpha/api/tasks").status == 200
         response = web.logout()
-        assert response.status == 303
+        assert response.status == 200, response.text
         assert web.session is None
         web.cookies["lattice_session"] = cookie  # a copy kept after logout
         assert web.get("/p/alpha/api/tasks").status == 401

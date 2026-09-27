@@ -174,5 +174,5 @@ def test_index_requires_a_session(server: ServerHandle, root: Path) -> None:
     response = WebClient(server).get("/")
     assert response.status == 303 and response.headers["location"] == "/login"
     # A bearer token is not a browser session.
-    status, _, _ = server.request("GET", "/", token=mint(root))
-    assert status in (303, 401)
+    bearer = WebClient(server).get("/", Authorization=f"Bearer {mint(root)}")
+    assert bearer.status == 303 and bearer.headers["location"] == "/login"

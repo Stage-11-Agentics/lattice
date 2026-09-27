@@ -107,10 +107,6 @@ class WebClient:
             "POST", "/login", body=urllib.parse.urlencode(form).encode(), headers=headers
         )
 
-    def logout(self, *, origin: str | None = "same") -> WebResponse:
-        headers = {"Content-Type": "application/x-www-form-urlencoded"}
-        if origin == "same":
-            headers["Origin"] = self.origin
-        elif origin is not None:
-            headers["Origin"] = origin
-        return self.request("POST", "/logout", body=b"", headers=headers)
+    def logout(self, *, origin: str | None = "same", **headers: str) -> WebResponse:
+        """``POST /logout`` with ``{}``, as ``/web/logout.js`` sends it."""
+        return self.post_json("/logout", {}, origin=origin, **headers)
