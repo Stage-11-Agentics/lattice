@@ -942,3 +942,187 @@ Additionally, `lattice advance N` processed multiple tasks in a single context w
   Doctor reports each, and compares `next_seqs` with the log maximum; when that
   fires, the older map-based counter warning for the same prefix is not
   repeated. `rebuild --all` still fails closed, naming every problem.
+
+---
+
+## 2026-09-27: Lattice v2 is built on its own release branch (LAT-283)
+
+- **Decision:** Lattice v2 (hosted mode and the operation refactor under it)
+  is built on a `v2` branch. Every ticket's PR targets `v2`; `main` stays
+  releasable and is merged into `v2` whenever it moves. `v2` reaches `main`,
+  then `prod`, then PyPI, each only with the operator's named approval, after
+  the release gate in `docs/hosted/EVALUATION.md` §5 (full suite, parity,
+  torture, the W/B/T scenarios, and about a week's trial on real boards).
+- **Why:** v2 changes the write path of a publicly used tool. Local behavior
+  must not change (the golden parity corpus guards it), and nobody should run
+  it before it has been tested heavily.
+- **Consequence:** trial clients install from the `v2` branch, never from
+  PyPI. Rollback during the trial is code-only: a board v2 has written is not
+  guaranteed to read correctly under v1 (for example, erased tasks reappear).
+
+---
+
+## 2026-09-27: The operation is the write seam (LAT-297)
+
+- **Decision:** Every board write is a named, typed, transport-free
+  **operation** (`@operation("task.status")` in `src/lattice/ops/`), run by
+  whichever process owns the board: the CLI process on a local board, the
+  server on a hosted one. An operation's `Params` are exactly its CLI
+  command's arguments and options (file paths become content); `Caller`
+  carries the actor, origin, attestations, and expectation; the result is an
+  `OpResult` whose `value` is the command's `--json` data. Rules raise
+  `OpError` with today's codes and messages, never `SystemExit`, and
+  `lattice.ops` imports nothing from `lattice.cli`. CLI commands, MCP tools,
+  and dashboard POSTs are thin wrappers over the same operations.
+- **Why:** the decision inside `mutate_task` is a Python callback; it cannot
+  cross a network, so the board's owner must run it. The rules also existed
+  three times (CLI, MCP, dashboard) and had drifted: MCP and dashboard status
+  changes skipped the plan gate and the review-cycle limit. Rejected: a
+  storage-level `write_task(events, snapshot)` seam (the Feb 2026 remote
+  design), which would ship precomputed events and leave the rules on the
+  client.
+- **Consequence:** one set of rules everywhere, a declared local change (G-6)
+  for MCP and dashboard users. Operations are auto-discovered, and packages
+  can add more through the `lattice.operations` entry-point group; a hosted
+  board runs a plugin operation only when the plugin is installed on the
+  server. New event families need no server code. See
+  `docs/architecture/operations.md`.
+
+---
+
+## 2026-09-27: Every event records its origin (LAT-297, LAT-305)
+
+- **Decision:** every event v2 appends carries a top-level `origin`: the
+  operation and its client-generated `op_id`, `reported` (host, OS user,
+  worktree, branch, Lattice version; derived per operation from its starting
+  directory), and, on a server only, `authenticated` (token ID, user,
+  machine), stamped from the token and never accepted from a client.
+  `schema_version` stays 1: the field is additive, and replay ignores unknown
+  top-level keys.
+- **Why:** the operator ruled machine, worktree, and user first-class on
+  every event. A token is issued to one person for one machine, so user and
+  machine can be authenticated; worktree and branch can only be reported.
+- **Consequence:** local boards record `reported` too (the parity corpus
+  normalizes it). `lattice show` prints `actor · user@machine · worktree
+  (branch)` per event, and `list --machine/--user/--worktree` filter on it.
+
+---
+
+## 2026-09-27: Hosted boards leave git; local boards keep their policy (LAT-310)
+
+- **Decision:** a checkout bound to a server keeps its board out of git.
+  `lattice remote attach` adds `/.lattice/` to `.gitignore` and to the clone's
+  `info/exclude`; the committed binding (`.lattice-remote.json`) names only an
+  alias and a project, never a host or a secret. The cache in `.lattice/` is
+  read-only (files 0400, durable directories 0500), private to its user, and
+  written only by the syncer; plans and notes are written through
+  `lattice plan write` / `notes write`, and a local edit that slips through is
+  moved to `cache/rescued/`, never discarded. Local boards keep their layout,
+  their tracked-board policy, and their `.gitignore` scaffolding.
+- **Why:** git cannot carry the one-writer guarantee across machines: it
+  merges append-only logs line by line and let two machines issue the same
+  short ID. A read-only mirror also cannot carry direct file edits back to the
+  server. For one machine with several worktrees, the guide's first section
+  untracks the board without any server, because linked worktrees already
+  share the primary's `.lattice/`.
+- **Consequence:** `lattice remote status` lists branches that still track
+  board files, and the guide's move steps untrack them. `rm -rf` fails on a
+  cache; `lattice cache clear` is the fix.
+
+---
+
+## 2026-09-27: One writer per board, and every server write is a transaction (LAT-304, LAT-306)
+
+- **Decision:** board ownership is structural. A server holds an owner lease
+  (`hosted/owner.json` plus an exclusive `flock`) on each board it serves, and
+  a cache carries a marker (`cache/state.json`). The storage write primitives
+  refuse a durable write to a server-owned board from anything but its server
+  (`BOARD_IS_HOSTED`) and to a cache from anything but the syncer
+  (`BOARD_IS_CACHE`), and refuse any path outside the board
+  (`BoardPathError`). On the server, each operation is a transaction: an undo
+  log fsynced before every change, a receipt holding the full result, and one
+  journal line as the only commit point. Any failure, in process or by crash,
+  rolls the operation back from its undo log; a retry with the same
+  `(token_id, op_id)` returns the stored result with `replayed: true`.
+- **Why:** local `mutate_task` already made one machine safe, but a crash
+  between events and snapshot was repaired by `rebuild`, which is not
+  available to a remote client. One mechanism covers every operation family.
+- **Consequence:** local mode keeps today's write ordering and crash
+  behavior exactly. A write whose answer was lost is `OUTCOME_UNKNOWN`, and
+  `lattice remote op-status` settles it. See `docs/architecture/hosted.md`.
+
+---
+
+## 2026-09-27: Tokens are issued to a person for a machine (LAT-305)
+
+- **Decision:** a token names one person (`user`, a `human:` actor) and one
+  machine or seat (`machine`, a label), and lists `fnmatch` actor patterns and
+  projects. A person token defaults to `[<user>, "agent:*"]`; a seat token is
+  minted with exactly one actor, which is then its default actor. Every token
+  may also act as `agent:lattice-auto-review`. Secrets are stored hashed and
+  never logged. Admin is shell access to the server host (`lattice server
+  token ...`); there are no accounts, passwords, or roles.
+- **Why:** unforgeable attribution of who and where, without a token per
+  agent session. The operator widened the first strict default to the person
+  plus their agents.
+- **Consequence:** the machine label names where a token was issued, not
+  where a copy runs, and revoking a token cannot retract board copies its
+  caches hold; the guide's trust section says both. Completion attestations
+  are recorded as the token's claims, not facts the server checked.
+
+---
+
+## 2026-09-27: Erasing a task is a reversible tombstone; hosted boards never delete (LAT-303)
+
+- **Decision:** `lattice erase <task> --reason` appends `task_tombstoned`, and
+  the snapshot gains `tombstoned`, `tombstoned_at`, `tombstone_reason`.
+  Nothing leaves the disk. Erased tasks drop out of `list`, `next`, stats, and
+  the dashboard (`list --include-tombstoned` shows them); `show` prints
+  `ERASED: <reason>`, and any other write is `TASK_ERASED`.
+  `lattice unerase <task> --reason` appends `task_untombstoned` and returns
+  the task in its prior status. On a hosted board, durable data is removed
+  only by archive and session relocation (copy first) and by rolling back an
+  uncommitted operation; `doctor --fix` is `LOCAL_ONLY`.
+- **Why:** a shared board is an audit record. The event log is the truth, so
+  "delete" must be an event, and any erase must be undoable with one command.
+- **Consequence:** v1 skips `task_tombstoned`, so erased tasks reappear under
+  v1; this is one reason v2-written boards need v2. Doctor reports any task
+  whose log file is missing (`missing_task_file`).
+
+---
+
+## 2026-09-27: A board moves by a doctor-gated import and guide steps (LAT-316)
+
+- **Decision:** `lattice server project import <slug> --from DIR` is the only
+  migration tool. It refuses an existing slug, a board that fails strict
+  doctor, and a symlink or special file under a durable path; lists the
+  unmanaged paths it leaves behind and the non-canonical plan and notes files
+  it copies; copies every durable file (`config.json` and `templates/`
+  included, never changed); repairs short IDs from the logs; and starts a new
+  epoch and audit history. The rest of the move, both directions, is a short
+  procedure in `docs/hosted/guide.md` that a person or an agent follows. The
+  old board is moved aside, never deleted.
+- **Why:** operator ruling at the contract read: moving a board is not worth
+  migrate-and-verify machinery when an agent can follow five steps.
+- **Consequence:** the docs-agent test (AC-44) proves the steps by having a
+  fresh agent follow them, including the move back.
+
+---
+
+## 2026-09-27: Client-local effects stay on the client (LAT-310)
+
+- **Decision:** hooks, c11 side effects, and auto-review spawning run on the
+  client that made the write, after it succeeds, never on the server. A hosted
+  board's hooks run on a client only if its remote sets
+  `run_board_hooks: true`. Auto-review fires from the project's synced
+  `config.json`, on the machine that made the transition; a machine may
+  decline with `run_auto_reviews: false`. The server runs no hooks, spawns no
+  agents, and never calls c11.
+- **Why:** a hosted board's hook commands are chosen by whoever administers
+  the server, so running them is an opt-in; the review agent needs the
+  caller's worktree. Keeping the server free of executables keeps it small and
+  independent of c11 (operator ruling).
+- **Consequence:** a thin client must stay alive until its review lands,
+  dashboard moves start no review, and `review-status` reads other machines'
+  reviews from the board. Each hosted project keeps its own review workflow,
+  set by the admin with `lattice server project config`.
