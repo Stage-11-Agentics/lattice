@@ -58,7 +58,7 @@ def bound_repo(env: HostedEnv, tmp_path: Path) -> tuple[Path, str]:
     repo = env.bind(make_repo(tmp_path / "repo"))
     created = run_cli(repo, "create", "Drag me", "--actor", "human:alice", "--json")
     assert created.exit_code == 0, created.output
-    return repo, json.loads(created.output)["data"]["id"]
+    return repo, json.loads(created.stdout)["data"]["id"]
 
 
 def use_token(env: HostedEnv, actors: tuple[str, ...]) -> str:

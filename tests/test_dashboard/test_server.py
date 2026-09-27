@@ -759,7 +759,7 @@ class TestBindError:
                 env=env,
             )
             assert result.exit_code != 0
-            parsed = json.loads(result.output)
+            parsed = json.loads(result.stdout)
             assert parsed["ok"] is False
             assert parsed["error"]["code"] == "PORT_IN_USE"
         finally:
