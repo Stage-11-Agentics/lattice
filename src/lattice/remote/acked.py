@@ -21,7 +21,11 @@ dropped.
 ``cache/`` is cache control (SPEC §6.1), written only by the syncer, the
 follower, and the hosted client. Appends and verify's rewrite take the
 exclusive flock ``cache/acked.lock``, so a write finishing during a verify is
-never lost.
+never lost. A write can land before the checkout's first sync (a fresh clone
+whose first command writes without reading), so taking the lock first creates
+``.lattice/`` and ``cache/`` with the cache's private mode (SPEC §9.4). Neither
+is a cache marker nor synced, so the next catch-up still bootstraps the cache
+with a reset.
 """
 
 from __future__ import annotations
@@ -38,6 +42,8 @@ from typing import Any
 ACKED_FILE = "acked.jsonl"
 LOCK_FILE = "acked.lock"
 RETENTION_DAYS = 90
+#: ``.lattice/`` and ``cache/`` are owner-only and writable (SPEC §9.4).
+PRIVATE_DIR_MODE = 0o700
 
 
 def _now() -> datetime:
@@ -58,10 +64,22 @@ def _parse(stamp: Any) -> datetime | None:
         return None
 
 
+def _ensure_cache_dir(cache_dir: Path) -> None:
+    """Create the cache's ``.lattice/`` and ``cache/`` where missing, 0700
+    whatever the umask; existing directories are left alone."""
+    for directory in (cache_dir.parent, cache_dir):
+        try:
+            os.mkdir(directory, PRIVATE_DIR_MODE)
+        except FileExistsError:
+            continue
+        os.chmod(directory, PRIVATE_DIR_MODE)
+
+
 @contextlib.contextmanager
 def _locked(cache_dir: Path) -> Iterator[None]:
     import fcntl
 
+    _ensure_cache_dir(cache_dir)
     fd = os.open(cache_dir / LOCK_FILE, os.O_RDWR | os.O_CREAT, 0o600)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
@@ -80,12 +98,6 @@ def record(cache_dir: Path, *, op_id: str, project: str, epoch: str | None, seq:
         "at": _stamp(_now()),
     }
     data = (json.dumps(line, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
-    # A write can be a fresh checkout's first command, before any sync has made
-    # the cache: create the cache-control directory (and .lattice/) owner-only.
-    for directory in (cache_dir.parent, cache_dir):
-        if not directory.is_dir():
-            directory.mkdir(exist_ok=True)
-            os.chmod(directory, 0o700)
     with _locked(cache_dir):
         fd = os.open(cache_dir / ACKED_FILE, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o600)
         try:

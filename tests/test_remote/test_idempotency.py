@@ -501,3 +501,79 @@ def test_verify_asks_op_status_once_per_ledger_line(tmp_path: Path) -> None:
     report = acked.verify(cache, status)
     assert asked == [op, op, "op_01J9Z0000000000000000000FF"]
     assert report.checked == report.confirmed == 3
+
+
+# ---------------------------------------------------------------------------
+# The first write from a checkout that has never synced (LAT-335)
+# ---------------------------------------------------------------------------
+
+
+def _assert_bootstrapped_and_clean(repo: Path) -> None:
+    lattice_dir = repo / ".lattice"
+    state = json.loads((lattice_dir / "cache" / "state.json").read_text())
+    assert state["epoch"] and not (lattice_dir / "cache" / "applying").exists()
+    for directory in (lattice_dir, lattice_dir / "cache"):
+        assert directory.stat().st_mode & 0o777 == 0o700
+    doctor = run_cli(repo, "doctor", "--json")
+    assert doctor.exit_code == 0, doctor.output
+    findings = json.loads(doctor.stdout)["data"]["findings"]
+    assert [f for f in findings if f["check"].startswith("cache_")] == []
+
+
+def test_the_first_write_from_an_unsynced_checkout_is_recorded(
+    hosted_env: HostedEnv, tmp_path: Path
+) -> None:
+    """A fresh clone's first command is a write (no read catches the cache up
+    first): the ledger creates the cache directory, so the ack is recorded
+    before the post-write sync bootstraps the cache."""
+    repo = hosted_env.bind(make_repo(tmp_path / "fresh"))
+    assert not (repo / ".lattice").exists()
+    result = run_cli(repo, "create", "First", "--actor", "agent:dev")
+    assert result.exit_code == 0, result.output
+    assert result.stderr == ""
+    lines = acked.read(repo / ".lattice" / "cache")
+    assert [x["op_id"] for x in lines] == [journal(hosted_env)[-1]["op_id"]]
+    assert lines[0]["epoch"] is None  # acknowledged before any sync
+    _assert_bootstrapped_and_clean(repo)
+    data = json.loads(run_cli(repo, "remote", "verify", "--json").stdout)["data"]
+    assert data == {"checked": 1, "confirmed": 1, "dropped": 0, "missing": []}
+
+
+def test_a_ledger_only_cache_is_still_bootstrapped_by_the_next_command(
+    hosted_env: HostedEnv, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A client that dies in the post-write sync of its first write leaves a
+    ``.lattice/`` holding only the ledger: not a cache marker, not board data.
+    The next command bootstraps the cache with a reset, as for a fresh clone."""
+    from lattice.remote import session
+
+    class Died(BaseException):
+        pass
+
+    def die(*_args: Any, **_kwargs: Any) -> bool:
+        raise Died("killed during the post-write sync")
+
+    repo = hosted_env.bind(make_repo(tmp_path / "fresh"))
+    with monkeypatch.context() as m:
+        m.setattr(session, "catch_up_and_report", die)
+        with pytest.raises(Died):
+            run_cli(repo, "create", "Dies syncing", "--actor", "agent:dev")
+    lattice_dir = repo / ".lattice"
+    left = sorted(p.relative_to(lattice_dir).as_posix() for p in lattice_dir.rglob("*"))
+    assert left == ["cache", "cache/acked.jsonl", "cache/acked.lock"]
+    session.reset_process_state()
+    listed = run_cli(repo, "list", "--json")
+    assert listed.exit_code == 0, listed.output
+    assert [t["title"] for t in json.loads(listed.stdout)["data"]] == ["Dies syncing"]
+    _assert_bootstrapped_and_clean(repo)
+    data = json.loads(run_cli(repo, "remote", "verify", "--json").stdout)["data"]
+    assert data == {"checked": 1, "confirmed": 1, "dropped": 0, "missing": []}
+
+
+def test_the_ledger_creates_missing_directories_private(tmp_path: Path) -> None:
+    cache = tmp_path / "checkout" / ".lattice" / "cache"
+    (tmp_path / "checkout").mkdir()
+    acked.record(cache, op_id="op_01J9Z0000000000000000000GG", project="p", epoch=None, seq=1)
+    assert [x["op_id"] for x in acked.read(cache)] == ["op_01J9Z0000000000000000000GG"]
+    for directory in (cache.parent, cache):
+        assert directory.stat().st_mode & 0o777 == 0o700
