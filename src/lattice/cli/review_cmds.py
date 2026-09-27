@@ -28,6 +28,7 @@ from lattice.core.review import (
     DEFAULT_MAX_DIFF_CHARS,
     DEFAULT_MAX_DIFF_LINES,
     DiffResolution,
+    adopt_review_state,
     cap_diff,
     cap_diff_chars,
     claim_review_state,
@@ -211,7 +212,11 @@ def _claim_or_refuse(
             "auto_fired": True,
             "agents": [],
         }
-        return take_over_review_state(lattice_dir, adopted)
+        adopted_claim = adopt_review_state(lattice_dir, adopted, existing)
+        if adopted_claim is not None:
+            return adopted_claim
+        # The record changed since we read it (a --force takeover landed): do not
+        # displace it; claim normally, which refuses while its holder is alive.
 
     claimed, holder = claim_review_state(
         lattice_dir,

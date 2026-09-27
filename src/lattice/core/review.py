@@ -228,6 +228,20 @@ def take_over_review_state(lattice_dir: Path, state: dict) -> str:
     return claim
 
 
+def adopt_review_state(lattice_dir: Path, state: dict, observed: dict) -> str | None:
+    """Take the slot over from *observed* (the auto-fired child adopting its
+    parent's claim), as a compare-and-swap under the per-task lock: only if the
+    record is still exactly what the child read. Returns the new claim's token, or
+    ``None`` when the record changed in between (a hosted ``--force`` took the
+    slot), so the child follows the normal claim path instead of displacing it."""
+    claim = new_claim_token()
+    with _state_lock(lattice_dir, state["task_id"]):
+        if read_review_state(lattice_dir, state["task_id"]) != observed:
+            return None
+        write_review_state(lattice_dir, {**state, "claim": claim})
+    return claim
+
+
 def clear_owned_review_state(lattice_dir: Path, task_id: str, claim: str | None) -> bool:
     """Remove the record only while it is still this claim's (see
     :func:`write_owned_review_state`). Returns whether it removed it."""
@@ -281,12 +295,11 @@ def claim_review_state(
     Returns ``(True, written_state)`` on success or ``(False, existing_state)``
     on contention.
 
-    Note: this is *not* a true compare-and-swap. ``write_review_state`` does
-    an atomic temp-file replace, but the read-decide-write window is not
-    locked. Two callers passing the read check within microseconds will both
-    write — last writer wins. The realistic race is handled in §5 of the
-    LAT-211 plan (see module-level docstring); the residual race spawns
-    duplicate work but never corrupts state.
+    The read-decide-write runs under the task's review-state lock, the same lock
+    every takeover (:func:`take_over_review_state`, :func:`adopt_review_state`) and
+    every owned write or clear takes, so two claimers cannot both win: the second
+    sees the first's live record and is refused. The new record carries a fresh
+    claim token (``"claim"``).
     """
     with _state_lock(lattice_dir, task_id):
         existing = read_review_state(lattice_dir, task_id)

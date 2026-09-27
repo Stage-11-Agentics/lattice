@@ -105,3 +105,86 @@ def test_the_displaced_review_leaves_the_forced_reviews_record_alone(
     assert record() == {}
     attached = [e for e in events_of(hosted_env, "DEM-1") if e["type"] == "artifact_attached"]
     assert sorted(e["actor"] for e in attached) == ["agent:forced", "agent:older"]
+
+
+def _parent_claim(lattice: Path, task: str) -> dict:
+    """The record auto-fire's parent writes, naming this process's parent."""
+    from lattice.core.review import claim_review_state
+
+    claimed, record = claim_review_state(
+        lattice,
+        task,
+        mode="single",
+        review_type="code-review",
+        started_by_pid=os.getppid(),
+        auto_fired=True,
+    )
+    assert claimed and record is not None
+    return record
+
+
+def test_the_auto_fired_child_adopts_its_parents_claim(tmp_path: Path) -> None:
+    from lattice.cli.review_cmds import _claim_or_refuse
+
+    lattice = tmp_path / ".lattice"
+    lattice.mkdir()
+    parent = _parent_claim(lattice, "task_1")
+    claim = _claim_or_refuse(
+        lattice,
+        "task_1",
+        mode="single",
+        review_type="code-review",
+        triggered_by="ev_trigger",
+        is_json=True,
+    )
+    held = read_review_state(lattice, "task_1")
+    assert held is not None
+    assert (held["started_by_pid"], held["claim"]) == (os.getpid(), claim)
+    assert claim != parent["claim"]
+
+
+def test_adoption_never_displaces_a_force_that_landed_after_the_childs_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Round-3 interleaving, made deterministic: the child reads its parent's
+    claim; a hosted --force takes the slot over; the child resumes. Its adoption is
+    a compare-and-swap on what it read, so it fails and the child takes the normal
+    claim path, which refuses while the forced holder is alive."""
+    from lattice.cli import review_cmds
+    from lattice.core.review import take_over_review_state
+
+    lattice = tmp_path / ".lattice"
+    lattice.mkdir()
+    _parent_claim(lattice, "task_1")
+    forced_record = {
+        "task_id": "task_1",
+        "mode": "single",
+        "review_type": "code-review",
+        "started_at": "2026-09-27T00:00:00Z",
+        "started_by_pid": 1,  # a live process: the forced reviewer
+        "auto_fired": False,
+        "agents": [],
+    }
+    forced: dict[str, str] = {}
+    real_read = review_cmds.read_review_state
+
+    def read_then_force(lattice_dir: Path, task_id: str) -> dict | None:
+        observed = real_read(lattice_dir, task_id)  # the child's read
+        forced["claim"] = take_over_review_state(lattice_dir, forced_record)  # the force lands
+        return observed
+
+    monkeypatch.setattr(review_cmds, "read_review_state", read_then_force)
+    with pytest.raises(SystemExit):
+        review_cmds._claim_or_refuse(
+            lattice,
+            "task_1",
+            mode="single",
+            review_type="code-review",
+            triggered_by="ev_trigger",
+            is_json=True,
+        )
+    error = json.loads(capsys.readouterr().out)["error"]
+    assert error["code"] == "REVIEW_IN_FLIGHT"
+    held = read_review_state(lattice, "task_1")
+    assert held is not None
+    assert (held["started_by_pid"], held["claim"]) == (1, forced["claim"])
