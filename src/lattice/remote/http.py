@@ -8,9 +8,8 @@
   ``Lattice-Protocol`` (a different value is ``PROTOCOL_MISMATCH``); a JSON
   endpoint's response must also be ``application/json`` with a parseable
   envelope. Anything else (a proxy's login page, an error page) fails with
-  ``PROXY_REJECTED``, naming the status and content type. The one exception is
-  a gateway status (502, 503, 504) without ``Lattice-Protocol``: that is a
-  proxy saying the server behind it is down, so it reads as unreachable.
+  ``PROXY_REJECTED``, naming the status and content type, whatever the status
+  (a proxy's 502 page included): it is never read as success or as unreachable.
 - **Bounded time.** A :class:`Policy` bounds the connect and the wait for the
   response to start; once the server has started answering, the body has
   60 seconds plus 2 seconds per MiB announced (``Content-Length``), with a
@@ -46,7 +45,6 @@ _MIB = 1024 * 1024
 _CHUNK = 256 * 1024
 _PROGRESS_SECONDS = 5.0
 _ERROR_BODY_LIMIT = _MIB
-_GATEWAY_STATUSES = frozenset({502, 503, 504})
 
 
 @dataclass(frozen=True)
@@ -420,8 +418,6 @@ def _check(
     content_type = headers.get("content-type")
     protocol = headers.get(HEADER_PROTOCOL.lower())
     if protocol is None:
-        if status in _GATEWAY_STATUSES:
-            raise Unreachable(f"HTTP {status} from a proxy in front of the server", sent=True)
         raise _not_lattice(remote, what, status, content_type)
     if protocol.strip() != str(PROTOCOL):
         raise OpError(

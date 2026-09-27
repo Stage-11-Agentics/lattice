@@ -27,7 +27,7 @@ def _board(tmp_path: Path) -> Path:
 def test_fingerprint_sees_durable_files_only(tmp_path: Path) -> None:
     board = _board(tmp_path)
     before = cache.fingerprint(board)
-    assert cache.durable_files(board) == ["config.json", "events/t.jsonl", "tasks/t.json"]
+    assert cache.synced_files(board) == ["config.json", "events/t.jsonl", "tasks/t.json"]
     (board / "locks" / "y.lock").write_text("")
     (board / "runner.log").write_text("changed")
     (board / "cache" / "state.json").write_text('{"x": 1}')

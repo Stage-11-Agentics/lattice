@@ -109,14 +109,29 @@ def test_an_error_envelope_becomes_a_server_error() -> None:
     assert (err.value.code, err.value.status, err.value.retry_after) == ("BOARD_BUSY", 503, 3.0)
 
 
-@pytest.mark.parametrize("status", [502, 503, 504])
-def test_a_gateway_error_page_reads_as_unreachable(status: int) -> None:
-    page = b"<html>Bad gateway</html>"
+@pytest.mark.parametrize("status", [500, 502, 503, 504])
+@pytest.mark.parametrize(
+    "content_type,body",
+    [("text/html", b"<html>Bad gateway</html>"), ("application/json", b'{"message": "down"}')],
+)
+def test_a_non_lattice_error_page_is_refused(status: int, content_type: str, body: bytes) -> None:
     with (
-        fixed_answer(status, {"Content-Type": "text/html"}, page) as proxy,
-        pytest.raises(http.Unreachable),
+        fixed_answer(status, {"Content-Type": content_type}, body) as proxy,
+        pytest.raises(OpError) as err,
     ):
         http.request(_remote(proxy.url), "GET", SYNC)
+    assert err.value.code == "PROXY_REJECTED"
+    assert f"HTTP {status}" in err.value.message
+
+
+def test_a_lattice_5xx_without_an_envelope_is_refused() -> None:
+    headers = {"Content-Type": "text/html", "Lattice-Protocol": "1"}
+    with (
+        fixed_answer(500, headers, b"<html>oops</html>") as proxy,
+        pytest.raises(OpError) as err,
+    ):
+        http.request(_remote(proxy.url), "GET", SYNC)
+    assert err.value.code == "PROXY_REJECTED"
 
 
 def test_a_refused_connection_is_unreachable_and_unsent() -> None:
@@ -144,6 +159,7 @@ def test_credentials_are_unredirected_headers() -> None:
         ("http://evil.example/v1/x", False),
         ("//evil.example/v1/x", False),
         ("https://127.0.0.1:1/v1/x", False),
+        ("http://127.0.0.1:1/v1/projects/demo/files/a?sha256=1", False),  # same origin, absolute
         ("v1/relative", False),
         ("/\\evil.example/x", False),
     ],

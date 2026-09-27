@@ -197,7 +197,7 @@ class StubServer:
                 self.board,
                 op_name,
                 params,
-                Caller(actor=actor),
+                Caller(actor=actor, origin={"op_id": f"op_{ULID()}"}),
                 run_hooks=False,
                 on_mutation=before,
             )
@@ -424,7 +424,9 @@ def running_stub(board_root: Path, **options: Any) -> Iterator[StubServer]:
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     httpd.daemon_threads = True
     stub.url = f"http://127.0.0.1:{httpd.server_address[1]}"
-    thread = threading.Thread(target=httpd.serve_forever, name="stub-sync", daemon=True)
+    thread = threading.Thread(
+        target=httpd.serve_forever, args=(0.02,), name="stub-sync", daemon=True
+    )
     thread.start()
     try:
         yield stub
