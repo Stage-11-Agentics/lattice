@@ -11,6 +11,8 @@ import http.client
 import json
 from pathlib import Path
 
+import pytest
+
 from lattice.core.ids import generate_op_id
 from lattice.server.testing import ServerHandle, running_server, wait_for
 from tests.test_server.conftest import mint
@@ -185,3 +187,45 @@ def test_op_status_finds_an_operation_from_a_retained_epoch(root: Path) -> None:
 def _journal_epoch(root: Path) -> str:
     meta = root / "projects" / SLUG / ".lattice" / "hosted" / "journal_meta.json"
     return json.loads(meta.read_text())["epoch"]
+
+
+def test_op_status_sees_a_commit_before_the_finish_step_completes(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SPEC §8.6: a complete, fsynced journal line is committed. Op status reads
+    without the work lock, so it must see the commit while finish is still running."""
+    import threading
+
+    import lattice.server.transactions as transactions
+
+    alice = mint(root)
+    bob = mint(root, user="human:bob")
+    reached, release = threading.Event(), threading.Event()
+
+    def pause(point: str, **_ctx: object) -> None:
+        if point == "finish.index" and not reached.is_set():
+            reached.set()
+            assert release.wait(10)
+
+    monkeypatch.setattr(transactions, "_fault", pause)
+    op_id = generate_op_id()
+    with running_server(root) as server:
+        answers: dict = {}
+        writer = threading.Thread(
+            target=lambda: answers.update(
+                write=server.op(SLUG, "task.create", {"title": "slow"}, token=alice, op_id=op_id)
+            )
+        )
+        writer.start()
+        try:
+            assert reached.wait(10)
+            mine = op_status(server, alice, op_id)
+            theirs = op_status(server, bob, op_id)
+        finally:
+            release.set()
+            writer.join(10)
+        assert mine[0] == 200 and mine[1]["data"]["state"] == "committed"
+        assert mine[1]["data"]["seq"] == 1
+        assert theirs[1]["data"] == {"state": "not_found"}
+        assert answers["write"][0] == 200
+        assert op_status(server, alice, op_id)[1]["data"]["result"]["task"]["title"] == "slow"

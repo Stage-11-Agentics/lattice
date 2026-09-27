@@ -147,7 +147,10 @@ class ControlFile:
     def close(self) -> None:
         if self.fd is not None:
             fd, self.fd = self.fd, None
-            os.close(fd)
+            try:
+                _fault(f"{self.point}.close")
+            finally:
+                os.close(fd)
 
 
 def append_control(path: Path, data: bytes, point: str) -> None:
@@ -314,9 +317,14 @@ class Transaction:
             handle.write(self.raw + b"\n")
             self.journal_fsync_started = True
             handle.fsync()
+            # The complete, fsynced line is the commit (SPEC §8.6): nothing after
+            # this point, not even closing the file, can make it uncommitted.
+            self.committed = True
+            # Op status reads without the work lock; it sees the commit at once,
+            # before the rest of finish runs (a dict store under the GIL).
+            self.project.op_seqs[(self.token_id, self.op_id)] = self.seq
         finally:
             handle.close()
-        self.committed = True
 
     # -- 6. finish ----------------------------------------------------------
 

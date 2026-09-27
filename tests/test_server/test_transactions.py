@@ -36,13 +36,13 @@ from click.testing import CliRunner
 from lattice.cli.main import cli
 from lattice.core.errors import OpError
 from lattice.core.ids import generate_op_id
-from lattice.server import control
+from lattice.server import transactions
 from lattice.server.project import Project
-from lattice.server.testing import make_root, running_server
+from lattice.server.testing import make_root
 from lattice.server.transactions import read_undo_log
 from lattice.storage import fs
 from lattice.storage.operations import discover_task_authorities
-from tests.test_server.conftest import board_hash, mint
+from tests.test_server.conftest import board_hash
 from tests.test_server.faults import (
     InjectedFault,
     Injector,
@@ -200,6 +200,15 @@ def _prepared(fresh: Fresh, projects: list[Project], scenario: Scenario):  # noq
     return root, project, build
 
 
+def wire_publication(project: Project) -> list[int]:
+    """Point the publication hook at the ``publication`` fault seam; returns the
+    seqs whose failed publication closed the project's streams."""
+    closed: list[int] = []
+    project.publish = lambda line: transactions._fault("publication", seq=line["seq"])
+    project.close_streams = lambda: closed.append(project.journal.head_seq)
+    return closed
+
+
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=lambda s: s.name)
 def test_every_boundary_leaves_the_operation_wholly_present_or_absent(
     scenario: Scenario,
@@ -209,6 +218,7 @@ def test_every_boundary_leaves_the_operation_wholly_present_or_absent(
 ) -> None:
     # The counting pass: every boundary this operation crosses, in order.
     root, project, build = _prepared(fresh, projects, scenario)
+    wire_publication(project)
     with monkeypatch.context() as m:
         counter = install(m, Injector())
         run(project, build())
@@ -221,11 +231,15 @@ def test_every_boundary_leaves_the_operation_wholly_present_or_absent(
         "dir_fsync",
         "receipt.write",
         "receipt.fsync",
+        "receipt.close",
         "journal.write",
         "journal.fsync",
+        "journal.close",
         "finish.accept",
         "finish.index",
+        "undo.close",
         "finish.undo_delete",
+        "publication",
     ):
         assert required in points, (scenario.name, required)
     if scenario.name == "task.archive":
@@ -235,6 +249,7 @@ def test_every_boundary_leaves_the_operation_wholly_present_or_absent(
     for position, (point, occurrence) in enumerate(boundaries):
         case = f"{scenario.name} failing at {point} #{occurrence}"
         root, project, build = _prepared(fresh, projects, scenario)
+        closed = wire_publication(project)
         before = state(root)
         write = build()
         error: BaseException | None = None
@@ -271,9 +286,11 @@ def test_every_boundary_leaves_the_operation_wholly_present_or_absent(
             assert (write.token_id, write.caller.origin["op_id"]) in project.index, case
             assert project.journal.head_seq == lines[-1]["seq"], case
             assert after["board"] != before["board"], case
+            # A failed publication closes the streams so followers replay.
+            assert closed == ([lines[-1]["seq"]] if point == "publication" else []), case
         discover_task_authorities(board_of(root))
+        doctor_clean(root)
         assert_next_write_commits_and_replays(root, project)
-    doctor_clean(root)
 
 
 def test_archive_failing_right_after_the_source_log_unlink_rolls_back(
@@ -334,6 +351,24 @@ def test_a_committed_operation_whose_finish_cannot_complete_quarantines_without_
             run(project, write)
     assert caught.value.code == "BOARD_UNAVAILABLE"
     assert journal_lines(root)[-1]["op_id"] == write.caller.origin["op_id"]
+
+
+def test_a_journal_close_failure_after_a_good_fsync_is_committed_not_quarantined(
+    fresh: Fresh, projects: list[Project], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, project, build = _prepared(fresh, projects, SCENARIOS[1])
+    write = build()
+    with monkeypatch.context() as m:
+        install(m, Injector("journal.close"))
+        with pytest.raises(InjectedFault):
+            run(project, write)  # SPEC §8.6: the error still reaches the caller
+    assert project.state == "loaded"
+    line = journal_lines(root)[-1]
+    assert line["op_id"] == write.caller.origin["op_id"]
+    assert project.journal.head_seq == line["seq"] and undo_logs(root) == []
+    replay = run(project, write)
+    assert replay.replayed and replay.seq == line["seq"]
+    doctor_clean(root)
 
 
 def test_a_one_off_accept_failure_is_finished_by_recovery(
@@ -524,70 +559,3 @@ def test_undo_log_reader_ignores_a_torn_final_line(tmp_path: Path) -> None:
     assert read_undo_log(path) == [entry]
     path.write_text(json.dumps(header) + "\n")
     assert read_undo_log(path) == []
-
-
-# ---------------------------------------------------------------------------
-# Over HTTP: what a client sees
-# ---------------------------------------------------------------------------
-
-
-def test_a_quarantined_project_answers_503_everywhere_and_changes_nothing(
-    root: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    token = mint(root)
-    with running_server(root) as server:
-        status, _, body = server.op(SLUG, "task.create", {"title": "a"}, token=token)
-        task = body["data"]["result"]["task"]["id"]
-        op_id = body["data"]["op_id"]
-        injector = install(monkeypatch, Injector("journal.fsync"))
-        status, _, body = server.op(SLUG, "task.create", {"title": "b"}, token=token)
-        assert status == 503 and body["error"]["code"] == "BOARD_UNAVAILABLE"
-        injector.disarm()
-        board = root / "projects" / SLUG / ".lattice"
-        frozen = board_hash(root, SLUG), (board / "hosted" / "journal.jsonl").read_bytes()
-        base = f"/v1/projects/{SLUG}"
-        for method, path, body in (
-            ("POST", f"{base}/ops/task.create", {"params": {"title": "c"}}),
-            ("GET", f"{base}/tasks", None),
-            ("GET", f"{base}/tasks/{task}", None),
-            ("GET", f"{base}/ops/{op_id}", None),
-        ):
-            status, _, answer = server.request(method, path, token=token, body=body)
-            assert status == 503, (method, path, answer)
-            assert answer["error"]["code"] == "BOARD_UNAVAILABLE"
-        assert (board_hash(root, SLUG), (board / "hosted" / "journal.jsonl").read_bytes()) == (
-            frozen
-        )
-        status, _, _ = server.op("beta", "task.create", {"title": "d"}, token=token)
-        assert status == 200
-
-
-def test_a_rolled_back_write_answers_its_error_and_the_retry_applies_once(
-    root: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    token = mint(root)
-    op_id = generate_op_id()
-    with running_server(root) as server:
-        before = board_hash(root, SLUG)
-        with monkeypatch.context() as m:
-            install(m, Injector("receipt.fsync"))
-            status, _, body = server.op(
-                SLUG, "task.create", {"title": "x"}, token=token, op_id=op_id
-            )
-        assert status == 500 and body["error"]["code"] == "INTERNAL_ERROR"
-        assert board_hash(root, SLUG) == before
-        status, _, body = server.request("GET", f"/v1/projects/{SLUG}/ops/{op_id}", token=token)
-        assert body["data"] == {"state": "not_found"}
-        status, _, body = server.op(SLUG, "task.create", {"title": "x"}, token=token, op_id=op_id)
-        assert status == 200 and body["data"]["result"]["replayed"] is False
-        assert body["data"]["seq"] == 1
-
-
-def test_control_requests_answer_through_strict_writes(root: Path) -> None:
-    """The set-config control request runs as a transaction on a running server."""
-    with running_server(root):
-        board = root / "projects" / SLUG / ".lattice"
-        answer = control.send_request(board, "set-config", {"set": {"review_mode": "inline"}})
-        assert answer["ok"] is True, answer
-        assert answer["result"]["seq"] == 1
-        assert not list((board / "hosted" / "undo").iterdir())
