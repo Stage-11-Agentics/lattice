@@ -83,11 +83,11 @@ def test_lane_logic_script_tag_present_and_no_inline_shadowing() -> None:
     """
     html = INDEX_HTML.read_text()
 
-    assert '<script src="/static/lane-logic.js">' in html, (
-        'index.html is missing the <script src="/static/lane-logic.js"> tag'
+    assert '<script src="static/lane-logic.js">' in html, (
+        'index.html is missing the <script src="static/lane-logic.js"> tag'
     )
     # Must load without defer (before the inline IIFE runs).
-    assert '<script src="/static/lane-logic.js" defer>' not in html, (
+    assert '<script src="static/lane-logic.js" defer>' not in html, (
         "lane-logic.js must NOT be loaded with defer — it must run before the inline IIFE"
     )
 

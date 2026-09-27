@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Lattice Dashboard</title>
-<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-<link rel="alternate icon" href="/favicon.ico">
+<link rel="icon" type="image/svg+xml" href="static/favicon.svg">
+<link rel="alternate icon" href="favicon.ico">
 <style>
 /* === Theme Variables === */
 :root,[data-theme="carbon"]{
@@ -295,7 +295,9 @@ tr:hover td{background:var(--surface-hover)}
 .event-item:last-child{border-bottom:none}
 .event-ts{color:var(--text-muted);font-family:var(--font-mono);font-size:.8rem;white-space:nowrap}
 .event-type{font-weight:600}
-.event-actor{color:var(--text-muted)}
+.event-actor{color:var(--text-muted);overflow-wrap:anywhere}
+.event-origin{color:var(--text-muted);font-family:var(--font-mono);font-size:.75rem;overflow-wrap:anywhere;margin:0.25rem 0}
+.erased-line{margin:0.5rem 0;padding:0.375rem 0.5rem;border-left:3px solid var(--danger,#c0392b);color:var(--text-secondary);font-family:var(--font-mono);font-size:.8rem}
 .back-link{display:inline-block;margin-bottom:0.75rem;font-size:.9rem}
 .archived-badge{background:var(--color-warning);color:var(--text-on-warning);padding:0.125rem 0.5rem;border-radius:var(--radius-sm);font-size:.8rem;font-weight:600}
 .rel-list,.art-list{list-style:none;padding:0}
@@ -1428,9 +1430,9 @@ select.form-control{cursor:pointer}
   <span class="nav-tab" data-view="list">List</span>
   <span class="nav-tab" data-view="activity">Activity</span>
   <span class="nav-tab" data-view="stats">Stats</span>
-  <span class="nav-tab" data-view="cube" onclick="location.hash='#/cube'">Cube</span>
-  <span class="nav-tab" data-view="cube2" onclick="location.hash='#/cube2'">DAG</span>
-  <span class="nav-tab" data-view="web" onclick="location.hash='#/web'">Web</span>
+  <span class="nav-tab" data-view="cube">Cube</span>
+  <span class="nav-tab" data-view="cube2">DAG</span>
+  <span class="nav-tab" data-view="web">Web</span>
   <span class="nav-tab nav-tab-structure" data-view="structure" style="display:none">Structure</span>
   <div class="nav-right" style="position:relative">
     <span id="stats-badges"></span>
@@ -1622,19 +1624,21 @@ select.form-control{cursor:pointer}
 <script src="https://unpkg.com/d3-force-3d@3"></script>
 <script src="https://unpkg.com/force-graph@1/dist/force-graph.min.js"></script>
 <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
-<link rel="stylesheet" href="/static/cube3d.css">
-<script src="/static/cube3d.js" defer></script>
-<link rel="stylesheet" href="/static/cube-v2.css">
-<script src="/static/cube-v2.js" defer></script>
+<link rel="stylesheet" href="static/cube3d.css">
+<script src="static/cube3d.js" defer></script>
+<link rel="stylesheet" href="static/cube-v2.css">
+<script src="static/cube-v2.js" defer></script>
 <!-- Pure lane sort/group logic (see lane-logic.js). Loaded WITHOUT defer so its
      definitions are global before the main IIFE below runs and calls into them. -->
-<script src="/static/lane-logic.js"></script>
+<script src="static/lane-logic.js"></script>
 <!-- Pure actor identity logic (see actor-logic.js). Loaded WITHOUT defer so its
      definitions are global before the main IIFE below runs and calls into them. -->
-<script src="/static/actor-logic.js"></script>
+<script src="static/actor-logic.js"></script>
 <!-- Pure panel click-outside logic (see panel-logic.js). Loaded WITHOUT defer so its
      definitions are global before the main IIFE below runs and calls into them. -->
-<script src="/static/panel-logic.js"></script>
+<script src="static/panel-logic.js"></script>
+<!-- esc, basePath, apiUrl: escaping and base-path URLs (SPEC §10), tested in tests/js/escape.test.js -->
+<script src="static/escape.js"></script>
 <script>
 (function(){
 "use strict";
@@ -2265,8 +2269,12 @@ var WEB_CHARGE = { hub: -400, task: -50 };
 var WEB_COLLISION_RADIUS = { hub: 30, task: 10 };
 
 // --- API ---
+// The page is served at "/" locally and at "/p/<slug>/" by a server, so every
+// API path resolves against the page's own base path (static/escape.js).
+var BASE_PATH = basePath(location.pathname);
+
 async function api(path, opts) {
-  var r = await fetch(path, opts);
+  var r = await fetch(apiUrl(BASE_PATH, path), opts);
   var body = await r.json();
   if (!body.ok) throw new Error(body.error ? body.error.message : "API error");
   return body.data;
@@ -2280,8 +2288,53 @@ async function apiPost(path, data) {
   });
 }
 
+// --- Delegated page actions ---
+// No event handler is ever built by concatenating a string into an inline
+// attribute (SPEC §10): an element names its action in data-action and carries
+// its arguments in data-* attributes (escaped like any other text), and this
+// one listener runs it. It listens in the capture phase so a container that
+// stops propagation cannot swallow an action inside it.
+var PAGE_ACTIONS = {
+  "reload": function() { location.reload(); },
+  "go": function(el) { location.hash = el.getAttribute("data-hash") || "#/board"; },
+  "dismiss": function(el) { if (el.parentNode) el.parentNode.remove(); },
+  "open-url": function(el) { window.open(el.getAttribute("data-url"), "_blank", "noopener"); },
+  "open-plans": function(el) { window.openPlans(el.getAttribute("data-task-id")); },
+  "open-notes": function(el) { window.openNotes(el.getAttribute("data-task-id")); },
+  "web-pane": function(el) { openWebDetailPane(el.getAttribute("data-task-id")); },
+  "web-full-detail": function(el) {
+    closeWebDetailPane();
+    location.hash = "#/task/" + el.getAttribute("data-task-id");
+  },
+  "render-stats": function() { renderStats(); },
+  "render-activity": function() { renderActivity(); }
+};
+
+document.addEventListener("click", function(e) {
+  var el = e.target && e.target.closest ? e.target.closest("[data-action]") : null;
+  if (!el) return;
+  var action = PAGE_ACTIONS[el.getAttribute("data-action")];
+  if (!action) return;
+  e.preventDefault();
+  action(el, e);
+}, true);
+
+// --- Who made an event, and from where ---
+// The origin line `lattice show --events` prints (AC-38), which the API adds
+// to every event that has an origin; else just the event's actor.
+function eventWho(ev) {
+  if (ev && ev.origin_line) return ev.origin_line;
+  return actorTooltip(ev && ev.actor);
+}
+
+// The line an erased task's detail view shows (SPEC §7), or "".
+function erasedLineHtml(task) {
+  if (!task || !task.tombstoned) return "";
+  var reason = task.tombstone_reason ? ": " + task.tombstone_reason : "";
+  return '<div class="erased-line">ERASED' + esc(reason) + '</div>';
+}
+
 // --- Open Notes / Plans in System Editor ---
-// Exposed on window because inline onclick handlers can't reach IIFE scope
 window.openNotes = async function(taskId) {
   try {
     await apiPost("/api/tasks/" + taskId + "/open-notes", {});
@@ -2390,7 +2443,7 @@ async function renderCube() {
       + '<div><div style="font-size:48px;margin-bottom:16px;opacity:0.6">\u26a0</div>'
       + '<div style="font-size:18px;font-weight:600;color:var(--text-primary);margin-bottom:8px">3D library unavailable</div>'
       + '<div style="max-width:400px;line-height:1.5">The Cube 3D view requires Three.js. Check your network connection.</div>'
-      + '<button onclick="location.reload()" style="margin-top:16px;padding:8px 24px;background:var(--accent-primary);color:#fff;border:none;border-radius:var(--radius-md);cursor:pointer">Retry</button>'
+      + '<button data-action="reload" style="margin-top:16px;padding:8px 24px;background:var(--accent-primary);color:#fff;border:none;border-radius:var(--radius-md);cursor:pointer">Retry</button>'
       + '</div></div>';
   }
 }
@@ -2420,7 +2473,7 @@ async function renderCubeV2Wrapper() {
     app.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:calc(100vh - 60px);color:var(--text-muted);text-align:center;padding:40px;">'
       + '<div><div style="font-size:18px;font-weight:600;color:var(--text-primary);margin-bottom:8px">Cube v2 unavailable</div>'
       + '<div style="max-width:400px;line-height:1.5">The Cube v2 view requires Three.js. Check your network connection.</div>'
-      + '<button onclick="location.reload()" style="margin-top:16px;padding:8px 24px;background:var(--accent-primary);color:#fff;border:none;border-radius:var(--radius-md);cursor:pointer">Retry</button>'
+      + '<button data-action="reload" style="margin-top:16px;padding:8px 24px;background:var(--accent-primary);color:#fff;border:none;border-radius:var(--radius-md);cursor:pointer">Retry</button>'
       + '</div></div>';
   }
 }
@@ -3040,7 +3093,7 @@ async function renderWeb() {
       + '<div class="web-fallback-icon">\u26a0</div>'
       + '<div class="web-fallback-title">Graph library unavailable</div>'
       + '<div class="web-fallback-msg">The Web view requires the force-graph library. Check your network connection.</div>'
-      + '<button class="web-fallback-retry" onclick="location.reload()">Retry</button>'
+      + '<button class="web-fallback-retry" data-action="reload">Retry</button>'
       + '</div>';
     return;
   }
@@ -3049,7 +3102,7 @@ async function renderWeb() {
       + '<div class="web-fallback-icon">\u26a0</div>'
       + '<div class="web-fallback-title">Layout library unavailable</div>'
       + '<div class="web-fallback-msg">The Web view requires d3-force. Check your network connection.</div>'
-      + '<button class="web-fallback-retry" onclick="location.reload()">Retry</button>'
+      + '<button class="web-fallback-retry" data-action="reload">Retry</button>'
       + '</div>';
     return;
   }
@@ -3102,7 +3155,7 @@ async function renderWeb() {
     container.insertAdjacentHTML("afterbegin",
       '<div class="web-mobile-notice">'
       + '<span>Web works best on larger screens. Pinch to zoom, drag to pan.</span>'
-      + '<button onclick="this.parentNode.remove()" style="background:none;border:none;cursor:pointer;color:inherit;font-size:16px">\u2715</button>'
+      + '<button data-action="dismiss" style="background:none;border:none;cursor:pointer;color:inherit;font-size:16px">\u2715</button>'
       + '</div>');
   }
 
@@ -3163,7 +3216,7 @@ async function renderWeb() {
       + '<div class="web-fallback-icon">\u26a0</div>'
       + '<div class="web-fallback-title">Graph rendering failed</div>'
       + '<div class="web-fallback-msg">' + esc(err.message) + '</div>'
-      + '<button class="web-fallback-retry" onclick="location.hash=\'#/web\'">Retry</button>'
+      + '<button class="web-fallback-retry" data-action="go" data-hash="#/web">Retry</button>'
       + '</div>';
     return;
   }
@@ -3344,7 +3397,7 @@ function openWebDetailPane(taskId) {
     var sid = task.short_id || task.id.substring(0, 12);
     title.innerHTML = '<span style="color:var(--accent-primary);font-family:var(--font-mono)">' + esc(sid) + '</span> ' + esc(task.title || "Untitled");
 
-    var html = '';
+    var html = erasedLineHtml(task);
 
     // Status bar
     html += '<div class="pane-status-bar">';
@@ -3386,7 +3439,7 @@ function openWebDetailPane(taskId) {
     if (task.relationships_out && task.relationships_out.length) {
       html += '<div class="pane-section"><h3>Relationships</h3>';
       task.relationships_out.forEach(function(r) {
-        html += '<div style="font-size:.85rem;margin-bottom:3px">' + esc(r.type) + ' \u2192 <a href="javascript:void(0)" onclick="openWebDetailPane(\'' + esc(r.target_task_id) + '\')" style="color:var(--accent-primary)">' + esc(r.target_task_id.substring(0, 12)) + '</a></div>';
+        html += '<div style="font-size:.85rem;margin-bottom:3px">' + esc(r.type) + ' \u2192 <a href="#" data-action="web-pane" data-task-id="' + esc(r.target_task_id) + '" style="color:var(--accent-primary)">' + esc(r.target_task_id.substring(0, 12)) + '</a></div>';
       });
       html += '</div>';
     }
@@ -3397,7 +3450,7 @@ function openWebDetailPane(taskId) {
       html += '<div class="pane-section"><h3>Comments (' + comments.length + ')</h3>';
       comments.forEach(function(ev) {
         html += '<div class="pane-comment">';
-        html += '<div class="pane-comment-meta">' + esc(ev.actor || "") + ' \u00b7 ' + esc(ev.ts || "") + '</div>';
+        html += '<div class="pane-comment-meta">' + esc(eventWho(ev)) + ' \u00b7 ' + esc(ev.ts || "") + '</div>';
         html += '<div>' + esc((ev.data && ev.data.body) || "") + evidenceLinkBadges(ev.data) + '</div>';
         html += '</div>';
       });
@@ -3412,14 +3465,14 @@ function openWebDetailPane(taskId) {
         html += '<div class="pane-event">';
         html += '<span style="color:var(--text-muted);font-size:.75rem;min-width:60px">' + esc((ev.ts || "").substring(11, 19)) + '</span>';
         html += '<span class="ev-type">' + esc(ev.type || "") + '</span>';
-        html += '<span>' + esc(ev.actor || "") + '</span>';
+        html += '<span class="event-actor">' + esc(eventWho(ev)) + '</span>';
         html += '</div>';
       });
       html += '</div>';
     }
 
     // Open full detail link
-    html += '<button class="pane-open-full" onclick="closeWebDetailPane(); location.hash=\'#/task/' + esc(taskId) + '\'">Open Full Detail View</button>';
+    html += '<button class="pane-open-full" data-action="web-full-detail" data-task-id="' + esc(taskId) + '">Open Full Detail View</button>';
 
     body.innerHTML = html;
 
@@ -3771,7 +3824,7 @@ function _renderPanelContent(taskId, task, events) {
   title.innerHTML = '<span style="color:var(--accent-primary);font-family:var(--font-mono)">' + esc(sid) + '</span> ' + esc(task.title || "Untitled");
   if (task.has_active_session) title.innerHTML += ' <span class="active-badge"><span class="active-dot"></span>Active</span>';
 
-  var html = '';
+  var html = erasedLineHtml(task);
 
   // Status / priority / type dropdowns (or read-only badges)
   if (!isArchived) {
@@ -3868,9 +3921,9 @@ function _renderPanelContent(taskId, task, events) {
   // Plan & Notes — always show Plan, show Notes only if file exists
   html += '<div class="dp-section"><h3>' + esc(t("section.plans")) + ' & ' + esc(t("section.notes")) + '</h3>';
   html += '<div style="display:flex;gap:8px;flex-wrap:wrap">';
-  html += '<button class="btn btn-primary btn-sm" onclick="openPlans(\'' + esc(task.id) + '\')">' + esc(t("btn.show_plan")) + '</button>';
+  html += '<button class="btn btn-primary btn-sm" data-action="open-plans" data-task-id="' + esc(task.id) + '">' + esc(t("btn.show_plan")) + '</button>';
   if (task.notes_exists) {
-    html += '<button class="btn btn-primary btn-sm" onclick="openNotes(\'' + esc(task.id) + '\')">' + esc(t("btn.show_notes")) + '</button>';
+    html += '<button class="btn btn-primary btn-sm" data-action="open-notes" data-task-id="' + esc(task.id) + '">' + esc(t("btn.show_notes")) + '</button>';
   }
   html += '</div></div>';
 
@@ -3886,7 +3939,7 @@ function _renderPanelContent(taskId, task, events) {
   if (comments.length) {
     comments.forEach(function(ev) {
       html += '<div class="dp-comment">';
-      html += '<div class="dp-comment-meta">' + esc(ev.actor || "") + ' \u00b7 ' + esc(ev.ts || "") + '</div>';
+      html += '<div class="dp-comment-meta">' + esc(eventWho(ev)) + ' \u00b7 ' + esc(ev.ts || "") + '</div>';
       html += '<div>' + esc((ev.data && ev.data.body) || "") + evidenceLinkBadges(ev.data) + '</div>';
       html += '</div>';
     });
@@ -3901,7 +3954,7 @@ function _renderPanelContent(taskId, task, events) {
       html += '<div class="dp-event">';
       html += '<span style="color:var(--text-muted);font-size:.75rem;min-width:55px">' + esc((ev.ts || "").substring(11, 19)) + '</span>';
       html += '<span class="ev-type">' + esc(ev.type || "") + '</span>';
-      html += '<span>' + esc(ev.actor || "") + '</span>';
+      html += '<span class="event-actor">' + esc(eventWho(ev)) + '</span>';
       html += '</div>';
     });
     html += '</div>';
@@ -4420,7 +4473,7 @@ function getLaneColor(status) {
 // --- Per-lane organization (sort + group) ---
 // The pure lane sort/group logic (constants, comparators, sortLaneItems,
 // groupLaneItems, resolveLaneSort, laneModesFor, isValidLaneMode, and the *_RANK /
-// *_TO_MODE tables) lives in /static/lane-logic.js, loaded as a classic script above
+// *_TO_MODE tables) lives in static/lane-logic.js, loaded as a classic script above
 // so those names are globals here. It is tested under node:test. Only the
 // config/DOM/net-coupled wrappers stay in this IIFE.
 
@@ -4465,7 +4518,7 @@ function renderLaneSortSelect(status) {
   var modes = laneModesFor(status);
   var html = '<select class="lane-sort" data-status="' + esc(status) + '"'
     + ' title="How cards in this lane are organized"'
-    + ' onclick="event.stopPropagation()" onmousedown="event.stopPropagation()">';
+    + '>';
   ["Sort", "Group"].forEach(function(groupName) {
     var inGroup = modes.filter(function(m) { return m.group === groupName; });
     if (!inGroup.length) return;
@@ -4830,7 +4883,7 @@ function renderBoardCard(t) {
 
   var html = '<div class="card' + (heatCls ? " " + heatCls : "") + (t.needs_human ? " needs-human" : "") + '" draggable="true" data-task-id="' + esc(t.id) + '" data-task-status="' + esc(t.status || "") + '"';
   if (t.last_status_changed_at) html += ' data-heat-ts="' + esc(t.last_status_changed_at) + '"';
-  html += ' ondragstart="window._boardDragStart(event)" ondragend="window._boardDragEnd(event)">';
+  html += '>';
 
   // Heat bar: vertical bar on left that shrinks as heat cools (gradient: solid at bottom, fading to transparent)
   if (heatEnabled && tier && tier.color && ratio > 0) {
@@ -4883,7 +4936,7 @@ function renderBoard() {
 
   var statuses = config.workflow ? config.workflow.statuses : [];
   if (tasks.length === 0) {
-    app.innerHTML = '<div class="empty"><p>' + esc(t("empty.board")) + '</p><p><button class="btn btn-primary" onclick="window.open(\'https://thelattice.works/getting-started\', \'_blank\')">' + t("empty.board.cta") + '</button></p></div>';
+    app.innerHTML = '<div class="empty"><p>' + esc(t("empty.board")) + '</p><p><button class="btn btn-primary" data-action="open-url" data-url="https://thelattice.works/getting-started">' + t("empty.board.cta") + '</button></p></div>';
     return;
   }
 
@@ -4928,7 +4981,7 @@ function renderBoard() {
     if (items.length === 0) cls += " empty-col";
     var laneColor = getLaneColor(status);
     html += '<div class="board-col ' + cls + '" data-status="' + esc(status) + '"';
-    html += ' ondragover="window._boardDragOver(event)" ondragleave="window._boardDragLeave(event)" ondrop="window._boardDrop(event)">';
+    html += '>';
     html += '<div class="board-col-header" style="background:' + esc(laneColor) + ';color:var(--text-on-lane)" title="' + esc(getStatusDescription(status)) + '">';
     html += '<span>' + esc(getStatusDisplayName(status)) + '</span>';
     html += '<span class="count">' + items.length + '</span>';
@@ -5039,11 +5092,25 @@ function renderBoard() {
 
   app.innerHTML = html;
 
-  // Per-lane organization dropdown → persist and re-render just this lane's ordering
+  // Per-lane organization dropdown → persist and re-render just this lane's
+  // ordering. Clicks on it stay inside it (the header behind it is clickable).
   app.querySelectorAll("select.lane-sort").forEach(function(sel) {
     sel.addEventListener("change", function() {
       setLaneSort(sel.getAttribute("data-status"), sel.value);
     });
+    sel.addEventListener("click", function(e) { e.stopPropagation(); });
+    sel.addEventListener("mousedown", function(e) { e.stopPropagation(); });
+  });
+
+  // Drag and drop: cards move between lanes.
+  app.querySelectorAll(".card[draggable]").forEach(function(card) {
+    card.addEventListener("dragstart", window._boardDragStart);
+    card.addEventListener("dragend", window._boardDragEnd);
+  });
+  app.querySelectorAll(".board-col").forEach(function(col) {
+    col.addEventListener("dragover", window._boardDragOver);
+    col.addEventListener("dragleave", window._boardDragLeave);
+    col.addEventListener("drop", window._boardDrop);
   });
 
   // Tag badge → set tag filter (stop propagation so the card click doesn't open detail)
@@ -5247,10 +5314,7 @@ window._boardDrop = async function(e) {
   }
 
   try {
-    await apiPost("/api/tasks/" + draggedTaskId + "/status", {
-      status: targetStatus,
-      actor: "dashboard:web"
-    });
+    await apiPost("/api/tasks/" + draggedTaskId + "/status", { status: targetStatus });
     showToast(tf("toast.moved_to", {status: targetStatus}), "success");
     // Refresh tasks and re-render
     tasks = await api("/api/tasks");
@@ -5404,6 +5468,7 @@ async function renderDetail(taskId) {
       html += '<div class="detail-title editable" id="detail-title" title="Click to edit">' + esc(task.title || "Untitled") + '</div>';
     }
     if (task.has_active_session) html += '<div style="margin-bottom:8px"><span class="active-badge"><span class="active-dot"></span>Actively being worked</span></div>';
+    html += erasedLineHtml(task);
 
     // --- Status + Action bar ---
     if (!isArchived) {
@@ -5529,7 +5594,7 @@ async function renderDetail(taskId) {
 
     // Plan — always visible, server scaffolds if file doesn't exist yet
     html += '<div class="detail-section"><h3>' + esc(t("section.plans")) + '</h3>';
-    html += '<button class="btn btn-primary btn-sm" onclick="openPlans(\'' + esc(task.id) + '\')" style="margin-top:4px">' + esc(t("btn.show_plan")) + '</button>';
+    html += '<button class="btn btn-primary btn-sm" data-action="open-plans" data-task-id="' + esc(task.id) + '" style="margin-top:4px">' + esc(t("btn.show_plan")) + '</button>';
     if (task.plan_exists) {
       html += '<p style="font-size:.75rem;color:var(--text-muted);margin-top:6px"><code>plans/' + esc(task.id) + '.md</code></p>';
     }
@@ -5538,7 +5603,7 @@ async function renderDetail(taskId) {
     // Notes
     if (task.notes_exists) {
       html += '<div class="detail-section"><h3>' + esc(t("section.notes")) + '</h3>';
-      html += '<button class="btn btn-primary btn-sm" onclick="openNotes(\'' + esc(task.id) + '\')" style="margin-top:4px">' + esc(t("btn.show_notes")) + '</button>';
+      html += '<button class="btn btn-primary btn-sm" data-action="open-notes" data-task-id="' + esc(task.id) + '" style="margin-top:4px">' + esc(t("btn.show_notes")) + '</button>';
       html += '<p style="font-size:.75rem;color:var(--text-muted);margin-top:6px"><code>notes/' + esc(task.id) + '.md</code></p>';
       html += '</div>';
     }
@@ -5556,7 +5621,7 @@ async function renderDetail(taskId) {
       html += '<div style="margin-top:8px">';
       comments.forEach(function(ev) {
         html += '<div class="comment-item">';
-        html += '<div class="comment-meta">' + esc(ev.actor || "") + ' &middot; ' + esc(ev.ts || "") + '</div>';
+        html += '<div class="comment-meta">' + esc(eventWho(ev)) + ' &middot; ' + esc(ev.ts || "") + '</div>';
         html += '<div class="comment-body">' + esc((ev.data && ev.data.body) || "") + evidenceLinkBadges(ev.data) + '</div>';
         html += '</div>';
       });
@@ -5573,7 +5638,7 @@ async function renderDetail(taskId) {
         html += '<span class="event-ts">' + esc(ev.ts || "") + '</span>';
         html += '<span class="event-type badge badge-stat">' + esc(ev.type || "") + '</span>';
         html += '<span>' + eventSummary(ev) + '</span>';
-        html += '<span class="event-actor">' + esc(ev.actor || "") + '</span>';
+        html += '<span class="event-actor">' + esc(eventWho(ev)) + '</span>';
         html += '</div>';
       });
       html += '</div>';
@@ -5589,7 +5654,7 @@ async function renderDetail(taskId) {
 
   } catch(e) {
     app.innerHTML = '<a href="#/' + esc(currentView) + '" class="back-link">' + t("btn.back") + '</a>' +
-      '<div class="error-box"><p>' + esc(e.message) + '</p><button class="btn" onclick="location.reload()">' + esc(t("btn.retry")) + '</button></div>';
+      '<div class="error-box"><p>' + esc(e.message) + '</p><button class="btn" data-action="reload">' + esc(t("btn.retry")) + '</button></div>';
   }
 }
 
@@ -6263,6 +6328,7 @@ function _renderActivityItem(ev, taskIdMap) {
   html += '<button class="btn-sm activity-nav-board" data-nav-task="' + esc(ev.task_id || '') + '"' + (onBoard ? '' : ' disabled title="Task not on board"') + '>' + esc(t("activity.view_on_board")) + '</button>';
   html += '<button class="btn-sm activity-nav-web" data-nav-task="' + esc(ev.task_id || '') + '">' + esc(t("activity.view_on_web")) + '</button>';
   html += '</div>';
+  if (ev.origin_line) html += '<div class="activity-detail-origin event-origin">' + esc(ev.origin_line) + '</div>';
   html += '<div class="activity-detail-json">' + esc(JSON.stringify(ev.data || {}, null, 2)) + '</div>';
   html += '</div>';
   html += '</div>';
@@ -6298,7 +6364,7 @@ async function renderActivity() {
 
     _renderActivityUI(app);
   } catch(e) {
-    app.innerHTML = '<div class="error-box"><p>' + esc(e.message) + '</p><button class="btn" onclick="renderActivity()">' + esc(t("btn.retry")) + '</button></div>';
+    app.innerHTML = '<div class="error-box"><p>' + esc(e.message) + '</p><button class="btn" data-action="render-activity">' + esc(t("btn.retry")) + '</button></div>';
   }
 }
 
@@ -6838,7 +6904,7 @@ async function renderStats() {
     }
 
     html += '<div style="margin-top:2rem;padding-top:1rem;border-top:1px solid var(--border);font-size:.8rem;opacity:.6">';
-    html += '<a href="/stats-demo" target="_blank" style="color:var(--accent)">Stats Demo Page</a> — 27 prototype improvements for review';
+    html += '<a href="stats-demo" target="_blank" style="color:var(--accent)">Stats Demo Page</a> — 27 prototype improvements for review';
     html += '</div>';
 
     html += '</div>';
@@ -6852,18 +6918,14 @@ async function renderStats() {
       });
     });
   } catch(e) {
-    app.innerHTML = '<div class="error-box"><p>' + esc(e.message) + '</p><button class="btn" onclick="renderStats()">' + esc(t("btn.retry")) + '</button></div>';
+    app.innerHTML = '<div class="error-box"><p>' + esc(e.message) + '</p><button class="btn" data-action="render-stats">' + esc(t("btn.retry")) + '</button></div>';
   }
 }
 
 // --- Helpers ---
-function esc(s) {
-  if (s == null) return "";
-  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
-}
 
 function showError(msg) {
-  document.getElementById("app").innerHTML = '<div class="error-box"><p>' + esc(msg) + '</p><button class="btn" onclick="location.reload()">' + esc(t("btn.retry")) + '</button></div>';
+  document.getElementById("app").innerHTML = '<div class="error-box"><p>' + esc(msg) + '</p><button class="btn" data-action="reload">' + esc(t("btn.retry")) + '</button></div>';
 }
 
 // --- Member Chips ---

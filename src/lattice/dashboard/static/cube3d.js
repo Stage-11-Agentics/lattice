@@ -874,11 +874,11 @@ function _cube3dShowCard(node) {
   el.className = 'cube3d-card';
   el.style.borderLeftColor = statusColor;
   el.innerHTML = '<div class="cube3d-card-header">'
-    + '<span class="cube3d-card-id">' + (node.short_id || node.id.substring(0, 8)) + '</span>'
+    + '<span class="cube3d-card-id">' + esc(node.short_id || node.id.substring(0, 8)) + '</span>'
     + '<span class="cube3d-card-status" style="background:' + statusColor + '">'
-    + getStatusDisplayName(node.status || '') + '</span>'
+    + esc(getStatusDisplayName(node.status || '')) + '</span>'
     + '</div>'
-    + '<div class="cube3d-card-title">' + (node.title || 'Untitled') + '</div>'
+    + '<div class="cube3d-card-title">' + esc(node.title || 'Untitled') + '</div>'
     + '<div class="cube3d-card-meta">'
     + (node.priority
       ? '<span class="cube3d-card-priority" style="background:'
@@ -889,11 +889,11 @@ function _cube3dShowCard(node) {
           ) + '"></span>'
       : '')
     + (node.assigned_to
-      ? '<span class="cube3d-card-assignee">' + node.assigned_to + '</span>'
+      ? '<span class="cube3d-card-assignee">' + esc(node.assigned_to) + '</span>'
       : '')
     + '</div>'
     + (node.description_snippet
-      ? '<div class="cube3d-card-description">' + node.description_snippet + '</div>'
+      ? '<div class="cube3d-card-description">' + esc(node.description_snippet) + '</div>'
       : '');
 
   el.addEventListener('click', function(e) {
@@ -936,36 +936,36 @@ function _cube3dRenderWorkspacePanel(node, fullData) {
 
   var html = '<div class="cube3d-workspace-header">'
     + '<span class="cube3d-workspace-id">'
-    + (node.short_id || node.id.substring(0, 12)) + '</span>'
+    + esc(node.short_id || node.id.substring(0, 12)) + '</span>'
     + '<span class="cube3d-workspace-status" style="background:' + statusColor + '">'
-    + getStatusDisplayName(node.status || '') + '</span>'
+    + esc(getStatusDisplayName(node.status || '')) + '</span>'
     + '</div>'
     + '<div class="cube3d-workspace-title">'
-    + (fullData.title || node.title || 'Untitled') + '</div>';
+    + esc(fullData.title || node.title || 'Untitled') + '</div>';
 
   // Meta fields
   html += '<div class="cube3d-workspace-meta">';
   if (fullData.priority) {
     html += '<div class="cube3d-workspace-meta-item">'
       + '<span class="cube3d-workspace-meta-label">Priority</span>'
-      + fullData.priority + '</div>';
+      + esc(fullData.priority) + '</div>';
   }
   if (fullData.assigned_to) {
     html += '<div class="cube3d-workspace-meta-item">'
       + '<span class="cube3d-workspace-meta-label">Assigned</span>'
-      + fullData.assigned_to + '</div>';
+      + esc(fullData.assigned_to) + '</div>';
   }
   if (fullData.type) {
     html += '<div class="cube3d-workspace-meta-item">'
       + '<span class="cube3d-workspace-meta-label">Type</span>'
-      + fullData.type + '</div>';
+      + esc(fullData.type) + '</div>';
   }
   html += '</div>';
 
   // Description
   if (fullData.description) {
     html += '<div class="cube3d-workspace-description">'
-      + fullData.description + '</div>';
+      + esc(fullData.description) + '</div>';
   }
 
   // Recent events
@@ -983,11 +983,14 @@ function _cube3dRenderWorkspacePanel(node, fullData) {
       }
       html += '<li class="cube3d-workspace-event">'
         + '<span class="cube3d-workspace-event-type">'
-        + typeLabel + '</span>'
+        + esc(typeLabel) + '</span>'
         + '<span class="cube3d-workspace-event-actor">'
-        + (ev.actor || '') + '</span>'
+        + esc(actorTooltip(ev.actor)) + '</span>'
         + '<span class="cube3d-workspace-event-time">'
-        + timeStr + '</span>'
+        + esc(timeStr) + '</span>'
+        + (ev.origin_line
+          ? '<span class="cube3d-workspace-event-origin event-origin">' + esc(ev.origin_line) + '</span>'
+          : '')
         + '</li>';
     });
     html += '</ul>';
@@ -1003,12 +1006,12 @@ function _cube3dRenderWorkspacePanel(node, fullData) {
       html += '<li class="cube3d-workspace-comment">'
         + '<div class="cube3d-workspace-comment-header">'
         + '<span class="cube3d-workspace-comment-actor">'
-        + (c.actor || '') + '</span>'
+        + esc(actorTooltip(c.actor)) + '</span>'
         + '<span class="cube3d-workspace-comment-time">'
-        + timeStr + '</span>'
+        + esc(timeStr) + '</span>'
         + '</div>'
         + '<div class="cube3d-workspace-comment-body">'
-        + (c.body || '') + '</div>'
+        + esc(c.body || '') + '</div>'
         + '</li>';
     });
     html += '</ul>';
@@ -1022,9 +1025,9 @@ function _cube3dRenderWorkspacePanel(node, fullData) {
     rels.forEach(function(r) {
       html += '<li class="cube3d-workspace-relation">'
         + '<span class="cube3d-workspace-relation-type">'
-        + (r.type || '').replace(/_/g, ' ') + '</span>'
+        + esc((r.type || '').replace(/_/g, ' ')) + '</span>'
         + '<span class="cube3d-workspace-relation-target">'
-        + (r.target_task_id || '').substring(0, 12) + '</span>'
+        + esc((r.target_task_id || '').substring(0, 12)) + '</span>'
         + '</li>';
     });
     html += '</ul>';
@@ -1375,7 +1378,7 @@ async function renderCube3D() {
       + '<div class="cube3d-empty-icon">\u26a0</div>'
       + '<div class="cube3d-empty-title">Three.js library unavailable</div>'
       + '<div class="cube3d-empty-msg">The 3D view requires Three.js. Check your network connection.</div>'
-      + '<button class="cube3d-empty-retry" onclick="location.reload()">Retry</button>'
+      + '<button class="cube3d-empty-retry" data-action="reload">Retry</button>'
       + '</div></div>';
     return;
   }
@@ -1431,7 +1434,7 @@ async function renderCube3D() {
     if (myGen !== _cube3d.generation) return;
     app.innerHTML = '<div id="cube3d-container"><div class="cube3d-empty">'
       + '<p>Failed to load graph data: '
-      + (typeof esc === 'function' ? esc(e.message) : e.message) + '</p>'
+      + esc(e.message) + '</p>'
       + '</div></div>';
     return;
   }

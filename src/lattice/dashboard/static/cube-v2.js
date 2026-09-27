@@ -25,7 +25,10 @@
 
 var _cv2L = (typeof window !== 'undefined' && window._lattice) || {};
 var _cv2Api = _cv2L.api || function() { return Promise.reject(new Error('api unavailable')); };
-var _cv2Esc = _cv2L.esc || function(s) { return String(s); };
+var _cv2Esc = _cv2L.esc || (typeof esc === 'function' ? esc : function(s) {
+  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+});
 var _cv2ShowToast = _cv2L.showToast || function() {};
 var _cv2GetStatusDisplayName = _cv2L.getStatusDisplayName || function(s) { return (s || '').replace(/_/g, ' '); };
 function _cv2OpenDetailPanel(id) {
@@ -1315,7 +1318,7 @@ async function renderCubeV2() {
     app.innerHTML = '<div id="cv2-container"><div class="cv2-empty">'
       + '<div class="cv2-empty-title">3D library unavailable</div>'
       + '<div class="cv2-empty-msg">DAG view requires Three.js. Check your network connection.</div>'
-      + '<button class="cv2-empty-retry" onclick="location.reload()">Retry</button>'
+      + '<button class="cv2-empty-retry" data-action="reload">Retry</button>'
       + '</div></div>';
     return;
   }
