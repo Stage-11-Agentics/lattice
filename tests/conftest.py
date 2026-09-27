@@ -259,6 +259,21 @@ def git(cwd: Path, *args: str) -> str:
 
 
 @pytest.fixture()
+def caller_git_worktree(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch):
+    """Run the test from an empty git worktree of its own.
+
+    ``code-review``, ``plan-review`` and the auto-fire path resolve the
+    caller's git worktree from the current directory. Without this the tests
+    silently use whatever checkout pytest was started from, and fail when that
+    is not a git worktree (an sdist, a copied tree, ``cd /tmp``).
+    """
+    worktree = tmp_path_factory.mktemp("caller-wt")
+    git(worktree, "init", "-q", "-b", "main")
+    monkeypatch.chdir(worktree)
+    return worktree
+
+
+@pytest.fixture()
 def worktree_repo(tmp_path: Path):
     """The worktree-per-ticket topology that makes diff resolution hard.
 

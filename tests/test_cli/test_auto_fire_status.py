@@ -12,6 +12,7 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from click.testing import CliRunner
 
 from lattice.cli import auto_review as cli_auto_review
@@ -22,6 +23,9 @@ from lattice.core.config import default_config, serialize_config
 from lattice.core.review import write_review_state
 from lattice.storage.fs import LATTICE_DIR, atomic_write, ensure_lattice_dirs
 from lattice.storage.readers import read_task_events
+
+# These commands resolve the caller's git worktree from cwd.
+pytestmark = pytest.mark.usefixtures("caller_git_worktree")
 
 
 # ---------------------------------------------------------------------------
