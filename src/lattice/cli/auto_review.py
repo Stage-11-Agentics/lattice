@@ -160,6 +160,16 @@ def auto_fire_review(
             return {"fired": False, "reason": "reviewed_worktree_not_git"}
         reviewed_worktree = normalized_worktree
 
+    # A hosted checkout whose .lattice/ or a runtime directory is a symlink or
+    # a file: never write the claim or the log through it (SPEC §9.4).
+    from lattice.core.errors import OpError
+    from lattice.remote.cache_paths import require_safe_board
+
+    try:
+        require_safe_board(lattice_dir)
+    except OpError:
+        return {"fired": False, "reason": "unsafe_cache_path"}
+
     # Synchronous parent-side claim — see LAT-211 §5.
     claimed, existing = claim_review_state(
         lattice_dir,

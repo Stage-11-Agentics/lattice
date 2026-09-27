@@ -55,10 +55,10 @@ from typing import Any
 
 from lattice.core.errors import OpError
 from lattice.remote.cache import SyncOutcome
-from lattice.remote import cache, config
+from lattice.remote import cache, cache_paths, config
 from lattice.remote.http import Remote
 from lattice.remote.stream import StreamConnection, get_info, open_stream
-from lattice.storage.fs import LATTICE_DIR, atomic_write, ensure_dir
+from lattice.storage.fs import LATTICE_DIR
 
 #: ``catch_up(hosted_root, *, bulk=False) -> SyncOutcome`` (H-10b's signature).
 CatchUp = Callable[..., SyncOutcome]
@@ -562,10 +562,18 @@ class Follower:
         self._live_until = until
         record = {"pid": os.getpid(), "stream_live_until": _iso(until) if until else None}
         path = follower_path(self.hosted_root)
+        data = (json.dumps(record, sort_keys=True, indent=2) + "\n").encode("utf-8")
         try:
-            if not path.parent.is_dir() and path.parent.parent.is_dir():
-                ensure_dir(path.parent)
-            atomic_write(path, json.dumps(record, sort_keys=True, indent=2) + "\n")
+            # Through real directories only, never a symlink (cache_paths).
+            lattice_fd = cache_paths.open_dir(self.hosted_root, LATTICE_DIR, create=False)
+            try:
+                cache_fd = cache_paths.open_child(lattice_fd, "cache", path.parent)
+            finally:
+                os.close(lattice_fd)
+            try:
+                cache_paths.write_file(cache_fd, FOLLOWER_JSON, data)
+            finally:
+                os.close(cache_fd)
         except OSError as exc:
             self._notice(f"lattice: cannot write {path}: {exc}")
 

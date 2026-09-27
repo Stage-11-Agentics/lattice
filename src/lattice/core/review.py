@@ -69,6 +69,15 @@ FAILURES_FILE = "failures.jsonl"
 # ---------------------------------------------------------------------------
 
 
+def _require_safe_board(lattice_dir: Path) -> None:
+    """On a hosted checkout, refuse a ``.lattice``, ``cache/``, or runtime
+    directory that is a symlink or a file before writing under it (SPEC §9.4,
+    ``lattice.remote.cache_paths``); a local board is left as it is."""
+    from lattice.remote.cache_paths import require_safe_board
+
+    require_safe_board(lattice_dir)
+
+
 def _make_prompt_dir(lattice_dir: Path, prefix: str) -> Path:
     """Create a unique prompt directory inside ``.lattice/tmp-prompts/``.
 
@@ -76,6 +85,7 @@ def _make_prompt_dir(lattice_dir: Path, prefix: str) -> Path:
     sub-agents can read/write the files regardless of sandbox restrictions.
     The caller is responsible for cleanup (see ``cleanup_prompt_dirs``).
     """
+    _require_safe_board(lattice_dir)
     base = lattice_dir / TMP_PROMPTS_DIR
     base.mkdir(exist_ok=True)
     return Path(tempfile.mkdtemp(prefix=prefix, dir=base))
@@ -88,6 +98,7 @@ def cleanup_prompt_dirs(lattice_dir: Path) -> int:
     """
     import shutil
 
+    _require_safe_board(lattice_dir)
     base = lattice_dir / TMP_PROMPTS_DIR
     if not base.exists():
         return 0
@@ -155,6 +166,7 @@ def _state_path(lattice_dir: Path, task_id: str) -> Path:
 
 def write_review_state(lattice_dir: Path, state: dict) -> None:
     """Persist in-flight review state atomically."""
+    _require_safe_board(lattice_dir)
     state_dir = lattice_dir / REVIEW_STATE_DIR
     state_dir.mkdir(exist_ok=True)
     path = _state_path(lattice_dir, state["task_id"])
@@ -176,6 +188,7 @@ def read_review_state(lattice_dir: Path, task_id: str) -> dict | None:
 
 def clear_review_state(lattice_dir: Path, task_id: str) -> None:
     """Remove in-flight review state after completion."""
+    _require_safe_board(lattice_dir)
     path = _state_path(lattice_dir, task_id)
     path.unlink(missing_ok=True)
 
@@ -189,6 +202,7 @@ def new_claim_token() -> str:
 def _state_lock(lattice_dir: Path, task_id: str) -> Iterator[None]:
     from lattice.storage.locks import lattice_lock
 
+    _require_safe_board(lattice_dir)
     locks_dir = lattice_dir / "locks"
     locks_dir.mkdir(exist_ok=True)
     with lattice_lock(locks_dir, f"review_state_{task_id}"):
@@ -350,6 +364,7 @@ def record_agent_failure(
     stays compact. ``agent``/``task_id``/``timestamp`` are always present and
     win over any same-named detail key.
     """
+    _require_safe_board(lattice_dir)
     state_dir = lattice_dir / REVIEW_STATE_DIR
     state_dir.mkdir(exist_ok=True)
     path = _failures_path(lattice_dir)

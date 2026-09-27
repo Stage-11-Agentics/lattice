@@ -211,7 +211,19 @@ def spawn_one_in_current_workspace(
        --dangerously-skip-permissions "Read /path/to/prompt.md and follow the
        instructions."``) followed by ``c11 send-key enter`` to submit it.
     6. Return ``(True, surface_ref)``.
+
+    Before any of it: when *cwd* is a hosted checkout whose ``.lattice``,
+    ``cache/``, or a runtime directory is a symlink or a file, the prompt is
+    never written through it (SPEC §9.4): ``(False, <why>)``, no pane created.
     """
+    from lattice.core.errors import OpError
+    from lattice.remote.cache_paths import require_safe_board
+
+    try:
+        require_safe_board(Path(cwd) / ".lattice")
+    except OpError as exc:
+        return False, exc.message
+
     ws_ref = os.environ.get("C11_WORKSPACE_ID")
     if not ws_ref:
         return False, "not inside c11 — run from a c11 surface (C11_WORKSPACE_ID unset)"

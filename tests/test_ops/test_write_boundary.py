@@ -14,7 +14,11 @@ Every durable write goes through a recorded, marker-checked primitive of
    SPEC names besides operations (the owning server, the cache syncer, the
    local-only maintenance commands), and ``AWAITING_CONVERSION``, each naming
    the ticket that removes it.
-3. **The lists stay true.** Every listed module exists and still does what it
+3. **Client-cache writers stay with the client cache.** The mutating APIs of
+   ``lattice.remote.cache_paths`` (a hosted checkout's own directories and the
+   files in them, never through a symlink) are writer primitives too, tracked
+   through that module's own helpers. Only ``CACHE_OWNERS`` may use them.
+4. **The lists stay true.** Every listed module exists and still does what it
    is listed for, so an entry that is no longer needed fails until removed.
 """
 
@@ -55,12 +59,17 @@ RAW_WRITERS: dict[str, str] = {
     "lattice.cli.review_cmds": "the review text's temp file in the system temp dir",
     "lattice.core.agent_spawn": "the spawn prompt and output temp files (tmp-prompts/, runtime)",
     "lattice.core.review": "review_state/ records, failures.jsonl and temp prompts (runtime)",
-    "lattice.integrations.c11": "the c11 bridge's state file in the user's data dir",
+    "lattice.integrations.c11": "the c11 bridge's state file in the user's data dir, and the "
+    "trident pane's prompt under <cwd>/.lattice/tmp-prompts/ (runtime; refused on a hosted "
+    "checkout whose .lattice is not a real directory, SPEC §9.4)",
     "lattice.remote.cache": "cache control (SPEC §6.1): cache/incoming staging, cache/rescued, "
     "cache/applying, cache/unreachable_until",
     "lattice.remote.acked": "cache/acked.jsonl and its lock (cache control, SPEC §6.1, §9.2)",
+    "lattice.remote.cache_paths": "the client's own directories under a hosted .lattice/ "
+    "(cache/, runtime) and files in them, never through a symlink (SPEC §6.1, §9.4)",
     "lattice.remote.config": "remotes.json in the user's config dir",
-    "lattice.remote.session": "cache/unreachable_until and cache/acked.jsonl (cache control)",
+    "lattice.remote.session": "opens locks/cache_sync.lock to probe it (runtime); its cache "
+    "files go through lattice.remote.cache_paths",
     "lattice.server.control": "control requests under hosted/control (server control)",
     "lattice.server.journal": "the journal under hosted/ (server control)",
     "lattice.server.transactions": "undo logs and receipts under hosted/ (server control)",
@@ -90,8 +99,6 @@ BOARD_OWNERS: dict[str, str] = {
     "staging board (SPEC §11)",
     "lattice.server.tokens": "tokens.json in the server root, outside any board (SPEC §8.3)",
     "lattice.remote.cache": "the cache syncer, the only writer of a cache (SPEC §6.2, §9.4)",
-    "lattice.remote.follower": "the follower's cache/follower.json (cache control, SPEC §6.1, "
-    "§9.6)",
     "lattice.server.testing": "test helper: a server project built from a fixture board, as "
     "the owning server's import would (SPEC §11)",
     "lattice.cli.main": "init and its example tasks (LOCAL_ONLY, SPEC §3.5)",
@@ -102,6 +109,22 @@ BOARD_OWNERS: dict[str, str] = {
     "hosted/maintenance.json (SPEC §3.5)",
     "lattice.cli.helpers": "require_actor's session touch on a local board, as today (SPEC §3.7); "
     "skipped on a cache (§9.5), refused on a server-owned board by the markers (§6.2)",
+}
+
+#: The mutating APIs of lattice.remote.cache_paths: they create, chmod, replace,
+#: or remove under a hosted checkout's .lattice/ (SPEC §6.1 cache control and
+#: runtime paths, §9.4).
+CACHE_PATHS_MODULE = "lattice.remote.cache_paths"
+CACHE_PRIMITIVES = frozenset({"open_child", "open_dir", "opened_dir", "write_file", "remove_file"})
+
+#: The client-cache writers: the only modules that may use a cache_paths writer.
+CACHE_OWNERS: dict[str, str] = {
+    "lattice.remote.acked": "cache/acked.jsonl and its lock (SPEC §9.2, §9.5)",
+    "lattice.remote.cache": "the cache syncer and cache clear: .lattice/, cache/, locks/, "
+    "runtime directories, applying, state.json, staging, rescue (SPEC §9.4)",
+    "lattice.remote.session": "cache/unreachable_until (SPEC §9.5) and cache/server_info.json "
+    "(SPEC §15)",
+    "lattice.remote.follower": "the follower's cache/follower.json (SPEC §9.6)",
 }
 
 #: Board writers that still bypass operations, each removed by the named ticket
@@ -353,6 +376,32 @@ def _writer_uses(module: Module, tree: ast.AST, writers: set[str]) -> list[tuple
 WRITERS = storage_writers()
 
 
+def cache_writers() -> set[str]:
+    """The cache_paths writer primitives and every cache_paths function that uses
+    one (``opened_dir`` through ``open_dir`` through ``open_child``)."""
+    module = MODULES[CACHE_PATHS_MODULE]
+    definitions = {f"{module.name}.{name}": node for name, node in _definitions(module).items()}
+    writers = {f"{CACHE_PATHS_MODULE}.{name}" for name in CACHE_PRIMITIVES}
+    changed = True
+    while changed:
+        changed = False
+        for key, node in definitions.items():
+            if key not in writers and _writer_uses(module, node, writers):
+                writers.add(key)
+                changed = True
+    return writers
+
+
+CACHE_WRITERS = cache_writers()
+
+
+def cache_writer_calls(module: Module) -> list[str]:
+    return [
+        f"{module.name}:{line}: {writer}"
+        for line, writer in _writer_uses(module, module.tree, CACHE_WRITERS)
+    ]
+
+
 def board_writer_calls(module: Module) -> list[str]:
     return [
         f"{module.name}:{line}: {writer}"
@@ -398,6 +447,47 @@ def test_board_writers_are_called_only_behind_operations() -> None:
     )
 
 
+def test_cache_writers_are_called_only_by_the_client_cache() -> None:
+    offenders = [
+        hit
+        for module in MODULES.values()
+        if module.name != CACHE_PATHS_MODULE and module.name not in CACHE_OWNERS
+        for hit in cache_writer_calls(module)
+    ]
+    assert offenders == [], (
+        "only the client cache (CACHE_OWNERS) writes under a hosted checkout's .lattice/ "
+        "through lattice.remote.cache_paths; add a new caller there with its SPEC reason:\n"
+        + "\n".join(offenders)
+    )
+
+
+def test_the_scan_sees_the_cache_writers() -> None:
+    assert f"{CACHE_PATHS_MODULE}.opened_dir" in CACHE_WRITERS  # through open_dir
+    assert f"{CACHE_PATHS_MODULE}.read_file" not in CACHE_WRITERS
+    module = load_module(
+        "lattice.cli.example",
+        Path("example.py"),
+        ast.parse(
+            """
+from lattice.remote import cache_paths
+from lattice.remote.cache_paths import write_file as put
+
+def f(fd):
+    put(fd, "x", b"")
+    cache_paths.remove_file(fd, "x")
+    with cache_paths.opened_dir(fd, "x"):
+        cache_paths.read_file(fd, "x")
+"""
+        ),
+    )
+    found = [hit.split(": ", 1)[1] for hit in cache_writer_calls(module)]
+    assert found == [
+        f"{CACHE_PATHS_MODULE}.write_file",  # through the ``put`` alias
+        f"{CACHE_PATHS_MODULE}.remove_file",
+        f"{CACHE_PATHS_MODULE}.opened_dir",
+    ]
+
+
 def test_every_listed_module_still_needs_its_entry() -> None:
     for name in RAW_WRITERS:
         assert name in MODULES, f"RAW_WRITERS names a missing module {name}"
@@ -407,6 +497,9 @@ def test_every_listed_module_still_needs_its_entry() -> None:
         assert board_writer_calls(MODULES[name]), f"{name} no longer writes a board; remove it"
         assert not MODULES[name].inside_boundary
     assert not set(BOARD_OWNERS) & set(AWAITING_CONVERSION)
+    for name in CACHE_OWNERS:
+        assert name in MODULES, f"CACHE_OWNERS names a missing module {name}"
+        assert cache_writer_calls(MODULES[name]), f"{name} no longer writes the cache; remove it"
 
 
 def _scan(source: str, name: str = "lattice.cli.example") -> tuple[list[str], list[str]]:

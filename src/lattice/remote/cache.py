@@ -31,6 +31,12 @@ time, for the whole cycle):
    directories 0500, ``.lattice/``, ``cache/`` and runtime directories 0700);
    write ``cache/state.json``; remove ``cache/applying`` last.
 
+``.lattice/`` and the client's own directories under it (``cache/`` and its
+subdirectories, the runtime directories) are reached through
+:mod:`lattice.remote.cache_paths`, never through a symlink: a checkout where one
+is a symlink or a file is refused with ``BINDING_CONFLICT`` before anything is
+written, walked, or deleted.
+
 Hard failures raise ``OpError`` (``PROXY_REJECTED``, ``PROTOCOL_MISMATCH``, a
 non-transient server error, ``NOT_HOSTED``, the remote's first-contact errors,
 and ``INTEGRITY_ERROR`` for a delta rejected whole, with ``details.reason``
@@ -63,7 +69,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
 from lattice.core.errors import OpError
-from lattice.remote import http
+from lattice.remote import cache_paths, http
 from lattice.remote.config import resolve_remote
 from lattice.storage.fs import atomic_write, ensure_dir, unlink_entry
 from lattice.storage.ownership import PathClass, classify_path, syncing_board
@@ -74,7 +80,7 @@ BINDING_FILE = ".lattice-remote.json"
 #: The synced classes (SPEC §6.1): durable board data and workspace files. One
 #: set, used for verification, the fingerprint, modes, reset, rescue, and doctor.
 SYNCED_CLASSES = frozenset({PathClass.DURABLE, PathClass.WORKSPACE})
-RUNTIME_DIRS = ("locks", "review_state", "tmp-prompts", ".daemon")
+RUNTIME_DIRS = cache_paths.RUNTIME_DIRS
 #: The durable directories of a local board (``ensure_lattice_dirs``), so a cache
 #: has the same layout even where the server holds no file (AC-9).
 STANDARD_DIRS = (
@@ -410,10 +416,43 @@ def _fcntl():
     return fcntl
 
 
-def _private_dir(path: Path) -> None:
-    """Create a cache-control or runtime directory (never board data), 0700."""
-    path.mkdir(parents=True, exist_ok=True)
-    os.chmod(path, PRIVATE_DIR_MODE)
+def _dir_fd(lattice_dir: Path, rel: str = "", *, create: bool = True) -> int:
+    """A descriptor of ``.lattice/`` or a cache-control or runtime directory
+    under it (never board data), each component a real directory made 0700 and
+    never followed (:mod:`lattice.remote.cache_paths`). A symlink or a file
+    there is ``BINDING_CONFLICT`` (``UNSAFE_CACHE_PATH``). The caller closes it."""
+    parts = [lattice_dir.name, *(part for part in rel.split("/") if part)]
+    try:
+        return cache_paths.open_dir(lattice_dir.parent, *parts, create=create)
+    except cache_paths.UnsafeCachePath as exc:
+        raise cache_paths.layout_error(lattice_dir.parent, Path(exc.filename)) from None
+
+
+def _private_dir(lattice_dir: Path, rel: str = "") -> None:
+    """Create ``.lattice/`` or a cache-control or runtime directory under it, 0700
+    (see :func:`_dir_fd`)."""
+    os.close(_dir_fd(lattice_dir, rel))
+
+
+def _write_cache_file(lattice_dir: Path, name: str, text: str) -> None:
+    """Replace ``cache/<name>`` atomically, never through a symlink."""
+    fd = _dir_fd(lattice_dir, "cache")
+    try:
+        cache_paths.write_file(fd, name, text.encode("utf-8"))
+    finally:
+        os.close(fd)
+
+
+def _remove_cache_file(lattice_dir: Path, name: str) -> None:
+    """Unlink ``cache/<name>`` itself; nothing to do without a ``cache/``."""
+    try:
+        fd = _dir_fd(lattice_dir, "cache", create=False)
+    except FileNotFoundError:
+        return
+    try:
+        cache_paths.remove_file(fd, name)
+    finally:
+        os.close(fd)
 
 
 def _lock(path: Path, exclusive: bool, deadline: float | None) -> int | None:
@@ -425,9 +464,14 @@ def _lock(path: Path, exclusive: bool, deadline: float | None) -> int | None:
     """
     fcntl = _fcntl()
     mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+    lattice_dir, name = path.parent.parent, path.name
     while True:
-        _private_dir(path.parent)
-        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        dir_fd = _dir_fd(lattice_dir, path.parent.name)
+        try:
+            fd = os.open(name, os.O_RDWR | os.O_CREAT | cache_paths.NOFOLLOW, 0o600, dir_fd=dir_fd)
+        except BaseException:
+            os.close(dir_fd)
+            raise
         try:
             if deadline is None:
                 fcntl.flock(fd, mode)
@@ -442,12 +486,15 @@ def _lock(path: Path, exclusive: bool, deadline: float | None) -> int | None:
                             return None
                         time.sleep(0.02)
             try:
-                same = os.fstat(fd).st_ino == os.stat(path).st_ino
+                here = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+                same = os.fstat(fd).st_ino == here.st_ino
             except FileNotFoundError:
                 same = False
         except BaseException:
             os.close(fd)
             raise
+        finally:
+            os.close(dir_fd)
         if same:
             return fd
         os.close(fd)
@@ -463,6 +510,7 @@ def read_lock(hosted_root: Path) -> Iterator[Path]:
     mid-apply and the tree is mixed.
     """
     lattice_dir = Path(hosted_root) / LATTICE_DIR
+    cache_paths.require_safe_layout(Path(hosted_root))
     if not lattice_dir.is_dir():
         yield lattice_dir
         return
@@ -724,7 +772,7 @@ class _Syncer:
     def _fetch(self, entry: _Entry) -> Path:
         assert entry.href is not None
         incoming = self.cache_dir / "incoming"
-        _private_dir(incoming)
+        _private_dir(self.lattice_dir, "cache/incoming")
         staged = incoming / f"{len(self.staged):06d}"
         digest = hashlib.sha256()
         size = 0
@@ -744,7 +792,14 @@ class _Syncer:
 
     def _clear_staging(self) -> None:
         self.staged.clear()
-        shutil.rmtree(self.cache_dir / "incoming", ignore_errors=True)
+        try:
+            fd = _dir_fd(self.lattice_dir, "cache", create=False)
+        except (OSError, OpError):
+            return
+        try:
+            shutil.rmtree("incoming", ignore_errors=True, dir_fd=fd)
+        finally:
+            os.close(fd)
 
     # -- apply ----------------------------------------------------------------
 
@@ -757,17 +812,18 @@ class _Syncer:
         self._clear_unreachable()
 
     def _write_state(self, state: dict) -> None:
-        atomic_write(
-            self.cache_dir / "state.json",
-            json.dumps(state, sort_keys=True, indent=2) + "\n",
+        _write_cache_file(
+            self.lattice_dir, "state.json", json.dumps(state, sort_keys=True, indent=2) + "\n"
         )
 
     def _clear_unreachable(self) -> None:
-        with contextlib.suppress(FileNotFoundError):
-            os.unlink(self.cache_dir / "unreachable_until")
+        _remove_cache_file(self.lattice_dir, "unreachable_until")
 
     def _apply(self, delta: _Delta, contents: dict[str, bytes | Path]) -> None:
         lattice_dir = self.lattice_dir
+        # Once, at the start of the apply (reset and rescue included): its base
+        # directories are real directories, never a symlink (cache_paths).
+        cache_paths.require_safe_layout(self.root)
         fd = _lock(lattice_dir / "locks" / "cache_rw.lock", exclusive=True, deadline=None)
         try:
             with syncing_board(lattice_dir):
@@ -781,8 +837,9 @@ class _Syncer:
 
     def _apply_locked(self, delta: _Delta, contents: dict[str, bytes | Path]) -> None:
         lattice_dir = self.lattice_dir
-        atomic_write(
-            self.cache_dir / "applying",
+        _write_cache_file(
+            lattice_dir,
+            "applying",
             json.dumps(
                 {
                     "remote": self.remote.alias,
@@ -801,7 +858,7 @@ class _Syncer:
         _step("applying_written")
         if delta.reset:
             for name in RUNTIME_DIRS:
-                _private_dir(lattice_dir / name)
+                _private_dir(lattice_dir, name)
             _files, dirs = _walk_synced(lattice_dir)
             for rel in dirs:
                 _chmod(lattice_dir / rel, PRIVATE_DIR_MODE)
@@ -854,7 +911,7 @@ class _Syncer:
         )
         _step("state_written")
         self._clear_unreachable()
-        os.unlink(self.cache_dir / "applying")
+        _remove_cache_file(lattice_dir, "applying")
 
     def _ensure_synced_dir(self, directory: Path) -> None:
         """Create a synced directory and its missing parents, each writable for
@@ -914,17 +971,17 @@ class _Syncer:
 
     def _new_rescue_dir(self) -> Path:
         base = self.cache_dir / "rescued"
-        _private_dir(base)
+        _private_dir(self.lattice_dir, "cache/rescued")
         stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
         candidate, n = base / stamp, 1
-        while candidate.exists():
+        while os.path.lexists(candidate):
             n += 1
             candidate = base / f"{stamp}-{n}"
-        _private_dir(candidate)
+        _private_dir(self.lattice_dir, f"cache/rescued/{candidate.name}")
         return candidate
 
     def _rescue_one(self, source: Path, dest: Path) -> None:
-        _private_dir(dest.parent)
+        _private_dir(self.lattice_dir, dest.parent.relative_to(self.lattice_dir).as_posix())
         tmp = dest.parent / f".rescue-{secrets.token_hex(6)}.tmp"
         mode = os.lstat(source).st_mode
         if stat.S_ISLNK(mode):
@@ -987,6 +1044,7 @@ def catch_up(hosted_root: Path, *, bulk: bool = False) -> SyncOutcome:
         raise not_hosted(root)
     alias, project = identity
     lattice_dir = root / LATTICE_DIR
+    cache_paths.require_safe_layout(root)
     if lattice_dir.is_dir() and not has_cache_marker(lattice_dir) and synced_files(lattice_dir):
         raise OpError(
             "BINDING_CONFLICT",
@@ -996,10 +1054,7 @@ def catch_up(hosted_root: Path, *, bulk: bool = False) -> SyncOutcome:
         )
     remote = resolve_remote(alias)
     deadline = None if bulk else time.monotonic() + PROBE_SECONDS
-    if not lattice_dir.is_dir():
-        with syncing_board(lattice_dir):
-            ensure_dir(lattice_dir)
-    os.chmod(lattice_dir, PRIVATE_DIR_MODE)
+    _private_dir(lattice_dir)
     syncer = _Syncer(root, remote, project, bulk, deadline)
     fd = _lock(lattice_dir / "locks" / "cache_sync.lock", exclusive=True, deadline=deadline)
     if fd is None:
@@ -1012,7 +1067,7 @@ def catch_up(hosted_root: Path, *, bulk: bool = False) -> SyncOutcome:
             raise not_hosted(root)
         if now != identity:
             syncer = _Syncer(root, resolve_remote(now[0]), now[1], bulk, deadline)
-        _private_dir(lattice_dir / "cache")
+        _private_dir(lattice_dir, "cache")
         return syncer.run()
     finally:
         os.close(fd)
@@ -1044,6 +1099,13 @@ def clear_cache(hosted_root: Path, *, forget: bool = False) -> ClearResult:
     _fcntl()
     root = Path(hosted_root)
     lattice_dir = root / LATTICE_DIR
+    bad = cache_paths.unsafe_component(root)
+    if bad is not None:
+        # Never walk, chmod, or delete through it; a checkout nothing routes
+        # to the server stays NOT_HOSTED, as before.
+        if cache_identity(root) is None:
+            raise not_hosted(root)
+        raise cache_paths.layout_error(root, bad)
     if not lattice_dir.is_dir() or not has_cache_marker(lattice_dir):
         raise not_hosted(root)
     identity = cache_identity(root)
@@ -1075,9 +1137,9 @@ def clear_cache(hosted_root: Path, *, forget: bool = False) -> ClearResult:
             rescued = lattice_dir / "cache" / "rescued"
             kept = rescued if rescued.is_dir() and any(rescued.iterdir()) else None
             if not forget:
-                _private_dir(lattice_dir / "cache")
-                atomic_write(
-                    lattice_dir / "cache" / "state.json",
+                _write_cache_file(
+                    lattice_dir,
+                    "state.json",
                     json.dumps({"project": project, "remote": remote}, sort_keys=True, indent=2)
                     + "\n",
                 )
