@@ -59,6 +59,9 @@ __all__ = [
     "find_root",
     "jsonl_append",
     "recording",
+    "remove_dir",
+    "strict_durability",
+    "truncate_file",
     "unlink_path",
 ]
 
@@ -139,11 +142,31 @@ def _guard(path: Path, kind: MutationKind | None) -> None:
         recorder._before(target.path, kind)
 
 
+_STRICT_DURABILITY: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "lattice_strict_durability", default=False
+)
+
+
+@contextlib.contextmanager
+def strict_durability() -> Iterator[None]:
+    """Make a failed directory fsync raise for the duration of the block.
+
+    A server transaction runs inside one, so recovery can react to a write
+    whose durability is unknown (SPEC §8.6). Local mode never enters it.
+    """
+    token = _STRICT_DURABILITY.set(True)
+    try:
+        yield
+    finally:
+        _STRICT_DURABILITY.reset(token)
+
+
 def _fsync_directory(path: Path) -> None:
     """Fsync a directory to ensure metadata (e.g. renames) is durable.
 
     Some platforms (notably macOS HFS+) may not support fsync on directory
-    file descriptors, so ``OSError`` is silently ignored.
+    file descriptors, so ``OSError`` is silently ignored, except inside
+    :func:`strict_durability`, where it propagates.
     """
     try:
         fd = os.open(str(path), os.O_RDONLY)
@@ -152,7 +175,8 @@ def _fsync_directory(path: Path) -> None:
         finally:
             os.close(fd)
     except OSError:
-        pass
+        if _STRICT_DURABILITY.get():
+            raise
 
 
 def atomic_write(path: Path, content: str | bytes) -> None:
@@ -221,6 +245,24 @@ def unlink_path(path: Path, *, missing_ok: bool = False) -> None:
         return
     _guard(path, "unlink")
     path.unlink(missing_ok=missing_ok)
+
+
+def truncate_file(path: Path, length: int) -> None:
+    """Cut a file back to *length* bytes and fsync it, confined, marker-checked, and
+    recorded as a ``replace``. Used to roll back appends (SPEC §8.6)."""
+    _guard(path, "replace")
+    with open(path, "r+b") as fh:
+        fh.truncate(length)
+        fh.flush()
+        os.fsync(fh.fileno())
+
+
+def remove_dir(path: Path) -> None:
+    """Remove an empty directory, confined, marker-checked, and recorded as an
+    ``unlink``. Used to roll back a directory an operation created (SPEC §8.6)."""
+    _guard(path, "unlink")
+    path.rmdir()
+    _fsync_directory(path.parent)
 
 
 def ensure_artifact_dirs(lattice_dir: Path) -> None:
