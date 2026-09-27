@@ -108,6 +108,8 @@ class StubServer:
     history: dict[str, list[tuple[int, int]]] = field(default_factory=dict)
     #: Every request reaching a handler, in order: (kind, query) where kind is sync|files.
     arrivals: list[tuple[str, dict]] = field(default_factory=list)
+    #: Every file answer: (path, HTTP status).
+    file_statuses: list[tuple[str, int]] = field(default_factory=list)
 
     @property
     def board(self) -> Path:
@@ -403,6 +405,7 @@ class _Handler(BaseHTTPRequestHandler):
             if gate is not None:
                 gate.wait(10)
             status, payload = stub.file_bytes(rel, query.get("sha256"))
+            stub.file_statuses.append((rel, status))
             if status != 200:
                 self._envelope(status, payload)
                 return
