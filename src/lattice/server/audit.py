@@ -734,10 +734,12 @@ class AuditCommitter:
     def _cycle(self) -> None:
         """Stage under the work lock, then commit outside it; requeue on failure."""
         self.waiting_for_lock = True
+        started = time.monotonic()
         try:
             self.lock.acquire()
         finally:
             self.waiting_for_lock = False
+        locked_at = time.monotonic()
         pending = None
         try:
             with self._cond:
@@ -753,8 +755,12 @@ class AuditCommitter:
             return
         finally:
             self.lock.release()
+        timings = {
+            "lock_wait_ms": round((locked_at - started) * 1000, 1),
+            "stage_ms": round((time.monotonic() - locked_at) * 1000, 1),
+        }
         try:
-            self._commit(tree, pending)
+            self._commit(tree, pending, timings=timings)
         except Exception as exc:  # noqa: BLE001
             self._failed(pending, "commit", exc)
             return
@@ -784,10 +790,20 @@ class AuditCommitter:
             self._active = False
             self._cond.notify_all()
 
-    def _commit(self, tree: str, pending: _Pending | None, *, final: bool = False) -> bool:
-        """Commit *tree*; ``False`` when it matches ``HEAD`` (nothing changed)."""
+    def _commit(
+        self,
+        tree: str,
+        pending: _Pending | None,
+        *,
+        final: bool = False,
+        timings: dict[str, float] | None = None,
+    ) -> bool:
+        """Commit *tree*; ``False`` when it matches ``HEAD`` (nothing changed).
+        *timings* (the cycle's ``lock_wait_ms`` and ``stage_ms``, the time it
+        held the work lock) join ``commit_ms`` on the ``audit_commit`` line."""
         if pending is None:
             pending = _Pending(0, 0, 0, 0.0, 0.0, None)
+        started = time.monotonic()
         commit = commit_tree(self.directory, tree, pending.message())
         if commit is None:
             self.log.debug(
@@ -805,6 +821,8 @@ class AuditCommitter:
             last_seq=pending.last_seq,
             ops=pending.ops,
             final=final,
+            **(timings or {}),
+            commit_ms=round((time.monotonic() - started) * 1000, 1),
         )
         self.maintenance.request()
         return True

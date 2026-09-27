@@ -19,7 +19,12 @@ from pathlib import Path
 import pytest
 
 from lattice.server import audit
+from lattice.server import project as server_project
 from lattice.server.audit import GitError, Stager
+from lattice.server.config import AuditConfig
+from lattice.server.testing import make_root, wait_for
+from tests.test_server.audit_helpers import close, direct_project, log_lines
+from tests.test_server.faults import request, run
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
 
@@ -27,6 +32,7 @@ BOARD_FILES = 3000
 #: With two spinning threads, one changed file of 3,000: the worker staged in
 #: 0.11 s and in-process staging took 5-9 s (laptop, LAT-340).
 CONTENDED_LIMIT_SECONDS = 2.0
+QUICK = AuditConfig(debounce_seconds=0.05, max_interval_seconds=1)
 
 
 def _repo(tmp_path: Path, files: int) -> Path:
@@ -127,3 +133,29 @@ def test_busy_server_threads_do_not_slow_the_stage(tmp_path: Path) -> None:
     finally:
         stager.close()
     assert elapsed < CONTENDED_LIMIT_SECONDS, elapsed
+
+
+def test_audit_commit_reports_the_lock_it_held(tmp_path: Path) -> None:
+    """``audit_commit`` names its lock wait, its stage (the work-lock hold), and its commit."""
+    root = make_root(tmp_path, projects={"alpha": {"code": "ALP"}})
+    project, stream = direct_project(root, "alpha", QUICK)
+    try:
+        run(project, request("task.create", {"title": "one"}))
+        wait_for(lambda: any(line["event"] == "audit_commit" for line in log_lines(stream)))
+    finally:
+        close(project)
+    line = next(line for line in log_lines(stream) if line["event"] == "audit_commit")
+    assert {"lock_wait_ms", "stage_ms", "commit_ms"} <= line.keys(), line
+
+
+def test_a_slow_work_lock_hold_is_logged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = make_root(tmp_path, projects={"alpha": {"code": "ALP"}})
+    project, stream = direct_project(root, "alpha", QUICK)
+    monkeypatch.setattr(server_project, "SLOW_WORK_LOCK_SECONDS", 0.05)
+    try:
+        with project.locked():
+            time.sleep(0.1)
+    finally:
+        close(project)
+    slow = [line for line in log_lines(stream) if line["event"] == "work_lock_slow"]
+    assert slow and slow[0]["held_ms"] >= 100 and slow[0]["thread"], slow

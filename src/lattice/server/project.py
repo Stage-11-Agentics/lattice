@@ -23,6 +23,7 @@ import json
 import os
 import socket
 import threading
+import time
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
@@ -80,6 +81,9 @@ T = TypeVar("T")
 
 LOADED, LOADING, UNLOADED, UNAVAILABLE = "loaded", "loading", "unloaded", "unavailable"
 UNLOADED_REASON = "unloaded by an admin"
+#: A work-lock hold this long logs ``work_lock_slow``: every request of the
+#: project waited behind it.
+SLOW_WORK_LOCK_SECONDS = 1.0
 STATES = (LOADED, LOADING, UNLOADED, UNAVAILABLE)
 
 #: The only operations that may rewrite ``config.json`` over the op path
@@ -272,9 +276,11 @@ class Project:
         """Hold the work lock (call from a worker thread). The owner flag, which
         lets the board primitives write this server-owned board, is set only
         while this process holds the project's owner lease."""
+        started = time.monotonic()
         acquired = self.work.acquire(timeout=-1 if timeout is None else timeout)
         if not acquired:
             raise OpError("BOARD_BUSY", f"project {self.slug} is busy; retry shortly.")
+        locked_at = time.monotonic()
         token = CURRENT_PROJECT.set(self.slug)
         try:
             with owning_board(self.board) if self._lease_fd is not None else nullcontext():
@@ -282,6 +288,16 @@ class Project:
         finally:
             CURRENT_PROJECT.reset(token)
             self.work.release()
+            held = time.monotonic() - locked_at
+            if held >= SLOW_WORK_LOCK_SECONDS:
+                # Every other request of the project waited this long (LAT-340).
+                self.log.warning(
+                    "work_lock_slow",
+                    project=self.slug,
+                    thread=threading.current_thread().name,
+                    wait_ms=round((locked_at - started) * 1000, 1),
+                    held_ms=round(held * 1000, 1),
+                )
 
     def report_unknown_type(self, etype: str) -> None:
         if etype not in self._reported_types:
