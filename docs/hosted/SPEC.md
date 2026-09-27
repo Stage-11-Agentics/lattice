@@ -394,7 +394,7 @@ All under `lattice server`; all accept `--root`; all have `--json`.
 | `init [--root]` | Create the root, `server.json`, empty `tokens.json` (0600). Idempotent. |
 | `serve` | Run the server (§8.1). |
 | `project create <slug> [--code CODE] [--subproject-code C] [--review-mode M] [--plan-review-mode M] [--plan-approval A] [--auto-code-review/--no-auto-code-review] [--auto-plan-review/--no-auto-plan-review]` | Create `projects/<slug>/.lattice/` exactly as `lattice init` would with the same options, then the journal (epoch, seq 0) and audit repo. `--review-mode`, `--plan-review-mode`, and `--plan-approval` take `init`'s choices; the two toggles set `auto_code_review_on_transition` and `auto_plan_review_on_transition` (default on, as `init`). Slug: `^[a-z0-9][a-z0-9-]{0,62}$`. |
-| `project import <slug> --from DIR [--code CODE]` | §11. The source's `config.json`, review settings included, is imported unchanged. |
+| `project import <slug> --from DIR` | §11. The source's `config.json`, review settings included, is imported unchanged. A board without a project code gets one afterwards through `lattice set-project-code` on a bound checkout (§3.9). |
 | `project config <slug> --set KEY=VALUE...` | Change the project's review workflow (below). |
 | `project list` | Slug, project code, head seq, task count, state (`loaded`, `loading`, `unloaded`, `unavailable`), owner. |
 | `project unload <slug>`, `project load <slug>`, `project reload <slug>` | Release one project's lease so offline maintenance can run on it, take it back (running §8.7), or both in one step (for example to retry recovery after freeing disk). The other projects keep serving. |
@@ -691,11 +691,11 @@ A directory is a **hosted root** when either holds:
 
 Moving a board needs one tool, a doctor-gated import. The rest is a short procedure in the guide that a person or an agent follows.
 
-`lattice server project import <slug> --from DIR [--code CODE]`, where `DIR` contains `.lattice/`:
+`lattice server project import <slug> --from DIR`, where `DIR` contains `.lattice/`. Import never changes the board's configuration:
 
 1. Refuse if `projects/<slug>` already exists.
 2. Run strict doctor read-only on the source; refuse on any error and print the findings (AC-17).
-3. Walk the source's `.lattice/` without following symlinks. Refuse, naming the path, if any durable path (§6.1) is a symlink or anything other than a regular file or a directory. Nothing is created on a refusal.
+3. Walk the source's `.lattice/` without following symlinks. Refuse with `VALIDATION_ERROR`, naming the path in the message and in `details.path`, if any durable path (§6.1) is a symlink or anything other than a regular file or a directory. Nothing is created on a refusal.
 4. Print two lists: every unmanaged path (§6.1), which import does not copy, and every non-canonical file under `plans/`, `notes/`, `archive/plans/`, and `archive/notes/` (anything other than `<task_id>.md` for a task of the board), which import copies because it is durable. Unmanaged paths stay only in the old board, which the move keeps (below).
 5. Copy every durable regular file into `projects/<slug>/.lattice/`, `config.json` and `templates/` included, so the project keeps its review workflow and prompt overrides.
 6. Run the short-ID repair (§5) with the log floor; like `rebuild --all`, it rewrites the derived files (task snapshots in `tasks/` and `archive/tasks/`, `ids.json`, `events/_lifecycle.jsonl`).
