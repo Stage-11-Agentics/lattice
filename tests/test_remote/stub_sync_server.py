@@ -84,6 +84,8 @@ class Fault:
     mutate_file: Callable[[str, bytes], bytes] | None = None
     #: Answer every request with this (status, headers, body) instead.
     raw: tuple[int, dict[str, str], bytes] | None = None
+    #: Answer every files request with this (status, headers, body) instead.
+    raw_files: tuple[int, dict[str, str], bytes] | None = None
     #: Held (not set) → sync answers wait on it after assembly.
     sync_gate: threading.Event | None = None
     #: Held (not set) → file answers wait on it.
@@ -359,6 +361,14 @@ class _Handler(BaseHTTPRequestHandler):
         except OSError:
             pass
 
+    def _raw(self, status: int, headers: dict[str, str], body: bytes) -> None:
+        self.send_response(status)
+        for name, value in headers.items():
+            self.send_header(name, value)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _envelope(self, status: int, payload: Any) -> None:
         if 200 <= status < 300:
             doc = {"ok": True, "data": payload}
@@ -372,13 +382,7 @@ class _Handler(BaseHTTPRequestHandler):
         query = {k: v[-1] for k, v in urllib.parse.parse_qs(parts.query).items()}
         stub.requests.append({"path": self.path, "headers": dict(self.headers.items())})
         if stub.fault.raw is not None:
-            status, headers, body = stub.fault.raw
-            self.send_response(status)
-            for name, value in headers.items():
-                self.send_header(name, value)
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            self._raw(*stub.fault.raw)
             return
         if self.headers.get("Authorization") != f"Bearer {stub.token}":
             self._envelope(401, {"code": "UNAUTHENTICATED", "message": "bad token"})
@@ -401,6 +405,9 @@ class _Handler(BaseHTTPRequestHandler):
         if rest.startswith("files/"):
             rel = urllib.parse.unquote(rest[len("files/") :])
             stub.arrivals.append(("files", {"path": rel, **query}))
+            if stub.fault.raw_files is not None:
+                self._raw(*stub.fault.raw_files)
+                return
             gate = stub.fault.files_gate
             if gate is not None:
                 gate.wait(10)

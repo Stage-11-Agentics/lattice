@@ -5,10 +5,14 @@ from __future__ import annotations
 
 import pytest
 
+from pathlib import Path
+
 from lattice.core.errors import OpError
-from lattice.remote import http
+from lattice.remote import cache, http
 from lattice.remote.http import Remote
+from tests.test_remote.conftest import bind
 from tests.test_remote.proxies import fixed_answer, recording_listener
+from tests.test_remote.stub_sync_server import StubServer
 
 TOKEN = "lat_tok_secret_for_transport"
 PROXY_HEADERS = {
@@ -167,3 +171,66 @@ def test_credentials_are_unredirected_headers() -> None:
 def test_only_same_origin_relative_hrefs(href: str, ok: bool) -> None:
     remote = _remote("http://127.0.0.1:1")
     assert (http.href_url(remote, href) is not None) is ok
+
+
+# ---------------------------------------------------------------------------
+# Through the client: catch_up's sync and files requests (AC-20, H-10b part)
+# ---------------------------------------------------------------------------
+
+LOGIN_PAGE = (200, {"Content-Type": "text/html"}, b"<html>Sign in</html>")
+
+
+def _bind_with_proxy_headers(client: Path, url: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    bind(client, url, TOKEN, monkeypatch)
+    monkeypatch.setenv("PROXY_ID", PROXY_HEADERS["CF-Access-Client-Id"])
+    monkeypatch.setenv("PROXY_SECRET", PROXY_HEADERS["CF-Access-Client-Secret"])
+    monkeypatch.setenv(
+        "LATTICE_REMOTE_TEAM_HEADERS",
+        '{"CF-Access-Client-Id": "PROXY_ID", "CF-Access-Client-Secret": "PROXY_SECRET"}',
+    )
+
+
+def test_catch_up_refuses_a_redirected_sync(
+    tmp_path: Path, stub: StubServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = tmp_path / "client"
+    with recording_listener() as second:
+        with fixed_answer(302, {"Location": second.url + "/login"}) as proxy:
+            _bind_with_proxy_headers(client, proxy.url, monkeypatch)
+            with pytest.raises(OpError) as err:
+                cache.catch_up(client)
+            assert _credential_leaked(proxy.requests)  # sent to the configured URL only
+        assert second.requests == []
+    assert err.value.code == "PROXY_REJECTED"
+    assert not (client / ".lattice" / "cache" / "state.json").exists()
+
+
+def test_catch_up_refuses_an_html_sync_answer(
+    tmp_path: Path, stub: StubServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = tmp_path / "client"
+    with fixed_answer(*LOGIN_PAGE) as proxy:
+        _bind_with_proxy_headers(client, proxy.url, monkeypatch)
+        with pytest.raises(OpError) as err:
+            cache.catch_up(client)
+    assert err.value.code == "PROXY_REJECTED"
+
+
+@pytest.mark.parametrize("kind", ["redirect", "html"])
+def test_catch_up_refuses_a_bad_files_answer(
+    tmp_path: Path, stub: StubServer, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    client = tmp_path / "client"
+    _bind_with_proxy_headers(client, stub.url, monkeypatch)
+    monkeypatch.setenv("LATTICE_REMOTE_TEAM_TOKEN", stub.token)
+    stub.inline_file_bytes = 10  # every file travels through the files endpoint
+    with recording_listener() as second:
+        stub.fault.raw_files = (
+            (302, {"Location": second.url + "/steal"}, b"") if kind == "redirect" else LOGIN_PAGE
+        )
+        with pytest.raises(OpError) as err:
+            cache.catch_up(client)
+        assert second.requests == []
+    assert err.value.code == "PROXY_REJECTED"
+    assert any(kind == "files" for kind, _ in stub.arrivals)
+    assert not (client / ".lattice" / "cache" / "state.json").exists()
