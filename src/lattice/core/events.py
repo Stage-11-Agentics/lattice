@@ -45,6 +45,8 @@ BUILTIN_EVENT_TYPES: frozenset[str] = frozenset(
         "auto_review_spawned",
         "needs_human_flagged",
         "needs_human_cleared",
+        "task_tombstoned",
+        "task_untombstoned",
     }
 )
 

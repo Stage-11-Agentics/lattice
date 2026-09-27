@@ -857,6 +857,36 @@ MAINTENANCE = Scenario(
     ),
 )
 
+# v2-only (LAT-303): recorded by the ticket that added erase and unerase.
+TOMBSTONES = Scenario(
+    name="tombstones",
+    description="erase and unerase: hidden views, show, TASK_ERASED, restore, doctor",
+    steps=(
+        c("create", "Erase me", *H),
+        c("create", "Keep me", *H),
+        c("status", "PAR-1", "in_planning", *H),
+        c("erase", "PAR-1", *H),
+        c("erase", "PAR-1", "--reason", "Filed twice", *H),
+        c("list"),
+        c("list", "--include-tombstoned"),
+        c("next"),
+        # Compact only: the full view's event lines carry this machine's origin.
+        c("show", "PAR-1", "--compact"),
+        c("comment", "PAR-1", "Still here?", *A),
+        c("status", "PAR-1", "planned", *H),
+        c("assign", "PAR-1", "agent:worker", *H),
+        c("erase", "PAR-1", "--reason", "Again", *H),
+        c("doctor"),
+        c("unerase", "PAR-2", "--reason", "Not erased", *H),
+        c("unerase", "PAR-1", "--reason", "Not a duplicate after all", *H),
+        c("list"),
+        c("show", "PAR-1", "--compact"),
+        c("comment", "PAR-1", "Back again", *A),
+        DeleteFile(".lattice/events/<<task:PAR-2>>.jsonl"),
+        c("doctor"),
+    ),
+)
+
 
 SCENARIOS: tuple[Scenario, ...] = (
     LIFECYCLE,
@@ -877,6 +907,7 @@ SCENARIOS: tuple[Scenario, ...] = (
     REVIEWS,
     DASHBOARD,
     MAINTENANCE,
+    TOMBSTONES,
 )
 
 # Every rejection code of SPEC §3.1 that the CLI emits today. test_local_parity
@@ -917,6 +948,7 @@ REQUIRED_CODES = frozenset(
         "REVIEW_CYCLE_LIMIT",
         "INTEGRITY_ERROR",
         "MISSING_SURFACE",
+        "TASK_ERASED",
     }
 )
 
@@ -959,5 +991,7 @@ REQUIRED_COMMANDS = frozenset(
         "resource heartbeat",
         "session start",
         "session end",
+        "erase",
+        "unerase",
     }
 )

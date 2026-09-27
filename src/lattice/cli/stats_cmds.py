@@ -126,7 +126,7 @@ def stats_cmd(output_json: bool) -> None:
     lattice_dir = require_root(is_json)
     config = load_project_config(lattice_dir)
 
-    stats = build_stats(lattice_dir, config)
+    stats = build_stats(lattice_dir, config, include_tombstoned=False)
 
     if is_json:
         click.echo(json_envelope(True, data=stats))

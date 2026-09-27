@@ -36,6 +36,7 @@ from lattice.storage.operations import (
     resolve_task_prose_path,
 )
 from lattice.core.origin import format_origin_line
+from lattice.core.visibility import erased_line, is_tombstoned, visible
 from lattice.storage.readers import read_task_events
 
 read_snapshot = helpers.read_snapshot
@@ -212,6 +213,7 @@ def event_cmd(
     help="Only tasks carrying the needs_human flag (any status).",
 )
 @click.option("--include-archived", is_flag=True, help="Include archived tasks.")
+@click.option("--include-tombstoned", is_flag=True, help="Include erased tasks.")
 @click.option("--compact", is_flag=True, help="Compact JSON output.")
 @click.option("--json", "output_json", is_flag=True, help="Output structured JSON.")
 @click.option("--quiet", is_flag=True, help="Print one task ID per line.")
@@ -223,6 +225,7 @@ def list_cmd(
     priority: str | None,
     needs_human_filter: bool,
     include_archived: bool,
+    include_tombstoned: bool,
     compact: bool,
     output_json: bool,
     quiet: bool,
@@ -251,6 +254,7 @@ def list_cmd(
         if authority.location == "archived":
             snap["_archived"] = True
         snapshots.append(snap)
+    snapshots = visible(snapshots, include_tombstoned=include_tombstoned)
 
     # Apply filters (AND combination)
     filtered: list[dict] = []
@@ -317,6 +321,8 @@ def list_cmd(
             flag = snap.get("needs_human")
             prefix = ">>> " if flag else ""
             archived_marker = " [A]" if snap.get("_archived") else ""
+            if is_tombstoned(snap):
+                archived_marker += " [ERASED]"
             line = (
                 f'{prefix}{display_id}  {s_display}  {p}  {t}  "{title}"  '
                 f"{assigned_to}{archived_marker}"
@@ -399,11 +405,11 @@ def next_cmd(
         if status_csv is not None:
             ready_statuses = frozenset(s.strip() for s in status_csv.split(",") if s.strip())
 
-        # Load all active snapshots
-        active = [
+        # Load all active snapshots; erased tasks are never offered (SPEC §7).
+        active = visible(
             authority.snapshot
             for authority in discover_task_authorities(lattice_dir, include_archived=False)
-        ]
+        )
         selected = select_next(active, actor=resolved_actor, ready_statuses=ready_statuses)
 
     if selected is None:
@@ -845,6 +851,8 @@ def _print_compact_show(
     archived_note = "  [ARCHIVED]" if is_archived else ""
     header = f"{short_id} ({task_id})" if short_id else task_id
     click.echo(f'{header}  "{title}"{archived_note}')
+    if is_tombstoned(snapshot):
+        click.echo(erased_line(snapshot))
     next_str = ""
     if valid_transitions:
         next_str = f"\n  Next: {' | '.join(valid_transitions)}"
@@ -903,6 +911,8 @@ def _print_human_show(
     archived_note = "  [ARCHIVED]" if is_archived else ""
     header = f"{short_id} ({task_id})" if short_id else task_id
     click.echo(f'{header}  "{title}"{archived_note}')
+    if is_tombstoned(snapshot):
+        click.echo(erased_line(snapshot))
     click.echo(f"Status: {status_display}  Priority: {priority}  Type: {task_type}")
     flag = snapshot.get("needs_human")
     if flag and isinstance(flag, dict):

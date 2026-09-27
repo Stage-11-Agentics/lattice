@@ -1,0 +1,1248 @@
+{
+  "board": {
+    ".gitignore": {
+      "lines": [
+        "# Ephemeral Lattice runtime state — not part of the durable board.",
+        "# The board (tasks/ events/ plans/ artifacts/ ids.json config.json)",
+        "# stays tracked: it is the audit log and cross-machine coordination",
+        "# state. The paths below are mutated constantly and must never",
+        "# diverge per-worktree or collide on merge.",
+        "review_state/",
+        "tmp-prompts/",
+        ".daemon/",
+        "locks/"
+      ]
+    },
+    "config.json": {
+      "json": {
+        "auto_code_review_on_transition": false,
+        "auto_plan_review_on_transition": false,
+        "default_actor": "human:parity",
+        "default_priority": "medium",
+        "default_status": "backlog",
+        "done_display": "grouped",
+        "instance_id": "<ID-9>",
+        "plan_approval": "auto",
+        "plan_review_mode": "single",
+        "project_code": "PAR",
+        "review_max_diff_chars": 120000,
+        "review_max_diff_lines": 5000,
+        "review_mode": "single",
+        "review_timeout_seconds": 600,
+        "schema_version": 1,
+        "status_preset": "stage11",
+        "task_types": [
+          "task",
+          "bug",
+          "spike",
+          "chore"
+        ],
+        "workflow": {
+          "completion_policies": {
+            "done": {
+              "require_roles": [
+                "review"
+              ]
+            },
+            "pr_open": {
+              "require_roles": [
+                "validation"
+              ]
+            }
+          },
+          "descriptions": {
+            "backlog": "Task is captured but no work has started. No planning, no implementation.",
+            "blocked": "Work cannot proceed due to an external dependency or unresolved issue.",
+            "cancelled": "Work has been abandoned. No further action will be taken.",
+            "done": "Work is reviewed, merged, and shipped. No further action needed.",
+            "in_planning": "Design, dialogue, and scoping underway. No implementation code should be written yet.",
+            "in_progress": "Implementation is actively underway. Code is being written, tested, or integrated.",
+            "in_validation": "End-to-end validation is underway. The change is being exercised against a running system — browser automation, simulator flows, curl — before the PR opens. The bar: 'I saw it work,' not 'I think it should work.'",
+            "planned": "Plan is written and approved. Ready for implementation but work has not started.",
+            "pr_open": "PR is open and awaiting human review, CI, or merge. Local review and validation artifacts are recorded.",
+            "review": "Local review is underway. A review sub-agent is examining the diff before validation begins."
+          },
+          "roles": [
+            "review",
+            "plan-review",
+            "review-individual",
+            "validation"
+          ],
+          "statuses": [
+            "backlog",
+            "in_planning",
+            "planned",
+            "in_progress",
+            "review",
+            "in_validation",
+            "pr_open",
+            "done",
+            "blocked",
+            "cancelled"
+          ],
+          "transitions": {
+            "backlog": [
+              "in_planning",
+              "planned",
+              "cancelled"
+            ],
+            "blocked": [
+              "in_planning",
+              "planned",
+              "in_progress",
+              "in_validation",
+              "pr_open",
+              "cancelled"
+            ],
+            "cancelled": [],
+            "done": [],
+            "in_planning": [
+              "planned",
+              "cancelled"
+            ],
+            "in_progress": [
+              "review",
+              "blocked",
+              "cancelled"
+            ],
+            "in_validation": [
+              "pr_open",
+              "in_progress",
+              "in_planning",
+              "blocked",
+              "cancelled"
+            ],
+            "planned": [
+              "in_progress",
+              "review",
+              "blocked",
+              "cancelled"
+            ],
+            "pr_open": [
+              "done",
+              "in_progress",
+              "review",
+              "blocked",
+              "cancelled"
+            ],
+            "review": [
+              "in_validation",
+              "pr_open",
+              "done",
+              "in_progress",
+              "in_planning",
+              "cancelled"
+            ]
+          },
+          "universal_targets": [
+            "cancelled"
+          ],
+          "wip_limits": {
+            "in_progress": 10,
+            "in_validation": 5,
+            "pr_open": 10,
+            "review": 5
+          }
+        },
+        "workflow_preset": "classic"
+      }
+    },
+    "context.md": {
+      "lines": [
+        "# Instance Context",
+        "",
+        "<!-- Every lattice instance exists for a reason — a convergence of intention",
+        "     and infrastructure. This file declares that reason. Agents and humans",
+        "     read it to understand the purpose, conventions, and relationships",
+        "     of this particular node in the lattice. -->",
+        "",
+        "## Purpose",
+        "",
+        "<!-- What does this instance observe? What project, team, or domain",
+        "     does it serve? Declare the scope of attention. -->",
+        "",
+        "## Related Instances",
+        "",
+        "<!-- If this node coordinates with other lattice instances, name them here.",
+        "     Include instance_id, instance_name, and the nature of the relationship.",
+        "     The lattice is stronger when its nodes are aware of each other. -->",
+        "",
+        "## Conventions",
+        "",
+        "<!-- Every instance develops its own rhythms — workflow conventions,",
+        "     naming patterns, status meanings that diverge from defaults.",
+        "     Record them here so that new minds arriving in this context",
+        "     can orient immediately. -->"
+      ]
+    },
+    "events/<ID-1>.jsonl": {
+      "jsonl": [
+        {
+          "actor": "human:parity",
+          "data": {
+            "priority": "medium",
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "title": "Erase me",
+            "type": "task"
+          },
+          "id": "<ID-2>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "task_created"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "from": null,
+            "to": "human:parity"
+          },
+          "id": "<ID-10>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "assignment_changed"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "from": "backlog",
+            "to": "in_planning"
+          },
+          "id": "<ID-5>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "status_changed"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "reason": "Filed twice"
+          },
+          "id": "<ID-6>",
+          "provenance": {
+            "reason": "Filed twice"
+          },
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "task_tombstoned"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "reason": "Not a duplicate after all"
+          },
+          "id": "<ID-7>",
+          "provenance": {
+            "reason": "Not a duplicate after all"
+          },
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "task_untombstoned"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "body": "Back again"
+          },
+          "id": "<ID-8>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "comment_added"
+        }
+      ]
+    },
+    "events/_lifecycle.jsonl": {
+      "jsonl": [
+        {
+          "actor": "human:parity",
+          "data": {
+            "priority": "medium",
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "title": "Erase me",
+            "type": "task"
+          },
+          "id": "<ID-2>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "task_created"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "priority": "medium",
+            "short_id": "PAR-2",
+            "status": "backlog",
+            "title": "Keep me",
+            "type": "task"
+          },
+          "id": "<ID-4>",
+          "schema_version": 1,
+          "task_id": "<ID-3>",
+          "ts": "<TS>",
+          "type": "task_created"
+        }
+      ]
+    },
+    "ids.json": {
+      "json": {
+        "map": {
+          "PAR-1": "<ID-1>",
+          "PAR-2": "<ID-3>"
+        },
+        "next_seqs": {
+          "PAR": 3
+        },
+        "schema_version": 2
+      }
+    },
+    "plans/<ID-1>.md": {
+      "lines": [
+        "# PAR-1: Erase me"
+      ]
+    },
+    "plans/<ID-3>.md": {
+      "lines": [
+        "# PAR-2: Keep me"
+      ]
+    },
+    "tasks/<ID-1>.json": {
+      "json": {
+        "acceptance_criteria": [],
+        "assigned_to": "human:parity",
+        "branch_links": [],
+        "comment_count": 1,
+        "complexity": null,
+        "created_at": "<TS>",
+        "created_by": "human:parity",
+        "custom_fields": {},
+        "description": null,
+        "done_at": null,
+        "evidence_refs": [],
+        "id": "<ID-1>",
+        "last_event_id": "<ID-8>",
+        "last_status_changed_at": "<TS>",
+        "linked_files": [],
+        "priority": "medium",
+        "relationships_out": [],
+        "reopened_count": 0,
+        "schema_version": 1,
+        "short_id": "PAR-1",
+        "status": "in_planning",
+        "tags": null,
+        "title": "Erase me",
+        "type": "task",
+        "updated_at": "<TS>",
+        "urgency": null
+      }
+    },
+    "tasks/<ID-3>.json": {
+      "json": {
+        "acceptance_criteria": [],
+        "assigned_to": null,
+        "branch_links": [],
+        "comment_count": 0,
+        "complexity": null,
+        "created_at": "<TS>",
+        "created_by": "human:parity",
+        "custom_fields": {},
+        "description": null,
+        "done_at": null,
+        "evidence_refs": [],
+        "id": "<ID-3>",
+        "last_event_id": "<ID-4>",
+        "last_status_changed_at": "<TS>",
+        "linked_files": [],
+        "priority": "medium",
+        "relationships_out": [],
+        "reopened_count": 0,
+        "schema_version": 1,
+        "short_id": "PAR-2",
+        "status": "backlog",
+        "tags": null,
+        "title": "Keep me",
+        "type": "task",
+        "updated_at": "<TS>",
+        "urgency": null
+      }
+    }
+  },
+  "description": "erase and unerase: hidden views, show, TASK_ERASED, restore, doctor",
+  "mode": "json",
+  "scenario": "tombstones",
+  "steps": [
+    {
+      "args": [
+        "init",
+        "--path",
+        "<ROOT>",
+        "--actor",
+        "human:parity",
+        "--project-code",
+        "PAR",
+        "--no-setup-claude",
+        "--no-setup-agents",
+        "--no-seed"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "",
+          ".lattice/ created — a mind now has a place to remember.",
+          "Default actor: human:parity",
+          "Project code: PAR",
+          "Workflow statuses: stage11 (10 statuses)"
+        ]
+      }
+    },
+    {
+      "args": [
+        "create",
+        "Erase me",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "acceptance_criteria": [],
+            "assigned_to": null,
+            "branch_links": [],
+            "comment_count": 0,
+            "complexity": null,
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "custom_fields": {},
+            "description": null,
+            "done_at": null,
+            "evidence_refs": [],
+            "id": "<ID-1>",
+            "last_event_id": "<ID-2>",
+            "last_status_changed_at": "<TS>",
+            "linked_files": [],
+            "priority": "medium",
+            "relationships_out": [],
+            "reopened_count": 0,
+            "schema_version": 1,
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "tags": null,
+            "title": "Erase me",
+            "type": "task",
+            "updated_at": "<TS>",
+            "urgency": null
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "create",
+        "Keep me",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "acceptance_criteria": [],
+            "assigned_to": null,
+            "branch_links": [],
+            "comment_count": 0,
+            "complexity": null,
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "custom_fields": {},
+            "description": null,
+            "done_at": null,
+            "evidence_refs": [],
+            "id": "<ID-3>",
+            "last_event_id": "<ID-4>",
+            "last_status_changed_at": "<TS>",
+            "linked_files": [],
+            "priority": "medium",
+            "relationships_out": [],
+            "reopened_count": 0,
+            "schema_version": 1,
+            "short_id": "PAR-2",
+            "status": "backlog",
+            "tags": null,
+            "title": "Keep me",
+            "type": "task",
+            "updated_at": "<TS>",
+            "urgency": null
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "status",
+        "PAR-1",
+        "in_planning",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "acceptance_criteria": [],
+            "assigned_to": "human:parity",
+            "branch_links": [],
+            "comment_count": 0,
+            "complexity": null,
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "custom_fields": {},
+            "description": null,
+            "done_at": null,
+            "evidence_refs": [],
+            "id": "<ID-1>",
+            "last_event_id": "<ID-5>",
+            "last_status_changed_at": "<TS>",
+            "linked_files": [],
+            "next_steps": {
+              "action": "write_plan",
+              "plan_path": "plans/<ID-1>.md",
+              "then": "planned"
+            },
+            "priority": "medium",
+            "relationships_out": [],
+            "reopened_count": 0,
+            "schema_version": 1,
+            "short_id": "PAR-1",
+            "status": "in_planning",
+            "tags": null,
+            "title": "Erase me",
+            "type": "task",
+            "updated_at": "<TS>",
+            "urgency": null
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "erase",
+        "PAR-1",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "VALIDATION_ERROR",
+            "message": "--reason is required."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "erase",
+        "PAR-1",
+        "--reason",
+        "Filed twice",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "acceptance_criteria": [],
+            "assigned_to": "human:parity",
+            "branch_links": [],
+            "comment_count": 0,
+            "complexity": null,
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "custom_fields": {},
+            "description": null,
+            "done_at": null,
+            "evidence_refs": [],
+            "id": "<ID-1>",
+            "last_event_id": "<ID-6>",
+            "last_status_changed_at": "<TS>",
+            "linked_files": [],
+            "priority": "medium",
+            "relationships_out": [],
+            "reopened_count": 0,
+            "schema_version": 1,
+            "short_id": "PAR-1",
+            "status": "in_planning",
+            "tags": null,
+            "title": "Erase me",
+            "tombstone_reason": "Filed twice",
+            "tombstoned": true,
+            "tombstoned_at": "<TS>",
+            "type": "task",
+            "updated_at": "<TS>",
+            "urgency": null
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "list",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": [
+            {
+              "acceptance_criteria": [],
+              "assigned_to": null,
+              "branch_links": [],
+              "comment_count": 0,
+              "complexity": null,
+              "created_at": "<TS>",
+              "created_by": "human:parity",
+              "custom_fields": {},
+              "description": null,
+              "done_at": null,
+              "evidence_refs": [],
+              "id": "<ID-3>",
+              "last_event_id": "<ID-4>",
+              "last_status_changed_at": "<TS>",
+              "linked_files": [],
+              "priority": "medium",
+              "relationships_out": [],
+              "reopened_count": 0,
+              "schema_version": 1,
+              "short_id": "PAR-2",
+              "status": "backlog",
+              "tags": null,
+              "title": "Keep me",
+              "type": "task",
+              "updated_at": "<TS>",
+              "urgency": null
+            }
+          ],
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "list",
+        "--include-tombstoned",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": [
+            {
+              "acceptance_criteria": [],
+              "assigned_to": "human:parity",
+              "branch_links": [],
+              "comment_count": 0,
+              "complexity": null,
+              "created_at": "<TS>",
+              "created_by": "human:parity",
+              "custom_fields": {},
+              "description": null,
+              "done_at": null,
+              "evidence_refs": [],
+              "id": "<ID-1>",
+              "last_event_id": "<ID-6>",
+              "last_status_changed_at": "<TS>",
+              "linked_files": [],
+              "priority": "medium",
+              "relationships_out": [],
+              "reopened_count": 0,
+              "schema_version": 1,
+              "short_id": "PAR-1",
+              "status": "in_planning",
+              "tags": null,
+              "title": "Erase me",
+              "tombstone_reason": "Filed twice",
+              "tombstoned": true,
+              "tombstoned_at": "<TS>",
+              "type": "task",
+              "updated_at": "<TS>",
+              "urgency": null
+            },
+            {
+              "acceptance_criteria": [],
+              "assigned_to": null,
+              "branch_links": [],
+              "comment_count": 0,
+              "complexity": null,
+              "created_at": "<TS>",
+              "created_by": "human:parity",
+              "custom_fields": {},
+              "description": null,
+              "done_at": null,
+              "evidence_refs": [],
+              "id": "<ID-3>",
+              "last_event_id": "<ID-4>",
+              "last_status_changed_at": "<TS>",
+              "linked_files": [],
+              "priority": "medium",
+              "relationships_out": [],
+              "reopened_count": 0,
+              "schema_version": 1,
+              "short_id": "PAR-2",
+              "status": "backlog",
+              "tags": null,
+              "title": "Keep me",
+              "type": "task",
+              "updated_at": "<TS>",
+              "urgency": null
+            }
+          ],
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "next",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "acceptance_criteria": [],
+            "assigned_to": null,
+            "branch_links": [],
+            "comment_count": 0,
+            "complexity": null,
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "custom_fields": {},
+            "description": null,
+            "done_at": null,
+            "evidence_refs": [],
+            "id": "<ID-3>",
+            "last_event_id": "<ID-4>",
+            "last_status_changed_at": "<TS>",
+            "linked_files": [],
+            "plan_content": null,
+            "priority": "medium",
+            "relationships_out": [],
+            "reopened_count": 0,
+            "schema_version": 1,
+            "short_id": "PAR-2",
+            "status": "backlog",
+            "tags": null,
+            "title": "Keep me",
+            "type": "task",
+            "updated_at": "<TS>",
+            "urgency": null
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "show",
+        "PAR-1",
+        "--compact",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "acceptance_criteria_count": 0,
+            "assigned_to": "human:parity",
+            "branch_link_count": 0,
+            "comment_count": 0,
+            "complexity": null,
+            "created_by": "human:parity",
+            "done_at": null,
+            "evidence_ref_count": 0,
+            "id": "<ID-1>",
+            "last_status_changed_at": "<TS>",
+            "linked_file_count": 0,
+            "needs_human": null,
+            "priority": "medium",
+            "relationships_out_count": 0,
+            "reopened_count": 0,
+            "retired_acceptance_criteria_count": 0,
+            "short_id": "PAR-1",
+            "status": "in_planning",
+            "tags": null,
+            "title": "Erase me",
+            "tombstoned": true,
+            "type": "task",
+            "urgency": null,
+            "valid_transitions": [
+              "planned",
+              "cancelled"
+            ]
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "comment",
+        "PAR-1",
+        "Still here?",
+        "--actor",
+        "agent:worker",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "TASK_ERASED",
+            "message": "Task PAR-1 is erased (Filed twice). Restore it with 'lattice unerase PAR-1 --reason TEXT'."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "status",
+        "PAR-1",
+        "planned",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "TASK_ERASED",
+            "message": "Task PAR-1 is erased (Filed twice). Restore it with 'lattice unerase PAR-1 --reason TEXT'."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "assign",
+        "PAR-1",
+        "agent:worker",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "TASK_ERASED",
+            "message": "Task PAR-1 is erased (Filed twice). Restore it with 'lattice unerase PAR-1 --reason TEXT'."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "erase",
+        "PAR-1",
+        "--reason",
+        "Again",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "TASK_ERASED",
+            "message": "Task PAR-1 is erased (Filed twice). Restore it with 'lattice unerase PAR-1 --reason TEXT'."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "doctor",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "findings": [],
+            "summary": {
+              "artifacts": 0,
+              "errors": 0,
+              "events": 5,
+              "resources": 0,
+              "tasks": 2,
+              "warnings": 0
+            }
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "unerase",
+        "PAR-2",
+        "--reason",
+        "Not erased",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "CONFLICT",
+            "message": "Task PAR-2 is not erased."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "unerase",
+        "PAR-1",
+        "--reason",
+        "Not a duplicate after all",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "acceptance_criteria": [],
+            "assigned_to": "human:parity",
+            "branch_links": [],
+            "comment_count": 0,
+            "complexity": null,
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "custom_fields": {},
+            "description": null,
+            "done_at": null,
+            "evidence_refs": [],
+            "id": "<ID-1>",
+            "last_event_id": "<ID-7>",
+            "last_status_changed_at": "<TS>",
+            "linked_files": [],
+            "priority": "medium",
+            "relationships_out": [],
+            "reopened_count": 0,
+            "schema_version": 1,
+            "short_id": "PAR-1",
+            "status": "in_planning",
+            "tags": null,
+            "title": "Erase me",
+            "type": "task",
+            "updated_at": "<TS>",
+            "urgency": null
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "list",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": [
+            {
+              "acceptance_criteria": [],
+              "assigned_to": "human:parity",
+              "branch_links": [],
+              "comment_count": 0,
+              "complexity": null,
+              "created_at": "<TS>",
+              "created_by": "human:parity",
+              "custom_fields": {},
+              "description": null,
+              "done_at": null,
+              "evidence_refs": [],
+              "id": "<ID-1>",
+              "last_event_id": "<ID-7>",
+              "last_status_changed_at": "<TS>",
+              "linked_files": [],
+              "priority": "medium",
+              "relationships_out": [],
+              "reopened_count": 0,
+              "schema_version": 1,
+              "short_id": "PAR-1",
+              "status": "in_planning",
+              "tags": null,
+              "title": "Erase me",
+              "type": "task",
+              "updated_at": "<TS>",
+              "urgency": null
+            },
+            {
+              "acceptance_criteria": [],
+              "assigned_to": null,
+              "branch_links": [],
+              "comment_count": 0,
+              "complexity": null,
+              "created_at": "<TS>",
+              "created_by": "human:parity",
+              "custom_fields": {},
+              "description": null,
+              "done_at": null,
+              "evidence_refs": [],
+              "id": "<ID-3>",
+              "last_event_id": "<ID-4>",
+              "last_status_changed_at": "<TS>",
+              "linked_files": [],
+              "priority": "medium",
+              "relationships_out": [],
+              "reopened_count": 0,
+              "schema_version": 1,
+              "short_id": "PAR-2",
+              "status": "backlog",
+              "tags": null,
+              "title": "Keep me",
+              "type": "task",
+              "updated_at": "<TS>",
+              "urgency": null
+            }
+          ],
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "show",
+        "PAR-1",
+        "--compact",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "acceptance_criteria_count": 0,
+            "assigned_to": "human:parity",
+            "branch_link_count": 0,
+            "comment_count": 0,
+            "complexity": null,
+            "created_by": "human:parity",
+            "done_at": null,
+            "evidence_ref_count": 0,
+            "id": "<ID-1>",
+            "last_status_changed_at": "<TS>",
+            "linked_file_count": 0,
+            "needs_human": null,
+            "priority": "medium",
+            "relationships_out_count": 0,
+            "reopened_count": 0,
+            "retired_acceptance_criteria_count": 0,
+            "short_id": "PAR-1",
+            "status": "in_planning",
+            "tags": null,
+            "title": "Erase me",
+            "type": "task",
+            "urgency": null,
+            "valid_transitions": [
+              "planned",
+              "cancelled"
+            ]
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "comment",
+        "PAR-1",
+        "Back again",
+        "--actor",
+        "agent:worker",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "acceptance_criteria": [],
+            "assigned_to": "human:parity",
+            "branch_links": [],
+            "comment_count": 1,
+            "complexity": null,
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "custom_fields": {},
+            "description": null,
+            "done_at": null,
+            "evidence_refs": [],
+            "id": "<ID-1>",
+            "last_event_id": "<ID-8>",
+            "last_status_changed_at": "<TS>",
+            "linked_files": [],
+            "priority": "medium",
+            "relationships_out": [],
+            "reopened_count": 0,
+            "schema_version": 1,
+            "short_id": "PAR-1",
+            "status": "in_planning",
+            "tags": null,
+            "title": "Erase me",
+            "type": "task",
+            "updated_at": "<TS>",
+            "urgency": null
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "delete_file": ".lattice/events/<ID-3>.jsonl"
+    },
+    {
+      "args": [
+        "doctor",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "findings": [
+              {
+                "check": "authoritative_log",
+                "level": "error",
+                "message": "Task <ID-3> has snapshot data but no authoritative event log; manual recovery is required.",
+                "task_id": "<ID-3>"
+              },
+              {
+                "check": "global_log_consistency",
+                "level": "warning",
+                "message": "Lifecycle log event <ID-4> (task_created) has no matching per-task event",
+                "task_id": "<ID-3>"
+              },
+              {
+                "check": "alias_integrity",
+                "level": "warning",
+                "message": "ids.json maps PAR-2 to a task without valid authority (<ID-3>); run lattice rebuild --all after recovery",
+                "task_id": "<ID-3>"
+              },
+              {
+                "check": "missing_task_file",
+                "level": "error",
+                "message": "Task <ID-3> is referenced by _lifecycle.jsonl but its event log is missing (events/<ID-3>.jsonl)",
+                "task_id": "<ID-3>"
+              }
+            ],
+            "summary": {
+              "artifacts": 0,
+              "errors": 2,
+              "events": 6,
+              "resources": 0,
+              "tasks": 2,
+              "warnings": 2
+            }
+          },
+          "ok": true
+        }
+      }
+    }
+  ]
+}

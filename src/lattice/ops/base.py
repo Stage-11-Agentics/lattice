@@ -82,6 +82,7 @@ from lattice.core.errors import HTTP_STATUS, OpError, StateConflict
 from lattice.core.events import create_event
 from lattice.core.ids import is_short_id, validate_actor, validate_id
 from lattice.core.origin import origin_scope
+from lattice.core.visibility import require_not_tombstoned
 from lattice.storage.operations import (
     AuthoritativeLogError,
     MutationCallback,
@@ -395,16 +396,19 @@ class OpContext:
             raise OpError("NOT_FOUND", f"Short ID '{normalized}' not found.")
         raise OpError("INVALID_ID", f"Invalid task ID format: '{raw_id}'.")
 
-    def require_active(self, task_id: str) -> dict:
+    def require_active(self, task_id: str, *, allow_tombstoned: bool = False) -> dict:
         """Return the active task's snapshot.
 
-        ``NOT_FOUND`` when the task is absent or archived; a log that cannot be
-        replayed raises ``AuthoritativeLogError``, which ``execute`` reports as
+        ``NOT_FOUND`` when the task is absent or archived; ``TASK_ERASED`` when
+        it is erased, unless *allow_tombstoned*; a log that cannot be replayed
+        raises ``AuthoritativeLogError``, which ``execute`` reports as
         ``INTEGRITY_ERROR``.
         """
         authority = read_task_authority(self.lattice_dir, task_id, allow_missing=True)
         if authority is None or authority.location != "active":
             raise OpError("NOT_FOUND", f"Task {task_id} not found.")
+        if not allow_tombstoned:
+            require_not_tombstoned(authority.snapshot)
         return authority.snapshot
 
     def event(

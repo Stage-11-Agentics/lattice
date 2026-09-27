@@ -135,6 +135,41 @@ def _collect_event_files(lattice_dir: Path) -> list[Path]:
     return result
 
 
+def _missing_task_file_findings(
+    lattice_dir: Path, lifecycle_events: list[dict], event_files: list[Path]
+) -> list[dict]:
+    """``missing_task_file``: a task named by ``_lifecycle.jsonl`` or ``ids.json``
+    with no event log, active or archived (SPEC §7). Erasing keeps every file,
+    so a missing log is always a finding."""
+    present = {f.stem for f in event_files}
+    referenced: dict[str, str] = {}
+    for ev in lifecycle_events:
+        task_id = ev.get("task_id")
+        if isinstance(task_id, str) and task_id:
+            referenced.setdefault(task_id, "_lifecycle.jsonl")
+    try:
+        id_map = json.loads((lattice_dir / "ids.json").read_text()).get("map", {})
+    except (OSError, ValueError, AttributeError):
+        id_map = {}  # an unreadable index is alias_integrity's finding
+    if isinstance(id_map, dict):
+        for target in id_map.values():
+            if isinstance(target, str) and target:
+                referenced.setdefault(target, "ids.json")
+    return [
+        {
+            "level": "error",
+            "check": "missing_task_file",
+            "message": (
+                f"Task {task_id} is referenced by {source} but its event log is missing "
+                f"(events/{task_id}.jsonl)"
+            ),
+            "task_id": task_id,
+        }
+        for task_id, source in sorted(referenced.items())
+        if task_id not in present
+    ]
+
+
 def _collect_resource_event_files(lattice_dir: Path) -> list[Path]:
     """Collect all per-resource event files (``res_*.jsonl``)."""
     result = []
@@ -1098,6 +1133,11 @@ def doctor(fix: bool, output_json: bool, offline_maintenance: bool) -> None:
                 )
 
     # -----------------------------------------------------------------
+    # Check 11: Task files referenced but missing
+    # -----------------------------------------------------------------
+    findings.extend(_missing_task_file_findings(lattice_dir, global_events, event_files))
+
+    # -----------------------------------------------------------------
     # Output
     # -----------------------------------------------------------------
     warnings = sum(1 for f in findings if f["level"] == "warning")
@@ -1211,6 +1251,10 @@ def doctor(fix: bool, output_json: bool, offline_maintenance: bool) -> None:
                 if f["check"] == "alias_integrity":
                     click.echo(f"\u26a0 {f['message']}")
 
+        for f in findings:
+            if f["check"] == "missing_task_file":
+                click.echo(f"\u26a0 {f['message']}")
+
         if resource_count > 0:
             if resource_ok:
                 click.echo(f"\u2713 All {resource_count} resource(s) consistent")
@@ -1248,6 +1292,7 @@ def _rebuild_task(lattice_dir: Path, task_id: str) -> dict:
         lambda _context: TaskMutationDecision(idempotent=True),
         source="either",
         run_hooks=False,
+        allow_tombstoned=True,
     )
     return result.snapshot
 
