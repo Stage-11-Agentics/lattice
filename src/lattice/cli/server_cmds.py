@@ -347,9 +347,9 @@ def token_revoke(token_id: str, root: str | None, is_json: bool) -> None:
     )
 
 
-def _scope_command(name: str, verb: str) -> Callable:
+def _scope_command(name: str, verb: str, action_text: str) -> Callable:
     @token_group.command(
-        name, help=f"{verb} projects or actor patterns on a token (effective next request)."
+        name, help=f"{action_text} projects or actor patterns (effective next request)."
     )
     @click.argument("token_id")
     @click.option("--project", "projects", multiple=True, help="Project slug (repeatable).")
@@ -375,5 +375,5 @@ def _scope_command(name: str, verb: str) -> Callable:
     return command
 
 
-token_grant = _scope_command("grant", "Granted")
-token_ungrant = _scope_command("ungrant", "Ungranted")
+token_grant = _scope_command("grant", "Granted", "Add")
+token_ungrant = _scope_command("ungrant", "Ungranted", "Remove")
