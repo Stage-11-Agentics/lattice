@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from lattice.core.events import create_event, get_actor_display
 from lattice.core.next import _actors_match, compute_claim_transitions, select_next
 from lattice.core.tasks import apply_event_to_snapshot
+from lattice.core.visibility import visible
 from lattice.ops.base import OpContext, OpError, OpResult, operation
 from lattice.ops.plan_gate import check_plan_gate
 from lattice.storage.hooks import execute_hooks
@@ -52,10 +53,11 @@ class NextClaim:
         # Hooks wait until the board lock is released (below).
         inner = dataclasses.replace(ctx, run_hooks=False)
         with lattice_lock(ctx.lattice_dir / "locks", NEXT_CLAIM_LOCK):
-            active = [
+            # Erased tasks are never offered, exactly as plain `next` skips them.
+            active = visible(
                 authority.snapshot
                 for authority in discover_task_authorities(ctx.lattice_dir, include_archived=False)
-            ]
+            )
             selected = select_next(active, actor=ctx.actor, ready_statuses=ready)
             if selected is None:
                 return OpResult(value=None, idempotent=True)

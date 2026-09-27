@@ -481,3 +481,153 @@ def test_weather_never_shows_an_erased_task(
     data = _json(run("weather", "--json"))["data"]
     assert data["vital_signs"]["active_tasks"] == 1
     assert [t["title"] for t in data["up_next"]] == ["Ghost planned task"]
+
+
+# ---------------------------------------------------------------------------
+# Round 3: `next` / `next --claim` (board.next_claim, H-2) skip erased tasks
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def ready(run, fill_plan):  # noqa: ANN001
+    """Create a backlog task with a real plan (the claim's plan gate passes)."""
+
+    def _ready(title: str, priority: str = "medium") -> str:
+        task_id = _json(run("create", title, "--priority", priority, *ACTOR, "--json"))["data"][
+            "id"
+        ]
+        fill_plan(task_id, title)
+        return task_id
+
+    return _ready
+
+
+@pytest.mark.parametrize("is_json", [False, True], ids=["plain", "json"])
+def test_next_claim_skips_an_erased_best_candidate(
+    initialized_root: Path, run, ready, is_json: bool
+) -> None:  # noqa: ANN001
+    best = ready("Erased best", "critical")
+    second = ready("Visible second", "high")
+    run("erase", best, "--reason", "gone", *ACTOR)
+    erased_log = initialized_root / ".lattice" / "events" / f"{best}.jsonl"
+    before = erased_log.read_bytes()
+
+    json_flag = ("--json",) if is_json else ()
+    shown = run("next", *json_flag)
+    claimed = run("next", "--claim", "--actor", "agent:w", *json_flag)
+    assert claimed.exit_code == 0, claimed.output
+    if is_json:
+        assert _json(shown)["data"]["id"] == second
+        data = _json(claimed)["data"]
+        assert data["id"] == second
+        assert data["status"] == "in_progress" and data["assigned_to"] == "agent:w"
+    else:
+        assert "Visible second" in shown.output and "Erased best" not in shown.output
+        assert "Visible second" in claimed.output and "Erased best" not in claimed.output
+    assert erased_log.read_bytes() == before
+
+    # With only the erased task left in the pool, there is nothing to claim.
+    again = run("next", "--claim", "--actor", "agent:v", "--json")
+    assert again.exit_code == 0 and _json(again)["data"] is None
+    assert erased_log.read_bytes() == before
+
+
+def test_concurrent_next_claims_skip_an_erased_task(initialized_root: Path, run, ready) -> None:  # noqa: ANN001
+    import threading
+
+    best = ready("Erased best", "critical")
+    visible_tasks = {ready(f"t{i}") for i in range(2)}
+    run("erase", best, "--reason", "gone", *ACTOR)
+    local = resolve_board(initialized_root)
+    for _ in range(5):
+        barrier = threading.Barrier(2)
+        results: list = [None, None]
+        errors: list[BaseException] = []
+
+        def claim(i: int, actor: str) -> None:
+            try:
+                barrier.wait()
+                results[i] = local.execute("board.next_claim", {}, Caller(actor=actor)).value
+            except BaseException as exc:  # noqa: BLE001 - surfaced below
+                errors.append(exc)
+
+        threads = [
+            threading.Thread(target=claim, args=(i, a))
+            for i, a in enumerate(["agent:a", "agent:b"])
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+        assert not errors, errors
+        claimed = {r["id"] for r in results}
+        assert claimed == visible_tasks  # two distinct tasks, never the erased one
+        for task_id in visible_tasks:  # back to the pool for the next round
+            local.execute(
+                "task.assign", {"task": task_id, "actor_id": "none"}, Caller(actor="agent:t")
+            )
+            local.execute(
+                "task.status",
+                {"task": task_id, "new_status": "backlog", "force": True, "reason": "r"},
+                Caller(actor="agent:t"),
+            )
+    assert "tombstoned" in _json(run("show", best, "--json"))["data"]
+
+
+def test_unarchive_of_an_erased_task_is_refused(board: dict, run) -> None:  # noqa: ANN001
+    """An erased task cannot be archived through Lattice, so an archived erased
+    task only comes from a hand-edited log; unarchive still refuses it."""
+    root, target = board["root"], board["target"]
+    run("erase", target, "--reason", "gone", *ACTOR)
+    log = root / ".lattice" / "events" / f"{target}.jsonl"
+    archived = {
+        "schema_version": 1,
+        "id": "ev_01J9ZABCDEFGHJKMNPQRSTVWXY",
+        "ts": "2026-09-27T00:00:00Z",
+        "type": "task_archived",
+        "task_id": target,
+        "actor": "human:test",
+        "data": {},
+    }
+    with log.open("a") as f:
+        f.write(json.dumps(archived, sort_keys=True, separators=(",", ":")) + "\n")
+    assert run("rebuild", target).exit_code == 0
+    assert (root / ".lattice" / "archive" / "events" / f"{target}.jsonl").exists()
+    before = _files(root)
+    for extra in ((), ("--json",)):
+        result = run("unarchive", target, *ACTOR, *extra)
+        assert result.exit_code == 1
+        if extra:
+            assert _json(result)["error"]["code"] == "TASK_ERASED"
+        else:
+            assert "is erased (gone)" in result.output
+    assert _files(root) == before
+
+
+H2_OPS = [
+    ("task.update", {"pairs": ["priority=high"]}),
+    ("task.edit_description", {"description": "new"}),
+    ("task.assign", {"actor_id": "agent:x"}),
+    ("task.needs_human", {"flag_reason": "help"}),
+    ("task.claim", {"surface": "s-1"}),
+    ("task.unclaim", {}),
+    ("task.archive", {}),
+    ("task.event", {"event_type": "x_custom"}),
+]
+
+
+@pytest.mark.parametrize(("op", "params"), H2_OPS, ids=[op for op, _ in H2_OPS])
+def test_converted_operations_refuse_an_erased_task(board: dict, op: str, params: dict) -> None:
+    """Every operation H-2 converted raises TASK_ERASED with the task snapshot
+    and writes nothing (``task.unarchive``: see the test above)."""
+    root, target = board["root"], board["target"]
+    local = resolve_board(root)
+    caller = Caller(actor="human:test")
+    local.execute("task.erase", {"task": target, "reason": "gone"}, caller)
+    before = _files(root)
+    with pytest.raises(OpError) as exc:
+        local.execute(op, {"task": target, **params}, caller)
+    assert exc.value.code == "TASK_ERASED"
+    assert exc.value.details["snapshot"]["id"] == target
+    assert exc.value.details["snapshot"]["tombstoned"] is True
+    assert _files(root) == before
