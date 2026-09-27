@@ -5,7 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import sys
-from collections.abc import Generator
+from collections.abc import Generator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal
@@ -19,7 +19,13 @@ from lattice.core.tasks import FromMismatchError, apply_event_to_snapshot, seria
 from lattice.storage.fs import atomic_write, ensure_dir, jsonl_append, unlink_path
 from lattice.storage.hooks import execute_hooks
 from lattice.storage.locks import lattice_lock, multi_lock
-from lattice.storage.short_ids import load_id_index, save_id_index
+from lattice.storage.short_ids import (
+    load_id_index,
+    max_observed_short_ids,
+    next_short_id,
+    observed_short_ids,
+    save_id_index,
+)
 
 TaskLocation = Literal["active", "archived"]
 TaskSource = Literal["active", "archived", "either", "absent"]
@@ -578,7 +584,13 @@ def _reserve_or_reconcile_short_id(
     authority: ResolvedTaskAuthority | None,
     *,
     allow_backfill: bool = False,
+    max_observed: Mapping[str, int] | None = None,
 ) -> tuple[str, bool]:
+    """Return the task's short ID, issuing one above the log floor if needed.
+
+    Runs under the ``ids_json`` lock. *max_observed* is the caller's floor
+    (a server keeps it in memory); ``None`` rescans every task log.
+    """
     index = _load_strict_id_index(lattice_dir)
     mapping: dict[str, str] = index["map"]
     next_seqs: dict[str, int] = index["next_seqs"]
@@ -625,17 +637,18 @@ def _reserve_or_reconcile_short_id(
             valid_reservations.append((parse_project_short_id(sid, prefix), sid))
         except AuthoritativeLogError:
             continue
-    if len(valid_reservations) == 1:
+    if len(valid_reservations) == 1 and valid_reservations[0][1] not in observed_short_ids(
+        lattice_dir
+    ):
+        # A reservation left by an interrupted create, not yet in any log.
         return valid_reservations[0][1], False
 
     seq = next_seqs.get(prefix, 1)
     if not isinstance(seq, int) or seq < 1:
         raise AuthoritativeLogError(f"ids.json next_seqs[{prefix!r}] is malformed")
-    while f"{prefix}-{seq}" in mapping:
-        seq += 1
-    short_id = f"{prefix}-{seq}"
-    mapping[short_id] = task_id
-    next_seqs[prefix] = seq + 1
+    if max_observed is None:
+        max_observed = max_observed_short_ids(lattice_dir)
+    short_id = next_short_id(index, prefix, task_id, max_observed)
     save_id_index(lattice_dir, index)
     return short_id, True
 
@@ -653,6 +666,7 @@ def mutate_task(
     may_emit_lifecycle: bool = False,
     project_prefix: str | None = None,
     allow_short_id_backfill: bool = False,
+    short_id_floor: Mapping[str, int] | None = None,
 ) -> TaskMutationResult:
     """Replay, validate, mutate, and materialize one task under stable locks.
 
@@ -660,6 +674,9 @@ def mutate_task(
     after the locks are released (a server passes ``False`` and still passes
     *config* for its rules). ``expect_last_event_id``: raise ``CONFLICT``
     before the callback runs unless the task's last event is this one.
+    ``short_id_floor``: the highest short-ID sequence per prefix already in
+    the event history, when the caller keeps it (a server); ``None`` rescans
+    every task log under the allocation lock.
     """
     locks_dir = lattice_dir / "locks"
     lock_keys = [f"events_{task_id}", f"tasks_{task_id}"]
@@ -716,6 +733,7 @@ def mutate_task(
                 project_prefix,
                 authority,
                 allow_backfill=allow_short_id_backfill,
+                max_observed=short_id_floor,
             )
 
         context = TaskMutationContext(
