@@ -20,8 +20,10 @@ it. In order:
 5. Run doctor's board checks on the staged copy, which holds exactly the bytes
    imported; any error refuses (``INTEGRITY_ERROR``) with every finding.
 6. Rebuild the task-derived files with the short-ID log floor (SPEC §5).
-7. Seal the board (journal at a new epoch, head 0) and, under ``admin.lock``,
-   rename it into place if the slug is still free.
+7. Seal the board (journal at a new epoch, head 0), make the staging directory
+   its audit repository as ``project create`` does (SPEC §8.10; the first
+   commit names the new epoch), and, under ``admin.lock``, rename it into place
+   if the slug is still free.
 
 Any refusal or failure removes the staging directory, so nothing is created.
 """
@@ -39,13 +41,14 @@ from pathlib import Path, PurePosixPath
 from lattice.core.errors import OpError
 from lattice.core.ids import generate_instance_id
 from lattice.server.admin import (
+    _create_audit_repo,
     admin_lock,
     check_slug,
     project_dir,
     require_root,
     seal_new_board,
 )
-from lattice.server.config import PROJECTS_DIR
+from lattice.server.config import PROJECTS_DIR, SERVER_JSON, ServerConfigError, load_config
 from lattice.server.journal import HOSTED_DIR
 from lattice.storage.fs import LATTICE_DIR, atomic_write, ensure_dir
 from lattice.storage.integrity import DoctorReport, check_board, repair_task_derived_files
@@ -371,6 +374,10 @@ def import_project(root: Path, slug: str, source: Path) -> dict:
     final = project_dir(root, slug)
     if final.exists():
         raise OpError("CONFLICT", f"Project '{slug}' already exists at {final}.")
+    try:
+        audit_config = load_config(root).audit
+    except ServerConfigError as exc:
+        raise OpError("VALIDATION_ERROR", f"{root / SERVER_JSON}: {exc}") from exc
     source = Path(source)
     lattice_fd = _open_source(source)
     staging = root / PROJECTS_DIR / f".importing-{slug}-{generate_instance_id()[5:]}"
@@ -402,6 +409,7 @@ def import_project(root: Path, slug: str, source: Path) -> dict:
                 journal = seal_new_board(board)
             finally:
                 release_owner_flock(fd)
+        audit_state = _create_audit_repo(staging, audit_config, epoch=journal.epoch)
         with admin_lock(root):
             if final.exists():
                 raise OpError("CONFLICT", f"Project '{slug}' already exists at {final}.")
@@ -419,6 +427,7 @@ def import_project(root: Path, slug: str, source: Path) -> dict:
         "project_code": _project_code(final / LATTICE_DIR),
         "epoch": journal.epoch,
         "head_seq": 0,
+        "audit": audit_state,
         "copied": len(scan.copied_files),
         "not_copied": [{"path": p, "class": c} for p, c in scan.not_copied],
         "non_canonical": _non_canonical(scan),

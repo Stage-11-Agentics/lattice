@@ -18,14 +18,25 @@ from click.testing import CliRunner
 
 from lattice.cli.main import cli
 from lattice.core.errors import OpError
-from lattice.server import admin, importer
+from lattice.server import admin, audit, importer
+from lattice.server.config import AuditConfig
 from lattice.server.journal import Journal
-from lattice.server.testing import running_server
+from lattice.server.testing import running_server, write_config
 from lattice.storage.board_init import create_board
 from lattice.storage.integrity import check_board
 from lattice.storage.operations import AuthoritativeLogError
 from lattice.storage.ownership import board_state
 from lattice.templates import load_review_template
+from tests.test_server.audit_helpers import (
+    close,
+    commits,
+    direct_project,
+    durable_files,
+    git_out,
+    head_tree,
+    install_git_shim,
+    log_lines,
+)
 from tests.test_server.conftest import board_hash, mint
 
 OVERRIDE = "# Our own code-review prompt\n\nReview {task_id} the house way.\n"
@@ -602,8 +613,9 @@ def _fail(exc: BaseException) -> Callable[..., None]:
             "INTEGRITY_ERROR",
         ),
         ("seal_new_board", OSError(5, "I/O error"), None),
+        ("_create_audit_repo", OSError(5, "I/O error"), None),
     ],
-    ids=["copy", "doctor", "repair", "seal"],
+    ids=["copy", "doctor", "repair", "seal", "audit"],
 )
 def test_a_failure_at_any_step_removes_the_staging_board(
     root: Path,
@@ -640,3 +652,95 @@ def test_a_slug_taken_during_the_import_is_refused_at_publication(
     config = json.loads((root / "projects" / "imp" / ".lattice" / "config.json").read_text())
     assert config["project_code"] == "WON"
     assert not list((root / "projects").glob(".importing-*"))
+
+
+# ---------------------------------------------------------------------------
+# SPEC §8.10: the audit repository, made at import exactly as at create
+# ---------------------------------------------------------------------------
+
+needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+
+
+def _first_commit(directory: Path) -> str:
+    return git_out(directory, "log", "--format=%an <%ae>|%cn <%ce>|%B").strip()
+
+
+@needs_git
+def test_import_makes_the_audit_repo_as_create_does(root: Path, source: Path) -> None:
+    data = importer.import_project(root, "imp", source)
+    created = admin.create_project(root, "fresh")
+    assert data["audit"] == created["audit"] == {"repo": True, "reason": None}
+    directory = root / "projects" / "imp"
+    assert (directory / ".gitignore").read_text() == audit.gitignore_text()
+    assert head_tree(directory) == durable_files(directory / ".lattice")
+    # The one commit create makes, naming the import's new epoch at head 0.
+    fresh = _first_commit(root / "projects" / "fresh")
+    assert _first_commit(directory) == fresh.replace(created["epoch"], data["epoch"])
+    assert audit.last_audited(directory) == (data["epoch"], 0)
+    assert not list((root / "projects").glob(".importing-*"))
+
+
+@needs_git
+def test_the_first_load_of_an_imported_project_adds_nothing(root: Path, source: Path) -> None:
+    importer.import_project(root, "imp", source)
+    directory = root / "projects" / "imp"
+    before = (commits(directory), head_tree(directory), (directory / ".gitignore").read_text())
+    project, stream = direct_project(root, "imp", AuditConfig(debounce_seconds=0.05))
+    try:
+        assert not any(line["event"] == "audit_repo_created" for line in log_lines(stream))
+    finally:
+        close(project)  # the final commit, had the load changed anything
+    after = (commits(directory), head_tree(directory), (directory / ".gitignore").read_text())
+    assert after == before
+
+
+def test_import_with_audit_disabled_makes_no_repo_as_create(root: Path, source: Path) -> None:
+    write_config(root, {"audit": {"enabled": False}})
+    data = importer.import_project(root, "imp", source)
+    created = admin.create_project(root, "fresh")
+    reason = "audit.enabled is false in server.json"
+    assert data["audit"] == created["audit"] == {"repo": False, "reason": reason}
+    for slug in ("imp", "fresh"):
+        assert not (root / "projects" / slug / ".git").exists()
+        assert not (root / "projects" / slug / ".gitignore").exists()
+
+
+def test_import_without_git_makes_no_repo_as_create(
+    root: Path, source: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    empty = tmp_path / "empty-path"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+    data = importer.import_project(root, "imp", source)
+    created = admin.create_project(root, "fresh")
+    assert data["audit"] == created["audit"] == {"repo": False, "reason": "git is not on PATH"}
+    assert not (root / "projects" / "imp" / ".git").exists()
+
+
+@needs_git
+def test_a_git_failure_at_import_is_reported_and_the_first_load_makes_the_repo(
+    root: Path, source: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shim = install_git_shim(tmp_path, monkeypatch)
+    shim.fail_once("init")
+    data = importer.import_project(root, "imp", source)
+    assert data["audit"]["repo"] is False and "init" in data["audit"]["reason"]
+    directory = root / "projects" / "imp"
+    assert (directory / ".lattice" / "config.json").is_file()
+    assert not (directory / ".git").exists()
+    project, stream = direct_project(root, "imp", AuditConfig(debounce_seconds=0.05))
+    try:
+        assert any(line["event"] == "audit_repo_created" for line in log_lines(stream))
+    finally:
+        close(project)
+    assert head_tree(directory) == durable_files(directory / ".lattice")
+
+
+def test_a_broken_server_json_refuses_before_the_source_is_read(
+    root: Path, tmp_path: Path
+) -> None:
+    write_config(root, {"audit": {"debounce_seconds": "soon"}})
+    with pytest.raises(OpError) as raised:
+        importer.import_project(root, "imp", tmp_path / "missing")
+    assert raised.value.code == "VALIDATION_ERROR" and "server.json" in raised.value.message
+    _assert_nothing_created(root)
