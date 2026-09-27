@@ -180,9 +180,9 @@ def test_a_fresh_clone_offline_says_there_is_no_cache(
 def test_long_running_commands_read_without_holding_the_lock(
     hosted_env: HostedEnv, repo: Path
 ) -> None:
-    """``dashboard``, ``watch``, and ``wait`` run until stopped: holding the shared
-    read lock for their lifetime would starve every sync, and they keep their
-    cache fresh themselves, so routing gives them neither lock nor catch-up."""
+    """``dashboard``, ``watch``, and ``wait`` run until stopped: they catch up
+    before their first read like any command, but holding the shared read lock
+    for their lifetime would starve every sync, so they read without it."""
     import click
 
     from lattice.cli.helpers import require_root
@@ -202,7 +202,7 @@ def test_long_running_commands_read_without_holding_the_lock(
                 with click.Context(click.Command(name), parent=root_ctx, info_name=name):
                     require_root(False)
                     assert bool(session._locks) is held, name
-                    assert bool(session._fresh) is held, name
+                    assert session._fresh, name  # caught up either way
             session.reset_process_state()
     finally:
         os.chdir(previous)

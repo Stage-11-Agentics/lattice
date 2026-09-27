@@ -178,8 +178,15 @@ def mark_fresh(hosted: Hosted) -> None:
     _fresh.add(hosted.root.resolve())
 
 
-def ensure_fresh(hosted: Hosted) -> None:
-    """Catch the cache up once per process (SPEC §9.5); see the module docstring."""
+def ensure_fresh(hosted: Hosted, *, defer_to_running_sync: bool = False) -> None:
+    """Catch the cache up once per process (SPEC §9.5); see the module docstring.
+
+    *defer_to_running_sync* (the commands that run until stopped): when a synced
+    cache is already being caught up by another sync (a follower's, another
+    command's), do not queue behind it for the probe budget. That sync brings
+    the cache to the server's head, and the command's own reads wait for its
+    apply on the shared read lock, so they see the state before or after it.
+    """
     key = hosted.root.resolve()
     if key in _fresh:
         return
@@ -192,7 +199,31 @@ def ensure_fresh(hosted: Hosted) -> None:
     if state.get("epoch") and in_unreachable_window(hosted):
         unreachable_notice(hosted, state.get("synced_at"))
         return
+    if defer_to_running_sync and state.get("epoch") and _sync_in_progress(hosted):
+        return
     catch_up_and_report(hosted)
+
+
+def _sync_in_progress(hosted: Hosted) -> bool:
+    """Whether another process or thread holds this cache's sync lock now."""
+    import fcntl
+
+    path = hosted.lattice_dir / "locks" / "cache_sync.lock"
+    try:
+        fd = os.open(path, os.O_RDWR)
+    except OSError:
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    except OSError:
+        return False
+    else:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(fd)
 
 
 def catch_up_and_report(hosted: Hosted, *, after_write: bool = False) -> bool:
@@ -422,14 +453,14 @@ def prepare_read(hosted: Hosted, *, lock: bool = True) -> Path:
     """Everything a read on *hosted* needs first; returns its cache ``.lattice/``.
 
     ``lock=False`` is for a command that runs until stopped (``watch``,
-    ``wait``, ``dashboard``): it keeps its cache fresh itself (the follower's
-    syncs) and takes the read lock around each of its own reads, so here it
-    gets neither a catch-up nor a lifetime lock, only the routing, the version
-    lines, and terminal safety.
+    ``wait``, ``dashboard``): it still catches up before its first read (a
+    binding-only checkout is bootstrapped; routing errors are typed), but it
+    takes no lifetime lock, since it would starve every sync on the machine;
+    its own reads take the lock around each read. It does not queue behind a
+    sync already in flight (see :func:`ensure_fresh`).
     """
     scrub_stdout()
-    if lock:
-        ensure_fresh(hosted)
+    ensure_fresh(hosted, defer_to_running_sync=not lock)
     announce_versions(hosted)
     if lock:
         hold_read_lock(hosted)
