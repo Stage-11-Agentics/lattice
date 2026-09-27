@@ -188,7 +188,9 @@ def catch_up_and_report(hosted: Hosted, *, after_write: bool = False) -> bool:
             f"run `lattice sync` when {hosted.remote} is back.",
             {"root": str(hosted.root)},
         )
-    if outcome.kind == "unreachable":
+    if outcome.kind == "unreachable" and not after_write:
+        # Not after a write: the server has just answered, so the next command
+        # should try again rather than skip the network.
         open_unreachable_window(hosted)
     if outcome.synced_at is None and not after_write:
         raise _never_synced(hosted, outcome.detail)

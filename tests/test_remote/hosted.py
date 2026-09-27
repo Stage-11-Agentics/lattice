@@ -30,6 +30,7 @@ from tests.test_remote import sync_shim
 REMOTE = "team"
 PROJECT = "demo"
 TOKEN_ENV = "LATTICE_TOKEN_TEAM"
+FAKE_LATTICE = "/nonexistent/fake-lattice"
 
 
 def git(cwd: Path, *args: str) -> str:
@@ -176,3 +177,58 @@ def chmod_writable(root: Path) -> None:
             with_path = Path(dirpath) / name
             if not with_path.is_symlink():
                 with_path.chmod(0o700)
+
+
+@dataclass
+class SpawnRecorder:
+    """Stands in for the detached ``lattice code-review`` / ``plan-review`` spawn."""
+
+    real_popen: Any = None
+    calls: list[dict[str, Any]] = field(default_factory=list)
+
+    def __call__(self, cmd: list[str], **kwargs: Any) -> Any:
+        # ``auto_review.subprocess`` is the subprocess module itself: pass
+        # everything but the review spawn through.
+        if not (isinstance(cmd, list) and cmd and cmd[0] == FAKE_LATTICE):
+            return self.real_popen(cmd, **kwargs)
+        self.calls.append({"cmd": list(cmd), **kwargs})
+
+        class _Proc:
+            pid = 40000 + len(self.calls)
+
+        return _Proc()
+
+    @property
+    def review_types(self) -> list[str]:
+        return [c["cmd"][1] for c in self.calls]
+
+
+@pytest.fixture()
+def spawns(monkeypatch: pytest.MonkeyPatch) -> SpawnRecorder:
+    from lattice.cli import auto_review
+
+    recorder = SpawnRecorder(real_popen=auto_review.subprocess.Popen)
+    monkeypatch.setattr(auto_review.subprocess, "Popen", recorder)
+    monkeypatch.setattr(auto_review, "find_lattice_executable", lambda: FAKE_LATTICE)
+    return recorder
+
+
+def walk_to(cwd: Path, task: str, *statuses: str, actor: str = "agent:dev") -> None:
+    """Move *task* through *statuses*, writing a plan before ``planned``."""
+    for status in statuses:
+        if status == "planned":
+            plan = cwd / f".plan-{task}.md"
+            plan.write_text(f"# {task}\n\n## Approach\n\n- Do the work.\n")
+            result = run_cli(cwd, "plan", "write", task, "--file", str(plan), "--actor", actor)
+            assert result.exit_code == 0, result.output
+            plan.unlink()
+        result = run_cli(cwd, "status", task, status, "--actor", actor, "--json")
+        assert result.exit_code == 0, result.output
+
+
+def events_of(env: HostedEnv, short_id: str) -> list[dict]:
+    """The server board's events for *short_id* (read from the server's files)."""
+    ids = json.loads((env.board / "ids.json").read_text())
+    task_id = ids["map"][short_id]
+    lines = (env.board / "events" / f"{task_id}.jsonl").read_text().splitlines()
+    return [json.loads(line) for line in lines]
