@@ -68,7 +68,11 @@ def test_a_server_killed_after_a_commit_and_restarted_applies_the_write_once(
 
         writer = threading.Thread(target=write)
         writer.start()
-        assert wait_for(lambda: len(_journal(board)) == 2, timeout=15)  # committed on disk
+        # The server says so from the post-fsync seam: the line is committed
+        # (journal bytes alone are visible before their fsync).
+        committed = Path(str(pause) + ".committed")
+        assert wait_for(committed.exists, timeout=15)
+        assert len(_journal(board)) == 2
         assert list((board / "hosted" / "undo").glob("*.jsonl"))  # finish never ran
         first.kill()  # SIGKILL at the commit point
         first.communicate(timeout=10)

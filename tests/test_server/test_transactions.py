@@ -27,8 +27,8 @@ import asyncio
 import errno
 import json
 import shutil
+from types import SimpleNamespace
 from collections.abc import Callable, Iterator
-from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -273,30 +273,72 @@ def wire_publication(project: Project) -> list[int]:
     return closed
 
 
-@contextmanager
-def follower(project: Project) -> Iterator[Subscriber]:
-    """A connected stream subscriber on *project* (no HTTP: the broadcaster's queue)."""
-    loop = asyncio.new_event_loop()
-    subscriber = Subscriber(loop, 1000)
-    assert project.broadcaster.subscribe(subscriber, 64)
-    try:
-        yield subscriber
-    finally:
-        project.broadcaster.unsubscribe(subscriber)
-        loop.close()
+class Follower:
+    """A connected follower of *project*, without HTTP: a broadcaster subscriber
+    whose every accepted entry counts as delivered (``abort()`` clears only the
+    undelivered queue), and which, once its stream is ended, reconnects from
+    its ``Last-Event-ID`` through the stream endpoint's own resume path
+    (``app._stream_start``: subscribe, then replay under the work lock)."""
+
+    LIMITS = SimpleNamespace(max_stream_subscribers_per_project=64, replay_reset_entries=1000)
+
+    def __init__(self, project: Project) -> None:
+        self.project = project
+        #: The head when it connected: it follows from here.
+        self.start = project.journal.head_seq if project.journal else 0
+        self.loop = asyncio.new_event_loop()
+        self.delivered: list[int] = []
+        self.reconnects = 0
+        self.subscriber = self._subscribe()
+
+    def _new_subscriber(self) -> Subscriber:
+        follower = self
+
+        class Recording(Subscriber):
+            def offer(self, item: tuple[str, int, bytes]) -> bool:
+                accepted = super().offer(item)
+                if accepted and item[0] == JOURNAL:
+                    follower.delivered.append(item[1])
+                return accepted
+
+        return Recording(self.loop, 1000)
+
+    def _subscribe(self) -> Subscriber:
+        subscriber = self._new_subscriber()
+        assert self.project.broadcaster.subscribe(subscriber, 64)
+        return subscriber
+
+    def reconnect_if_ended(self) -> None:
+        """Resume from the last delivered entry, as a real follower would."""
+        if not self.subscriber.aborted:
+            return
+        from lattice.server.app import _stream_start
+
+        self.reconnects += 1
+        project = self.project
+        journal = project.journal
+        since = self.delivered[-1] if self.delivered else self.start
+        subscriber = self._new_subscriber()
+        with project.locked():
+            resume = (True, journal.epoch, since, journal.hash_at(since))
+            frames, _head = _stream_start(project, self.LIMITS, subscriber, resume)
+        for frame in frames:
+            text = frame.decode()
+            assert "event: reset" not in text, "a resume inside the epoch must replay"
+            ident = next(x for x in text.splitlines() if x.startswith("id: "))
+            self.delivered.append(int(ident.split(":")[2]))
+        self.subscriber = subscriber
+
+    def close(self) -> None:
+        self.project.broadcaster.unsubscribe(self.subscriber)
+        self.loop.close()
 
 
-def assert_follower_missed_no_seq(
-    subscriber: Subscriber, after: int, head: int, case: str
-) -> None:
-    """Every committed seq after *after* reached the follower in order, with no gap;
-    or its stream was ended (a failed publication), and it resumes from its
-    ``Last-Event-ID`` with what it had, which is itself gap-free (SPEC §8.9)."""
-    seqs = [seq for kind, seq, _ in subscriber.take() if kind == JOURNAL]
-    if subscriber.aborted:
-        assert seqs == list(range(after + 1, after + 1 + len(seqs))), case
-    else:
-        assert seqs == list(range(after + 1, head + 1)), case
+def assert_follower_missed_no_seq(follower: Follower, head: int, case: str) -> None:
+    """Every committed seq after the follower connected reached it, in order, with
+    no gap and no duplicate, through the final head, reconnecting after any
+    ended stream (SPEC §8.9, AC-4)."""
+    assert follower.delivered == list(range(follower.start + 1, head + 1)), case
 
 
 # Every-boundary fault walk with real fsyncs: slow CI runners need more than the 15 s default.
@@ -345,11 +387,9 @@ def test_every_boundary_leaves_the_operation_wholly_present_or_absent(
         root, project, build = _prepared(fresh, projects, scenario)
         closed = wire_publication(project)
         before = state(root)
-        head_before = project.journal.head_seq
         write = build()
         error: BaseException | None = None
-        stream = ExitStack()
-        subscriber = stream.enter_context(follower(project))
+        stream = Follower(project)
         with monkeypatch.context() as m:
             injector = install(m, Injector(point, occurrence, short=point.endswith(".write")))
             try:
@@ -387,11 +427,14 @@ def test_every_boundary_leaves_the_operation_wholly_present_or_absent(
             assert after["board"] != before["board"], case
             # A failed publication closes the streams so followers replay.
             assert closed == ([lines[-1]["seq"]] if point == "publication" else []), case
+        # A follower whose stream a failed publication ended reconnects now.
+        stream.reconnect_if_ended()
+        assert stream.reconnects == (1 if point == "publication" else 0), case
         discover_task_authorities(board_of(root))
         doctor_clean(root)
         assert_next_write_commits_and_replays(root, project)
         # In the in-process branch a connected follower misses no seq (AC-4, H-22).
-        assert_follower_missed_no_seq(subscriber, head_before, project.journal.head_seq, case)
+        assert_follower_missed_no_seq(stream, project.journal.head_seq, case)
         stream.close()
 
 

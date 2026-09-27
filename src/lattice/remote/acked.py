@@ -1,14 +1,15 @@
 """Acknowledged writes and ``lattice remote verify`` (SPEC §9.2, §9.5).
 
-After the server acknowledges a write, :meth:`HostedBoard.execute` appends
-one line to the checkout's ``cache/acked.jsonl``::
+As soon as the server acknowledges a write, before the post-write sync,
+:meth:`HostedBoard.execute` appends one line to the checkout's
+``cache/acked.jsonl``::
 
     {"op_id", "project", "epoch", "seq", "at"}
 
-``epoch`` is the cache's epoch after the post-write catch-up, when that
-catch-up reached the write's ``seq`` (the op response carries no epoch);
-otherwise ``null``. It is informational: verification asks the server by
-``op_id``.
+``epoch`` is the epoch the cache knew at that moment (the op response carries
+none), or ``null``. It is informational: verification asks the server by
+``op_id``. An append first cuts a torn final line (a client killed
+mid-append), so it never joins one.
 
 :func:`verify` asks the server, through op status, about every line. A line
 the server does not hold (``not_found``) is reported and kept, so it is
@@ -80,14 +81,36 @@ def record(cache_dir: Path, *, op_id: str, project: str, epoch: str | None, seq:
     }
     data = (json.dumps(line, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
     with _locked(cache_dir):
-        fd = os.open(cache_dir / ACKED_FILE, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        fd = os.open(cache_dir / ACKED_FILE, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o600)
         try:
+            _cut_torn_tail(fd)
             view = memoryview(data)
             while view:
                 view = view[os.write(fd, view) :]
             os.fsync(fd)
         finally:
             os.close(fd)
+
+
+def _cut_torn_tail(fd: int) -> None:
+    """Truncate an unterminated final line (a client killed mid-append), so the
+    next record starts a line of its own instead of joining the torn one."""
+    size = os.fstat(fd).st_size
+    if size == 0:
+        return
+    if os.pread(fd, 1, size - 1) == b"\n":
+        return
+    start = max(0, size - 65536)
+    while True:
+        chunk = os.pread(fd, size - start, start)
+        cut = chunk.rfind(b"\n")
+        if cut >= 0:
+            os.ftruncate(fd, start + cut + 1)
+            return
+        if start == 0:
+            os.ftruncate(fd, 0)
+            return
+        start = max(0, start - 65536)
 
 
 def read(cache_dir: Path) -> list[dict]:
@@ -124,7 +147,8 @@ class Report:
 
 
 def verify(cache_dir: Path, status: Callable[[str], dict]) -> Report:
-    """Check every line against the server (*status* is op status for one op_id).
+    """Check every line against the server (*status* is op status for one op_id),
+    one lookup per line.
 
     Asks the server first, then rewrites the file under the lock: lines that
     arrived meanwhile are kept unchanged, and nothing changes if any lookup
@@ -133,22 +157,22 @@ def verify(cache_dir: Path, status: Callable[[str], dict]) -> Report:
     now = _now()
     cutoff = now - timedelta(days=RETENTION_DAYS)
     report = Report()
-    verdicts: dict[str, bool] = {}
-    for entry in read(cache_dir):
+    # One lookup per ledger line (a replayed op may be recorded twice; each
+    # line is checked on its own), keyed by the line's position and content.
+    verdicts: dict[tuple[int, str], bool] = {}
+    for number, entry in enumerate(read(cache_dir)):
         at = _parse(entry.get("at"))
         if at is not None and at < cutoff:
             continue
-        op_id = entry["op_id"]
-        if op_id not in verdicts:
-            verdicts[op_id] = status(op_id).get("state") == "committed"
+        verdicts[_key(number, entry)] = status(entry["op_id"]).get("state") == "committed"
     with _locked(cache_dir):
         kept: list[dict] = []
-        for entry in read(cache_dir):
+        for number, entry in enumerate(read(cache_dir)):
             at = _parse(entry.get("at"))
             if at is not None and at < cutoff:
                 report.dropped += 1
                 continue
-            held = verdicts.get(entry["op_id"])
+            held = verdicts.get(_key(number, entry))
             if held is None:  # acknowledged after this verify asked: next time
                 kept.append(entry)
                 continue
@@ -161,6 +185,12 @@ def verify(cache_dir: Path, status: Callable[[str], dict]) -> Report:
             kept.append(entry)
         _rewrite(cache_dir, kept)
     return report
+
+
+def _key(number: int, entry: dict) -> tuple[int, str]:
+    """A ledger line's identity between verify's two reads: appends only add at
+    the end, so a line keeps its position; its content guards the rest."""
+    return number, json.dumps(entry, sort_keys=True)
 
 
 def _rewrite(cache_dir: Path, lines: list[dict]) -> None:

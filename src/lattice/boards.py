@@ -288,18 +288,24 @@ class HostedBoard:
                 session.restore_unreachable_window(self.hosted)
             raise
         session.close_unreachable_window(self.hosted)
+        # Acknowledged: into the ledger before anything else can fail or die
+        # (the post-write sync included), so verify always knows of it (SPEC §9.5).
+        self._record_ack(data.get("op_id") or body["op_id"], data.get("seq"))
         result = result_from_json(data.get("result") or {})
         session.catch_up_and_report(self.hosted, after_write=True)
         session.mark_fresh(self.hosted)
-        self._record_ack(data.get("op_id") or body["op_id"], data.get("seq"))
         if self.remote.run_board_hooks:
             self._run_hooks(result, config)
         return result
 
     def _record_ack(self, op_id: str, seq: Any) -> None:
         """Append the acknowledged write to ``cache/acked.jsonl`` for ``lattice remote
-        verify`` (SPEC §9.5). The write already succeeded: a failure to record it
-        is one line on stderr, never an error."""
+        verify`` (SPEC §9.5), before the post-write sync. The write already
+        succeeded: any failure to record it is one line on stderr, never an error.
+
+        ``epoch`` is the epoch the cache knew when the server acknowledged the
+        write (the op response carries none); verify asks by ``op_id``, so it is
+        informational."""
         import json
         import sys
 
@@ -307,16 +313,17 @@ class HostedBoard:
 
         cache = self.cache_dir / "cache"
         try:
-            state = json.loads((cache / "state.json").read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            state = {}
-        synced = isinstance(seq, int) and isinstance(state.get("head_seq"), int)
-        epoch = state.get("epoch") if synced and state["head_seq"] >= seq else None
-        try:
+            try:
+                state = json.loads((cache / "state.json").read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                state = None
+            epoch = state.get("epoch") if isinstance(state, dict) else None
+            if not isinstance(epoch, str):
+                epoch = None
             acked.record(cache, op_id=op_id, project=self.hosted.project, epoch=epoch, seq=seq)
-        except OSError as exc:
+        except Exception as exc:  # noqa: BLE001 - never fail a write the server applied
             print(
-                f"lattice: could not record operation {op_id} in cache/acked.jsonl ({exc}); "
+                f"lattice: could not record operation {op_id} in cache/acked.jsonl ({exc!r}); "
                 "lattice remote verify will not check it",
                 file=sys.stderr,
             )

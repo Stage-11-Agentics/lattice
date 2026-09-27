@@ -468,14 +468,11 @@ def test_unload_runs_the_same_phases_before_releasing_the_lease(
 
 def test_a_half_written_request_waits_until_it_is_complete(root: Path) -> None:
     """A non-atomic writer's partial request is never answered as malformed while
-    it is being written; a request left malformed past the grace period is."""
-    import os
-
-    with running_server(root) as server:
+    it is being written; once complete it runs."""
+    with running_server(root):
         board = root / "projects" / "alpha" / ".lattice"
-        folder = board / "hosted" / "control"
         request = json.dumps({"action": "set-config", "set": {"review_mode": "triple"}})
-        partial = folder / "01J9Z0000000000000000000AB.json"
+        partial = board / "hosted" / "control" / "01J9Z0000000000000000000AB.json"
         partial.write_text(request[:20])  # half written
         time.sleep(0.3)  # several poll periods (0.05 s in tests)
         assert not partial.with_suffix(".done").exists()
@@ -484,11 +481,37 @@ def test_a_half_written_request_waits_until_it_is_complete(root: Path) -> None:
         assert wait_for(lambda: partial.with_suffix(".done").exists(), timeout=5)
         assert json.loads(partial.with_suffix(".done").read_text())["ok"] is True
 
-        stale = folder / "01J9Z0000000000000000000AC.json"
-        stale.write_text("{not json")
-        old = time.time() - control.INCOMPLETE_GRACE_SECONDS - 1
-        os.utime(stale, (old, old))  # abandoned long ago: malformed, answered
-        assert wait_for(lambda: stale.with_suffix(".done").exists(), timeout=5)
-        answer = json.loads(stale.with_suffix(".done").read_text())
+
+def test_a_malformed_request_expires_however_its_mtime_moves(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review round 2 (push 2): the grace runs on this process's monotonic clock
+    from first sight. A malformed oldest request with a far-future mtime, touched
+    again and again, is still answered once the grace passes, and a later valid
+    request is processed at once meanwhile."""
+    import os
+
+    monkeypatch.setattr(control, "INCOMPLETE_GRACE_SECONDS", 1.0)
+    with running_server(root):
+        folder = root / "projects" / "alpha" / ".lattice" / "hosted" / "control"
+        folder.mkdir(exist_ok=True)
+        bad = folder / "01J9Z0000000000000000000AC.json"  # the oldest request
+        bad.write_text("{not json")
+        future = time.time() + 10 * 365 * 86400
+        os.utime(bad, (future, future))
+        good = folder / "01J9Z0000000000000000000AD.json"
+        control._write_private(
+            good, json.dumps({"action": "set-config", "set": {"review_mode": "triple"}}).encode()
+        )
+        assert wait_for(lambda: good.with_suffix(".done").exists(), timeout=2)
+        assert json.loads(good.with_suffix(".done").read_text())["ok"] is True
+        assert not bad.with_suffix(".done").exists()  # still within its grace
+
+        started = time.monotonic()
+        while not bad.with_suffix(".done").exists() and time.monotonic() - started < 5:
+            if bad.exists():
+                os.utime(bad, (future + 1, time.time() + 3600))  # touched: no extension
+            time.sleep(0.05)
+        answer = json.loads(bad.with_suffix(".done").read_text())
         assert answer["ok"] is False and answer["error"]["code"] == "VALIDATION_ERROR"
-        assert server.project("alpha").state == "loaded"
+        assert time.monotonic() - started < 3  # the 1 s grace, plus poll periods

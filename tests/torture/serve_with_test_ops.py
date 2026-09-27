@@ -6,9 +6,10 @@ product has no hook for this: the launcher imports the test operations
 itself, then runs the ordinary CLI.
 
 ``LATTICE_TEST_PAUSE_AFTER_COMMIT=<path>``: while the file *path* exists,
-every transaction sleeps right after its journal line is fsynced (the
-commit point) and before anything else, so a test can kill the process at
-exactly that instant (AC-46's kill-and-restart case).
+every transaction, right after its journal line is fsynced (the commit
+point, the ``finish.accept`` seam) and before anything else, creates
+``<path>.committed`` and sleeps, so a test that waits for that marker kills
+the process at exactly that instant (AC-46's kill-and-restart case).
 """
 
 from __future__ import annotations
@@ -29,7 +30,10 @@ if PAUSE:
     from lattice.server import transactions
 
     def _pause_after_commit(point: str, **_ctx: object) -> None:
-        if point == "finish.accept":
+        if point == "finish.accept" and os.path.exists(PAUSE):
+            # Reached only after the journal write and its fsync succeeded.
+            with open(PAUSE + ".committed", "w") as marker:
+                marker.write("committed\n")
             deadline = time.monotonic() + 30
             while os.path.exists(PAUSE) and time.monotonic() < deadline:
                 time.sleep(0.02)

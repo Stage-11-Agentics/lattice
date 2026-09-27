@@ -41,39 +41,72 @@ HOP_BY_HOP = {"connection", "keep-alive", "transfer-encoding", "content-length"}
 
 class Dropper:
     """Forwards everything to the server; drops the response of the next
-    ``drops`` operation POSTs after they commit, running ``meanwhile`` first."""
+    ``drops`` operation POSTs after they commit, running ``meanwhile`` first.
+
+    A dropped response is kept in ``captured`` (by ``op_id``): it is exactly
+    what the client should have received. With ``answer_captured`` set, an
+    operation POST whose ``op_id`` was captured is answered with that original
+    response and never reaches the server, so a second run renders the
+    original result, for comparison with the replayed run.
+    """
 
     def __init__(self, target: str) -> None:
         self.target = target.removeprefix("http://")
         self.drops = 0
         self.dropped: list[str] = []
+        self.captured: dict[str, tuple[int, list[tuple[str, str]], bytes]] = {}
+        self.answer_captured = False
         self.meanwhile: Callable[[], None] | None = None
         self.url = ""
 
     def forward(self, handler: BaseHTTPRequestHandler) -> None:
         length = int(handler.headers.get("Content-Length") or 0)
         body = handler.rfile.read(length) if length else None
+        is_op = handler.command == "POST" and "/ops/" in handler.path
+        op_id = json.loads(body or b"{}").get("op_id") if is_op else None
+        if is_op and self.answer_captured and op_id in self.captured:
+            self._answer(handler, *self.captured[op_id])
+            return
         headers = {k: v for k, v in handler.headers.items() if k.lower() not in HOP_BY_HOP}
         conn = http.client.HTTPConnection(self.target, timeout=60)
         conn.request(handler.command, handler.path, body=body, headers=headers)
         response = conn.getresponse()
         data = response.read()
+        status, response_headers = response.status, response.getheaders()
         conn.close()
-        is_op = handler.command == "POST" and "/ops/" in handler.path
         if is_op and self.drops > 0:
             self.drops -= 1
-            self.dropped.append(json.loads(body or b"{}").get("op_id"))
+            self.dropped.append(op_id)
+            self.captured.setdefault(op_id, (status, response_headers, data))
             if self.meanwhile is not None:
                 self.meanwhile()
             handler.close_connection = True
             return  # committed on the server; the client never hears back
-        handler.send_response(response.status)
-        for name, value in response.getheaders():
+        self._answer(handler, status, response_headers, data)
+
+    @staticmethod
+    def _answer(
+        handler: BaseHTTPRequestHandler, status: int, headers: list[tuple[str, str]], data: bytes
+    ) -> None:
+        handler.send_response(status)
+        for name, value in headers:
             if name.lower() not in HOP_BY_HOP:
                 handler.send_header(name, value)
         handler.send_header("Content-Length", str(len(data)))
         handler.end_headers()
         handler.wfile.write(data)
+
+
+@contextmanager
+def pinned_op_id(monkeypatch: pytest.MonkeyPatch, op_id: str) -> Iterator[None]:
+    """The next operation the client sends uses *op_id*; later ones get fresh ids."""
+    from lattice import boards
+    from lattice.core.ids import generate_op_id
+
+    pending = [op_id]
+    with monkeypatch.context() as m:
+        m.setattr(boards, "generate_op_id", lambda: pending.pop() if pending else generate_op_id())
+        yield
 
 
 @contextmanager
@@ -181,27 +214,47 @@ VARIANTS = [
 ]
 
 
+def _acks(repo: Path, op_id: str) -> int:
+    return sum(1 for x in acked.read(repo / ".lattice" / "cache") if x["op_id"] == op_id)
+
+
 @pytest.mark.parametrize(("family", "as_json"), VARIANTS)
-def test_a_lost_response_is_retried_and_replayed(
-    family: str, as_json: bool, hosted_env: HostedEnv, repo: Path
+def test_a_lost_response_is_retried_replayed_and_rendered_as_the_original(
+    family: str,
+    as_json: bool,
+    hosted_env: HostedEnv,
+    repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Drop the response, write from another client, retry with the same op_id:
+    replayed verbatim, applied once. The command's output equals what the
+    original response renders (the captured response, answered to a second run
+    under the same op_id), and the same client effects run (the ack)."""
+    from lattice.core.ids import generate_op_id
+
     if family == "resource acquire":
         assert run_cli(repo, "resource", "create", "db", "--actor", "agent:dev").exit_code == 0
     args = CASES[family](repo) + (["--json"] if as_json else [])
+    op_id = generate_op_id()
     with dropping_proxy(hosted_env) as dropper:
         dropper.drops = 1
         dropper.meanwhile = other_client_write(hosted_env)
-        result = run_cli(repo, *args)
-    assert result.exit_code == 0, result.output
-    (op_id,) = dropper.dropped
-    _replayed_once(hosted_env, op_id)
+        with pinned_op_id(monkeypatch, op_id):
+            replayed = run_cli(repo, *args)
+        assert replayed.exit_code == 0, replayed.output
+        assert dropper.dropped == [op_id]
+        _replayed_once(hosted_env, op_id)
+        assert _acks(repo, op_id) == 1
+
+        dropper.answer_captured = True  # what the lost response would have shown
+        with pinned_op_id(monkeypatch, op_id):
+            original = run_cli(repo, *args)
+        assert original.exit_code == 0, original.output
+    assert replayed.stdout == original.stdout
     if as_json:
-        assert json.loads(result.stdout)["ok"] is True
-    else:
-        assert result.stdout.strip()
-    # The acknowledged write is recorded once, with the op_id it was retried under.
-    ack = [x for x in acked.read(repo / ".lattice" / "cache") if x["op_id"] == op_id]
-    assert len(ack) == 1 and ack[0]["project"] == PROJECT
+        assert json.loads(replayed.stdout)["ok"] is True
+    assert _acks(repo, op_id) == 2  # the client effect ran in both, once each
+    assert [x["op_id"] for x in journal(hosted_env)].count(op_id) == 1
 
 
 def test_a_replayed_create_renders_exactly_the_committed_result(
@@ -220,42 +273,78 @@ def test_a_replayed_create_renders_exactly_the_committed_result(
 
 
 def test_a_status_that_records_an_auto_review_uses_two_op_ids(
-    hosted_env: HostedEnv, repo: Path, spawns: SpawnRecorder
+    hosted_env: HostedEnv, repo: Path, spawns: SpawnRecorder, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The status's response is lost and replayed; its client effects (the review
+    spawn and the auto-review record, under a second op_id) run as they would
+    have after the original response, and the output is the original's."""
+    from lattice.core.ids import generate_op_id
+
     admin.set_project_config(
         hosted_env.server_root, PROJECT, {"auto_code_review_on_transition": "true"}
     )
     walk_to(repo, "DEM-1", "in_planning", "planned", "in_progress")
+    status_op = generate_op_id()
+    args = ("status", "DEM-1", "review", "--actor", "agent:dev", "--json")
+    before = spawns.review_types.count("code-review")
+    records_before = len(journal(hosted_env))
     with dropping_proxy(hosted_env) as dropper:
         dropper.drops = 1
-        result = run_cli(repo, "status", "DEM-1", "review", "--actor", "agent:dev", "--json")
-    assert result.exit_code == 0, result.output
-    (status_op,) = dropper.dropped
-    _replayed_once(hosted_env, status_op)
-    # The walk's plan review ran earlier; this transition's code review ran once.
-    assert spawns.review_types.count("code-review") == 1
-    tail = journal(hosted_env)[-2:]
+        with pinned_op_id(monkeypatch, status_op):
+            replayed = run_cli(repo, *args)
+        assert replayed.exit_code == 0, replayed.output
+        _replayed_once(hosted_env, status_op)
+        after_replay = journal(hosted_env)
+        assert spawns.review_types.count("code-review") == before + 1
+
+        dropper.answer_captured = True
+        with pinned_op_id(monkeypatch, status_op):
+            original = run_cli(repo, *args)
+        assert original.exit_code == 0, original.output
+    rendered = [json.loads(r.stdout)["data"] for r in (replayed, original)]
+    for data in rendered:
+        # Fields each run's own client effect sets: the review it spawned (its
+        # pid, from the spawn stub) and the auto-review record it then wrote
+        # (the task's last event). Everything from the status result matches.
+        data["auto_review"].pop("pid")
+        data["next_steps"].pop("pid")
+        data.pop("last_event_id")
+    assert rendered[0] == rendered[1]
+    assert spawns.review_types.count("code-review") == before + 2  # once per run
+    tail = after_replay[-2:]
     assert [x["op"] for x in tail] == ["task.status", "task.record_auto_review"]
     assert tail[0]["op_id"] == status_op and tail[1]["op_id"] != status_op
+    records = [
+        x for x in journal(hosted_env)[records_before:] if x["op"] == "task.record_auto_review"
+    ]
+    assert len({x["op_id"] for x in records}) == len(records) == 2  # one per run, both applied
 
 
 def test_outcome_unknown_names_the_op_and_op_status_finds_it(
     hosted_env: HostedEnv, repo: Path
 ) -> None:
+    """The request is sent and committed, then the server goes down (in place of
+    its answer) and stays down past retry_seconds: OUTCOME_UNKNOWN naming the
+    op_id. With the server back, op-status reports it committed, once."""
     with dropping_proxy(hosted_env) as dropper:
-        dropper.drops = 10**6  # never answers: down past retry_seconds
         hosted_env.write_remote(url=dropper.url, retry_seconds=1)
+        dropper.drops = 1
+        dropper.meanwhile = hosted_env.stop  # down right after the commit
         result = run_cli(repo, "create", "Unknown", "--actor", "agent:dev", "--json")
+        down_retries = len(dropper.dropped)
+        hosted_env.start()  # back, on a new port (the proxy still points at the old one)
     assert result.exit_code == 1
     error = json.loads(result.stdout)["error"]
     assert error["code"] == "OUTCOME_UNKNOWN"
-    op_id = dropper.dropped[0]
+    (op_id,) = dropper.dropped
+    assert down_retries == 1
     assert op_id in error["message"] and "lattice remote op-status" in error["message"]
-    assert set(dropper.dropped) == {op_id}  # every retry reused it
+    assert "retrying operation " + op_id in result.stderr  # it did retry, same op_id
     shown = run_cli(repo, "remote", "op-status", op_id, "--json")
+    assert shown.exit_code == 0, shown.output
     assert json.loads(shown.stdout)["data"]["state"] == "committed"
     assert [x["op_id"] for x in journal(hosted_env)].count(op_id) == 1
-    # Not acknowledged, so not recorded for verify.
+    # Never acknowledged, so not in the ledger verify checks.
     assert op_id not in {x["op_id"] for x in acked.read(repo / ".lattice" / "cache")}
 
 
@@ -304,3 +393,107 @@ def test_a_torn_acked_line_is_skipped(tmp_path: Path) -> None:
     with open(cache / acked.ACKED_FILE, "ab") as fh:
         fh.write(b'{"op_id": "op_torn')
     assert [x["op_id"] for x in acked.read(cache)] == ["op_01J9Z0000000000000000000AA"]
+
+
+# ---------------------------------------------------------------------------
+# The ledger itself (review round 2, push 2)
+# ---------------------------------------------------------------------------
+
+
+def test_the_ack_is_recorded_before_the_post_write_sync(
+    hosted_env: HostedEnv, repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A client that dies during the post-write sync has already recorded the
+    acknowledged write, so verify still checks it."""
+    from lattice.remote import session
+
+    class Died(BaseException):
+        pass
+
+    def die(*_args: Any, **_kwargs: Any) -> bool:
+        raise Died("killed during the post-write sync")
+
+    before = len(acked.read(repo / ".lattice" / "cache"))
+    with monkeypatch.context() as m:
+        m.setattr(session, "catch_up_and_report", die)
+        with pytest.raises(Died):
+            run_cli(repo, "create", "Dies syncing", "--actor", "agent:dev")
+    lines = acked.read(repo / ".lattice" / "cache")
+    assert len(lines) == before + 1
+    assert lines[-1]["op_id"] == journal(hosted_env)[-1]["op_id"]
+
+
+def test_a_record_after_a_torn_tail_keeps_both_writes(tmp_path: Path) -> None:
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    first, second = "op_01J9Z0000000000000000000AA", "op_01J9Z0000000000000000000BB"
+    acked.record(cache, op_id=first, project="p", epoch="ep_x", seq=1)
+    with open(cache / acked.ACKED_FILE, "ab") as fh:
+        fh.write(b'{"op_id":"op_torn')  # a client killed mid-append
+    acked.record(cache, op_id=second, project="p", epoch="ep_x", seq=2)
+    assert [x["op_id"] for x in acked.read(cache)] == [first, second]
+    report = acked.verify(cache, lambda _op: {"state": "committed"})
+    assert report.checked == report.confirmed == 2
+
+
+def test_a_torn_only_ledger_is_cut_before_the_next_record(tmp_path: Path) -> None:
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / acked.ACKED_FILE).write_bytes(b'{"op_id":"op_torn')
+    acked.record(cache, op_id="op_01J9Z0000000000000000000CC", project="p", epoch=None, seq=3)
+    assert [x["op_id"] for x in acked.read(cache)] == ["op_01J9Z0000000000000000000CC"]
+
+
+def test_an_odd_cache_state_never_fails_a_write(
+    hosted_env: HostedEnv, repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from lattice.boards import resolve_board
+
+    board = resolve_board(repo)
+    state = repo / ".lattice" / "cache" / "state.json"
+    original = state.read_bytes()
+    mode = state.stat().st_mode
+    state.chmod(0o600)
+    try:
+        state.write_text("[]\n")  # valid JSON, not an object
+        board._record_ack("op_01J9Z0000000000000000000DD", 7)
+    finally:
+        state.write_bytes(original)
+        state.chmod(mode & 0o777)
+    line = acked.read(repo / ".lattice" / "cache")[-1]
+    assert line["op_id"] == "op_01J9Z0000000000000000000DD" and line["epoch"] is None
+    assert capsys.readouterr().err == ""
+
+
+def test_a_failing_ledger_is_one_warning_line_and_the_write_succeeds(
+    hosted_env: HostedEnv, repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(*_args: Any, **_kwargs: Any) -> None:
+        raise ValueError("ledger unusable")
+
+    monkeypatch.setattr(acked, "record", broken)
+    result = run_cli(repo, "create", "Still written", "--actor", "agent:dev", "--json")
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["data"]["title"] == "Still written"
+    warnings = [x for x in result.stderr.splitlines() if "cache/acked.jsonl" in x]
+    assert len(warnings) == 1 and "lattice remote verify will not check it" in warnings[0]
+
+
+def test_verify_asks_op_status_once_per_ledger_line(tmp_path: Path) -> None:
+    """Two lines for one op_id (a replayed write acknowledged twice) are two
+    lookups, each line judged on its own."""
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    op = "op_01J9Z0000000000000000000EE"
+    acked.record(cache, op_id=op, project="p", epoch="ep_x", seq=1)
+    acked.record(cache, op_id=op, project="p", epoch="ep_x", seq=1)
+    acked.record(cache, op_id="op_01J9Z0000000000000000000FF", project="p", epoch=None, seq=2)
+    asked: list[str] = []
+
+    def status(op_id: str) -> dict:
+        asked.append(op_id)
+        return {"state": "committed"}
+
+    report = acked.verify(cache, status)
+    assert asked == [op, op, "op_01J9Z0000000000000000000FF"]
+    assert report.checked == report.confirmed == 3
