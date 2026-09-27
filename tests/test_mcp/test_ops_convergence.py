@@ -330,17 +330,28 @@ class TestLatticeRoot:
 
 
 # ---------------------------------------------------------------------------
-# Bound checkout (H-11): runs once ``resolve_board`` routes a bound checkout
-# to a ``HostedBoard`` (SPEC §9.2, §9.3, §9.5). Until then it is skipped.
+# Bound checkout (H-11): the same tools on a checkout routed to a real
+# in-process server (SPEC §9.2, §9.3, §9.5).
 # ---------------------------------------------------------------------------
 
-requires_binding = pytest.mark.skipif(
-    not hasattr(lattice.boards, "HostedBoard"),
-    reason="H-11 (client binding) has not landed: resolve_board has no HostedBoard yet",
-)
+
+def _read_lock_free(checkout: Path) -> bool:
+    """Whether no process holds the cache's read lock (an exclusive try succeeds)."""
+    import fcntl
+    import os
+
+    fd = os.open(checkout / LATTICE_DIR / "locks" / "cache_rw.lock", os.O_RDWR)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return False
+    else:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return True
+    finally:
+        os.close(fd)
 
 
-@requires_binding
 def test_mcp_tools_work_on_a_bound_checkout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -362,6 +373,7 @@ def test_mcp_tools_work_on_a_bound_checkout(
         monkeypatch.setenv("LATTICE_REMOTE_TEAM_URL", server.url)
         monkeypatch.setenv("LATTICE_REMOTE_TEAM_TOKEN", token)
         lroot = str(checkout)
+        assert isinstance(lattice.boards.resolve_board(checkout), lattice.boards.HostedBoard)
 
         created = lattice_create(title="Hosted", actor=ACTOR, lattice_root=lroot)
         assert created["short_id"] == "ALP-1"
@@ -379,6 +391,22 @@ def test_mcp_tools_work_on_a_bound_checkout(
         assert shown["status"] == "planned"
         assert shown["events"][-1]["type"] == "comment_added"
         assert [t["short_id"] for t in lattice_list(lattice_root=lroot)] == ["ALP-1"]
+        # No call leaves the cache's read lock held: a sync could not apply.
+        assert _read_lock_free(checkout)
+
+        # Each call catches up, even in this long-lived process: a write another
+        # client makes on the server is visible to the next MCP read.
+        status, _, body = server.op(
+            "alpha",
+            "task.comment",
+            {"task": "ALP-1", "text": "elsewhere"},
+            token=token,
+            actor="human:alice",
+        )
+        assert status == 200, body
+        shown = lattice_show(task_id="ALP-1", lattice_root=lroot)
+        assert [e["data"].get("body") for e in shown["events"][-2:]] == ["from mcp", "elsewhere"]
+        assert _read_lock_free(checkout)
 
         # The write happened on the server's board, not in the checkout.
         server_events = (

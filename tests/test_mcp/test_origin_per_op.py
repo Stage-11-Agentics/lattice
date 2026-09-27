@@ -42,8 +42,9 @@ def _checkout(path: Path, code: str, branch: str) -> Path:
 class McpProcess:
     """A ``lattice-mcp`` subprocess driven over newline-delimited JSON-RPC."""
 
-    def __init__(self, cwd: Path) -> None:
+    def __init__(self, cwd: Path, extra_env: dict[str, str] | None = None) -> None:
         env = {k: v for k, v in os.environ.items() if not k.startswith("LATTICE_")}
+        env.update(extra_env or {})
         self.proc = subprocess.Popen(
             [sys.executable, "-c", "from lattice.mcp.server import main; main()"],
             cwd=cwd,
@@ -169,3 +170,57 @@ def test_linked_worktree_writes_the_primary_board_and_names_itself(
         (str(linked.resolve()), "feat/PRI-1-wt"),
     ]
     assert not (linked / LATTICE_DIR).exists()
+
+
+def test_one_process_local_and_bound_checkouts(tmp_path: Path) -> None:
+    """The same, with one checkout bound to a server (H-11): the server's event
+    names the bound checkout's worktree and the branch current at each write."""
+    from lattice.server import tokens
+    from lattice.server.testing import make_root, running_server
+
+    local = _checkout(tmp_path / "local", "LOC", "main")
+    bound = tmp_path / "bound"
+    bound.mkdir()
+    _git(bound, "init", "-q", "-b", "main")
+    (bound / ".lattice-remote.json").write_text('{"remote": "team", "project": "alpha"}\n')
+    _git(bound, "add", ".lattice-remote.json")
+    _git(bound, "commit", "-q", "-m", "bind")
+    root = make_root(tmp_path / "server", projects={"alpha": {"code": "ALP"}})
+    token = tokens.create_token(root, user="human:alice", machine="laptop", all_projects=True)
+    cwd = tmp_path / "server-cwd"
+    cwd.mkdir()
+
+    with running_server(root) as server:
+        mcp = McpProcess(
+            cwd,
+            {"LATTICE_REMOTE_TEAM_URL": server.url, "LATTICE_REMOTE_TEAM_TOKEN": token["token"]},
+        )
+        try:
+            hosted = mcp.call("lattice_create", title="H", actor=ACTOR, lattice_root=str(bound))
+            mcp.call("lattice_create", title="L", actor=ACTOR, lattice_root=str(local))
+            _git(bound, "checkout", "-q", "-b", "feat/ALP-1-switch")
+            mcp.call(
+                "lattice_comment", task_id="ALP-1", text="x", actor=ACTOR, lattice_root=str(bound)
+            )
+            shown = mcp.call("lattice_show", task_id="ALP-1", lattice_root=str(bound))
+        finally:
+            mcp.close()
+
+    server_log = root / "projects" / "alpha" / LATTICE_DIR / "events" / f"{hosted['id']}.jsonl"
+    origins = [json.loads(line)["origin"] for line in server_log.read_text().splitlines()]
+    assert [(o["op"], o["reported"]["worktree"], o["reported"]["branch"]) for o in origins] == [
+        ("task.create", str(bound.resolve()), "main"),
+        ("task.comment", str(bound.resolve()), "feat/ALP-1-switch"),
+    ]
+    assert all(o["authenticated"]["user"] == "human:alice" for o in origins)
+    assert shown["events"][-1]["type"] == "comment_added"
+    local_origin = _origins(local, _only_task(local))[0]
+    assert (local_origin["reported"]["worktree"], local_origin["reported"]["branch"]) == (
+        str(local.resolve()),
+        "main",
+    )
+
+
+def _only_task(checkout: Path) -> str:
+    (path,) = (checkout / LATTICE_DIR / "events").glob("task_*.jsonl")
+    return path.stem
