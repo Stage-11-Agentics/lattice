@@ -213,7 +213,7 @@ def running_server(
         timeout_graceful_shutdown=5,
         server_header=False,
     )
-    server = uvicorn.Server(uv_config)
+    server = _test_server(uv_config)
     thread = threading.Thread(
         target=server.run, kwargs={"sockets": [sock]}, name=f"lattice-server-{port}", daemon=True
     )
@@ -243,6 +243,52 @@ def running_server(
         thread.join(timeout=10)
         sock.close()
         os.close(fd)
+
+
+def _test_server(config: Any) -> Any:
+    """A ``uvicorn.Server`` that stops in milliseconds.
+
+    uvicorn checks ``should_exit`` every 0.1 s, then sleeps a fixed 0.1 s in
+    ``shutdown`` and 0.1 s per poll while connections and tasks drain: about
+    0.2 s per stop. The default suite starts some 400 test servers, so those
+    sleeps were about 75 s of its serial time (G-9). Same steps, 10 ms polls.
+    """
+    import asyncio
+
+    import uvicorn
+
+    class TestServer(uvicorn.Server):
+        async def main_loop(self) -> None:
+            counter = 0
+            should_exit = await self.on_tick(counter)
+            while not should_exit:
+                for _ in range(10):  # uvicorn's 0.1 s tick, checking every 10 ms
+                    if self.should_exit:
+                        return
+                    await asyncio.sleep(0.01)
+                counter = (counter + 1) % 864000
+                should_exit = await self.on_tick(counter)
+
+        async def shutdown(self, sockets: list[socket.socket] | None = None) -> None:
+            for listener in self.servers:
+                listener.close()
+            for sock in sockets or []:
+                sock.close()
+            state = self.server_state
+            for connection in list(state.connections):
+                connection.shutdown()
+            deadline = time.monotonic() + self.config.timeout_graceful_shutdown
+            await asyncio.sleep(0.01)
+            while (state.connections or state.tasks) and not self.force_exit:
+                if time.monotonic() > deadline:
+                    for task in state.tasks:
+                        task.cancel(msg="Task cancelled, timeout graceful shutdown exceeded")
+                    break
+                await asyncio.sleep(0.01)
+            if not self.force_exit:
+                await self.lifespan.shutdown()
+
+    return TestServer(config)
 
 
 def wait_for(predicate: Any, timeout: float = 5.0, interval: float = 0.02) -> bool:
