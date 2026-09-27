@@ -130,13 +130,16 @@ def _update_pairs(fields: dict) -> list[str]:
 
     Values are text, as on the command line: a list of tags is joined with
     commas, a number or boolean is written as JSON, and ``None``, a list for
-    any other field, or an object is refused.
+    any other field, or an object is refused, as is a name holding ``=``
+    (it would split into another field).
     """
     pairs: list[str] = []
     for name, value in fields.items():
+        if "=" in name:
+            raise LatticeToolError("VALIDATION_ERROR", f"Invalid field name: '{name}'.")
         if name == "tags" and isinstance(value, list) and all(isinstance(t, str) for t in value):
             value = ",".join(value)
-        elif isinstance(value, bool | int | float) and not isinstance(value, str):
+        elif isinstance(value, bool | int | float):
             value = json.dumps(value)
         elif not isinstance(value, str):
             raise LatticeToolError(

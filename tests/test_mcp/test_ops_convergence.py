@@ -190,6 +190,8 @@ class TestWritesAreOperations:
         with pytest.raises(LatticeToolError) as info:
             lattice_update(task_id=task["id"], actor=ACTOR, fields={"custom_fields.x": {"a": 1}})
         assert info.value.code == "VALIDATION_ERROR"
+        with pytest.raises(LatticeToolError, match="Invalid field name"):
+            lattice_update(task_id=task["id"], actor=ACTOR, fields={"custom_fields.a=b": "c"})
 
     def test_no_private_rules_or_storage_writes_in_mcp(self) -> None:
         """The tools module reaches the board only through operations and reads."""
