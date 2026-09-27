@@ -22,7 +22,7 @@ import json
 import os
 import socket
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -31,7 +31,7 @@ from typing import Any, TypeVar
 from lattice.core.config import serialize_config
 from lattice.core.errors import OpError
 from lattice.core.ids import generate_op_id
-from lattice.ops.base import Caller, OpResult, check_path_component, execute
+from lattice.ops.base import Authorizer, Caller, OpResult, execute
 from lattice.server import control
 from lattice.server.floors import ShortIdFloors
 from lattice.server.journal import (
@@ -85,9 +85,11 @@ class WriteRequest:
     caller: Caller  # origin carries op_id, reported, authenticated
     token_id: str | None
     fp: str
-    #: Authorizes a ``--name`` session actor's permission identity
-    #: (``agent:<base_name>``) before anything is written (SPEC §3.7 step 3).
-    authorize_identity: Callable[[str], None] | None = None
+    #: SPEC §3.7 step 3, run by ``execute`` after it validates the session
+    #: name and resolves the actor, and before anything is written (the
+    #: session touch included): authorizes the permission identity (a session
+    #: actor's is ``agent:<base_name>``) against the token.
+    authorize: Authorizer | None = None
 
 
 @dataclass
@@ -378,10 +380,6 @@ class Project:
         """
         tracker = MutationTracker(self.board, request.op)
         caller = request.caller
-        if caller.actor_name is not None and request.authorize_identity is not None:
-            # SPEC §3.1, §3.7: validate the name, resolve, authorize; execute touches.
-            check_path_component(caller.actor_name, "session name")
-            request.authorize_identity(self.session_permission_identity(caller.actor_name))
         try:
             result = execute(
                 self.board,
@@ -390,6 +388,7 @@ class Project:
                 caller,
                 run_hooks=False,
                 on_mutation=tracker,
+                authorize=request.authorize,
                 short_id_floor=self.floors.max_observed,
             )
         except BaseException:
@@ -477,24 +476,6 @@ class Project:
                 op_id=op_id,
                 paths=tracker.relative_paths(),
             )
-
-    def session_permission_identity(self, actor_name: str) -> str:
-        """``agent:<base_name>`` of the session *actor_name* names (read only).
-
-        The stand-in for H-5's step-3 hook: under the work lock nothing can
-        change the session between this read and ``execute``'s own. The caller
-        has already checked *actor_name* is one safe path component.
-        """
-        from lattice.core.actors import build_actor_dict
-        from lattice.storage.sessions import resolve_session
-
-        session = resolve_session(self.board, actor_name)
-        if session is None:
-            raise OpError(
-                "SESSION_NOT_FOUND",
-                f"No active session named '{actor_name}'. Start one with 'lattice session start'.",
-            )
-        return f"agent:{build_actor_dict(session)['base_name']}"
 
     # -- server-started transactions -----------------------------------------
 

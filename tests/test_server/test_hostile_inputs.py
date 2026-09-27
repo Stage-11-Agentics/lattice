@@ -58,3 +58,14 @@ def test_hostile_project_slugs(server: ServerHandle, root: Path, slug: str) -> N
     assert {k: v for k, v in after.items() if k != "server_status.json"} == {
         k: v for k, v in before.items() if k != "server_status.json"
     }
+
+
+@pytest.mark.parametrize("name", ["../../tmp/x", "../../../tokens.json", "a/b", "..", "x\x00"])
+def test_hostile_resource_names_are_refused(server: ServerHandle, root: Path, name: str) -> None:
+    token = mint(root)
+    before = _outside_target(root)
+    for op in ("resource.create", "resource.acquire"):
+        status, _, body = server.op("alpha", op, {"name": name}, token=token)
+        assert status == 400 and body["error"]["code"] == "VALIDATION_ERROR", (op, body)
+    assert _outside_target(root) == before
+    assert not list((root / "projects" / "alpha" / ".lattice" / "resources").iterdir())

@@ -165,3 +165,40 @@ def test_token_create_warns_when_no_pattern_matches_the_user(root: Path) -> None
     )
     assert result.exit_code == 0
     assert "Warning: no --actor pattern matches human:alice" in result.output
+
+
+def test_session_operations_run_as_the_tokens_default_actor(
+    server: ServerHandle, root: Path
+) -> None:
+    token = mint(root)  # [human:alice, agent:*]: default actor human:alice
+    status, _, body = server.op(
+        "alpha",
+        "session.start",
+        {"model": "m", "framework": "pytest", "name": "Orion"},
+        token=token,
+    )
+    assert status == 200, body
+    name = body["data"]["result"]["value"]["name"]
+    status, _, body = _create(server, token, actor_name=name)
+    assert status == 200 and _created_by(body)["base_name"] == "Orion"
+    status, _, body = server.op("alpha", "session.end", {"name": name}, token=token)
+    assert status == 200, body
+    wildcard = mint(root, actors=["agent:*"])
+    status, _, body = server.op(
+        "alpha", "session.start", {"model": "m", "framework": "pytest"}, token=wildcard
+    )
+    assert status == 400 and body["error"]["code"] == "MISSING_ACTOR"
+
+
+def test_a_session_actor_is_authorized_before_the_session_is_touched(
+    server: ServerHandle, root: Path
+) -> None:
+    permitted = _session(root, "alpha", "Argus")
+    refused = _session(root, "alpha", "Vesper")
+    token = mint(root, actors=["agent:Argus"])
+    sessions = root / "projects" / "alpha" / ".lattice" / "sessions"
+    before = {n: (sessions / f"{n}.json").stat().st_ino for n in (permitted, refused)}
+    assert _create(server, token, actor_name=refused)[0] == 403
+    assert (sessions / f"{refused}.json").stat().st_ino == before[refused]  # never rewritten
+    assert _create(server, token, actor_name=permitted)[0] == 200
+    assert (sessions / f"{permitted}.json").stat().st_ino != before[permitted]  # touched

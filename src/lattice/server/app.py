@@ -474,7 +474,7 @@ def _parse_envelope(
         caller=caller,
         token_id=token.id,
         fp=fp,
-        authorize_identity=token.authorize_actor,
+        authorize=lambda identity, _caller: token.authorize_actor(identity),
     )
     return write, body
 
