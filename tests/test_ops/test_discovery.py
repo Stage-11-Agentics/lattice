@@ -68,3 +68,11 @@ def test_broken_plugin_is_skipped_with_a_message(
 
     assert "task.create" in names
     assert "failed to load operation plugin 'broken'" in capsys.readouterr().err
+
+
+def test_concurrent_first_lookups_see_the_whole_registry(fresh_discovery: None) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(lambda _i: set(registered_operations()), range(8)))
+    assert all("task.status" in names for names in results)

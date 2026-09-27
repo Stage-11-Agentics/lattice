@@ -11,11 +11,13 @@ import importlib
 import os
 import pkgutil
 import sys
+import threading
 from importlib.metadata import entry_points
 
 OPERATIONS_GROUP = "lattice.operations"
 
 _discovered = False
+_lock = threading.RLock()
 
 
 def discover() -> None:
@@ -28,8 +30,14 @@ def discover() -> None:
     global _discovered
     if _discovered:
         return
-    _discovered = True
+    with _lock:
+        if _discovered:
+            return
+        _discover()
+        _discovered = True
 
+
+def _discover() -> None:
     import lattice.ops as package
 
     for info in sorted(pkgutil.iter_modules(package.__path__), key=lambda m: m.name):
