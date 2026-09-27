@@ -55,6 +55,12 @@ Rules of the pattern:
   apply without the operation handling them.
 - ``value`` is the ``data`` object the command prints under ``--json``,
   minus fields the CLI adds from client-side effects.
+- A ``Params`` field that names a file (a resource or session name) is listed
+  in the class attribute ``path_params`` (``{field: label}``); ``execute``
+  checks each with :func:`check_path_component` after parsing, before the
+  actor is resolved (SPEC §3.1).
+- An operation that takes no actor (``session start``, ``set-project-code``)
+  sets the class attribute ``no_actor = True``.
 - Operations live one per module under ``lattice/ops/`` (discovered, so adding
   one edits no shared file) or in a plugin package that names its module in
   the ``lattice.operations`` entry-point group.
@@ -90,6 +96,7 @@ from lattice.storage.ownership import check_board_writable as check_board_marker
 
 __all__ = [
     "HTTP_STATUS",
+    "Authorizer",
     "Caller",
     "CommonParams",
     "OpContext",
@@ -101,7 +108,9 @@ __all__ = [
     "get_operation",
     "operation",
     "parse_params",
+    "permission_identity",
     "registered_operations",
+    "resolve_actor",
 ]
 
 # ---------------------------------------------------------------------------
@@ -339,7 +348,10 @@ class OpResult:
     ``replayed``: a server returned a stored result for a retried ``op_id``.
     ``paths``: every durable path the call wrote, appended, unlinked, or
     created as a directory, relative to ``.lattice/`` and sorted (SPEC §8.5);
-    set by :func:`execute`, empty on a result an operation builds itself."""
+    set by :func:`execute`, empty on a result an operation builds itself.
+    ``resource_id`` / ``resource_name``: the resource a ``resource.*``
+    operation wrote, so a client can run the board's resource hooks for
+    ``events`` (SPEC §3.4)."""
 
     task: dict | None = None
     events: list[dict] = field(default_factory=list)
@@ -347,6 +359,8 @@ class OpResult:
     idempotent: bool = False
     replayed: bool = False
     paths: tuple[str, ...] = ()
+    resource_id: str | None = None
+    resource_name: str | None = None
 
 
 @dataclass
@@ -465,6 +479,17 @@ def check_board_writable(board_dir: Path, caller: Caller) -> None:
     check_board_markers(board_dir)
 
 
+def check_path_params(params: Any) -> None:
+    """Check every field its ``Params`` class lists in ``path_params`` (SPEC §3.1).
+
+    ``None`` means the option was not given; there is no path to check.
+    """
+    for name, label in getattr(type(params), "path_params", {}).items():
+        value = getattr(params, name)
+        if value is not None:
+            check_path_component(value, label)
+
+
 # ---------------------------------------------------------------------------
 # Actor resolution (SPEC §3.7; today's require_actor precedence and messages)
 # ---------------------------------------------------------------------------
@@ -479,7 +504,12 @@ def _invalid_actor(actor: Any) -> OpError:
 
 
 def resolve_actor(lattice_dir: Path, caller: Caller) -> str | dict:
-    """Resolve the caller's actor without writing anything."""
+    """SPEC §3.7 step 1: the caller's actor, resolved without writing anything.
+
+    A ``--name`` session wins over ``--actor``, exactly as ``require_actor``
+    always resolved them: the session's structured actor, else the validated
+    legacy string, else ``MISSING_ACTOR``.
+    """
     from lattice.core.actors import build_actor_dict
     from lattice.storage.sessions import resolve_session
 
@@ -497,6 +527,28 @@ def resolve_actor(lattice_dir: Path, caller: Caller) -> str | dict:
             raise _invalid_actor(caller.actor)
         return caller.actor
     raise OpError("MISSING_ACTOR", "Either --name (session) or --actor (legacy) is required.")
+
+
+def permission_identity(actor: str | dict) -> str:
+    """SPEC §3.7 step 2: the identity a token must permit for *actor*.
+
+    A string actor is itself; a structured session actor is
+    ``agent:<base_name>``, so a token permits a session by its base name,
+    whatever serial it was given.
+    """
+    if isinstance(actor, dict):
+        return f"agent:{actor['base_name']}"
+    return actor
+
+
+Authorizer = Callable[[str, "Caller"], None]
+"""SPEC §3.7 step 3: ``authorize(permission_identity, caller)``.
+
+Raises ``OpError`` (a server raises ``ACTOR_NOT_PERMITTED``) to refuse the
+actor; returns ``None`` to permit it. It runs after the actor is resolved and
+before anything is written, including the session touch. A server passes one
+to :func:`execute`; locally there is no token and none is passed.
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -517,6 +569,7 @@ def execute(
     run_hooks: bool,
     config: dict | None = None,
     on_mutation: Callable[[Path, MutationKind], None] | None = None,
+    authorize: Authorizer | None = None,
 ) -> OpResult:
     """Run one operation against the board at *board_dir* (its ``.lattice/``).
 
@@ -526,7 +579,8 @@ def execute(
     that runs its own effects afterwards (auto-review, hints) passes the object
     it will use for them, so one pre-write config governs the rules, the hooks,
     and the effects even if a hook edits ``config.json``. Loaded from the board
-    when omitted.
+    when omitted. ``authorize``: the server's actor check (see
+    :data:`Authorizer`); ``None`` locally.
 
     Every storage write the operation makes is confined to this board
     (``BoardPathError``, ``VALIDATION_ERROR``).
@@ -539,7 +593,15 @@ def execute(
     """
     board_dir = Path(board_dir)
     with board_scope(board_dir), recording(on_mutation) as recorder:
-        result = _execute(board_dir, op_name, params, caller, run_hooks=run_hooks, config=config)
+        result = _execute(
+            board_dir,
+            op_name,
+            params,
+            caller,
+            run_hooks=run_hooks,
+            config=config,
+            authorize=authorize,
+        )
     return dataclasses.replace(result, paths=tuple(recorder.relative_paths(board_dir)))
 
 
@@ -551,6 +613,7 @@ def _execute(
     *,
     run_hooks: bool,
     config: dict | None,
+    authorize: Authorizer | None,
 ) -> OpResult:
     # 1. Only the board's owner writes it.
     check_board_writable(board_dir, caller)
@@ -559,10 +622,11 @@ def _execute(
     op_cls = get_operation(op_name)
     parsed = parse_params(op_cls.Params, params, op_name=op_name)
     check_op_id(caller.origin.get("op_id"))
+    check_path_params(parsed)
     if caller.actor_name is not None:
         check_path_component(caller.actor_name, "session name")
 
-    # 3. The actor, resolved before anything is written.
+    # 3. The actor (SPEC §3.7): resolve, then authorize, and only then write.
     if config is None:
         config = _load_config(board_dir)
     actor: str | dict | None = None
@@ -571,6 +635,8 @@ def _execute(
         on_behalf_of = getattr(parsed, "on_behalf_of", None)
         if on_behalf_of is not None and not validate_actor(on_behalf_of):
             raise _invalid_actor(on_behalf_of)
+        if authorize is not None:
+            authorize(permission_identity(actor), caller)
         if caller.actor_name is not None:
             from lattice.storage.sessions import touch_session
 

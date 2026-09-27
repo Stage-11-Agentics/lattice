@@ -1254,41 +1254,18 @@ def _offer_claude_md(root: Path, *, auto_accept: bool = False, config: dict | No
 @click.option("--force", is_flag=True, help="Allow changing an existing project code.")
 def set_project_code(code: str, force: bool) -> None:
     """Set or change the project code for short task IDs."""
-    from lattice.cli.helpers import load_project_config, output_error, require_root
-    from lattice.storage.short_ids import load_id_index
+    from lattice.cli.ops_bridge import run_operation
+    from lattice.ops import Caller
 
-    lattice_dir = require_root(False)
-    config = load_project_config(lattice_dir)
-
-    code = code.upper()
-    if not validate_project_code(code):
-        raise click.ClickException(
-            f"Invalid project code: '{code}'. "
-            "Must be 1-5 uppercase ASCII letters/digits, starting with a letter."
-        )
-
-    existing_code = config.get("project_code")
-    if existing_code:
-        if existing_code == code:
-            click.echo(f"Project code is already {code}.")
-            return
-        if not force:
-            output_error(
-                f"Project code is already set to '{existing_code}'. Use --force to change it.",
-                "CONFLICT",
-                False,
-            )
-
-    config["project_code"] = code
-    atomic_write(lattice_dir / "config.json", serialize_config(config))
-
-    # Initialize ids.json if it doesn't exist
-    index = load_id_index(lattice_dir)
-    if not (lattice_dir / "ids.json").exists():
-        save_id_index(lattice_dir, index)
-
+    result = run_operation(
+        "board.set_project_code", {"code": code, "force": force}, False, caller=Caller()
+    )
+    code = result.value["project_code"]
+    if result.idempotent:
+        click.echo(f"Project code is already {code}.")
+        return
     click.echo(f"Project code set to {code}.")
-    if not existing_code:
+    if not result.value["previous"]:
         click.echo("Run 'lattice backfill-ids' to assign short IDs to existing tasks.")
 
 
@@ -1302,41 +1279,16 @@ def set_project_code(code: str, force: bool) -> None:
 @click.option("--force", is_flag=True, help="Allow changing an existing subproject code.")
 def set_subproject_code(code: str, force: bool) -> None:
     """Set or change the subproject code for hierarchical short IDs."""
-    from lattice.cli.helpers import load_project_config, output_error, require_root
+    from lattice.cli.ops_bridge import run_operation
+    from lattice.ops import Caller
 
-    lattice_dir = require_root(False)
-    config = load_project_config(lattice_dir)
-
-    code = code.upper()
-    if not validate_subproject_code(code):
-        raise click.ClickException(
-            f"Invalid subproject code: '{code}'. "
-            "Must be 1-5 uppercase ASCII letters/digits, starting with a letter."
-        )
-
-    if not config.get("project_code"):
-        output_error(
-            "Cannot set subproject code without a project code. "
-            "Run 'lattice set-project-code' first.",
-            "VALIDATION_ERROR",
-            False,
-        )
-
-    existing_code = config.get("subproject_code")
-    if existing_code:
-        if existing_code == code:
-            click.echo(f"Subproject code is already {code}.")
-            return
-        if not force:
-            output_error(
-                f"Subproject code is already set to '{existing_code}'. Use --force to change it.",
-                "CONFLICT",
-                False,
-            )
-
-    config["subproject_code"] = code
-    atomic_write(lattice_dir / "config.json", serialize_config(config))
-
+    result = run_operation(
+        "board.set_subproject_code", {"code": code, "force": force}, False, caller=Caller()
+    )
+    code = result.value["subproject_code"]
+    if result.idempotent:
+        click.echo(f"Subproject code is already {code}.")
+        return
     click.echo(f"Subproject code set to {code}.")
 
 

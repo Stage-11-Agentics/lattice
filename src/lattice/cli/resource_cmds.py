@@ -14,25 +14,17 @@ from lattice.cli.helpers import (
     load_project_config,
     output_error,
     output_result,
-    read_resource_snapshot,
-    require_actor,
     require_root,
     resolve_resource,
 )
 from lattice.cli.main import cli
-from lattice.core.events import create_resource_event
-from lattice.core.ids import generate_resource_id, validate_id
+from lattice.cli.ops_bridge import board_or_exit, caller_from_context, run_operation
 from lattice.core.resources import (
-    apply_resource_event_to_snapshot,
-    compute_expires_at,
-    evict_stale_holders,
-    find_holder,
     format_duration_ago,
     format_duration_remaining,
     is_holder_stale,
-    is_resource_available,
 )
-from lattice.storage.operations import resource_write_context, write_resource_event
+from lattice.ops import OpError
 
 
 # ---------------------------------------------------------------------------
@@ -48,6 +40,23 @@ def resource() -> None:
 # ---------------------------------------------------------------------------
 # lattice resource create
 # ---------------------------------------------------------------------------
+
+
+def _provenance(
+    model: str | None,
+    session: str | None,
+    triggered_by: str | None,
+    on_behalf_of: str | None,
+    reason: str | None,
+) -> dict:
+    """The ``common_options`` provenance flags as operation params."""
+    return {
+        "model": model,
+        "session": session,
+        "triggered_by": triggered_by,
+        "on_behalf_of": on_behalf_of,
+        "reason": reason,
+    }
 
 
 @resource.command("create")
@@ -73,88 +82,26 @@ def resource_create(
 ) -> None:
     """Create a new resource."""
     is_json = output_json
-    lattice_dir = require_root(is_json)
-    actor = require_actor(is_json)
-
-    # Validate ID format before locking
-    if resource_id:
-        if not validate_id(resource_id, "res"):
-            output_error(
-                f"Invalid resource ID format: '{resource_id}'.",
-                "INVALID_ID",
-                is_json,
-            )
-    # Validate max_holders
-    if max_holders < 1:
-        output_error("--max-holders must be at least 1.", "VALIDATION_ERROR", is_json)
-    # Validate TTL
-    if ttl < 1:
-        output_error("--ttl must be at least 1 second.", "VALIDATION_ERROR", is_json)
-
-    # Lock: read-check-write atomically
-    with resource_write_context(lattice_dir, name):
-        existing = read_resource_snapshot(lattice_dir, name)
-        if existing is not None:
-            if resource_id and existing.get("id") == resource_id:
-                # Idempotent: same ID, same resource
-                output_result(
-                    data=existing,
-                    human_message=f"Resource '{name}' already exists ({existing['id']})",
-                    quiet_value=existing["id"],
-                    is_json=is_json,
-                    is_quiet=quiet,
-                )
-                return
-            output_error(
-                f"Resource '{name}' already exists ({existing['id']}).",
-                "CONFLICT",
-                is_json,
-            )
-
-        # Check caller-supplied ID uniqueness across all resources
-        if resource_id:
-            _check_id_uniqueness(lattice_dir, resource_id, is_json)
-        else:
-            resource_id = generate_resource_id()
-
-        # Build event
-        data = {
+    result = run_operation(
+        "resource.create",
+        {
             "name": name,
+            "description": description,
             "max_holders": max_holders,
-            "ttl_seconds": ttl,
-        }
-        if description:
-            data["description"] = description
-
-        event = create_resource_event(
-            "resource_created",
-            resource_id,
-            actor,
-            data,
-            model=model,
-            session=session,
-            triggered_by=triggered_by,
-            on_behalf_of=on_behalf_of,
-            reason=provenance_reason,
-        )
-
-        snapshot = apply_resource_event_to_snapshot(None, event)
-        config = load_project_config(lattice_dir)
-        write_resource_event(
-            lattice_dir,
-            resource_id,
-            name,
-            [event],
-            snapshot,
-            config,
-            _caller_holds_lock=True,
-            run_hooks=True,
-        )
-
+            "ttl": ttl,
+            "id": resource_id,
+            **_provenance(model, session, triggered_by, on_behalf_of, provenance_reason),
+        },
+        is_json,
+    )
+    if result.idempotent:
+        message = f"Resource '{name}' already exists ({result.resource_id})"
+    else:
+        message = f"Created resource '{name}' ({result.resource_id})"
     output_result(
-        data=snapshot,
-        human_message=f"Created resource '{name}' ({resource_id})",
-        quiet_value=resource_id,
+        data=result.value,
+        human_message=message,
+        quiet_value=result.resource_id,
         is_json=is_json,
         is_quiet=quiet,
     )
@@ -188,205 +135,25 @@ def resource_acquire(
 ) -> None:
     """Acquire exclusive access to a resource."""
     is_json = output_json
-    lattice_dir = require_root(is_json)
-    actor = require_actor(is_json)
-    config = load_project_config(lattice_dir)
+    board = board_or_exit(is_json)
+    params = {
+        "name": name,
+        "task": task_id,
+        "force": force,
+        **_provenance(model, session, triggered_by, on_behalf_of, provenance_reason),
+    }
 
-    # Resolve task short ID if provided
-    if task_id:
-        from lattice.cli.helpers import resolve_task_id
-
-        task_id = resolve_task_id(lattice_dir, task_id, is_json)
-
-    # Common event kwargs
-    event_kwargs = dict(
-        model=model,
-        session=session,
-        triggered_by=triggered_by,
-        on_behalf_of=on_behalf_of,
-        reason=provenance_reason,
-    )
-
-    # Try to acquire (with optional wait loop)
+    # Each attempt is its own resource.acquire call (its own op_id and lock);
+    # nothing is held between attempts, so a release can land while we wait.
     start_time = time.monotonic()
     poll_interval = 0.1  # start at 100ms
-
     while True:
-        # Lock per-iteration: read, check, write atomically.
-        # Lock is released between polls so other operations (release) can proceed.
-        with resource_write_context(lattice_dir, name):
-            # Resolve resource under lock (handles auto-create from config)
-            resource_id, resource_name, snapshot = resolve_resource(lattice_dir, name, is_json)
-
-            # Auto-create from config if needed (under same lock)
-            if not resource_id:
-                resource_id, resource_name, snapshot = _auto_create_resource(
-                    lattice_dir,
-                    resource_name,
-                    actor,
-                    config,
-                    is_json,
-                    **event_kwargs,
-                )
-
-            assert snapshot is not None
-
-            from lattice.core.events import utc_now
-
-            now = utc_now()
-            events_to_write: list[dict] = []
-
-            # Evict stale holders
-            stale = evict_stale_holders(snapshot, now)
-            for stale_holder in stale:
-                exp_event = create_resource_event(
-                    "resource_expired",
-                    resource_id,
-                    actor,
-                    {
-                        "holder": stale_holder["actor"],
-                        "expired_at": stale_holder.get("expires_at", now),
-                        "reclaimed_by": actor,
-                    },
-                    ts=now,
-                    **event_kwargs,
-                )
-                snapshot = apply_resource_event_to_snapshot(snapshot, exp_event)
-                events_to_write.append(exp_event)
-
-            # Check if actor already holds it (idempotent)
-            existing_holder = find_holder(snapshot, actor)
-            if existing_holder is not None:
-                # Extend TTL
-                new_expires = compute_expires_at(snapshot["ttl_seconds"], now)
-                hb_event = create_resource_event(
-                    "resource_heartbeat",
-                    resource_id,
-                    actor,
-                    {"holder": actor, "expires_at": new_expires},
-                    ts=now,
-                    **event_kwargs,
-                )
-                snapshot = apply_resource_event_to_snapshot(snapshot, hb_event)
-                events_to_write.append(hb_event)
-
-                if events_to_write:
-                    write_resource_event(
-                        lattice_dir,
-                        resource_id,
-                        resource_name,
-                        events_to_write,
-                        snapshot,
-                        config,
-                        _caller_holds_lock=True,
-                        run_hooks=True,
-                    )
-
-                output_result(
-                    data=snapshot,
-                    human_message=f"Already holding '{resource_name}' (TTL extended)",
-                    quiet_value=resource_id,
-                    is_json=is_json,
-                    is_quiet=quiet,
-                )
-                return
-
-            # Force eviction
-            if force and snapshot.get("holders"):
-                for h in list(snapshot.get("holders", [])):
-                    exp_event = create_resource_event(
-                        "resource_expired",
-                        resource_id,
-                        actor,
-                        {
-                            "holder": h["actor"],
-                            "expired_at": now,
-                            "reclaimed_by": actor,
-                        },
-                        ts=now,
-                        **event_kwargs,
-                    )
-                    snapshot = apply_resource_event_to_snapshot(snapshot, exp_event)
-                    events_to_write.append(exp_event)
-
-            # Check availability
-            if is_resource_available(snapshot, now):
-                expires_at = compute_expires_at(snapshot["ttl_seconds"], now)
-                acq_data: dict = {
-                    "holder": actor,
-                    "expires_at": expires_at,
-                }
-                if task_id:
-                    acq_data["task_id"] = task_id
-                if provenance_reason:
-                    acq_data["reason"] = provenance_reason
-
-                acq_event = create_resource_event(
-                    "resource_acquired",
-                    resource_id,
-                    actor,
-                    acq_data,
-                    ts=now,
-                    **event_kwargs,
-                )
-                snapshot = apply_resource_event_to_snapshot(snapshot, acq_event)
-                events_to_write.append(acq_event)
-
-                write_resource_event(
-                    lattice_dir,
-                    resource_id,
-                    resource_name,
-                    events_to_write,
-                    snapshot,
-                    config,
-                    _caller_holds_lock=True,
-                    run_hooks=True,
-                )
-
-                output_result(
-                    data=snapshot,
-                    human_message=f"Acquired '{resource_name}' (expires {format_duration_remaining(expires_at, now)})",
-                    quiet_value=resource_id,
-                    is_json=is_json,
-                    is_quiet=quiet,
-                )
-                return
-
-            # Write any stale eviction events even if we can't acquire yet
-            if events_to_write:
-                write_resource_event(
-                    lattice_dir,
-                    resource_id,
-                    resource_name,
-                    events_to_write,
-                    snapshot,
-                    config,
-                    _caller_holds_lock=True,
-                    run_hooks=True,
-                )
-
-            # Capture holder info for error message (while still under lock)
-            holders = snapshot.get("holders", [])
-            holder_info = ""
-            if holders:
-                h = holders[0]
-                holder_info = f" Held by {h['actor']}"
-                if h.get("task_id"):
-                    holder_info += f" ({h['task_id']})"
-                holder_info += f" since {format_duration_ago(h['acquired_at'], now)}"
-                holder_info += f", expires {format_duration_remaining(h['expires_at'], now)}"
-
-        # --- Lock released ---
-
-        # Not available and not waiting
-        if not do_wait:
-            output_error(
-                f"Resource '{name}' is not available.{holder_info}",
-                "RESOURCE_HELD",
-                is_json,
-            )
-
-        # Wait mode: check timeout
+        try:
+            result = board.execute("resource.acquire", params, caller_from_context())
+            break
+        except OpError as exc:
+            if exc.code != "RESOURCE_HELD" or not do_wait:
+                output_error(exc.message, exc.code, is_json)
         elapsed = time.monotonic() - start_time
         if elapsed >= timeout:
             output_error(
@@ -394,9 +161,22 @@ def resource_acquire(
                 "TIMEOUT",
                 is_json,
             )
-
         time.sleep(min(poll_interval, timeout - elapsed))
         poll_interval = min(poll_interval * 2, 1.0)  # backoff to 1s max
+
+    last = result.events[-1]
+    if last["type"] == "resource_heartbeat":
+        message = f"Already holding '{result.resource_name}' (TTL extended)"
+    else:
+        remaining = format_duration_remaining(last["data"]["expires_at"], last["ts"])
+        message = f"Acquired '{result.resource_name}' (expires {remaining})"
+    output_result(
+        data=result.value,
+        human_message=message,
+        quiet_value=result.resource_id,
+        is_json=is_json,
+        is_quiet=quiet,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -419,64 +199,18 @@ def resource_release(
 ) -> None:
     """Release a held resource."""
     is_json = output_json
-    lattice_dir = require_root(is_json)
-    actor = require_actor(is_json)
-    config = load_project_config(lattice_dir)
-
-    # Lock: read-check-write atomically
-    with resource_write_context(lattice_dir, name):
-        resource_id, resource_name, snapshot = resolve_resource(lattice_dir, name, is_json)
-        if snapshot is None:
-            output_error(f"Resource '{name}' does not exist.", "NOT_FOUND", is_json)
-
-        # Verify actor holds it
-        holder = find_holder(snapshot, actor)
-        if holder is None:
-            output_error(
-                f"You ({actor}) do not hold resource '{resource_name}'.",
-                "NOT_HELD",
-                is_json,
-            )
-
-        from lattice.core.events import utc_now
-
-        now = utc_now()
-
-        rel_data: dict = {"holder": actor}
-        if holder.get("task_id"):
-            rel_data["task_id"] = holder["task_id"]
-        if provenance_reason:
-            rel_data["reason"] = provenance_reason
-
-        event = create_resource_event(
-            "resource_released",
-            resource_id,
-            actor,
-            rel_data,
-            ts=now,
-            model=model,
-            session=session,
-            triggered_by=triggered_by,
-            on_behalf_of=on_behalf_of,
-            reason=provenance_reason,
-        )
-
-        snapshot = apply_resource_event_to_snapshot(snapshot, event)
-        write_resource_event(
-            lattice_dir,
-            resource_id,
-            resource_name,
-            [event],
-            snapshot,
-            config,
-            _caller_holds_lock=True,
-            run_hooks=True,
-        )
-
+    result = run_operation(
+        "resource.release",
+        {
+            "name": name,
+            **_provenance(model, session, triggered_by, on_behalf_of, provenance_reason),
+        },
+        is_json,
+    )
     output_result(
-        data=snapshot,
-        human_message=f"Released '{resource_name}'",
-        quiet_value=resource_id,
+        data=result.value,
+        human_message=f"Released '{result.resource_name}'",
+        quiet_value=result.resource_id,
         is_json=is_json,
         is_quiet=quiet,
     )
@@ -502,68 +236,20 @@ def resource_heartbeat(
 ) -> None:
     """Extend TTL on a held resource."""
     is_json = output_json
-    lattice_dir = require_root(is_json)
-    actor = require_actor(is_json)
-    config = load_project_config(lattice_dir)
-
-    # Lock: read-check-write atomically
-    with resource_write_context(lattice_dir, name):
-        resource_id, resource_name, snapshot = resolve_resource(lattice_dir, name, is_json)
-        if snapshot is None:
-            output_error(f"Resource '{name}' does not exist.", "NOT_FOUND", is_json)
-
-        # Verify actor holds it
-        holder = find_holder(snapshot, actor)
-        if holder is None:
-            output_error(
-                f"You ({actor}) do not hold resource '{resource_name}'.",
-                "NOT_HELD",
-                is_json,
-            )
-
-        from lattice.core.events import utc_now
-
-        now = utc_now()
-
-        # Reject heartbeat on expired holders — must re-acquire
-        if is_holder_stale(holder, now):
-            output_error(
-                f"Your hold on '{resource_name}' has expired. Use 'lattice resource acquire' to re-acquire.",
-                "EXPIRED",
-                is_json,
-            )
-
-        new_expires = compute_expires_at(snapshot["ttl_seconds"], now)
-
-        event = create_resource_event(
-            "resource_heartbeat",
-            resource_id,
-            actor,
-            {"holder": actor, "expires_at": new_expires},
-            ts=now,
-            model=model,
-            session=session,
-            triggered_by=triggered_by,
-            on_behalf_of=on_behalf_of,
-            reason=provenance_reason,
-        )
-
-        snapshot = apply_resource_event_to_snapshot(snapshot, event)
-        write_resource_event(
-            lattice_dir,
-            resource_id,
-            resource_name,
-            [event],
-            snapshot,
-            config,
-            _caller_holds_lock=True,
-            run_hooks=True,
-        )
-
+    result = run_operation(
+        "resource.heartbeat",
+        {
+            "name": name,
+            **_provenance(model, session, triggered_by, on_behalf_of, provenance_reason),
+        },
+        is_json,
+    )
+    event = result.events[-1]
+    remaining = format_duration_remaining(event["data"]["expires_at"], event["ts"])
     output_result(
-        data=snapshot,
-        human_message=f"Heartbeat: '{resource_name}' TTL extended to {format_duration_remaining(new_expires, now)}",
-        quiet_value=resource_id,
+        data=result.value,
+        human_message=f"Heartbeat: '{result.resource_name}' TTL extended to {remaining}",
+        quiet_value=result.resource_id,
         is_json=is_json,
         is_quiet=quiet,
     )
@@ -602,85 +288,9 @@ def resource_list(output_json: bool) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _check_id_uniqueness(lattice_dir: Path, resource_id: str, is_json: bool) -> None:
-    """Verify no existing resource uses this ID (different name, same ID = corruption)."""
-    all_resources = list_all_resources(lattice_dir)
-    for r in all_resources:
-        if r.get("id") == resource_id:
-            output_error(
-                f"Resource ID '{resource_id}' is already used by resource '{r.get('name')}'.",
-                "CONFLICT",
-                is_json,
-            )
-
-
 def _filter_active_holders(snapshot: dict, now: str) -> list[dict]:
     """Return holders that are not expired at *now*."""
     return [h for h in snapshot.get("holders", []) if not is_holder_stale(h, now)]
-
-
-def _auto_create_resource(
-    lattice_dir: Path,
-    resource_name: str,
-    actor: str,
-    config: dict,
-    is_json: bool,
-    *,
-    model: str | None = None,
-    session: str | None = None,
-    triggered_by: str | None = None,
-    on_behalf_of: str | None = None,
-    reason: str | None = None,
-) -> tuple[str, str, dict]:
-    """Auto-create a resource from config definition.
-
-    Called under resource_write_context — re-checks existence to prevent
-    races where two concurrent first-acquires both try to auto-create.
-
-    Returns (resource_id, name, snapshot).
-    """
-    # Re-check existence under lock
-    existing = read_resource_snapshot(lattice_dir, resource_name)
-    if existing is not None:
-        return existing["id"], resource_name, existing
-
-    config_resources = config.get("resources", {})
-    res_def = config_resources.get(resource_name, {})
-
-    resource_id = generate_resource_id()
-    data = {
-        "name": resource_name,
-        "max_holders": res_def.get("max_holders", 1),
-        "ttl_seconds": res_def.get("ttl_seconds", 300),
-    }
-    desc = res_def.get("description")
-    if desc:
-        data["description"] = desc
-
-    event = create_resource_event(
-        "resource_created",
-        resource_id,
-        actor,
-        data,
-        model=model,
-        session=session,
-        triggered_by=triggered_by,
-        on_behalf_of=on_behalf_of,
-        reason=reason,
-    )
-
-    snapshot = apply_resource_event_to_snapshot(None, event)
-    write_resource_event(
-        lattice_dir,
-        resource_id,
-        resource_name,
-        [event],
-        snapshot,
-        config,
-        _caller_holds_lock=True,
-        run_hooks=True,
-    )
-    return resource_id, resource_name, snapshot
 
 
 def _show_single_resource(lattice_dir: Path, name: str, is_json: bool) -> None:

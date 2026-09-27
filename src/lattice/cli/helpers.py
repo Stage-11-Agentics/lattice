@@ -18,6 +18,10 @@ from lattice.storage.operations import (
     mutate_task_events,  # noqa: F401 - CLI re-export
     read_task_authority,
 )
+from lattice.storage.resources import (  # noqa: F401 - CLI re-export
+    list_all_resources,
+    read_resource_snapshot,
+)
 from lattice.storage.short_ids import resolve_short_id as _resolve_short
 
 
@@ -196,11 +200,16 @@ def require_actor(is_json: bool, *, optional: bool = False) -> str | dict | None
     ``common_options``).  Returns a structured dict (from session) or
     a validated legacy string.
 
+    Resolution is ``lattice.ops.base.resolve_actor`` (SPEC §3.7), the same
+    function operations use; a session actor's session is then touched under
+    the ``sessions_index`` lock.
+
     Set *optional* to ``True`` for commands where identity is not
     required (e.g., ``lattice next`` without ``--claim``).  Returns
     ``None`` when no identity flags were provided.
     """
-    from lattice.storage.sessions import resolve_session, touch_session
+    from lattice.ops.base import Caller, resolve_actor
+    from lattice.storage.sessions import touch_session
 
     ctx = click.get_current_context()
     ctx.ensure_object(dict)
@@ -212,39 +221,22 @@ def require_actor(is_json: bool, *, optional: bool = False) -> str | dict | None
     session_name = ctx.obj.get("_session_name")
     actor_str = ctx.obj.get("_actor")
 
-    if session_name is not None:
-        lattice_dir = ctx.obj.get("_lattice_dir")
-        if lattice_dir is None:
-            lattice_dir = require_root(is_json)
-            ctx.obj["_lattice_dir"] = lattice_dir
-
-        session_data = resolve_session(lattice_dir, session_name)
-        if session_data is None:
-            output_error(
-                f"No active session named '{session_name}'. "
-                "Start one with 'lattice session start'.",
-                "SESSION_NOT_FOUND",
-                is_json,
-            )
-        touch_session(lattice_dir, session_name)
-
-        result: str | dict = _build_actor_dict(session_data)
-        ctx.obj["_resolved_actor"] = result
-        return result
-
-    if actor_str is not None:
-        validate_actor_format_or_exit(actor_str, is_json)
-        ctx.obj["_resolved_actor"] = actor_str
-        return actor_str
-
-    if optional:
+    if session_name is None and actor_str is None and optional:
         return None
 
-    output_error(
-        "Either --name (session) or --actor (legacy) is required.",
-        "MISSING_ACTOR",
-        is_json,
-    )
+    lattice_dir = ctx.obj.get("_lattice_dir")
+    if session_name is not None and lattice_dir is None:
+        lattice_dir = require_root(is_json)
+        ctx.obj["_lattice_dir"] = lattice_dir
+
+    try:
+        result = resolve_actor(lattice_dir, Caller(actor=actor_str, actor_name=session_name))
+    except OpError as exc:
+        output_error(exc.message, exc.code, is_json)
+    if session_name is not None:
+        touch_session(lattice_dir, session_name)
+    ctx.obj["_resolved_actor"] = result
+    return result
 
 
 def validate_actor_format_or_exit(actor: str, is_json: bool) -> None:
@@ -362,60 +354,13 @@ def resolve_resource(
     name_or_id: str,
     is_json: bool,
 ) -> tuple[str, str, dict | None]:
-    """Resolve a resource name or ID to (resource_id, name, snapshot_or_None).
+    """``storage.resources.find_resource`` against the board's config; exits on ``NOT_FOUND``."""
+    from lattice.storage.resources import find_resource
 
-    Resolution order:
-    1. Check ``res_`` ULID format -> direct lookup in events/
-    2. Scan ``.lattice/resources/*/resource.json`` for matching ``name``
-    3. Check ``config.resources`` for matching key -> return (None, name, None) for auto-create
-    4. Error out
-    """
-    # 1. Direct ULID
-    if validate_id(name_or_id, "res"):
-        # Find by scanning resource dirs for matching id
-        resources_dir = lattice_dir / "resources"
-        if resources_dir.is_dir():
-            for res_dir in resources_dir.iterdir():
-                if not res_dir.is_dir():
-                    continue
-                snap_path = res_dir / "resource.json"
-                if snap_path.exists():
-                    snap = json.loads(snap_path.read_text())
-                    if snap.get("id") == name_or_id:
-                        return name_or_id, snap["name"], snap
-        output_error(f"Resource with ID '{name_or_id}' not found.", "NOT_FOUND", is_json)
-
-    # 2. Scan by name
-    resources_dir = lattice_dir / "resources"
-    if resources_dir.is_dir():
-        for res_dir in resources_dir.iterdir():
-            if not res_dir.is_dir():
-                continue
-            snap_path = res_dir / "resource.json"
-            if snap_path.exists():
-                snap = json.loads(snap_path.read_text())
-                if snap.get("name") == name_or_id:
-                    return snap["id"], name_or_id, snap
-
-    # 3. Check config for auto-create
-    config = load_project_config(lattice_dir)
-    config_resources = config.get("resources", {})
-    if name_or_id in config_resources:
-        return "", name_or_id, None  # empty id signals auto-create needed
-
-    output_error(
-        f"Resource '{name_or_id}' not found. Create it with 'lattice resource create {name_or_id}'.",
-        "NOT_FOUND",
-        is_json,
-    )
-
-
-def read_resource_snapshot(lattice_dir: Path, resource_name: str) -> dict | None:
-    """Read a resource snapshot by name, returning None if not found."""
-    snap_path = lattice_dir / "resources" / resource_name / "resource.json"
-    if not snap_path.exists():
-        return None
-    return json.loads(snap_path.read_text())
+    try:
+        return find_resource(lattice_dir, name_or_id, load_project_config(lattice_dir))
+    except OpError as exc:
+        output_error(exc.message, exc.code, is_json)
 
 
 def read_resource_snapshot_or_exit(lattice_dir: Path, resource_name: str, is_json: bool) -> dict:
@@ -424,21 +369,6 @@ def read_resource_snapshot_or_exit(lattice_dir: Path, resource_name: str, is_jso
     if snapshot is None:
         output_error(f"Resource '{resource_name}' not found.", "NOT_FOUND", is_json)
     return snapshot
-
-
-def list_all_resources(lattice_dir: Path) -> list[dict]:
-    """Return a list of all resource snapshots."""
-    resources_dir = lattice_dir / "resources"
-    results = []
-    if not resources_dir.is_dir():
-        return results
-    for res_dir in sorted(resources_dir.iterdir()):
-        if not res_dir.is_dir():
-            continue
-        snap_path = res_dir / "resource.json"
-        if snap_path.exists():
-            results.append(json.loads(snap_path.read_text()))
-    return results
 
 
 # ---------------------------------------------------------------------------

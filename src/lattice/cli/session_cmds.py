@@ -11,9 +11,9 @@ from lattice.cli.helpers import (
     require_root,
 )
 from lattice.cli.main import cli
+from lattice.cli.ops_bridge import run_operation
+from lattice.ops import Caller
 from lattice.storage.sessions import (
-    create_session,
-    end_session,
     list_sessions,
     resolve_session,
 )
@@ -58,47 +58,41 @@ def session_start(
     quiet: bool,
 ) -> None:
     """Register a new session and get a disambiguated name."""
-    lattice_dir = require_root(output_json)
-
-    try:
-        identity = create_session(
-            lattice_dir,
-            base_name=base_name,
-            agent_type=agent_type,
-            model=model,
-            framework=framework,
-            prompt=prompt,
-            parent=parent,
-        )
-    except ValueError as e:
-        output_error(str(e), "VALIDATION_ERROR", output_json)
+    result = run_operation(
+        "session.start",
+        {
+            "name": base_name,
+            "model": model,
+            "framework": framework,
+            "agent_type": agent_type,
+            "prompt": prompt,
+            "parent": parent,
+        },
+        output_json,
+        caller=Caller(),
+    )
+    identity = result.value
 
     if output_json:
         envelope = {
             "ok": True,
-            "data": {
-                "name": identity.name,
-                "base_name": identity.base_name,
-                "serial": identity.serial,
-                "session": identity.session,
-                "model": identity.model,
-                "framework": identity.framework,
-            },
+            "data": identity,
         }
         click.echo(json.dumps(envelope, sort_keys=True, indent=2))
     elif quiet:
-        click.echo(identity.name)
+        click.echo(identity["name"])
     else:
-        click.echo(f"Session created: {identity.name}")
-        click.echo(f"  Serial: {identity.serial}", nl=False)
-        if identity.serial > 1:
-            click.echo(f" ({identity.serial - 1} previous {identity.base_name} session(s))")
+        serial = identity["serial"]
+        click.echo(f"Session created: {identity['name']}")
+        click.echo(f"  Serial: {serial}", nl=False)
+        if serial > 1:
+            click.echo(f" ({serial - 1} previous {identity['base_name']} session(s))")
         else:
             click.echo()
-        click.echo(f"  Session ID: {identity.session}")
-        click.echo(f"  Model: {identity.model}")
-        if identity.framework:
-            click.echo(f"  Framework: {identity.framework}")
+        click.echo(f"  Session ID: {identity['session']}")
+        click.echo(f"  Model: {identity['model']}")
+        if identity["framework"]:
+            click.echo(f"  Framework: {identity['framework']}")
 
 
 # ---------------------------------------------------------------------------
@@ -116,11 +110,7 @@ def session_end(
     output_json: bool,
 ) -> None:
     """End an active session and archive it."""
-    lattice_dir = require_root(output_json)
-
-    success = end_session(lattice_dir, name, reason=reason)
-    if not success:
-        output_error(f"No active session named '{name}'.", "NOT_FOUND", output_json)
+    run_operation("session.end", {"name": name, "reason": reason}, output_json, caller=Caller())
 
     if output_json:
         envelope = {"ok": True, "data": {"name": name, "status": "ended"}}
