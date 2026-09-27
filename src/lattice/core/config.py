@@ -678,6 +678,11 @@ def validate_completion_policy(
     return (len(failures) == 0, failures)
 
 
+# The review marker pattern lives with the attestations; the old private name
+# stays importable for callers that parse review headers with it.
+from lattice.core.attestations import REVIEW_MARKER_RE as _REVIEW_MARKER  # noqa: E402, F401
+
+
 def _has_reachable_review_commit(
     snapshot: dict, lattice_dir: Path, repo_root: Path, prospective: list[str]
 ) -> bool:
