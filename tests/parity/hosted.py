@@ -45,9 +45,7 @@ from tests.test_remote import sync_shim
 from tests.parity.record import (
     DURABLE_DIRS,
     DURABLE_FILES,
-    MODES,
     LocalTarget,
-    golden_path,
     _patch_config,
 )
 
@@ -105,38 +103,35 @@ class MutationLog:
             return [m for m in self.entries if m.project == project]
 
 
-#: Removals SPEC §7 permits: copy-first relocation by these operations.
-RELOCATING_OPS = {
-    "task.archive": ("", "archive/"),
-    "task.unarchive": ("archive/", ""),
-    "session.end": ("sessions/", "sessions/archive/"),
-}
+def _relocated_copies(op: str, path: str) -> tuple[str, ...] | None:
+    """Where a removal SPEC §7 permits leaves its copy (any of these), or ``None``
+    when *op* removing *path* is not a permitted relocation: archive and unarchive
+    move a task's files between the active tree and ``archive/``, and ending a
+    session moves ``sessions/<name>.json`` to ``sessions/archive/<name>_<id>.json``."""
+    if op == "task.archive" and not path.startswith("archive/"):
+        return (f"archive/{path}",)
+    if op == "task.unarchive" and path.startswith("archive/"):
+        return (path[len("archive/") :],)
+    if op == "session.end" and path.startswith("sessions/") and path.count("/") == 1:
+        return (f"sessions/archive/{path[len('sessions/') : -len('.json')]}_",)
+    return None
 
 
 def forbidden_removals(mutations: list[Mutation], board: Path) -> list[Mutation]:
     """Unlinks of durable paths that are not a relocation SPEC §7 permits.
 
-    A permitted relocation removes a path only when the same operation created
-    its relocated copy, and that copy exists after the scenario (or was itself
-    relocated back later, which the same rule covers). Test fixtures are exempt.
+    A permitted relocation removes a path only after the same operation wrote its
+    relocated copy (copy first). Test fixtures and non-durable paths are exempt.
     """
     bad: list[Mutation] = []
-    created: dict[str, set[str]] = {}
-    for m in mutations:
-        if m.kind in ("create", "replace", "append"):
-            created.setdefault(m.op, set()).add(m.path)
-    for m in mutations:
+    for i, m in enumerate(mutations):
         if m.kind != "unlink" or m.op == FIXTURE_OP or not is_durable(m.path):
             continue
-        rule = RELOCATING_OPS.get(m.op)
-        if rule is None:
-            bad.append(m)
-            continue
-        src, dst = rule
-        if not m.path.startswith(src):
-            bad.append(m)
-            continue
-        if dst + m.path[len(src) :] not in created.get(m.op, set()):
+        copies = _relocated_copies(m.op, m.path)
+        written_before = [
+            w.path for w in mutations[:i] if w.op == m.op and w.kind in ("create", "replace")
+        ]
+        if copies is None or not any(p.startswith(c) for p in written_before for c in copies):
             bad.append(m)
     return bad
 
@@ -366,9 +361,7 @@ class HostedTarget(LocalTarget):
     def finish(self, root: Path, invoke: Any) -> None:
         """Catch the cache up (a scenario may end on a fixture or a refusal), so
         the captured board is the server's as of the last step."""
-        # Any read command catches up first (SPEC §9.5). TODO(H-10c): ``lattice sync``.
-        result = invoke(["list", "--json"])
-        assert result["exit_code"] == 0, result
+        catch_up(root, self.env(root))
 
     def fixture(self, root: Path, rel: str, text: str | None, executable: bool) -> bool:
         if not rel.startswith(".lattice/"):
@@ -450,6 +443,22 @@ def declared_differences(capture: dict[str, Any]) -> dict[str, Any]:
             step = {**step, "stdout": {"lines": lines}}
         steps.append(step)
     return {**capture, "steps": steps}
+
+
+def catch_up(root: Path, env: dict[str, str]) -> None:
+    """One catch-up of the checkout at *root* (what every read command does first,
+    SPEC §9.5), outside any command. TODO(H-10c): ``lattice sync``."""
+    from lattice.remote import session
+    from lattice.remote.binding import classify
+    from tests.parity.record import _base_env, _process_env
+
+    with _process_env({**_base_env(root), **env}):
+        hosted = classify(root)
+        assert hosted is not None
+        try:
+            assert session.catch_up_and_report(hosted), "the final catch-up failed"
+        finally:
+            session.reset_process_state()
 
 
 def hosted_target(server: ParityServer, scenario: Scenario) -> HostedTarget:
