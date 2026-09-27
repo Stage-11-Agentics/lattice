@@ -91,11 +91,7 @@ def _write_private(path: Path, data: bytes) -> None:
     finally:
         os.close(fd)
     os.replace(tmp, path)
-    dir_fd = os.open(path.parent, os.O_RDONLY)
-    try:
-        os.fsync(dir_fd)
-    finally:
-        os.close(dir_fd)
+    _fsync_dir(path.parent)
 
 
 def send_request(
@@ -174,6 +170,15 @@ def answer_unowned(path: Path, answer: dict) -> None:
     else: the ``.done`` goes through the same private writer the admin uses."""
     _write_private(path.with_suffix(".done"), (json.dumps(answer, sort_keys=True) + "\n").encode())
     path.unlink(missing_ok=True)
+    _fsync_dir(path.parent)  # a server-control write: its fsync failure propagates (SPEC §8.6)
+
+
+def _fsync_dir(directory: Path) -> None:
+    fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def run_request(project: Any, path: Path, log: Any = None) -> dict:
