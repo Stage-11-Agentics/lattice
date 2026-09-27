@@ -10,9 +10,10 @@ one directory, and writes one JSON line per step to ``spec["out"]``.
   that names a task, the task's short ID and ``last_event_id`` after the write
   (from the command's ``--json`` output, or from ``show`` when the output has
   no snapshot, as for ``plan write``).
-- ``{"mode": "poll", "cwds": [...], "out", "stop": path}``: until *stop* exists,
+- ``{"mode": "poll", "cwds": [...], "out", "stop": path, "summary"?: bool}``: until *stop* exists,
   run ``list --json`` from each directory in turn and record when it started
-  (``t0``) and returned (``t``) and every task's ``last_event_id``.
+  (``t0``) and returned (``t``) and every task's ``last_event_id`` (with
+  ``summary``, only how many tasks it listed).
 
 ``TORTURE_HOST`` replaces ``socket.gethostname()`` (the reported host, SPEC §4).
 """
@@ -105,7 +106,12 @@ def poll(spec: dict) -> None:
                     row.get("short_id") or row["id"]: row.get("last_event_id")
                     for row in json.loads(out)["data"]
                 }
-                fh.write(json.dumps({"cwd": cwd, "t0": started, "t": t, "tasks": tasks}) + "\n")
+                row: dict = {"cwd": cwd, "t0": started, "t": t}
+                if spec.get("summary"):
+                    row["count"] = len(tasks)
+                else:
+                    row["tasks"] = tasks
+                fh.write(json.dumps(row) + "\n")
                 fh.flush()
 
 
