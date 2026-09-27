@@ -428,6 +428,8 @@ class Transaction:
         for entry in reversed(entries):
             _fault("recover.rollback", path=entry["path"])
             self._undo(entry)
+        # A restored watched file (config.json) is not a hand edit: re-baseline it.
+        self.project.remember_watched([entry["path"] for entry in entries])
         _fault("recover.undo_delete")
         unlink_path(self.undo_path)
 
