@@ -685,9 +685,11 @@ def _task_list(
 ) -> list[dict]:
     from lattice.core.stats import load_all_snapshots
     from lattice.core.tasks import compact_snapshot
+    from lattice.core.visibility import visible
 
     active, archived_rows = load_all_snapshots(board)
-    rows = active + (archived_rows if archived else [])
+    # Erased (tombstoned) tasks are left out of lists by default (SPEC §7).
+    rows = visible(active + (archived_rows if archived else []))
     out = []
     for snap in rows:
         if status and snap.get("status") != status:

@@ -123,3 +123,33 @@ def test_listing_journals_a_hand_edit_first(server: ServerHandle, root: Path) ->
     journal = board / "hosted" / "journal.jsonl"
     last = json.loads(journal.read_text().splitlines()[-1])
     assert last["seq"] == 2 and last["op"] == "external" and last["paths"] == ["config.json"]
+
+
+def test_erased_tasks_leave_the_list_and_return_on_unerase(
+    server: ServerHandle, root: Path
+) -> None:
+    """Review round 3: GET .../tasks applies the tombstone visibility rule (SPEC §7)."""
+    token = mint(root, projects=["alpha"])
+    task = create_task(server, token, "alpha", title="to erase")
+
+    def listed() -> list[str]:
+        _, _, body = server.request("GET", "/v1/projects/alpha/tasks", token=token)
+        return [t["id"] for t in body["data"]["tasks"]]
+
+    assert listed() == [task["id"]]
+    status, _, body = server.op(
+        "alpha", "task.erase", {"task": task["id"], "reason": "duplicate"}, token=token
+    )
+    assert status == 200, body
+    assert listed() == []
+    status, _, body = server.request("GET", f"/v1/projects/alpha/tasks/{task['id']}", token=token)
+    assert status == 200 and body["data"]["snapshot"]["tombstoned"] is True
+    status, _, body = server.op(
+        "alpha", "task.comment", {"task": task["id"], "text": "late"}, token=token
+    )
+    assert status == 422 and body["error"]["code"] == "TASK_ERASED"
+    status, _, body = server.op(
+        "alpha", "task.unerase", {"task": task["id"], "reason": "not a duplicate"}, token=token
+    )
+    assert status == 200, body
+    assert listed() == [task["id"]]
