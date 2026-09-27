@@ -193,6 +193,17 @@ Check if enabled: look for `"heartbeat": {"enabled": true}` in `.lattice/config.
 
 When enabled, keep advancing after each task: complete the current task → `lattice next --claim` → work the next one → repeat. Stop after `max_advances` (default 10), when the backlog is empty, or when a task is flagged `needs-human` or hits `blocked`.
 
+## Hosted Boards
+
+A checkout with a committed `.lattice-remote.json` is bound to a Lattice server (Lattice v2, optional). Its board lives on the server; `.lattice/` is a read-only mirror, refreshed before every read.
+
+- Every command works the same, with the same output and error codes. Writes go to the server; reading `.lattice/` files still works.
+- **Never edit files under `.lattice/`.** Write plans and notes with `lattice plan write` / `lattice notes write`, the board's context with `lattice context write`, and orchestration files with `lattice board write orchestration/<path>`.
+- **`OUTCOME_UNKNOWN`** means the server may have applied the write. Run `lattice remote op-status <op_id>` (the message names it) before retrying: `committed` means do not run it again.
+- `SERVER_UNREACHABLE` means nothing was written; there is no offline queue. Reads keep working from the cache with a one-line notice.
+- `LOCAL_ONLY` (from `rebuild`, `doctor --fix`, and similar) means the command runs on the server host, not here.
+- Setup, moving a board to a server and back, and every error code: `docs/hosted/guide.md` in the Lattice repository.
+
 ## Rules
 
 1. **Open before you work.** Every unit of work starts with a Lattice task. Not after. Not during. Before.

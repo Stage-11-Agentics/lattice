@@ -568,6 +568,10 @@ This applies to uncommitted changes in the working tree, unexpected commits on t
 
 When you discover something important about how this project works — a pattern, a gotcha, a convention — **do not save it to auto-memory**. Memory is per-session and per-user; future Lattice agents in other installations will never see it. Instead, add it to this project's `CLAUDE.md` (for project-specific conventions) or propose updating the Lattice template (for universal patterns that should ship with every `lattice init`). The goal: every future agent, in every future installation, benefits from what you learned.
 
+### Hosted Boards
+
+A checkout with a committed `.lattice-remote.json` is bound to a Lattice server: its board lives on the server and `.lattice/` is a read-only mirror. Every command above works the same; writes go to the server. Never edit files under `.lattice/` there: write plans and notes with `lattice plan write` / `lattice notes write`, and orchestration files with `lattice board write`. If a write fails with `OUTCOME_UNKNOWN`, check `lattice remote op-status <op_id>` before retrying, or it may apply twice. Setup and troubleshooting: `docs/hosted/guide.md` in the Lattice repository.
+
 ### Quick Reference
 
 ```

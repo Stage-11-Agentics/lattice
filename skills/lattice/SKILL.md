@@ -213,6 +213,17 @@ lattice plan write LAT-42 --file plan.md --expect-sha256 <hex> --actor agent:cla
 
 Each write records a `plan_written` / `notes_written` event with the content's SHA-256 and size. Orchestrator working files go through `lattice board write orchestration/<path> --file <path>`, and the board's `context.md` through `lattice context write --file <path>`.
 
+## Hosted Boards
+
+A checkout with a committed `.lattice-remote.json` is bound to a Lattice server (Lattice v2, optional). Its board lives on the server; `.lattice/` is a read-only mirror, refreshed before every read.
+
+- Every command works the same, with the same output and error codes. Writes go to the server; reading `.lattice/` files still works.
+- **Never edit files under `.lattice/`.** Write plans and notes with `lattice plan write` / `lattice notes write`, the board's context with `lattice context write`, and orchestration files with `lattice board write orchestration/<path>`.
+- **`OUTCOME_UNKNOWN`** means the server may have applied the write. Run `lattice remote op-status <op_id>` (the message names it) before retrying: `committed` means do not run it again.
+- `SERVER_UNREACHABLE` means nothing was written; there is no offline queue. Reads keep working from the cache with a one-line notice.
+- `LOCAL_ONLY` (from `rebuild`, `doctor --fix`, and similar) means the command runs on the server host, not here.
+- Setup, moving a board to a server and back, and every error code: `docs/hosted/guide.md` in the Lattice repository.
+
 ## Multi-Agent Coordination
 
 Lattice handles concurrent writes safely with file locks. Multiple agents can work simultaneously:
