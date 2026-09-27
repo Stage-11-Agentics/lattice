@@ -20,6 +20,7 @@ from lattice.core.config import (
 )
 from lattice.core.events import count_review_rework_cycles
 from lattice.core.tasks import is_backward_status_transition
+from lattice.ops.attestation_check import attested_review_commits
 from lattice.ops.base import CommonParams, OpContext, OpError, OpResult, operation
 from lattice.ops.plan_gate import check_plan_gate
 from lattice.storage.fs import atomic_write
@@ -114,16 +115,12 @@ class Status:
                         "Override with --force --reason.",
                         snapshot,
                     )
-            # The reachable-review-commit policy inspects the checkout the
-            # operation started in (H-4 replaces this with an attestation).
+            # The reachable-review-commit policy judges the caller's
+            # attestation, checked against the board as it is now (SPEC §3.4).
             policy = config.get("workflow", {}).get("completion_policies", {}).get(new_status, {})
-            policy_context = (
-                {"lattice_dir": ctx.lattice_dir, "repo_root": ctx.caller_worktree}
-                if policy.get("require_reachable_review_commit")
-                else {}
-            )
+            attested = attested_review_commits(ctx, snapshot, policy, check_stale=not p.force)
             policy_ok, failures = validate_completion_policy(
-                config, snapshot, new_status, **policy_context
+                config, snapshot, new_status, reachable_review_commits=attested
             )
             if not policy_ok:
                 if not p.force:
@@ -160,6 +157,8 @@ class Status:
             if p.force:
                 data["force"] = True
                 data["reason"] = p.reason
+            if attested is not None:
+                data["attestations"] = {"reachable_review_commits": attested}
             events.append(ctx.event("status_changed", task_id, data, p))
             return TaskMutationDecision(events=events, value=backward)
 

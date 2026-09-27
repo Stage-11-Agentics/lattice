@@ -47,6 +47,8 @@ BUILTIN_EVENT_TYPES: frozenset[str] = frozenset(
         "needs_human_cleared",
         "task_tombstoned",
         "task_untombstoned",
+        "plan_written",
+        "notes_written",
     }
 )
 

@@ -96,3 +96,35 @@ def check_or_exit(is_json: bool, check: Any, *args: Any) -> None:
         check(*args)
     except OpError as exc:
         output_error(exc.message, exc.code, is_json)
+
+
+def run_attested_operation(
+    op_name: str,
+    params: Any,
+    is_json: bool,
+    *,
+    board: LocalBoard,
+    attest: Any,
+    config: dict | None = None,
+) -> OpResult:
+    """Run *op_name* with the attestations ``attest()`` computes (SPEC §3.4).
+
+    A stale attestation (``COMPLETION_BLOCKED`` with ``details.reason``
+    ``STALE_ATTESTATION``) means the task changed between computing and
+    writing: recompute and retry once, as a new operation call with its own
+    ``op_id``. Any other error prints as ``run_operation`` prints it.
+    """
+    from lattice.core.attestations import STALE_ATTESTATION
+
+    for attempt in range(2):
+        caller = caller_from_context(attestations=attest())
+        try:
+            return board.execute(op_name, params, caller, config=config)
+        except OpError as exc:
+            stale = exc.code == "COMPLETION_BLOCKED" and (
+                exc.details.get("reason") == STALE_ATTESTATION
+            )
+            if stale and attempt == 0:
+                continue
+            output_error(exc.message, exc.code, is_json)
+    raise AssertionError("unreachable")

@@ -242,6 +242,10 @@ _NOOP_EVENT_TYPES: frozenset[str] = frozenset(
         # was auto-spawned, when, by which transition) but does not
         # mutate the task snapshot — the eventual review artifact does.
         "auto_review_spawned",
+        # Written by `lattice plan write` / `notes write` (SPEC §3.9): the file
+        # itself carries the content; the event records its hash and size.
+        "plan_written",
+        "notes_written",
     }
 )
 

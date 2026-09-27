@@ -379,12 +379,6 @@ class OpContext:
     short_id_floor: Mapping[str, int] | None = None
     _expectation_pending: bool = True
 
-    @property
-    def caller_worktree(self) -> Path | None:
-        """The git worktree the operation started in, as its origin reports it."""
-        worktree = (self.caller.origin.get("reported") or {}).get("worktree")
-        return Path(worktree) if worktree else None
-
     def resolve_task(self, raw_id: str) -> str:
         """Resolve a ULID or short ID to the task's ULID (``NOT_FOUND`` / ``INVALID_ID``)."""
         from lattice.storage.short_ids import resolve_short_id
