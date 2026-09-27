@@ -124,12 +124,20 @@ class TestReads:
             f"/api/tasks/{task['id']}/comments",
             f"/api/tasks/{task['id']}/full",
         ]
-        for path in paths:
-            hosted = web.get("/p/alpha" + path)
-            local = api.route_get(board, path)
-            assert hosted.status == local.status, path
-            assert hosted.json == json.loads(local.body()), path
-            assert hosted.headers["cache-control"] == "no-store", path
+        # Three heads: fresh, after a comment, after an archive. Later heads reuse
+        # cached replays of unchanged tasks, so any mutation of one shows here.
+        other = create_task(server, token, title="second")
+        for step in range(3):
+            if step == 1:
+                server.op("alpha", "task.comment", {"task": task["id"], "text": "2"}, token=token)
+            if step == 2:
+                server.op("alpha", "task.archive", {"task": other["id"]}, token=token)
+            for path in paths:
+                hosted = web.get("/p/alpha" + path)
+                local = api.route_get(board, path)
+                assert hosted.status == local.status, (step, path)
+                assert hosted.json == json.loads(local.body()), (step, path)
+                assert hosted.headers["cache-control"] == "no-store", path
 
     def test_git_views_are_unavailable_when_hosted(self, web: WebClient) -> None:
         body = web.get("/p/alpha/api/git").json

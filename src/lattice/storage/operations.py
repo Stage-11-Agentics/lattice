@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import json
 import sys
 from collections.abc import Generator, Mapping
@@ -316,9 +317,100 @@ def read_task_authority(
     This is the canonical read path for callers that care whether a task is
     active or archived.  It never selects placement from snapshot presence and
     returns the replayed snapshot, so a stale cache cannot resurrect a task.
+
+    Inside :func:`authority_cache` (a server's hosted dashboard read, under the
+    project's work lock) a replay whose event logs are unchanged is reused.
     """
+    cache = _AUTHORITY_CACHE.get()
+    if cache is not None:
+        return cache.read(lattice_dir, task_id, allow_missing)
+    return _read_task_authority_locked(lattice_dir, task_id, allow_missing=allow_missing)
+
+
+def _read_task_authority_locked(
+    lattice_dir: Path,
+    task_id: str,
+    *,
+    allow_missing: bool = False,
+) -> ResolvedTaskAuthority | None:
     with task_locks(lattice_dir / "locks", [task_id]):
         return resolve_task_authority(lattice_dir, task_id, allow_missing=allow_missing)
+
+
+class AuthorityCache:
+    """Strict replays kept across reads, each valid while both of its task's
+    event logs keep the ``(size, mtime_ns, ino)`` it was read at.
+
+    An authority is determined by its task's two event logs alone, so an
+    unchanged pair means an unchanged replay. Only a process that serializes
+    every write of the board against its reads may use one: the server's
+    hosted dashboard, whose reads run under the project's work lock (SPEC §8.5,
+    §10). Callers must treat cached authorities as read-only. The cache holds at
+    most *max_bytes* of event-log bytes, least recently used first out.
+    """
+
+    def __init__(self, max_bytes: int = 64 * 1024 * 1024) -> None:
+        from collections import OrderedDict
+
+        self.max_bytes = max_bytes
+        self.bytes = 0
+        self._entries: OrderedDict[tuple[str, bool], tuple[tuple, ResolvedTaskAuthority]] = (
+            OrderedDict()
+        )
+
+    @staticmethod
+    def _key(lattice_dir: Path, task_id: str) -> tuple:
+        out = []
+        for location in ("active", "archived"):
+            try:
+                st = _location_paths(lattice_dir, task_id, location)["event"].stat()
+            except FileNotFoundError:
+                out.append(None)
+                continue
+            out.append((st.st_size, st.st_mtime_ns, st.st_ino))
+        return tuple(out)
+
+    def read(
+        self, lattice_dir: Path, task_id: str, allow_missing: bool
+    ) -> ResolvedTaskAuthority | None:
+        slot = (task_id, allow_missing)
+        key = self._key(lattice_dir, task_id)
+        hit = self._entries.get(slot)
+        if hit is not None and hit[0] == key:
+            self._entries.move_to_end(slot)
+            return hit[1]
+        authority = _read_task_authority_locked(lattice_dir, task_id, allow_missing=allow_missing)
+        self._drop(slot)
+        if authority is not None and key == self._key(lattice_dir, task_id):
+            self._entries[slot] = (key, authority)
+            self.bytes += len(authority.event_bytes)
+            while self.bytes > self.max_bytes and self._entries:
+                self._drop(next(iter(self._entries)))
+        return authority
+
+    def _drop(self, slot: tuple[str, bool]) -> None:
+        old = self._entries.pop(slot, None)
+        if old is not None:
+            self.bytes -= len(old[1].event_bytes)
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+
+_AUTHORITY_CACHE: contextvars.ContextVar[AuthorityCache | None] = contextvars.ContextVar(
+    "lattice_authority_cache", default=None
+)
+
+
+@contextlib.contextmanager
+def authority_cache(cache: AuthorityCache) -> Generator[None, None, None]:
+    """Reuse *cache* for :func:`read_task_authority` in this context (see
+    :class:`AuthorityCache` for who may)."""
+    token = _AUTHORITY_CACHE.set(cache)
+    try:
+        yield
+    finally:
+        _AUTHORITY_CACHE.reset(token)
 
 
 def resolve_task_prose_path(

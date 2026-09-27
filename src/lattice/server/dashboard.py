@@ -43,6 +43,7 @@ from lattice.server.journal import fingerprint
 from lattice.server.project import Project, WriteRequest
 from lattice.server.registry import in_worker
 from lattice.server.tokens import TokenRecord
+from lattice.storage.operations import AuthorityCache, authority_cache
 
 if TYPE_CHECKING:
     from lattice.server.app import ServerState
@@ -85,6 +86,9 @@ class ReadMemo:
         self.journal: object | None = None
         self.head: tuple[str | None, int] | None = None
         self.entries: OrderedDict[tuple[str, str], CachedRead] = OrderedDict()
+        #: Replays reused across heads while their event logs are unchanged, so
+        #: a write costs the next read one replay, not one per task (AC-42).
+        self.authorities = AuthorityCache()
 
     def get(
         self,
@@ -93,6 +97,8 @@ class ReadMemo:
         key: tuple[str, str],
         compute: Callable[[], CachedRead],
     ) -> CachedRead:
+        if journal is not self.journal:
+            self.authorities = AuthorityCache()  # a new load: nothing carries over
         if journal is not self.journal or head != self.head:
             self.entries.clear()
             self.journal, self.head = journal, head
@@ -100,7 +106,8 @@ class ReadMemo:
         if hit is not None:
             self.entries.move_to_end(key)
             return hit
-        value = compute()
+        with authority_cache(self.authorities):
+            value = compute()
         self.entries[key] = value
         while len(self.entries) > self.limit:
             self.entries.popitem(last=False)
