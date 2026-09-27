@@ -188,7 +188,7 @@ def running_server(
     import uvicorn
 
     from lattice.server.app import create_app
-    from lattice.server.serve import UVICORN_OPTIONS, acquire_server_lock, load_server_config
+    from lattice.server.serve import acquire_server_lock, load_server_config, uvicorn_options
 
     root = Path(root)
     if config:
@@ -211,7 +211,7 @@ def running_server(
         access_log=False,
         lifespan="on",
         timeout_graceful_shutdown=5,
-        **UVICORN_OPTIONS,
+        **uvicorn_options(server_config),
     )
     server = _test_server(uv_config)
     thread = threading.Thread(

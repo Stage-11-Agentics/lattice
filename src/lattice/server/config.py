@@ -7,6 +7,7 @@ when the server starts, so a typo never silently falls back to a default.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import math
 import os
@@ -78,7 +79,8 @@ class StreamConfig:
 class ServerConfig:
     bind: str = "127.0.0.1"
     port: int = 8740
-    trusted_proxy: bool = False
+    #: Proxy addresses or CIDRs whose ``X-Forwarded-*`` headers count.
+    trusted_proxies: tuple[str, ...] = ()
     public_origins: tuple[str, ...] = ()
     log_level: str = "info"
     audit: AuditConfig = field(default_factory=AuditConfig)
@@ -129,6 +131,38 @@ def check_push(push: Any) -> dict:
     return {"remote": remote, "branch": branch}
 
 
+def check_trusted_proxies(value: Any) -> tuple[str, ...]:
+    """``trusted_proxies``: IPv4 or IPv6 addresses or CIDR ranges (SPEC §8.1).
+
+    Every entry must parse, so a typo is refused rather than silently trusting
+    nothing (uvicorn would keep an unparseable entry as a literal host name),
+    and ``*`` is refused because the list names proxies, never "everyone". A
+    range with host bits set is refused too: uvicorn would read it as a
+    literal and match nothing.
+    """
+    if not isinstance(value, list):
+        raise ServerConfigError("trusted_proxies must be a list of addresses or CIDR ranges")
+    entries: list[str] = []
+    for entry in value:
+        if not isinstance(entry, str):
+            raise ServerConfigError(
+                f"trusted_proxies entries must be strings (an address or CIDR), got {entry!r}"
+            )
+        entry = entry.strip()
+        try:
+            if "/" in entry:
+                ipaddress.ip_network(entry)
+            else:
+                ipaddress.ip_address(entry)
+        except ValueError as exc:
+            raise ServerConfigError(
+                f"trusted_proxies entry {entry!r} is not an IPv4 or IPv6 address or CIDR "
+                f"range: {exc}"
+            ) from exc
+        entries.append(entry)
+    return tuple(entries)
+
+
 def _check_int(section: str, key: str, value: Any, *, minimum: int = 0) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
         raise ServerConfigError(f"{section}{key} must be an integer >= {minimum}, got {value!r}")
@@ -172,6 +206,11 @@ def parse_config(raw: Any) -> ServerConfig:
         raw = {}
     if not isinstance(raw, dict):
         raise ServerConfigError(f"{SERVER_JSON} must hold a JSON object")
+    if "trusted_proxy" in raw:
+        raise ServerConfigError(
+            f"trusted_proxy is no longer accepted in {SERVER_JSON}; list the proxy addresses "
+            'or CIDRs in trusted_proxies instead (for example "trusted_proxies": ["127.0.0.1"])'
+        )
     known = {f.name for f in fields(ServerConfig)}
     for key in raw:
         if key not in known:
@@ -185,10 +224,8 @@ def parse_config(raw: Any) -> ServerConfig:
         kwargs["port"] = _check_int("", "port", raw["port"])
         if kwargs["port"] > 65535:
             raise ServerConfigError("port must be at most 65535")
-    if "trusted_proxy" in raw:
-        if not isinstance(raw["trusted_proxy"], bool):
-            raise ServerConfigError("trusted_proxy must be true or false")
-        kwargs["trusted_proxy"] = raw["trusted_proxy"]
+    if "trusted_proxies" in raw:
+        kwargs["trusted_proxies"] = check_trusted_proxies(raw["trusted_proxies"])
     if "public_origins" in raw:
         origins = raw["public_origins"]
         if not isinstance(origins, list) or not all(isinstance(o, str) for o in origins):

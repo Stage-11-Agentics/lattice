@@ -246,6 +246,7 @@ class HeadersMiddleware:
                     "request",
                     method=scope.get("method"),
                     path=path,
+                    client=_client_host(scope),
                     status=status_holder["status"],
                     duration_ms=round((time.monotonic() - started) * 1000, 1),
                     project=fields.get("project"),
@@ -257,6 +258,13 @@ class HeadersMiddleware:
                     replayed=fields.get("replayed"),
                     error_code=fields.get("error_code"),
                 )
+
+
+def _client_host(scope: Scope) -> str | None:
+    """The request's client address: the peer, or the address a listed proxy
+    forwarded (uvicorn has already applied ``trusted_proxies``, SPEC §8.1)."""
+    client = scope.get("client")
+    return client[0] if client else None
 
 
 def endpoint(

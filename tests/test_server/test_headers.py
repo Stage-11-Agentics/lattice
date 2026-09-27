@@ -45,7 +45,8 @@ def test_success_envelope(server: ServerHandle, root: Path) -> None:
 
 def test_uvicorn_never_trusts_forwarded_headers_itself() -> None:
     """uvicorn rewrites the scheme and client from ``X-Forwarded-*`` sent from
-    127.0.0.1 by default; only ``trusted_proxy`` may (SPEC §8.1)."""
-    from lattice.server.serve import UVICORN_OPTIONS
+    127.0.0.1 by default; only ``trusted_proxies`` may (SPEC §8.1)."""
+    from lattice.server.config import ServerConfig
+    from lattice.server.serve import uvicorn_options
 
-    assert UVICORN_OPTIONS["proxy_headers"] is False
+    assert uvicorn_options(ServerConfig())["proxy_headers"] is False
