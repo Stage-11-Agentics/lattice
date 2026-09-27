@@ -3,14 +3,15 @@ holding a 1,000-task board, with readers, writers, and followers in their
 specified roles, and write latency measured per operation.
 
 Shared by ``test_readers_writers`` (H-15) and ``test_with_dashboards`` (H-13b),
-which adds dashboard viewers to the same rig (fixture ``load_rig`` in
-``tests/torture/conftest.py``)::
+which adds dashboard viewers to the same rig::
 
-    def test_x(load_rig: LoadRig) -> None:
-        load_rig.start_followers(5)
-        readers = load_rig.start_readers(20)
-        latencies = load_rig.run_writers(5, seconds=60)   # blocks; fails fast
-        reads = load_rig.stop_readers(readers)
+    def test_x(tmp_path: Path) -> None:
+        with LoadRig.running(tmp_path) as rig:       # fails, never skips
+            rig.start_followers(5)
+            readers = rig.start_readers(20)
+            latencies = rig.run_writers(5, seconds=60)   # blocks; fails fast
+            reads = rig.stop_readers(readers)
+        print(p95(read_latencies(reads)))               # reported, not bounded
         assert p95(latencies) < 0.5
 
 Roles and cadence (the same shape as H-13b's harness):
@@ -28,10 +29,16 @@ Roles and cadence (the same shape as H-13b's harness):
 Every reader, follower, writer, and loader has its own token, as separate
 machines would (one token would hit ``max_inflight_per_token`` and the per-token
 rate). A reader or follower that dies fails the run at once; every reader ends
-its output with a ``done`` line. ``TORTURE_CLIENT_DIR`` (not a ``LATTICE_*``
-name: the suite strips those) puts client checkouts elsewhere, for example a
-tmpfs, so client caches stop sharing the server's disk; it never changes the
-workload.
+its output with a ``done`` line.
+
+**Client filesystem (EVALUATION AC-42).** The clients stand in for separate
+machines, so their checkouts and caches live on a filesystem other than the
+server root's: ``/dev/shm`` on Linux, or on macOS a RAM disk the rig creates
+(``hdiutil attach -nomount ram://...`` then ``diskutil erasevolume APFS``) and
+always detaches. If it cannot arrange that, :meth:`LoadRig.build` fails and says
+why; it never skips, and it asserts the two directories are on different
+devices (``st_dev``) before any client exists. Client read latency is reported
+(``read_latencies``), not bounded (LAT-330).
 """
 
 from __future__ import annotations
@@ -41,11 +48,14 @@ import json
 import os
 import random
 import shutil
+import sys
 import subprocess
 import tempfile
 import threading
 import time
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -66,6 +76,71 @@ from tests.torture.rehearsal import read_jsonl, start_scripted
 
 READ_INTERVAL_SECONDS = 5.0
 WRITE_INTERVAL_SECONDS = 0.2
+
+
+#: The macOS RAM disk's size: room for 30 caches of a 1,000-task board and more.
+RAM_DISK_BYTES = 2 * 1024**3
+
+
+@contextmanager
+def separate_client_filesystem() -> Iterator[Path]:
+    """A fresh directory on a filesystem other than the test's temp directory's,
+    removed afterwards: ``/dev/shm`` on Linux, a RAM disk created (and always
+    detached) on macOS. Raises ``AssertionError`` naming the reason when neither
+    is possible: the load verdict is never given with clients on the server's
+    filesystem."""
+    if sys.platform == "darwin":
+        with _mac_ram_disk() as mount:
+            path = Path(tempfile.mkdtemp(prefix="lattice-load-", dir=mount))
+            yield path
+        return
+    shm = Path("/dev/shm")
+    if not (shm.is_dir() and os.access(shm, os.W_OK)):
+        raise AssertionError(
+            "AC-42 needs the clients on a filesystem separate from the server's; "
+            f"/dev/shm is not a writable directory on this {sys.platform} host"
+        )
+    path = Path(tempfile.mkdtemp(prefix="lattice-load-", dir=shm))
+    try:
+        yield path
+    finally:
+        chmod_tree_writable(path)
+        shutil.rmtree(path, ignore_errors=True)
+
+
+@contextmanager
+def _mac_ram_disk() -> Iterator[Path]:
+    sectors = RAM_DISK_BYTES // 512
+    attach = subprocess.run(
+        ["hdiutil", "attach", "-nomount", f"ram://{sectors}"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if attach.returncode != 0:
+        raise AssertionError(f"AC-42 could not create a RAM disk for the clients: {attach.stderr}")
+    device = attach.stdout.strip().split()[0]
+    try:
+        name = f"LatticeLoad{os.getpid()}"
+        erase = subprocess.run(
+            ["diskutil", "erasevolume", "APFS", name, device],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if erase.returncode != 0:
+            raise AssertionError(f"AC-42 could not format the RAM disk {device}: {erase.stderr}")
+        yield Path("/Volumes") / name
+    finally:
+        subprocess.run(["hdiutil", "detach", device, "-force"], capture_output=True, timeout=60)
+
+
+def assert_separate_filesystems(client_dir: Path, server_root: Path) -> None:
+    client_dev, server_dev = os.stat(client_dir).st_dev, os.stat(server_root).st_dev
+    assert client_dev != server_dev, (
+        f"client dir {client_dir} and server root {server_root} are on one filesystem "
+        f"(st_dev {client_dev}); AC-42's clients stand in for separate machines"
+    )
 
 
 def p95(values: list[float]) -> float:
@@ -90,24 +165,23 @@ class LoadRig:
     procs: list[subprocess.Popen] = field(default_factory=list)
     #: Each checkout's own client (and token).
     clients: dict[Path, Client] = field(default_factory=dict)
+    #: On a filesystem separate from the server root's (:func:`separate_client_filesystem`).
     client_dir: Path = field(default_factory=Path)
     writers: list[WriterReport] = field(default_factory=list)
-
-    def __post_init__(self) -> None:
-        base = os.environ.get("TORTURE_CLIENT_DIR")
-        self.client_dir = (
-            Path(tempfile.mkdtemp(prefix="lattice-load-", dir=base))
-            if base
-            else self.work / "checkouts"
-        )
+    #: Undoes the client filesystem; closed last by :meth:`close`.
+    cleanup: ExitStack = field(default_factory=ExitStack)
 
     @classmethod
     def build(cls, work: Path, *, tasks: int = 1000) -> LoadRig:
-        """Start a server and fill project ``demo`` with *tasks* tasks over HTTP. The
-        server is stopped again if anything here fails."""
-        server = ServerProcess(make_root(work, projects={PROJECT: {"code": "DEM"}}))
-        server.start()
+        """Arrange the separate client filesystem, start a server, and fill project
+        ``demo`` with *tasks* tasks over HTTP. Everything is undone if any step fails."""
+        cleanup = ExitStack()
         try:
+            client_dir = cleanup.enter_context(separate_client_filesystem())
+            server = ServerProcess(make_root(work, projects={PROJECT: {"code": "DEM"}}))
+            assert_separate_filesystems(client_dir, server.root)
+            server.start()
+            cleanup.callback(server.stop)
             loaders = [server.mint(user="human:loader", machine=f"loader-{n}") for n in range(8)]
 
             def create(n: int) -> str:
@@ -123,10 +197,28 @@ class LoadRig:
 
             with ThreadPoolExecutor(8) as pool:
                 short_ids = list(pool.map(create, range(tasks)))
-            return cls(work=work, server=server, tasks=short_ids)
+            return cls(
+                work=work,
+                server=server,
+                tasks=short_ids,
+                client_dir=client_dir,
+                cleanup=cleanup,
+            )
         except BaseException:
-            server.stop()
+            cleanup.close()
             raise
+
+    @classmethod
+    @contextmanager
+    def running(cls, work: Path, *, tasks: int = 1000) -> Iterator[LoadRig]:
+        """:meth:`build`, then :meth:`close` however the block ends. Enter it inside
+        the test body, so a rig that cannot be arranged (no separate client
+        filesystem) FAILS the test rather than erroring a fixture."""
+        rig = cls.build(work, tasks=tasks)
+        try:
+            yield rig
+        finally:
+            rig.close()
 
     # -- clients ------------------------------------------------------------
 
@@ -263,13 +355,15 @@ class LoadRig:
         return rows
 
     def close(self) -> None:
-        (self.work / "stop-readers").write_text("")
-        for proc in self.procs:
-            stop_process(proc)
-        self.server.stop()
-        if not self.client_dir.is_relative_to(self.work):
-            chmod_tree_writable(self.client_dir)
-            shutil.rmtree(self.client_dir, ignore_errors=True)
+        """Stop every child and the server, then remove the client filesystem, even
+        if a step fails."""
+        try:
+            (self.work / "stop-readers").write_text("")
+            for proc in self.procs:
+                stop_process(proc)
+            self.server.stop()
+        finally:
+            self.cleanup.close()
 
 
 def _mixed_op(rng: random.Random, tasks: list[str], w: int, k: int) -> tuple[str, dict]:
@@ -301,3 +395,8 @@ def _post(
         return response.status, json.loads(raw)
     except ValueError:
         return response.status, raw[:200]
+
+
+def read_latencies(reads: list[dict]) -> list[float]:
+    """Each read's duration (catch-up plus ``list``), for the report (LAT-330)."""
+    return [r["t"] - r["t0"] for r in reads]

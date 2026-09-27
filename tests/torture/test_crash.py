@@ -20,11 +20,16 @@ until every case has happened for real:
 - *committed unheard*: a post-commit kill abandoned, ``committed`` in op status;
 - every operation family both acknowledged and caught in flight by a kill.
 
+A kill counts toward these cases only for an ``op_id`` whose request demonstrably
+died on the wire (sent, no answer; a refused connection is not one). An
+operation whose response beat the signal is ordinary, not interrupted.
+
 Then, after a last SIGKILL and restart: op status agrees with the ledger for every
 ``op_id``; the board's events are exactly the committed operations' events;
 each plan file holds the text of the plan write with the highest committed
-``seq`` (and no uncommitted text anywhere); every snapshot is byte-identical to
-a ``lattice rebuild --all`` of the event logs; no undo log remains; and
+``seq`` (and no uncommitted text anywhere); ``tasks/`` and ``archive/tasks/``
+hold exactly the files, byte for byte, that ``lattice rebuild --all`` of the
+event logs writes; no undo log remains; and
 ``server project doctor`` reports no finding at all.
 
 The per-PR lane stops as soon as every case is covered (at least 6 kills); the
@@ -40,6 +45,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -76,6 +82,9 @@ class Ledger:
     rejected: dict[str, dict] = field(default_factory=dict)  # op_id -> error envelope
     decisions: dict[str, str] = field(default_factory=dict)  # op_id -> retry | abandon
     killed: dict[str, str] = field(default_factory=dict)  # op_id in flight -> moment
+    #: op_ids whose request died on the wire (sent, then no answer): the only
+    #: ones a kill demonstrably interrupted. A refused connection is not one.
+    interrupted: set[str] = field(default_factory=set)
     tasks: list[str] = field(default_factory=list)  # live (unarchived) short IDs
     lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -112,8 +121,11 @@ def _writer(
         while True:
             try:
                 status, body = server.op(op, params, token=token, actor=f"agent:w{n}", op_id=op_id)
-            except OSError:
+            except OSError as exc:
                 status, body = None, None
+                if not _refused(exc):
+                    with ledger.lock:
+                        ledger.interrupted.add(op_id)
             if status == 200:
                 result = body["data"]["result"]
                 with ledger.lock:
@@ -140,6 +152,12 @@ def _writer(
             time.sleep(0.05)
 
 
+def _refused(exc: OSError) -> bool:
+    """Whether the request never reached a server (nothing was listening)."""
+    reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+    return isinstance(reason, ConnectionRefusedError)
+
+
 def _in_flight(undo_dir: Path) -> str | None:
     """The ``op_id`` of an undo log that exists right now, if any."""
     try:
@@ -150,6 +168,20 @@ def _in_flight(undo_dir: Path) -> str | None:
     except FileNotFoundError:
         pass
     return None
+
+
+def _undo_logs(server: ServerProcess) -> set[str]:
+    undo_dir = server.board() / "hosted" / "undo"
+    return {p.name for p in undo_dir.iterdir()} if undo_dir.is_dir() else set()
+
+
+def _wait_settled(server: ServerProcess, left: set[str], timeout: float = 30) -> None:
+    """Wait until startup recovery has settled every undo log the crash left, so
+    the next kill is aimed at a live operation, never at a stale log."""
+    deadline = time.monotonic() + timeout
+    while left & _undo_logs(server):
+        assert time.monotonic() < deadline, f"recovery left {left & _undo_logs(server)}"
+        time.sleep(0.01)
 
 
 def _size(path: Path) -> int:
@@ -206,7 +238,7 @@ class Coverage:
 def _coverage(server: ServerProcess, token: str, ledger: Ledger, settled: dict) -> Coverage:
     cov = Coverage()
     with ledger.lock:
-        killed = dict(ledger.killed)
+        killed = {k: v for k, v in ledger.killed.items() if k in ledger.interrupted}
         acked = dict(ledger.acked)
         unknown = set(ledger.unknown)
         requests = dict(ledger.requests)
@@ -251,7 +283,9 @@ def _run(tmp_path: Path, min_kills: int) -> None:
             moment, decision = MODES[kills % len(MODES)]
             _kill_in_flight(server, ledger, moment, decision)
             kills += 1
+            left = _undo_logs(server)
             server.start()
+            _wait_settled(server, left)
             time.sleep(0.3)  # let retries land before counting
             cov = _coverage(server, token, ledger, settled)
         stop.set()
@@ -341,14 +375,23 @@ def _verify(server: ServerProcess, token: str, ledger: Ledger, tmp_path: Path) -
         timeout=300,
     )
     assert rebuild.returncode == 0, rebuild.stdout + rebuild.stderr
-    for rel in ("tasks", "archive/tasks"):
-        for path in (board / rel).glob("*.json"):
-            rebuilt = copy / ".lattice" / rel / path.name
-            assert json.loads(path.read_text()) == json.loads(rebuilt.read_text()), path
+    assert _snapshot_bytes(board) == _snapshot_bytes(copy / ".lattice")
 
     undo = board / "hosted" / "undo"
     assert not undo.exists() or not any(undo.iterdir()), sorted(undo.iterdir())
     _assert_doctor_silent(server)
+
+
+def _snapshot_bytes(lattice_dir: Path) -> dict[str, bytes]:
+    """Every file under ``tasks/`` and ``archive/tasks/``: relative path -> raw bytes."""
+    found: dict[str, bytes] = {}
+    for rel in ("tasks", "archive/tasks"):
+        directory = lattice_dir / rel
+        if directory.is_dir():
+            for path in sorted(directory.rglob("*")):
+                if path.is_file():
+                    found[path.relative_to(lattice_dir).as_posix()] = path.read_bytes()
+    return found
 
 
 def _assert_doctor_silent(server: ServerProcess) -> None:

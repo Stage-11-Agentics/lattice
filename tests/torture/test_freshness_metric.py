@@ -37,7 +37,7 @@ def test_prompt_observations_are_fresh() -> None:
     ]
     measured = freshness(WRITES, polls)["a"]
     assert round(measured.delay, 6) == 0.3  # ev_b: acked 11.0, first seen at 11.3
-    assert round(measured.gap, 6) == 1.1  # 10.2 -> 11.3; the window is 10.0 to 11.5
+    assert round(measured.gap, 6) == 1.1  # 10.2 -> 11.3, bracketed by 9.5 and 12.1
     assert measured.reads == 5
 
 
@@ -70,3 +70,20 @@ def test_a_write_never_seen_is_infinitely_late() -> None:
 def test_no_read_after_the_last_write_is_an_unbounded_gap() -> None:
     polls = [_poll("e", 10.9, 11.0, DEM_1="ev_b")]
     assert math.isinf(freshness(WRITES, polls)["e"].gap)
+
+
+def test_the_gap_is_bracketed_by_real_reads_not_by_the_first_ack() -> None:
+    """Round-2 counterexample: reads at 1.0 and 10.1, one write acked at 10.0 and
+    seen at 10.1. The delay is 0.1 s, but the cadence gap is 9.1 s: a read at
+    the start of the window would not have run for 9 s."""
+    writes = [{"task": "DEM-1", "last_event_id": "ev_a", "t": 10.0}]
+    polls = [_poll("f", 0.9, 1.0), _poll("f", 10.0, 10.1, DEM_1="ev_a")]
+    measured = freshness(writes, polls)["f"]
+    assert round(measured.delay, 6) == 0.1
+    assert round(measured.gap, 6) == 9.1
+
+
+def test_no_read_before_the_first_write_is_an_unbounded_gap() -> None:
+    writes = [{"task": "DEM-1", "last_event_id": "ev_a", "t": 10.0}]
+    polls = [_poll("g", 10.0, 10.1, DEM_1="ev_a"), _poll("g", 10.2, 10.3, DEM_1="ev_a")]
+    assert math.isinf(freshness(writes, polls)["g"].gap)

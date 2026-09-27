@@ -209,8 +209,9 @@ def freshness(writes: list[dict], polls: list[dict]) -> dict[str, Freshness]:
     """For each directory polled: for every write, the time from its acknowledgement
     to the end of the first read there that showed it (0 when a read that ended
     before the acknowledgement already showed it; ``inf`` when no read ever did),
-    worst case; and the longest gap between consecutive completed reads, from the
-    first write's acknowledgement to the last one's.
+    worst case; and the longest gap between consecutive completed reads across
+    the write window, bracketed by the last read completed before the first
+    acknowledgement and the first read completed after the last one.
 
     "Every write visible within 2 s" is ``delay <= 2`` in every directory, and it
     means something only when ``gap <= 2`` too: a read cadence slower than the
@@ -251,9 +252,16 @@ def freshness(writes: list[dict], polls: list[dict]) -> dict[str, Freshness]:
             for j, t_ack in enumerate(acked[task]):
                 seen = seen_at[j]
                 delay = max(delay, float("inf") if seen is None else max(0.0, seen - t_ack))
-        ends = [window[0]] + [r["t"] for r in rows if window[0] <= r["t"] <= window[1]]
+        # The real reads bracketing the write window: the last one completed
+        # before the first acknowledgement, every one inside, and the first
+        # after the last acknowledgement. A missing bracket is an unbounded gap.
+        before = [r["t"] for r in rows if r["t"] < window[0]]
+        inside = [r["t"] for r in rows if window[0] <= r["t"] <= window[1]]
         after = [r["t"] for r in rows if r["t"] > window[1]]
-        ends += after[:1] or [float("inf")]
-        gap = max(b - a for a, b in zip(ends, ends[1:], strict=False))
+        if before and after:
+            ends = [before[-1], *inside, after[0]]
+            gap = max(b - a for a, b in zip(ends, ends[1:], strict=False))
+        else:
+            gap = float("inf")
         measured[cwd] = Freshness(delay=delay, gap=gap, reads=len(rows))
     return measured
