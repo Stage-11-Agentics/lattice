@@ -744,3 +744,40 @@ def test_a_broken_server_json_refuses_before_the_source_is_read(
         importer.import_project(root, "imp", tmp_path / "missing")
     assert raised.value.code == "VALIDATION_ERROR" and "server.json" in raised.value.message
     _assert_nothing_created(root)
+
+
+# ---------------------------------------------------------------------------
+# LAT-347: a doctor-refused board has a repair path (SPEC §11)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("as_json", [True, False], ids=["json", "plain"])
+def test_import_refusal_names_doctor_fix(root: Path, source: Path, as_json: bool) -> None:
+    _corrupt_log(source / ".lattice")
+    result = _import(root, source, as_json=as_json)
+    assert result.exit_code == 1
+    text = json.loads(result.output)["error"]["message"] if as_json else result.output
+    assert text.rstrip().endswith(importer.NEXT_STEP)
+    assert "lattice doctor --fix --actor <you>" in text
+    _assert_nothing_created(root)
+
+
+def test_import_after_history_repair(root: Path, tmp_path: Path) -> None:
+    from tests.test_storage.history_fixture import build_fixture
+
+    board, _t = build_fixture(tmp_path / "damaged")
+    refused = _import(root, board.root)
+    assert refused.exit_code == 1
+    assert json.loads(refused.output)["error"]["code"] == "INTEGRITY_ERROR"
+    _assert_nothing_created(root)
+
+    fixed = _cli("doctor", "--fix", "--actor", "human:t", root=board.root)
+    assert fixed.exit_code == 0, fixed.output
+    result = _import(root, board.root)
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)["data"]
+    assert data["doctor"]["summary"]["errors"] == 0
+    assert data["doctor"]["summary"]["warnings"] == 0
+    imported = root / "projects" / "imp"
+    doctor = _cli("doctor", "--json", root=imported)
+    assert json.loads(doctor.output)["data"]["summary"]["errors"] == 0, doctor.output
