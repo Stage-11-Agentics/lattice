@@ -291,9 +291,35 @@ class HostedBoard:
         result = result_from_json(data.get("result") or {})
         session.catch_up_and_report(self.hosted, after_write=True)
         session.mark_fresh(self.hosted)
+        self._record_ack(data.get("op_id") or body["op_id"], data.get("seq"))
         if self.remote.run_board_hooks:
             self._run_hooks(result, config)
         return result
+
+    def _record_ack(self, op_id: str, seq: Any) -> None:
+        """Append the acknowledged write to ``cache/acked.jsonl`` for ``lattice remote
+        verify`` (SPEC §9.5). The write already succeeded: a failure to record it
+        is one line on stderr, never an error."""
+        import json
+        import sys
+
+        from lattice.remote import acked
+
+        cache = self.cache_dir / "cache"
+        try:
+            state = json.loads((cache / "state.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            state = {}
+        synced = isinstance(seq, int) and isinstance(state.get("head_seq"), int)
+        epoch = state.get("epoch") if synced and state["head_seq"] >= seq else None
+        try:
+            acked.record(cache, op_id=op_id, project=self.hosted.project, epoch=epoch, seq=seq)
+        except OSError as exc:
+            print(
+                f"lattice: could not record operation {op_id} in cache/acked.jsonl ({exc}); "
+                "lattice remote verify will not check it",
+                file=sys.stderr,
+            )
 
     def _run_hooks(self, result: Any, config: dict | None) -> None:
         import json
