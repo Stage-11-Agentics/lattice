@@ -549,3 +549,32 @@ def test_a_rescue_survives_a_kill_at_every_step(
     assert cache.catch_up(client_root).kind == "applied"
     assert b"precious local edit" in _rescued(client_root).values()
     assert_mirror(client_root, stub)
+
+
+def test_a_planted_symlink_and_fifo_are_removed_through_the_primitive(
+    tmp_path: Path, client_root: Path, stub: StubServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lattice.storage import fs
+
+    _synced(client_root, stub)
+    lattice = _lattice(client_root)
+    outside = tmp_path / "outside-target.txt"
+    outside.write_text("not board data")
+    os.chmod(lattice / "tasks", 0o700)
+    (lattice / "tasks" / "planted.json").symlink_to(outside)
+    os.chmod(lattice / "tasks", 0o500)
+    os.chmod(lattice / "notes", 0o700)
+    os.mkfifo(lattice / "notes" / "pipe")
+    os.chmod(lattice / "notes", 0o500)
+    removed: list[str] = []
+    real = fs.unlink_entry
+    monkeypatch.setattr(cache, "unlink_entry", lambda p: (removed.append(Path(p).name), real(p)))
+    assert cache.catch_up(client_root).kind == "applied"  # the tree changed: a reset
+    assert sorted(removed) == ["pipe", "planted.json"]
+    assert not os.path.lexists(lattice / "tasks" / "planted.json")
+    assert not os.path.lexists(lattice / "notes" / "pipe")
+    assert outside.read_text() == "not board data"
+    rescued = lattice / "cache" / "rescued"
+    links = [p for p in rescued.rglob("planted.json")]
+    assert len(links) == 1 and links[0].is_symlink() and os.readlink(links[0]) == str(outside)
+    assert_mirror(client_root, stub)

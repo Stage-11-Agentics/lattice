@@ -86,6 +86,8 @@ class Fault:
     raw: tuple[int, dict[str, str], bytes] | None = None
     #: Answer every files request with this (status, headers, body) instead.
     raw_files: tuple[int, dict[str, str], bytes] | None = None
+    #: Answer every ``manifest=1`` sync with this (status, headers, body) instead.
+    raw_manifest: tuple[int, dict[str, str], bytes] | None = None
     #: Held (not set) → sync answers wait on it after assembly.
     sync_gate: threading.Event | None = None
     #: Held (not set) → file answers wait on it.
@@ -394,6 +396,9 @@ class _Handler(BaseHTTPRequestHandler):
         rest = parts.path[len(prefix) :]
         if rest == "sync":
             stub.arrivals.append(("sync", query))
+            if query.get("manifest") == "1" and stub.fault.raw_manifest is not None:
+                self._raw(*stub.fault.raw_manifest)
+                return
             body = stub.sync_body(query)
             if stub.fault.mutate_sync is not None:
                 stub.fault.mutate_sync(body)

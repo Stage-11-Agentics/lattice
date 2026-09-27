@@ -21,7 +21,7 @@ from tests.test_remote.proxies import tcp_proxy
 from tests.test_remote.stub_sync_server import running_stub
 from tests.torture.envelope import MIB, build_envelope
 
-pytestmark = [pytest.mark.torture, pytest.mark.timeout(900)]
+pytestmark = [pytest.mark.torture, pytest.mark.envelope, pytest.mark.timeout(900)]
 
 
 def test_initial_sync_and_reset_at_the_supported_size_through_a_slow_link(

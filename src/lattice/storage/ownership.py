@@ -268,13 +268,17 @@ class BoardTarget:
         return any(cls in RECORDED_CLASSES for _board, cls in self.classes)
 
 
-def locate(path: Path) -> BoardTarget | None:
+def locate(path: Path, *, follow: bool = True) -> BoardTarget | None:
     """Resolve *path* against its board, or ``None`` when it is not a board path.
+
+    ``follow=False`` resolves only the parent directory and keeps the final
+    component as named, for a mutation of the directory entry itself (removing
+    a symlink, never its target).
 
     Raises ``BoardPathError`` when the resolved path escapes the board.
     """
     absolute = Path(path).absolute()
-    resolved = absolute.resolve()
+    resolved = absolute.resolve() if follow else absolute.parent.resolve() / absolute.name
     board = _SCOPE.get()
     if board is None:
         parts = absolute.parts

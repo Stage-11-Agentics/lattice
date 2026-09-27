@@ -13,7 +13,7 @@ from __future__ import annotations
 import socket
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -157,6 +157,49 @@ def tcp_proxy(target_port: int, *, bytes_per_second: float | None = None) -> Ite
     thread.start()
     try:
         yield proxy
+    finally:
+        stop.set()
+        thread.join(timeout=5)
+        listen.close()
+
+
+@contextmanager
+def scripted_tcp(script: Callable[[socket.socket], None]) -> Iterator[str]:
+    """A TCP listener that reads each request's head, then runs *script* on the
+    connection (writing whatever raw bytes it likes)."""
+    listen = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listen.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listen.bind(("127.0.0.1", 0))
+    listen.listen(8)
+    listen.settimeout(0.1)
+    stop = threading.Event()
+
+    def serve(conn: socket.socket) -> None:
+        try:
+            data = b""
+            while b"\r\n\r\n" not in data:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    return
+                data += chunk
+            script(conn)
+        except OSError:
+            pass
+        finally:
+            conn.close()
+
+    def accept() -> None:
+        while not stop.is_set():
+            try:
+                conn, _ = listen.accept()
+            except (TimeoutError, OSError):
+                continue
+            threading.Thread(target=serve, args=(conn,), daemon=True).start()
+
+    thread = threading.Thread(target=accept, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{listen.getsockname()[1]}"
     finally:
         stop.set()
         thread.join(timeout=5)

@@ -22,10 +22,12 @@ carrying the server's code, message, and details.
 
 from __future__ import annotations
 
+import contextlib
 import http.client
 import json
 import socket
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -176,8 +178,14 @@ def href_url(remote: Remote, href: str) -> str | None:
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        raise _Redirected(code, headers.get("Location") or newurl)
+    """Every redirect status stops the request with its raw ``Location``,
+    before urllib parses (or could follow) it."""
+
+    def http_error_302(self, req, fp, code, msg, headers):
+        fp.close()
+        raise _Redirected(code, headers.get("Location") or headers.get("URI"))
+
+    http_error_301 = http_error_303 = http_error_307 = http_error_308 = http_error_302
 
 
 class _Redirected(Exception):
@@ -189,29 +197,66 @@ class _Redirected(Exception):
 
 @dataclass
 class _Socket:
-    """What the connection factory saw: whether it connected.
+    """The one connection a request makes, and its response-start deadline.
 
-    The socket's timeout, set once connected, bounds the wait for the answer to
-    start and then each read of the body; the body's total budget is checked
-    between reads.
+    ``response_seconds`` is an absolute budget from the start of the request
+    until the status line and headers have arrived: the socket timeout bounds
+    each wait inside it, and a watchdog shuts the socket down when the budget
+    runs out, so a peer dribbling header bytes cannot stretch it. Once the
+    headers are in, the body runs under its own deadline (:func:`_read_body`).
     """
 
     started: float
     response_seconds: float
     connected: bool = False
+    expired: bool = False
+    sock: socket.socket | None = None
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _watchdog: threading.Timer | None = field(default=None, repr=False)
 
-    def read_timeout(self) -> float:
-        return max(0.05, self.started + self.response_seconds - time.monotonic())
+    def remaining(self) -> float:
+        return self.started + self.response_seconds - time.monotonic()
+
+    def arm(self) -> None:
+        self._watchdog = threading.Timer(max(0.0, self.remaining()), self._expire)
+        self._watchdog.daemon = True
+        self._watchdog.start()
+
+    def stop(self) -> None:
+        """Stop the watchdog (the answer started, or the request failed)."""
+        if self._watchdog is not None:
+            self._watchdog.cancel()
+
+    def expiry_reason(self) -> str:
+        return f"no answer within {self.response_seconds:g} s"
+
+    def attach(self, sock: socket.socket) -> None:
+        with self._lock:
+            if self.expired:
+                raise TimeoutError("the answer did not start in time")
+            sock.settimeout(max(0.05, self.remaining()))
+            self.sock = sock
+            self.connected = True
+
+    def _expire(self) -> None:
+        with self._lock:
+            self.expired = True
+            if self.sock is not None:
+                with contextlib.suppress(OSError):
+                    self.sock.shutdown(socket.SHUT_RDWR)
+
+    def body_timeout(self, seconds: float) -> None:
+        """Bound the next body read by what is left of the body's deadline."""
+        if self.sock is not None:
+            with contextlib.suppress(OSError):  # closed once the body is complete
+                self.sock.settimeout(max(0.05, seconds))
 
 
 def _connection_class(base: type[http.client.HTTPConnection], holder: _Socket) -> Callable:
     class _Conn(base):  # type: ignore[misc, valid-type]
         def connect(self) -> None:
             super().connect()
-            # The connect used the policy's connect timeout; from here on the
-            # wait for the answer is bounded by what is left of its budget.
-            self.sock.settimeout(holder.read_timeout())
-            holder.connected = True
+            holder.attach(self.sock)
 
     return _Conn
 
@@ -298,15 +343,25 @@ def request(
     opener = urllib.request.build_opener(
         _NoRedirect(), _HTTPHandler(holder), _HTTPSHandler(holder)
     )
+    holder.arm()
     try:
         try:
-            response = opener.open(req, timeout=policy.connect_seconds)
+            response = opener.open(
+                req, timeout=max(0.05, min(policy.connect_seconds, holder.remaining()))
+            )
         except urllib.error.HTTPError as exc:
             response = exc
     except _Redirected as exc:
+        holder.stop()
         raise _redirect_error(remote, what, exc.status, exc.location) from None
     except (urllib.error.URLError, OSError, http.client.HTTPException, ValueError) as exc:
-        raise Unreachable(_reason(exc), sent=holder.connected) from None
+        holder.stop()
+        reason = holder.expiry_reason() if holder.expired else _reason(exc)
+        raise Unreachable(reason, sent=holder.connected) from None
+    holder.stop()
+    if holder.expired:  # the watchdog fired as the headers completed
+        response.close()
+        raise Unreachable(holder.expiry_reason(), sent=True)
 
     with response:
         status = response.status if hasattr(response, "status") else response.code
@@ -317,6 +372,7 @@ def request(
         limit = None if ok else _ERROR_BODY_LIMIT
         payload = _read_body(
             response,
+            holder,
             headers,
             policy,
             sink=sink if ok else None,
@@ -327,6 +383,7 @@ def request(
 
 def _read_body(
     response: Any,
+    holder: _Socket,
     headers: Mapping[str, str],
     policy: Policy,
     *,
@@ -342,12 +399,14 @@ def _read_body(
     next_progress = started + _PROGRESS_SECONDS
     chunks: list[bytes] = []
     received = 0
+    read = getattr(response, "read1", None) or response.read  # one recv per call
     try:
         while True:
             now = time.monotonic()
-            if now > deadline:
+            if now >= deadline:
                 raise Unreachable("the transfer ran out of time", sent=True)
-            chunk = response.read(_CHUNK)
+            holder.body_timeout(deadline - now)
+            chunk = read(_CHUNK)
             if not chunk:
                 break
             received += len(chunk)
@@ -383,7 +442,10 @@ def _reason(exc: BaseException) -> str:
 
 
 def _redirect_error(remote: Remote, what: str, status: int, location: str | None) -> OpError:
-    host = urllib.parse.urlsplit(location).hostname if location else None
+    try:
+        host = urllib.parse.urlsplit(location).hostname if location else None
+    except ValueError:  # a malformed Location is still a redirect, and still refused
+        host = None
     target = f" to {host}" if host else ""
     return proxy_rejected(
         f"{remote.alias}: the answer to {what} was an HTTP {status} redirect{target}, "

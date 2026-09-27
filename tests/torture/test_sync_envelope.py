@@ -18,7 +18,7 @@ from tests.test_remote.proxies import tcp_proxy
 from tests.test_remote.stub_sync_server import running_stub
 from tests.torture.envelope import MIB, build_envelope, event_line
 
-pytestmark = [pytest.mark.torture, pytest.mark.timeout(180)]
+pytestmark = [pytest.mark.torture, pytest.mark.envelope, pytest.mark.timeout(180)]
 
 WRITE_SECONDS = 8.0
 APPEND_EVERY = 0.2

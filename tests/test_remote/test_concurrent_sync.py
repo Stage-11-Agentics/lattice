@@ -198,3 +198,115 @@ def test_a_second_sync_waits_for_the_first_to_apply(
     assert second_query["since"] == str(first_state_head)  # it began from the first's result
     assert second.result.head_seq == stub.head
     assert_mirror(client_root, stub)
+
+
+# ---------------------------------------------------------------------------
+# cache clear against syncs and readers
+# ---------------------------------------------------------------------------
+
+
+def _cleared(client: Path) -> bool:
+    lattice = client / ".lattice"
+    return not (lattice / "tasks").exists() and (lattice / "cache" / "state.json").exists()
+
+
+def test_clear_waits_for_a_sync_in_flight(client_root: Path, stub: StubServer) -> None:
+    create_task(stub)
+    cache.catch_up(client_root)
+    create_task(stub, "pending")
+    gate = threading.Event()
+    stub.fault.sync_gate = gate
+    before = len(stub.arrivals)
+    sync = _Thread(lambda: cache.catch_up(client_root, bulk=True))
+    sync.start()
+    deadline = time.monotonic() + WAIT
+    while len(stub.arrivals) == before and time.monotonic() < deadline:
+        time.sleep(0.01)
+    clear = _Thread(lambda: cache.clear_cache(client_root))
+    clear.start()
+    time.sleep(0.2)
+    assert not _cleared(client_root)  # the clear waits for the sync's cycle
+    gate.set()
+    sync.join(WAIT)
+    clear.join(WAIT)
+    assert sync.error is None and clear.error is None, (sync.error, clear.error)
+    assert sync.result.kind == "applied"
+    assert _cleared(client_root)
+    stub.fault.sync_gate = None
+    assert cache.catch_up(client_root).kind == "applied"
+    assert_mirror(client_root, stub)
+
+
+def test_a_sync_waits_for_a_clear_in_progress(
+    client_root: Path, stub: StubServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    create_task(stub)
+    cache.catch_up(client_root)
+    reached, release = _seam_gate(monkeypatch, "clear_deleted")
+    clear = _Thread(lambda: cache.clear_cache(client_root))
+    clear.start()
+    assert reached.wait(WAIT)  # deleted, marker not yet written, locks held
+    before = len(stub.arrivals)
+    sync = _Thread(lambda: cache.catch_up(client_root, bulk=True))
+    sync.start()
+    time.sleep(0.2)
+    assert len(stub.arrivals) == before  # the sync has not begun
+    release.set()
+    clear.join(WAIT)
+    sync.join(WAIT)
+    assert clear.error is None and sync.error is None, (clear.error, sync.error)
+    assert sync.result.kind == "applied"  # a reset from the routing marker
+    assert_mirror(client_root, stub)
+
+
+def test_clear_waits_for_a_reader(client_root: Path, stub: StubServer) -> None:
+    create_task(stub)
+    cache.catch_up(client_root)
+    paused, resume = threading.Event(), threading.Event()
+
+    def reader() -> set[str]:
+        with cache.read_lock(client_root) as lattice:
+            paused.set()
+            resume.wait(WAIT)
+            return _task_ids(lattice / "events")
+
+    read = _Thread(reader)
+    read.start()
+    assert paused.wait(WAIT)
+    clear = _Thread(lambda: cache.clear_cache(client_root))
+    clear.start()
+    time.sleep(0.2)
+    assert not _cleared(client_root)
+    resume.set()
+    read.join(WAIT)
+    clear.join(WAIT)
+    assert read.error is None and clear.error is None
+    assert len(read.result) == 1  # the reader saw the whole board
+    assert _cleared(client_root)
+
+
+def test_a_reader_arriving_mid_clear_waits_for_the_final_tree(
+    client_root: Path, stub: StubServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    create_task(stub)
+    cache.catch_up(client_root)
+    reached, release = _seam_gate(monkeypatch, "clear_deleted")
+    clear = _Thread(lambda: cache.clear_cache(client_root))
+    clear.start()
+    assert reached.wait(WAIT)
+    entered = threading.Event()
+
+    def reader() -> bool:
+        with cache.read_lock(client_root) as lattice:
+            entered.set()
+            return (lattice / "cache" / "state.json").exists()
+
+    read = _Thread(reader)
+    read.start()
+    time.sleep(0.2)
+    assert not entered.is_set()
+    release.set()
+    clear.join(WAIT)
+    read.join(WAIT)
+    assert clear.error is None and read.error is None, (clear.error, read.error)
+    assert read.result is True  # it saw the routing marker, not a half-cleared tree

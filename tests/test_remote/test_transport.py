@@ -5,13 +5,15 @@ from __future__ import annotations
 
 import pytest
 
+import socket
+import time
 from pathlib import Path
 
 from lattice.core.errors import OpError
 from lattice.remote import cache, http
 from lattice.remote.http import Remote
 from tests.test_remote.conftest import bind
-from tests.test_remote.proxies import fixed_answer, recording_listener
+from tests.test_remote.proxies import fixed_answer, recording_listener, scripted_tcp
 from tests.test_remote.stub_sync_server import StubServer
 
 TOKEN = "transport-test-bearer-secret"
@@ -234,3 +236,72 @@ def test_catch_up_refuses_a_bad_files_answer(
     assert err.value.code == "PROXY_REJECTED"
     assert any(kind == "files" for kind, _ in stub.arrivals)
     assert not (client / ".lattice" / "cache" / "state.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# Malformed redirects and the two time budgets
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("location", ["http://[bad", "http://[::1", "::::", ""])
+def test_a_malformed_redirect_location_is_still_refused(location: str) -> None:
+    headers = {"Location": location} if location else {}
+    with fixed_answer(302, headers) as proxy, pytest.raises(OpError) as err:
+        http.request(_remote(proxy.url), "GET", SYNC)
+    assert err.value.code == "PROXY_REJECTED"
+    assert "HTTP 302" in err.value.message
+
+
+def _lattice_head(length: int) -> bytes:
+    return (
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/json\r\n"
+        "Lattice-Protocol: 1\r\n"
+        f"Content-Length: {length}\r\n"
+        "Connection: close\r\n\r\n"
+    ).encode()
+
+
+def test_a_dribbled_header_cannot_stretch_the_response_start_budget() -> None:
+    def dribble(conn: socket.socket) -> None:
+        conn.sendall(b"HTTP/1.1 200 OK\r\n")
+        for _ in range(50):
+            conn.sendall(b"X-Pad: a\r\n")
+            time.sleep(0.1)
+
+    policy = http.Policy(connect_seconds=0.5, response_seconds=0.6)
+    with scripted_tcp(dribble) as url:
+        started = time.monotonic()
+        with pytest.raises(http.Unreachable) as err:
+            http.request(_remote(url), "GET", SYNC, policy=policy)
+        elapsed = time.monotonic() - started
+    assert elapsed < 1.5
+    assert "no answer within 0.6 s" in err.value.reason
+
+
+def test_a_slow_but_valid_body_gets_the_body_budget() -> None:
+    body = b'{"ok": true, "data": {"slow": true}}'
+
+    def slow_body(conn: socket.socket) -> None:
+        conn.sendall(_lattice_head(len(body)) + body[:10])
+        time.sleep(1.0)  # longer than the whole response-start budget
+        conn.sendall(body[10:])
+
+    policy = http.Policy(connect_seconds=0.5, response_seconds=0.6)
+    with scripted_tcp(slow_body) as url:
+        response = http.request(_remote(url), "GET", SYNC, policy=policy)
+    assert response.data() == {"slow": True}
+
+
+def test_a_stalled_body_fails_at_its_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(http, "body_budget_seconds", lambda length: 0.5)
+
+    def stall(conn: socket.socket) -> None:
+        conn.sendall(_lattice_head(100) + b"{")
+        time.sleep(3)
+
+    with scripted_tcp(stall) as url:
+        started = time.monotonic()
+        with pytest.raises(http.Unreachable):
+            http.request(_remote(url), "GET", SYNC)
+        assert time.monotonic() - started < 2.0

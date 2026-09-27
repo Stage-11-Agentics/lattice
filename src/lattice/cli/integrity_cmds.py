@@ -578,7 +578,38 @@ def doctor(fix: bool, output_json: bool, offline_maintenance: bool) -> None:
         maintenance_gate(
             lattice_dir, "doctor --fix" if fix else "doctor", is_json, offline_maintenance
         )
+    if board_state(lattice_dir) == "cache":
+        _doctor_cache(lattice_dir, is_json)
+        return
+    _doctor_report(lattice_dir, fix, is_json)
 
+
+def _doctor_cache(lattice_dir: Path, is_json: bool) -> None:
+    """Doctor on a hosted cache (SPEC §9.6).
+
+    Catches up and fetches the server's manifest outside the cache's read
+    lock, then runs every check, the manifest comparison included, under it,
+    so no sync can change the tree between an enumeration and its reads. Only
+    an unreachable or busy server becomes a warning; every other remote
+    failure is an error with its own code.
+    """
+    from lattice.remote.cache import cache_check
+
+    try:
+        with cache_check(lattice_dir.parent) as cache_findings:
+            _doctor_report(lattice_dir, False, is_json, cache_findings=cache_findings)
+    except OpError as exc:
+        output_error(exc.message, exc.code, is_json)
+
+
+def _doctor_report(
+    lattice_dir: Path, fix: bool, is_json: bool, *, cache_findings: list[dict] | None = None
+) -> None:
+    """Run every check on *lattice_dir*, print the report, and exit 1 on errors.
+
+    ``cache_findings``: on a hosted cache, the comparison with the server's
+    manifest, reported as one more check.
+    """
     findings: list[dict] = []
 
     # Gather files
@@ -1141,9 +1172,9 @@ def doctor(fix: bool, output_json: bool, offline_maintenance: bool) -> None:
     # -----------------------------------------------------------------
     # Check 12: a hosted cache against the server's manifest (SPEC §9.6)
     # -----------------------------------------------------------------
-    cache_checked = board_state(lattice_dir) == "cache"
-    if cache_checked:
-        findings.extend(_cache_manifest_findings(lattice_dir))
+    cache_checked = cache_findings is not None
+    if cache_findings:
+        findings.extend(cache_findings)
 
     # -----------------------------------------------------------------
     # Output
@@ -1292,23 +1323,6 @@ def doctor(fix: bool, output_json: bool, offline_maintenance: bool) -> None:
     # Exit with non-zero if there are errors (not warnings)
     if errors > 0:
         raise SystemExit(1)
-
-
-def _cache_manifest_findings(lattice_dir: Path) -> list[dict]:
-    """Every synced file of a hosted cache against the server's manifest."""
-    from lattice.remote.cache import manifest_findings
-
-    try:
-        return manifest_findings(lattice_dir.parent)
-    except OpError as exc:
-        return [
-            {
-                "level": "warning",
-                "check": "cache_manifest_unavailable",
-                "message": f"Could not compare the cache with the server ({exc.code}: {exc.message})",
-                "task_id": None,
-            }
-        ]
 
 
 # ---------------------------------------------------------------------------

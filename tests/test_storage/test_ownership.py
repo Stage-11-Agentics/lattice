@@ -236,9 +236,14 @@ def test_reads_succeed_on_a_cache(board: Path, invoke, marker: str) -> None:  # 
     _plant(board, marker)
     before = _durable_tree(board)
     assert read_task_authority(board, task_id).snapshot["title"] == "Seed"
-    for args in (("list",), ("show", task_id), ("list", "--json"), ("doctor",)):
+    for args in (("list",), ("show", task_id), ("list", "--json")):
         result = invoke(*args)
         assert result.exit_code == 0, (args, result.output)
+    # Doctor on a cache also compares it with the server (SPEC §9.6), so with
+    # no remote configured it fails with that error; it still writes nothing.
+    result = invoke("doctor", "--json")
+    assert result.exit_code == 1
+    assert json.loads(result.output)["error"]["code"] == "REMOTE_NOT_CONFIGURED"
     assert _durable_tree(board) == before
 
 

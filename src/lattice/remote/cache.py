@@ -64,7 +64,7 @@ from typing import Any, Literal
 from lattice.core.errors import OpError
 from lattice.remote import http
 from lattice.remote.config import resolve_remote
-from lattice.storage.fs import atomic_write, ensure_dir, unlink_path
+from lattice.storage.fs import atomic_write, ensure_dir, unlink_entry
 from lattice.storage.ownership import PathClass, classify_path, syncing_board
 
 LATTICE_DIR = ".lattice"
@@ -809,7 +809,7 @@ class _Syncer:
             _step("file_written")
         for rel in delta.removed:
             target = lattice_dir / rel
-            if os.path.islink(target) or target.is_file():
+            if os.path.lexists(target) and not stat.S_ISDIR(os.lstat(target).st_mode):
                 self._open_parents(target, opened)
                 self._remove(target)
                 _step("removed")
@@ -865,12 +865,9 @@ class _Syncer:
             opened.add(directory)
 
     def _remove(self, target: Path) -> None:
-        if os.path.islink(target):
-            # A planted symlink is not board data, and the primitive would
-            # resolve it (possibly outside the board); remove the link itself.
-            os.unlink(target)
-        else:
-            unlink_path(target)
+        """Remove a synced entry itself, never following it: a planted symlink
+        goes, its target (possibly outside the board) stays."""
+        unlink_entry(target)
 
     # -- rescue (SPEC §9.4: a reset never discards a local edit) --------------
 
@@ -909,10 +906,11 @@ class _Syncer:
     def _rescue_one(self, source: Path, dest: Path) -> None:
         _private_dir(dest.parent)
         tmp = dest.parent / f".rescue-{secrets.token_hex(6)}.tmp"
-        if os.path.islink(source):
+        mode = os.lstat(source).st_mode
+        if stat.S_ISLNK(mode):
             os.symlink(os.readlink(source), tmp)
-        elif not source.is_file():
-            os.unlink(source)  # a socket or FIFO holds no edit to keep
+        elif not stat.S_ISREG(mode):
+            self._remove(source)  # a socket or FIFO holds no edit to keep
             return
         else:
             with open(source, "rb") as src, open(tmp, "wb") as out:
@@ -1024,35 +1022,49 @@ def clear_cache(hosted_root: Path, *, forget: bool = False) -> ClearResult:
     if identity is None:
         raise not_hosted(root)
     remote, project = identity
-    sync_fd = _lock(lattice_dir / "locks" / "cache_sync.lock", exclusive=True, deadline=None)
+    locks = lattice_dir / "locks"
+    sync_fd = _lock(locks / "cache_sync.lock", exclusive=True, deadline=None)
     try:
-        rw_fd = _lock(lattice_dir / "locks" / "cache_rw.lock", exclusive=True, deadline=None)
+        rw_fd = _lock(locks / "cache_rw.lock", exclusive=True, deadline=None)
         try:
+            # Both locks are held for the whole clear: every deletion, the
+            # routing marker, and last of all the lock files themselves, so
+            # no sync or reader can start on a half-cleared tree.
             for dirpath, dirnames, _files in os.walk(lattice_dir):
                 for name in dirnames:
                     _chmod(Path(dirpath) / name, PRIVATE_DIR_MODE)
             _chmod(lattice_dir, PRIVATE_DIR_MODE)
             for entry in list(lattice_dir.iterdir()):
+                if entry.name == "locks" and entry.is_dir() and not entry.is_symlink():
+                    continue
                 if entry.name == "cache" and entry.is_dir() and not entry.is_symlink():
                     for sub in list(entry.iterdir()):
                         if sub.name != "rescued":
                             _delete(sub)
                 else:
                     _delete(entry)
+            _step("clear_deleted")
+            rescued = lattice_dir / "cache" / "rescued"
+            kept = rescued if rescued.is_dir() and any(rescued.iterdir()) else None
+            if not forget:
+                _private_dir(lattice_dir / "cache")
+                atomic_write(
+                    lattice_dir / "cache" / "state.json",
+                    json.dumps({"project": project, "remote": remote}, sort_keys=True, indent=2)
+                    + "\n",
+                )
+            # A caller arriving from here on finds the final tree (the marker,
+            # or nothing) and fresh lock files; one already waiting on the old
+            # files re-opens them after the inode check in ``_lock``.
+            _delete(locks)
+            if forget and kept is None:
+                for directory in (lattice_dir / "cache", lattice_dir):
+                    with contextlib.suppress(OSError):
+                        directory.rmdir()
         finally:
             os.close(rw_fd)
     finally:
         os.close(sync_fd)
-    rescued = lattice_dir / "cache" / "rescued"
-    kept = rescued if rescued.is_dir() and any(rescued.iterdir()) else None
-    if not forget:
-        _private_dir(lattice_dir / "cache")
-        (lattice_dir / "cache" / "state.json").write_text(
-            json.dumps({"project": project, "remote": remote}, sort_keys=True, indent=2) + "\n",
-            encoding="utf-8",
-        )
-    elif kept is None:
-        shutil.rmtree(lattice_dir, ignore_errors=True)
     return ClearResult(root, remote, project, forget, kept)
 
 
@@ -1068,45 +1080,74 @@ def _delete(path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def manifest_findings(hosted_root: Path, *, attempts: int = 3) -> list[dict]:
-    """Doctor findings comparing every synced file with the server's manifest.
+def _fetch_manifest(root: Path, alias: str, project: str) -> tuple[dict | None, dict | None]:
+    """Catch up, then fetch the server's manifest: ``(manifest, None)``, or
+    ``(None, warning)`` when the server is unreachable or busy. Every other
+    failure raises with its own code."""
+    outcome = catch_up(root)
+    if outcome.kind in ("unreachable", "busy"):
+        return None, _unavailable(f"{outcome.kind}: {outcome.detail}")
+    if outcome.kind == "incomplete":
+        return None, None  # read_lock refuses the mixed tree with CACHE_INCOMPLETE
+    remote = resolve_remote(alias)
+    path = f"/v1/projects/{urllib.parse.quote(project, safe='')}/sync?since=0&manifest=1"
+    try:
+        response = http.request(remote, "GET", path, policy=http.BULK, what="manifest")
+    except http.Unreachable as exc:
+        return None, _unavailable(f"cannot reach {alias}: {exc.reason}")
+    except http.ServerError as exc:
+        if exc.status >= 500 or exc.code in ("BOARD_BUSY", "RATE_LIMITED"):
+            return None, _unavailable(f"{alias} answered {exc.code}")
+        raise
+    manifest = _data(response)
+    files = manifest.get("files") if isinstance(manifest, dict) else None
+    if not isinstance(files, dict) or not all(isinstance(v, dict) for v in files.values()):
+        raise _integrity("MALFORMED_SYNC", "the server's manifest is malformed")
+    return manifest, None
 
-    Catches up and fetches the manifest outside the read lock, then, holding
-    it, checks that the manifest's head is the cache's head and hashes every
-    file through the last read; a head mismatch retries the whole sequence.
+
+@contextlib.contextmanager
+def cache_check(hosted_root: Path, *, attempts: int = 3) -> Iterator[list[dict]]:
+    """Hold the cache's read lock for doctor, yielding the manifest findings.
+
+    Catches up and fetches the manifest outside the lock (an apply waits for
+    readers, so catching up inside it could deadlock), then takes the lock and
+    checks that the manifest's head is the locked ``state.json`` head; on a
+    mismatch it releases and retries the whole sequence (bounded). The caller
+    runs every other check inside the block, so all enumeration, reads, and
+    hashing see one tree. An unreachable or busy server yields one warning;
+    every other failure raises with its own code.
     """
     root = Path(hosted_root)
     identity = cache_identity(root)
     if identity is None:
         raise not_hosted(root)
     alias, project = identity
-    for _ in range(attempts):
-        outcome = catch_up(root)
-        if outcome.kind in ("unreachable", "busy", "incomplete"):
-            return [_unavailable(f"{outcome.kind}: {outcome.detail}")]
-        remote = resolve_remote(alias)
-        path = f"/v1/projects/{urllib.parse.quote(project, safe='')}/sync?since=0&manifest=1"
-        try:
-            response = http.request(remote, "GET", path, policy=http.BULK, what="manifest")
-        except http.Unreachable as exc:
-            return [_unavailable(f"cannot reach {alias}: {exc.reason}")]
-        except http.ServerError as exc:
-            if exc.status >= 500 or exc.code in ("BOARD_BUSY", "RATE_LIMITED"):
-                return [_unavailable(f"{alias} answered {exc.code}")]
-            raise
-        manifest = _data(response)
-        files = manifest.get("files") if isinstance(manifest, dict) else None
-        if not isinstance(files, dict):
-            raise _integrity("MALFORMED_SYNC", "the server's manifest is malformed")
+    for attempt in range(attempts):
+        manifest, warning = _fetch_manifest(root, alias, project)
         with read_lock(root) as lattice_dir:
-            state = _read_json(lattice_dir / "cache" / "state.json")
-            if (manifest.get("epoch"), manifest.get("head_seq")) != (
-                state.get("epoch"),
-                state.get("head_seq"),
-            ):
-                continue
-            return _compare(lattice_dir, files)
-    return [_unavailable("the board kept changing while doctor compared it with the server")]
+            if manifest is not None:
+                state = _read_json(lattice_dir / "cache" / "state.json")
+                heads = (manifest.get("epoch"), manifest.get("head_seq"))
+                if heads != (state.get("epoch"), state.get("head_seq")):
+                    if attempt + 1 < attempts:
+                        continue
+                    warning = _unavailable(
+                        "the board kept changing while doctor compared it with the server"
+                    )
+            if warning is not None:
+                yield [warning]
+            elif manifest is None:
+                yield []
+            else:
+                yield _compare(lattice_dir, manifest["files"])
+            return
+
+
+def manifest_findings(hosted_root: Path, *, attempts: int = 3) -> list[dict]:
+    """The manifest comparison alone (see :func:`cache_check`)."""
+    with cache_check(hosted_root, attempts=attempts) as findings:
+        return findings
 
 
 def _unavailable(detail: str) -> dict:

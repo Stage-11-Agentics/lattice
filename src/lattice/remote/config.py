@@ -6,8 +6,9 @@ Sources, environment first:
   ``LATTICE_REMOTE_<ALIAS>_HEADERS`` (a JSON object mapping header name to the
   name of the environment variable holding its value), where ``<ALIAS>`` is
   uppercased with non-alphanumerics replaced by ``_``;
-- ``$XDG_CONFIG_HOME/lattice/remotes.json`` (default ``~/.config/...``). A
-  token is never read from it while it is group- or world-readable.
+- ``$XDG_CONFIG_HOME/lattice/remotes.json`` (default ``~/.config/...``). It can
+  hold tokens, so it is read only when private: a file other users can access
+  is refused before anything is read from it.
 
 A token is a literal string or ``{"env": "VAR"}``; header values are always
 ``{"env": "VAR"}``. An alias configured nowhere is ``REMOTE_NOT_CONFIGURED``;
@@ -58,39 +59,58 @@ def _env_value(name: str, what: str, alias: str) -> str:
     return value
 
 
-def _file_entry(alias: str) -> tuple[dict[str, Any] | None, bool]:
-    """The file's entry for *alias*, and whether the file is private (0600)."""
-    path = remotes_path()
+def _read_private(path: Path) -> str | None:
+    """The file's text, or ``None`` if it does not exist.
+
+    It is opened once; the permissions are checked on that descriptor before
+    anything is read from it, so no swap between check and read can slip a
+    group- or world-readable file past the check.
+    """
     try:
-        info = path.stat()
-        raw = path.read_text(encoding="utf-8")
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     except FileNotFoundError:
-        return None, True
+        return None
     except OSError as exc:
         raise OpError("VALIDATION_ERROR", f"cannot read {path}: {exc}") from None
+    with os.fdopen(fd, "rb") as fh:
+        info = os.fstat(fh.fileno())
+        if not stat.S_ISREG(info.st_mode):
+            raise OpError("VALIDATION_ERROR", f"{path} is not a regular file")
+        if info.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
+            raise OpError(
+                "VALIDATION_ERROR",
+                f"{path} is accessible to other users (mode "
+                f"{stat.S_IMODE(info.st_mode):04o}); it can hold tokens, so Lattice reads it "
+                f"only when it is private. Run: chmod 600 {path}",
+                {"path": str(path)},
+            )
+        try:
+            return fh.read().decode("utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise OpError("VALIDATION_ERROR", f"cannot read {path}: {exc}") from None
+
+
+def _file_entry(alias: str) -> dict[str, Any] | None:
+    """The file's entry for *alias* (the file must be private, 0600)."""
+    path = remotes_path()
+    raw = _read_private(path)
+    if raw is None:
+        return None
     try:
         data = json.loads(raw)
     except ValueError as exc:
         raise OpError("VALIDATION_ERROR", f"{path} is not valid JSON: {exc}") from None
     remotes = data.get("remotes") if isinstance(data, dict) else None
     entry = remotes.get(alias) if isinstance(remotes, dict) else None
-    private = not (info.st_mode & (stat.S_IRWXG | stat.S_IRWXO))
-    return (entry if isinstance(entry, dict) else None), private
+    return entry if isinstance(entry, dict) else None
 
 
-def _token(value: Any, alias: str, *, private: bool) -> str | None:
+def _token(value: Any, alias: str) -> str | None:
     if value is None:
         return None
     if isinstance(value, dict) and isinstance(value.get("env"), str):
         return _env_value(value["env"], "token", alias)
     if isinstance(value, str):
-        if not private:
-            raise OpError(
-                "VALIDATION_ERROR",
-                f"{remotes_path()} is readable by other users and holds a token for "
-                f"'{alias}'; run: chmod 600 {remotes_path()}",
-                {"remote": alias},
-            )
         return value
     raise OpError(
         "VALIDATION_ERROR", f"remote '{alias}': token must be a string or {{\"env\": ...}}"
@@ -117,15 +137,13 @@ def _headers(value: Any, alias: str) -> dict[str, str]:
 def resolve_remote(alias: str) -> Remote:
     """The :class:`Remote` for *alias*, environment overriding the file."""
     prefix = env_prefix(alias)
-    entry, private = _file_entry(alias)
-    entry = dict(entry or {})
+    entry = dict(_file_entry(alias) or {})
     env_url = os.environ.get(prefix + "URL")
     if env_url:
         entry["url"] = env_url
     env_token = os.environ.get(prefix + "TOKEN")
     if env_token:
         entry["token"] = env_token
-        private = True
     env_headers = os.environ.get(prefix + "HEADERS")
     if env_headers:
         try:
@@ -144,6 +162,6 @@ def resolve_remote(alias: str) -> Remote:
     return Remote(
         alias=alias,
         url=url,
-        token=_token(entry.get("token"), alias, private=private),
+        token=_token(entry.get("token"), alias),
         headers=_headers(entry.get("headers"), alias),
     )

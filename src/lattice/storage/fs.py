@@ -62,6 +62,7 @@ __all__ = [
     "remove_dir",
     "strict_durability",
     "truncate_file",
+    "unlink_entry",
     "unlink_path",
 ]
 
@@ -125,14 +126,14 @@ def recording(
         _RECORDER.reset(token)
 
 
-def _guard(path: Path, kind: MutationKind | None) -> bool:
+def _guard(path: Path, kind: MutationKind | None, *, follow: bool = True) -> bool:
     """Confine, check markers, and record one mutation of *path* before it happens.
 
     ``kind`` ``None`` means a whole-file write: ``replace`` if the path exists,
     else ``create``. Returns whether the mutation must be strictly durable
     (see :func:`strict_durability`).
     """
-    target = locate(path)
+    target = locate(path, follow=follow)
     if target is None:
         return _STRICT_DURABILITY.get()
     check_write(target)
@@ -257,6 +258,24 @@ def unlink_path(path: Path, *, missing_ok: bool = False) -> None:
     path.unlink(missing_ok=missing_ok)
     if strict:
         _fsync_directory(path.parent, strict=True)
+
+
+def unlink_entry(path: Path) -> None:
+    """Remove one directory entry without following it: a file, a symlink (never
+    its target), a FIFO, or a socket.
+
+    Confined by the resolved location of its parent directory, marker-checked,
+    and recorded as an ``unlink``, like :func:`unlink_path`. The cache syncer
+    uses it to remove whatever a user left under a synced directory.
+    """
+    entry = Path(path).absolute()
+    # Checked as written, so its board comes from its own ``.lattice``
+    # component; removed at its parent's resolved location, as checked.
+    strict = _guard(entry, "unlink", follow=False)
+    anchored = entry.parent.resolve() / entry.name
+    os.unlink(anchored)
+    if strict:
+        _fsync_directory(anchored.parent, strict=True)
 
 
 def truncate_file(path: Path, length: int) -> None:
