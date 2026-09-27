@@ -658,3 +658,55 @@ class TestOpenPlans:
         assert plan.read_text() == "# Authored meanwhile\n\nKeep me.\n"
         assert len(events_of(ld, task)) == before  # nothing written by the dashboard
         assert opened == [["open", str(plan.resolve())]]
+
+
+# ---------------------------------------------------------------------------
+# Force: the CLI's --force --reason, as the dashboard passes it (AC-24; Architect ruling, PR #89)
+# ---------------------------------------------------------------------------
+
+
+class TestForce:
+    def _to_planned(self, port: int, task: str) -> None:
+        for step in ("in_planning", "planned"):
+            assert post(port, f"/api/tasks/{task}/status", {"status": step})[0] == 200
+
+    def test_a_forced_move_passes_the_plan_gate_and_records_force(self, local_recording_dash):
+        port, ld, ids, board, _opened = local_recording_dash
+        task = ids["backlog"]
+        self._to_planned(port, task)
+        status, body = post(port, f"/api/tasks/{task}/status", {"status": "in_progress"})
+        assert (status, body["error"]["code"]) == (422, "PLAN_REQUIRED")
+        assert (
+            f'lattice status {task} in_progress --force --reason "..."' in body["error"]["message"]
+        )
+
+        status, body = post(
+            port,
+            f"/api/tasks/{task}/status",
+            {"status": "in_progress", "force": True, "reason": "hotfix, plan follows"},
+        )
+
+        assert status == 200, body
+        assert body["data"]["status"] == "in_progress"
+        op, params, caller = board.calls[-1]
+        assert op == "task.status"
+        assert (params["force"], params["reason"]) == (True, "hotfix, plan follows")
+        event = events_of(ld, task)[-1]
+        assert event["type"] == "status_changed"
+        assert event["data"]["force"] is True
+        assert event["data"]["reason"] == "hotfix, plan follows"
+        assert event["actor"] == "dashboard:web"
+        _assert_browser_origin(event, "task.status")
+
+    @pytest.mark.parametrize("extra", [{}, {"reason": ""}, {"reason": None}])
+    def test_force_without_a_reason_is_refused(self, local_recording_dash, extra):
+        port, ld, ids, _board, _opened = local_recording_dash
+        task = ids["backlog"]
+        self._to_planned(port, task)
+        before = board_bytes(ld)
+        status, body = post(
+            port, f"/api/tasks/{task}/status", {"status": "in_progress", "force": True, **extra}
+        )
+        assert status == 400
+        assert body["error"]["code"] == "VALIDATION_ERROR"
+        assert board_bytes(ld) == before

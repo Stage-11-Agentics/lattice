@@ -29,6 +29,7 @@ import json
 import os
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -151,12 +152,18 @@ def _notice(line: str) -> None:
     print(f"lattice: {line}", file=sys.stderr)
 
 
-def unreachable_notice(hosted: Hosted, synced_at: str | None) -> None:
-    _notice(f"cannot reach {hosted.remote}; showing cache as of {synced_at or 'never'}")
+def unreachable_notice(
+    hosted: Hosted, synced_at: str | None, notify: Callable[[str], None] | None = None
+) -> None:
+    (notify or _notice)(
+        f"cannot reach {hosted.remote}; showing cache as of {synced_at or 'never'}"
+    )
 
 
-def busy_notice(hosted: Hosted, synced_at: str | None) -> None:
-    _notice(f"{hosted.remote} is busy; showing cache as of {synced_at or 'never'}")
+def busy_notice(
+    hosted: Hosted, synced_at: str | None, notify: Callable[[str], None] | None = None
+) -> None:
+    (notify or _notice)(f"{hosted.remote} is busy; showing cache as of {synced_at or 'never'}")
 
 
 def _never_synced(hosted: Hosted, detail: str | None) -> OpError:
@@ -191,17 +198,31 @@ def ensure_fresh(hosted: Hosted, *, defer_to_running_sync: bool = False) -> None
     if key in _fresh:
         return
     _fresh.add(key)
+    catch_up_unless_live(hosted, defer_to_running_sync=defer_to_running_sync)
+
+
+def catch_up_unless_live(
+    hosted: Hosted,
+    *,
+    defer_to_running_sync: bool = False,
+    notify: Callable[[str], None] | None = None,
+) -> None:
+    """One read's freshness step (SPEC §9.5): nothing while a live follower
+    keeps the cache fresh; inside the offline window, the cache with its
+    notice; otherwise one catch-up. A process that reads again and again
+    (``lattice dashboard``) runs it before every read. *notify* receives the
+    notice lines (default: stderr)."""
     from lattice.remote.follower import live_follower
 
     if live_follower(hosted.root):
         return
     state = _state(hosted)
     if state.get("epoch") and in_unreachable_window(hosted):
-        unreachable_notice(hosted, state.get("synced_at"))
+        unreachable_notice(hosted, state.get("synced_at"), notify)
         return
     if defer_to_running_sync and state.get("epoch") and _sync_in_progress(hosted):
         return
-    catch_up_and_report(hosted)
+    catch_up_and_report(hosted, notify=notify)
 
 
 def _sync_in_progress(hosted: Hosted) -> bool:
@@ -226,10 +247,13 @@ def _sync_in_progress(hosted: Hosted) -> bool:
         os.close(fd)
 
 
-def catch_up_and_report(hosted: Hosted, *, after_write: bool = False) -> bool:
+def catch_up_and_report(
+    hosted: Hosted, *, after_write: bool = False, notify: Callable[[str], None] | None = None
+) -> bool:
     """One catch-up with the one-line notices of SPEC §9.5; returns whether the
     cache is now at the server's head. After a write, a failure is only a
-    notice (the write succeeded, §3.4 item 4)."""
+    notice (the write succeeded, §3.4 item 4). *notify* receives the notice
+    lines (default: stderr)."""
     from lattice.remote.cache import catch_up
 
     release_read_lock(hosted.root)
@@ -237,7 +261,7 @@ def catch_up_and_report(hosted: Hosted, *, after_write: bool = False) -> bool:
         outcome = catch_up(hosted.root)
     except OpError:
         if after_write:
-            _notice(
+            (notify or _notice)(
                 f"{hosted.remote} took the write, but the cache could not sync; "
                 "the next command will retry"
             )
@@ -260,9 +284,9 @@ def catch_up_and_report(hosted: Hosted, *, after_write: bool = False) -> bool:
     if outcome.synced_at is None and not after_write:
         raise _never_synced(hosted, outcome.detail)
     if outcome.kind == "busy":
-        busy_notice(hosted, outcome.synced_at)
+        busy_notice(hosted, outcome.synced_at, notify)
     else:
-        unreachable_notice(hosted, outcome.synced_at)
+        unreachable_notice(hosted, outcome.synced_at, notify)
     return False
 
 
