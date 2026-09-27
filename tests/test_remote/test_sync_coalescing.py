@@ -208,11 +208,11 @@ def test_a_caller_that_arrived_before_the_request_adopts_it(
     cache.catch_up(client_root)
     create_task(stub, "second")
     reached, release = _gate_at(monkeypatch, "sync_ticket")
-    polling = _polling(monkeypatch)
     before = _syncs(stub)
     first = _Thread(lambda: cache.catch_up(client_root, bulk=True))
     first.start()
     assert reached.wait(WAIT)  # A holds the lock; its ticket is not yet taken
+    polling = _polling(monkeypatch)  # from here on, only a waiter polls
     waiter = _Thread(lambda: cache.catch_up(client_root, adopt=cache.ANY_KIND))
     waiter.start()
     assert polling.wait(WAIT)
@@ -238,13 +238,13 @@ def test_a_damaged_or_replaced_record_is_never_adopted(
     cache.catch_up(client_root)
     create_task(stub, "second")
     reached, release = _gate_at(monkeypatch, "sync_ticket")
-    polling = _polling(monkeypatch)
     gate = threading.Event()
     stub.fault.sync_gate = gate
     before = _syncs(stub)
     first = _Thread(lambda: cache.catch_up(client_root, bulk=True))
     first.start()
     assert reached.wait(WAIT)
+    polling = _polling(monkeypatch)  # from here on, only a waiter polls
     waiter = _Thread(lambda: cache.catch_up(client_root, adopt=cache.ANY_KIND))
     waiter.start()
     assert polling.wait(WAIT)
@@ -279,11 +279,11 @@ def test_a_read_adopts_a_failure_but_a_post_write_or_bulk_caller_does_not(
     )
     stub.fault.raw = busy
     reached, release = _gate_at(monkeypatch, "sync_ticket")
-    polling = _polling(monkeypatch)
     calls = record_requests(monkeypatch)
     first = _Thread(lambda: cache.catch_up(client_root))
     first.start()
     assert reached.wait(WAIT)
+    polling = _polling(monkeypatch)  # from here on, only a waiter polls
     read = _Thread(lambda: cache.catch_up(client_root, adopt=cache.ANY_KIND))
     strict = _Thread(lambda: cache.catch_up(client_root))  # a post-write sync's set
     read.start()
@@ -312,7 +312,6 @@ def test_a_read_that_adopts_unreachable_never_opens_the_offline_window(
 
     monkeypatch.setattr(http, "request", down)
     reached, release = _gate_at(monkeypatch, "sync_ticket")
-    polling = _polling(monkeypatch)
     opened: list[tuple[str, bool]] = []
     sync_lock = client_root / ".lattice" / "locks" / "cache_sync.lock"
 
@@ -332,6 +331,7 @@ def test_a_read_that_adopts_unreachable_never_opens_the_offline_window(
     )
     first.start()
     assert reached.wait(WAIT)
+    polling = _polling(monkeypatch)  # from here on, only a waiter polls
     waiter = _Thread(
         lambda: cache.catch_up(
             client_root, adopt=cache.ANY_KIND, on_unreachable=on_unreachable("adopter")
