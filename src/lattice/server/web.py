@@ -52,20 +52,29 @@ _LOGIN_BODY_LIMIT = 4096
 
 LOGOUT_JS = """\
 // Logout: a same-origin JSON POST (SPEC §10), then back to the login form.
-document.addEventListener("DOMContentLoaded", function () {
-  var button = document.getElementById("logout");
-  if (!button) return;
-  button.addEventListener("click", function () {
-    fetch("/logout", {
-      method: "POST",
-      credentials: "same-origin",
-      headers: { "Content-Type": "application/json" },
-      body: "{}",
-    }).then(function () {
-      window.location.href = "/login";
+// Loaded by the index page and injected by a hosted dashboard page, so it
+// attaches whether or not the document has finished loading.
+(function () {
+  function attach() {
+    var button = document.getElementById("logout");
+    if (!button) return;
+    button.addEventListener("click", function () {
+      fetch("/logout", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      }).then(function () {
+        window.location.href = "/login";
+      });
     });
-  });
-});
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", attach);
+  } else {
+    attach();
+  }
+})();
 """
 
 
