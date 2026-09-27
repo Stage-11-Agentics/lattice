@@ -30,7 +30,7 @@ def _normalize_pairs(pairs: tuple[str, ...], config: dict) -> list[tuple[str, ob
     if not pairs:
         raise OpError("VALIDATION_ERROR", "No field=value pairs provided.")
 
-    parsed: list[tuple[str, str]] = []
+    parsed: list[tuple[str, object]] = []
     for pair in pairs:
         if "=" not in pair:
             raise OpError(
@@ -39,7 +39,21 @@ def _normalize_pairs(pairs: tuple[str, ...], config: dict) -> list[tuple[str, ob
             )
         field, value = pair.split("=", 1)
         parsed.append((field, value))
+    return _normalize_values(parsed, config)
 
+
+def _normalize_fields(fields: dict, config: dict) -> list[tuple[str, object]]:
+    """Validate a ``fields`` mapping: the same rules, with JSON values kept as given.
+
+    A custom field holds any JSON value (``custom_fields`` is an open object);
+    ``tags`` given as text is split on commas, as a list it is kept.
+    """
+    if not fields:
+        raise OpError("VALIDATION_ERROR", "No fields provided to update.")
+    return _normalize_values(list(fields.items()), config)
+
+
+def _normalize_values(parsed: list[tuple[str, object]], config: dict) -> list[tuple[str, object]]:
     normalized: list[tuple[str, object]] = []
     for field, value in parsed:
         if field in REDIRECT_FIELDS:
@@ -84,7 +98,7 @@ def _normalize_pairs(pairs: tuple[str, ...], config: dict) -> list[tuple[str, ob
                 "VALIDATION_ERROR", f"Invalid task type: '{value}'. Valid types: {valid}."
             )
 
-        if field == "tags":
+        if field == "tags" and isinstance(value, str):
             new_value: object = [t.strip() for t in value.split(",") if t.strip()]
         else:
             new_value = value
@@ -96,11 +110,21 @@ def _normalize_pairs(pairs: tuple[str, ...], config: dict) -> list[tuple[str, ob
 class UpdateParams(CommonParams):
     task: str
     pairs: tuple[str, ...] = ()
+    #: Typed values for callers that have them (MCP): ``{field: JSON value}``.
+    #: The CLI never sends it; its pairs are text.
+    fields: dict | None = None
+
+    def check(self) -> None:
+        if self.fields is not None and self.pairs:
+            raise OpError(
+                "VALIDATION_ERROR", "Provide either field=value pairs or fields, not both."
+            )
 
 
 @operation("task.update")
 class Update:
-    """Set fields from ``field=value`` pairs; one ``field_updated`` per changed field.
+    """Set fields from ``field=value`` pairs (or a typed ``fields`` mapping); one
+    ``field_updated`` per changed field.
 
     ``value`` is the updated snapshot, or ``{"message": "No changes"}`` when
     nothing changed (``idempotent``). ``events`` name the fields that changed.
@@ -110,7 +134,10 @@ class Update:
 
     def run(self, ctx: OpContext, p: UpdateParams) -> OpResult:
         task_id = ctx.resolve_task(p.task)
-        normalized = _normalize_pairs(p.pairs, ctx.config)
+        if p.fields is not None:
+            normalized = _normalize_fields(p.fields, ctx.config)
+        else:
+            normalized = _normalize_pairs(p.pairs, ctx.config)
         shared_ts = utc_now()
 
         def decide(context):  # noqa: ANN001, ANN202

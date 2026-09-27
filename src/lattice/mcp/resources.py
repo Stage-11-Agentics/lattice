@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import functools
 import json
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from lattice.core.ids import is_short_id, validate_id
 from lattice.mcp.server import mcp
-from lattice.storage.fs import find_root
 from lattice.storage.operations import (
     discover_task_authorities,
     read_task_authority,
@@ -21,12 +23,32 @@ from lattice.storage.short_ids import resolve_short_id
 # ---------------------------------------------------------------------------
 
 
+def _resource(uri: str) -> Callable[[Callable[..., str]], Callable[..., str]]:
+    """Register a resource whose read is one command, as a tool call is
+    (``lattice.mcp.tools._call``): caught up first, read lock released after."""
+
+    def register(fn: Callable[..., str]) -> Callable[..., str]:
+        @functools.wraps(fn)
+        def read(*args: Any, **kwargs: Any) -> str:
+            from lattice.mcp.tools import _call
+
+            with _call():
+                return fn(*args, **kwargs)
+
+        return mcp.resource(uri)(read)
+
+    return register
+
+
 def _find_root_dir() -> Path:
-    """Resolve the .lattice/ directory."""
-    root = find_root()
-    if root is None:
-        raise ValueError("No .lattice/ directory found.")
-    return root / ".lattice"
+    """Resolve the .lattice/ directory, caught up before it is read (SPEC §12)."""
+    from lattice.boards import resolve_board
+    from lattice.ops import OpError
+
+    try:
+        return resolve_board().lattice_dir
+    except OpError as exc:
+        raise ValueError(exc.message) from exc
 
 
 def _resolve_task_id(lattice_dir: Path, raw_id: str) -> str:
@@ -55,7 +77,7 @@ def _load_all_snapshots(lattice_dir: Path) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-@mcp.resource("lattice://tasks")
+@_resource("lattice://tasks")
 def resource_all_tasks() -> str:
     """All active task snapshots as a JSON array."""
     lattice_dir = _find_root_dir()
@@ -63,7 +85,7 @@ def resource_all_tasks() -> str:
     return json.dumps(snapshots, sort_keys=True, indent=2)
 
 
-@mcp.resource("lattice://tasks/{task_id}")
+@_resource("lattice://tasks/{task_id}")
 def resource_task_detail(task_id: str) -> str:
     """Full task detail including events as a JSON object."""
     lattice_dir = _find_root_dir()
@@ -82,7 +104,7 @@ def resource_task_detail(task_id: str) -> str:
     return json.dumps(result, sort_keys=True, indent=2)
 
 
-@mcp.resource("lattice://tasks/status/{status}")
+@_resource("lattice://tasks/status/{status}")
 def resource_tasks_by_status(status: str) -> str:
     """Tasks filtered by status as a JSON array."""
     lattice_dir = _find_root_dir()
@@ -91,7 +113,7 @@ def resource_tasks_by_status(status: str) -> str:
     return json.dumps(filtered, sort_keys=True, indent=2)
 
 
-@mcp.resource("lattice://tasks/assigned/{actor}")
+@_resource("lattice://tasks/assigned/{actor}")
 def resource_tasks_by_assignee(actor: str) -> str:
     """Tasks filtered by assignee as a JSON array."""
     lattice_dir = _find_root_dir()
@@ -100,14 +122,14 @@ def resource_tasks_by_assignee(actor: str) -> str:
     return json.dumps(filtered, sort_keys=True, indent=2)
 
 
-@mcp.resource("lattice://config")
+@_resource("lattice://config")
 def resource_config() -> str:
     """The project config.json contents."""
     lattice_dir = _find_root_dir()
     return (lattice_dir / "config.json").read_text()
 
 
-@mcp.resource("lattice://notes/{task_id}")
+@_resource("lattice://notes/{task_id}")
 def resource_notes(task_id: str) -> str:
     """The task's notes markdown file contents."""
     lattice_dir = _find_root_dir()
@@ -120,7 +142,7 @@ def resource_notes(task_id: str) -> str:
     raise ValueError(f"No notes file found for task {task_id}.")
 
 
-@mcp.resource("lattice://plans/{task_id}")
+@_resource("lattice://plans/{task_id}")
 def resource_plans(task_id: str) -> str:
     """The task's plan markdown file contents."""
     lattice_dir = _find_root_dir()

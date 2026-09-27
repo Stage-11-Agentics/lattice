@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from lattice.mcp.tools import lattice_comment, lattice_create, lattice_status
+from lattice.mcp.tools import lattice_assign, lattice_comment, lattice_create, lattice_status
 from lattice.storage.fs import LATTICE_DIR
 
 _ACTOR = "human:test"
@@ -98,6 +98,9 @@ class TestMCPCompletionPolicy:
     def test_require_assigned_blocks(self, lattice_env: Path) -> None:
         _config_with_policy(lattice_env, {"done": {"require_assigned": True}})
         task_id = _create_task_at_review(lattice_env)
+        # Entering in_progress auto-assigns the mover, as the CLI does (SPEC §12);
+        # unassign so the policy has something to refuse.
+        lattice_assign(task_id=task_id, assignee="none", actor=_ACTOR)
 
         with pytest.raises(ValueError, match="Completion policy not satisfied"):
             lattice_status(task_id=task_id, new_status="done", actor=_ACTOR)
