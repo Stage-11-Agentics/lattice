@@ -126,8 +126,8 @@ class SyncOutcome:
     """What one :func:`catch_up` did.
 
     ``kind``: ``applied`` (a delta or reset applied), ``unchanged`` (already at
-    the server's head), ``unreachable`` (the server did not answer, or answered
-    5xx), ``busy`` (``BOARD_BUSY`` / ``RATE_LIMITED``, or the probe's budget ran
+    the server's head), ``unreachable`` (no answer in time, or
+    ``BOARD_UNAVAILABLE``), ``busy`` (``BOARD_BUSY`` / ``RATE_LIMITED``, or the probe's budget ran
     out waiting for another sync), ``incomplete`` (``cache/applying`` remains:
     an interrupted apply could not be repaired, so reads fail with
     ``CACHE_INCOMPLETE``). ``head_seq`` and ``synced_at`` describe the cache
@@ -515,6 +515,24 @@ def _restore_all_modes(lattice_dir: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+#: Server error codes that mean "not now" rather than "wrong": the only ones a
+#: catch-up (and doctor) turns into an outcome instead of raising. A project
+#: quarantined as ``BOARD_UNAVAILABLE`` (SPEC §8.6) cannot serve the cache until
+#: its next load, so the cache reads as if the server were unreachable. Every
+#: other code, whatever its HTTP status (a 500 ``INTEGRITY_ERROR`` included),
+#: raises with its own code.
+AVAILABILITY_CODES: dict[str, OutcomeKind] = {
+    "BOARD_BUSY": "busy",
+    "RATE_LIMITED": "busy",
+    "BOARD_UNAVAILABLE": "unreachable",
+}
+
+
+def availability(exc: http.ServerError) -> OutcomeKind | None:
+    """``busy`` or ``unreachable`` for an availability code, else ``None``."""
+    return AVAILABILITY_CODES.get(exc.code)
+
+
 class _Restart(Exception):
     """Discard this cycle's fetches and sync again from the current state."""
 
@@ -655,14 +673,11 @@ class _Syncer:
                 "unreachable", f"cannot reach {self.remote.alias}: {exc.reason}"
             ) from None
         except http.ServerError as exc:
-            if exc.code in ("BOARD_BUSY", "RATE_LIMITED"):
-                raise _Transient("busy", f"{self.remote.alias} is busy ({exc.code})") from None
             if exc.code == "STALE_VERSION" and expect == "bytes":
                 raise _Restart("STALE_VERSION", exc.message) from None
-            if exc.status >= 500:
-                raise _Transient(
-                    "unreachable", f"{self.remote.alias} answered {exc.code}: {exc.message}"
-                ) from None
+            kind = availability(exc)
+            if kind is not None:
+                raise _Transient(kind, f"{self.remote.alias} answered {exc.code}") from None
             raise
 
     # -- fetch and verify -----------------------------------------------------
@@ -985,12 +1000,19 @@ def catch_up(hosted_root: Path, *, bulk: bool = False) -> SyncOutcome:
         with syncing_board(lattice_dir):
             ensure_dir(lattice_dir)
     os.chmod(lattice_dir, PRIVATE_DIR_MODE)
-    _private_dir(lattice_dir / "cache")
     syncer = _Syncer(root, remote, project, bulk, deadline)
     fd = _lock(lattice_dir / "locks" / "cache_sync.lock", exclusive=True, deadline=deadline)
     if fd is None:
         return syncer.outcome("busy", "another sync of this cache is in progress")
     try:
+        # A `cache clear --forget` may have run while this waited for the lock:
+        # route by what is on disk now, never by what was read before it.
+        now = cache_identity(root)
+        if now is None:
+            raise not_hosted(root)
+        if now != identity:
+            syncer = _Syncer(root, resolve_remote(now[0]), now[1], bulk, deadline)
+        _private_dir(lattice_dir / "cache")
         return syncer.run()
     finally:
         os.close(fd)
@@ -1013,7 +1035,8 @@ class ClearResult:
 def clear_cache(hosted_root: Path, *, forget: bool = False) -> ClearResult:
     """Delete the cache at *hosted_root* (SPEC §9.4 "Clearing a cache").
 
-    Keeps ``cache/rescued/`` and, unless *forget*, a routing marker
+    Keeps ``cache/rescued/``, the runtime ``locks/`` (so every waiter stays on
+    the same lock files), and, unless *forget*, a routing marker
     ``cache/state.json`` holding only ``{remote, project}``. Refuses with
     ``NOT_HOSTED``, deleting nothing, unless ``.lattice/`` carries a cache
     marker, so it can never delete a local board.
@@ -1032,9 +1055,9 @@ def clear_cache(hosted_root: Path, *, forget: bool = False) -> ClearResult:
     try:
         rw_fd = _lock(locks / "cache_rw.lock", exclusive=True, deadline=None)
         try:
-            # Both locks are held for the whole clear: every deletion, the
-            # routing marker, and last of all the lock files themselves, so
-            # no sync or reader can start on a half-cleared tree.
+            # Both locks are held for the whole clear, and ``locks/`` (runtime
+            # state) is never deleted, so every sync and reader waits on the
+            # same lock files and none starts on a half-cleared tree.
             for dirpath, dirnames, _files in os.walk(lattice_dir):
                 for name in dirnames:
                     _chmod(Path(dirpath) / name, PRIVATE_DIR_MODE)
@@ -1058,14 +1081,10 @@ def clear_cache(hosted_root: Path, *, forget: bool = False) -> ClearResult:
                     json.dumps({"project": project, "remote": remote}, sort_keys=True, indent=2)
                     + "\n",
                 )
-            # A caller arriving from here on finds the final tree (the marker,
-            # or nothing) and fresh lock files; one already waiting on the old
-            # files re-opens them after the inode check in ``_lock``.
-            _delete(locks)
             if forget and kept is None:
-                for directory in (lattice_dir / "cache", lattice_dir):
-                    with contextlib.suppress(OSError):
-                        directory.rmdir()
+                with contextlib.suppress(OSError):
+                    (lattice_dir / "cache").rmdir()
+            _step("clear_finished")
         finally:
             os.close(rw_fd)
     finally:
@@ -1101,9 +1120,9 @@ def _fetch_manifest(root: Path, alias: str, project: str) -> tuple[dict | None, 
     except http.Unreachable as exc:
         return None, _unavailable(f"cannot reach {alias}: {exc.reason}")
     except http.ServerError as exc:
-        if exc.status >= 500 or exc.code in ("BOARD_BUSY", "RATE_LIMITED"):
-            return None, _unavailable(f"{alias} answered {exc.code}")
-        raise
+        if availability(exc) is None:
+            raise
+        return None, _unavailable(f"{alias} answered {exc.code}")
     manifest = _data(response)
     files = manifest.get("files") if isinstance(manifest, dict) else None
     if not isinstance(files, dict) or not all(isinstance(v, dict) for v in files.values()):

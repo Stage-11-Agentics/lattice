@@ -219,3 +219,33 @@ def test_an_apply_waits_for_the_whole_doctor_scan(
     assert [f for f in findings if f["level"] == "error"] == []
     assert "applying_written" in marks  # the archive applied once doctor finished
     assert (client_root / ".lattice" / "archive" / "tasks" / f"{task}.json").exists()
+
+
+def test_a_server_integrity_error_fails_doctor(client_root: Path, stub: StubServer) -> None:
+    create_task(stub)
+    cache.catch_up(client_root)
+    stub.fault.raw_manifest = (500, _JSON, _envelope("INTEGRITY_ERROR"))
+    result = _doctor(client_root, "--json")
+    assert result.exit_code == 1
+    assert json.loads(result.stdout)["error"]["code"] == "INTEGRITY_ERROR"
+
+
+def test_a_server_integrity_error_during_doctors_catch_up_fails_doctor(
+    client_root: Path, stub: StubServer
+) -> None:
+    create_task(stub)
+    cache.catch_up(client_root)
+    stub.fault.raw = (500, _JSON, _envelope("INTEGRITY_ERROR"))
+    result = _doctor(client_root, "--json")
+    assert result.exit_code == 1
+    assert json.loads(result.stdout)["error"]["code"] == "INTEGRITY_ERROR"
+
+
+def test_a_quarantined_project_is_a_warning(client_root: Path, stub: StubServer) -> None:
+    create_task(stub)
+    cache.catch_up(client_root)
+    stub.fault.raw_manifest = (503, _JSON, _envelope("BOARD_UNAVAILABLE"))
+    result = _doctor(client_root, "--json")
+    assert result.exit_code == 0, result.output
+    checks = [f["check"] for f in json.loads(result.stdout)["data"]["findings"]]
+    assert checks == ["cache_manifest_unavailable"]

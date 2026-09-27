@@ -310,3 +310,36 @@ def test_a_reader_arriving_mid_clear_waits_for_the_final_tree(
     read.join(WAIT)
     assert clear.error is None and read.error is None, (clear.error, read.error)
     assert read.result is True  # it saw the routing marker, not a half-cleared tree
+
+
+@pytest.mark.parametrize("binding", [True, False], ids=["bound", "marker-only"])
+def test_clear_forget_versus_a_sync_arriving_at_its_end(
+    client_root: Path, stub: StubServer, monkeypatch: pytest.MonkeyPatch, binding: bool
+) -> None:
+    """The sync arrives after everything is deleted but before clear releases its
+    locks: it waits on the same lock files, then routes by what is on disk."""
+    create_task(stub)
+    cache.catch_up(client_root)
+    if not binding:
+        (client_root / cache.BINDING_FILE).unlink()  # routed by the marker alone
+    reached, release = _seam_gate(monkeypatch, "clear_finished")
+    clear = _Thread(lambda: cache.clear_cache(client_root, forget=True))
+    clear.start()
+    assert reached.wait(WAIT)
+    before = len(stub.arrivals)
+    sync = _Thread(lambda: cache.catch_up(client_root, bulk=True))
+    sync.start()
+    time.sleep(0.2)
+    assert len(stub.arrivals) == before  # waiting on clear's locks
+    assert not (client_root / ".lattice" / "cache").exists()  # nothing recreated meanwhile
+    release.set()
+    clear.join(WAIT)
+    sync.join(WAIT)
+    assert clear.error is None, clear.error
+    if binding:
+        assert sync.error is None, sync.error
+        assert sync.result.kind == "applied"  # a first sync from the binding
+        assert_mirror(client_root, stub)
+    else:
+        assert sync.error is not None and sync.error.code == "NOT_HOSTED"
+        assert not (client_root / ".lattice" / "cache").exists()

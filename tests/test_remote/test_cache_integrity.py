@@ -378,7 +378,7 @@ def test_cache_clear_keeps_rescued_and_the_marker(client_root: Path, stub: StubS
     assert result.exit_code == 0, result.output
     assert "kept rescued board files" in result.stderr
     lattice = _lattice(client_root)
-    assert sorted(p.name for p in lattice.iterdir()) == ["cache"]
+    assert sorted(p.name for p in lattice.iterdir()) == ["cache", "locks"]  # runtime locks stay
     assert sorted(p.name for p in (lattice / "cache").iterdir()) == ["rescued", "state.json"]
     assert json.loads((lattice / "cache" / "state.json").read_text()) == {
         "project": PROJECT,
@@ -411,7 +411,8 @@ def test_cache_clear_forget_then_another_project(
     _synced(client_root, stub)
     result = _clear(client_root, "--forget")
     assert result.exit_code == 0, result.output
-    assert not _lattice(client_root).exists()
+    assert sorted(p.name for p in _lattice(client_root).iterdir()) == ["locks"]
+    assert cache.cache_identity(client_root) is not None  # the committed binding alone
     other_root = tmp_path / "other-project"
     other_root.mkdir()
     from lattice.storage.board_init import create_board

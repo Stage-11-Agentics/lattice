@@ -196,3 +196,16 @@ def test_remote_not_configured(client_root: Path, stub: StubServer, monkeypatch)
     assert err.value.code == "REMOTE_NOT_CONFIGURED"
     assert "lattice remote add team" in err.value.message
     assert not (client_root / ".lattice").exists()
+
+
+@pytest.mark.parametrize(
+    "status,code", [(500, "INTEGRITY_ERROR"), (500, "SOMETHING_NEW"), (503, "STORAGE_LOW")]
+)
+def test_a_hard_server_error_raises_whatever_its_status(
+    client_root: Path, stub: StubServer, status: int, code: str
+) -> None:
+    body = json.dumps({"ok": False, "error": {"code": code, "message": "broken"}}).encode()
+    stub.fault.raw = (status, {"Content-Type": "application/json", "Lattice-Protocol": "1"}, body)
+    with pytest.raises(OpError) as err:
+        cache.catch_up(client_root)
+    assert err.value.code == code
