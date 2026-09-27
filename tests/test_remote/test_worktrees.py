@@ -180,3 +180,32 @@ def test_status_lists_branches_that_still_track_the_board(
     assert as_json["branches_tracking_board"] == ["pre-move"]
     assert as_json["cache"]["stale"] is False
     assert as_json["identity"]["user"] == "human:alice"
+
+
+def test_sync_routes_like_every_command(hosted_env: HostedEnv, tmp_path: Path) -> None:
+    """``lattice sync`` uses the same routing (the worktree jump to the primary
+    checkout's cache), and ``hosted_root_of`` refuses a binding beside a local
+    board instead of reading it as not hosted."""
+    from lattice.core.errors import OpError
+    from lattice.remote.follower import hosted_root_of
+
+    repo = make_repo(tmp_path / "repo")
+    _commit_binding(hosted_env, repo)
+    wt = add_worktree(repo, tmp_path / "wt", "feat")
+    hosted_env.server_op("task.create", {"title": "Synced"}, actor="human:alice")
+    synced = run_cli(wt, "sync", "--json")
+    assert synced.exit_code == 0, synced.output
+    assert json.loads(synced.stdout)["data"]["status"] == "applied"
+    assert not (wt / ".lattice").exists()
+    assert hosted_root_of(repo) == repo
+
+    local = make_repo(tmp_path / "local")
+    create_board(local, project_code="LOC", actor="human:alice")
+    hosted_env.bind(local)
+    with pytest.raises(OpError) as exc:
+        hosted_root_of(local)
+    assert exc.value.code == "BINDING_CONFLICT"
+    refused = run_cli(local, "sync", "--json")
+    assert refused.exit_code == 1
+    assert json.loads(refused.stdout)["error"]["code"] == "BINDING_CONFLICT"
+    assert hosted_root_of(tmp_path / "nowhere") is None

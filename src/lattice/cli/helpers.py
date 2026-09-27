@@ -64,7 +64,8 @@ def require_root(is_json: bool = False) -> Path:
 
 
 #: Commands that run until stopped. Holding the cache's shared read lock for
-#: their lifetime would starve every sync on the machine, so they read without it.
+#: their lifetime would starve every sync on the machine, and they keep their
+#: cache fresh themselves, so they get neither the catch-up nor the lock here.
 LONG_RUNNING_COMMANDS = frozenset({"dashboard", "watch", "wait"})
 
 

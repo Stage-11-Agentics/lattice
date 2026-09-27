@@ -419,9 +419,17 @@ def _restore_stdout() -> None:
 
 
 def prepare_read(hosted: Hosted, *, lock: bool = True) -> Path:
-    """Everything a read on *hosted* needs first; returns its cache ``.lattice/``."""
+    """Everything a read on *hosted* needs first; returns its cache ``.lattice/``.
+
+    ``lock=False`` is for a command that runs until stopped (``watch``,
+    ``wait``, ``dashboard``): it keeps its cache fresh itself (the follower's
+    syncs) and takes the read lock around each of its own reads, so here it
+    gets neither a catch-up nor a lifetime lock, only the routing, the version
+    lines, and terminal safety.
+    """
     scrub_stdout()
-    ensure_fresh(hosted)
+    if lock:
+        ensure_fresh(hosted)
     announce_versions(hosted)
     if lock:
         hold_read_lock(hosted)

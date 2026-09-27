@@ -181,7 +181,8 @@ def test_long_running_commands_read_without_holding_the_lock(
     hosted_env: HostedEnv, repo: Path
 ) -> None:
     """``dashboard``, ``watch``, and ``wait`` run until stopped: holding the shared
-    read lock for their lifetime would starve every sync."""
+    read lock for their lifetime would starve every sync, and they keep their
+    cache fresh themselves, so routing gives them neither lock nor catch-up."""
     import click
 
     from lattice.cli.helpers import require_root
@@ -191,11 +192,17 @@ def test_long_running_commands_read_without_holding_the_lock(
     previous = Path.cwd()
     os.chdir(repo)
     try:
-        for name, held in (("watch", False), ("dashboard", False), ("list", True)):
+        for name, held in (
+            ("watch", False),
+            ("wait", False),
+            ("dashboard", False),
+            ("list", True),
+        ):
             with click.Context(cli, info_name="lattice") as root_ctx:
                 with click.Context(click.Command(name), parent=root_ctx, info_name=name):
                     require_root(False)
                     assert bool(session._locks) is held, name
+                    assert bool(session._fresh) is held, name
             session.reset_process_state()
     finally:
         os.chdir(previous)
