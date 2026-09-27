@@ -24,7 +24,7 @@ from lattice.core.comments import materialize_comments
 from lattice.core.config import get_project_type
 from lattice.core.errors import HTTP_STATUS, OpError
 from lattice.core.ids import validate_id
-from lattice.core.origin import format_origin_line
+from lattice.core.origin import format_origin_line, origin_matches
 from lattice.core.tasks import compact_snapshot, get_artifact_evidence_refs
 from lattice.core.visibility import visible
 from lattice.storage.operations import (
@@ -173,9 +173,38 @@ def get_config(ld: Path) -> dict:
     return _read_config(ld)
 
 
-def get_tasks(ld: Path) -> list[dict]:
-    """Active tasks for the boards; erased tasks are left out (SPEC §7)."""
-    snapshots = visible(a.snapshot for a in discover_task_authorities(ld, include_archived=False))
+#: ``/api/tasks`` query parameters that filter by origin, as ``lattice list``
+#: names them (``--machine``, ``--user``, ``--worktree``).
+ORIGIN_FILTER_PARAMS = ("machine", "user", "worktree")
+
+
+def get_tasks(
+    ld: Path,
+    *,
+    machine: str | None = None,
+    user: str | None = None,
+    worktree: str | None = None,
+) -> list[dict]:
+    """Active tasks for the boards; erased tasks are left out (SPEC §7).
+
+    *machine*, *user* and *worktree* filter as ``lattice list`` does: a task
+    matches when one event in its log carries an origin satisfying every one
+    given (:func:`origin_matches`), so a task written before v2 never matches.
+    The worktree is matched as given: the caller sends the recorded path, since
+    a path is never resolved against the serving machine's filesystem.
+    """
+    authorities = discover_task_authorities(ld, include_archived=False)
+    if machine is not None or user is not None or worktree is not None:
+        worktrees = frozenset({worktree}) if worktree is not None else None
+        authorities = [
+            a
+            for a in authorities
+            if any(
+                origin_matches(event, user=user, machine=machine, worktrees=worktrees)
+                for event in a.events
+            )
+        ]
+    snapshots = visible(a.snapshot for a in authorities)
     rows = []
     for snap in snapshots:
         row = _board_row(snap)
@@ -483,7 +512,8 @@ def route_get(
         if path == "/api/config":
             return ok(get_config(ld))
         if path == "/api/tasks":
-            return ok(get_tasks(ld))
+            origin_filters = {k: query[k][0] for k in ORIGIN_FILTER_PARAMS if k in query}
+            return ok(get_tasks(ld, **origin_filters))
         if path == "/api/stats":
             return ok(get_stats(ld))
         if path == "/api/activity":

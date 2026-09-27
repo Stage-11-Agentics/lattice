@@ -1362,6 +1362,7 @@ select.form-control{cursor:pointer}
 .filter-panel-group-title{font-size:.7rem;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted);margin-bottom:.5rem;font-weight:700}
 .filter-panel-section{margin-bottom:.75rem}
 .filter-panel-section label{display:block;font-size:.8rem;color:var(--text-secondary);margin-bottom:.25rem}
+.filter-panel-section input[type=text]{width:100%;box-sizing:border-box;padding:.3rem .5rem;margin-bottom:.4rem;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);color:var(--text-primary);font-size:.85rem}
 .filter-panel-section select{width:100%;padding:.3rem .5rem;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);color:var(--text-primary);font-size:.85rem}
 .tag-overflow{opacity:.7}
 .card-meta .tag-badge{max-width:8rem;overflow:hidden;text-overflow:ellipsis;display:inline-block;vertical-align:middle;cursor:pointer}
@@ -1495,6 +1496,15 @@ select.form-control{cursor:pointer}
       </div>
       <div class="filter-panel-section" id="filter-section-creator">
         <!-- Populated by renderFilterPanel(). Hidden when no tasks have creators. -->
+      </div>
+      <!-- Origin filters (AC-39): matched server side, as `lattice list --machine/--user/--worktree`. -->
+      <div class="filter-panel-section" id="filter-section-origin">
+        <label for="filter-origin-machine">Machine</label>
+        <input type="text" id="filter-origin-machine" data-origin-filter="machine" placeholder="any" spellcheck="false" autocomplete="off">
+        <label for="filter-origin-user">User</label>
+        <input type="text" id="filter-origin-user" data-origin-filter="user" placeholder="any" spellcheck="false" autocomplete="off">
+        <label for="filter-origin-worktree">Worktree</label>
+        <input type="text" id="filter-origin-worktree" data-origin-filter="worktree" placeholder="any (absolute path)" spellcheck="false" autocomplete="off">
       </div>
     </div>
   </div>
@@ -1639,6 +1649,8 @@ select.form-control{cursor:pointer}
 <script src="static/panel-logic.js"></script>
 <!-- esc, basePath, apiUrl: escaping and base-path URLs (SPEC §10), tested in tests/js/escape.test.js -->
 <script src="static/escape.js"></script>
+<!-- Origin filter query for /api/tasks, tested in tests/js/origin-filter.test.js -->
+<script src="static/origin-filter.js"></script>
 <script>
 (function(){
 "use strict";
@@ -2219,6 +2231,9 @@ var activeTagFilter = null;
 // ACTOR_UNASSIGNED (assignee only), or null. Mirrors activeTagFilter.
 var activeAssigneeFilter = null;
 var activeCreatorFilter = null;
+// Origin filters ({machine, user, worktree}, see origin-filter.js), from the
+// page URL. Every GET of /api/tasks carries them, so the server filters.
+var activeOriginFilters = originFiltersFromSearch(location.search);
 
 // --- Cube (3D view) state ---
 // Cube 3D state is managed internally by cube3d.js
@@ -2271,6 +2286,7 @@ var WEB_COLLISION_RADIUS = { hub: 30, task: 10 };
 var BASE_PATH = basePath(location.pathname);
 
 async function api(path, opts) {
+  if (!opts || !opts.method || opts.method === "GET") path = withOriginFilters(path, activeOriginFilters);
   var r = await fetch(apiUrl(BASE_PATH, path), opts);
   var body = await r.json();
   if (!body.ok) throw new Error(body.error ? body.error.message : "API error");
@@ -3566,7 +3582,7 @@ function activeFilterCount() {
   if (activeTagFilter) n++;
   if (activeAssigneeFilter) n++;
   if (activeCreatorFilter) n++;
-  return n;
+  return n + originFilterCount(activeOriginFilters);
 }
 
 // Shared predicate — the three filters AND together. Applied by both
@@ -3637,6 +3653,44 @@ function setActorFilter(field, keyOrNull) {
   if (sel) sel.value = value || "";
 }
 
+// Origin filters narrow the task list on the server, so a change refetches it.
+async function setOriginFilters(filters) {
+  activeOriginFilters = filters;
+  var sp = new URLSearchParams(location.search);
+  ORIGIN_FILTER_KEYS.forEach(function(key) {
+    if (filters[key]) sp.set(key, filters[key]); else sp.delete(key);
+  });
+  var qs = sp.toString();
+  history.replaceState(null, "", location.pathname + (qs ? "?" + qs : "") + location.hash);
+  _syncOriginFilterInputs();
+  updateFiltersBtnAffordance();
+  try {
+    tasks = await api("/api/tasks");
+  } catch (e) {
+    showToast(e.message, "error");
+    return;
+  }
+  updateAllBadges();
+  if (currentView === "board") renderBoard();
+  else if (currentView === "list") renderList();
+}
+
+function _syncOriginFilterInputs() {
+  ORIGIN_FILTER_KEYS.forEach(function(key) {
+    var input = document.getElementById("filter-origin-" + key);
+    if (input) input.value = activeOriginFilters[key] || "";
+  });
+}
+
+function _readOriginFilterInputs() {
+  var sp = new URLSearchParams();
+  ORIGIN_FILTER_KEYS.forEach(function(key) {
+    var input = document.getElementById("filter-origin-" + key);
+    if (input && input.value) sp.set(key, input.value);
+  });
+  return originFiltersFromSearch(sp.toString());
+}
+
 // One action, two entry points (drawer header button, ✕ on the nav count):
 // reset tag + assignee + creator and scrub all three URL params.
 function clearAllFilters() {
@@ -3650,6 +3704,7 @@ function clearAllFilters() {
   updateFiltersBtnAffordance();
   _rerenderFilteredViews();
   renderFilterPanel(); // resync drawer selects (cheap; safe when closed)
+  if (originFilterCount(activeOriginFilters) > 0) setOriginFilters(originFiltersFromSearch(""));
 }
 
 function renderFilterPanel() {
@@ -4218,6 +4273,10 @@ document.addEventListener("DOMContentLoaded", function() {
   if (filterClose) filterClose.addEventListener("click", closeFilterPanel);
   var filterClearAll = document.getElementById("filter-clear-all");
   if (filterClearAll) filterClearAll.addEventListener("click", clearAllFilters);
+  _syncOriginFilterInputs();
+  document.querySelectorAll("[data-origin-filter]").forEach(function(input) {
+    input.addEventListener("change", function() { setOriginFilters(_readOriginFilterInputs()); });
+  });
 
   // Escape key closes panels (unless user is in an active inline edit)
   document.addEventListener("keydown", function(e) {
