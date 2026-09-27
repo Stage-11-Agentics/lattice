@@ -98,6 +98,10 @@ MAX_BACKOFF_SECONDS = 60.0
 
 #: Paths per ``hash-object`` call (keeps the argument list far below ARG_MAX).
 HASH_BATCH = 256
+#: How long :meth:`Stager.close` lets the stage worker finish before killing it.
+WORKER_STOP_SECONDS = 5.0
+#: :meth:`AuditCommitter.abandon` never waits on work it will throw away.
+ABANDON_STOP_SECONDS = 0.5
 
 EPOCH_TRAILER = "Lattice-Epoch"
 SEQ_TRAILER = "Lattice-Seq"
@@ -295,8 +299,14 @@ class Stager:
         self.directory = Path(directory)
         self.board = self.directory / ".lattice"
         self._cache: dict[str, tuple[tuple[int, int, int, int], str]] = {}
+        #: Serializes requests to the worker (the committer thread's prehash and
+        #: shutdown's stage can overlap).
         self._lock = threading.Lock()
+        #: Guards ``_worker`` and ``_closed``; never held across a request, so
+        #: :meth:`close` never waits behind one.
+        self._state = threading.Lock()
         self._worker: subprocess.Popen[bytes] | None = None
+        self._closed = False
 
     def stage(self) -> str:
         """Rebuild the index from the board and return its tree id. Call with the
@@ -312,32 +322,45 @@ class Stager:
 
     def _ask(self, command: bytes) -> dict[str, Any]:
         with self._lock:
-            worker = self._worker
-            if worker is None or worker.poll() is not None:
-                worker = self._worker = self._start_worker()
+            with self._state:
+                if self._closed:
+                    raise GitError(["stage"], None, "the stage worker is closed")
+                worker = self._worker
+                if worker is None or worker.poll() is not None:
+                    worker = self._worker = self._start_worker()
             assert worker.stdin is not None and worker.stdout is not None
             try:
                 worker.stdin.write(command + b"\n")
                 worker.stdin.flush()
                 line = worker.stdout.readline()
-            except OSError:
+            except (OSError, ValueError):  # ValueError: close() closed a pipe
                 line = b""
             try:
                 reply = json.loads(line) if line else None
             except ValueError:
                 reply = None
             if not isinstance(reply, dict):
-                self._stop_worker(wait=True)
-                raise GitError(["stage"], worker.poll(), "the stage process ended without a reply")
+                with self._state:
+                    if self._worker is worker:
+                        self._worker = None
+                _reap(worker, WORKER_STOP_SECONDS)
+                raise GitError(
+                    ["stage"], worker.returncode, "the stage process ended without a reply"
+                )
             if "error" in reply:
                 error = reply["error"]
                 raise GitError(error["args"], error["returncode"], error["stderr"])
             return reply
 
-    def close(self) -> None:
-        """End the worker (it also ends when this process does). Never waits."""
-        with self._lock:
-            self._stop_worker(wait=False)
+    def close(self, timeout: float = WORKER_STOP_SECONDS) -> None:
+        """End and reap the worker; no later call starts another. End of input
+        ends an idle worker at once; one still busy after *timeout* is killed.
+        A request in flight on another thread fails as a :class:`GitError`."""
+        with self._state:
+            self._closed = True
+            worker, self._worker = self._worker, None
+        if worker is not None:
+            _reap(worker, timeout)
 
     def _start_worker(self) -> subprocess.Popen[bytes]:
         try:
@@ -348,20 +371,6 @@ class Stager:
             )
         except OSError as exc:
             raise GitError(["stage"], None, str(exc)) from exc
-
-    def _stop_worker(self, *, wait: bool) -> None:
-        worker, self._worker = self._worker, None
-        if worker is None:
-            return
-        with contextlib.suppress(OSError):
-            assert worker.stdin is not None
-            worker.stdin.close()  # end of input: the worker exits
-        if wait:
-            try:
-                worker.wait(5)
-            except subprocess.TimeoutExpired:
-                worker.kill()
-                worker.wait()
 
     def stage_here(self) -> str:
         """:meth:`stage`'s work in this process (the worker runs it)."""
@@ -419,6 +428,22 @@ class Stager:
             for rel in [r for r in self._cache if r not in present]:
                 del self._cache[rel]
         return listing
+
+
+def _reap(worker: subprocess.Popen[bytes], timeout: float) -> None:
+    """Close the worker's input, wait up to *timeout* for it to exit, else kill
+    it; wait for it and close its pipes, so no child outlives the call."""
+    with contextlib.suppress(OSError, ValueError):
+        assert worker.stdin is not None
+        worker.stdin.close()  # end of input: the worker exits
+    try:
+        worker.wait(timeout)
+    except subprocess.TimeoutExpired:
+        worker.kill()
+        worker.wait()
+    with contextlib.suppress(OSError, ValueError):
+        assert worker.stdout is not None
+        worker.stdout.close()
 
 
 _STAGE_WORKER = "from lattice.server.audit import _stage_worker; _stage_worker()"
@@ -734,12 +759,13 @@ class AuditCommitter:
         self.maintenance.stop(flush=True, timeout=FINAL_MAINTENANCE_SECONDS)
 
     def abandon(self) -> None:
-        """Stop without committing (a quarantined board is not trusted). Never waits."""
+        """Stop without committing (a quarantined board is not trusted). Waits only
+        to reap the stage worker (``ABANDON_STOP_SECONDS``, then it is killed)."""
         with self._cond:
             self._stopping = True
             self._pending = None
             self._cond.notify_all()
-        self.stager.close()
+        self.stager.close(ABANDON_STOP_SECONDS)
         self.maintenance.stop(flush=False, timeout=0)
 
     # -- the thread ------------------------------------------------------------
@@ -799,11 +825,22 @@ class AuditCommitter:
             return
         finally:
             self.lock.release()
+        held = time.monotonic() - locked_at
         timings = {
             "prehash_ms": round((started - prehash_started) * 1000, 1),
             "lock_wait_ms": round((locked_at - started) * 1000, 1),
-            "stage_ms": round((time.monotonic() - locked_at) * 1000, 1),
+            "stage_ms": round(held * 1000, 1),
         }
+        from lattice.server.project import SLOW_WORK_LOCK_SECONDS
+
+        if held >= SLOW_WORK_LOCK_SECONDS:  # as Project.locked logs every other hold
+            self.log.warning(
+                "work_lock_slow",
+                project=self.slug,
+                thread=threading.current_thread().name,
+                wait_ms=timings["lock_wait_ms"],
+                held_ms=timings["stage_ms"],
+            )
         try:
             self._commit(tree, pending, timings=timings)
         except Exception as exc:  # noqa: BLE001

@@ -9,21 +9,24 @@ readers' catch-ups timed out. In the worker it keeps its idle speed.
 from __future__ import annotations
 
 import shutil
+import signal
 import subprocess
 import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from lattice.server import audit
+from lattice.server import admin, audit
 from lattice.server import project as server_project
 from lattice.server.audit import GitError, Stager
 from lattice.server.config import AuditConfig
-from lattice.server.testing import make_root, wait_for
+from lattice.server.testing import make_root, running_server, wait_for
 from tests.test_server.audit_helpers import close, direct_project, log_lines
+from tests.test_server.conftest import create_task, mint
 from tests.test_server.faults import request, run
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
@@ -178,3 +181,113 @@ def test_a_file_changed_after_the_prehash_is_hashed_again(tmp_path: Path) -> Non
         assert stager.stage() == Stager(directory).stage_here()
     finally:
         stager.close()
+
+
+def test_close_reaps_the_worker_and_starts_no_other(tmp_path: Path) -> None:
+    stager = Stager(_repo(tmp_path, 5))
+    stager.stage()
+    worker = stager._worker
+    assert worker is not None
+    stager.close()
+    assert worker.returncode == 0 and worker.stdout is not None and worker.stdout.closed
+    with pytest.raises(GitError, match="closed"):
+        stager.stage()
+    assert stager._worker is None
+
+
+def test_close_kills_a_worker_that_does_not_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(audit, "_STAGE_WORKER", "import time; time.sleep(60)")
+    stager = Stager(_repo(tmp_path, 1))
+    worker = stager._worker = stager._start_worker()
+    started = time.monotonic()
+    stager.close(timeout=0.2)
+    assert worker.returncode == -signal.SIGKILL
+    assert time.monotonic() - started < 5
+
+
+def _record_worker_at_shutdown(
+    monkeypatch: pytest.MonkeyPatch, project: Any, seen: list[tuple[str, int | None]]
+) -> list[subprocess.Popen]:
+    """Capture the stager's worker at the final stage, and record its return code
+    (``None`` while it runs) when clean_shutdown is written and the lease released."""
+    workers: list[subprocess.Popen] = []
+    real_stage = Stager.stage
+    real_clean = project.write_clean_shutdown
+    real_release, real_unload = project.release, project.unload
+
+    def stage(self: Stager) -> str:
+        tree = real_stage(self)
+        workers.append(self._worker)
+        return tree
+
+    def at(name: str, real: Any) -> Any:
+        def wrapped(*args: Any, **kwargs: Any) -> Any:
+            seen.append((name, workers[0].poll() if workers else "no worker"))
+            return real(*args, **kwargs)
+
+        return wrapped
+
+    monkeypatch.setattr(Stager, "stage", stage)
+    monkeypatch.setattr(project, "write_clean_shutdown", at("clean_shutdown", real_clean))
+    monkeypatch.setattr(project, "release", at("release_lease", real_release))
+    monkeypatch.setattr(project, "unload", at("unload", real_unload))
+    return workers
+
+
+def test_server_shutdown_reaps_the_worker_before_clean_shutdown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The SIGTERM path (``ProjectRegistry.stop``)."""
+    config = {"audit": {"debounce_seconds": 60, "max_interval_seconds": 60}}
+    root = make_root(tmp_path, projects={"alpha": {"code": "ALP"}}, config=config)
+    seen: list[tuple[str, int | None]] = []
+    with running_server(root) as server:
+        create_task(server, mint(root))
+        workers = _record_worker_at_shutdown(monkeypatch, server.project("alpha"), seen)
+    assert len(workers) == 1 and workers[0] is not None
+    assert seen == [("clean_shutdown", 0), ("release_lease", 0)], seen
+
+
+def test_unload_reaps_the_worker_before_clean_shutdown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = {"audit": {"debounce_seconds": 60, "max_interval_seconds": 60}}
+    root = make_root(tmp_path, projects={"alpha": {"code": "ALP"}}, config=config)
+    seen: list[tuple[str, int | None]] = []
+    with running_server(root) as server:
+        create_task(server, mint(root))
+        workers = _record_worker_at_shutdown(monkeypatch, server.project("alpha"), seen)
+        admin.project_lifecycle(root, "alpha", "unload")
+        assert len(workers) == 1 and workers[0] is not None
+        assert seen == [("clean_shutdown", 0), ("unload", 0), ("release_lease", 0)], seen
+
+
+def test_abandon_reaps_the_worker(tmp_path: Path) -> None:
+    root = make_root(tmp_path, projects={"alpha": {"code": "ALP"}})
+    project, stream = direct_project(root, "alpha", QUICK)
+    run(project, request("task.create", {"title": "one"}))
+    wait_for(lambda: any(line["event"] == "audit_commit" for line in log_lines(stream)))
+    worker = project.committer.stager._worker
+    assert worker is not None
+    project._abandon_audit()
+    assert worker.returncode is not None
+    with project.work:
+        project.release()
+
+
+def test_a_slow_audit_stage_logs_work_lock_slow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The committer takes the work lock itself, so it logs its own slow hold."""
+    monkeypatch.setattr(server_project, "SLOW_WORK_LOCK_SECONDS", 0.0)
+    root = make_root(tmp_path, projects={"alpha": {"code": "ALP"}})
+    project, stream = direct_project(root, "alpha", QUICK)
+    try:
+        run(project, request("task.create", {"title": "one"}))
+        wait_for(lambda: any(line["event"] == "audit_commit" for line in log_lines(stream)))
+    finally:
+        close(project)
+    slow = [line for line in log_lines(stream) if line["event"] == "work_lock_slow"]
+    assert any(line["thread"].startswith("lattice-audit-") for line in slow), slow
