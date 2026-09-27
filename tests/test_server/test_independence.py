@@ -14,9 +14,11 @@ this runs in the torture lane.
 from __future__ import annotations
 
 import os
+import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -32,10 +34,10 @@ from tests.parity.hosted import (
     comparable,
     declared_differences,
     durable_tree,
+    NOT_HOSTED,
     hosted_target,
 )
 from tests.parity.record import MODES, load_golden, run_scenario
-from tests.parity.test_hosted_parity import NOT_HOSTED
 
 pytestmark = pytest.mark.torture
 
@@ -105,9 +107,12 @@ def serve_with_fake_c11(tmp_path: Path) -> Iterator[tuple[ParityServer, Path, So
     fake.write_text(f'#!/bin/sh\necho "$@" >> "{ran}"\n')
     fake.chmod(0o755)
     (bin_dir / "cmux").symlink_to(fake)
-    # A short path: AF_UNIX paths are limited to about 100 bytes.
-    sock_dir = Path(os.environ.get("TMPDIR", "/tmp"))
-    watch = SocketWatch(sock_dir / f"c11-{os.getpid()}-{threading.get_ident() % 10000}.sock")
+    # A short path: AF_UNIX paths are limited to 104 bytes on macOS (108 on Linux),
+    # and tmp_path (or macOS's $TMPDIR) is longer than that.
+    sock_dir = Path(tempfile.mkdtemp(prefix="c11-", dir="/tmp"))
+    sock_path = sock_dir / "c11.sock"
+    assert len(os.fsencode(sock_path)) < 104, sock_path
+    watch = SocketWatch(sock_path)
 
     env = {k: v for k, v in os.environ.items() if not k.startswith(("LATTICE_", "C11_", "CMUX_"))}
     env.update(
@@ -158,7 +163,7 @@ def serve_with_fake_c11(tmp_path: Path) -> Iterator[tuple[ParityServer, Path, So
             proc.wait()
         log.close()
         watch.close()
-        watch.path.unlink(missing_ok=True)
+        shutil.rmtree(sock_dir, ignore_errors=True)
 
 
 @pytest.mark.timeout(300)
@@ -173,7 +178,7 @@ def test_a_served_corpus_never_touches_c11(tmp_path: Path) -> None:
                 checkout = tmp_path / "checkouts" / target.slug
                 capture = run_scenario(scenario, checkout, mode=mode, target=target)
                 expected = comparable(load_golden(scenario.name, mode))
-                actual = comparable(declared_differences(capture))
+                actual = comparable(declared_differences(capture, binding=target.binding))
                 assert actual == expected, f"{scenario.name}.{mode} drifted through serve"
                 assert durable_tree(checkout / ".lattice") == durable_tree(
                     server.board(target.slug)

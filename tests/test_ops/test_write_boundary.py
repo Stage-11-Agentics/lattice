@@ -88,6 +88,8 @@ BOARD_OWNERS: dict[str, str] = {
     "lattice.cli.demo_cmd": "demo init (LOCAL_ONLY, SPEC §3.5)",
     "lattice.cli.integrity_cmds": "rebuild, doctor --fix, backfill-ids (LOCAL_ONLY, SPEC §3.5)",
     "lattice.cli.migration_cmds": "migrate needs-human (LOCAL_ONLY, SPEC §3.5)",
+    "lattice.cli.maintenance": "--offline-maintenance: the owner flock and "
+    "hosted/maintenance.json (SPEC §3.5)",
     "lattice.cli.helpers": "require_actor's session touch on a local board, as today (SPEC §3.7); "
     "skipped on a cache (§9.5), refused on a server-owned board by the markers (§6.2)",
 }
@@ -133,9 +135,10 @@ class Module:
     name: str
     path: Path
     tree: ast.Module
-    #: local name -> the module it was imported from (``from X import name``)
-    imported: dict[str, str] = field(default_factory=dict)
-    #: local name -> module, for ``import X as name`` / ``from pkg import module``
+    #: local name -> (module, original name): ``from X import name as local``, and
+    #: ``local = <resolvable name>`` aliases anywhere in the module
+    symbols: dict[str, tuple[str, str]] = field(default_factory=dict)
+    #: local name -> module, for ``import X as local`` / ``from pkg import module``
     modules: dict[str, str] = field(default_factory=dict)
 
     @property
@@ -146,23 +149,77 @@ class Module:
         )
 
 
+def load_module(name: str, path: Path, tree: ast.Module) -> Module:
+    """*tree* with its imports and name aliases resolved."""
+    module = Module(name, path, tree)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            for alias in node.names:
+                local = alias.asname or alias.name
+                module.symbols[local] = (node.module, alias.name)
+                module.modules[local] = f"{node.module}.{alias.name}"
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.asname:
+                    module.modules[alias.asname] = alias.name
+                else:
+                    module.modules[alias.name.split(".")[0]] = alias.name.split(".")[0]
+                    module.modules[alias.name] = alias.name
+    # ``aw = atomic_write`` / ``zap = os.unlink``: the alias resolves like the original.
+    for _ in range(3):
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and isinstance(node.value, (ast.Name, ast.Attribute))
+            ):
+                target = resolve(module, node.value)
+                if target is not None and target[1] != node.targets[0].id:
+                    module.symbols.setdefault(node.targets[0].id, target)
+    return module
+
+
 def _modules() -> dict[str, Module]:
     found: dict[str, Module] = {}
     for path in sorted(PACKAGE.rglob("*.py")):
         parts = path.relative_to(SRC).with_suffix("").parts
         name = ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
-        module = Module(name, path, ast.parse(path.read_text(encoding="utf-8")))
-        for node in ast.walk(module.tree):
-            if isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
-                for alias in node.names:
-                    local = alias.asname or alias.name
-                    module.imported[local] = node.module
-                    module.modules[local] = f"{node.module}.{alias.name}"
-            elif isinstance(node, ast.Import):
-                for alias in node.names:
-                    module.modules[alias.asname or alias.name] = alias.name
-        found[name] = module
+        found[name] = load_module(name, path, ast.parse(path.read_text(encoding="utf-8")))
     return found
+
+
+def resolve(module: Module, expr: ast.expr) -> tuple[str, str] | None:
+    """What *expr* names: ``(module, symbol)``. An attribute of an imported
+    object (``Saver.save``, ``Saver().save``) resolves to that object."""
+    if isinstance(expr, ast.Name):
+        if expr.id in module.symbols:
+            return module.symbols[expr.id]
+        if expr.id in module.modules:
+            return None  # a module itself
+        return (module.name, expr.id)
+    if isinstance(expr, ast.Attribute):
+        value = expr.value
+        if isinstance(value, ast.Name) and value.id in module.modules:
+            return (module.modules[value.id], expr.attr)
+        if isinstance(value, ast.Attribute):
+            dotted = _dotted(value)
+            if dotted is not None and dotted in module.modules.values():
+                return (dotted, expr.attr)
+        if isinstance(value, ast.Name) and value.id in module.symbols:
+            return module.symbols[value.id]
+        if isinstance(value, ast.Call):
+            return resolve(module, value.func)
+    return None
+
+
+def _dotted(expr: ast.expr) -> str | None:
+    if isinstance(expr, ast.Name):
+        return expr.id
+    if isinstance(expr, ast.Attribute):
+        head = _dotted(expr.value)
+        return None if head is None else f"{head}.{expr.attr}"
+    return None
 
 
 MODULES = _modules()
@@ -183,28 +240,28 @@ def _constant_mode(call: ast.Call, position: int) -> str | None:
     return None
 
 
+OPENERS = frozenset({("builtins", "open"), ("io", "open"), ("codecs", "open")})
+
+
 def raw_writes(module: Module) -> list[str]:
     """Each direct filesystem change in *module*, as ``line: call``."""
     hits: list[str] = []
     for call in _calls(module.tree):
         func = call.func
         where = f"{module.name}:{call.lineno}"
-        if isinstance(func, ast.Name) and func.id == "open":
+        target = resolve(module, func)
+        if target == (module.name, "open") and isinstance(func, ast.Name):
+            target = ("builtins", "open")  # not shadowed: the builtin
+        if target in OPENERS:
             mode = _constant_mode(call, 1)
             if mode is None and (len(call.args) > 1 or call.keywords):
                 hits.append(f"{where}: open(<mode>)")
             elif isinstance(mode, str) and WRITE_MODE_CHARS & set(mode):
                 hits.append(f"{where}: open({mode!r})")
+        elif target in RAW_FUNCTIONS or target == ("os", "open"):
+            hits.append(f"{where}: {target[0]}.{target[1]}")
         elif isinstance(func, ast.Attribute):
-            owner = func.value.id if isinstance(func.value, ast.Name) else None
-            if (
-                owner is not None
-                and (module.modules.get(owner, owner), func.attr) in RAW_FUNCTIONS
-            ):
-                hits.append(f"{where}: {owner}.{func.attr}")
-            elif owner in ("os",) and func.attr == "open":
-                hits.append(f"{where}: os.open")
-            elif func.attr in RAW_METHODS:
+            if func.attr in RAW_METHODS:
                 hits.append(f"{where}: .{func.attr}()")
             elif func.attr == "replace" and len(call.args) == 1 and not call.keywords:
                 hits.append(f"{where}: .replace(target)")  # str.replace takes two
@@ -215,56 +272,63 @@ def raw_writes(module: Module) -> list[str]:
     return hits
 
 
+def _definitions(module: Module) -> dict[str, ast.AST]:
+    """Top-level functions and classes by name; a class stands for all its methods,
+    and a function for everything nested in it."""
+    return {
+        node.name: node
+        for node in module.tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    }
+
+
 def storage_writers() -> set[tuple[str, str]]:
-    """``(module, function)`` for every lattice.storage function that writes a board:
-    a primitive of storage/fs.py, mutate_task, or a function calling one (transitively)."""
-    functions: dict[tuple[str, str], ast.AST] = {}
+    """``(module, name)`` for every lattice.storage function or class that writes a
+    board: a primitive of storage/fs.py, mutate_task, or anything that uses one,
+    directly, through a nested helper or a method, or through another such writer."""
+    definitions: dict[tuple[str, str], ast.AST] = {}
     for module in MODULES.values():
         if module.name.startswith("lattice.storage"):
-            for node in module.tree.body:
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    functions[(module.name, node.name)] = node
+            for name, node in _definitions(module).items():
+                definitions[(module.name, name)] = node
     writers = {(FS_MODULE, name) for name in PRIMITIVES if name != "mutate_task"}
     writers.add(("lattice.storage.operations", "mutate_task"))
     changed = True
     while changed:
         changed = False
-        for (mod_name, fn_name), node in functions.items():
-            if (mod_name, fn_name) in writers:
-                continue
-            module = MODULES[mod_name]
-            for call in _calls(node):
-                target = _call_target(module, call)
-                if target in writers:
-                    writers.add((mod_name, fn_name))
-                    changed = True
-                    break
+        for key, node in definitions.items():
+            if key not in writers and _uses_writer(MODULES[key[0]], node, writers):
+                writers.add(key)
+                changed = True
     return writers
 
 
-def _call_target(module: Module, call: ast.Call) -> tuple[str, str] | None:
-    func = call.func
-    if isinstance(func, ast.Name):
-        if func.id in module.imported:
-            return (module.imported[func.id], func.id)
-        return (module.name, func.id)
-    if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
-        target_module = module.modules.get(func.value.id)
-        if target_module is not None:
-            return (target_module, func.attr)
-    return None
+def _uses_writer(module: Module, tree: ast.AST, writers: set[tuple[str, str]]) -> bool:
+    return bool(_writer_uses(module, tree, writers))
+
+
+def _writer_uses(
+    module: Module, tree: ast.AST, writers: set[tuple[str, str]]
+) -> list[tuple[int, tuple[str, str]]]:
+    """Every call of, or reference to, a writer in *tree* (a reference covers a writer
+    passed as a callback or bound to another name)."""
+    found: list[tuple[int, tuple[str, str]]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Name, ast.Attribute)) and isinstance(node.ctx, ast.Load):
+            target = resolve(module, node)
+            if target in writers:
+                found.append((node.lineno, target))
+    return sorted(set(found))
 
 
 WRITERS = storage_writers()
 
 
 def board_writer_calls(module: Module) -> list[str]:
-    hits = []
-    for call in _calls(module.tree):
-        target = _call_target(module, call)
-        if target in WRITERS:
-            hits.append(f"{module.name}:{call.lineno}: {target[0]}.{target[1]}")
-    return hits
+    return [
+        f"{module.name}:{line}: {target[0]}.{target[1]}"
+        for line, target in _writer_uses(module, module.tree, WRITERS)
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -316,8 +380,16 @@ def test_every_listed_module_still_needs_its_entry() -> None:
     assert not set(BOARD_OWNERS) & set(AWAITING_CONVERSION)
 
 
-def test_the_scan_catches_what_it_should(tmp_path: Path) -> None:
-    source = """
+def _scan(source: str, name: str = "lattice.cli.example") -> tuple[list[str], list[str]]:
+    module = load_module(name, Path("example.py"), ast.parse(source))
+    raw = [hit.split(": ", 1)[1] for hit in raw_writes(module)]
+    board = [hit.split(": ", 1)[1] for hit in board_writer_calls(module)]
+    return raw, board
+
+
+def test_the_scan_catches_plain_writes() -> None:
+    raw, board = _scan(
+        """
 from pathlib import Path
 from lattice.storage.fs import atomic_write
 from lattice.storage import operations
@@ -334,22 +406,102 @@ def f(p: Path):
     atomic_write(p, "x")
     operations.mutate_task(p, "t", None, {})
 """
-    module = Module("lattice.cli.example", tmp_path / "x.py", ast.parse(source))
-    for node in ast.walk(module.tree):
-        if isinstance(node, ast.ImportFrom):
-            for alias in node.names:
-                module.imported[alias.asname or alias.name] = node.module
-                module.modules[alias.asname or alias.name] = f"{node.module}.{alias.name}"
-        elif isinstance(node, ast.Import):
-            for alias in node.names:
-                module.modules[alias.asname or alias.name] = alias.name
-    raw = [hit.split(": ", 1)[1] for hit in raw_writes(module)]
-    assert raw == [
-        ".write_text()",
-        "open('a')",
-        "os.replace",
-        "shutil.rmtree",
-        ".replace(target)",
-    ]
-    board = [hit.split(": ", 1)[1] for hit in board_writer_calls(module)]
+    )
+    assert raw == [".write_text()", "open('a')", "os.replace", "shutil.rmtree", ".replace(target)"]
     assert board == ["lattice.storage.fs.atomic_write", "lattice.storage.operations.mutate_task"]
+
+
+def test_the_scan_sees_through_aliases_and_imported_functions() -> None:
+    raw, board = _scan(
+        """
+import io
+import os as system
+import lattice.storage.fs as board_fs
+from os import unlink as zap, rename
+from shutil import rmtree as nuke, move
+from lattice.storage.fs import atomic_write as aw
+
+again = aw
+unlinker = system.remove
+
+def f(p):
+    zap(p)
+    rename(p, p)
+    nuke(p)
+    move(p, p)
+    unlinker(p)
+    io.open(p, "w")
+    system.makedirs(p)
+    aw(p, "x")
+    again(p, "x")
+    board_fs.unlink_path(p)
+    schedule(aw)
+"""
+    )
+    assert raw == [
+        "os.unlink",
+        "os.rename",
+        "shutil.rmtree",
+        "shutil.move",
+        "os.remove",
+        "open('w')",
+        "os.makedirs",
+    ]
+    assert board == [
+        "lattice.storage.fs.atomic_write",  # the ``again = aw`` alias line
+        "lattice.storage.fs.atomic_write",
+        "lattice.storage.fs.atomic_write",
+        "lattice.storage.fs.unlink_path",
+        "lattice.storage.fs.atomic_write",  # passed as a callback
+    ]
+
+
+def test_a_storage_writer_behind_a_method_or_a_nested_helper_is_a_writer() -> None:
+    """Transitive writers include classes whose methods write and functions whose
+    nested helpers write; calling them from outside is caught."""
+    storage = load_module(
+        "lattice.storage.example",
+        Path("example.py"),
+        ast.parse(
+            """
+from lattice.storage.fs import atomic_write
+
+class Saver:
+    def save(self, p):
+        atomic_write(p, "x")
+
+def outer(p):
+    def inner():
+        atomic_write(p, "x")
+    inner()
+
+def reader(p):
+    return p.read_text()
+"""
+        ),
+    )
+    MODULES[storage.name] = storage
+    try:
+        writers = storage_writers()
+        assert ("lattice.storage.example", "Saver") in writers
+        assert ("lattice.storage.example", "outer") in writers
+        assert ("lattice.storage.example", "reader") not in writers
+        caller = load_module(
+            "lattice.cli.example",
+            Path("caller.py"),
+            ast.parse(
+                """
+from lattice.storage.example import Saver, outer, reader
+
+def f(p):
+    Saver().save(p)
+    Saver.save(Saver(), p)
+    outer(p)
+    reader(p)
+"""
+            ),
+        )
+        used = {target for _, target in _writer_uses(caller, caller.tree, writers)}
+        assert used == {("lattice.storage.example", "Saver"), ("lattice.storage.example", "outer")}
+    finally:
+        del MODULES[storage.name]

@@ -141,8 +141,17 @@ class ServerState:
 # ---------------------------------------------------------------------------
 
 
+class AsciiJSONResponse(JSONResponse):
+    """JSON with every non-ASCII character escaped: event data may hold a lone
+    surrogate (valid JSON, e.g. from ``--data '{"k": "\\ud800"}'``), which has no
+    UTF-8 encoding, so Starlette's UTF-8 rendering would fail after the commit."""
+
+    def render(self, content: Any) -> bytes:
+        return json.dumps(content, separators=(",", ":")).encode("ascii")
+
+
 def envelope_ok(data: Any, status: int = 200) -> JSONResponse:
-    return JSONResponse({"ok": True, "data": data}, status_code=status)
+    return AsciiJSONResponse({"ok": True, "data": data}, status_code=status)
 
 
 def envelope_error(exc: OpError) -> JSONResponse:
@@ -156,13 +165,13 @@ def envelope_error(exc: OpError) -> JSONResponse:
         retry_after = retry_after or 2
     if retry_after is not None:
         headers["Retry-After"] = str(int(retry_after))
-    return JSONResponse(
+    return AsciiJSONResponse(
         {"ok": False, "error": error}, status_code=error_status(exc), headers=headers
     )
 
 
 def internal_error() -> JSONResponse:
-    return JSONResponse(
+    return AsciiJSONResponse(
         {"ok": False, "error": {"code": "INTERNAL_ERROR", "message": "internal server error"}},
         status_code=500,
     )
@@ -525,7 +534,7 @@ async def healthz(request: Request, state: ServerState) -> Response:
         "disk_free_bytes": free,
         "projects": counts,
     }
-    return JSONResponse(body, status_code=200 if ok else 503)
+    return AsciiJSONResponse(body, status_code=200 if ok else 503)
 
 
 async def _with_token(

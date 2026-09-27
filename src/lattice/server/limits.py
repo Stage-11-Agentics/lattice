@@ -166,14 +166,14 @@ def check_event_data_cap(op_name: str, params: object, limit: int) -> None:
             data = json.loads(data)
         except ValueError:
             data = _NOT_JSON
-    encoded = (
-        params["data"].encode("utf-8")
+    text = (
+        params["data"]
         if data is _NOT_JSON
-        else json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
-            "utf-8"
-        )
+        else json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     )
-    size = len(encoded)
+    # UTF-8 bytes; a lone surrogate (valid in JSON as an escape, not encodable in
+    # UTF-8) counts as its six-byte ``\\uXXXX`` escape.
+    size = len(text.encode("utf-8", errors="backslashreplace"))
     if size > limit:
         raise OpError(
             "PAYLOAD_TOO_LARGE",

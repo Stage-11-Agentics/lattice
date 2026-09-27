@@ -151,8 +151,12 @@ def _claim_or_refuse(
     review_type: str,
     triggered_by: str | None,
     is_json: bool,
+    override: bool = False,
 ) -> None:
     """Claim ``review_state`` for this review subprocess, or exit with a clear error.
+
+    *override* (``--force`` on a hosted checkout, SPEC §3.4) takes the record over
+    whatever it holds, so no refusal applies.
 
     Implements the LAT-211 plan-review finding 3 ordering: read existing
     state *before* calling :func:`claim_review_state`. If the existing
@@ -175,6 +179,20 @@ def _claim_or_refuse(
     (or returns the structured error for ``--json``) on contention.
     """
     existing = read_review_state(lattice_dir, task_id)
+    if override:
+        write_review_state(
+            lattice_dir,
+            {
+                "task_id": task_id,
+                "mode": mode,
+                "review_type": review_type,
+                "started_at": _now_iso(),
+                "started_by_pid": os.getpid(),
+                "auto_fired": triggered_by is not None,
+                "agents": [],
+            },
+        )
+        return
     if (
         triggered_by is not None
         and isinstance(existing, dict)
@@ -398,12 +416,15 @@ def code_review(
             is_json=is_json,
         )
 
+    # SPEC §3.4: on a hosted checkout --force overrides every in-flight refusal.
+    override = force and _hosted(lattice_dir)
+
     # Inline-mode contention check: even though inline never claims, refuse
     # if a non-inline review is in flight so the operator doesn't run two
     # reviews in parallel by accident.
     if mode == "inline" and not dry_run:
         existing = read_review_state(lattice_dir, task_id)
-        if isinstance(existing, dict):
+        if isinstance(existing, dict) and not override:
             from lattice.core.review import pid_alive
 
             holder_pid = existing.get("started_by_pid")
@@ -448,6 +469,7 @@ def code_review(
             review_type="code-review",
             triggered_by=triggered_by,
             is_json=is_json,
+            override=override,
         )
 
     resolution = resolve_diff(
@@ -666,9 +688,12 @@ def plan_review(
         is_json=is_json,
     )
 
+    # SPEC §3.4: on a hosted checkout --force overrides every in-flight refusal.
+    override = force and _hosted(lattice_dir)
+
     if mode == "inline":
         existing = read_review_state(lattice_dir, task_id)
-        if isinstance(existing, dict):
+        if isinstance(existing, dict) and not override:
             from lattice.core.review import pid_alive
 
             holder_pid = existing.get("started_by_pid")
@@ -704,6 +729,7 @@ def plan_review(
         review_type="plan-review",
         triggered_by=triggered_by,
         is_json=is_json,
+        override=override,
     )
 
     # Load and fill plan review template

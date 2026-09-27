@@ -217,3 +217,87 @@ def test_plan_review_refuses_the_same_way(
             b, "plan-review", "DEM-1", "--mode", "inline", "--force", "--actor", "agent:dev"
         )
         assert forced.exit_code == 0, forced.output
+
+
+def _hold_review_state(checkout: Path, task_id: str, review_type: str) -> None:
+    """A live review_state record on this checkout: pid 1 is always alive."""
+    record = {
+        "agents": [],
+        "auto_fired": True,
+        "mode": "single",
+        "review_type": review_type,
+        "started_at": "2026-09-27T00:00:00Z",
+        "started_by_pid": 1,
+        "task_id": task_id,
+    }
+    path = checkout / ".lattice" / "review_state" / f"{task_id}.json"
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(json.dumps(record))
+
+
+@pytest.mark.parametrize("review_type", ["code-review", "plan-review"])
+def test_force_overrides_a_live_local_review_on_the_same_checkout(
+    hosted_env: HostedEnv,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    review_type: str,
+) -> None:
+    """SPEC §3.4: on a hosted checkout ``--force`` overrides the refusal, including
+    this machine's own live review_state record, in every mode."""
+    _, b = two_checkouts(hosted_env, tmp_path)
+    created = run_cli(b, "create", "Held", "--actor", "agent:dev", "--json")
+    task_id = json.loads(created.stdout)["data"]["id"]
+    plan = run_cli(b, "plan", "write", "DEM-1", "--stdin", "--actor", "agent:dev", input="# P\n")
+    assert plan.exit_code == 0, plan.output
+    _hold_review_state(b, task_id, review_type)
+    extra = ("--base", "main", "--head", "feat") if review_type == "code-review" else ()
+    review = (review_type, "DEM-1", *extra, "--actor", "agent:dev")
+
+    for mode in ("inline", "single"):
+        refused = run_cli(b, *review, "--mode", mode, "--json")
+        assert refused.exit_code == 1, (mode, refused.output)
+        assert json.loads(refused.stdout)["error"]["code"] == "REVIEW_IN_FLIGHT"
+
+    inline = run_cli(b, *review, "--mode", "inline", "--force")
+    assert inline.exit_code == 0, inline.output
+    fake_agent_on_path(tmp_path, monkeypatch)
+    single = run_cli(b, *review, "--mode", "single", "--force")
+    assert single.exit_code == 0, single.output
+    role = "review" if review_type == "code-review" else "plan-review"
+    attached = [e for e in events_of(hosted_env, "DEM-1") if e["type"] == "artifact_attached"]
+    assert [e["data"]["role"] for e in attached] == [role]
+
+
+def test_force_does_not_override_a_live_review_on_a_local_board(tmp_path: Path) -> None:
+    """Local boards keep today's behaviour: ``--force`` is a hosted override only."""
+    repo = make_repo(tmp_path / "local")
+    assert (
+        run_cli(
+            repo,
+            "init",
+            "--project-code",
+            "LOC",
+            "--actor",
+            "human:a",
+            "--no-setup-claude",
+            "--no-setup-agents",
+            "--no-seed",
+        ).exit_code
+        == 0
+    )
+    created = run_cli(repo, "create", "Held", "--actor", "agent:dev", "--json")
+    task_id = json.loads(created.stdout)["data"]["id"]
+    _hold_review_state(repo, task_id, "code-review")
+    refused = run_cli(
+        repo,
+        "code-review",
+        "LOC-1",
+        "--mode",
+        "inline",
+        "--force",
+        "--actor",
+        "agent:dev",
+        "--json",
+    )
+    assert refused.exit_code == 1
+    assert json.loads(refused.stdout)["error"]["code"] == "REVIEW_IN_FLIGHT"

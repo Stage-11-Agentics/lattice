@@ -33,6 +33,14 @@ def test_event_data_cap() -> None:
     check_event_data_cap("task.event", {"data": text}, size)
     with pytest.raises(OpError):
         check_event_data_cap("task.event", {"data": text}, size - 1)
+    # non-ASCII counts as UTF-8; a lone surrogate (valid JSON, not UTF-8) as its escape
+    check_event_data_cap("task.event", {"data": '{"k":"éé"}'}, len('{"k":""}') + 4)
+    with pytest.raises(OpError):
+        check_event_data_cap("task.event", {"data": '{"k":"éé"}'}, len('{"k":""}') + 3)
+    lone = '{"k":"\\ud800"}'  # the JSON text holds the escape
+    check_event_data_cap("task.event", {"data": lone}, len('{"k":""}') + 6)
+    with pytest.raises(OpError):
+        check_event_data_cap("task.event", {"data": lone}, len('{"k":""}') + 5)
     # other operations and events without data are not checked
     check_event_data_cap("task.comment", {"data": "x" * 1000}, 1)
     check_event_data_cap("task.event", {"type": "x_t"}, 1)
@@ -107,3 +115,37 @@ def test_task_event_data_cap_through_a_bound_checkout(hosted_env, tmp_path: Path
     )
     assert at_limit.exit_code == 0, at_limit.output
     assert events_of(hosted_env, "DEM-1")[-1]["type"] == "x_big"
+
+
+def test_task_event_data_with_non_ascii_and_a_lone_surrogate_through_a_bound_checkout(
+    hosted_env,  # noqa: F811
+    tmp_path: Path,
+) -> None:
+    """The cap counts UTF-8 bytes at the limit boundary, and a lone escaped surrogate
+    (valid JSON the local CLI accepts) is measured as its escape, never a 500."""
+    from tests.test_remote.hosted import events_of, make_repo, run_cli
+
+    limit = 64 * 1024
+    repo = make_repo(tmp_path / "repo")
+    assert run_cli(repo, "remote", "attach", "team", "demo").exit_code == 0
+    assert run_cli(repo, "create", "Evented", "--actor", "agent:dev").exit_code == 0
+    overhead = len('{"k":""}')
+
+    def event(text: str) -> tuple[int, dict]:
+        result = run_cli(
+            repo, "event", "DEM-1", "x_text", "--data", text, "--actor", "agent:dev", "--json"
+        )
+        return result.exit_code, json.loads(result.stdout)
+
+    at_limit = '{"k": "' + "é" * ((limit - overhead) // 2) + '"}'
+    assert event(at_limit)[0] == 0
+    code, body = event('{"k": "' + "é" * ((limit - overhead) // 2) + 'x"}')
+    assert (code, body["error"]["code"]) == (1, "PAYLOAD_TOO_LARGE")
+
+    code, body = event('{"k": "\\ud800"}')
+    assert code == 0, body
+    assert events_of(hosted_env, "DEM-1")[-1]["data"] == {"k": "\ud800"}
+    lone_at_limit = '{"k": "' + "\\ud800" + "v" * (limit - overhead - 6) + '"}'
+    assert event(lone_at_limit)[0] == 0
+    code, body = event('{"k": "' + "\\ud800" + "v" * (limit - overhead - 5) + '"}')
+    assert (code, body["error"]["code"]) == (1, "PAYLOAD_TOO_LARGE")

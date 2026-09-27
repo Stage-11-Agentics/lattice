@@ -29,7 +29,9 @@ no-delete assertion of G-2.
 
 from __future__ import annotations
 
+import itertools
 import json
+import os
 import re
 import threading
 from collections.abc import Iterator
@@ -88,6 +90,8 @@ class Mutation:
     op: str
     path: str
     kind: str
+    #: The server transaction that made it (one per write, SPEC §8.6).
+    txn: int = 0
 
 
 @dataclass
@@ -119,8 +123,8 @@ def _relocated_copies(op: str, path: str) -> tuple[str, ...] | None:
 def forbidden_removals(mutations: list[Mutation], board: Path) -> list[Mutation]:
     """Unlinks of durable paths that are not a relocation SPEC §7 permits.
 
-    A permitted relocation removes a path only after the same operation wrote its
-    relocated copy (copy first). Test fixtures and non-durable paths are exempt.
+    A permitted relocation removes a path only after the same transaction wrote
+    its relocated copy (copy first); a copy an earlier transaction wrote does not count. Test fixtures and non-durable paths are exempt.
     """
     bad: list[Mutation] = []
     for i, m in enumerate(mutations):
@@ -128,7 +132,7 @@ def forbidden_removals(mutations: list[Mutation], board: Path) -> list[Mutation]
             continue
         copies = _relocated_copies(m.op, m.path)
         written_before = [
-            w.path for w in mutations[:i] if w.op == m.op and w.kind in ("create", "replace")
+            w.path for w in mutations[:i] if w.txn == m.txn and w.kind in ("create", "replace")
         ]
         if copies is None or not any(p.startswith(c) for p in written_before for c in copies):
             bad.append(m)
@@ -142,12 +146,16 @@ def recording_mutations() -> Iterator[MutationLog]:
 
     log = MutationLog()
     original = MutationTracker.__call__
+    serials = itertools.count(1)
 
     def tracked(self: MutationTracker, path: Path, kind: str) -> None:
         original(self, path, kind)
         rel = path.resolve().relative_to(self.board).as_posix()
+        # One tracker per server write: its serial names the transaction.
+        txn = self.__dict__.setdefault("_parity_txn", next(serials))
+        project = CURRENT_PROJECT.get() or "?"
         with log._lock:
-            log.entries.append(Mutation(CURRENT_PROJECT.get() or "?", self.op, rel, kind))
+            log.entries.append(Mutation(project, self.op, rel, kind, txn))
 
     MutationTracker.__call__ = tracked  # type: ignore[method-assign]
     try:
@@ -344,6 +352,11 @@ class HostedTarget(LocalTarget):
         )
         return dict(SETUP)
 
+    @property
+    def binding(self) -> str:
+        """The checkout's ``<alias>/<project>``, as hosted messages name it."""
+        return f"{REMOTE}/{self.slug}"
+
     def finish(self, root: Path, invoke: Any) -> None:
         """Catch the cache up (a scenario may end on a fixture or a refusal), so
         the captured board is the server's as of the last step."""
@@ -378,29 +391,36 @@ _PLAN_REQUIRED_SUFFIX = re.compile(
 )
 
 
-def assert_local_only(step: dict[str, Any], command: str) -> None:
-    """*step* is the ``LOCAL_ONLY`` refusal of *command* (SPEC §3.5), plain or JSON."""
+def local_only_step(args: list[str], command: str, binding: str) -> dict[str, Any]:
+    """The complete step a bound checkout records for *command* (SPEC §3.5): exit 1,
+    the ``LOCAL_ONLY`` refusal and nothing else, plain (stderr) or ``--json`` (stdout)."""
     from lattice.boards import local_only_error
 
-    assert step["exit_code"] == 1, step
-    body = step["stdout"].get("json")
-    if body is not None:
-        assert body["ok"] is False and body["error"]["code"] == "LOCAL_ONLY", step
-        message = body["error"]["message"]
-    else:
-        message = "\n".join(step["stderr"]["lines"]).removeprefix("Error: ")
-    binding = re.search(r"\('([^']+)'\)", message)
-    assert binding is not None, step
-    assert message == local_only_error(command, binding.group(1)).message, step
+    message = local_only_error(command, binding).message
+    if "--json" in args:
+        body = {"ok": False, "error": {"code": "LOCAL_ONLY", "message": message}}
+        return {"args": args, "exit_code": 1, "stdout": {"json": body}, "stderr": {"lines": []}}
+    return {
+        "args": args,
+        "exit_code": 1,
+        "stdout": {"lines": []},
+        "stderr": {"lines": [f"Error: {message}"]},
+    }
 
 
 CACHE_DOCTOR_LINE = "\u2713 Cache matches the server"
 
 
-def declared_differences(capture: dict[str, Any]) -> dict[str, Any]:
+class UndeclaredDifference(AssertionError):
+    """A hosted step that differs from its local form in a way SPEC does not declare."""
+
+
+def declared_differences(capture: dict[str, Any], *, binding: str) -> dict[str, Any]:
     """A hosted capture with SPEC's declared hosted differences put back in their
-    local form. Each rewrite matches the hosted text exactly, so any other change
-    still fails the comparison."""
+    local form. Every rewrite first checks the hosted form exactly (a whole
+    ``LOCAL_ONLY`` step, exactly one doctor cache line, the exact hint text), so any
+    other change still fails the comparison or raises :class:`UndeclaredDifference`.
+    *binding* is the checkout's ``<alias>/<project>``."""
     ids = (capture["board"].get("ids.json") or {}).get("json", {}).get("map", {})
 
     def local_hint(match: re.Match[str]) -> str:
@@ -418,14 +438,21 @@ def declared_differences(capture: dict[str, Any]) -> dict[str, Any]:
         return value
 
     steps = []
-    for step in fix(capture["steps"]):
-        command = local_only_command(step.get("args") or [])
+    for step in capture["steps"]:
+        args = step.get("args") or []
+        command = local_only_command(args)
         if command is not None:
-            assert_local_only(step, command)
-            step = local_only_marker(step)
+            # SPEC §3.5: the whole step must be the refusal, nothing more.
+            if step != local_only_step(args, command, binding):
+                raise UndeclaredDifference(f"not the LOCAL_ONLY refusal: {step}")
+            steps.append(local_only_marker(step))
+            continue
+        step = fix(step)
         lines = (step.get("stdout") or {}).get("lines")
-        if step.get("args", [None])[0] == "doctor" and lines and CACHE_DOCTOR_LINE in lines:
-            # SPEC §9.6: doctor on a cache also compares it with the server's manifest.
+        if args[:1] == ["doctor"] and lines is not None:
+            # SPEC §9.6: doctor on a cache adds exactly one line, its manifest check.
+            if lines.count(CACHE_DOCTOR_LINE) != 1:
+                raise UndeclaredDifference(f"doctor on a cache: expected one cache line: {step}")
             lines = [line for line in lines if line != CACHE_DOCTOR_LINE]
             step = {**step, "stdout": {"lines": lines}}
         steps.append(step)
@@ -437,3 +464,128 @@ def hosted_target(server: ParityServer, scenario: Scenario) -> HostedTarget:
     replayed on a machine whose remote opts into running them (SPEC §3.4, G-10)."""
     settings = {"run_board_hooks": True} if scenario.config.get("hooks") else {}
     return HostedTarget(server, server.new_slug(scenario.name), settings)
+
+
+# ---------------------------------------------------------------------------
+# The replay check
+# ---------------------------------------------------------------------------
+
+#: Scenarios the hosted replay leaves out, each with the ticket that owns the gap.
+NOT_HOSTED = {
+    # The settings POST goes through the in-process *local* dashboard, which
+    # H-13a converts to board.set_dashboard_config and gives a hosted
+    # checkout's dashboard its follower (dashboard/server.py is H-13a's file,
+    # BUILDPLAN §4). Until then a bound checkout's dashboard does not write.
+    "dashboard_settings": "H-13a",
+}
+
+#: The hosted replays, in three groups of about equal time, one test file each
+#: (``test_hosted_parity.py``, ``_2``, ``_3``), so no file exceeds the per-file budget.
+HOSTED_GROUPS: tuple[tuple[str, ...], ...] = (
+    ("lifecycle", "hooks_sentinel", "tombstones", "plan_read", "project_codes", "rejections"),
+    (
+        "artifacts",
+        "review_cycles",
+        "comments",
+        "prose_writes",
+        "reviews",
+        "completion_git_policy",
+        "maintenance",
+    ),
+    ("claims", "links", "sessions", "resources", "criteria", "plan_integrity", "flags"),
+)
+
+
+def hosted_cases(group: int) -> list[Any]:
+    """``pytest.param(scenario, mode)`` for every replay of *group*."""
+    import pytest
+
+    from tests.parity.corpus import SCENARIOS
+    from tests.parity.record import MODES
+
+    names = HOSTED_GROUPS[group]
+    return [
+        pytest.param(s, m, id=f"{s.name}.{m}") for s in SCENARIOS if s.name in names for m in MODES
+    ]
+
+
+def read_board(root: Path, args: list[str], extra_env: dict[str, str]) -> tuple[int, str, str]:
+    """``lattice <args>`` read in-process against the board at *root*: exit code,
+    stdout, and the type of any exception (a corrupt board crashes some reads,
+    locally as well)."""
+    from lattice.cli.main import cli
+    from tests.parity.record import _base_env, _chdir, _process_env, _runner
+
+    env = {**_base_env(root), **extra_env}
+    with _chdir(root), _process_env(env):
+        result = _runner().invoke(cli, args, env=env)
+    exc = result.exception
+    crash = "" if exc is None or isinstance(exc, SystemExit) else type(exc).__name__
+    return result.exit_code, result.stdout.replace(str(root), "<ROOT>"), crash
+
+
+def board_reads(lattice_dir: Path) -> list[list[str]]:
+    """Read commands covering every task, active and archived."""
+    commands = [["list", "--json"], ["list", "--include-archived", "--json"]]
+    ids = json.loads((lattice_dir / "ids.json").read_text())["map"]
+    for short in sorted(ids):
+        commands.append(["show", short, "--json", "--compact"])
+    return commands
+
+
+def assert_reads_match(
+    checkout: Path, server_project: Path, cache: Path, env: dict[str, str]
+) -> None:
+    """Read commands print the same through the cache as on the server's own board.
+
+    The cache has just caught up, so the reads run as they do beside a live
+    follower (SPEC §9.5): straight from the cache, with no catch-up request each.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from lattice.remote.follower import follower_path
+
+    marker = follower_path(checkout)
+    until = (datetime.now(UTC) + timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    marker.write_text(json.dumps({"pid": os.getpid(), "stream_live_until": until}))
+    try:
+        for args in board_reads(cache):
+            on_cache = read_board(checkout, args, env)
+            on_server = read_board(server_project, args, {})
+            assert on_cache == on_server, f"lattice {' '.join(args)} differs on cache and server"
+    finally:
+        marker.unlink()
+
+
+def check_scenario_through_the_server(
+    scenario: Scenario, mode: str, server: ParityServer, tmp_path: Path
+) -> None:
+    """Replay *scenario* through a bound checkout and check it (AC-5, AC-9, G-2):
+    the golden's output and board, the cache equal to the server board, reads
+    agreeing on both, and no unpermitted removal."""
+    from tests.parity.record import load_golden, run_scenario
+
+    target = hosted_target(server, scenario)
+    checkout = tmp_path / "board"
+    capture = run_scenario(scenario, checkout, mode=mode, target=target)
+
+    expected = comparable(load_golden(scenario.name, mode))
+    actual = comparable(declared_differences(capture, binding=target.binding))
+    assert actual["steps"] == expected["steps"], f"hosted output drift in {scenario.name}.{mode}"
+    assert actual["board"] == expected["board"], f"hosted board drift in {scenario.name}.{mode}"
+    assert actual.get("sentinel") == expected.get("sentinel"), "hook sentinel drift"
+
+    # AC-9: the cache is the server board, byte for byte, and reads agree.
+    cache = checkout / ".lattice"
+    board = server.board(target.slug)
+    assert durable_tree(cache) == durable_tree(board)
+    if mode == "plain":
+        # Once per scenario: the plain replay runs every step (``plain_only`` ones
+        # too), so the JSON replay's board adds no read coverage.
+        assert_reads_match(checkout, board.parent, cache, target.env(checkout))
+
+    # G-2: no removal of board data except a permitted relocation.
+    assert server.mutations is not None
+    mutations = server.mutations.of(target.slug)
+    assert mutations, "the recorder saw the scenario's writes"
+    assert forbidden_removals(mutations, board) == []

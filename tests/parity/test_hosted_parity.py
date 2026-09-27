@@ -11,133 +11,55 @@ stderr, exit codes, and the board. After each one:
 - the server's write recorder saw no removal of a durable path except a
   relocation SPEC §7 permits (G-2).
 
-A hosted divergence is a bug in the product, never in the golden.
+The replays run in three files of about equal time (``HOSTED_GROUPS``), sharing
+one server per worker (``conftest.py``); this one holds group 1 and the checks
+on the harness itself. A hosted divergence is a bug in the product, never in
+the golden.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import threading
-from collections.abc import Iterator
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
+from lattice.server.testing import wait_for
 from tests.parity.corpus import SCENARIOS, Scenario
 from tests.parity.hosted import (
     ACTORLESS_COMMANDS,
     FIXTURE_OP,
+    HOSTED_GROUPS,
+    NOT_HOSTED,
     Mutation,
     ParityServer,
-    comparable,
-    declared_differences,
+    check_scenario_through_the_server,
     durable_tree,
     forbidden_removals,
+    hosted_cases,
     hosted_target,
-    parity_server,
 )
-from tests.parity.record import MODES, _base_env, _chdir, _process_env, _runner, load_golden
+from tests.parity.record import _base_env, _chdir, _process_env, _runner
 
-#: Scenarios the hosted replay leaves out, each with the ticket that owns the gap.
-NOT_HOSTED = {
-    # The settings POST goes through the in-process *local* dashboard, which
-    # H-13a converts to board.set_dashboard_config and gives a hosted
-    # checkout's dashboard its follower (dashboard/server.py is H-13a's file,
-    # BUILDPLAN §4). Until then a bound checkout's dashboard does not write.
-    "dashboard_settings": "H-13a",
-}
-
-CASES = [(s, m) for s in SCENARIOS if s.name not in NOT_HOSTED for m in MODES]
+pytestmark = pytest.mark.usefixtures("no_fsync")
 
 
-@pytest.fixture(scope="session")
-def server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[ParityServer]:
-    """One server per worker (each xdist worker is its own session)."""
-    with parity_server(tmp_path_factory.mktemp("parity-server")) as handle:
-        yield handle
-
-
-def _read(root: Path, args: list[str], extra_env: dict[str, str]) -> tuple[int, str, str]:
-    """``lattice <args>`` read in-process against the board at *root*: exit code,
-    stdout, and the type of any exception (a corrupt board crashes some reads,
-    locally as well)."""
-    from lattice.cli.main import cli
-
-    env = {**_base_env(root), **extra_env}
-    with _chdir(root), _process_env(env):
-        result = _runner().invoke(cli, args, env=env)
-    exc = result.exception
-    crash = "" if exc is None or isinstance(exc, SystemExit) else type(exc).__name__
-    return result.exit_code, result.stdout.replace(str(root), "<ROOT>"), crash
-
-
-def _reads(lattice_dir: Path) -> list[list[str]]:
-    """Read commands covering every task, active and archived."""
-    commands = [["list", "--json"], ["list", "--include-archived", "--json"]]
-    ids = json.loads((lattice_dir / "ids.json").read_text())["map"]
-    for short in sorted(ids):
-        commands.append(["show", short, "--json", "--compact"])
-    return commands
-
-
-def _assert_reads_match(
-    checkout: Path, server_project: Path, cache: Path, env: dict[str, str]
-) -> None:
-    """Read commands print the same through the cache as on the server's own board.
-
-    The cache has just caught up, so the reads run as they do beside a live
-    follower (SPEC §9.5): straight from the cache, with no catch-up request each.
-    """
-    from datetime import UTC, datetime, timedelta
-
-    from lattice.remote.follower import follower_path
-
-    marker = follower_path(checkout)
-    until = (datetime.now(UTC) + timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    marker.write_text(json.dumps({"pid": os.getpid(), "stream_live_until": until}))
-    try:
-        for args in _reads(cache):
-            on_cache = _read(checkout, args, env)
-            on_server = _read(server_project, args, {})
-            assert on_cache == on_server, f"lattice {' '.join(args)} differs on cache and server"
-    finally:
-        marker.unlink()
-
-
-@pytest.mark.parametrize(("scenario", "mode"), CASES, ids=[f"{s.name}.{m}" for s, m in CASES])
+@pytest.mark.parametrize(("scenario", "mode"), hosted_cases(0))
 def test_scenario_matches_golden_through_the_server(
     scenario: Scenario, mode: str, server: ParityServer, tmp_path: Path
 ) -> None:
-    from tests.parity.record import run_scenario
-
-    target = hosted_target(server, scenario)
-    checkout = tmp_path / "board"
-    capture = run_scenario(scenario, checkout, mode=mode, target=target)
-
-    expected = comparable(load_golden(scenario.name, mode))
-    actual = comparable(declared_differences(capture))
-    assert actual["steps"] == expected["steps"], f"hosted output drift in {scenario.name}.{mode}"
-    assert actual["board"] == expected["board"], f"hosted board drift in {scenario.name}.{mode}"
-    assert actual.get("sentinel") == expected.get("sentinel"), "hook sentinel drift"
-
-    # AC-9: the cache is the server board, byte for byte, and reads agree.
-    cache = checkout / ".lattice"
-    board = server.board(target.slug)
-    assert durable_tree(cache) == durable_tree(board)
-    _assert_reads_match(checkout, board.parent, cache, target.env(checkout))
-
-    # G-2: no removal of board data except a permitted relocation.
-    assert server.mutations is not None
-    mutations = server.mutations.of(target.slug)
-    assert mutations, "the recorder saw the scenario's writes"
-    assert forbidden_removals(mutations, board) == []
+    check_scenario_through_the_server(scenario, mode, server, tmp_path)
 
 
-def test_every_scenario_but_the_declared_gaps_runs_hosted() -> None:
+def test_every_scenario_but_the_declared_gaps_runs_hosted_once() -> None:
     names = {s.name for s in SCENARIOS}
     assert set(NOT_HOSTED) <= names
-    assert {s.name for s, _ in CASES} == names - set(NOT_HOSTED)
+    grouped = [name for group in HOSTED_GROUPS for name in group]
+    assert len(grouped) == len(set(grouped))
+    assert set(grouped) == names - set(NOT_HOSTED)
 
 
 def test_actorless_commands_are_the_no_actor_operations() -> None:
@@ -155,22 +77,34 @@ def test_actorless_commands_are_the_no_actor_operations() -> None:
 
 def test_the_no_delete_check_catches_an_unpermitted_removal(tmp_path: Path) -> None:
     """The G-2 assertion is live: an unlink outside a relocation is reported, a
-    copy-first relocation and a test fixture are not."""
-    removed = Mutation("p", "task.comment", "plans/task_x.md", "unlink")
+    copy-first relocation in the same transaction and a test fixture are not, and a
+    copy an earlier transaction wrote never excuses a later removal."""
+    removed = Mutation("p", "task.comment", "plans/task_x.md", "unlink", 1)
     moved = [
-        Mutation("p", "task.archive", "archive/tasks/t.json", "create"),
-        Mutation("p", "task.archive", "tasks/t.json", "unlink"),
+        Mutation("p", "task.archive", "archive/tasks/t.json", "create", 2),
+        Mutation("p", "task.archive", "tasks/t.json", "unlink", 2),
     ]
-    half_moved = [Mutation("p", "task.archive", "tasks/u.json", "unlink")]
-    fixture = Mutation("p", FIXTURE_OP, "plans/task_y.md", "unlink")
-    runtime = Mutation("p", "task.comment", "locks/x.lock", "unlink")
+    half_moved = [Mutation("p", "task.archive", "tasks/u.json", "unlink", 3)]
+    fixture = Mutation("p", FIXTURE_OP, "plans/task_y.md", "unlink", 4)
+    runtime = Mutation("p", "task.comment", "locks/x.lock", "unlink", 5)
     found = forbidden_removals([removed, *moved, *half_moved, fixture, runtime], tmp_path)
     assert found == [removed, half_moved[0]]
+
+    # archive (copy + unlink), unarchive (copy + unlink), then an archive that only
+    # unlinks: the first archive's copy is an earlier transaction's.
+    cycle = [
+        Mutation("p", "task.archive", "archive/tasks/v.json", "create", 10),
+        Mutation("p", "task.archive", "tasks/v.json", "unlink", 10),
+        Mutation("p", "task.unarchive", "tasks/v.json", "create", 11),
+        Mutation("p", "task.unarchive", "archive/tasks/v.json", "unlink", 11),
+        Mutation("p", "task.archive", "tasks/v.json", "unlink", 12),
+    ]
+    assert forbidden_removals(cycle, tmp_path) == [cycle[-1]]
 
 
 def test_archive_loop_with_concurrent_client_reads(server: ParityServer, tmp_path: Path) -> None:
     """AC-9 (H-12 part): archive and unarchive through the real CLI while another
-    thread reads through the same checkout: no read error, and every read sees the
+    process reads through the same checkout: no read error, and every read sees the
     task in exactly one placement."""
     from lattice.cli.main import cli
     from tests.parity.corpus import Scenario as S
@@ -191,57 +125,64 @@ def test_archive_loop_with_concurrent_client_reads(server: ParityServer, tmp_pat
     assert code == 0, err
     task_id = json.loads(out)["data"]["id"]
 
-    # The CliRunner swaps process-wide streams and cwd, so the concurrent reader
-    # is a second process: a real `lattice` subprocess, reading as a user would.
-    import subprocess
-    import sys
+    # The CliRunner swaps process-wide streams and cwd, so the concurrent reader is
+    # a second process: one Python running the real CLI in a loop, one JSON line per
+    # read, until the stop file appears.
+    stop = tmp_path / "stop"
+    reads_file = tmp_path / "reads.jsonl"
+    child_env = {k: v for k, v in {**os.environ, **env}.items() if v is not None}
+    reader = subprocess.Popen(
+        [sys.executable, "-c", READER, task_id, str(stop), str(reads_file)],
+        cwd=checkout,
+        env=child_env,
+    )
 
-    lattice = str(Path(sys.executable).with_name("lattice"))
-    stop = threading.Event()
-    failures: list[str] = []
-    reads = 0
+    def reads() -> list[dict]:
+        if not reads_file.exists():
+            return []
+        return [json.loads(line) for line in reads_file.read_text().splitlines()[:-1]]
 
-    def reader() -> None:
-        nonlocal reads
-        child_env = {k: v for k, v in {**os.environ, **env}.items() if v is not None}
-        while not stop.is_set():
-            active = subprocess.run(
-                [lattice, "list", "--include-archived", "--json"],
-                cwd=checkout,
-                env=child_env,
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            archived = subprocess.run(
-                [lattice, "show", task_id, "--json"],
-                cwd=checkout,
-                env=child_env,
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            reads += 1
-            if active.returncode != 0 or archived.returncode != 0:
-                failures.append(active.stderr + archived.stderr)
-                continue
-            listed = [t["id"] for t in json.loads(active.stdout)["data"]]
-            shown = json.loads(archived.stdout)["data"]
-            if listed.count(task_id) != 1 or shown.get("id") != task_id:
-                failures.append(f"inconsistent read: {listed} / {shown.get('id')}")
-
-    thread = threading.Thread(target=reader, daemon=True)
-    thread.start()
     try:
+        assert wait_for(lambda: len(reads()) >= 1 or reader.poll() is not None, 30)
         # Keep moving the task until the reader has overlapped several cycles.
+        start = len(reads())
         for cycle in range(30):
             assert run("archive", task_id, "--actor", "human:parity")[0] == 0
             assert run("unarchive", task_id, "--actor", "human:parity")[0] == 0
-            if cycle >= 3 and reads >= 3:
+            if cycle >= 2 and len(reads()) - start >= 3:
                 break
     finally:
-        stop.set()
-        thread.join(timeout=60)
-    assert reads >= 3
+        stop.touch()
+        reader.wait(timeout=60)
+    done = reads()
+    assert len(done) - start >= 3
+    failures = [
+        r
+        for r in done
+        if r["codes"] != [0, 0] or r["listed"].count(task_id) != 1 or r["shown"] != task_id
+    ]
     assert failures == []
     assert durable_tree(checkout / ".lattice") == durable_tree(server.board(target.slug))
+
+
+READER = """
+import json, os, sys
+from click.testing import CliRunner
+from lattice.cli.main import cli
+
+task_id, stop, out = sys.argv[1:4]
+runner = CliRunner()
+with open(out, "w") as fh:
+    while not os.path.exists(stop):
+        listed = runner.invoke(cli, ["list", "--include-archived", "--json"])
+        shown = runner.invoke(cli, ["show", task_id, "--json"])
+        record = {"codes": [listed.exit_code, shown.exit_code], "listed": [], "shown": None}
+        try:
+            record["listed"] = [t["id"] for t in json.loads(listed.stdout)["data"]]
+            record["shown"] = json.loads(shown.stdout)["data"]["id"]
+        except (ValueError, KeyError, TypeError):
+            record["error"] = listed.stdout[-300:] + shown.stdout[-300:]
+        fh.write(json.dumps(record) + "\\n")
+        fh.flush()
+    fh.write("{}\\n")
+"""
