@@ -328,6 +328,85 @@ def project_rotate_epoch(slug: str, root: str | None, is_json: bool) -> None:
         return f"Rotated {slug} to epoch {data['epoch']}{how}; every cache resyncs."
 
     _run(is_json, lambda: admin.rotate_project_epoch(_root(root), slug), render)
+def _lifecycle_command(action: str, summary: str) -> Callable:
+    @project_group.command(action, help=summary)
+    @click.argument("slug")
+    @_root_option
+    @_json_option
+    def command(slug: str, root: str | None, is_json: bool) -> None:
+        from lattice.server import admin
+
+        def render(data: dict) -> str:
+            if action == "unload":
+                return (
+                    f"Unloaded {slug}: its lease is released, and every route for it answers "
+                    f"503 until 'lattice server project load {slug}'."
+                )
+            return f"Loaded {slug} (epoch {data.get('epoch')}, head seq {data.get('head_seq')})."
+
+        _run(is_json, lambda: admin.project_lifecycle(_root(root), slug, action), render)
+
+    return command
+
+
+_lifecycle_command(
+    "unload", "Release one project's lease (running server) so offline maintenance can run."
+)
+_lifecycle_command("load", "Take one project's lease back and run its startup recovery.")
+_lifecycle_command("reload", "Unload, then load, one project (for example after a repair).")
+
+
+def _render_doctor(slug: str, data: dict) -> str:
+    lines = [f"{f['level'].upper()}  {f['check']}: {f['message']}" for f in data["findings"]]
+    summary = data.get("summary") or {}
+    if not lines:
+        lines.append(f"{slug}: no issues found.")
+    else:
+        lines.append(
+            f"{slug}: {summary.get('warnings', 0)} warning(s), {summary.get('errors', 0)} error(s)."
+        )
+    return "\n".join(lines)
+
+
+@project_group.command("doctor")
+@click.argument("slug")
+@_root_option
+@_json_option
+def project_doctor(slug: str, root: str | None, is_json: bool) -> None:
+    """Run doctor's read-only checks on a project without racing its writes."""
+    from lattice.server import admin
+
+    result: dict = {}
+
+    def action() -> dict:
+        result.update(admin.project_doctor(_root(root), slug))
+        return result
+
+    _run(is_json, action, lambda data: _render_doctor(slug, data))
+    if (result.get("summary") or {}).get("errors"):
+        raise SystemExit(1)
+
+
+@project_group.command("recover")
+@click.argument("slug")
+@click.option("--rollback", "mode", flag_value="rollback", help="Roll back unmatched undo logs.")
+@click.option("--keep", "mode", flag_value="keep", help="Keep the files; delete unmatched logs.")
+@_root_option
+@_json_option
+def project_recover(slug: str, mode: str | None, root: str | None, is_json: bool) -> None:
+    """Settle undo logs the journal cannot (needs the project's lease free)."""
+    from lattice.server import admin
+
+    def render(data: dict) -> str:
+        if not data["undo_logs"]:
+            return f"{slug} has no undo logs; nothing to recover."
+        return (
+            f"Recovered {slug}: {len(data['committed'])} committed log(s) removed, "
+            f"{len(data['rolled_back'])} rolled back, {len(data['kept'])} kept. "
+            f"Load it with 'lattice server project load {slug}' (a new epoch starts)."
+        )
+
+    _run(is_json, lambda: admin.recover_project(_root(root), slug, mode), render)
 
 
 # ---------------------------------------------------------------------------

@@ -218,15 +218,33 @@ class CrashSnapshots:
         self.base = Path(base)
         self.snapshots: list[tuple[str, Path]] = []
         self._seen: Counter = Counter()
+        self._states: set[str] = set()
+
+    def _state(self) -> str:
+        """A digest of every file's path and bytes: seams that leave the disk
+        byte-identical (an fsync, a close) are one crash state, tested once."""
+        import hashlib
+
+        digest = hashlib.sha256()
+        for path in sorted(self.root.rglob("*")):
+            if path.is_file() and not path.is_symlink():
+                digest.update(str(path.relative_to(self.root)).encode() + b"\0")
+                digest.update(hashlib.sha256(path.read_bytes()).digest())
+            elif path.is_dir():
+                digest.update(str(path.relative_to(self.root)).encode() + b"/\0")
+        return digest.hexdigest()
 
     def __call__(self, point: str, **ctx: Any) -> None:
         import shutil
 
         self._seen[point] += 1
         label = f"{point}#{self._seen[point]}"
-        target = self.base / f"crash-{len(self.snapshots):03d}"
-        shutil.copytree(self.root, target, symlinks=True)
-        self.snapshots.append((label, target))
+        state = self._state()
+        if state not in self._states:
+            self._states.add(state)
+            target = self.base / f"crash-{len(self.snapshots):03d}"
+            shutil.copytree(self.root, target, symlinks=True)
+            self.snapshots.append((label, target))
         if "data" in ctx and "path" in ctx:
             torn = self.base / f"crash-{len(self.snapshots):03d}"
             shutil.copytree(self.root, torn, symlinks=True)

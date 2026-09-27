@@ -26,8 +26,9 @@ from lattice.server import admin, control
 from lattice.server.config import STATUS_JSON, ServerConfig
 from lattice.server.journal import now_ms
 from lattice.server.log import ServerLog
-from lattice.server.project import CURRENT_PROJECT, LOADING, STATES, UNLOADED, Project
+from lattice.server.project import CURRENT_PROJECT, LOADED, LOADING, STATES, UNLOADED, Project
 from lattice.storage.fs import atomic_write
+from lattice.storage.ownership import release_owner_flock, try_owner_flock
 
 T = TypeVar("T")
 
@@ -107,9 +108,9 @@ class ProjectRegistry:
     # -- admission -----------------------------------------------------------
 
     @asynccontextmanager
-    async def admitted(self, project: Project) -> AsyncIterator[Project]:
-        """Hold *project*'s admission lock (``BOARD_BUSY`` after ``lock_timeout_seconds``),
-        loading it first if it has never loaded."""
+    async def admission_only(self, project: Project) -> AsyncIterator[Project]:
+        """Hold *project*'s admission lock (``BOARD_BUSY`` after
+        ``lock_timeout_seconds``), without loading it."""
         timeout = self.config.limits.lock_timeout_seconds
         try:
             async with asyncio.timeout(timeout):
@@ -121,11 +122,18 @@ class ProjectRegistry:
                 {"retry_after": 2},
             ) from None
         try:
-            if project.state in (UNLOADED, LOADING):
-                await in_worker(project.load)
             yield project
         finally:
             project.admission.release()
+
+    @asynccontextmanager
+    async def admitted(self, project: Project) -> AsyncIterator[Project]:
+        """Hold *project*'s admission lock, loading it first if it has never loaded
+        (a project an admin unloaded stays unloaded)."""
+        async with self.admission_only(project):
+            if project.state in (UNLOADED, LOADING) and not project.held_unloaded:
+                await in_worker(project.load)
+            yield project
 
     async def run_locked(self, project: Project, fn: Callable[[], T], *, admit: bool = True) -> T:
         """Admit, then run *fn* in a worker under the project's work lock (after the
@@ -156,6 +164,10 @@ class ProjectRegistry:
             project.broadcaster.close_all()
 
     async def stop(self) -> None:
+        """Graceful shutdown, in named phases (SPEC §8.11): stop the background
+        tasks; drain (take each project's admission, so its in-flight operation
+        finishes and no other starts); the final audit commit (H-16's hook);
+        write ``clean_shutdown``; release the lease."""
         for task in self._tasks:
             task.cancel()
         for task in self._tasks:
@@ -165,10 +177,25 @@ class ProjectRegistry:
                 pass
         self._tasks.clear()
         for project in list(self._projects.values()):
-            async with project.admission:
-                await in_worker(lambda p=project: _release(p))
+            async with project.admission:  # drain
+                await in_worker(lambda p=project: self._shut_down(p))
         set_unknown_type_reporter(None)
         self.write_status(stopped=True)
+
+    def _shut_down(self, project: Project) -> None:
+        with project.work:
+            for phase in SHUTDOWN_PHASES:
+                try:
+                    phase(self, project)
+                except Exception as exc:  # noqa: BLE001 - every project still releases
+                    self.log.error(
+                        "shutdown_phase_failed",
+                        project=project.slug,
+                        phase=phase.__name__,
+                        error=repr(exc),
+                    )
+            if project.holds_lease:
+                project.release()
 
     def _report_unknown_type(self, etype: str) -> None:
         slug = CURRENT_PROJECT.get()
@@ -198,7 +225,9 @@ class ProjectRegistry:
             await self.run_pending_control()
 
     async def run_pending_control(self) -> None:
-        """Run the control requests waiting in any project directory."""
+        """Run the control requests waiting in any project directory, oldest first.
+        Lifecycle requests run here, at the admission layer (:meth:`run_lifecycle`);
+        every other request runs under the project's work lock."""
         for slug in self.slugs():
             board = self.root / "projects" / slug / ".lattice"
             if not control.pending_requests(board):
@@ -207,11 +236,108 @@ class ProjectRegistry:
             if project is None:
                 continue
             try:
-                await self.run_locked(project, project.run_control_requests, admit=False)
+                while True:
+                    pending = control.pending_requests(board)
+                    if not pending:
+                        break
+                    head = pending[0]
+                    if control.request_action(head) in control.LIFECYCLE_ACTIONS:
+                        await self.run_lifecycle(project, head)
+                        continue
+                    ran = await self.run_locked(project, project.run_control_requests, admit=False)
+                    if not ran:
+                        break
             except OpError as exc:
                 self.log.warning("control_deferred", project=slug, error_code=exc.code)
             except Exception as exc:  # noqa: BLE001
                 self.log.error("control_failed", project=slug, error=repr(exc))
+
+    # -- lifecycle control requests (SPEC §8.2) -------------------------------
+
+    async def run_lifecycle(self, project: Project, path: Path) -> None:
+        """Run one ``unload``, ``load``, ``reload``, or ``doctor`` request and answer it.
+
+        Holds the project's admission lock (so the operation in flight, if any,
+        finishes first and none starts), never a work lock across a load: a
+        load takes the work lock itself.
+        """
+        action = control.request_action(path)
+        try:
+            result = await self._lifecycle(project, action or "")
+            answer: dict = {"ok": True, "result": result}
+        except OpError as exc:
+            answer = {"ok": False, "error": exc.to_dict()}
+        except Exception as exc:  # noqa: BLE001 - answered and logged, never raised
+            self.log.error(
+                "control_request_crashed", project=project.slug, action=action, error=repr(exc)
+            )
+            answer = {
+                "ok": False,
+                "error": {"code": "INTERNAL_ERROR", "message": f"{action} failed: {exc!r}"},
+            }
+        await in_worker(lambda: control.answer_unowned(path, answer))
+        self.log.info(
+            "control_request",
+            project=project.slug,
+            request=path.stem,
+            action=action,
+            ok=answer["ok"],
+            error_code=(answer.get("error") or {}).get("code"),
+        )
+
+    async def _lifecycle(self, project: Project, action: str) -> dict:
+        async with self.admission_only(project):
+            if action == "unload":
+                return await in_worker(lambda: self._unload(project))
+            if action == "load":
+                return await in_worker(lambda: self._load(project))
+            if action == "reload":
+                await in_worker(lambda: self._unload(project))
+                return await in_worker(lambda: self._load(project))
+            if action == "doctor":
+                return await in_worker(lambda: self._doctor(project))
+        raise OpError("VALIDATION_ERROR", f"unsupported control action {action!r}")
+
+    def _unload(self, project: Project) -> dict:
+        with project.work:
+            project.unload()
+        # Answer only once the lease is provably free (SPEC §8.2).
+        if not admin.try_owner_flock_free(project.board):
+            raise OpError(
+                "BOARD_BUSY", f"project {project.slug} was unloaded, but its lease is still held"
+            )
+        return {"project": project.slug, "state": project.state, "lease": "released"}
+
+    def _load(self, project: Project) -> dict:
+        project.held_unloaded = False
+        if not (project.state == LOADED and project.holds_lease):
+            project.load()
+        if project.state != LOADED:
+            raise OpError(
+                "BOARD_UNAVAILABLE",
+                f"project {project.slug} did not load: {project.reason}",
+                {"reason": project.reason},
+            )
+        head = project.head()
+        return {"project": project.slug, "state": project.state, **head}
+
+    def _doctor(self, project: Project) -> dict:
+        if project.holds_lease:
+            with project.locked():
+                data = admin.run_doctor(project.board)
+        else:
+            fd = try_owner_flock(project.board)
+            if fd is None:
+                raise OpError(
+                    "BOARD_BUSY",
+                    f"another process holds project {project.slug} (offline maintenance?)",
+                )
+            try:
+                with project.work:
+                    data = admin.run_doctor(project.board)
+            finally:
+                release_owner_flock(fd)
+        return {"project": project.slug, **data}
 
     def write_status(self, *, stopped: bool = False) -> None:
         """Publish project states for ``lattice server project list``.
@@ -237,6 +363,25 @@ class ProjectRegistry:
             self.log.warning("status_write_failed", error=str(exc))
 
 
-def _release(project: Project) -> None:
-    with project.work:
-        project.release()
+def final_audit(registry: ProjectRegistry, project: Project) -> None:
+    """The final audit commit (SPEC §8.10): H-16 connects its committer here."""
+
+
+def clean_shutdown(registry: ProjectRegistry, project: Project) -> None:
+    project.write_clean_shutdown()
+    if project.journal is not None and project.state == "loaded":
+        registry.log.info(
+            "clean_shutdown", project=project.slug, head_seq=project.journal.head_seq
+        )
+
+
+def release_lease(registry: ProjectRegistry, project: Project) -> None:
+    project.release()
+
+
+#: The per-project shutdown phases, in order, run under the work lock after drain.
+SHUTDOWN_PHASES: tuple[Callable[[ProjectRegistry, Project], None], ...] = (
+    final_audit,
+    clean_shutdown,
+    release_lease,
+)

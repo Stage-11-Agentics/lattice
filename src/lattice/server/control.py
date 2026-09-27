@@ -138,9 +138,24 @@ def send_request(
 # Server side
 # ---------------------------------------------------------------------------
 
-#: action name -> handler(project, request) -> result. Later tickets add
-#: ``rotate-epoch`` (H-10a) and ``unload``, ``load``, ``reload``, ``doctor`` (H-22).
+#: action name -> handler(project, request) -> result, run under the project's
+#: work lock. ``rotate-epoch`` is H-10a's.
 ACTIONS: dict[str, Callable[[Any, dict], Any]] = {}
+
+#: Actions that change whether the server holds the project (or, for
+#: ``doctor``, may need to take its lease): the registry runs them at the
+#: admission layer, never inside a held work lock (``ProjectRegistry``).
+LIFECYCLE_ACTIONS = frozenset({"unload", "load", "reload", "doctor"})
+
+
+def request_action(path: Path) -> str | None:
+    """The ``action`` a request file names, or ``None`` if it cannot be read."""
+    try:
+        request = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    action_name = request.get("action") if isinstance(request, dict) else None
+    return action_name if isinstance(action_name, str) else None
 
 
 def action(name: str) -> Callable[[Callable[[Any, dict], Any]], Callable[[Any, dict], Any]]:
@@ -168,8 +183,9 @@ def pending_requests(board: Path) -> list[Path]:
 
 
 def answer_unowned(path: Path, answer: dict) -> None:
-    """Answer a request for a project this server does not hold, touching nothing
-    else: the ``.done`` goes through the same private writer the admin uses."""
+    """Answer a request through the same private writer the admin uses, touching
+    nothing else: for a project this server does not hold, and for lifecycle
+    requests, whose answer may land after the lease is released."""
     _write_private(path.with_suffix(".done"), (json.dumps(answer, sort_keys=True) + "\n").encode())
     _remove(path)
 

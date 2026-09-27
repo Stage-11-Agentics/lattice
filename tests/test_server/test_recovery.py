@@ -49,7 +49,6 @@ def _receipt_lines(root: Path) -> list[bytes]:
     return [line for p in sorted(receipts.glob("*.jsonl")) for line in p.read_bytes().splitlines()]
 
 
-@pytest.mark.xfail(strict=True, reason="scaffold: startup recovery lands after the plan review")
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=lambda s: s.name)
 def test_a_crash_at_every_boundary_recovers_at_startup(
     scenario: Scenario,
