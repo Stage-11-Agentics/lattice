@@ -14,11 +14,12 @@ from lattice.cli.helpers import (
     require_root,
 )
 from lattice.cli.main import cli
+from lattice.cli.maintenance import enter_offline_maintenance, offline_maintenance_option
 from lattice.core.config import configured_event_prefix
 from lattice.core.events import LIFECYCLE_EVENT_TYPES, serialize_event
 from lattice.core.ids import validate_id, validate_short_id, parse_short_id
 from lattice.core.tasks import serialize_snapshot
-from lattice.storage.fs import atomic_write
+from lattice.storage.fs import atomic_write, ensure_dir
 from lattice.storage.locks import multi_lock
 from lattice.storage.operations import (
     AuthoritativeLogError,
@@ -456,10 +457,13 @@ def inspect_task_authority(
 @cli.command()
 @click.option("--fix", is_flag=True, help="Attempt to fix detected issues.")
 @click.option("--json", "output_json", is_flag=True, help="Output structured JSON.")
-def doctor(fix: bool, output_json: bool) -> None:
+@offline_maintenance_option
+def doctor(fix: bool, output_json: bool, offline_maintenance: bool) -> None:
     """Check project integrity and report issues."""
     is_json = output_json
     lattice_dir = require_root(is_json)
+    if offline_maintenance:
+        enter_offline_maintenance(lattice_dir, "doctor --fix" if fix else "doctor", is_json)
 
     findings: list[dict] = []
 
@@ -1307,10 +1311,15 @@ def _rebuild_resource(lattice_dir: Path, resource_id: str) -> dict:
 @click.argument("task_id", required=False, default=None)
 @click.option("--all", "rebuild_all", is_flag=True, help="Rebuild all tasks.")
 @click.option("--json", "output_json", is_flag=True, help="Output structured JSON.")
-def rebuild(task_id: str | None, rebuild_all: bool, output_json: bool) -> None:
+@offline_maintenance_option
+def rebuild(
+    task_id: str | None, rebuild_all: bool, output_json: bool, offline_maintenance: bool
+) -> None:
     """Rebuild task snapshots from event logs."""
     is_json = output_json
     lattice_dir = require_root(is_json)
+    if offline_maintenance:
+        enter_offline_maintenance(lattice_dir, "rebuild", is_json)
 
     # Validate arguments: exactly one of task_id or --all
     if task_id is not None and rebuild_all:
@@ -1347,7 +1356,7 @@ def rebuild(task_id: str | None, rebuild_all: bool, output_json: bool) -> None:
                 res_snapshot = _rebuild_resource(lattice_dir, res_id)
                 res_name = res_snapshot.get("name", res_id)
                 resource_dir = lattice_dir / "resources" / res_name
-                resource_dir.mkdir(parents=True, exist_ok=True)
+                ensure_dir(resource_dir)
                 snapshot_path = resource_dir / "resource.json"
                 locks_dir = lattice_dir / "locks"
                 with multi_lock(locks_dir, [f"resources_{res_name}"]):

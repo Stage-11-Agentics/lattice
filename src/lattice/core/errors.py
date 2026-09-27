@@ -104,3 +104,36 @@ class StateConflict(OpError, ValueError):
 
     def __init__(self, message: str, snapshot: dict | None):
         super().__init__("CONFLICT", message, {"snapshot": task_state_snapshot(snapshot)})
+
+
+class BoardWriteError(OpError):
+    """A storage write primitive refused a path before touching disk (SPEC §6.2).
+
+    Raised by ``lattice.storage.fs``; nothing was written when it propagates.
+    """
+
+
+class BoardIsCache(BoardWriteError):
+    """``BOARD_IS_CACHE``: a durable write into a client cache from outside its syncer."""
+
+    def __init__(self, message: str, details: dict[str, Any] | None = None):
+        super().__init__("BOARD_IS_CACHE", message, details)
+
+
+class BoardIsHosted(BoardWriteError):
+    """``BOARD_IS_HOSTED``: a durable write into a server-owned board from outside
+    the owning server and outside offline maintenance."""
+
+    def __init__(self, message: str, details: dict[str, Any] | None = None):
+        super().__init__("BOARD_IS_HOSTED", message, details)
+
+
+class BoardPathError(BoardWriteError):
+    """A write whose resolved path is not under the board's ``.lattice/``.
+
+    ``VALIDATION_ERROR`` on every surface (SPEC §3.1): the backstop behind the
+    path-bearing input checks.
+    """
+
+    def __init__(self, message: str, details: dict[str, Any] | None = None):
+        super().__init__("VALIDATION_ERROR", message, details)

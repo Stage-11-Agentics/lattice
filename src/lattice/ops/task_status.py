@@ -22,6 +22,7 @@ from lattice.core.events import count_review_rework_cycles
 from lattice.core.tasks import is_backward_status_transition
 from lattice.ops.base import CommonParams, OpContext, OpError, OpResult, operation
 from lattice.ops.plan_gate import check_plan_gate
+from lattice.storage.fs import atomic_write
 from lattice.storage.operations import TaskMutationDecision
 
 ACTIVE_WORK_STATUSES = frozenset({"in_planning", "in_progress"})
@@ -55,7 +56,7 @@ def append_plan_reset_section(lattice_dir, task_id: str, actor, event_ts: str | 
         date = event_ts.split("T", 1)[0]
     content = plan_path.read_text(encoding="utf-8")
     separator = "" if content.endswith("\n") else "\n"
-    plan_path.write_text(f"{content}{separator}\n## Reset {date} by {actor}\n", encoding="utf-8")
+    atomic_write(plan_path, f"{content}{separator}\n## Reset {date} by {actor}\n")
 
 
 @operation("task.status")

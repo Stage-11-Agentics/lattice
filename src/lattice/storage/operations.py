@@ -16,7 +16,7 @@ from lattice.core.origin import stamp_origin
 from lattice.core.comments import materialize_comments, validate_comment_for_delete
 from lattice.core.comments import validate_comment_for_edit, validate_comment_for_react
 from lattice.core.tasks import FromMismatchError, apply_event_to_snapshot, serialize_snapshot
-from lattice.storage.fs import atomic_write, jsonl_append
+from lattice.storage.fs import atomic_write, ensure_dir, jsonl_append, unlink_path
 from lattice.storage.hooks import execute_hooks
 from lattice.storage.locks import lattice_lock, multi_lock
 from lattice.storage.short_ids import load_id_index, save_id_index
@@ -472,7 +472,7 @@ def _reconcile_placement(
             )
 
     for path in target.values():
-        path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_dir(path.parent)
 
     if not target["event"].exists() or target["event"].read_bytes() != event_bytes:
         atomic_write(target["event"], event_bytes)
@@ -506,7 +506,7 @@ def _reconcile_placement(
                         "active and archived supplementary files diverge; manual recovery required",
                         path=other[name],
                     )
-            other[name].unlink()
+            unlink_path(other[name])
             if inject_faults:
                 _mutation_boundary(f"source_{name}_removed", lattice_dir, task_id)
             placement_changed = True
@@ -774,7 +774,7 @@ def mutate_task(
         if authority is not None and (
             not event_path.exists() or event_path.read_bytes() != authority.event_bytes
         ):
-            event_path.parent.mkdir(parents=True, exist_ok=True)
+            ensure_dir(event_path.parent)
             atomic_write(event_path, authority.event_bytes)
             placement_reconciled = True
         if decision.events:
@@ -880,7 +880,7 @@ def scaffold_plan(
     if plan_path.exists():
         return
 
-    plan_path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_dir(plan_path.parent)
 
     heading = f"# {short_id}: {title}" if short_id else f"# {title}"
     lines = [heading, ""]
@@ -889,7 +889,7 @@ def scaffold_plan(
         lines.append(description)
         lines.append("")
 
-    plan_path.write_text("\n".join(lines), encoding="utf-8")
+    atomic_write(plan_path, "\n".join(lines))
 
 
 def scaffold_notes(
@@ -919,7 +919,7 @@ def scaffold_notes(
     lines.append("<!-- Scratchpad — working notes, debug logs, context dumps, open questions. -->")
     lines.append("")
 
-    notes_path.write_text("\n".join(lines), encoding="utf-8")
+    atomic_write(notes_path, "\n".join(lines))
 
 
 @contextlib.contextmanager
@@ -935,7 +935,7 @@ def resource_write_context(
     ``_caller_holds_lock=True`` inside this context to avoid deadlock.
     """
     locks_dir = lattice_dir / "locks"
-    locks_dir.mkdir(parents=True, exist_ok=True)
+    ensure_dir(locks_dir)
     with lattice_lock(locks_dir, f"resources_{resource_name}", timeout=timeout):
         yield
 
@@ -976,7 +976,7 @@ def write_resource_event(
 
     # Ensure resource directory exists
     resource_dir = lattice_dir / "resources" / resource_name
-    resource_dir.mkdir(parents=True, exist_ok=True)
+    ensure_dir(resource_dir)
 
     for event in events:
         stamp_origin(event)

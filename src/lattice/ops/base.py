@@ -84,6 +84,8 @@ from lattice.storage.operations import (
     mutate_task,
     read_task_authority,
 )
+from lattice.storage.ownership import board_scope
+from lattice.storage.ownership import check_board_writable as check_board_markers
 
 __all__ = [
     "HTTP_STATUS",
@@ -449,7 +451,13 @@ def check_op_id(op_id: Any) -> None:
 
 
 def check_board_writable(board_dir: Path, caller: Caller) -> None:
-    """Refuse a write to a board this process does not own (SPEC §6, H-8)."""
+    """Refuse a write to a board this process does not own (SPEC §6, H-8).
+
+    ``BOARD_IS_CACHE`` on a client cache outside its syncer, ``BOARD_IS_HOSTED``
+    on a server-owned board outside the owning server (``owning_board``) and
+    offline maintenance.
+    """
+    check_board_markers(board_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -513,8 +521,24 @@ def execute(
     it will use for them, so one pre-write config governs the rules, the hooks,
     and the effects even if a hook edits ``config.json``. Loaded from the board
     when omitted.
+
+    Every storage write the operation makes is confined to this board
+    (``BoardPathError``, ``VALIDATION_ERROR``).
     """
     board_dir = Path(board_dir)
+    with board_scope(board_dir):
+        return _execute(board_dir, op_name, params, caller, run_hooks=run_hooks, config=config)
+
+
+def _execute(
+    board_dir: Path,
+    op_name: str,
+    params: Any,
+    caller: Caller,
+    *,
+    run_hooks: bool,
+    config: dict | None,
+) -> OpResult:
     # 1. Only the board's owner writes it.
     check_board_writable(board_dir, caller)
 

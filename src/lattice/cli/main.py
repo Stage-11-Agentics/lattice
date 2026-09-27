@@ -15,6 +15,8 @@ from lattice.core.config import (
     validate_project_code,
     validate_subproject_code,
 )
+from lattice.cli.maintenance import enter_offline_maintenance, offline_maintenance_option
+from lattice.core.errors import BoardWriteError
 from lattice.core.ids import generate_instance_id, generate_task_id, validate_actor
 from lattice.storage.fs import LATTICE_DIR, atomic_write, ensure_lattice_dirs
 from lattice.storage.short_ids import _default_index, save_id_index
@@ -275,7 +277,26 @@ def _seed_example_tasks(lattice_dir: Path, config: dict) -> None:
         mutate_task(lattice_dir, source_id, relationship_decision, config, run_hooks=True)
 
 
-@click.group(invoke_without_command=True)
+class _LatticeGroup(click.Group):
+    """The root group. A storage primitive's refusal (a cache, a server-owned
+    board, a path outside the board) reaches a command that is not yet an
+    operation as an exception; render it as that command's error, not a
+    traceback."""
+
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        ctx.meta["lattice.argv"] = tuple(args)
+        return super().parse_args(ctx, args)
+
+    def invoke(self, ctx: click.Context):  # noqa: ANN201
+        try:
+            return super().invoke(ctx)
+        except BoardWriteError as exc:
+            from lattice.cli.helpers import output_error
+
+            output_error(exc.message, exc.code, "--json" in ctx.meta.get("lattice.argv", ()))
+
+
+@click.group(cls=_LatticeGroup, invoke_without_command=True)
 @click.version_option(package_name="lattice-tracker")
 @click.pass_context
 def cli(ctx: click.Context) -> None:
@@ -452,6 +473,7 @@ def _stdin_is_tty() -> bool:
     help="Project type. 'standard' is a normal Lattice project. 'structure' enables "
     "the Structure Overview tab for Cell 05 mission-control views.",
 )
+@offline_maintenance_option
 def init(
     target_path: str,
     actor: str | None,
@@ -472,10 +494,13 @@ def init(
     plan_approval: str | None,
     done_display: str | None,
     project_type: str | None,
+    offline_maintenance: bool,
 ) -> None:
     """Initialize a new Lattice project."""
     root = Path(target_path)
     lattice_dir = root / LATTICE_DIR
+    if offline_maintenance:
+        enter_offline_maintenance(lattice_dir, "init", False)
 
     # Idempotency: if .lattice/ already exists as a directory, skip
     if lattice_dir.is_dir():

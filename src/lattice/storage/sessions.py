@@ -17,7 +17,7 @@ from pathlib import Path
 from lattice.core.actors import ActorIdentity, validate_base_name, validate_session_creation
 from lattice.core.events import utc_now
 from lattice.core.ids import generate_session_id
-from lattice.storage.fs import atomic_write
+from lattice.storage.fs import atomic_write, ensure_dir, unlink_path
 from lattice.storage.locks import lattice_lock
 
 # ---------------------------------------------------------------------------
@@ -32,8 +32,8 @@ _LOCK_KEY = "sessions_index"
 
 def ensure_session_dirs(lattice_dir: Path) -> None:
     """Create sessions/ and sessions/archive/ if they don't exist."""
-    (lattice_dir / _SESSIONS_DIR).mkdir(parents=True, exist_ok=True)
-    (lattice_dir / _SESSIONS_ARCHIVE).mkdir(parents=True, exist_ok=True)
+    ensure_dir(lattice_dir / _SESSIONS_DIR)
+    ensure_dir(lattice_dir / _SESSIONS_ARCHIVE)
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +137,7 @@ def create_session(
     """
     ensure_session_dirs(lattice_dir)
     locks_dir = lattice_dir / "locks"
-    locks_dir.mkdir(parents=True, exist_ok=True)
+    ensure_dir(locks_dir)
 
     # Determine base name
     if base_name is None:
@@ -265,7 +265,7 @@ def end_session(
         atomic_write(archive_path, json.dumps(data, sort_keys=True, indent=2) + "\n")
 
         # Remove active session file
-        session_path.unlink()
+        unlink_path(session_path)
 
         # Update index
         index = _read_index(lattice_dir)
