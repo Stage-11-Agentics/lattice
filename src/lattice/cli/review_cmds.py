@@ -1414,18 +1414,14 @@ def _compute_elapsed_str(
 
 
 def _check_review_artifacts(lattice_dir: Path, task_id: str) -> bool:
-    """Check if any review artifacts exist for a task."""
-    artifacts_dir = lattice_dir / "artifacts" / task_id
-    if not artifacts_dir.exists():
-        return False
-    # Check for any files with review-related roles
-    for f in artifacts_dir.iterdir():
-        if f.suffix == ".json":
-            try:
-                meta = json.loads(f.read_text(encoding="utf-8"))
-                role = meta.get("role", "")
-                if "review" in role:
-                    return True
-            except (json.JSONDecodeError, OSError):
-                continue
+    """Check if any review artifacts are attached to a task.
+
+    Read from the task's ``artifact_attached`` events: artifact metadata lives
+    under ``artifacts/meta/`` keyed by artifact ID, never per task.
+    """
+    for event in _task_events(lattice_dir, task_id):
+        if event.get("type") == "artifact_attached":
+            role = (event.get("data") or {}).get("role") or ""
+            if "review" in role:
+                return True
     return False

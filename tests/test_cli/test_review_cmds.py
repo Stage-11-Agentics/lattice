@@ -122,6 +122,23 @@ class TestReviewStatus:
         assert data["ok"] is True
         assert data["data"]["status"] == "none"
 
+    def test_an_attached_review_artifact_is_reported(self, tmp_path):
+        """Artifact metadata lives under artifacts/meta/, not per task: the check
+        reads the task's artifact_attached events (it used to find none, ever)."""
+        root = _make_board(tmp_path)
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+        env = {"LATTICE_ROOT": str(root)}
+        attach = ["attach", task_id, "--inline", "LGTM", "--role", "review"]
+        assert runner.invoke(cli, [*attach, "--actor", "agent:test"], env=env).exit_code == 0
+
+        plain = runner.invoke(cli, ["review-status", task_id], env=env, catch_exceptions=False)
+        assert "Review artifacts exist" in plain.output
+        as_json = runner.invoke(
+            cli, ["review-status", task_id, "--json"], env=env, catch_exceptions=False
+        )
+        assert "note" in json.loads(as_json.output)["data"]
+
     def test_shows_in_flight_state(self, tmp_path):
         root = _make_board(tmp_path)
         runner = CliRunner()
