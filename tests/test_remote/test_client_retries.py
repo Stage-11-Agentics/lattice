@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import socket
 import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -75,25 +76,45 @@ def scripted(answers: list[tuple]) -> Iterator[dict[str, Any]]:
 
 @pytest.fixture()
 def clock(monkeypatch: pytest.MonkeyPatch) -> list[float]:
-    """A fake clock: each sleep advances it; returns the list of waits."""
+    """A fake clock: each sleep advances it; returns the list of waits between
+    attempts (a wait sliced for progress lines counts once)."""
     now = [1000.0]
     waits: list[float] = []
+    pending = [0.0]
+    send = http.request
 
     def sleep(seconds: float) -> None:
-        waits.append(seconds)
+        pending[0] += seconds
         now[0] += seconds
+
+    def request(*args: Any, **kwargs: Any) -> Any:
+        if pending[0]:
+            waits.append(pending[0])
+            pending[0] = 0.0
+        return send(*args, **kwargs)
 
     monkeypatch.setattr(client, "_now", lambda: now[0])
     monkeypatch.setattr(client, "_sleep", sleep)
+    monkeypatch.setattr(http, "request", request)
     return waits
 
 
-def _remote(url: str, retry_seconds: float = 30.0) -> http.Remote:
+def _remote(url: str, retry_seconds: float = 15.0) -> http.Remote:
     return http.Remote(alias="team", url=url, token="t", retry_seconds=retry_seconds)
 
 
-def _post(url: str, retry_seconds: float = 30.0) -> dict:
-    return client.post_operation(_remote(url, retry_seconds), "demo", "task.create", dict(BODY))
+def _post(url: str, retry_seconds: float = 15.0, *, offline: bool = False) -> dict:
+    return client.post_operation(
+        _remote(url, retry_seconds), "demo", "task.create", dict(BODY), offline=offline
+    )
+
+
+def _closed_port() -> str:
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()  # nothing listens here
+    return f"http://127.0.0.1:{port}"
 
 
 @pytest.mark.parametrize(
@@ -111,10 +132,8 @@ def test_transient_answers_are_retried_with_the_same_op_id(
     with scripted([transient, transient, OK]) as server:
         data = _post(server["url"])
     assert data["seq"] == 7
-    retrying = [line for line in capsys.readouterr().err.splitlines() if "retrying" in line]
-    assert retrying == [
-        f"lattice: team: HTTP {transient[0]} {transient[2]['error']['code']}; retrying "
-        f"operation {OP_ID} for up to 30 s"
+    assert capsys.readouterr().err.splitlines() == [
+        f"lattice: server team ({server['url']}) is busy; retrying for up to 15 s"
     ]
     assert [b["op_id"] for b in server["bodies"]] == [OP_ID] * 3
     assert clock == [0.5, 1.0]  # backoff from 0.5 s, doubling
@@ -129,7 +148,7 @@ def test_retry_after_is_honored(clock: list[float]) -> None:
 def test_backoff_caps_at_five_seconds(clock: list[float]) -> None:
     busy = _error(503, "BOARD_BUSY")
     with scripted([busy] * 6 + [OK]) as server:
-        _post(server["url"])
+        _post(server["url"], retry_seconds=30)
     assert clock == [0.5, 1.0, 2.0, 4.0, 5.0, 5.0]
 
 
@@ -162,16 +181,76 @@ def test_a_lost_response_is_outcome_unknown(monkeypatch: pytest.MonkeyPatch) -> 
     assert len(server["bodies"]) == 1
 
 
-def test_never_connecting_is_server_unreachable(clock: list[float]) -> None:
-    sock = socket.socket()
-    sock.bind(("127.0.0.1", 0))
-    port = sock.getsockname()[1]
-    sock.close()  # nothing listens here
+def test_never_connecting_is_server_unreachable(
+    clock: list[float], capsys: pytest.CaptureFixture
+) -> None:
+    url = _closed_port()
     with pytest.raises(OpError) as exc:
-        _post(f"http://127.0.0.1:{port}", retry_seconds=2)
+        _post(url, retry_seconds=2)
     assert exc.value.code == "SERVER_UNREACHABLE"
-    assert "Nothing was written" in exc.value.message
-    assert clock == [0.5, 1.0]
+    assert exc.value.message == (
+        f"server team ({url}) is not available. Nothing was written; "
+        "run the command again when it is back."
+    )
+    details = exc.value.details
+    assert set(details) == {"remote", "url", "os_error", "waited_seconds"}
+    assert (details["remote"], details["url"]) == ("team", url)
+    assert "refused" in details["os_error"].lower()
+    assert details["waited_seconds"] == 2.0
+    assert clock == [0.5, 1.0, 0.5]  # the last wait ends at the deadline
+    err = capsys.readouterr().err
+    assert err.splitlines() == [
+        f"lattice: server team ({url}) is not available; retrying for up to 2 s"
+    ]
+    assert OP_ID not in err and "Errno" not in err
+
+
+def test_progress_every_five_seconds(clock: list[float], capsys: pytest.CaptureFixture) -> None:
+    """SPEC §8.6 "No silent wait": the not-available line at once, then one line
+    per 5 s, with no operation ID and no raw OS error."""
+    url = _closed_port()
+    with pytest.raises(OpError) as exc:
+        _post(url, retry_seconds=16)
+    assert exc.value.code == "SERVER_UNREACHABLE"
+    # Backoff 0.5, 1, 2, 4, 5 s, then the last wait ends at the 16 s deadline.
+    assert clock == [0.5, 1.0, 2.0, 4.0, 5.0, 3.5]
+    lines = capsys.readouterr().err.splitlines()
+    assert lines == [
+        f"lattice: server team ({url}) is not available; retrying for up to 16 s",
+        "lattice: team still not available (5 s of 16 s)",
+        "lattice: team still not available (10 s of 16 s)",
+        "lattice: team still not available (15 s of 16 s)",
+    ]
+
+
+def test_busy_progress_says_busy(clock: list[float], capsys: pytest.CaptureFixture) -> None:
+    busy = _error(503, "BOARD_BUSY")
+    with scripted([busy] * 4 + [OK]) as server:
+        _post(server["url"])
+    assert capsys.readouterr().err.splitlines() == [
+        f"lattice: server team ({server['url']}) is busy; retrying for up to 15 s",
+        "lattice: team still busy (5 s of 15 s)",
+    ]
+
+
+def test_offline_window_gives_up_at_once(
+    clock: list[float], capsys: pytest.CaptureFixture
+) -> None:
+    """SPEC §8.6 "No repeated wait": a first attempt that cannot connect ends
+    the write at once, with no progress lines."""
+    with pytest.raises(OpError) as exc:
+        _post(_closed_port(), offline=True)
+    assert exc.value.code == "SERVER_UNREACHABLE"
+    assert exc.value.details["waited_seconds"] == 0
+    assert clock == []
+    assert capsys.readouterr().err == ""
+
+
+def test_offline_window_still_retries_a_server_that_answers(clock: list[float]) -> None:
+    """Only a failed connection gives up early: a busy server is retried as usual."""
+    with scripted([_error(503, "BOARD_BUSY"), OK]) as server:
+        assert _post(server["url"], offline=True)["seq"] == 7
+    assert clock == [0.5]
 
 
 @pytest.mark.parametrize("header", ["-1", "NaN", "Infinity", "-Infinity", "1e309", "soon"])
@@ -217,3 +296,91 @@ def test_retry_seconds_within_bounds_is_accepted(
     path.write_text('{"remotes": {"team": {"url": "https://h.example.com", "retry_seconds": 0}}}')
     path.chmod(0o600)
     assert resolve_remote("team").retry_seconds == 0.0
+
+
+def _progress_threads() -> list[threading.Thread]:
+    return [t for t in threading.enumerate() if t.name == "lattice-write-progress"]
+
+
+def test_progress_keeps_coming_while_a_request_blocks_past_the_window(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    """SPEC §8.6 "No silent wait": a retry the server took and never answers
+    gets a line per interval for as long as it is in flight, past the retry
+    window up to its read timeout, worded so the numbers stay true; the ticker
+    stops with the call and nothing prints after it returns (real clock, a
+    0.2 s interval, a 0.6 s window, a 1.5 s read timeout)."""
+    monkeypatch.setattr(client, "PROGRESS_SECONDS", 0.2)
+    monkeypatch.setattr(client, "OP_POLICY", http.Policy(1.0, 1.5))
+    times: list[float] = []
+    write = client._progress
+    monkeypatch.setattr(
+        client, "_progress", lambda line: (times.append(time.monotonic()), write(line))
+    )
+    with scripted([_error(503, "BOARD_BUSY"), "hang"]) as server, pytest.raises(OpError) as exc:
+        started = time.monotonic()
+        _post(server["url"], retry_seconds=0.6)
+    ended = time.monotonic()
+    assert exc.value.code == "OUTCOME_UNKNOWN"
+    assert len(server["bodies"]) == 2  # the retry blocked for its whole read timeout
+    assert ended - started >= 1.9  # 0.5 s backoff + 1.5 s read timeout, past the window
+    assert not _progress_threads()
+    lines = capsys.readouterr().err.splitlines()
+    assert lines[0].endswith("is busy; retrying for up to 0.6 s")
+    within = [line for line in lines if "still busy" in line]
+    waiting = [line for line in lines if "still waiting for team to answer" in line]
+    assert within and len(waiting) >= 5
+    assert lines == [lines[0], *within, *waiting]  # the window's lines, then the waiting ones
+    assert all(
+        line.endswith("if the request reached it, the write may have applied") for line in waiting
+    )
+    assert all("op_" not in line and "errno" not in line.lower() for line in lines)
+    marks = [started, *times, ended]
+    assert max(b - a for a, b in zip(marks, marks[1:], strict=False)) < 0.5
+    time.sleep(0.5)  # a ticker left behind would print here
+    assert capsys.readouterr().err == ""
+    assert not _progress_threads()
+
+
+def test_a_first_attempt_in_flight_is_not_silent(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    """Before any failure the write is not retrying yet, but a request the
+    server took and has not answered still gets the waiting line."""
+    monkeypatch.setattr(client, "PROGRESS_SECONDS", 0.2)
+    monkeypatch.setattr(client, "OP_POLICY", http.Policy(1.0, 0.7))
+    with scripted(["hang"]) as server, pytest.raises(OpError) as exc:
+        _post(server["url"], retry_seconds=0.3)
+    assert exc.value.code == "OUTCOME_UNKNOWN"
+    lines = capsys.readouterr().err.splitlines()
+    assert len(lines) >= 2
+    assert all(line.startswith("lattice: still waiting for team to answer (") for line in lines)
+    assert not _progress_threads()
+
+
+def test_a_slow_first_attempt_does_not_print_two_lines_at_once(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    """The next line is scheduled from the previous one, not from the start: a
+    first attempt that took 5 s (a connect timeout) prints one line, not two."""
+    now = [1000.0]
+
+    def slow_refusal(*args: Any, **kwargs: Any) -> Any:
+        now[0] += 5.0
+        raise http.Unreachable("timed out")
+
+    def sleep(seconds: float) -> None:
+        now[0] += seconds
+
+    monkeypatch.setattr(client, "_now", lambda: now[0])
+    monkeypatch.setattr(client, "_sleep", sleep)
+    monkeypatch.setattr(http, "request", slow_refusal)
+    with pytest.raises(OpError):
+        _post("http://127.0.0.1:9", retry_seconds=12)
+    lines = capsys.readouterr().err.splitlines()
+    # The first line at 5 s (after the slow attempt), the next one 5 s later at
+    # 10.5 s; never a "5 s" line right after the first.
+    assert lines == [
+        "lattice: server team (http://127.0.0.1:9) is not available; retrying for up to 12 s",
+        "lattice: team still not available (10 s of 12 s)",
+    ]

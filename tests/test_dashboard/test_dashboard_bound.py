@@ -147,3 +147,33 @@ def test_a_forced_move_on_a_bound_checkout_records_force_and_the_browser_actor(
     assert event["data"]["reason"] == "straight to work"
     assert event["actor"] == "human:alice"
     assert event["origin"]["reported"]["source"] == "browser"
+
+
+def test_each_browser_write_looks_at_the_offline_window_afresh(
+    hosted_env: HostedEnv, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SPEC §8.6 "No repeated wait" per write, not per dashboard: a window that
+    was open when the dashboard started does not make later writes give up."""
+    import time
+
+    from lattice.remote import client, session
+    from lattice.remote.binding import Hosted
+
+    repo, task = bound_repo(hosted_env, tmp_path)
+    window = repo / ".lattice" / "cache" / "unreachable_until"
+    seen: list[bool] = []
+    post = client.post_operation
+
+    def spy(*args: object, offline: bool = False, **kwargs: object) -> dict:
+        seen.append(offline)
+        return post(*args, offline=offline, **kwargs)
+
+    monkeypatch.setattr(client, "post_operation", spy)
+    with dashboard(repo) as port:
+        window.write_text(f"{time.time() + 60:.3f}\n")
+        hosted = Hosted(repo, "team", "demo")
+        assert session.window_open_at_start(hosted)  # as a stale memo would hold
+        window.unlink()
+        status, body = request(port, "POST", f"/api/tasks/{task}/comment", {"body": "hi"})
+    assert status == 200, body
+    assert seen == [False]

@@ -126,10 +126,33 @@ def json_error_obj(code: str, message: str) -> dict:
     return {"code": code, "message": message}
 
 
+#: Error codes whose ``--json`` envelope carries the error's ``details``
+#: (SPEC §8.6: an unreachable server's URL and raw OS error). Only hosted
+#: checkouts raise them, so local output is unchanged.
+_ENVELOPE_DETAILS = frozenset({"SERVER_UNREACHABLE"})
+
+
+def _handled_details(code: str) -> dict | None:
+    """The ``details`` of the ``OpError`` being handled, for the codes above."""
+    import sys
+
+    exc = sys.exc_info()[1]
+    if code in _ENVELOPE_DETAILS and isinstance(exc, OpError) and exc.code == code:
+        return exc.details or None
+    return None
+
+
 def output_error(message: str, code: str, is_json: bool, exit_code: int = 1) -> NoReturn:
-    """Print error and exit. JSON errors go to stdout; human errors to stderr."""
+    """Print error and exit. JSON errors go to stdout; human errors to stderr.
+
+    Called while handling an ``OpError`` whose code is in ``_ENVELOPE_DETAILS``,
+    the JSON error also carries that error's ``details``."""
     if is_json:
-        click.echo(json_envelope(False, error=json_error_obj(code, message)))
+        error = json_error_obj(code, message)
+        details = _handled_details(code)
+        if details:
+            error["details"] = details
+        click.echo(json_envelope(False, error=error))
     else:
         click.echo(f"Error: {message}", err=True)
     raise SystemExit(exit_code)

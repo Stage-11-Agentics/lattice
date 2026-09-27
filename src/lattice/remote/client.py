@@ -8,18 +8,22 @@
   ``op_id`` for up to the remote's ``retry_seconds`` on a connection error, a
   read timeout, HTTP 429, 502, or 504, and HTTP 503 unless the envelope says
   ``BOARD_UNAVAILABLE``. It waits ``Retry-After`` when given, else backs off
-  from 0.5 s doubling to 5 s. When it gives up, ``SERVER_UNREACHABLE`` means no
-  attempt ever reached the server (nothing was written); ``OUTCOME_UNKNOWN``
-  means one may have been applied.
+  from 0.5 s doubling to 5 s, and says so on stderr (never silently). When it
+  gives up, ``SERVER_UNREACHABLE`` means no attempt ever reached the server
+  (nothing was written); ``OUTCOME_UNKNOWN`` means one may have been applied.
+  A write started inside the offline window gives up at once when its first
+  attempt cannot connect, so a stopped server costs one wait per outage.
 """
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import sys
+import threading
 import time
 import urllib.parse
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any
 
 from lattice.core.errors import OpError
@@ -31,6 +35,8 @@ from lattice.remote import http
 OP_POLICY = http.Policy(connect_seconds=5.0, response_seconds=90.0)
 FIRST_BACKOFF_SECONDS = 0.5
 MAX_BACKOFF_SECONDS = 5.0
+#: A retrying write reports progress this often (SPEC §8.6).
+PROGRESS_SECONDS = 5.0
 
 #: Test seams: the clock the retry budget runs on, and the sleep between attempts.
 _now: Callable[[], float] = time.monotonic
@@ -102,55 +108,174 @@ def server_unreachable(remote: http.Remote, detail: str) -> OpError:
     )
 
 
-def post_operation(remote: http.Remote, project: str, op_name: str, body: dict) -> dict:
+def write_unreachable(remote: http.Remote, os_error: str, waited: float) -> OpError:
+    """A write that never reached the server (SPEC §8.6): plain words, with the
+    raw OS error only in ``details``."""
+    return OpError(
+        "SERVER_UNREACHABLE",
+        f"server {remote.alias} ({remote.url}) is not available. Nothing was written; "
+        "run the command again when it is back.",
+        {
+            "remote": remote.alias,
+            "url": remote.url,
+            "os_error": os_error,
+            "waited_seconds": round(max(0.0, waited), 1),
+        },
+    )
+
+
+def _progress(line: str) -> None:
+    print(f"lattice: {line}", file=sys.stderr)
+
+
+class _Progress:
+    """The progress lines of one write (SPEC §8.6 "No silent wait").
+
+    While the write retries: the first line after the first failed attempt,
+    then one line every ``PROGRESS_SECONDS``, each scheduled from the previous
+    one. The retry loop ticks while it sleeps; a ticker thread ticks while any
+    request is in flight (a connect, or a server that took the request and has
+    not answered), for as long as it is, so the cadence holds past the retry
+    window too, until the request's own read timeout. A request in flight
+    before the first failure, or after the window, gets the waiting line.
+    """
+
+    def __init__(self, remote: http.Remote, started: float, deadline: float):
+        self.remote = remote
+        self.started = started
+        self.deadline = deadline
+        self.state = "not available"
+        self.retrying = False
+        self.next = started + PROGRESS_SECONDS
+        self._lock = threading.Lock()
+
+    def begin(self, now: float) -> None:
+        with self._lock:
+            if self.retrying:
+                return
+            self.retrying = True
+            _progress(
+                f"server {self.remote.alias} ({self.remote.url}) is {self.state}; retrying "
+                f"for up to {self.remote.retry_seconds:g} s"
+            )
+            self.next = now + PROGRESS_SECONDS
+
+    def tick(self, *, in_flight: bool = False) -> None:
+        with self._lock:
+            now = _now()
+            if now < self.next:
+                return
+            self.next = now + PROGRESS_SECONDS
+            if self.retrying and now < self.deadline:
+                _progress(
+                    f"{self.remote.alias} still {self.state} ({now - self.started:.0f} s of "
+                    f"{self.remote.retry_seconds:g} s)"
+                )
+            elif in_flight:
+                _progress(
+                    f"still waiting for {self.remote.alias} to answer "
+                    f"({now - self.started:.0f} s); if the request reached it, the write "
+                    "may have applied"
+                )
+            # Otherwise the deadline has passed between attempts: the error
+            # line follows at once.
+
+    def sleep(self, seconds: float) -> None:
+        """Sleep *seconds*, in slices so each progress line lands on time."""
+        until = _now() + seconds
+        while True:
+            self.tick()
+            now = _now()
+            if now >= until:
+                return
+            _sleep(min(until, self.next) - now)
+
+    @contextlib.contextmanager
+    def in_flight(self) -> Iterator[None]:
+        """Keep the lines coming while one request is in flight; the ticker
+        stops (and is joined) before this returns, so nothing prints after."""
+        stop = threading.Event()
+
+        def run() -> None:
+            while not stop.wait(max(0.01, self.next - _now())):
+                self.tick(in_flight=True)
+
+        ticker = threading.Thread(target=run, name="lattice-write-progress", daemon=True)
+        ticker.start()
+        try:
+            yield
+        finally:
+            stop.set()
+            ticker.join()
+
+
+def post_operation(
+    remote: http.Remote,
+    project: str,
+    op_name: str,
+    body: dict,
+    *,
+    offline: bool = False,
+) -> dict:
     """``POST /v1/projects/<project>/ops/<op_name>`` with retries; returns the
-    response's ``data`` (``{result, seq, op_id}``). See the module docstring."""
+    response's ``data`` (``{result, seq, op_id}``). See the module docstring.
+
+    *offline*: the offline window was already open when the command started, so
+    a first attempt that cannot connect gives up at once (no repeated wait).
+    It writes progress lines to stderr (SPEC §8.6): once retrying, at once and
+    then every 5 seconds; and every 5 seconds while any request is in flight,
+    past the retry window too. They name no operation ID and no raw OS error.
+    """
     op_id = body["op_id"]
     path = (
         f"/v1/projects/{urllib.parse.quote(project, safe='')}/ops/"
         f"{urllib.parse.quote(op_name, safe='.')}"
     )
-    deadline = _now() + remote.retry_seconds
+    started = _now()
+    deadline = started + remote.retry_seconds
+    progress = _Progress(remote, started, deadline)
     backoff = FIRST_BACKOFF_SECONDS
     reached = False
-    announced = False
+    first = True
     while True:
         wait: float | None = None
         try:
-            response = http.request(
-                remote,
-                "POST",
-                path,
-                json_body=body,
-                policy=OP_POLICY,
-                what=f"operation {op_name}",
-            )
+            with progress.in_flight():
+                response = http.request(
+                    remote,
+                    "POST",
+                    path,
+                    json_body=body,
+                    policy=OP_POLICY,
+                    what=f"operation {op_name}",
+                )
             return response.data()
         except http.Unreachable as exc:
             reached = reached or exc.sent
             detail = exc.reason
+            progress.state = "not available"
+            if first and offline and not exc.sent:
+                raise write_unreachable(remote, detail, _now() - started) from None
         except http.ServerError as exc:
             if not _retryable(exc):
                 raise OpError(exc.code, exc.message, exc.details) from None
             reached = True
             detail = f"HTTP {exc.status} {exc.code}"
+            progress.state = "busy"
             wait = exc.retry_after
+        first = False
+        now = _now()
         if wait is None:
-            wait = backoff
+            # The last backoff ends at the deadline, so the retries fill the
+            # whole budget; a server's Retry-After past it is honored by giving up.
+            wait = min(backoff, max(0.0, deadline - now))
             backoff = min(backoff * 2, MAX_BACKOFF_SECONDS)
-        if _now() + wait > deadline:
+        if now >= deadline or now + wait > deadline:
             if reached:
                 raise outcome_unknown(remote, op_id, detail)
-            raise server_unreachable(remote, detail)
-        if not announced:
-            # One line, so a write waiting out a restart does not look hung.
-            announced = True
-            print(
-                f"lattice: {remote.alias}: {detail}; retrying operation {op_id} for up to "
-                f"{remote.retry_seconds:g} s",
-                file=sys.stderr,
-            )
-        _sleep(wait)
+            raise write_unreachable(remote, detail, now - started)
+        progress.begin(now)  # no silent wait: say so at once, in plain words
+        progress.sleep(wait)
 
 
 def op_status(remote: http.Remote, project: str, op_id: str) -> dict:

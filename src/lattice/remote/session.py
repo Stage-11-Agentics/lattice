@@ -48,9 +48,9 @@ _fresh: set[Path] = set()
 _locks: dict[Path, contextlib.ExitStack] = {}
 #: Roots whose version lines this process already printed.
 _announced: set[Path] = set()
-#: The offline-window file as it was before this command first opened it, by
-#: root (``None``: absent), so a refused write can put it back.
-_window_before: dict[Path, bytes | None] = {}
+#: Whether the offline window was open when this command first looked, by root
+#: (a write started inside it does not wait again, SPEC §8.6).
+_window_at_start: dict[Path, bool] = {}
 #: Whether this process filters unknown-event warnings by the server's types.
 _filtering_types = False
 
@@ -61,7 +61,7 @@ def reset_process_state() -> None:
         release_read_lock(root)
     _fresh.clear()
     _announced.clear()
-    _window_before.clear()
+    _window_at_start.clear()
     _restore_output()
     global _filtering_types
     if _filtering_types:
@@ -100,13 +100,30 @@ def in_unreachable_window(hosted: Hosted) -> bool:
     return time.time() < until
 
 
+def window_open_at_start(hosted: Hosted) -> bool:
+    """Whether the offline window was open when this command first asked, before
+    its own read phase could open it (SPEC §8.6, "No repeated wait")."""
+    key = hosted.root.resolve()
+    if key not in _window_at_start:
+        _window_at_start[key] = in_unreachable_window(hosted)
+    return _window_at_start[key]
+
+
+def forget_window_at_start(root: Path) -> None:
+    """Let the next write on *root* look at the offline window afresh: a process
+    that writes again and again (``lattice dashboard``) calls this before each
+    write, so each one waits once per outage like a CLI command."""
+    _window_at_start.pop(Path(root).resolve(), None)
+
+
 @contextlib.contextmanager
-def _existing_cache_dir(hosted: Hosted) -> Iterator[int | None]:
+def _existing_cache_dir(hosted: Hosted, *, create: bool = False) -> Iterator[int | None]:
     """A descriptor of an existing ``cache/`` (never followed, SPEC §9.4), or
     ``None`` when there is none or it is not a real directory: the offline window
-    and the server info are best effort."""
+    and the server info are best effort. *create* makes a missing ``.lattice/``
+    and ``cache/`` first (never through a symlink)."""
     try:
-        fd = cache_paths.open_dir(hosted.root, LATTICE_DIR, "cache", create=False)
+        fd = cache_paths.open_dir(hosted.root, LATTICE_DIR, "cache", create=create)
     except OSError:
         yield None
         return
@@ -117,37 +134,14 @@ def _existing_cache_dir(hosted: Hosted) -> Iterator[int | None]:
 
 
 def open_unreachable_window(hosted: Hosted) -> None:
-    with _existing_cache_dir(hosted) as fd:
+    """Record the offline window (now plus 15 s), in a binding-only checkout too:
+    its missing cache directories are made first (SPEC §8.6, §9.5)."""
+    with _existing_cache_dir(hosted, create=True) as fd:
         if fd is None:
             return
-        key = hosted.root.resolve()
-        if key not in _window_before:
-            try:
-                _window_before[key] = cache_paths.read_file(fd, UNREACHABLE_FILE)
-            except OSError:
-                _window_before[key] = None
         with contextlib.suppress(OSError):
             until = f"{time.time() + UNREACHABLE_WINDOW_SECONDS:.3f}\n"
             cache_paths.write_file(fd, UNREACHABLE_FILE, until.encode("utf-8"))
-
-
-def restore_unreachable_window(hosted: Hosted) -> None:
-    """Undo this command's change to the offline window.
-
-    A write refused with ``SERVER_UNREACHABLE`` leaves the checkout exactly as
-    it was (G-8), including the window its own read phase opened.
-    """
-    key = hosted.root.resolve()
-    if key not in _window_before:
-        return
-    before = _window_before.pop(key)
-    with _existing_cache_dir(hosted) as fd, contextlib.suppress(OSError):
-        if fd is None:
-            return
-        if before is None:
-            cache_paths.remove_file(fd, UNREACHABLE_FILE)
-        else:
-            cache_paths.write_file(fd, UNREACHABLE_FILE, before)
 
 
 def close_unreachable_window(hosted: Hosted) -> None:
@@ -211,6 +205,7 @@ def ensure_fresh(hosted: Hosted, *, defer_to_running_sync: bool = False) -> None
     key = hosted.root.resolve()
     if key in _fresh:
         return
+    window_open_at_start(hosted)
     _fresh.add(key)
     catch_up_unless_live(hosted, defer_to_running_sync=defer_to_running_sync)
 

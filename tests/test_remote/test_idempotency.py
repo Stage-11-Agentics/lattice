@@ -357,7 +357,7 @@ def test_outcome_unknown_names_the_op_and_op_status_finds_it(
     (op_id,) = dropper.dropped
     assert down_retries == 1
     assert op_id in error["message"] and "lattice remote op-status" in error["message"]
-    assert "retrying operation " + op_id in result.stderr  # it did retry, same op_id
+    assert "is not available; retrying for up to 1 s" in result.stderr  # it did retry
     shown = run_cli(repo, "remote", "op-status", op_id, "--json")
     assert shown.exit_code == 0, shown.output
     assert json.loads(shown.stdout)["data"]["state"] == "committed"

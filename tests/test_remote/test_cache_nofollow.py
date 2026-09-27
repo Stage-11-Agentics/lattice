@@ -114,7 +114,7 @@ def _offline_window(repo: Path, _env: HostedEnv, _capsys: Any) -> None:
     hosted = _hosted(repo)
     session.open_unreachable_window(hosted)
     assert not session.in_unreachable_window(hosted)
-    session.restore_unreachable_window(hosted)
+    assert not session.window_open_at_start(hosted)
     session.open_unreachable_window(hosted)
     session.close_unreachable_window(hosted)
 
