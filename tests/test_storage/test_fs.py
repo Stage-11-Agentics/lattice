@@ -140,14 +140,14 @@ class TestFsyncDirectory:
         target = tmp_path / "output.json"
         with patch("lattice.storage.fs._fsync_directory") as mock_fsync:
             atomic_write(target, "content\n")
-        mock_fsync.assert_called_once_with(tmp_path)
+        mock_fsync.assert_called_once_with(tmp_path, strict=False)
 
     def test_called_during_jsonl_append(self, tmp_path: Path) -> None:
         """jsonl_append should call _fsync_directory on the parent dir."""
         target = tmp_path / "events.jsonl"
         with patch("lattice.storage.fs._fsync_directory") as mock_fsync:
             jsonl_append(target, '{"ok":true}\n')
-        mock_fsync.assert_called_once_with(tmp_path)
+        mock_fsync.assert_called_once_with(tmp_path, strict=False)
 
     def test_does_not_raise_on_oserror(self, tmp_path: Path) -> None:
         """_fsync_directory should silently ignore OSError (e.g. macOS)."""
