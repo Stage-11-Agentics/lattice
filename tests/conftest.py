@@ -276,18 +276,24 @@ def worktree_repo(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(autouse=True)
-def _strip_caller_shell_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Strip every ``LATTICE_*`` / ``C11_*`` / ``CMUX_*`` variable the shell exported.
+def purge_caller_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Purge every ``LATTICE_*`` / ``C11_*`` / ``CMUX_*`` variable, then set intentional values.
 
     A ``LATTICE_ROOT`` exported in the shell that runs pytest points any test
     that relies on cwd discovery at a real board (it once let a test claim a
     task on the live board), and ``C11_*`` makes the c11 bridge drive the
-    caller's real c11 session. Prefix matching covers variables nobody listed.
-    Tests that need one set it themselves (``CliRunner`` ``env=``, ``monkeypatch``).
+    caller's real c11 session. Prefix matching covers variables nobody listed,
+    with no exception for caller-supplied values.
     """
     import os
 
     for key in list(os.environ):
-        if key.startswith(("LATTICE_", "C11_", "CMUX_")) and key != "LATTICE_NO_UPDATE_CHECK":
+        if key.startswith(("LATTICE_", "C11_", "CMUX_")):
             monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("LATTICE_NO_UPDATE_CHECK", "1")
+
+
+@pytest.fixture(autouse=True)
+def _strip_caller_shell_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every test starts without the caller's shell; tests that need a value set it."""
+    purge_caller_env(monkeypatch)
