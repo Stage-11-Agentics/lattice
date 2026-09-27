@@ -109,18 +109,27 @@ def restore_private_modes(root: Path) -> None:
     first lets classification and the sync see inside. Anything else is left
     as it is and reported where it is used (:func:`cache_access_error`)."""
     lattice_dir = Path(root) / LATTICE_DIR
-    for path in (lattice_dir, *(lattice_dir / name for name in GUARDED)):
-        try:
-            info = os.lstat(path)
-        except OSError:
-            continue
-        if (
-            stat.S_ISDIR(info.st_mode)
-            and info.st_uid == os.getuid()
-            and stat.S_IMODE(info.st_mode) & PRIVATE_DIR_MODE != PRIVATE_DIR_MODE
-        ):
-            with contextlib.suppress(OSError):
-                os.chmod(path, PRIVATE_DIR_MODE)
+    # ``.lattice`` first, never followed: a symlink or a file there is left for
+    # the layout check to refuse, and nothing beneath it is looked at.
+    if not _restore_owned_dir(lattice_dir):
+        return
+    for name in GUARDED:
+        _restore_owned_dir(lattice_dir / name)
+
+
+def _restore_owned_dir(path: Path) -> bool:
+    """0700 on *path* when it is a real directory (not followed) this user owns
+    but cannot fully use; returns whether it is a real directory."""
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return False
+    if not stat.S_ISDIR(info.st_mode):
+        return False
+    if _owned(info) and stat.S_IMODE(info.st_mode) & PRIVATE_DIR_MODE != PRIVATE_DIR_MODE:
+        with contextlib.suppress(OSError):
+            os.chmod(path, PRIVATE_DIR_MODE)
+    return True
 
 
 def require_safe_layout(root: Path) -> None:
@@ -143,38 +152,37 @@ def routes_to_server(root: Path) -> bool:
     )
 
 
-def cache_access_error(exc: OSError) -> OpError | None:
-    """What a command reports when *exc* came from a path under a hosted
-    checkout's ``.lattice/``, or ``None`` when it did not.
+def cache_access_error(exc: BaseException) -> OpError | None:
+    """What a command reports when *exc* is, or was raised from, an ``OSError``
+    on a path under a hosted checkout's ``.lattice/``; ``None`` otherwise.
 
     The syncer keeps that tree read-only and owns its modes, so a path there
     this process cannot use (a runtime directory locked down by hand, a file
     another user owns, a write that bypassed the syncer) is ``BOARD_IS_CACHE``
-    with the way out, never a traceback. A relative name (a descriptor-relative
-    call) is placed against the command's own root, and only for a permission
-    error on a name that is not the caller's own file in the current directory."""
+    with the way out, never a traceback. The ``OSError`` may be wrapped (a
+    replay's ``AuthoritativeLogError`` is raised from one); only an absolute
+    filename is placed, so the answer never depends on the process's cwd
+    (descriptor-level I/O names its path through :func:`naming`)."""
     from lattice.core.errors import BoardIsCache
 
-    if exc.filename is None:
+    os_error = _os_error_in_chain(exc)
+    if os_error is None or os_error.filename is None:
         return None
-    path = Path(os.fsdecode(exc.filename))
-    root: Path | None = None
-    shown = str(path)
-    if path.is_absolute():
-        for parent in path.parents:
-            if parent.name == LATTICE_DIR and _routes_quietly(parent.parent):
-                root = parent.parent
-                shown = str(path.relative_to(root))
-                break
-    elif exc.errno in (errno.EACCES, errno.EPERM, errno.EROFS) and not os.path.lexists(path):
-        from lattice.storage.fs import LatticeRootError, find_root
-
-        with contextlib.suppress(LatticeRootError, OSError):
-            found = find_root()
-            if found is not None and _routes_quietly(found):
-                root = found
+    path = Path(os.fsdecode(os_error.filename))
+    if not path.is_absolute():
+        return None
+    root = next(
+        (
+            candidate.parent
+            for candidate in (path, *path.parents)
+            if candidate.name == LATTICE_DIR and _routes_quietly(candidate.parent)
+        ),
+        None,
+    )
     if root is None:
         return None
+    exc = os_error
+    shown = path.relative_to(root).as_posix()
     return BoardIsCache(
         f"this is a read-only mirror of {_mirror_label(root)}, and it cannot use "
         f"{shown} ({exc.strerror}). Restore that path's permissions, or run "
@@ -186,6 +194,17 @@ def cache_access_error(exc: OSError) -> OpError | None:
             "errno": errno.errorcode.get(exc.errno or 0, str(exc.errno)),
         },
     )
+
+
+def _os_error_in_chain(exc: BaseException) -> OSError | None:
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        if isinstance(current, OSError):
+            return current
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return None
 
 
 def _routes_quietly(root: Path) -> bool:
@@ -214,31 +233,53 @@ def require_safe_board(lattice_dir: Path) -> None:
 def open_child(parent_fd: int, name: str, path: Path, *, create: bool = True) -> int:
     """Open directory *name* under *parent_fd* without following it, making it
     first when *create*, and set it to 0700; *path* names it in errors."""
-    if create:
-        with contextlib.suppress(FileExistsError):
-            os.mkdir(name, PRIVATE_DIR_MODE, dir_fd=parent_fd)
-    try:
+    with naming(path):
+        if create:
+            with contextlib.suppress(FileExistsError):
+                os.mkdir(name, PRIVATE_DIR_MODE, dir_fd=parent_fd)
         try:
-            fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | NOFOLLOW, dir_fd=parent_fd)
-        except PermissionError:
-            # Its mode is 0700 (set below on every open): one of ours locked
-            # down by hand is restored first; anything else is reported.
-            info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-            if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
-                raise
-            os.chmod(name, PRIVATE_DIR_MODE, dir_fd=parent_fd)
-            fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | NOFOLLOW, dir_fd=parent_fd)
-    except OSError as exc:
-        if exc.errno in (errno.ELOOP, errno.ENOTDIR):
-            raise UnsafeCachePath(path) from exc
-        # A descriptor-relative call names only *name*; report the full path.
-        raise type(exc)(exc.errno, exc.strerror, str(path)) from exc
+            try:
+                fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | NOFOLLOW, dir_fd=parent_fd)
+            except PermissionError:
+                # Its mode is 0700 (set below on every open): one of ours locked
+                # down by hand is restored first; anything else is reported.
+                info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+                if not stat.S_ISDIR(info.st_mode) or not _owned(info):
+                    raise
+                os.chmod(name, PRIVATE_DIR_MODE, dir_fd=parent_fd)
+                fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | NOFOLLOW, dir_fd=parent_fd)
+        except OSError as exc:
+            if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+                raise UnsafeCachePath(path) from exc
+            raise
+        try:
+            os.fchmod(fd, PRIVATE_DIR_MODE)
+        except BaseException:
+            os.close(fd)
+            raise
+        return fd
+
+
+@contextlib.contextmanager
+def naming(path: Path) -> Iterator[None]:
+    """Re-raise an ``OSError`` from descriptor-level I/O on *path* (a relative
+    name, or no name at all, as ``fchmod`` gives) with *path* as its filename,
+    so it can be placed in its checkout (:func:`cache_access_error`)."""
     try:
-        os.fchmod(fd, PRIVATE_DIR_MODE)
-    except BaseException:
-        os.close(fd)
-        raise
-    return fd
+        yield
+    except OSError as exc:
+        if isinstance(exc, UnsafeCachePath) or (
+            exc.filename is not None and os.path.isabs(os.fsdecode(exc.filename))
+        ):
+            raise
+        raise type(exc)(exc.errno, exc.strerror, str(path)) from exc
+
+
+def _owned(info: os.stat_result) -> bool:
+    """Whether this process's user owns *info* (never on a platform without
+    POSIX user IDs, where hosted mode is refused anyway)."""
+    getuid = getattr(os, "getuid", None)
+    return getuid is not None and info.st_uid == getuid()
 
 
 def open_dir(base: Path, *parts: str, create: bool = True) -> int:

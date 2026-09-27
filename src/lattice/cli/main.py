@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import NoReturn
 
 import click
 
@@ -263,20 +264,25 @@ class _LatticeGroup(click.Group):
         try:
             return super().invoke(ctx)
         except OpError as exc:
-            from lattice.cli.helpers import output_error
-
-            output_error(exc.message, exc.code, "--json" in ctx.meta.get("lattice.argv", ()))
-        except OSError as exc:
-            # A hosted checkout's read-only mirror refused this process a path.
+            _render(ctx, exc)
+        except Exception as exc:
+            # A hosted checkout's read-only mirror refused this process a path
+            # (an OSError, or one a replay wrapped); anything else is re-raised.
             from lattice.remote.cache_paths import cache_access_error
 
             mapped = cache_access_error(exc)
             if mapped is None:
                 raise
-            from lattice.cli.helpers import _scrub_hosted_output, output_error
+            _render(ctx, mapped)
 
-            _scrub_hosted_output()  # the message quotes the binding (SPEC §4)
-            output_error(mapped.message, mapped.code, "--json" in ctx.meta.get("lattice.argv", ()))
+
+def _render(ctx: click.Context, exc: OpError) -> NoReturn:
+    from lattice.cli.helpers import output_error
+
+    session = sys.modules.get("lattice.remote.session")
+    if session is not None:
+        session.scrub_output()  # a hosted message can quote the binding (SPEC §4)
+    output_error(exc.message, exc.code, "--json" in ctx.meta.get("lattice.argv", ()))
 
 
 def _end_hosted_command() -> None:

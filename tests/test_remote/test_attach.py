@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import stat
 from pathlib import Path
 
@@ -79,6 +80,7 @@ def test_hosted_mode_needs_a_posix_platform(
     repo = make_repo(tmp_path / "repo")
     assert run_cli(repo, "remote", "attach", "team", "demo").exit_code == 0
     monkeypatch.setattr(binding, "hosted_supported", lambda: False)
+    monkeypatch.delattr(os, "getuid", raising=False)  # no POSIX user IDs either
     for args in (
         ("list", "--json"),
         ("create", "x", "--actor", "agent:a", "--json"),

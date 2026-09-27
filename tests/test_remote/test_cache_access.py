@@ -155,19 +155,30 @@ class TestCacheAccessError:
     def test_no_filename_is_not_mapped(self) -> None:
         assert cache_access_error(OSError(errno.ENOSPC, "No space left on device")) is None
 
-    def test_relative_name_placed_against_the_command_root(
+    def test_the_lattice_directory_itself(self, synced: Path) -> None:
+        exc = PermissionError(errno.EACCES, "Permission denied", str(synced / ".lattice"))
+        mapped = cache_access_error(exc)
+        assert mapped is not None and mapped.details["path"] == ".lattice"
+
+    def test_a_wrapped_os_error_is_found(self, synced: Path) -> None:
+        from lattice.storage.operations import AuthoritativeLogError
+
+        path = synced / ".lattice" / "events" / "x.jsonl"
+        try:
+            try:
+                raise PermissionError(errno.EACCES, "Permission denied", str(path))
+            except OSError as inner:
+                raise AuthoritativeLogError(str(inner), path=path) from inner
+        except AuthoritativeLogError as wrapped:
+            mapped = cache_access_error(wrapped)
+        assert mapped is not None and mapped.details["path"] == ".lattice/events/x.jsonl"
+
+    def test_a_relative_name_is_never_placed_by_the_cwd(
         self, synced: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.chdir(synced)
         exc = PermissionError(errno.EACCES, "Permission denied", "cache_rw.lock")
-        mapped = cache_access_error(exc)
-        assert mapped is not None
-        assert mapped.details["path"] == "cache_rw.lock"
-        missing = FileNotFoundError(errno.ENOENT, "No such file or directory", "input.md")
-        assert cache_access_error(missing) is None
-        (synced / "mine.md").write_text("an unreadable --file of the caller's\n")
-        own = PermissionError(errno.EACCES, "Permission denied", "mine.md")
-        assert cache_access_error(own) is None
+        assert cache_access_error(exc) is None
 
 
 def test_a_sync_failing_after_a_write_is_only_a_notice(
@@ -263,3 +274,155 @@ def test_an_op_error_no_command_renders_is_not_a_traceback(
     assert plain.output == "Error: not a real directory\n"
     envelope = json.loads(run_cli(tmp_path, "boom", "--json").output)
     assert envelope["error"] == {"code": "BINDING_CONFLICT", "message": "not a real directory"}
+
+
+# ---------------------------------------------------------------------------
+# One unreadable synced file: the replay wraps the PermissionError
+# (AuthoritativeLogError); every surface still reports BOARD_IS_CACHE.
+# ---------------------------------------------------------------------------
+
+
+def _lock_one_events_file(repo: Path) -> tuple[str, str]:
+    ids = json.loads((repo / ".lattice" / "ids.json").read_text())
+    task_id = ids["map"]["DEM-1"]
+    events = repo / ".lattice" / "events" / f"{task_id}.jsonl"
+    events.chmod(0)
+    return task_id, events.relative_to(repo).as_posix()
+
+
+def test_unreadable_events_file_cli(synced: Path) -> None:
+    _task, rel = _lock_one_events_file(synced)
+    result = _list(synced, "--json")
+    assert result.exit_code == 1
+    error = json.loads(result.output)["error"]
+    assert error["code"] == "BOARD_IS_CACHE"
+    assert f"cannot use {rel} (Permission denied)" in error["message"]
+
+
+def test_unreadable_events_file_mcp_tool(
+    synced: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lattice.mcp.tools import LatticeToolError, lattice_list
+
+    _task, rel = _lock_one_events_file(synced)
+    monkeypatch.chdir(tmp_path)  # an MCP server started elsewhere
+    with pytest.raises(LatticeToolError) as raised:
+        lattice_list(lattice_root=str(synced))
+    assert raised.value.code == "BOARD_IS_CACHE"
+    assert raised.value.details["path"] == rel
+
+
+def test_unreadable_events_file_mcp_resource(
+    synced: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lattice.mcp.resources import resource_all_tasks
+    from lattice.mcp.tools import LatticeToolError
+
+    _task, rel = _lock_one_events_file(synced)
+    monkeypatch.chdir(synced)
+    with pytest.raises(LatticeToolError) as raised:
+        resource_all_tasks()
+    assert raised.value.code == "BOARD_IS_CACHE"
+    assert raised.value.details["path"] == rel
+
+
+def test_unreadable_events_file_dashboard_get(synced: Path, hosted_env: HostedEnv) -> None:
+    from tests.test_dashboard.bound_helpers import dashboard, request
+
+    with dashboard(synced, follower_factory=_NoFollower, restart_after=3600) as port:
+        task_id, rel = _lock_one_events_file(synced)
+        status, payload = request(port, "GET", f"/api/tasks/{task_id}")
+    assert status == 500, payload
+    assert payload["error"]["code"] == "BOARD_IS_CACHE"
+    assert payload["error"]["details"]["path"] == rel
+
+
+def test_dashboard_post_maps_a_cache_error_too(
+    synced: Path, hosted_env: HostedEnv, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lattice.boards import HostedBoard
+    from tests.test_dashboard.bound_helpers import dashboard, request
+
+    task_id = json.loads((synced / ".lattice" / "ids.json").read_text())["map"]["DEM-1"]
+    lock = synced / ".lattice" / "locks" / "cache_rw.lock"
+
+    def refused(*_args, **_kwargs):  # noqa: ANN202
+        raise PermissionError(errno.EACCES, "Permission denied", str(lock))
+
+    with dashboard(synced, follower_factory=_NoFollower, restart_after=3600) as port:
+        monkeypatch.setattr(HostedBoard, "execute", refused)
+        status, payload = request(port, "POST", f"/api/tasks/{task_id}/comment", {"body": "hi"})
+    assert status == 500, payload
+    assert payload["error"]["code"] == "BOARD_IS_CACHE"
+    assert payload["error"]["details"]["path"] == ".lattice/locks/cache_rw.lock"
+
+
+# ---------------------------------------------------------------------------
+# Descriptor-level I/O names its absolute path (never placed by the cwd).
+# ---------------------------------------------------------------------------
+
+
+def test_a_foreign_owned_cache_directory_fails_fchmod_clearly(
+    synced: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An accessible directory another user owns: ``fchmod`` gives EPERM with
+    no filename at all."""
+    from lattice.remote import cache_paths
+
+    real_fchmod = os.fchmod
+
+    def fchmod(fd: int, mode: int) -> None:
+        if os.fstat(fd).st_ino == (synced / ".lattice" / "cache").stat().st_ino:
+            raise PermissionError(errno.EPERM, "Operation not permitted")
+        real_fchmod(fd, mode)
+
+    monkeypatch.setattr(cache_paths.os, "fchmod", fchmod)
+    result = _list(synced, "--json")
+    assert result.exit_code == 1
+    error = json.loads(result.output)["error"]
+    assert error["code"] == "BOARD_IS_CACHE"
+    assert "cannot use .lattice/cache (Operation not permitted)" in error["message"]
+
+
+def test_an_unwritable_lock_file_from_mcp_with_an_explicit_root(
+    synced: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lattice.mcp.tools import LatticeToolError, lattice_list
+
+    (synced / ".lattice" / "locks" / "cache_rw.lock").chmod(0)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    with pytest.raises(LatticeToolError) as raised:
+        lattice_list(lattice_root=str(synced))
+    assert raised.value.code == "BOARD_IS_CACHE"
+    assert raised.value.details["path"] == ".lattice/locks/cache_rw.lock"
+
+
+# ---------------------------------------------------------------------------
+# MCP: the whole tool and resource read is covered, not only freshness.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("surface", ["tool", "resource"])
+def test_mcp_config_read_after_a_successful_freshness_step(
+    synced: Path, monkeypatch: pytest.MonkeyPatch, surface: str
+) -> None:
+    from lattice.mcp.resources import resource_config
+    from lattice.mcp.tools import LatticeToolError, lattice_config
+
+    fresh: list[Path] = []
+    real_ensure_fresh = session.ensure_fresh
+
+    def ensure_fresh(hosted, **kwargs):  # noqa: ANN001, ANN202
+        real_ensure_fresh(hosted, **kwargs)
+        fresh.append(hosted.root)  # returned: the freshness step succeeded
+        (hosted.root / ".lattice" / "config.json").chmod(0)
+
+    monkeypatch.setattr(session, "ensure_fresh", ensure_fresh)
+    monkeypatch.chdir(synced)
+    with pytest.raises(LatticeToolError) as raised:
+        lattice_config(lattice_root=str(synced)) if surface == "tool" else resource_config()
+    assert fresh
+    assert raised.value.code == "BOARD_IS_CACHE"
+    assert raised.value.details["path"] == ".lattice/config.json"
