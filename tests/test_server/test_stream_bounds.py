@@ -27,7 +27,7 @@ def board(tmp_path: Path) -> Iterator[BoardServer]:
             "replay_reset_entries": 5,
         }
     }
-    with serve_board(tmp_path, config=config, heartbeat_seconds=HEARTBEAT) as served:
+    with serve_board(tmp_path, audit=False, config=config, heartbeat_seconds=HEARTBEAT) as served:
         yield served
 
 
@@ -139,7 +139,7 @@ def test_an_abort_ends_a_stream_blocked_in_send_and_releases_its_connection(
     ends a stream at once, even while its pump waits on a send a stalled client
     never drains, and aborts the connection so uvicorn's graceful shutdown has
     nothing to wait for."""
-    with serve_board(tmp_path, heartbeat_seconds=HEARTBEAT) as board:
+    with serve_board(tmp_path, audit=False, heartbeat_seconds=HEARTBEAT) as board:
         task = board.op("task.create", {"title": "t"})["task"]["id"]
         stalled = stalled_stream(board)
         project = board.project

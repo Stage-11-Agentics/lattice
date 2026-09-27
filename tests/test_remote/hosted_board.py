@@ -64,7 +64,7 @@ class RealHostedBoard:
 def real_hosted_board(
     tmp_path: Path, monkeypatch, heartbeat: float = 0.2
 ) -> Iterator[RealHostedBoard]:
-    with serve_board(tmp_path / "server", heartbeat_seconds=heartbeat) as server:
+    with serve_board(tmp_path / "server", audit=False, heartbeat_seconds=heartbeat) as server:
         client = bind(tmp_path / "client", server.url, server.token, monkeypatch)
         outcome = cache.catch_up(client, bulk=True)
         assert outcome.kind == "applied", outcome

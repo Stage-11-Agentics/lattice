@@ -185,7 +185,11 @@ def test_one_process_local_and_bound_checkouts(tmp_path: Path) -> None:
     (bound / ".lattice-remote.json").write_text('{"remote": "team", "project": "alpha"}\n')
     _git(bound, "add", ".lattice-remote.json")
     _git(bound, "commit", "-q", "-m", "bind")
-    root = make_root(tmp_path / "server", projects={"alpha": {"code": "ALP"}})
+    root = make_root(
+        tmp_path / "server",
+        projects={"alpha": {"code": "ALP"}},
+        config={"audit": {"enabled": False}},
+    )
     token = tokens.create_token(root, user="human:alice", machine="laptop", all_projects=True)
     cwd = tmp_path / "server-cwd"
     cwd.mkdir()

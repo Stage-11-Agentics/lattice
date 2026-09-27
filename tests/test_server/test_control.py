@@ -14,20 +14,8 @@ from lattice.cli.main import cli
 from lattice.core.errors import OpError
 from lattice.server import admin, control
 from lattice.server.journal import Journal
-from lattice.server.testing import make_root, running_server, wait_for
+from lattice.server.testing import running_server, wait_for
 from tests.test_server.conftest import create_task, mint
-
-
-@pytest.fixture()
-def root(tmp_path: Path) -> Path:
-    """The shared ``root`` without audit: control, unload, and doctor are the subject
-    here, the shutdown phases run either way, and each stop's audit commit and
-    ``git gc`` were most of these tests' time."""
-    return make_root(
-        tmp_path,
-        projects={"alpha": {"code": "ALP"}, "beta": {"code": "BET"}},
-        config={"audit": {"enabled": False}},
-    )
 
 
 def _journal(root: Path, slug: str = "alpha") -> list[dict]:

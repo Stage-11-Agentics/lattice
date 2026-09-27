@@ -20,7 +20,7 @@ HEARTBEAT = 0.2
 
 @pytest.fixture()
 def board(tmp_path: Path) -> Iterator[BoardServer]:
-    with serve_board(tmp_path, heartbeat_seconds=HEARTBEAT) as served:
+    with serve_board(tmp_path, audit=False, heartbeat_seconds=HEARTBEAT) as served:
         yield served
 
 

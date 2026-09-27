@@ -19,7 +19,7 @@ from tests.test_server.conftest import mint
 
 @pytest.fixture()
 def board(tmp_path: Path) -> Iterator[BoardServer]:
-    with serve_board(tmp_path) as served:
+    with serve_board(tmp_path, audit=False) as served:
         yield served
 
 
@@ -123,7 +123,9 @@ def test_archive_relocation_is_removed_and_the_append_base_is_dropped(
 
 
 def test_large_files_travel_as_hash_pinned_hrefs(tmp_path: Path) -> None:
-    with serve_board(tmp_path, config={"limits": {"inline_file_bytes": 256}}) as board:
+    with serve_board(
+        tmp_path, audit=False, config={"limits": {"inline_file_bytes": 256}}
+    ) as board:
         task = create(board, "x" * 300)
         body = board.sync()
         spec = body["files"][f"tasks/{task}.json"]

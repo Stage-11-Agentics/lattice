@@ -98,7 +98,7 @@ _FOLLOW_SCRIPT = "from lattice.cli.main import cli; cli(['sync', '--follow'])"
 def test_follow_exits_0_on_sigterm_and_clears_stream_live_until(tmp_path, monkeypatch) -> None:
     """A real ``lattice sync --follow`` process on H-10a's real server, syncing
     with H-10b's real ``catch_up``; nothing is patched."""
-    with serve_board(tmp_path / "server", heartbeat_seconds=0.2) as srv:
+    with serve_board(tmp_path / "server", audit=False, heartbeat_seconds=0.2) as srv:
         root = bind(tmp_path / "b", srv.url, srv.token, monkeypatch)
         env = dict(os.environ, PYTHONPATH=str(REPO))
         proc = subprocess.Popen(

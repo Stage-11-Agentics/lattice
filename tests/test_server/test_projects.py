@@ -4,9 +4,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from lattice.server import admin
 from lattice.server.testing import ServerHandle
 from tests.test_server.conftest import create_task, mint
+
+
+@pytest.fixture()
+def root(audited_root: Path) -> Path:
+    """The default server config (audit on): ``/v1/info`` reports its audit state."""
+    return audited_root
 
 
 def test_projects_lists_exactly_the_callers_projects(server: ServerHandle, root: Path) -> None:

@@ -544,6 +544,7 @@ def serve_board(
     machine: str = "test",
     config: dict | None = None,
     heartbeat_seconds: float | None = None,
+    audit: bool = True,
     **server_options: Any,
 ) -> Iterator[BoardServer]:
     """A server root under *base* with one project, a token for it, and a running
@@ -552,12 +553,16 @@ def serve_board(
     The project is new (``project create`` with *code*), or a copy of the local
     board *source* (a directory holding ``.lattice/``, or the ``.lattice/``
     itself) placed with a fresh journal whose baseline is its current logs and,
-    as ``project import`` does, its audit repository.
+    as ``project import`` does, its audit repository. ``audit=False`` turns audit
+    off in ``server.json`` (no repository, no committer), for tests it is not the
+    subject of.
     """
     from lattice.server import tokens
 
     root = Path(base) / "server-root"
     admin.init_root(root)
+    if not audit:
+        config = {**(config or {}), "audit": {"enabled": False}}
     if config:
         write_config(root, config)
     if source is None:

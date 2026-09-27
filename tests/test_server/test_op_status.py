@@ -24,7 +24,9 @@ SLUG = "demo"
 
 @pytest.fixture()
 def served(tmp_path: Path) -> Iterator[tuple[ServerHandle, str]]:
-    root = make_root(tmp_path, projects={SLUG: {"code": "DEM"}})
+    root = make_root(
+        tmp_path, projects={SLUG: {"code": "DEM"}}, config={"audit": {"enabled": False}}
+    )
     token = tokens.create_token(root, user="human:alice", machine="laptop", projects=[SLUG])
     with running_server(root) as handle:
         yield handle, token["token"]
@@ -169,7 +171,9 @@ class RecordingPending(dict):
 
 @contextlib.contextmanager
 def _server(tmp_path: Path, **limits: int) -> Iterator[tuple[ServerHandle, str, RecordingPending]]:
-    root = make_root(tmp_path, projects={SLUG: {"code": "DEM"}})
+    root = make_root(
+        tmp_path, projects={SLUG: {"code": "DEM"}}, config={"audit": {"enabled": False}}
+    )
     token = tokens.create_token(root, user="human:alice", machine="laptop", projects=[SLUG])
     config = {"limits": limits} if limits else None
     with running_server(root, config=config) as handle:
