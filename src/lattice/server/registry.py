@@ -81,7 +81,9 @@ class ProjectRegistry:
         project = self._projects.get(slug)
         if project is not None:
             return project
-        if not admin.SLUG_RE.fullmatch(slug) or slug not in self.slugs():
+        if not admin.SLUG_RE.fullmatch(slug):
+            return None
+        if not (self.root / "projects" / slug / ".lattice" / "config.json").is_file():
             return None
         project = Project(slug, self.root / "projects" / slug, self.log, self.server_id)
         self._projects[slug] = project
