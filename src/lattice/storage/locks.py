@@ -1,9 +1,21 @@
-"""File locking and deterministic lock ordering."""
+"""File locking and deterministic lock ordering.
+
+Task locks sit under a board-wide *task gate*. :func:`task_locks` holds the
+gate shared plus each named task's ``events_<id>`` and ``tasks_<id>`` keys, so
+holders of one task exclude each other and holders of different tasks run
+concurrently. :func:`all_task_locks` holds the gate exclusively, which excludes
+every task holder (including one creating a task) with one descriptor, where
+locking each task's keys would hold two descriptors per task and exhaust a
+256-descriptor limit on a large board. The gate is taken before any other key.
+"""
 
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Generator
+import os
+import threading
+import time
+from collections.abc import Generator, Iterable
 from pathlib import Path
 
 from filelock import FileLock, Timeout
@@ -76,3 +88,100 @@ def multi_lock(
     finally:
         for lock in reversed(acquired):
             lock.release()
+
+
+_TASK_GATE_KEY = "task_gate"
+_POLL_INTERVAL = 0.01
+_held_gates = threading.local()
+
+
+def task_lock_keys(task_ids: Iterable[str]) -> list[str]:
+    """The per-task lock keys (event log and snapshot) for *task_ids*."""
+    return [key for task_id in task_ids for key in (f"events_{task_id}", f"tasks_{task_id}")]
+
+
+@contextlib.contextmanager
+def task_locks(
+    locks_dir: Path,
+    task_ids: Iterable[str],
+    extra_keys: Iterable[str] = (),
+    timeout: float = 10,
+) -> Generator[None, None, None]:
+    """Lock the named tasks: the task gate shared, then the tasks' keys and
+    *extra_keys* through :func:`multi_lock`."""
+    with _task_gate(locks_dir, exclusive=False, timeout=timeout):
+        with multi_lock(locks_dir, [*task_lock_keys(task_ids), *extra_keys], timeout=timeout):
+            yield
+
+
+@contextlib.contextmanager
+def all_task_locks(
+    locks_dir: Path,
+    extra_keys: Iterable[str] = (),
+    timeout: float = 10,
+) -> Generator[None, None, None]:
+    """Lock every task on the board: the task gate exclusive, then *extra_keys*.
+
+    It holds ``1 + len(extra_keys)`` descriptors whatever the board's size.
+    Code under it may still take :func:`task_locks` (the gate is reentrant per
+    thread); taking this while the thread holds :func:`task_locks` raises.
+    """
+    with _task_gate(locks_dir, exclusive=True, timeout=timeout):
+        with multi_lock(locks_dir, list(extra_keys), timeout=timeout):
+            yield
+
+
+@contextlib.contextmanager
+def _task_gate(locks_dir: Path, *, exclusive: bool, timeout: float) -> Generator[None, None, None]:
+    """Hold the task gate, reentrantly per thread (a nested hold is a no-op)."""
+    path = os.path.realpath(locks_dir / f"{_TASK_GATE_KEY}.lock")
+    held: dict[str, bool] = _held_gates.__dict__.setdefault("gates", {})
+    if path in held:
+        if exclusive and not held[path]:
+            raise RuntimeError("all_task_locks cannot be taken while this thread holds task_locks")
+        yield
+        return
+    release = _acquire_gate(path, exclusive=exclusive, timeout=timeout)
+    held[path] = exclusive
+    try:
+        yield
+    finally:
+        del held[path]
+        release()
+
+
+def _acquire_gate(path: str, *, exclusive: bool, timeout: float):  # noqa: ANN202
+    """Take the gate's flock, shared or exclusive; return its release function.
+
+    Without ``fcntl`` (Windows) the gate is always exclusive: coarser, still safe.
+    """
+    try:
+        import fcntl
+    except ImportError:
+        lock = FileLock(path, timeout=timeout)
+        try:
+            lock.acquire()
+        except Timeout:
+            raise LockTimeout(
+                f"Could not acquire lock '{_TASK_GATE_KEY}' within {timeout}s"
+            ) from None
+        return lock.release
+
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+    operation = (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            try:
+                fcntl.flock(fd, operation)
+                return lambda: os.close(fd)
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise LockTimeout(
+                        f"Could not acquire lock '{_TASK_GATE_KEY}' within {timeout}s"
+                    ) from None
+                time.sleep(_POLL_INTERVAL)
+    except BaseException:
+        os.close(fd)
+        raise

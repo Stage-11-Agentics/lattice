@@ -77,8 +77,11 @@ def test_serve_process_lifecycle(root: Path) -> None:
         if proc.poll() is None:
             proc.kill()
     assert proc.returncode == 0, err.decode()
-    events = [json.loads(line)["event"] for line in out.decode().splitlines()]
+    lines = [json.loads(line) for line in out.decode().splitlines()]
+    events = [line["event"] for line in lines]
     assert events[0] == "startup" and events[-1] == "shutdown"
+    fd_limit = lines[0]["fd_limit"]  # LAT-339: the raised descriptor limit, logged once
+    assert fd_limit["soft"] >= fd_limit["before"]
     assert "project_load" in events
     assert not control.server_running(root)
 

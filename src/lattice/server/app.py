@@ -130,6 +130,9 @@ class ServerState:
         #: a retry queued behind its own first attempt keeps the pair pending.
         #: Touched only on the event loop.
         self.pending_ops: dict[tuple[str, str, str], int] = {}
+        #: The descriptor limit ``serve`` set at startup (``before``, ``soft``,
+        #: ``hard``), logged on the startup line; ``None`` in an in-process server.
+        self.fd_limit: dict[str, int | None] | None = None
 
     def _tokens_reloaded(self, **fields: Any) -> None:
         level = "info" if fields.get("ok") else "error"
@@ -1062,6 +1065,7 @@ def create_app(root: Path, *, config: ServerConfig, log: ServerLog | None = None
             protocol=PROTOCOL,
             server_id=state.server_id,
             projects=len(state.registry.slugs()),
+            **({"fd_limit": state.fd_limit} if state.fd_limit is not None else {}),
         )
         state.registry.start()
         try:
