@@ -403,6 +403,12 @@ class LocalTarget:
         _patch_config(root / ".lattice", scenario.config, root)
         return step
 
+    def step_env(self, args: list[str]) -> dict[str, str]:
+        return {}
+
+    def finish(self, root: Path, invoke: Any) -> None:
+        """After the last step, before the board is captured."""
+
     def fixture(self, root: Path, rel: str, text: str | None, executable: bool) -> bool:
         return False
 
@@ -444,6 +450,7 @@ def run_scenario(
         raw_steps.append(target.setup(scenario, root, invoke))
         for step in scenario.steps:
             raw_steps.extend(_run_step(step, mode, root, board, env, invoke, target))
+        target.finish(root, invoke)
     return _normalize_capture(scenario, mode, root, raw_steps)
 
 
@@ -465,6 +472,8 @@ def _run_step(step, mode, root, board, env, invoke, target) -> list[dict[str, An
         if mode == "json" and _json_capable(args):
             args.append("--json")
         step_env = {k: board.expand(v) for k, v in step.env.items()} if step.env else None
+        if extra := target.step_env(args):
+            step_env = {**extra, **(step_env or {})}
         return [invoke(args, stdin=step.stdin, step_env=step_env)]
     if isinstance(step, WriteFile):
         rel, text = board.expand(step.path), board.expand(step.text)

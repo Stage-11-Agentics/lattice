@@ -45,7 +45,9 @@ from tests.test_remote import sync_shim
 from tests.parity.record import (
     DURABLE_DIRS,
     DURABLE_FILES,
+    MODES,
     LocalTarget,
+    golden_path,
     _patch_config,
 )
 
@@ -170,6 +172,7 @@ class ParityServer:
     root: Path
     handle: ServerHandle
     token: str
+    strict_token: str
     mutations: MutationLog
     _count: int = 0
     _lock: threading.Lock = field(default_factory=threading.Lock)
@@ -230,10 +233,10 @@ class ParityServer:
 
 @contextmanager
 def parity_server(base: Path) -> Iterator[ParityServer]:
-    """One server for a worker's scenarios; a token that may act as any
-    ``human:`` or ``agent:`` actor and so, like the local CLI, has no default."""
+    """One server for a worker's scenarios, with two tokens (see :func:`token_for`)."""
     root = make_root(base)
-    minted = tokens.create_token(
+    person = tokens.create_token(root, user="human:parity", machine="parity", all_projects=True)
+    strict = tokens.create_token(
         root,
         user="human:parity",
         machine="parity",
@@ -243,7 +246,30 @@ def parity_server(base: Path) -> Iterator[ParityServer]:
     with recording_mutations() as mutations, running_server(root) as handle:
         # TODO(rebase onto v2): H-10a's real sync route replaces the shim.
         sync_shim.install(handle.app)
-        yield ParityServer(root=root, handle=handle, token=minted["token"], mutations=mutations)
+        yield ParityServer(
+            root=root,
+            handle=handle,
+            token=person["token"],
+            strict_token=strict["token"],
+            mutations=mutations,
+        )
+
+
+#: The commands whose operations take no actor (``no_actor``; SPEC §3.7): on a
+#: server they run as the token's default actor.
+ACTORLESS_COMMANDS = {
+    ("session", "start"): "session.start",
+    ("session", "end"): "session.end",
+    ("set-project-code",): "board.set_project_code",
+    ("set-subproject-code",): "board.set_subproject_code",
+    ("context", "write"): "board.context_write",
+    ("board", "write"): "board.file_write",
+}
+TOKEN_ENV = "LATTICE_PARITY_TOKEN"
+
+
+def actorless(args: list[str]) -> bool:
+    return any(tuple(args[: len(cmd)]) == cmd for cmd in ACTORLESS_COMMANDS)
 
 
 # ---------------------------------------------------------------------------
@@ -252,6 +278,27 @@ def parity_server(base: Path) -> Iterator[ParityServer]:
 
 SETUP = {"setup": "project created on the server (lattice init is LOCAL_ONLY here)"}
 _ID_TOKEN = re.compile(r"<ID-(\d+)>")
+
+
+def local_only_command(args: list[str]) -> str | None:
+    """The SPEC §3.5 command *args* runs, when it is one (``lattice.boards``' list)."""
+    if not args:
+        return None
+    if args[0] in ("rebuild", "backfill-ids", "init"):
+        return args[0]
+    if args[0] == "doctor" and "--fix" in args:
+        return "doctor --fix"
+    if args[:2] in (["migrate", "needs-human"], ["demo", "init"]):
+        return " ".join(args[:2])
+    return None
+
+
+def local_only_marker(step: dict[str, Any]) -> dict[str, Any]:
+    """A maintenance command's step reduced to its arguments: locally it runs, on a
+    bound checkout it refuses with ``LOCAL_ONLY`` (checked by
+    :func:`declared_differences`). The board after the scenario is still compared."""
+    command = local_only_command(step.get("args") or [])
+    return {"args": step["args"], "local_only": command} if command else step
 
 
 def comparable(capture: dict[str, Any]) -> dict[str, Any]:
@@ -268,10 +315,14 @@ def comparable(capture: dict[str, Any]) -> dict[str, Any]:
         )
 
     out = {k: v for k, v in capture.items() if k not in ("steps", "board", "sentinel")}
-    out["steps"] = [renumber(step) for step in capture["steps"][1:]]
+    out["steps"] = [renumber(local_only_marker(step)) for step in capture["steps"][1:]]
     board = capture["board"]
-    # Files in the normalizer's order: their path's first ID was numbered in the steps.
-    out["board"] = {renumber(path): renumber(board[path]) for path in board}
+
+    def order(path: str) -> str:
+        # Numbering-independent: IDs the steps showed take their new number; others sort alike.
+        return _ID_TOKEN.sub(lambda m: seen.get(m.group(1), "<ID-?>"), path)
+
+    out["board"] = {renumber(path): renumber(board[path]) for path in sorted(board, key=order)}
     if "sentinel" in capture:
         out["sentinel"] = renumber(capture["sentinel"])
     return out
@@ -289,11 +340,21 @@ class HostedTarget(LocalTarget):
         home = root / "home"
         path = home / ".config" / "lattice" / "remotes.json"
         path.parent.mkdir(parents=True, exist_ok=True)
-        entry = {"url": self.server.handle.url, "token": self.server.token, "retry_seconds": 1}
+        entry = {"url": self.server.handle.url, "token": {"env": TOKEN_ENV}, "retry_seconds": 1}
         entry.update(self.settings)
         path.write_text(json.dumps({"remotes": {REMOTE: entry}}, indent=2) + "\n")
         path.chmod(0o600)
-        return {}
+        return {TOKEN_ENV: self.server.strict_token}
+
+    def step_env(self, args: list[str]) -> dict[str, str]:
+        """Which token a command uses. A write with no actor fails locally with
+        ``MISSING_ACTOR``; on a server it runs as the token's default actor when
+        the token has one (SPEC §8.3, §9.5). So every command runs with a token
+        that has no default (``human:*``, ``agent:*``), which refuses it the same
+        way, except the commands that take no actor, which on a server need the
+        token's default (SPEC §3.7): they use a person token whose default is
+        ``human:parity``, the local board's ``default_actor``."""
+        return {TOKEN_ENV: self.server.token} if actorless(args) else {}
 
     def setup(self, scenario: Scenario, root: Path, invoke: Any) -> dict[str, Any]:
         self.server.create_project(self.slug, scenario.config, root)
@@ -301,6 +362,13 @@ class HostedTarget(LocalTarget):
             json.dumps({"project": self.slug, "remote": REMOTE}) + "\n"
         )
         return dict(SETUP)
+
+    def finish(self, root: Path, invoke: Any) -> None:
+        """Catch the cache up (a scenario may end on a fixture or a refusal), so
+        the captured board is the server's as of the last step."""
+        # Any read command catches up first (SPEC §9.5). TODO(H-10c): ``lattice sync``.
+        result = invoke(["list", "--json"])
+        assert result["exit_code"] == 0, result
 
     def fixture(self, root: Path, rel: str, text: str | None, executable: bool) -> bool:
         if not rel.startswith(".lattice/"):
@@ -330,6 +398,25 @@ _PLAN_REQUIRED_SUFFIX = re.compile(
 )
 
 
+def assert_local_only(step: dict[str, Any], command: str) -> None:
+    """*step* is the ``LOCAL_ONLY`` refusal of *command* (SPEC §3.5), plain or JSON."""
+    from lattice.boards import local_only_error
+
+    assert step["exit_code"] == 1, step
+    body = step["stdout"].get("json")
+    if body is not None:
+        assert body["ok"] is False and body["error"]["code"] == "LOCAL_ONLY", step
+        message = body["error"]["message"]
+    else:
+        message = "\n".join(step["stderr"]["lines"]).removeprefix("Error: ")
+    binding = re.search(r"\('([^']+)'\)", message)
+    assert binding is not None, step
+    assert message == local_only_error(command, binding.group(1)).message, step
+
+
+CACHE_DOCTOR_LINE = "\u2713 Cache matches the server"
+
+
 def declared_differences(capture: dict[str, Any]) -> dict[str, Any]:
     """A hosted capture with SPEC's declared hosted differences put back in their
     local form. Each rewrite matches the hosted text exactly, so any other change
@@ -350,4 +437,23 @@ def declared_differences(capture: dict[str, Any]) -> dict[str, Any]:
             return _PLAN_REQUIRED_SUFFIX.sub(r"\1", value)
         return value
 
-    return {**capture, "steps": fix(capture["steps"])}
+    steps = []
+    for step in fix(capture["steps"]):
+        command = local_only_command(step.get("args") or [])
+        if command is not None:
+            assert_local_only(step, command)
+            step = local_only_marker(step)
+        lines = (step.get("stdout") or {}).get("lines")
+        if step.get("args", [None])[0] == "doctor" and lines and CACHE_DOCTOR_LINE in lines:
+            # SPEC §9.6: doctor on a cache also compares it with the server's manifest.
+            lines = [line for line in lines if line != CACHE_DOCTOR_LINE]
+            step = {**step, "stdout": {"lines": lines}}
+        steps.append(step)
+    return {**capture, "steps": steps}
+
+
+def hosted_target(server: ParityServer, scenario: Scenario) -> HostedTarget:
+    """A fresh project and checkout target for *scenario*. A board with hooks is
+    replayed on a machine whose remote opts into running them (SPEC §3.4, G-10)."""
+    settings = {"run_board_hooks": True} if scenario.config.get("hooks") else {}
+    return HostedTarget(server, server.new_slug(scenario.name), settings)

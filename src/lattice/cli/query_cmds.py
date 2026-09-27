@@ -21,6 +21,7 @@ from lattice.cli.helpers import (
 )
 from lattice.cli.main import cli
 from lattice.cli.ops_bridge import board_or_exit, caller_from_context, is_hosted, run_operation
+from lattice.core.errors import OpError
 from lattice.core.comments import materialize_comments
 from lattice.core.config import get_valid_transitions, validate_status
 from lattice.core.events import get_actor_display
@@ -442,12 +443,17 @@ def next_cmd(
     if claim:
         board = board_or_exit(is_json)
         caller = caller_from_context()
+        no_actor = caller.actor is None and caller.actor_name is None
         # On a hosted checkout the server defaults the actor (SPEC §9.5).
-        if caller.actor is None and caller.actor_name is None and not is_hosted(board):
+        if no_actor and not is_hosted(board):
             output_error("--claim requires --actor or --name.", "VALIDATION_ERROR", is_json)
-        selected = run_operation(
-            "board.next_claim", {"status": status_csv}, is_json, caller=caller, board=board
-        ).value
+        try:
+            selected = board.execute("board.next_claim", {"status": status_csv}, caller).value
+        except OpError as exc:
+            if no_actor and exc.code == "MISSING_ACTOR":
+                # The token has no default actor: today's refusal, as locally (AC-5).
+                output_error("--claim requires --actor or --name.", "VALIDATION_ERROR", is_json)
+            output_error(exc.message, exc.code, is_json)
         lattice_dir = board.lattice_dir
     else:
         lattice_dir = require_root(is_json)

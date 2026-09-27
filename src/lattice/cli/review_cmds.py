@@ -831,7 +831,7 @@ def _report_review_failure(
     Best-effort by construction: reporting a failure must never raise over the
     top of the failure it is reporting, so every step is guarded.
     """
-    from lattice.boards import LocalBoard
+    from lattice.boards import resolve_board
     from lattice.cli.auto_review import log_path_for
     from lattice.ops import Caller, OpError
 
@@ -846,8 +846,8 @@ def _report_review_failure(
         body_lines.append(f"Spawn log: {log_path}")
     body = "\n".join(body_lines)
 
-    # Both writes are operations on this board, as the reviewer's identity.
-    board = LocalBoard(root=lattice_dir.parent, start=Path.cwd())
+    # Both writes are operations on this board (on a hosted checkout, through
+    # the server), as the reviewer's identity.
     caller = (
         Caller(actor_name=actor.get("name") or actor.get("base_name"))
         if isinstance(actor, dict)
@@ -855,6 +855,12 @@ def _report_review_failure(
     )
 
     try:
+        board = resolve_board()
+    except Exception:  # noqa: BLE001 — never mask the review failure
+        board = None
+    try:
+        if board is None:
+            raise OpError("NOT_INITIALIZED", "no board")
         board.execute("task.comment", {"task": task_id, "text": body}, caller, config=config)
     except Exception:  # noqa: BLE001 — never mask the review failure
         click.echo("Warning: could not record the review failure as a comment.", err=True)
@@ -871,6 +877,8 @@ def _report_review_failure(
         else f"Auto-fired {review_type} failed ({message}) — task is unreviewed."
     )
     try:
+        if board is None:
+            raise OpError("NOT_INITIALIZED", "no board")
         board.execute(
             "task.needs_human",
             {"task": task_id, "flag_reason": flag_reason},
