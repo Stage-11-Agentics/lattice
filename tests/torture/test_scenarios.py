@@ -29,6 +29,7 @@ from lattice.server.testing import make_root
 from tests.torture.harness import (
     Client,
     ServerProcess,
+    bound_checkout,
     chmod_tree_writable,
     git,
     lattice,
@@ -36,6 +37,7 @@ from tests.torture.harness import (
     spawn_lattice,
     stop_process,
 )
+from tests.torture.proxy import header_proxy
 from tests.torture.rehearsal import (
     FRESHNESS_SECONDS,
     cut_feature_branch,
@@ -275,6 +277,97 @@ def test_w(tmp_path: Path) -> None:
         assert_matches_server(alice, worktrees[0], server)
         assert server_heads(server) == before
         assert_doctor_clean(alice, worktrees[0], server)
+    finally:
+        if follower is not None:
+            stop_process(follower)
+        server.stop()
+        chmod_tree_writable(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# B
+# ---------------------------------------------------------------------------
+
+PROXY_HEADERS = {
+    "X-Access-Client-Id": ("TORTURE_PROXY_ID", "box-id"),
+    "X-Access-Client-Secret": ("TORTURE_PROXY_SECRET", "box-secret-value"),
+}
+
+
+def test_b(tmp_path: Path) -> None:
+    server = ServerProcess(make_root(tmp_path, projects={"demo": {"code": "DEM"}}))
+    server.start()
+    follower = None
+    try:
+        with header_proxy(
+            server.url, {name: value for name, (_, value) in PROXY_HEADERS.items()}
+        ) as proxy:
+            laptop = server.client(tmp_path / "laptop", user="human:alice", machine="laptop")
+            box = server.client(
+                tmp_path / "box",
+                user="human:alice",
+                machine="box",
+                url=proxy.url,
+                headers=PROXY_HEADERS,
+            )
+            origin = tmp_path / "origin.git"
+            git(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+            repo = bound_checkout(laptop, tmp_path / "laptop-repo")
+            git(repo, "remote", "add", "origin", str(origin))
+            git(repo, "push", "-q", "-u", "origin", "main")
+
+            # The laptop: three worktrees of one checkout, one follower.
+            local = [repo.parent / f"laptop-wt-{n}" for n in range(3)]
+            for n, wt in enumerate(local):
+                git(repo, "worktree", "add", "-q", "-b", f"laptop-{n}", str(wt))
+            follower = start_follower(laptop, repo, tmp_path / "follower.log")
+            # The box: three clones (three caches) behind the proxy, no follower.
+            remote_clones = []
+            for n in range(3):
+                clone = tmp_path / f"box-clone-{n}"
+                git(tmp_path, "clone", "-q", str(origin), str(clone))
+                remote_clones.append(clone)
+
+            # Without the proxy's headers the box gets the proxy's answer, never the
+            # server's, and the client refuses it (SPEC §9.1).
+            bare = server.client(
+                tmp_path / "box-no-headers", machine="box", token=box.token, url=proxy.url
+            )
+            refused = lattice(
+                bare, remote_clones[0], "create", "no", "--actor", "agent:x", "--json", check=False
+            )
+            assert refused.returncode != 0
+            assert json.loads(refused.stdout)["error"]["code"] == "PROXY_REJECTED"
+            assert proxy.refused and not proxy.admitted
+            proxy.requests.clear()
+
+            records, polls = run_writers(
+                tmp_path,
+                [(laptop, wt, f"agent:laptop-{n}") for n, wt in enumerate(local)]
+                + [(box, clone, f"agent:box-{n}") for n, clone in enumerate(remote_clones)],
+                [(laptop, [repo, *local]), (box, remote_clones)],
+                tasks=3,
+                writes=216,
+            )
+            dirs = [repo, *local, *remote_clones]
+            worst = assert_fresh(records, polls, dirs)
+            print(f"B worst visibility delay per directory: {worst}")
+            for cwd in [repo, *local]:
+                assert_matches_server(laptop, cwd, server)
+            for cwd in remote_clones:
+                assert_matches_server(box, cwd, server)
+            for cwd in dirs:
+                assert lattice_paths_in_status(cwd) == [], cwd
+            # Every box request went through the proxy with its headers.
+            assert proxy.admitted and not proxy.refused, proxy.refused[:3]
+            assert all(r["has_authorization"] for r in proxy.admitted)
+            # The laptop's view of the box's writes came from its follower.
+            assert lattice_json(laptop, repo, "remote", "status")["follower"]["live"]
+            assert stop_process(follower) == 0
+            follower = None
+            assert_doctor_clean(laptop, local[0], server)
+            report = lattice_json(box, remote_clones[0], "doctor")
+            assert not [f for f in report["findings"] if f["level"] == "error"], report
     finally:
         if follower is not None:
             stop_process(follower)
