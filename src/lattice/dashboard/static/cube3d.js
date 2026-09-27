@@ -870,8 +870,7 @@ function _cube3dShowCard(node) {
   el.style.borderLeftColor = statusColor;
   el.innerHTML = '<div class="cube3d-card-header">'
     + '<span class="cube3d-card-id">' + esc(node.short_id || node.id.substring(0, 8)) + '</span>'
-    + '<span class="cube3d-card-status" style="background:' + esc(statusColor) + '">'
-    + esc(getStatusDisplayName(node.status || '')) + '</span>'
+    + statusSpanHtml('cube3d-card-status', getStatusDisplayName(node.status || ''), {background: statusColor})
     + '</div>'
     + '<div class="cube3d-card-title">' + esc(node.title || 'Untitled') + '</div>'
     + '<div class="cube3d-card-meta">'
@@ -932,8 +931,7 @@ function _cube3dRenderWorkspacePanel(node, fullData) {
   var html = '<div class="cube3d-workspace-header">'
     + '<span class="cube3d-workspace-id">'
     + esc(node.short_id || node.id.substring(0, 12)) + '</span>'
-    + '<span class="cube3d-workspace-status" style="background:' + esc(statusColor) + '">'
-    + esc(getStatusDisplayName(node.status || '')) + '</span>'
+    + statusSpanHtml('cube3d-workspace-status', getStatusDisplayName(node.status || ''), {background: statusColor})
     + '</div>'
     + '<div class="cube3d-workspace-title">'
     + esc(fullData.title || node.title || 'Untitled') + '</div>';

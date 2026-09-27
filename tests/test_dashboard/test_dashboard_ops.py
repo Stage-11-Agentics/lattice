@@ -626,3 +626,36 @@ class TestOpenPlans:
         status, body = post(port, f"/api/tasks/{task}/status", {"status": "in_progress"})
         assert status == 422
         assert body["error"]["code"] == "PLAN_REQUIRED"
+
+    def test_plan_authored_after_the_check_is_opened_not_replaced(
+        self, local_recording_dash, monkeypatch
+    ):
+        """Deterministic interleave: open-plans sees no plan, another writer then
+        authors one, then the scaffold write runs; the authored plan survives."""
+        from lattice.dashboard import server as server_module
+
+        port, ld, ids, board, opened = local_recording_dash
+        task = ids["backlog"]
+        plan = ld / "plans" / f"{task}.md"
+        real_resolve = server_module.resolve_task_prose_path
+        calls = []
+
+        def resolve_then_author(lattice_dir, task_id, kind):  # noqa: ANN001, ANN202
+            found = real_resolve(lattice_dir, task_id, kind)
+            calls.append(found[0])
+            if len(calls) == 1:
+                plan.write_text("# Authored meanwhile\n\nKeep me.\n")
+            return found
+
+        monkeypatch.setattr(server_module, "resolve_task_prose_path", resolve_then_author)
+        before = len(events_of(ld, task))
+
+        status, body = post(port, f"/api/tasks/{task}/open-plans", {})
+
+        assert status == 200, body
+        assert calls[0] is None  # the dashboard really saw no plan
+        ((op, params, _caller),) = board.calls
+        assert (op, params["if_absent"]) == ("task.plan_write", True)
+        assert plan.read_text() == "# Authored meanwhile\n\nKeep me.\n"
+        assert len(events_of(ld, task)) == before  # nothing written by the dashboard
+        assert opened == [["open", str(plan.resolve())]]

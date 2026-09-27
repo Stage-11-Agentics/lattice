@@ -30,6 +30,17 @@ ESCAPE_IDENTIFIERS = [
     "statusDisplayName",
     "legendItemHtml",
     "boardColumnOpenTag",
+    "statusSpanHtml",
+    "boardCardOpenTag",
+    "statusOptionHtml",
+    "statusSelectOptionsHtml",
+    "boardColumnHeaderHtml",
+    "laneSortSelectOpenTag",
+    "laneColorRowHtml",
+    "statsBarRowHtml",
+    "wipAlertHtml",
+    "webStatusRowHtml",
+    "statusTransitionHtml",
     "basePath",
     "apiUrl",
 ]
@@ -99,3 +110,84 @@ def test_status_and_legend_markup_goes_through_the_tested_helpers() -> None:
         js = (STATIC / name).read_text()
         assert js.count("legendItemHtml(") >= 2, f"{name} legends must use legendItemHtml"
         assert 'legend-dot" style="background:\' +' not in js
+
+
+# Where a workflow status, its display name, or its description reaches markup,
+# and the builder (node-tested with the hostile corpus) that must render it.
+STATUS_SITES = [
+    ("index.html", 'statusSpanHtml("badge", getStatusDisplayName(task.status), {background:', 2),
+    ("index.html", "statusSelectOptionsHtml(config && config.workflow, task.status, allowed)", 2),
+    (
+        "index.html",
+        'statusSpanHtml("badge badge-stat", getStatusDisplayName(task.status), '
+        "{title: getStatusDescription(task.status)})",
+        3,
+    ),
+    ("index.html", 'statusSpanHtml("tpi-status", getStatusDisplayName(status))', 1),
+    ("index.html", 'statusSpanHtml("list-status", t.status || "")', 1),
+    ("index.html", "statusSpanHtml(statusClass, c.status", 1),
+    (
+        "index.html",
+        "boardColumnHeaderHtml(laneColor, getStatusDescription(status), "
+        "getStatusDisplayName(status), items.length)",
+        1,
+    ),
+    ("index.html", "boardColumnOpenTag(status, items.length === 0)", 1),
+    ("index.html", "boardCardOpenTag(t, ", 1),
+    ("index.html", "laneSortSelectOpenTag(status)", 1),
+    ("index.html", "laneColorRowHtml(s, color)", 1),
+    ("index.html", "statusOptionHtml(s, s, false)", 1),
+    ("index.html", "statsBarRowHtml(row[0], pct, color, row[1])", 1),
+    ("index.html", "statsBarRowHtml(r.status, pct, color, label,", 1),
+    ("index.html", 'wipAlertHtml(t("stats.wip_exceeded"), w.status, w.current, w.limit)', 1),
+    ("index.html", "webStatusRowHtml(getLaneColor(node.status), node.status)", 1),
+    ("index.html", "statusTransitionHtml(config && config.workflow, d.from, d.to)", 1),
+    ("cube3d.js", "statusSpanHtml('cube3d-card-status', getStatusDisplayName(", 1),
+    ("cube3d.js", "statusSpanHtml('cube3d-workspace-status', getStatusDisplayName(", 1),
+    ("cube3d.js", "legendItemHtml('cube3d-legend-item', 'cube3d-legend-dot'", 1),
+    ("cube-v2.js", "statusSpanHtml('cv2-tooltip-status', statusName, {color: statusColor})", 1),
+    ("cube-v2.js", "legendItemHtml('cv2-legend-item', 'cv2-legend-dot'", 1),
+]
+
+STATUS_BUILDERS = re.compile(
+    r"statusSpanHtml|statusOptionHtml|statusSelectOptionsHtml|boardColumnHeaderHtml|"
+    r"boardColumnOpenTag|boardCardOpenTag|laneSortSelectOpenTag|laneColorRowHtml|"
+    r"statsBarRowHtml|wipAlertHtml|webStatusRowHtml|statusTransitionHtml|legendItemHtml"
+)
+STATUS_VALUE = re.compile(
+    r"getStatusDisplayName\(|getStatusDescription\(|_cv2GetStatusDisplayName\(|"
+    r"\bstatusName\b|esc\((?:s|status|task\.status|node\.status|t\.status[^)]*|r\.status|"
+    r"w\.status)\)|_structureEscape\(c\.status"
+)
+MARKUP_LITERAL = re.compile(r"""['"][^'"]*<[a-zA-Z/]""")
+
+
+def status_markup_outside_builders(text: str) -> list[str]:
+    """Lines that put a status value into a markup literal without a builder."""
+    return [
+        line.strip()
+        for line in text.splitlines()
+        if MARKUP_LITERAL.search(line)
+        and STATUS_VALUE.search(line)
+        and not STATUS_BUILDERS.search(line)
+    ]
+
+
+@pytest.mark.parametrize(("name", "snippet", "count"), STATUS_SITES)
+def test_each_status_sink_uses_its_builder(name: str, snippet: str, count: int) -> None:
+    assert (STATIC / name).read_text().count(snippet) == count, f"{name}: {snippet}"
+
+
+@pytest.mark.parametrize("name", ["index.html", "cube3d.js", "cube-v2.js"])
+def test_no_status_markup_outside_the_builders(name: str) -> None:
+    assert status_markup_outside_builders((STATIC / name).read_text()) == []
+
+
+def test_the_status_scan_catches_the_pre_repair_shapes() -> None:
+    old = [
+        """'<span class="cv2-tooltip-status" style="color:' + c + '">' + _cv2Esc(statusName)""",
+        """html += '<option value="' + esc(s) + '">' + esc(getStatusDisplayName(s)) + '</option>';""",
+        """html += '<td><span class="badge badge-stat" title="' + esc(getStatusDescription(x)) + '">';""",
+        """html += '<span class="stats-bar-label">' + esc(r.status) + '</span>';""",
+    ]
+    assert len(status_markup_outside_builders("\n".join(old))) == len(old)

@@ -270,11 +270,12 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
                 self._send_error(400, "BAD_REQUEST", "Invalid JSON in request body")
                 return None
 
-        def _run(self, request: api.WriteRequest) -> Any:
+        def _run(self, request: api.WriteRequest, *, exists_ok: bool = False) -> Any:
             """Run *request*'s operation on the board as a browser write.
 
             Returns the ``OpResult``; on a refusal or failure, sends the error
-            response and returns ``None``.
+            response and returns ``None``. With *exists_ok*, an ``if_absent``
+            write that found the file already there returns ``True`` instead.
             """
             from lattice.ops import Caller
 
@@ -285,6 +286,8 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
                 )
                 return self._target.board.execute(request.op_name, request.params, caller)
             except OpError as exc:
+                if exists_ok and exc.details.get("reason") == "ALREADY_EXISTS":
+                    return True
                 refused = api.write_error(request, exc)
                 self._send(ApiResponse(refused.status, refused.envelope()))
             except Exception as exc:  # noqa: BLE001 - the page gets an envelope, never a reset
@@ -325,7 +328,9 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
                     self._send_error(404, "NOT_FOUND", f"Task {task_id} not found")
                     return
                 # A missing plan is scaffolded through the plan-write operation,
-                # like any other dashboard write (SPEC §10).
+                # like any other dashboard write (SPEC §10), and only if it is
+                # still missing under the task lock: a plan written since the
+                # check above is opened, never replaced.
                 snapshot = authority.snapshot
                 scaffold = scaffold_plan_text(
                     snapshot.get("title", "Untitled"),
@@ -334,12 +339,12 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
                 )
                 request = api.WriteRequest(
                     "task.plan_write",
-                    {"task": task_id, "stdin": scaffold},
+                    {"task": task_id, "stdin": scaffold, "if_absent": True},
                     None,
                     lambda result: (200, result.value),
                     task_id,
                 )
-                if not self._run(request):
+                if self._run(request, exists_ok=True) is None:
                     return
                 path, _ = resolve_task_prose_path(ld, task_id, kind)
                 if path is None:

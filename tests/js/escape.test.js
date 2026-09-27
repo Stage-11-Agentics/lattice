@@ -20,6 +20,17 @@ const {
   statusDisplayName,
   legendItemHtml,
   boardColumnOpenTag,
+  statusSpanHtml,
+  boardCardOpenTag,
+  statusOptionHtml,
+  statusSelectOptionsHtml,
+  boardColumnHeaderHtml,
+  laneSortSelectOpenTag,
+  laneColorRowHtml,
+  statsBarRowHtml,
+  wipAlertHtml,
+  webStatusRowHtml,
+  statusTransitionHtml,
   basePath,
   apiUrl,
 } = require(path.join(STATIC, "escape.js"));
@@ -87,7 +98,7 @@ const HOSTILE_LABELS = [
 ];
 
 // Every tag in `html` is one of `tags`, its attributes are well-formed quoted
-// name="value" pairs from `attrs`, no attribute is an event handler, every
+// name="value" pairs (or bare boolean names) from `attrs`, no attribute is an event handler, every
 // class is a safe token list, and no text holds a raw "<" or ">".
 function assertSafeMarkup(html, tags, attrs) {
   const tagRe = /<\/?([a-zA-Z0-9]+)([^>]*)>/g;
@@ -99,8 +110,8 @@ function assertSafeMarkup(html, tags, attrs) {
     last = tagRe.lastIndex;
     assert.ok(tags.includes(m[1].toLowerCase()), `unexpected tag <${m[1]}> in ${html}`);
     const attrText = m[2];
-    assert.ok(/^(\s+[a-z-]+="[^"<>]*")*\s*$/.test(attrText), `malformed attributes: ${attrText}`);
-    for (const a of attrText.matchAll(/([a-z-]+)="([^"]*)"/g)) {
+    assert.ok(/^(\s+[a-z-]+(="[^"<>]*")?)*\s*$/.test(attrText), `malformed attributes: ${attrText}`);
+    for (const a of attrText.matchAll(/\s([a-z-]+)(?:="([^"]*)")?/g)) {
       assert.ok(attrs.includes(a[1]), `unexpected attribute ${a[1]} in ${html}`);
       assert.ok(!/^on/i.test(a[1]), `event handler attribute ${a[1]}`);
       if (a[1] === "class") assert.ok(/^[a-z0-9_ -]*$/.test(a[2]), `unsafe class "${a[2]}"`);
@@ -157,6 +168,74 @@ test("boardColumnOpenTag: a hostile status is a class token and an escaped data 
     boardColumnOpenTag("in_progress", true),
     '<div class="board-col status-in_progress empty-col" data-status="in_progress">'
   );
+});
+
+// Every status sink in the page (review round 2): each builder takes the hostile
+// corpus in every string it is given (status, display name, description, lane
+// colour) and must still produce only the markup it means to.
+const wfWith = (label) => ({ display_names: { s: label, backlog: label } });
+
+test("statusSpanHtml: badges, detail meta, stats tables, task picker, cube cards, DAG tooltip", () => {
+  for (const v of HOSTILE_LABELS) {
+    const label = statusDisplayName(wfWith(v), "s");
+    const cases = [
+      // pane / detail-panel badge (index.html pane status bar, archived detail panel)
+      statusSpanHtml("badge", label, { background: v, style: "color:#fff;padding:2px 8px", title: v }),
+      // detail meta, statistics tables (recently active, stale)
+      statusSpanHtml("badge badge-stat", label, { title: v }),
+      // activity task picker, list table, structure roster
+      statusSpanHtml("tpi-status", label),
+      statusSpanHtml("structure-status-" + classToken(v), v),
+      // Cube 3D card and workspace header, Cube v2 tooltip
+      statusSpanHtml("cube3d-card-status", label, { background: v }),
+      statusSpanHtml("cv2-tooltip-status", label, { color: v }),
+    ];
+    for (const html of cases) {
+      assertSafeMarkup(html, ["span"], ["class", "style", "title"]);
+      assert.ok(html.includes(">" + esc(label) + "</span>") || html.includes(">" + esc(v) + "</span>"), html);
+    }
+  }
+});
+
+test("status selects: current status and targets are values and escaped labels", () => {
+  for (const v of HOSTILE_LABELS) {
+    const html = statusSelectOptionsHtml(wfWith(v), v, [v, "s", "backlog"]);
+    assertSafeMarkup(html, ["option"], ["value", "selected"]);
+    assert.equal((html.match(/<option /g) || []).length, 4);
+    assert.ok(html.startsWith('<option value="' + esc(v) + '" selected>'), html);
+    assertSafeMarkup(statusOptionHtml(v, v, false), ["option"], ["value"]);
+  }
+});
+
+test("board lane header, card, sort select, and lane colour row", () => {
+  for (const v of HOSTILE_LABELS) {
+    assertSafeMarkup(boardColumnHeaderHtml(v, v, statusDisplayName(wfWith(v), "s"), 3), ["div", "span"], ["class", "style", "title"]);
+    assertSafeMarkup(
+      boardCardOpenTag({ id: v, status: v, last_status_changed_at: v }, ["heat-hot", "needs-human"]),
+      ["div"],
+      ["class", "draggable", "data-task-id", "data-task-status", "data-heat-ts"]
+    );
+    assertSafeMarkup(laneSortSelectOpenTag(v), ["select"], ["class", "data-status", "title"]);
+    assertSafeMarkup(laneColorRowHtml(v, v), ["div", "span", "input"], ["class", "type", "data-status", "value"]);
+  }
+});
+
+test("statistics bars and WIP alerts", () => {
+  for (const v of HOSTILE_LABELS) {
+    assertSafeMarkup(statsBarRowHtml(v, v, v, v, v), ["div", "span"], ["class", "style", "title"]);
+    assertSafeMarkup(statsBarRowHtml(v, 40, "#fff", 2), ["div", "span"], ["class", "style"]);
+    assertSafeMarkup(wipAlertHtml(v, v, v, v), ["div", "strong"], ["class"]);
+  }
+});
+
+test("Web tooltip status row and the activity feed's status change", () => {
+  for (const v of HOSTILE_LABELS) {
+    assertSafeMarkup(webStatusRowHtml(v, v), ["div", "span"], ["style"]);
+    const text = statusTransitionHtml(wfWith(v), "s", v);
+    assertSafeMarkup(text, [], []);
+    assert.ok(text.includes(esc(v)), text);
+  }
+  assert.equal(statusTransitionHtml({}, undefined, "in_progress"), "? → in progress");
 });
 
 test("basePath: the page's directory, always slash-terminated", () => {

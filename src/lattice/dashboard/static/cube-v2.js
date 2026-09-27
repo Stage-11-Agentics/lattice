@@ -1009,7 +1009,7 @@ function _cv2UpdateHover(e) {
 
     tooltip.innerHTML = '<div class="cv2-tooltip-header">'
       + '<span class="cv2-tooltip-id">' + _cv2Esc(node.short_id || '') + '</span>'
-      + '<span class="cv2-tooltip-status" style="color:' + _cv2Esc(statusColor) + '">' + _cv2Esc(statusName) + '</span>'
+      + statusSpanHtml('cv2-tooltip-status', statusName, {color: statusColor})
       + '</div>'
       + '<div class="cv2-tooltip-title">' + _cv2Esc(node.title || 'Untitled') + '</div>'
       + '<div class="cv2-tooltip-meta">' + _cv2Esc(priorityLabel) + ' &middot; ' + _cv2Esc(typeLabel) + '</div>'

@@ -3002,7 +3002,7 @@ function buildWebTooltipHTML(node) {
   html += '</div>';
   html += '<div style="font-weight:500;margin-bottom:6px">' + esc(node.title || '') + '</div>';
   if (node.status) {
-    html += '<div style="display:flex;gap:6px;align-items:center;margin-bottom:2px"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + esc(getLaneColor(node.status)) + '"></span><span style="color:var(--text-muted);font-size:11px;min-width:50px">Status</span><span>' + esc(node.status) + '</span></div>';
+    html += webStatusRowHtml(getLaneColor(node.status), node.status);
   }
   if (node.assigned_to) {
     html += '<div style="display:flex;gap:6px;margin-bottom:2px"><span style="color:var(--text-muted);font-size:11px;min-width:50px">Assignee</span><span>' + esc(actorTooltip(node.assigned_to)) + '</span></div>';
@@ -3398,7 +3398,7 @@ function openWebDetailPane(taskId) {
 
     // Status bar
     html += '<div class="pane-status-bar">';
-    if (task.status) html += '<span class="badge" style="background:' + esc(getLaneColor(task.status)) + ';color:#fff;padding:2px 8px;border-radius:4px;font-size:.8rem" title="' + esc(getStatusDescription(task.status)) + '">' + esc(getStatusDisplayName(task.status)) + '</span>';
+    if (task.status) html += statusSpanHtml("badge", getStatusDisplayName(task.status), {background: getLaneColor(task.status), style: "color:#fff;padding:2px 8px;border-radius:4px;font-size:.8rem", title: getStatusDescription(task.status)});
     if (task.priority) html += '<span class="badge pri-' + classToken(task.priority) + '" style="padding:2px 8px;border-radius:4px;font-size:.8rem">' + esc(task.priority) + '</span>';
     if (task.type) html += '<span class="badge type-badge" style="padding:2px 8px;border-radius:4px;font-size:.8rem">' + esc(task.type) + '</span>';
     html += '</div>';
@@ -3827,12 +3827,9 @@ function _renderPanelContent(taskId, task, events) {
   if (!isArchived) {
     html += '<div class="dp-actions">';
     var transitions = (config && config.workflow && config.workflow.transitions) || {};
-    var allowed = transitions[task.status] || [];
+    var allowed = ownValue(transitions, task.status) || [];
     html += '<select id="dp-status" title="Change status">';
-    html += '<option value="' + esc(task.status) + '" selected>' + esc(getStatusDisplayName(task.status)) + '</option>';
-    allowed.forEach(function(s) {
-      html += '<option value="' + esc(s) + '">' + esc(getStatusDisplayName(s)) + '</option>';
-    });
+    html += statusSelectOptionsHtml(config && config.workflow, task.status, allowed);
     html += '</select>';
 
     html += '<select id="dp-priority" title="Change priority">';
@@ -3850,7 +3847,7 @@ function _renderPanelContent(taskId, task, events) {
     html += '</div>';
   } else {
     html += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">';
-    if (task.status) html += '<span class="badge" style="background:' + esc(getLaneColor(task.status)) + ';color:#fff;padding:2px 8px;border-radius:4px;font-size:.8rem" title="' + esc(getStatusDescription(task.status)) + '">' + esc(getStatusDisplayName(task.status)) + '</span>';
+    if (task.status) html += statusSpanHtml("badge", getStatusDisplayName(task.status), {background: getLaneColor(task.status), style: "color:#fff;padding:2px 8px;border-radius:4px;font-size:.8rem", title: getStatusDescription(task.status)});
     if (task.priority) html += '<span class="badge pri-' + classToken(task.priority) + '" style="padding:2px 8px;border-radius:4px;font-size:.8rem">' + esc(task.priority) + '</span>';
     if (task.type) html += '<span class="badge type-badge" style="padding:2px 8px;border-radius:4px;font-size:.8rem">' + esc(task.type) + '</span>';
     html += ' <span class="archived-badge">ARCHIVED</span></div>';
@@ -4307,7 +4304,7 @@ function _structureRenderFrame() {
       rosterRows += '<tr>'
         + '<td style="font-family:var(--font-mono);font-weight:600">' + _structureEscape(c.name) + '</td>'
         + '<td>' + _structureEscape(c.family) + '</td>'
-        + '<td><span class="' + statusClass + '">' + _structureEscape(c.status || "unknown") + '</span></td>'
+        + '<td>' + statusSpanHtml(statusClass, c.status || "unknown") + '</td>'
         + '<td style="min-width:120px"><div style="background:var(--border);border-radius:3px;height:8px;overflow:hidden"><div style="background:var(--accent-primary);height:100%;width:' + energyPct + '%"></div></div><div style="font-size:.7rem;color:var(--text-muted);margin-top:2px">' + energy + '</div></td>'
         + '<td style="text-align:right;font-variant-numeric:tabular-nums">' + _structureEscape(c.fun != null ? c.fun : "\u2014") + '</td>'
         + '<td style="text-align:right;font-variant-numeric:tabular-nums">' + _structureEscape(c.trust != null ? c.trust : "\u2014") + '</td>'
@@ -4514,9 +4511,7 @@ async function setLaneSort(status, mode) {
 function renderLaneSortSelect(status) {
   var current = getLaneSort(status);
   var modes = laneModesFor(status);
-  var html = '<select class="lane-sort" data-status="' + esc(status) + '"'
-    + ' title="How cards in this lane are organized"'
-    + '>';
+  var html = laneSortSelectOpenTag(status);
   ["Sort", "Group"].forEach(function(groupName) {
     var inGroup = modes.filter(function(m) { return m.group === groupName; });
     if (!inGroup.length) return;
@@ -4745,10 +4740,7 @@ function populateLaneColorSettings() {
   var html = "";
   statuses.forEach(function(s) {
     var color = getLaneColor(s);
-    html += '<div class="lane-color-row">';
-    html += '<span class="lane-name">' + esc(s) + '</span>';
-    html += '<input type="color" data-status="' + esc(s) + '" value="' + esc(color) + '">';
-    html += '</div>';
+    html += laneColorRowHtml(s, color);
   });
   container.innerHTML = html;
 }
@@ -4879,9 +4871,7 @@ function renderBoardCard(t) {
   var tier = heatEnabled ? getHeatTier(t.last_status_changed_at) : null;
   var ratio = heatEnabled ? getHeatBarRatio(t.last_status_changed_at) : 0;
 
-  var html = '<div class="card' + (heatCls ? " " + heatCls : "") + (t.needs_human ? " needs-human" : "") + '" draggable="true" data-task-id="' + esc(t.id) + '" data-task-status="' + esc(t.status || "") + '"';
-  if (t.last_status_changed_at) html += ' data-heat-ts="' + esc(t.last_status_changed_at) + '"';
-  html += '>';
+  var html = boardCardOpenTag(t, [heatCls, t.needs_human ? "needs-human" : ""].filter(Boolean));
 
   // Heat bar: vertical bar on left that shrinks as heat cools (gradient: solid at bottom, fading to transparent)
   if (heatEnabled && tier && tier.color && ratio > 0) {
@@ -4977,10 +4967,7 @@ function renderBoard() {
     var items = grouped[status] || [];
     var laneColor = getLaneColor(status);
     html += boardColumnOpenTag(status, items.length === 0);
-    html += '<div class="board-col-header" style="background:' + esc(laneColor) + ';color:var(--text-on-lane)" title="' + esc(getStatusDescription(status)) + '">';
-    html += '<span>' + esc(getStatusDisplayName(status)) + '</span>';
-    html += '<span class="count">' + items.length + '</span>';
-    html += '</div>';
+    html += boardColumnHeaderHtml(laneColor, getStatusDescription(status), getStatusDisplayName(status), items.length);
     // Empty lanes collapse to a 120px stub — nothing to organize, so no control.
     var laneMode = getLaneSort(status);
     if (items.length > 0) {
@@ -5236,7 +5223,7 @@ window._boardDragStart = function(e) {
 
   // Highlight valid drop targets
   var transitions = (config.workflow && config.workflow.transitions) || {};
-  var allowedTargets = transitions[draggedFromStatus] || [];
+  var allowedTargets = ownValue(transitions, draggedFromStatus) || [];
   setTimeout(function() {
     document.querySelectorAll(".board-col").forEach(function(col) {
       var colStatus = col.dataset.status;
@@ -5272,7 +5259,7 @@ window._boardDragOver = function(e) {
   if (targetStatus === draggedFromStatus) return;
 
   var transitions = (config.workflow && config.workflow.transitions) || {};
-  var allowed = transitions[draggedFromStatus] || [];
+  var allowed = ownValue(transitions, draggedFromStatus) || [];
   if (allowed.includes(targetStatus)) {
     e.dataTransfer.dropEffect = "move";
     col.classList.add("drag-over");
@@ -5302,7 +5289,7 @@ window._boardDrop = async function(e) {
   if (targetStatus === draggedFromStatus) return;
 
   var transitions = (config.workflow && config.workflow.transitions) || {};
-  var allowed = transitions[draggedFromStatus] || [];
+  var allowed = ownValue(transitions, draggedFromStatus) || [];
   if (!allowed.includes(targetStatus)) {
     showToast(tf("toast.invalid_transition", {from: draggedFromStatus, to: targetStatus}), "error");
     return;
@@ -5331,7 +5318,7 @@ function renderList() {
   var html = '<div class="filters">';
   html += '<input type="text" id="f-search" placeholder="' + esc(t("filter.search")) + '">';
   html += '<select id="f-status"><option value="">' + esc(t("filter.all_statuses")) + '</option>';
-  statuses.forEach(function(s) { html += '<option value="'+esc(s)+'">'+esc(s)+"</option>"; });
+  statuses.forEach(function(s) { html += statusOptionHtml(s, s, false); });
   html += "</select>";
   html += '<select id="f-type"><option value="">' + esc(t("filter.all_types")) + '</option>';
   types.forEach(function(ty) { html += '<option value="'+esc(ty)+'">'+esc(ty)+"</option>"; });
@@ -5412,7 +5399,7 @@ function applyListFilters() {
     html += '<tr class="list-row ' + rowHeatCls.trim() + '" style="cursor:pointer" data-task-id="' + esc(t.id) + '">';
     html += '<td class="id-cell"' + rowHeatBorder + ' title="' + esc(t.id) + '">' + (t.short_id ? '<span style="font-weight:600;color:var(--accent-primary)">' + esc(t.short_id) + '</span>' : esc(displayId)) + "</td>";
     html += "<td>" + esc(t.title || "Untitled") + (t.archived ? ' <span class="archived-badge">archived</span>' : "") + (t.comment_count ? ' <span style="color:var(--text-muted);font-size:.75rem" title="' + t.comment_count + ' comment' + (t.comment_count === 1 ? '' : 's') + '">\uD83D\uDCAC ' + t.comment_count + '</span>' : '') + "</td>";
-    html += "<td>" + esc(t.status || "") + (t.has_active_session ? ' <span class="active-badge"><span class="active-dot"></span>Active</span>' : "") + "</td>";
+    html += "<td>" + statusSpanHtml("list-status", t.status || "") + (t.has_active_session ? ' <span class="active-badge"><span class="active-dot"></span>Active</span>' : "") + "</td>";
     html += "<td>";
     if (t.priority) html += '<span class="badge pri-' + classToken(t.priority) + '">' + esc(t.priority) + "</span>";
     html += "</td>";
@@ -5470,12 +5457,9 @@ async function renderDetail(taskId) {
       html += '<div class="detail-actions">';
       // Status dropdown
       var transitions = (config && config.workflow && config.workflow.transitions) || {};
-      var allowed = transitions[task.status] || [];
+      var allowed = ownValue(transitions, task.status) || [];
       html += '<select id="detail-status" title="Change status">';
-      html += '<option value="' + esc(task.status) + '" selected>' + esc(getStatusDisplayName(task.status)) + '</option>';
-      allowed.forEach(function(s) {
-        html += '<option value="' + esc(s) + '">' + esc(getStatusDisplayName(s)) + '</option>';
-      });
+      html += statusSelectOptionsHtml(config && config.workflow, task.status, allowed);
       html += '</select>';
 
       // Priority dropdown
@@ -5498,7 +5482,7 @@ async function renderDetail(taskId) {
       html += '</div>';
     } else {
       html += '<div class="detail-meta">';
-      if (task.status) html += '<span class="badge badge-stat" title="' + esc(getStatusDescription(task.status)) + '">' + esc(getStatusDisplayName(task.status)) + '</span>';
+      if (task.status) html += statusSpanHtml("badge badge-stat", getStatusDisplayName(task.status), {title: getStatusDescription(task.status)});
       if (task.priority) html += '<span class="badge pri-' + classToken(task.priority) + '">' + esc(task.priority) + '</span>';
       if (task.type) html += '<span class="badge type-badge">' + esc(task.type) + '</span>';
       html += '</div>';
@@ -5973,7 +5957,7 @@ function eventSummary(ev) {
   var d = ev.data || {};
   switch(ev.type) {
     case "task_created": return esc(d.title || "");
-    case "status_changed": return esc(getStatusDisplayName(d.from||"?") + " \u2192 " + getStatusDisplayName(d.to||"?"));
+    case "status_changed": return statusTransitionHtml(config && config.workflow, d.from, d.to);
     case "assignment_changed": return esc((d.from||"unassigned") + " \u2192 " + (d.to||"unassigned"));
     case "field_updated": return esc(d.field + ": " + (d.from||"\u2013") + " \u2192 " + (d.to||"\u2013"));
     case "comment_added": {
@@ -6185,7 +6169,7 @@ function _openTaskPicker() {
       }
       item.innerHTML = '<span class="tpi-id">' + esc(idLabel) + '</span>'
         + '<span class="tpi-title">' + esc(ti.title || "") + '</span>'
-        + (status ? '<span class="tpi-status">' + esc(getStatusDisplayName(status)) + '</span>' : '');
+        + (status ? statusSpanHtml("tpi-status", getStatusDisplayName(status)) : '');
       item.addEventListener("click", function() {
         _applyActivityFilter("task", ti.short_id || ti.id);
         overlay.remove();
@@ -6725,7 +6709,7 @@ async function renderStats() {
         html += '<div class="stats-wip-alerts">';
         data.wip.forEach(function(w) {
           if (w.over) {
-            html += '<div class="stats-wip-alert">' + esc(t("stats.wip_exceeded")) + ': <strong>' + esc(w.status) + '</strong> &mdash; ' + esc(w.current) + '/' + esc(w.limit) + '</div>';
+            html += wipAlertHtml(t("stats.wip_exceeded"), w.status, w.current, w.limit);
           }
         });
         html += '</div>';
@@ -6740,11 +6724,7 @@ async function renderStats() {
       data.by_status.forEach(function(row) {
         var pct = maxStatus > 0 ? Math.round((row[1] / maxStatus) * 100) : 0;
         var color = getLaneColor(row[0]);
-        html += '<div class="stats-bar-row">';
-        html += '<span class="stats-bar-label">' + esc(row[0]) + '</span>';
-        html += '<div class="stats-bar-track"><div class="stats-bar-fill" style="width:' + pct + '%;background:' + esc(color) + '"></div></div>';
-        html += '<span class="stats-bar-count">' + esc(row[1]) + '</span>';
-        html += '</div>';
+        html += statsBarRowHtml(row[0], pct, color, row[1]);
       });
       html += '</div>';
     }
@@ -6788,7 +6768,7 @@ async function renderStats() {
         html += '<tr>';
         html += '<td class="id-cell"><a href="#/task/' + esc(task.full_id) + '">' + esc(task.id) + '</a></td>';
         html += '<td><a href="#/task/' + esc(task.full_id) + '">' + esc(task.title) + '</a></td>';
-        html += '<td><span class="badge badge-stat" title="' + esc(getStatusDescription(task.status)) + '">' + esc(getStatusDisplayName(task.status)) + '</span></td>';
+        html += '<td>' + statusSpanHtml("badge badge-stat", getStatusDisplayName(task.status), {title: getStatusDescription(task.status)}) + '</td>';
         html += '<td>' + esc(task.updated_ago) + '</td>';
         html += '</tr>';
       });
@@ -6804,7 +6784,7 @@ async function renderStats() {
         html += '<tr>';
         html += '<td class="id-cell"><a href="#/task/' + esc(task.full_id) + '">' + esc(task.id) + '</a></td>';
         html += '<td><a href="#/task/' + esc(task.full_id) + '">' + esc(task.title) + '</a></td>';
-        html += '<td><span class="badge badge-stat" title="' + esc(getStatusDescription(task.status)) + '">' + esc(getStatusDisplayName(task.status)) + '</span></td>';
+        html += '<td>' + statusSpanHtml("badge badge-stat", getStatusDisplayName(task.status), {title: getStatusDescription(task.status)}) + '</td>';
         html += '<td>' + esc(typeof task.days_stale === "number" ? task.days_stale.toFixed(1) : task.days_stale) + '</td>';
         html += '</tr>';
       });
@@ -6860,11 +6840,7 @@ async function renderStats() {
         var pct = maxTis > 0 ? Math.round((r.avg_hours / maxTis) * 100) : 0;
         var color = getLaneColor(r.status);
         var label = r.avg_hours >= 24 ? (r.avg_hours / 24).toFixed(1) + 'd' : r.avg_hours.toFixed(1) + 'h';
-        html += '<div class="stats-bar-row">';
-        html += '<span class="stats-bar-label">' + esc(r.status) + '</span>';
-        html += '<div class="stats-bar-track"><div class="stats-bar-fill" style="width:' + pct + '%;background:' + esc(color) + '"></div></div>';
-        html += '<span class="stats-bar-count" title="' + esc(r.sample_count) + ' samples">' + esc(label) + '</span>';
-        html += '</div>';
+        html += statsBarRowHtml(r.status, pct, color, label, r.sample_count + " samples");
       });
       html += '</div>';
     }
