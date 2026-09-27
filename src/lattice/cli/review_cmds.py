@@ -299,6 +299,19 @@ def _refuse_if_in_flight_on_board(
             )
 
 
+def _end_read_phase(lattice_dir: Path) -> None:
+    """Release a hosted cache's shared read lock before the review runs (SPEC §9.4).
+
+    The review's reads are done; the agent run can take minutes, and the review's
+    own writes (``lattice attach`` in a subprocess, the failure comment) end in a
+    sync that takes the lock exclusively, which would wait on this process for
+    ever. A no-op on a local board.
+    """
+    from lattice.remote.session import release_read_lock
+
+    release_read_lock(lattice_dir.parent)
+
+
 _FORCE_HELP = (
     "On a hosted checkout, run even while a review of this gate spawned on any "
     "machine is still in flight."
@@ -552,6 +565,7 @@ def code_review(
 
     assert actor is not None
     timeout = config.get("review_timeout_seconds", 600)
+    _end_read_phase(lattice_dir)
 
     if mode == "single":
         _run_single_and_store(
@@ -705,6 +719,7 @@ def plan_review(
 
     plan_approval = config.get("plan_approval", "auto")
     timeout = config.get("review_timeout_seconds", 600)
+    _end_read_phase(lattice_dir)
 
     if mode == "single":
         art_id = _run_single_and_store(
