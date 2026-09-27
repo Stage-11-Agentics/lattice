@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from pathlib import PurePosixPath
 
 # ---------------------------------------------------------------------------
 # Artifact types (section 10.2 of ProjectRequirements_v1)
@@ -24,6 +25,20 @@ ARTIFACT_TYPES: frozenset[str] = frozenset(
 # ---------------------------------------------------------------------------
 # Metadata construction
 # ---------------------------------------------------------------------------
+
+
+def payload_storage_name(artifact_id: str, filename: str) -> str:
+    """The name an artifact payload is stored under: ``<artifact_id><suffix>`` (SPEC §3.8).
+
+    *filename* is the client's metadata (title and content-type guess), never a
+    path: only ``PurePosixPath(filename).suffix`` is kept, and a suffix holding a
+    backslash or a control character is dropped, so no payload name can leave
+    ``artifacts/payload/``.
+    """
+    suffix = PurePosixPath(filename).suffix if isinstance(filename, str) else ""
+    if "\\" in suffix or any(ord(c) < 0x20 or 0x7F <= ord(c) <= 0x9F for c in suffix):
+        suffix = ""
+    return f"{artifact_id}{suffix}"
 
 
 def create_artifact_metadata(

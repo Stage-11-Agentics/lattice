@@ -27,6 +27,7 @@ EXPECTED_MODULES = [
     "query_cmds",
     "resource_cmds",
     "review_cmds",
+    "server_cmds",
     "session_cmds",
     "stats_cmds",
     "task_cmds",

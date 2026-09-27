@@ -44,3 +44,29 @@ def test_running_discovery_loads_nothing_forbidden() -> None:
     )
     proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_server_source_imports_nothing_forbidden() -> None:
+    """G-5: ``lattice.server`` imports nothing from ``lattice.cli`` or ``lattice.integrations``."""
+    files = sorted((SRC / "server").rglob("*.py"))
+    assert files
+    offenders = {
+        str(path.relative_to(SRC)): sorted(
+            n for n in _imports(path) if n.startswith(("lattice.cli", "lattice.integrations"))
+        )
+        for path in files
+    }
+    assert {k: v for k, v in offenders.items() if v} == {}
+
+
+def test_running_the_server_app_loads_nothing_forbidden() -> None:
+    code = (
+        "import sys, lattice.server.app, lattice.server.serve, lattice.server.testing\n"
+        "import lattice.ops\n"
+        "lattice.ops.discover()\n"
+        "bad = sorted(m for m in sys.modules if m.startswith(('lattice.cli', 'lattice.integrations')))\n"
+        "print(bad)\n"
+        "assert not bad, bad\n"
+    )
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stdout + proc.stderr

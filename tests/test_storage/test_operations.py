@@ -1155,6 +1155,8 @@ def test_production_task_writers_use_canonical_storage_api() -> None:
         source_root / "storage" / "operations.py",
         source_root / "storage" / "fs.py",
         source_root / "cli" / "integrity_cmds.py",
+        # The server's journal (hosted/journal.jsonl) is a server-control log, not a task log.
+        source_root / "server" / "journal.py",
     }
     violations: list[str] = []
     for path in source_root.rglob("*.py"):

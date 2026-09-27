@@ -344,7 +344,7 @@ class TestInitErrorHandling:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """PermissionError is caught and reported cleanly."""
-        from lattice.cli import main as cli_module
+        from lattice.storage import board_init as cli_module
 
         def raise_permission_error(root: Path) -> None:
             raise PermissionError("Operation not permitted")
@@ -359,7 +359,7 @@ class TestInitErrorHandling:
 
     def test_oserror_shows_message(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Generic OSError is caught and reported cleanly."""
-        from lattice.cli import main as cli_module
+        from lattice.storage import board_init as cli_module
 
         def raise_os_error(root: Path) -> None:
             raise OSError("No space left on device")

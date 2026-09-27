@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import sys
+from collections.abc import Callable
 
 from lattice.core.acceptance_criteria import (
     find_criterion,
@@ -691,6 +692,26 @@ def get_evidence_roles(snapshot: dict) -> set[str]:
     return roles
 
 
+def _print_unknown_type(etype: str) -> None:
+    print(
+        f"Warning: unknown event type '{etype}' ignored during snapshot materialization",
+        file=sys.stderr,
+    )
+
+
+_unknown_type_reporter: Callable[[str], None] = _print_unknown_type
+
+
+def set_unknown_type_reporter(reporter: Callable[[str], None] | None) -> None:
+    """Route unknown-event-type warnings to *reporter* (``None`` restores stderr).
+
+    A server installs one that logs each (project, type) once instead of
+    printing on every replay (SPEC §8.7).
+    """
+    global _unknown_type_reporter
+    _unknown_type_reporter = reporter if reporter is not None else _print_unknown_type
+
+
 def _apply_mutation(snap: dict, etype: str, event: dict) -> None:
     """Mutate *snap* in-place based on event type.
 
@@ -709,7 +730,4 @@ def _apply_mutation(snap: dict, etype: str, event: dict) -> None:
     else:
         # Unknown built-in types: warn for discoverability but don't fail,
         # to preserve forward compatibility (section 6).
-        print(
-            f"Warning: unknown event type '{etype}' ignored during snapshot materialization",
-            file=sys.stderr,
-        )
+        _unknown_type_reporter(etype)
