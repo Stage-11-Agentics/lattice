@@ -131,7 +131,7 @@ class ControlFile:
 
     def write(self, data: bytes) -> None:
         assert self.fd is not None
-        _fault(f"{self.point}.write", fd=self.fd, data=data)
+        _fault(f"{self.point}.write", fd=self.fd, data=data, path=self.path)
         view = memoryview(data)
         while view:
             view = view[os.write(self.fd, view) :]

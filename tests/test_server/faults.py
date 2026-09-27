@@ -195,3 +195,43 @@ def run_expecting_error(project: Project, write: WriteRequest) -> BaseException:
     except (OpError, OSError, Exception) as exc:  # noqa: BLE001 - the test inspects it
         return exc
     raise AssertionError(f"{write.op} unexpectedly succeeded")
+
+
+# ---------------------------------------------------------------------------
+# Crashes: the disk as a killed process leaves it (SPEC §8.7, AC-4)
+# ---------------------------------------------------------------------------
+
+
+class CrashSnapshots:
+    """Copies the server root at every seam, as if the process died right there.
+
+    Installed like an :class:`Injector` (it raises nothing), it records, for each
+    ``(point, occurrence)``, a copy of the whole root taken *before* that step
+    runs. At a ``*.write`` point it also records the torn variant: the copy with
+    the first half of the line already appended to the file being written. A
+    test then loads each copy with a fresh :class:`Project` and checks that
+    startup recovery leaves the operation wholly present or wholly absent.
+    """
+
+    def __init__(self, root: Path, base: Path) -> None:
+        self.root = Path(root)
+        self.base = Path(base)
+        self.snapshots: list[tuple[str, Path]] = []
+        self._seen: Counter = Counter()
+
+    def __call__(self, point: str, **ctx: Any) -> None:
+        import shutil
+
+        self._seen[point] += 1
+        label = f"{point}#{self._seen[point]}"
+        target = self.base / f"crash-{len(self.snapshots):03d}"
+        shutil.copytree(self.root, target, symlinks=True)
+        self.snapshots.append((label, target))
+        if "data" in ctx and "path" in ctx:
+            torn = self.base / f"crash-{len(self.snapshots):03d}"
+            shutil.copytree(self.root, torn, symlinks=True)
+            copied = torn / Path(ctx["path"]).resolve().relative_to(self.root.resolve())
+            data = ctx["data"]
+            with open(copied, "ab") as fh:
+                fh.write(data[: max(1, len(data) // 2)])
+            self.snapshots.append((f"{label} torn", torn))

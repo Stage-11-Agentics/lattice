@@ -349,10 +349,11 @@ def test_every_boundary_leaves_the_operation_wholly_present_or_absent(
         assert_next_write_commits_and_replays(root, project)
 
 
-def test_archive_failing_right_after_the_source_log_unlink_rolls_back(
-    fresh: Fresh, projects: list[Project], monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("name", ["task.archive", "task.unarchive"])
+def test_placement_failing_right_after_the_source_log_unlink_rolls_back(
+    name: str, fresh: Fresh, projects: list[Project], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    root, project, build = _prepared(fresh, projects, SCENARIOS[2])
+    root, project, build = _prepared(fresh, projects, SCENARIO[name])
     before = state(root)
     with monkeypatch.context() as m:
         install(m, Injector("placement.source_event_removed"))
@@ -361,7 +362,7 @@ def test_archive_failing_right_after_the_source_log_unlink_rolls_back(
     assert state(root) == before
     assert undo_logs(root) == []
     doctor_clean(root)
-    run(project, build())  # the archive itself now commits
+    run(project, build())  # the placement itself now commits
     doctor_clean(root)
 
 
