@@ -509,6 +509,12 @@ lattice sync --follow
 
 `lattice sync` catches up once. `lattice sync --follow` holds the server's change stream and syncs on every change, falling back to polling when a proxy blocks the stream. While it runs, reads on this machine skip their own catch-up. Stop it with Ctrl-C or SIGTERM. `lattice dashboard` on a hosted checkout runs a follower of its own. `lattice watch` and `lattice wait` work on hosted checkouts too.
 
+### Dashboards
+
+`lattice dashboard` on a bound checkout works as locally, with a follower of its own, so it updates live. Its writes go to the server as your token's user when the token permits it (the "browser actor"), else as the token's default actor.
+
+The server also serves each project's dashboard in the browser, with no checkout: open `<server url>/login`, paste a token, and pick a project at `/`; each project lives at `/p/<slug>/`. The session lasts 30 days and dies with its token. Behind a proxy that rewrites `Host`, list the public origin in `public_origins` (section 6). Moving a task in either dashboard starts no automatic review (section 13).
+
 ### Offline
 
 When the server is unreachable, reads show the cache and print one line to stderr:
