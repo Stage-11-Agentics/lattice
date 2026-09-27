@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import click
@@ -35,7 +36,7 @@ from lattice.storage.operations import (
     read_task_authority,
     resolve_task_prose_path,
 )
-from lattice.core.origin import format_origin_line
+from lattice.core.origin import format_origin_line, origin_matches
 from lattice.core.visibility import erased_line, is_tombstoned, visible
 from lattice.storage.readers import read_task_events
 
@@ -212,6 +213,22 @@ def event_cmd(
     is_flag=True,
     help="Only tasks carrying the needs_human flag (any status).",
 )
+@click.option(
+    "--machine",
+    default=None,
+    help="Only tasks with an event written from this machine (see below).",
+)
+@click.option(
+    "--user",
+    "origin_user",
+    default=None,
+    help="Only tasks with an event written by this user (see below).",
+)
+@click.option(
+    "--worktree",
+    default=None,
+    help="Only tasks with an event written from this worktree path (see below).",
+)
 @click.option("--include-archived", is_flag=True, help="Include archived tasks.")
 @click.option("--include-tombstoned", is_flag=True, help="Include erased tasks.")
 @click.option("--compact", is_flag=True, help="Compact JSON output.")
@@ -224,14 +241,29 @@ def list_cmd(
     task_type: str | None,
     priority: str | None,
     needs_human_filter: bool,
+    machine: str | None,
+    origin_user: str | None,
+    worktree: str | None,
     include_archived: bool,
     include_tombstoned: bool,
     compact: bool,
     output_json: bool,
     quiet: bool,
 ) -> None:
-    """List tasks with optional filters."""
+    """List tasks with optional filters.
+
+    Filters combine with AND. --machine, --user and --worktree match a task
+    when at least one event in its log carries an origin that satisfies all
+    three of them together. User and machine are the values `show` prints as
+    user@machine: the server-authenticated user and machine when present
+    (e.g. --user human:alice), else the reported OS user and host. The
+    worktree is the reported worktree path; a relative PATH is taken from
+    the current directory. Events written before v2 carry no origin, so tasks
+    with only such events never match.
+    """
     is_json = output_json
+    worktrees = _worktree_candidates(worktree) if worktree is not None else None
+    origin_filtered = machine is not None or origin_user is not None or worktrees is not None
 
     lattice_dir = require_root(is_json)
     config = load_project_config(lattice_dir)
@@ -272,6 +304,13 @@ def list_cmd(
         if priority is not None and snap.get("priority") != priority:
             continue
         if needs_human_filter and not snap.get("needs_human"):
+            continue
+        if origin_filtered and not any(
+            origin_matches(event, user=origin_user, machine=machine, worktrees=worktrees)
+            for event in read_task_events(
+                lattice_dir, snap.get("id", ""), is_archived=bool(snap.get("_archived"))
+            )
+        ):
             continue
         filtered.append(snap)
 
@@ -340,6 +379,18 @@ def list_cmd(
             if flag and isinstance(flag, dict) and flag.get("reason"):
                 line += f"  [needs human: {flag['reason']}]"
             click.echo(line)
+
+
+def _worktree_candidates(raw: str) -> frozenset[str]:
+    """The strings a ``--worktree`` value matches: its absolute form, plus its
+    resolved form when that differs (writers record resolved paths)."""
+    path = Path(os.path.abspath(os.path.expanduser(raw)))
+    candidates = {str(path)}
+    try:
+        candidates.add(str(path.resolve()))
+    except (OSError, RuntimeError):
+        pass
+    return frozenset(candidates)
 
 
 # ---------------------------------------------------------------------------

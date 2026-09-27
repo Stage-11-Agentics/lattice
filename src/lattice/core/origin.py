@@ -49,16 +49,10 @@ def format_origin_line(event: dict) -> str | None:
     origin = event.get("origin")
     if not isinstance(origin, dict):
         return None
-    reported = origin.get("reported") if isinstance(origin.get("reported"), dict) else {}
-    authenticated = (
-        origin.get("authenticated") if isinstance(origin.get("authenticated"), dict) else {}
-    )
+    reported = _reported(origin)
     actor = event.get("actor", "?")
     parts = [actor.get("name", str(actor)) if isinstance(actor, dict) else str(actor)]
-    if authenticated:
-        user, machine = authenticated.get("user"), authenticated.get("machine")
-    else:
-        user, machine = reported.get("os_user"), reported.get("host")
+    user, machine = _user_and_machine(origin)
     if user and machine:
         parts.append(f"{user}@{machine}")
     elif user or machine:
@@ -69,3 +63,45 @@ def format_origin_line(event: dict) -> str | None:
         branch = reported.get("branch")
         parts.append(f"{reported['worktree']} ({branch})" if branch else reported["worktree"])
     return " · ".join(parts)
+
+
+def _reported(origin: dict) -> dict:
+    reported = origin.get("reported")
+    return reported if isinstance(reported, dict) else {}
+
+
+def _user_and_machine(origin: dict) -> tuple[object, object]:
+    """``authenticated`` user and machine when a server stamped them, else ``reported``."""
+    authenticated = origin.get("authenticated")
+    if isinstance(authenticated, dict) and authenticated:
+        return authenticated.get("user"), authenticated.get("machine")
+    reported = _reported(origin)
+    return reported.get("os_user"), reported.get("host")
+
+
+def origin_matches(
+    event: dict,
+    *,
+    user: str | None = None,
+    machine: str | None = None,
+    worktrees: frozenset[str] | None = None,
+) -> bool:
+    """Whether *event*'s origin satisfies every filter given (``lattice list``).
+
+    User and machine are the values ``format_origin_line`` shows (authenticated,
+    else reported); the worktree is the reported one, matched against any of
+    *worktrees*. An event written before origins existed matches nothing.
+    """
+    origin = event.get("origin")
+    if not isinstance(origin, dict):
+        return False
+    event_user, event_machine = _user_and_machine(origin)
+    if user is not None and event_user != user:
+        return False
+    if machine is not None and event_machine != machine:
+        return False
+    if worktrees is not None:
+        reported = _reported(origin)
+        if reported.get("source") == "browser" or reported.get("worktree") not in worktrees:
+            return False
+    return True
