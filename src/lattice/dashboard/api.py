@@ -14,6 +14,7 @@ Nothing here writes a board: writes run through ``board.execute``.
 from __future__ import annotations
 
 import json
+import posixpath
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -24,7 +25,7 @@ from lattice.core.comments import materialize_comments
 from lattice.core.config import get_project_type
 from lattice.core.errors import HTTP_STATUS, OpError
 from lattice.core.ids import validate_id
-from lattice.core.origin import format_origin_line
+from lattice.core.origin import format_origin_line, origin_matches
 from lattice.core.tasks import compact_snapshot, get_artifact_evidence_refs
 from lattice.core.visibility import visible
 from lattice.storage.operations import (
@@ -173,9 +174,71 @@ def get_config(ld: Path) -> dict:
     return _read_config(ld)
 
 
-def get_tasks(ld: Path) -> list[dict]:
-    """Active tasks for the boards; erased tasks are left out (SPEC §7)."""
-    snapshots = visible(a.snapshot for a in discover_task_authorities(ld, include_archived=False))
+#: ``/api/tasks`` query parameters that filter by origin, as ``lattice list``
+#: names them (``--machine``, ``--user``, ``--worktree``), with the longest
+#: value each accepts.
+ORIGIN_FILTER_LIMITS = {"machine": 256, "user": 256, "worktree": 1024}
+
+
+def origin_filter_params(query: dict[str, list[str]]) -> dict[str, str]:
+    """The origin filters of a ``/api/tasks`` query, validated and normalized.
+
+    An empty value is no filter. The worktree must be absolute and is
+    normalized lexically as the CLI's ``--worktree`` is (``abspath``, then
+    ``resolve`` also folds a leading ``//``), so a trailing slash, repeated
+    slash or ``.``/``..`` segment matches as in the CLI. A relative
+    path, ``~``, or a symlink alias is the CLI's client-side resolution and
+    cannot be done here: a server never resolves a caller's path against its
+    own filesystem, so a relative worktree is refused and a symlink alias
+    matches nothing.
+    """
+    params: dict[str, str] = {}
+    for key, limit in ORIGIN_FILTER_LIMITS.items():
+        values = query.get(key)
+        if not values:
+            continue
+        value = values[0]
+        if len(value) > limit:
+            raise ApiError(
+                400, "VALIDATION_ERROR", f"{key} filter is longer than {limit} characters"
+            )
+        if key == "worktree":
+            if not value.startswith("/"):
+                raise ApiError(
+                    400, "VALIDATION_ERROR", f"worktree filter must be an absolute path: '{value}'"
+                )
+            value = "/" + posixpath.normpath(value).lstrip("/")
+        params[key] = value
+    return params
+
+
+def get_tasks(
+    ld: Path,
+    *,
+    machine: str | None = None,
+    user: str | None = None,
+    worktree: str | None = None,
+) -> list[dict]:
+    """Active tasks for the boards; erased tasks are left out (SPEC §7).
+
+    *machine*, *user* and *worktree* filter as ``lattice list`` does: a task
+    matches when one event in its log carries an origin satisfying every one
+    given (:func:`origin_matches`), so a task written before v2 never matches.
+    The worktree is matched as given; :func:`origin_filter_params` normalizes
+    a query's.
+    """
+    authorities = discover_task_authorities(ld, include_archived=False)
+    if machine is not None or user is not None or worktree is not None:
+        worktrees = frozenset({worktree}) if worktree is not None else None
+        authorities = [
+            a
+            for a in authorities
+            if any(
+                origin_matches(event, user=user, machine=machine, worktrees=worktrees)
+                for event in a.events
+            )
+        ]
+    snapshots = visible(a.snapshot for a in authorities)
     rows = []
     for snap in snapshots:
         row = _board_row(snap)
@@ -483,7 +546,7 @@ def route_get(
         if path == "/api/config":
             return ok(get_config(ld))
         if path == "/api/tasks":
-            return ok(get_tasks(ld))
+            return ok(get_tasks(ld, **origin_filter_params(query)))
         if path == "/api/stats":
             return ok(get_stats(ld))
         if path == "/api/activity":

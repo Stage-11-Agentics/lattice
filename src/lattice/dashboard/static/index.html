@@ -1362,6 +1362,7 @@ select.form-control{cursor:pointer}
 .filter-panel-group-title{font-size:.7rem;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted);margin-bottom:.5rem;font-weight:700}
 .filter-panel-section{margin-bottom:.75rem}
 .filter-panel-section label{display:block;font-size:.8rem;color:var(--text-secondary);margin-bottom:.25rem}
+.filter-panel-section input[type=text]{width:100%;box-sizing:border-box;padding:.3rem .5rem;margin-bottom:.4rem;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);color:var(--text-primary);font-size:.85rem}
 .filter-panel-section select{width:100%;padding:.3rem .5rem;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);color:var(--text-primary);font-size:.85rem}
 .tag-overflow{opacity:.7}
 .card-meta .tag-badge{max-width:8rem;overflow:hidden;text-overflow:ellipsis;display:inline-block;vertical-align:middle;cursor:pointer}
@@ -1397,9 +1398,8 @@ select.form-control{cursor:pointer}
    get the same 16px content box regardless of theme font size; without it
    the ✕ glyph on a 13px theme came out half a pixel shorter. The ID selector
    outranks theme `.btn:hover` rules that would otherwise repaint the accent
-   fill on hover — which is also why this rule must never set `display`: an
-   ID-level display outranks the UA's [hidden]{display:none} and would show
-   the ✕ with no filter active.
+   fill on hover. With no filter active the ✕ is made invisible by
+   `.is-idle` (visibility, below), keeping its space so the nav never shifts.
    #filters-btn is nowrap because its label carries the active count
    ("Filters · 1"); in a narrow nav it wrapped to two lines and grew to 42px
    while the ✕ beside it stayed at 26px — the pair split visibly. */
@@ -1408,6 +1408,10 @@ select.form-control{cursor:pointer}
 #filters-clear-btn{line-height:16px;margin-left:-0.5rem;padding-left:0.5rem;padding-right:0.5rem;border-left:none;border-radius:0 var(--radius-sm) var(--radius-sm) 0;background:var(--accent-primary);border-color:var(--accent-primary);color:var(--text-on-accent);letter-spacing:0;text-transform:none;opacity:.8}
 #filters-clear-btn:hover,#filters-clear-btn:focus-visible{background:var(--accent-primary);border-color:var(--accent-primary);opacity:1}
 #filters-btn{white-space:nowrap}
+/* The count and the ✕ keep their space when no filter is active (hidden by
+   visibility, never display), so the nav does not shift as filters change. */
+#filters-btn-count{font-variant-numeric:tabular-nums}
+#filters-btn-count.is-idle,#filters-clear-btn.is-idle{visibility:hidden}
 #filters-btn.has-clear{border-top-right-radius:0;border-bottom-right-radius:0}
 #filters-btn[aria-pressed="true"]{background:var(--accent-primary);color:var(--text-on-accent);border-color:var(--accent-primary)}
 .stats-tag-row{cursor:pointer}
@@ -1437,7 +1441,7 @@ select.form-control{cursor:pointer}
   <div class="nav-right" style="position:relative">
     <span id="stats-badges"></span>
     <button type="button" class="btn btn-new-task" id="new-task-btn" title="Create new task">+ New Task</button>
-    <button type="button" class="btn btn-with-icon" id="filters-btn" title="Filters" aria-pressed="false" aria-expanded="false"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg> <span id="filters-btn-label">Filters</span></button><button type="button" class="btn filters-clear-btn" id="filters-clear-btn" hidden aria-label="Clear all filters">✕</button>
+    <button type="button" class="btn btn-with-icon" id="filters-btn" title="Filters" aria-pressed="false" aria-expanded="false"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg> <span id="filters-btn-label">Filters</span><span id="filters-btn-count" class="is-idle" aria-hidden="true">· 0</span></button><button type="button" class="btn filters-clear-btn is-idle" id="filters-clear-btn" aria-hidden="true" aria-label="Clear all filters">✕</button>
     <button type="button" class="btn btn-with-icon" id="settings-btn" title="Dashboard Settings"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg> Settings</button>
     <button type="button" class="btn btn-with-icon" id="help-btn" title="User Guide"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> Help</button>
     <button type="button" class="btn btn-with-icon" id="refresh-btn" title="Refresh"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10"/><path d="M20.49 15a9 9 0 01-14.85 3.36L1 14"/></svg> Refresh</button>
@@ -1495,6 +1499,15 @@ select.form-control{cursor:pointer}
       </div>
       <div class="filter-panel-section" id="filter-section-creator">
         <!-- Populated by renderFilterPanel(). Hidden when no tasks have creators. -->
+      </div>
+      <!-- Origin filters (AC-39): matched server side, as `lattice list --machine/--user/--worktree`. -->
+      <div class="filter-panel-section" id="filter-section-origin">
+        <label for="filter-origin-machine">Machine</label>
+        <input type="text" id="filter-origin-machine" data-origin-filter="machine" placeholder="any" spellcheck="false" autocomplete="off">
+        <label for="filter-origin-user">User</label>
+        <input type="text" id="filter-origin-user" data-origin-filter="user" placeholder="any" spellcheck="false" autocomplete="off">
+        <label for="filter-origin-worktree">Worktree</label>
+        <input type="text" id="filter-origin-worktree" data-origin-filter="worktree" placeholder="any (absolute path)" spellcheck="false" autocomplete="off">
       </div>
     </div>
   </div>
@@ -1639,6 +1652,8 @@ select.form-control{cursor:pointer}
 <script src="static/panel-logic.js"></script>
 <!-- esc, basePath, apiUrl: escaping and base-path URLs (SPEC §10), tested in tests/js/escape.test.js -->
 <script src="static/escape.js"></script>
+<!-- Origin filter query for /api/tasks, tested in tests/js/origin-filter.test.js -->
+<script src="static/origin-filter.js"></script>
 <script>
 (function(){
 "use strict";
@@ -2219,6 +2234,11 @@ var activeTagFilter = null;
 // ACTOR_UNASSIGNED (assignee only), or null. Mirrors activeTagFilter.
 var activeAssigneeFilter = null;
 var activeCreatorFilter = null;
+// Origin filters ({machine, user, worktree}), read from the page URL. The
+// server filters: every task list fetch goes through loadTasks() or
+// setOriginFilters(), which send an explicit filter snapshot and install only
+// the response the gate accepts (origin-filter.js).
+var taskListGate = createTaskListGate(originFiltersFromSearch(location.search));
 
 // --- Cube (3D view) state ---
 // Cube 3D state is managed internally by cube3d.js
@@ -2275,6 +2295,17 @@ async function api(path, opts) {
   var body = await r.json();
   if (!body.ok) throw new Error(body.error ? body.error.message : "API error");
   return body.data;
+}
+
+// Refresh the task list under the shown origin filters. Installs the rows
+// into `tasks` only when the gate accepts them (a newer result or a filter
+// change wins); resolves to whether it did.
+async function loadTasks() {
+  var req = taskListGate.request();
+  var data = await api(req.path);
+  if (!taskListGate.accept(req)) return false;
+  tasks = data;
+  return true;
 }
 
 async function apiPost(path, data) {
@@ -2372,9 +2403,8 @@ async function init() {
   updateTabs();
 
   try {
-    var results = await Promise.all([api("/api/config"), api("/api/tasks"), api("/api/graph").catch(function() { return { links: [] }; })]);
+    var results = await Promise.all([api("/api/config"), loadTasks(), api("/api/graph").catch(function() { return { links: [] }; })]);
     config = results[0];
-    tasks = results[1];
     boardGraphLinks = (results[2] && results[2].links) || [];
     var initSp = new URLSearchParams(location.search);
     activeTagFilter = initSp.get("tag") || null;
@@ -3566,16 +3596,17 @@ function activeFilterCount() {
   if (activeTagFilter) n++;
   if (activeAssigneeFilter) n++;
   if (activeCreatorFilter) n++;
-  return n;
+  return n + originFilterCount(taskListGate.active());
 }
 
 // Shared predicate — the three filters AND together. Applied by both
 // renderBoard() and applyListFilters() so board and list stay consistent.
 function taskMatchesActiveFilters(task) {
-  if (activeTagFilter && (!task.tags || task.tags.indexOf(activeTagFilter) === -1)) return false;
-  if (!actorMatchesFilter(task.assigned_to, activeAssigneeFilter)) return false;
-  if (!actorMatchesFilter(task.created_by, activeCreatorFilter)) return false;
-  return true;
+  return taskMatchesSelections(
+    task,
+    {tag: activeTagFilter, assignee: activeAssigneeFilter, creator: activeCreatorFilter},
+    actorMatchesFilter
+  );
 }
 
 function updateFiltersBtnAffordance() {
@@ -3585,12 +3616,21 @@ function updateFiltersBtnAffordance() {
   var count = activeFilterCount();
   btn.setAttribute("aria-pressed", count > 0 ? "true" : "false");
   var base = t("nav.filters");
-  lbl.textContent = count > 0 ? base + " · " + count : base;
+  lbl.textContent = base;
+  // The count and the ✕ are always laid out and only made invisible when no
+  // filter is active, so the control never changes width.
+  var cnt = document.getElementById("filters-btn-count");
+  if (cnt) {
+    cnt.textContent = "· " + count;
+    cnt.classList.toggle("is-idle", count === 0);
+    if (count === 0) cnt.setAttribute("aria-hidden", "true"); else cnt.removeAttribute("aria-hidden");
+  }
   // ✕ attached beside the filters button — a real sibling <button> (tabbable,
   // Enter/Space native), so clicking it never touches the drawer toggle.
   var x = document.getElementById("filters-clear-btn");
   if (x) {
-    x.hidden = count === 0;
+    x.classList.toggle("is-idle", count === 0);
+    if (count === 0) x.setAttribute("aria-hidden", "true"); else x.removeAttribute("aria-hidden");
     x.title = t("filter.clear_all");
     x.setAttribute("aria-label", t("filter.clear_all"));
   }
@@ -3637,6 +3677,52 @@ function setActorFilter(field, keyOrNull) {
   if (sel) sel.value = value || "";
 }
 
+// Origin filters narrow the task list on the server, so a change refetches it
+// with the candidate filters (empty clears). The shown filters, URL, inputs
+// and tasks change together, and only when the gate accepts the response: an
+// older or failed request changes nothing (origin-filter.js).
+async function setOriginFilters(filters) {
+  var req = taskListGate.request(filters);
+  var data;
+  try {
+    data = await api(req.path);
+  } catch (e) {
+    if (!taskListGate.fail(req)) return;
+    _syncOriginFilterInputs();  // back to the filters the board shows
+    showToast(e.message, "error");
+    return;
+  }
+  if (!taskListGate.accept(req)) return;
+  tasks = data;
+  var sp = new URLSearchParams(location.search);
+  ORIGIN_FILTER_KEYS.forEach(function(key) {
+    if (req.filters[key]) sp.set(key, req.filters[key]); else sp.delete(key);
+  });
+  var qs = sp.toString();
+  history.replaceState(null, "", location.pathname + (qs ? "?" + qs : "") + location.hash);
+  _syncOriginFilterInputs();
+  updateFiltersBtnAffordance();
+  updateAllBadges();
+  if (currentView === "board") renderBoard();
+  else if (currentView === "list") renderList();
+}
+
+function _syncOriginFilterInputs() {
+  ORIGIN_FILTER_KEYS.forEach(function(key) {
+    var input = document.getElementById("filter-origin-" + key);
+    if (input) input.value = taskListGate.active()[key] || "";
+  });
+}
+
+function _readOriginFilterInputs() {
+  var sp = new URLSearchParams();
+  ORIGIN_FILTER_KEYS.forEach(function(key) {
+    var input = document.getElementById("filter-origin-" + key);
+    if (input && input.value) sp.set(key, input.value);
+  });
+  return originFiltersFromSearch(sp.toString());
+}
+
 // One action, two entry points (drawer header button, ✕ on the nav count):
 // reset tag + assignee + creator and scrub all three URL params.
 function clearAllFilters() {
@@ -3650,6 +3736,7 @@ function clearAllFilters() {
   updateFiltersBtnAffordance();
   _rerenderFilteredViews();
   renderFilterPanel(); // resync drawer selects (cheap; safe when closed)
+  if (originFilterCount(taskListGate.active()) > 0) setOriginFilters(originFiltersFromSearch(""));
 }
 
 function renderFilterPanel() {
@@ -3665,14 +3752,17 @@ function _renderTagFilterSection() {
   (tasks || []).forEach(function(task) {
     if (task.tags) task.tags.forEach(function(tag) { tagSet[tag] = true; });
   });
-  var allTags = Object.keys(tagSet).sort();
+  // Under an origin filter the loaded tasks are a subset, so an absent tag is
+  // not stale: it stays selected and ANDs (resolveSelection, origin-filter.js).
+  var tagSel = resolveSelection(Object.keys(tagSet), activeTagFilter, taskListGate.active());
+  var allTags = tagSel.options.sort();
   if (allTags.length === 0) {
     if (activeTagFilter) setTagFilter(null);
     section.style.display = "none";
     section.innerHTML = "";
     return;
   }
-  if (activeTagFilter && allTags.indexOf(activeTagFilter) === -1) {
+  if (activeTagFilter && tagSel.selected === null) {
     setTagFilter(null);
   }
   section.style.display = "";
@@ -3714,16 +3804,23 @@ function _renderActorFilterSection(field) {
     }
   });
 
-  if (keys.length === 0) {
+  // The unassigned sentinel is always a live option while the assignee
+  // section renders; anything else must match a present actor, except that
+  // under an origin filter an absent one stays selected, as for tags
+  // (resolveSelection, origin-filter.js).
+  var sentinelOk = isAssignee && active === ACTOR_UNASSIGNED;
+  var actorSel = sentinelOk ? null : resolveSelection(keys, active, taskListGate.active());
+  if (actorSel && actorSel.selected !== null && names[actorSel.selected] === undefined) {
+    names[actorSel.selected] = actorSel.selected;
+    keys = actorSel.options;
+  }
+  if (keys.length === 0 && !(sentinelOk && keepsAbsentSelection(taskListGate.active()))) {
     if (active) setActorFilter(field, null);
     section.style.display = "none";
     section.innerHTML = "";
     return;
   }
-  // The unassigned sentinel is always a live option while the assignee
-  // section renders; anything else must match a present actor.
-  var sentinelOk = isAssignee && active === ACTOR_UNASSIGNED;
-  if (active && !sentinelOk && keys.indexOf(active) === -1) {
+  if (active && actorSel && actorSel.selected === null) {
     setActorFilter(field, null);
     active = null;
   }
@@ -4164,7 +4261,7 @@ function _wirePanelActions(taskId, task) {
         await apiPost("/api/tasks/" + taskId + "/archive", {});
         showToast(t("toast.task_archived"), "success");
         closeDetailPanel();
-        tasks = await api("/api/tasks");
+        await loadTasks();
         updateAllBadges();
         if (currentView === "board") renderBoard();
         else if (currentView === "list") { renderList(); }
@@ -4177,7 +4274,7 @@ function _wirePanelActions(taskId, task) {
 
 async function _refreshAfterPanelEdit(taskId) {
   // Re-fetch tasks to update board/list behind the panel
-  tasks = await api("/api/tasks");
+  await loadTasks();
   updateAllBadges();
 
   // Re-render the underlying view
@@ -4218,6 +4315,10 @@ document.addEventListener("DOMContentLoaded", function() {
   if (filterClose) filterClose.addEventListener("click", closeFilterPanel);
   var filterClearAll = document.getElementById("filter-clear-all");
   if (filterClearAll) filterClearAll.addEventListener("click", clearAllFilters);
+  _syncOriginFilterInputs();
+  document.querySelectorAll("[data-origin-filter]").forEach(function(input) {
+    input.addEventListener("change", function() { setOriginFilters(_readOriginFilterInputs()); });
+  });
 
   // Escape key closes panels (unless user is in an active inline edit)
   document.addEventListener("keydown", function(e) {
@@ -5299,7 +5400,7 @@ window._boardDrop = async function(e) {
     await apiPost("/api/tasks/" + draggedTaskId + "/status", { status: targetStatus });
     showToast(tf("toast.moved_to", {status: targetStatus}), "success");
     // Refresh tasks and re-render
-    tasks = await api("/api/tasks");
+    await loadTasks();
     updateAllBadges();
     renderBoard();
   } catch(err) {
@@ -5648,7 +5749,7 @@ function _wireDetailActions(taskId, task) {
       try {
         await apiPost("/api/tasks/" + taskId + "/status", { status: newStatus });
         showToast(tf("toast.status_changed", {status: getStatusDisplayName(newStatus)}), "success");
-        tasks = await api("/api/tasks");
+        await loadTasks();
         updateAllBadges();
         renderDetail(taskId);
       } catch(e) {
@@ -5667,7 +5768,7 @@ function _wireDetailActions(taskId, task) {
       try {
         await apiPost("/api/tasks/" + taskId + "/update", { fields: { priority: newPri } });
         showToast(tf("toast.priority_changed", {value: newPri}), "success");
-        tasks = await api("/api/tasks");
+        await loadTasks();
         updateAllBadges();
         renderDetail(taskId);
       } catch(e) {
@@ -5686,7 +5787,7 @@ function _wireDetailActions(taskId, task) {
       try {
         await apiPost("/api/tasks/" + taskId + "/update", { fields: { type: newType } });
         showToast(tf("toast.type_changed", {value: newType}), "success");
-        tasks = await api("/api/tasks");
+        await loadTasks();
         updateAllBadges();
         renderDetail(taskId);
       } catch(e) {
@@ -5705,7 +5806,7 @@ function _wireDetailActions(taskId, task) {
         return apiPost("/api/tasks/" + taskId + "/update", { fields: { title: newVal.trim() } })
           .then(function() {
             showToast(t("toast.title_updated"), "success");
-            api("/api/tasks").then(function(t) { tasks = t; updateAllBadges(); });
+            loadTasks().then(function() { updateAllBadges(); });
             renderDetail(taskId);
           });
       });
@@ -5774,7 +5875,7 @@ function _wireDetailActions(taskId, task) {
         apiPost("/api/tasks/" + taskId + "/assign", { assigned_to: assignedTo })
           .then(function() {
             showToast(assignedTo ? tf("toast.assigned", {value: assignedTo}) : t("toast.unassigned"), "success");
-            api("/api/tasks").then(function(t) { tasks = t; updateAllBadges(); });
+            loadTasks().then(function() { updateAllBadges(); });
             renderDetail(taskId);
           })
           .catch(function(e) {
@@ -5795,7 +5896,7 @@ function _wireDetailActions(taskId, task) {
         return apiPost("/api/tasks/" + taskId + "/update", { fields: { tags: newTags } })
           .then(function() {
             showToast(t("toast.tags_updated"), "success");
-            api("/api/tasks").then(function(t) { tasks = t; updateAllBadges(); });
+            loadTasks().then(function() { updateAllBadges(); });
             renderDetail(taskId);
           });
       });
@@ -5839,7 +5940,7 @@ function _wireDetailActions(taskId, task) {
       try {
         await apiPost("/api/tasks/" + taskId + "/archive", {});
         showToast(t("toast.task_archived"), "success");
-        tasks = await api("/api/tasks");
+        await loadTasks();
         updateAllBadges();
         location.hash = "#/" + currentView;
       } catch(e) {
@@ -6998,7 +7099,7 @@ document.getElementById("create-task-submit").addEventListener("click", async fu
     var created = await apiPost("/api/tasks", payload);
     hideCreateTaskModal();
     showToast(tf("toast.task_created", {title: title}), "success");
-    tasks = await api("/api/tasks");
+    await loadTasks();
     updateAllBadges();
     // Navigate to the new task's detail
     location.hash = "#/task/" + created.id;
@@ -7293,9 +7394,8 @@ document.getElementById("help-btn").addEventListener("click", function() {
 
 document.getElementById("refresh-btn").addEventListener("click", async function() {
   try {
-    var results = await Promise.all([api("/api/config"), api("/api/tasks"), api("/api/graph").catch(function() { return { links: [] }; })]);
+    var results = await Promise.all([api("/api/config"), loadTasks(), api("/api/graph").catch(function() { return { links: [] }; })]);
     config = results[0];
-    tasks = results[1];
     boardGraphLinks = (results[2] && results[2].links) || [];
     archivedTasks = null;
     var dc = (config && config.dashboard) || {};
@@ -7384,17 +7484,16 @@ function startAutoRefresh() {
     }
 
     try {
-      var fetchPromises = [api("/api/tasks"), api("/api/config")];
+      var tasksBefore = tasks;
+      var fetchPromises = [loadTasks(), api("/api/config")];
       if (currentView === "board") fetchPromises.push(api("/api/graph").catch(function() { return { links: [] }; }));
       var fetchResults = await Promise.all(fetchPromises);
-      var newTasks = fetchResults[0];
       var newConfig = fetchResults[1];
       if (fetchResults[2]) boardGraphLinks = (fetchResults[2] && fetchResults[2].links) || [];
       // Only re-render if data actually changed
-      var tasksChanged = JSON.stringify(newTasks) !== JSON.stringify(tasks);
+      var tasksChanged = JSON.stringify(tasks) !== JSON.stringify(tasksBefore);
       var configChanged = JSON.stringify(newConfig) !== JSON.stringify(config);
       if (tasksChanged || configChanged) {
-        tasks = newTasks;
         config = newConfig;
         updateAllBadges();
         if (configChanged) {
