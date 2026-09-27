@@ -44,6 +44,10 @@ HEX64 = HEX32 * 2
         ("server at " + "100.64" + ".0.1:8740", "tailnet-ipv4"),
         ("peer " + "100.127" + ".255.255", "tailnet-ipv4"),
         ("route " + "100.101" + ".7.9/32", "tailnet-ipv4"),
+        ("host " + "100.64" + ".1.42/16", "tailnet-ipv4"),
+        ("net " + "100.64" + ".0.0/16", "tailnet-ipv4"),
+        ("net " + "100.64" + ".0.0/9", "tailnet-ipv4"),
+        ("team at example" + CFA, "cloudflare-access-team"),
     ],
 )
 def test_builtin_rule_fires(text: str, rule: str) -> None:
@@ -61,7 +65,6 @@ def test_builtin_rule_fires(text: str, rule: str) -> None:
         "example" + TS,
         "`*" + TS + "` names",
         "<team>" + CFA,
-        "example" + CFA,
         "100.63" + ".255.255 is outside the range",
         "100.128" + ".0.1 is outside the range",
         "version 1.100.64" + ".1.2",

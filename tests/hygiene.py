@@ -4,9 +4,9 @@ Three layers, all over the files git tracks:
 
 1. **Built-in patterns**, always on: Lattice token shapes, private keys,
    Cloudflare Access credential values, tailnet (``*.ts.net``) names other than
-   the ``example`` placeholder, ``*.cloudflareaccess.com`` team names other than
-   ``example``, and IPv4 host addresses in the tailnet range ``100.64.0.0/10``
-   (a range written in CIDR with a prefix of /16 or wider is documentation).
+   the ``example`` placeholder, any ``*.cloudflareaccess.com`` team name, and any
+   IPv4 address in the tailnet range ``100.64.0.0/10`` (with or without a ``/N``
+   suffix), except that literal range string itself.
 2. **Committed denylist** ``tests/hygiene_denylist.sha256``: a salt line, then one
    ``sha256(salt + string)`` per line. Every lowercased ``[a-z0-9.-]+`` token of
    every tracked text file (edge dots and hyphens trimmed) is hashed, along with
@@ -44,12 +44,15 @@ SALT_PREFIX = "salt:"
 _TAILNET_IP = re.compile(r"(?<![\d.])100\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?!\.?\d)(?:/(\d{1,2}))?")
 
 
+# The one documentation form allowed: the tailnet range itself, as SPEC §14 names it.
+_TAILNET_RANGE_DOC = "100.64.0.0/10"
+
+
 def _tailnet_ip(match: re.Match[str]) -> bool:
-    """A host address in 100.64.0.0/10; a written range (prefix /16 or wider) is not a host."""
-    second, third, fourth = (int(g) for g in match.groups()[:3])
-    prefix = match.group(4)
-    if prefix is not None and int(prefix) <= 16:
+    """Any address in 100.64.0.0/10, with or without a /N suffix, except the range itself."""
+    if match.group(0) == _TAILNET_RANGE_DOC:
         return False
+    second, third, fourth = (int(g) for g in match.groups()[:3])
     return 64 <= second <= 127 and third <= 255 and fourth <= 255
 
 
@@ -92,8 +95,7 @@ RULES: tuple[Rule, ...] = (
     ),
     Rule(
         "cloudflare-access-team",
-        re.compile(r"(?i)(?<![a-z0-9-])([a-z0-9-]+)\.cloudflareaccess\.com\b"),
-        _label_not_example,
+        re.compile(r"(?i)(?<![a-z0-9-])[a-z0-9-]+\.cloudflareaccess\.com\b"),
     ),
     Rule("tailnet-ipv4", _TAILNET_IP, _tailnet_ip),
 )
