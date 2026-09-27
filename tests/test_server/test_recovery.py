@@ -792,3 +792,35 @@ def test_op_status_at_rollover_never_loses_an_entry_committed_meanwhile(
     assert ops.count(new.caller.origin["op_id"]) == 1
     assert status["state"] == "committed" and "result" not in status  # expired: no result
     assert old_key not in project.index
+
+
+def test_commit_crash_before_undo_delete_then_offline_rotate_is_refused_and_retry_applies_once(
+    fresh: Fresh, projects: list[Project], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC-4 (H-22 row): commit, crash before the undo log's deletion, offline
+    'rotate-epoch' (refused while the undo log exists), restart, retry: the
+    write is applied exactly once."""
+    root, project = _loaded(fresh, projects)
+    write = request("task.create", {"title": "committed, then killed"})
+    _killed_write(monkeypatch, project, write, "finish.undo_delete")
+    project.release()
+    projects.remove(project)
+    op_id = write.caller.origin["op_id"]
+    assert [x["op_id"] for x in journal_lines(root)] == [op_id]  # committed on disk
+    assert undo_logs(root)
+
+    with pytest.raises(OpError) as refused:
+        admin.rotate_project_epoch(root, SLUG)
+    assert refused.value.code == "CONFLICT"
+    assert refused.value.details["reason"] == "UNDO_LOGS_PRESENT"
+    assert undo_logs(root)  # the refusal changed nothing
+
+    restarted = _restart(root)
+    projects.append(restarted)
+    assert restarted.state == "loaded" and undo_logs(root) == []  # committed: deleted
+    retry = run(restarted, write)
+    assert retry.replayed and retry.seq == 1
+    assert [x["op_id"] for x in journal_lines(root)] == [op_id]  # applied exactly once
+    restarted.release()
+    projects.remove(restarted)
+    assert admin.rotate_project_epoch(root, SLUG)["via"] == "offline"  # now allowed
