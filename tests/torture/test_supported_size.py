@@ -2,9 +2,9 @@
 a board at SPEC §8.8's envelope (2,000 tasks, 200 MiB of durable data, an 8 MiB
 log) complete through a link throttled to 1 MiB/s under the bulk policy.
 
-``TORTURE_ENVELOPE_MIB`` (not a ``LATTICE_*`` name: the suite strips those) shrinks
-the board for a quick local run; the
-default is the supported size.
+``TORTURE_ENVELOPE_MIB`` (not a ``LATTICE_*`` name: the suite strips those)
+shrinks the board for a quick local run; the default is the supported size,
+which takes about 5 minutes at 1 MiB/s.
 """
 
 from __future__ import annotations
