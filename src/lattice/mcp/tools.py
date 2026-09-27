@@ -16,16 +16,17 @@ even when one server process writes to several checkouts.
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated, Any
 
 from pydantic import Field
 
-from lattice.boards import LocalBoard, git_worktree, resolve_board
+from lattice.boards import HostedBoard, LocalBoard, git_worktree, resolve_board
 from lattice.core.acceptance_criteria import criterion_without_history
 from lattice.core.comments import materialize_comments
 from lattice.core.events import get_actor_display
@@ -67,7 +68,37 @@ def _tool_errors() -> Iterator[None]:
         raise LatticeToolError(exc.code, exc.message, exc.details) from exc
 
 
-def _board(lattice_root: str | None) -> LocalBoard:
+def _tool(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Register *fn* as an MCP tool whose call is one command (see :func:`_call`)."""
+
+    @functools.wraps(fn)
+    def call(*args: Any, **kwargs: Any) -> Any:
+        with _call():
+            return fn(*args, **kwargs)
+
+    return mcp.tool()(call)
+
+
+@contextmanager
+def _call() -> Iterator[None]:
+    """One tool call is one command to a hosted checkout's client session.
+
+    The session remembers per process which caches it caught up and holds a
+    cache's shared read lock until the command ends (SPEC §9.4, §9.5). This
+    server lives across many calls, so each call starts with that state
+    forgotten (its first read catches up) and releases the read lock when it
+    returns, so no sync waits on an idle server. On a local board it is a no-op.
+    """
+    from lattice.remote import session
+
+    session.reset_process_state()
+    try:
+        yield
+    finally:
+        session.reset_process_state()
+
+
+def _board(lattice_root: str | None) -> LocalBoard | HostedBoard:
     """The board this call's starting directory belongs to.
 
     ``lattice_root`` names the starting directory and wins over the server
@@ -86,7 +117,7 @@ def _execute(
     params: dict,
     actor: str,
     *,
-    board: LocalBoard | None = None,
+    board: LocalBoard | HostedBoard | None = None,
     attestations: dict | None = None,
     config: dict | None = None,
 ) -> OpResult:
@@ -98,11 +129,11 @@ def _execute(
 
 
 def _read_dir(lattice_root: str | None) -> Path:
-    """The call's board directory, caught up before it is read (SPEC §9.5)."""
+    """The call's board directory, ready to read: a hosted checkout's cache is
+    caught up and read-locked for the rest of the call (SPEC §9.5)."""
     board = _board(lattice_root)
     with _tool_errors():
-        board.refresh()
-    return board.lattice_dir
+        return board.lattice_dir
 
 
 def _load_config(lattice_dir: Path) -> dict:
@@ -130,7 +161,7 @@ def _resolve_task_id(lattice_dir: Path, raw_id: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@_tool
 def lattice_create(
     title: Annotated[str, Field(description="Task title")],
     actor: Annotated[str, Field(description="Actor ID (e.g., agent:claude-opus-4, human:atin)")],
@@ -163,7 +194,7 @@ def lattice_create(
     return _execute(lattice_root, "task.create", params, actor).task
 
 
-@mcp.tool()
+@_tool
 def lattice_criterion_add(
     task_id: Annotated[str, Field(description="Task ID (ULID or short ID)")],
     outcome: Annotated[str, Field(description="Observable outcome prose")],
@@ -180,7 +211,7 @@ def lattice_criterion_add(
     return _execute(lattice_root, "task.criterion_add", params, actor).value
 
 
-@mcp.tool()
+@_tool
 def lattice_criterion_edit(
     task_id: Annotated[str, Field(description="Task ID (ULID or short ID)")],
     criterion_id: Annotated[str, Field(description="Task-local criterion ID")],
@@ -195,7 +226,7 @@ def lattice_criterion_edit(
     return _execute(lattice_root, "task.criterion_edit", params, actor).value
 
 
-@mcp.tool()
+@_tool
 def lattice_criterion_retire(
     task_id: Annotated[str, Field(description="Task ID (ULID or short ID)")],
     criterion_id: Annotated[str, Field(description="Task-local criterion ID")],
@@ -209,7 +240,7 @@ def lattice_criterion_retire(
     return _execute(lattice_root, "task.criterion_retire", params, actor).value
 
 
-@mcp.tool()
+@_tool
 def lattice_criteria(
     task_id: Annotated[str, Field(description="Task ID (ULID or short ID)")],
     include_retired: Annotated[bool, Field(description="Include retired criteria")] = False,
@@ -236,7 +267,7 @@ def lattice_criteria(
     return {"task_id": task_id, "archived": archived, "criteria": criteria}
 
 
-@mcp.tool()
+@_tool
 def lattice_update(
     task_id: Annotated[str, Field(description="Task ID (ULID or short ID like LAT-42)")],
     actor: Annotated[str, Field(description="Actor ID")],
@@ -259,7 +290,7 @@ def lattice_update(
     return result.task
 
 
-@mcp.tool()
+@_tool
 def lattice_status(
     task_id: Annotated[str, Field(description="Task ID (ULID or short ID)")],
     new_status: Annotated[str, Field(description="New status value")],
@@ -281,7 +312,8 @@ def lattice_status(
     from lattice.core.config import resolve_status_input
 
     board = _board(lattice_root)
-    config = board.load_config()
+    with _tool_errors():
+        config = board.load_config()
     target_status = resolve_status_input(config, new_status)
     worktree = git_worktree(board.start)
     params = {"task": task_id, "new_status": new_status, "force": force, "reason": reason}
@@ -320,7 +352,7 @@ def lattice_status(
     return result.task
 
 
-@mcp.tool()
+@_tool
 def lattice_assign(
     task_id: Annotated[str, Field(description="Task ID (ULID or short ID)")],
     assignee: Annotated[str, Field(description="Assignee actor ID (e.g., agent:claude-opus-4)")],
@@ -337,7 +369,7 @@ def lattice_assign(
     return result.task
 
 
-@mcp.tool()
+@_tool
 def lattice_comment(
     task_id: Annotated[str, Field(description="Task ID (ULID or short ID)")],
     text: Annotated[str, Field(description="Comment text")],
@@ -369,7 +401,7 @@ def lattice_comment(
     return _execute(lattice_root, "task.comment", params, actor).task
 
 
-@mcp.tool()
+@_tool
 def lattice_link(
     source_id: Annotated[str, Field(description="Source task ID (ULID or short ID)")],
     relationship_type: Annotated[
@@ -395,7 +427,7 @@ def lattice_link(
     return _execute(lattice_root, "task.link", params, actor).task
 
 
-@mcp.tool()
+@_tool
 def lattice_unlink(
     source_id: Annotated[str, Field(description="Source task ID (ULID or short ID)")],
     relationship_type: Annotated[str, Field(description="Relationship type to remove")],
@@ -410,7 +442,7 @@ def lattice_unlink(
     return _execute(lattice_root, "task.unlink", params, actor).task
 
 
-@mcp.tool()
+@_tool
 def lattice_attach(
     task_id: Annotated[str, Field(description="Task ID (ULID or short ID)")],
     source: Annotated[str, Field(description="File path or URL to attach")],
@@ -469,7 +501,7 @@ def lattice_attach(
     return _execute(lattice_root, "task.attach", params, actor, board=board).value
 
 
-@mcp.tool()
+@_tool
 def lattice_archive(
     task_id: Annotated[str, Field(description="Task ID (ULID or short ID)")],
     actor: Annotated[str, Field(description="Actor ID")],
@@ -481,7 +513,7 @@ def lattice_archive(
     return _execute(lattice_root, "task.archive", {"task": task_id}, actor).value
 
 
-@mcp.tool()
+@_tool
 def lattice_unarchive(
     task_id: Annotated[str, Field(description="Task ID (ULID or short ID)")],
     actor: Annotated[str, Field(description="Actor ID")],
@@ -493,7 +525,7 @@ def lattice_unarchive(
     return _execute(lattice_root, "task.unarchive", {"task": task_id}, actor).value
 
 
-@mcp.tool()
+@_tool
 def lattice_branch_link(
     task_id: Annotated[str, Field(description="Task ID (ULID or short ID)")],
     branch: Annotated[str, Field(description="Git branch name")],
@@ -508,7 +540,7 @@ def lattice_branch_link(
     return _execute(lattice_root, "task.branch_link", params, actor).task
 
 
-@mcp.tool()
+@_tool
 def lattice_branch_unlink(
     task_id: Annotated[str, Field(description="Task ID (ULID or short ID)")],
     branch: Annotated[str, Field(description="Git branch name")],
@@ -523,7 +555,7 @@ def lattice_branch_unlink(
     return _execute(lattice_root, "task.branch_unlink", params, actor).task
 
 
-@mcp.tool()
+@_tool
 def lattice_event(
     task_id: Annotated[str, Field(description="Task ID (ULID or short ID)")],
     event_type: Annotated[str, Field(description="Custom event type (must start with x_)")],
@@ -542,7 +574,7 @@ def lattice_event(
     return _execute(lattice_root, "task.event", params, actor).value
 
 
-@mcp.tool()
+@_tool
 def lattice_comment_edit(
     task_id: Annotated[str, Field(description="Task ID (ULID or short ID)")],
     comment_id: Annotated[str, Field(description="Event ID of the comment to edit")],
@@ -571,7 +603,7 @@ def lattice_comment_edit(
     return _execute(lattice_root, "task.comment_edit", params, actor).task
 
 
-@mcp.tool()
+@_tool
 def lattice_comment_delete(
     task_id: Annotated[str, Field(description="Task ID (ULID or short ID)")],
     comment_id: Annotated[str, Field(description="Event ID of the comment to delete")],
@@ -585,7 +617,7 @@ def lattice_comment_delete(
     return _execute(lattice_root, "task.comment_delete", params, actor).task
 
 
-@mcp.tool()
+@_tool
 def lattice_react(
     task_id: Annotated[str, Field(description="Task ID (ULID or short ID)")],
     comment_id: Annotated[str, Field(description="Event ID of the comment to react to")],
@@ -605,7 +637,7 @@ def lattice_react(
     return result.task
 
 
-@mcp.tool()
+@_tool
 def lattice_unreact(
     task_id: Annotated[str, Field(description="Task ID (ULID or short ID)")],
     comment_id: Annotated[
@@ -627,7 +659,7 @@ def lattice_unreact(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@_tool
 def lattice_comments(
     task_id: Annotated[str, Field(description="Task ID (ULID or short ID)")],
     lattice_root: Annotated[
@@ -644,7 +676,7 @@ def lattice_comments(
     return materialize_comments(list(authority.events))
 
 
-@mcp.tool()
+@_tool
 def lattice_list(
     status: Annotated[str | None, Field(description="Filter by status")] = None,
     assigned: Annotated[str | None, Field(description="Filter by assignee")] = None,
@@ -682,7 +714,7 @@ def lattice_list(
     return filtered
 
 
-@mcp.tool()
+@_tool
 def lattice_show(
     task_id: Annotated[str, Field(description="Task ID (ULID or short ID)")],
     include_events: Annotated[bool, Field(description="Include event history")] = True,
@@ -726,7 +758,7 @@ def lattice_show(
     return result
 
 
-@mcp.tool()
+@_tool
 def lattice_config(
     lattice_root: Annotated[
         str | None, Field(description="Path to project directory containing .lattice/")
@@ -737,7 +769,7 @@ def lattice_config(
     return _load_config(lattice_dir)
 
 
-@mcp.tool()
+@_tool
 def lattice_doctor(
     fix: Annotated[bool, Field(description="Attempt to fix issues")] = False,
     lattice_root: Annotated[
