@@ -13,11 +13,23 @@ from lattice.server.testing import ServerHandle
 
 SESSION_COOKIE = "lattice_session"
 
-#: Failures that mean a kept-alive connection went stale before any response
-#: byte arrived (``RemoteDisconnected`` is raised only when the status line never
-#: started). ``IncompleteRead``, ``BadStatusLine``, ``LineTooLong`` and the like
-#: are protocol failures and are never retried.
+#: Failures that mean a kept-alive connection went stale: raised while sending,
+#: or while waiting for the first response byte. Once a byte has arrived, every
+#: failure (``IncompleteRead``, ``BadStatusLine``, ``LineTooLong``, a reset during
+#: the headers) is a protocol failure and is never retried.
 STALE_CONNECTION = (http.client.RemoteDisconnected, BrokenPipeError, ConnectionResetError)
+
+
+def _response_started(conn: http.client.HTTPConnection) -> bool:
+    """Block until the first response byte arrives (``True``) or the connection
+    closes or resets before one does (``False``), without consuming anything."""
+    import socket
+
+    assert conn.sock is not None
+    try:
+        return conn.sock.recv(1, socket.MSG_PEEK) != b""
+    except (ConnectionResetError, BrokenPipeError):
+        return False
 
 
 @dataclass
@@ -69,15 +81,23 @@ class WebClient:
             try:
                 try:
                     self._conn.request(method, path, body=body, headers=headers)
-                    resp = self._conn.getresponse()
+                    stale = not _response_started(self._conn)
                 except STALE_CONNECTION:
+                    stale = True  # the send itself failed on a closed connection
+                if stale:
                     # The server closed the idle connection before sending one byte
                     # of a response: only a reused connection's GET may try again.
                     self.close()
                     if attempt == 2 or not reused or method != "GET":
-                        raise
+                        raise http.client.RemoteDisconnected(
+                            "connection closed before any response byte"
+                        )
                     continue
-                raw = resp.read()  # a truncated or malformed response always propagates
+                # A byte of the status line has arrived: any failure from here on
+                # (a reset during the headers, a truncated or malformed response)
+                # propagates.
+                resp = self._conn.getresponse()
+                raw = resp.read()
             except BaseException:
                 self.close()
                 raise

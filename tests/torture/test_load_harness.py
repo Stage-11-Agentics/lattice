@@ -70,3 +70,24 @@ def test_a_living_child_does_not_fail_the_run(ctx) -> None:
     finally:
         child.kill()
         child.join(timeout=5)
+
+
+def _ready_then_die(ready, delay: float) -> None:
+    import os
+
+    ready.set()
+    time.sleep(delay)
+    os._exit(4)
+
+
+def test_a_death_just_before_the_deadline_is_not_dropped(ctx) -> None:
+    """Round 4 finding 2: a silent death seen less than the grace before the run
+    ends still fails the run."""
+    stop, results, ready = ctx.Event(), ctx.Queue(), ctx.Event()
+    child = ctx.Process(target=_ready_then_die, args=(ready, 0.6), daemon=True)
+    child.start()
+    assert ready.wait(10)
+    started = time.monotonic()
+    with pytest.raises(pytest.fail.Exception, match=r"exited \(4\) without a report"):
+        _run_for(0.75, results, {5: child}, stop, grace=0.5)
+    assert time.monotonic() - started < 3

@@ -152,3 +152,45 @@ def test_a_truncated_first_response_propagates() -> None:
         web.get("/one")
     assert server.accepted == 1
     server.close()
+
+
+def _reset(conn: socket.socket) -> None:
+    """Close with RST (SO_LINGER 0) instead of FIN."""
+    import struct
+
+    conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+
+
+def test_a_reset_after_the_status_line_propagates() -> None:
+    """Round 4 finding 1: a reset during the headers is a protocol failure, not a
+    stale connection, however the error is spelled."""
+
+    def after(conn: socket.socket) -> None:
+        _read_request(conn)
+        conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Le")
+        import time
+
+        time.sleep(0.2)  # the status line has reached the client
+        _reset(conn)
+
+    server = FakeServer([_serve_ok_then(after), _ok])
+    web = _client(server)
+    assert web.get("/one").status == 200
+    with pytest.raises((ConnectionResetError, http.client.HTTPException)) as caught:
+        web.get("/two")
+    assert not isinstance(caught.value, http.client.RemoteDisconnected)
+    assert server.accepted == 1  # never sent again on a fresh connection
+    server.close()
+
+
+def test_an_idle_connection_reset_before_any_byte_retries_once() -> None:
+    def after(conn: socket.socket) -> None:
+        _read_request(conn)  # the next request arrives, then the server resets
+        _reset(conn)
+
+    server = FakeServer([_serve_ok_then(after), _ok])
+    web = _client(server)
+    assert web.get("/one").status == 200
+    assert web.get("/two").status == 200
+    assert server.accepted == 2
+    server.close()
