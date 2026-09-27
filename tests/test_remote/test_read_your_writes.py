@@ -173,3 +173,14 @@ def test_a_write_whose_post_write_sync_fails_still_succeeds(
     assert "lattice: cannot reach team; showing cache as of 2026-01-01T00:00:00Z" in result.stderr
     shown = run_cli(repo, "show", "DEM-1", "--json")
     assert json.loads(shown.stdout)["data"]["title"] == "Committed anyway"
+
+
+def test_planning_hint_on_a_hosted_checkout_names_plan_write(
+    hosted_env: HostedEnv, tmp_path: Path
+) -> None:
+    repo = _attached(hosted_env, tmp_path)
+    assert run_cli(repo, "create", "Plan me", "--actor", "agent:dev").exit_code == 0
+    moved = run_cli(repo, "status", "DEM-1", "in_planning", "--actor", "agent:dev")
+    assert moved.exit_code == 0, moved.output
+    assert "lattice plan write DEM-1 --file <path>" in moved.stdout
+    assert "plans/task_" not in moved.stdout

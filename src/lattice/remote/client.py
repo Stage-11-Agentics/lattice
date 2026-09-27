@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import dataclasses
+import sys
 import time
 import urllib.parse
 from collections.abc import Callable
@@ -112,6 +113,7 @@ def post_operation(remote: http.Remote, project: str, op_name: str, body: dict) 
     deadline = _now() + remote.retry_seconds
     backoff = FIRST_BACKOFF_SECONDS
     reached = False
+    announced = False
     while True:
         wait: float | None = None
         try:
@@ -140,6 +142,14 @@ def post_operation(remote: http.Remote, project: str, op_name: str, body: dict) 
             if reached:
                 raise outcome_unknown(remote, op_id, detail)
             raise server_unreachable(remote, detail)
+        if not announced:
+            # One line, so a write waiting out a restart does not look hung.
+            announced = True
+            print(
+                f"lattice: {remote.alias}: {detail}; retrying operation {op_id} for up to "
+                f"{remote.retry_seconds:g} s",
+                file=sys.stderr,
+            )
         _sleep(wait)
 
 

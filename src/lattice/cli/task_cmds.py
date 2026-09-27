@@ -282,6 +282,12 @@ def compute_next_steps(
 
     if new_status == "in_planning":
         hint = f"Next: write the plan in plans/{task_id}.md, then move to planned."
+        if (lattice_dir / "cache" / "state.json").exists():
+            # A hosted cache is read-only: plans go through the server (SPEC §3.9).
+            hint = (
+                f"Next: write the plan with 'lattice plan write {label} --file <path>', "
+                "then move to planned."
+            )
         return hint, {
             "action": "write_plan",
             "plan_path": f"plans/{task_id}.md",

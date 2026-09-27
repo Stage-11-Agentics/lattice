@@ -105,11 +105,16 @@ def _post(url: str, retry_seconds: float = 30.0) -> dict:
     ],
 )
 def test_transient_answers_are_retried_with_the_same_op_id(
-    clock: list[float], transient: tuple
+    clock: list[float], transient: tuple, capsys: pytest.CaptureFixture
 ) -> None:
     with scripted([transient, transient, OK]) as server:
         data = _post(server["url"])
     assert data["seq"] == 7
+    retrying = [line for line in capsys.readouterr().err.splitlines() if "retrying" in line]
+    assert retrying == [
+        f"lattice: team: HTTP {transient[0]} {transient[2]['error']['code']}; retrying "
+        f"operation {OP_ID} for up to 30 s"
+    ]
     assert [b["op_id"] for b in server["bodies"]] == [OP_ID] * 3
     assert clock == [0.5, 1.0]  # backoff from 0.5 s, doubling
 
