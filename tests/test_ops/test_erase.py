@@ -195,7 +195,11 @@ REFUSED_WRITES = [
     ("claim", "{t}"),
     ("unclaim", "{t}"),
     ("attach", "{t}", "https://example.com/x", "--title", "x"),
+    ("attach", "{t}", "{r}/evidence.txt"),
     ("event", "{t}", "x_custom"),
+    # Composite commands refuse before spending an agent on the task.
+    ("code-review", "{t}"),
+    ("plan-review", "{t}"),
 ]
 
 
@@ -203,8 +207,9 @@ REFUSED_WRITES = [
 def test_every_other_write_is_refused(board: dict, run, args: tuple[str, ...]) -> None:  # noqa: ANN001
     root, target = board["root"], board["target"]
     run("erase", target, "--reason", "gone", *ACTOR)
+    (root / "evidence.txt").write_text("proof\n")
     before = _files(root)
-    argv = [a.format(t=target, o=board["other"], c=board["comment"]) for a in args]
+    argv = [a.format(t=target, o=board["other"], c=board["comment"], r=root) for a in args]
     for is_json in (False, True):
         result = run(
             *argv, *ACTOR, *(("--json",) if is_json else ()), env={"C11_SURFACE_ID": "s-1"}

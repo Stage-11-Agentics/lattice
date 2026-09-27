@@ -22,6 +22,8 @@ from lattice.cli.helpers import (
     resolve_task_id,
 )
 from lattice.cli.main import cli
+from lattice.core.errors import TaskErased
+from lattice.core.visibility import require_not_tombstoned
 from lattice.core.review import (
     DEFAULT_MAX_DIFF_CHARS,
     DEFAULT_MAX_DIFF_LINES,
@@ -281,6 +283,10 @@ def code_review(
 
     task_id = resolve_task_id(lattice_dir, task_id, is_json)
     snapshot = read_snapshot_or_exit(lattice_dir, task_id, is_json)
+    try:
+        require_not_tombstoned(snapshot)  # before any agent is spent on it
+    except TaskErased as exc:
+        output_error(exc.message, exc.code, is_json)
 
     # Resolve mode: CLI flag > config > default
     if mode is None:
@@ -522,6 +528,10 @@ def plan_review(
 
     task_id = resolve_task_id(lattice_dir, task_id, is_json)
     snapshot = read_snapshot_or_exit(lattice_dir, task_id, is_json)
+    try:
+        require_not_tombstoned(snapshot)  # before any agent is spent on it
+    except TaskErased as exc:
+        output_error(exc.message, exc.code, is_json)
 
     # Resolve mode: CLI flag > config > default
     if mode is None:
