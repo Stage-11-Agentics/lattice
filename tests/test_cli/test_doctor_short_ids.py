@@ -241,6 +241,7 @@ def test_non_string_short_id_is_reported_not_crashed_on(tmp_path: Path, bad: obj
 
     result = _invoke(tmp_path, "doctor", "--json")
     assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert result.exit_code == 1
     payload = json.loads(result.output)
     assert payload["ok"] is True
     alias = [f for f in payload["data"]["findings"] if f["check"] == "alias_integrity"]
