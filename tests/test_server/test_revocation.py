@@ -211,14 +211,33 @@ def test_a_dead_session_cookie_is_cleared_everywhere(root: Path, kind: str) -> N
         stream.close()
 
 
-def test_no_cookie_and_bearer_failures_set_no_cookie(root: Path) -> None:
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {},
+        {"Authorization": "Bearer nope"},
+        {"Authorization": "Bearer nope", "Cookie": "lattice_session=x"},
+        {"Authorization": "Bearer nope", "Cookie": "lattice_session=" + "a" * 43},
+    ],
+    ids=["no-cookie", "bad-bearer", "bad-bearer-malformed-cookie", "bad-bearer-dead-cookie"],
+)
+def test_no_cookie_or_a_bearer_header_never_clears_a_cookie(root: Path, headers) -> None:
+    """A1 negatives (H-13b round 3): without a session cookie, or with an
+    Authorization header (which alone decides), no answer clears the cookie."""
     with running_server(root) as server:
         anon = WebClient(server)
-        assert not anon.get("/p/alpha/api/tasks").set_cookies()
-        bearer = anon.request(
-            "GET",
-            "/p/alpha/api/tasks",
-            headers={"Authorization": "Bearer nope", "Cookie": "lattice_session=x"},
-            send_cookies=False,
-        )
-        assert bearer.status == 401 and not bearer.set_cookies()
+        answers = {
+            "api": anon.request("GET", "/p/alpha/api/tasks", headers=headers),
+            "page": anon.request("GET", "/p/alpha/", headers=headers),
+            "index": anon.request("GET", "/", headers=headers),
+        }
+        assert answers["api"].status == 401
+        assert answers["page"].status == 303 and answers["index"].status == 303
+        for where, response in answers.items():
+            assert not response.set_cookies(), (where, headers)
+        token = headers.get("Authorization", "").removeprefix("Bearer ") or None
+        extra = {k: v for k, v in headers.items() if k != "Authorization"}
+        stream = open_stream(server.url, "alpha", token, headers=extra)
+        assert stream.status == 401
+        assert not [v for k, v in stream.response.getheaders() if k.lower() == "set-cookie"]
+        stream.close()

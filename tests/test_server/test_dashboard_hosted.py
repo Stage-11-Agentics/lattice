@@ -633,3 +633,34 @@ class TestDroppedRetries:
         comments = web.get(f"/p/alpha/api/tasks/{task_id}/comments").json["data"]
         assert [c["body"] for c in comments] == ["only once"]
         assert retry.json["data"]["comment_count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Architect ruling (PR #89): status POSTs keep force + reason, as the CLI's
+# --force --reason; SPEC §10's "no force control" means no UI control.
+# ---------------------------------------------------------------------------
+
+
+class TestForce:
+    def test_force_with_reason_is_recorded_as_the_browser_actor(self, web: WebClient) -> None:
+        task_id = web.post_json("/p/alpha/api/tasks", {"title": "forced"}).json["data"]["id"]
+        for step in ("in_planning", "planned"):
+            assert _drag(web, task_id, step).status == 200
+        bare = web.post_json(
+            f"/p/alpha/api/tasks/{task_id}/status", {"status": "in_progress", "force": True}
+        )
+        assert bare.status == 400
+        assert bare.json["error"]["code"] == "VALIDATION_ERROR"
+        assert "--reason is required" in bare.json["error"]["message"]
+        forced = web.post_json(
+            f"/p/alpha/api/tasks/{task_id}/status",
+            {"status": "in_progress", "force": True, "reason": "plan lives elsewhere"},
+        )
+        assert forced.status == 200, forced.text
+        assert forced.json["data"]["status"] == "in_progress"
+        events = web.get(f"/p/alpha/api/tasks/{task_id}/events").json["data"]
+        change = next(e for e in events if e["type"] == "status_changed")  # newest first
+        assert change["actor"] == "human:alice"
+        assert change["data"]["to"] == "in_progress"
+        assert change["data"]["force"] is True
+        assert change["data"]["reason"] == "plan lives elsewhere"

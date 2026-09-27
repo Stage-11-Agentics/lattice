@@ -181,12 +181,13 @@ CLEAR_COOKIE = "lattice_clear_session"
 def session_auth(request: Request, state: ServerState) -> tuple[Session, TokenRecord]:
     """The request's session and its live token, or ``UNAUTHENTICATED``. A cookie
     that names no live session (expired, revoked, deleted, malformed) is
-    cleared on the response."""
+    cleared on the response, unless the request sent ``Authorization`` (which
+    alone decides, so the cookie was never the credential in question)."""
     cookie = session_cookie(request)
     try:
         session, token = state.sessions.authenticate(cookie)
     except OpError:
-        if cookie is not None:
+        if cookie is not None and request.headers.get("authorization") is None:
             secure = request_scheme(request, state) == "https"
             request.scope["state"][CLEAR_COOKIE] = _cookie_header("", secure=secure, max_age=0)
         raise

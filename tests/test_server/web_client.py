@@ -31,8 +31,48 @@ class WebResponse:
 
 @dataclass
 class WebClient:
+    """With ``keep_alive``, one persistent connection is reused across requests
+    (a GET is retried once on a fresh connection if the reused one fails), as a
+    browser does; otherwise each request opens and closes its own."""
+
     server: ServerHandle
     cookies: dict[str, str] = field(default_factory=dict)
+    keep_alive: bool = False
+    _conn: http.client.HTTPConnection | None = field(default=None, repr=False)
+
+    def close(self) -> None:
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
+
+    def _exchange(
+        self, method: str, path: str, body: bytes | None, headers: dict[str, str]
+    ) -> tuple[int, bytes, list[tuple[str, str]]]:
+        if not self.keep_alive:
+            conn = http.client.HTTPConnection("127.0.0.1", self.server.port, timeout=30)
+            try:
+                conn.request(method, path, body=body, headers=headers)
+                resp = conn.getresponse()
+                return resp.status, resp.read(), resp.getheaders()
+            finally:
+                conn.close()
+        for attempt in (1, 2):
+            reused = self._conn is not None
+            if self._conn is None:
+                self._conn = http.client.HTTPConnection("127.0.0.1", self.server.port, timeout=30)
+            try:
+                self._conn.request(method, path, body=body, headers=headers)
+                resp = self._conn.getresponse()
+                raw = resp.read()
+            except (OSError, http.client.HTTPException):
+                self.close()
+                if attempt == 2 or not reused or method != "GET":
+                    raise
+                continue
+            if resp.getheader("connection", "").lower() == "close":
+                self.close()
+            return resp.status, raw, resp.getheaders()
+        raise AssertionError("unreachable")
 
     @property
     def origin(self) -> str:
@@ -51,19 +91,12 @@ class WebClient:
         headers: dict[str, str] | None = None,
         send_cookies: bool = True,
     ) -> WebResponse:
-        conn = http.client.HTTPConnection("127.0.0.1", self.server.port, timeout=30)
         all_headers = dict(headers or {})
         if send_cookies and self.cookies:
             all_headers["Cookie"] = "; ".join(f"{k}={v}" for k, v in self.cookies.items())
-        try:
-            conn.request(method, path, body=body, headers=all_headers)
-            resp = conn.getresponse()
-            raw = resp.read()
-            raw_headers = resp.getheaders()
-        finally:
-            conn.close()
+        status, raw, raw_headers = self._exchange(method, path, body, all_headers)
         response = WebResponse(
-            resp.status,
+            status,
             {k.lower(): v for k, v in raw_headers},
             raw_headers,
             raw.decode("utf-8", errors="replace"),
