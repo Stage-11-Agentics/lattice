@@ -15,7 +15,11 @@ linked worktrees; the runner builds one and starts the first block there.
 
 Usage:
     uv run python scripts/run_hosted_guide.py [--guide PATH] [--bin DIR]
-        [--keep-going] [--keep] [--report PATH]
+        [--keep-going] [--keep] [--report PATH] [--setup SCRIPT]
+
+For docs/hosted/api.md, pass ``--setup scripts/hosted_api_setup.sh``: it runs
+the guide's quick start (a server on 127.0.0.1:8740, project ``demo``, and a
+token in ``$HOME/lattice-trial/token``) so the curl examples have a server.
 
 Exit status is 0 when every runnable block passed.
 """
@@ -41,6 +45,8 @@ FENCE = re.compile(r"^(?P<indent>[ \t]*)```(?P<lang>[A-Za-z0-9_-]*)\s*$")
 DIRECTIVE = re.compile(r"^\s*<!--\s*guide:\s*skip:\s*(?P<reason>.*?)\s*-->\s*$")
 HEADING = re.compile(r"^(#{1,3})\s+(?P<title>.+)$")
 BLOCK_TIMEOUT = 180
+# curl exits 0 on an HTTP error, so a printed error envelope also fails a block.
+ENVELOPE_ERROR = re.compile(r'"ok":\s*false')
 
 
 @dataclass
@@ -141,6 +147,7 @@ def run_block(block: Block, state: Path, cwd_file: Path, work: Path) -> None:
     wrapper = (
         f"source {shlex.quote(str(state))}\n"
         f'cd "$(cat {shlex.quote(str(cwd_file))})"\n'
+        "set -a\n"
         f"source {shlex.quote(str(script))}\n"
         f"export -p > {shlex.quote(str(state))}.next\n"
         f"pwd > {shlex.quote(str(cwd_file))}.next\n"
@@ -162,6 +169,8 @@ def run_block(block: Block, state: Path, cwd_file: Path, work: Path) -> None:
         out = f"{exc.stdout or ''}{exc.stderr or ''}\n[timed out after {BLOCK_TIMEOUT} s]"
     block.seconds = time.monotonic() - started
     block.output = out if isinstance(out, str) else out.decode(errors="replace")
+    if code == 0 and ENVELOPE_ERROR.search(block.output):
+        code = "ok, but printed an error envelope"
     if code == 0:
         Path(f"{state}.next").replace(state)
         Path(f"{cwd_file}.next").replace(cwd_file)
@@ -177,6 +186,7 @@ def main() -> int:
     ap.add_argument("--keep-going", action="store_true", help="run later blocks after a failure")
     ap.add_argument("--keep", action="store_true", help="keep the scratch directory")
     ap.add_argument("--report", help="write a JSON report here")
+    ap.add_argument("--setup", help="a bash script run first, in the same shell state (for api.md)")
     args = ap.parse_args()
 
     blocks = parse(Path(args.guide).read_text())
@@ -192,6 +202,12 @@ def main() -> int:
     cwd_file.write_text(str(primary))
 
     failed = False
+    if args.setup:
+        setup = Block(0, 0, "bash", "setup", Path(args.setup).read_text())
+        run_block(setup, state, cwd_file, work)
+        if setup.status != "ok":
+            print("setup failed:\n" + setup.output)
+            return 1
     for block in blocks:
         if block.lang not in ("bash", "sh"):
             block.status = f"shown ({block.lang})"
