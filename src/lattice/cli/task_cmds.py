@@ -22,14 +22,9 @@ from lattice.cli.helpers import (
 )
 from lattice.storage.operations import TaskMutationDecision, mutate_task
 from lattice.cli.main import cli
-from lattice.cli.ops_bridge import board_or_exit, run_operation
+from lattice.cli.ops_bridge import board_or_exit, params_or_exit, run_operation
 from lattice.core.comments import (
-    materialize_comments,
     validate_comment_body,
-    validate_comment_for_delete,
-    validate_comment_for_edit,
-    validate_comment_for_react,
-    validate_emoji,
 )
 from lattice.core.config import (
     VALID_COMPLEXITIES,
@@ -962,80 +957,25 @@ def comment_edit(
 ) -> None:
     """Edit an existing comment on a task."""
     is_json = output_json
-
-    if role is not None and clear_role:
-        output_error(
-            "--role and --clear-role are mutually exclusive.", "VALIDATION_ERROR", is_json
-        )
-
-    new_text = resolve_body(
-        new_text,
-        file_path,
-        is_json,
-        what="the new comment text",
-        arg_label="NEW_TEXT",
-    )
-
-    lattice_dir = require_root(is_json)
-    config = load_project_config(lattice_dir)
-    actor = require_actor(is_json)
-    if on_behalf_of is not None:
-        validate_actor_format_or_exit(on_behalf_of, is_json)
-
-    task_id = resolve_task_id(lattice_dir, task_id, is_json)
-
-    # Validate and normalize new body
-    try:
-        new_text = validate_comment_body(new_text)
-    except ValueError as exc:
-        output_error(str(exc), "VALIDATION_ERROR", is_json)
-
-    # Validate role against configured completion policy roles
-    if role is not None:
-        configured_roles = get_configured_roles(config)
-        if configured_roles and role not in configured_roles:
-            output_error(
-                f"Unknown role: '{role}'. Valid roles: {', '.join(sorted(configured_roles))}.",
-                "INVALID_ROLE",
-                is_json,
-            )
-
-    def decide(context):  # noqa: ANN001, ANN202
-        previous_body, previous_role = validate_comment_for_edit(list(context.events), comment_id)
-        role_requested = role is not None or clear_role
-        target_role = None if clear_role else role
-        event_data: dict = {
+    # --role with --clear-role, and NEW_TEXT with --file (both or neither), are
+    # argument problems, checked before the board in that order.
+    params = params_or_exit(
+        "task.comment_edit",
+        {
+            "task": task_id,
             "comment_id": comment_id,
-            "body": new_text,
-            "previous_body": previous_body,
-        }
-        if role_requested:
-            event_data["role"] = target_role
-            if previous_role != target_role:
-                event_data["previous_role"] = previous_role
-        if previous_body == new_text and (not role_requested or previous_role == target_role):
-            return TaskMutationDecision(idempotent=True)
-        event = create_event(
-            type="comment_edited",
-            task_id=task_id,
-            actor=actor,
-            data=event_data,
-            model=model,
-            session=session,
-            triggered_by=triggered_by,
-            on_behalf_of=on_behalf_of,
-            reason=provenance_reason,
-        )
-        return TaskMutationDecision(events=[event])
-
-    try:
-        result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
-    except ValueError as exc:
-        output_error(str(exc), "VALIDATION_ERROR", is_json)
-
+            "new_text": new_text,
+            "file": Path(file_path).read_text(encoding="utf-8") if file_path else None,
+            "role": role,
+            "clear_role": clear_role,
+            **_provenance(model, session, triggered_by, on_behalf_of, provenance_reason),
+        },
+        is_json,
+    )
+    result = run_operation("task.comment_edit", params, is_json)
     output_result(
-        data=result.snapshot,
-        human_message=f"Comment {comment_id} edited on {task_id}",
+        data=result.value,
+        human_message=f"Comment {comment_id} edited on {result.value['id']}",
         quiet_value="ok",
         is_json=is_json,
         is_quiet=quiet,
@@ -1064,38 +1004,18 @@ def comment_delete(
 ) -> None:
     """Delete a comment from a task."""
     is_json = output_json
-
-    lattice_dir = require_root(is_json)
-    config = load_project_config(lattice_dir)
-    actor = require_actor(is_json)
-    if on_behalf_of is not None:
-        validate_actor_format_or_exit(on_behalf_of, is_json)
-
-    task_id = resolve_task_id(lattice_dir, task_id, is_json)
-
-    def decide(context):  # noqa: ANN001, ANN202
-        validate_comment_for_delete(list(context.events), comment_id)
-        event = create_event(
-            type="comment_deleted",
-            task_id=task_id,
-            actor=actor,
-            data={"comment_id": comment_id},
-            model=model,
-            session=session,
-            triggered_by=triggered_by,
-            on_behalf_of=on_behalf_of,
-            reason=provenance_reason,
-        )
-        return TaskMutationDecision(events=[event])
-
-    try:
-        result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
-    except ValueError as exc:
-        output_error(str(exc), "VALIDATION_ERROR", is_json)
-
+    result = run_operation(
+        "task.comment_delete",
+        {
+            "task": task_id,
+            "comment_id": comment_id,
+            **_provenance(model, session, triggered_by, on_behalf_of, provenance_reason),
+        },
+        is_json,
+    )
     output_result(
-        data=result.snapshot,
-        human_message=f"Comment {comment_id} deleted from {task_id}",
+        data=result.value,
+        human_message=f"Comment {comment_id} deleted from {result.value['id']}",
         quiet_value="ok",
         is_json=is_json,
         is_quiet=quiet,
@@ -1126,51 +1046,18 @@ def react(
 ) -> None:
     """Add a reaction to a comment."""
     is_json = output_json
-
-    lattice_dir = require_root(is_json)
-    config = load_project_config(lattice_dir)
-    actor = require_actor(is_json)
-    if on_behalf_of is not None:
-        validate_actor_format_or_exit(on_behalf_of, is_json)
-
-    task_id = resolve_task_id(lattice_dir, task_id, is_json)
-
-    if not validate_emoji(emoji):
-        output_error(
-            f"Invalid emoji: '{emoji}'. Must be 1-50 alphanumeric, underscore, or hyphen characters.",
-            "VALIDATION_ERROR",
-            is_json,
-        )
-
-    def decide(context):  # noqa: ANN001, ANN202
-        events = list(context.events)
-        validate_comment_for_react(events, comment_id)
-        comments = materialize_comments(events)
-        for comment in _flatten_comments(comments):
-            if comment["id"] == comment_id and actor in comment.get("reactions", {}).get(
-                emoji, []
-            ):
-                return TaskMutationDecision(idempotent=True)
-        event = create_event(
-            type="reaction_added",
-            task_id=task_id,
-            actor=actor,
-            data={"comment_id": comment_id, "emoji": emoji},
-            model=model,
-            session=session,
-            triggered_by=triggered_by,
-            on_behalf_of=on_behalf_of,
-            reason=provenance_reason,
-        )
-        return TaskMutationDecision(events=[event])
-
-    try:
-        result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
-    except ValueError as exc:
-        output_error(str(exc), "VALIDATION_ERROR", is_json)
-
+    result = run_operation(
+        "task.react",
+        {
+            "task": task_id,
+            "comment_id": comment_id,
+            "emoji": emoji,
+            **_provenance(model, session, triggered_by, on_behalf_of, provenance_reason),
+        },
+        is_json,
+    )
     output_result(
-        data=result.snapshot,
+        data=result.value,
         human_message=(
             f"Reaction :{emoji}: already exists on {comment_id} (idempotent)."
             if result.idempotent
@@ -1206,66 +1093,23 @@ def unreact(
 ) -> None:
     """Remove a reaction from a comment."""
     is_json = output_json
-
-    lattice_dir = require_root(is_json)
-    config = load_project_config(lattice_dir)
-    actor = require_actor(is_json)
-    if on_behalf_of is not None:
-        validate_actor_format_or_exit(on_behalf_of, is_json)
-
-    task_id = resolve_task_id(lattice_dir, task_id, is_json)
-
-    if not validate_emoji(emoji):
-        output_error(
-            f"Invalid emoji: '{emoji}'. Must be 1-50 alphanumeric, underscore, or hyphen characters.",
-            "VALIDATION_ERROR",
-            is_json,
-        )
-
-    def decide(context):  # noqa: ANN001, ANN202
-        events = list(context.events)
-        validate_comment_for_react(events, comment_id)
-        comments = materialize_comments(events)
-        found = any(
-            comment["id"] == comment_id and actor in comment.get("reactions", {}).get(emoji, [])
-            for comment in _flatten_comments(comments)
-        )
-        if not found:
-            raise ValueError(f"Reaction :{emoji}: by {actor} not found on comment {comment_id}.")
-        event = create_event(
-            type="reaction_removed",
-            task_id=task_id,
-            actor=actor,
-            data={"comment_id": comment_id, "emoji": emoji},
-            model=model,
-            session=session,
-            triggered_by=triggered_by,
-            on_behalf_of=on_behalf_of,
-            reason=provenance_reason,
-        )
-        return TaskMutationDecision(events=[event])
-
-    try:
-        result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
-    except ValueError as exc:
-        output_error(str(exc), "NOT_FOUND", is_json)
-
+    result = run_operation(
+        "task.unreact",
+        {
+            "task": task_id,
+            "comment_id": comment_id,
+            "emoji": emoji,
+            **_provenance(model, session, triggered_by, on_behalf_of, provenance_reason),
+        },
+        is_json,
+    )
     output_result(
-        data=result.snapshot,
+        data=result.value,
         human_message=f"Reaction :{emoji}: removed from {comment_id}",
         quiet_value="ok",
         is_json=is_json,
         is_quiet=quiet,
     )
-
-
-def _flatten_comments(comments: list[dict]) -> list[dict]:
-    """Flatten a threaded comment list into a flat list (top-level + replies)."""
-    flat: list[dict] = []
-    for c in comments:
-        flat.append(c)
-        flat.extend(c.get("replies", []))
-    return flat
 
 
 # ---------------------------------------------------------------------------
@@ -1309,10 +1153,6 @@ def complete_cmd(
     from pathlib import Path
 
     from lattice.core.artifacts import create_artifact_metadata, serialize_artifact
-    from lattice.core.comments import validate_comment_body
-    from lattice.core.config import (
-        get_configured_roles,
-    )
     from lattice.core.ids import generate_artifact_id
     from lattice.storage.fs import atomic_write, ensure_artifact_dirs, unlink_path
 

@@ -33,7 +33,7 @@ def board_or_exit(is_json: bool) -> LocalBoard:
 
 def run_operation(
     op_name: str,
-    params: dict,
+    params: Any,
     is_json: bool,
     *,
     caller: Caller | None = None,
@@ -56,3 +56,34 @@ def run_operation(
         )
     except OpError as exc:
         output_error(exc.message, exc.code, is_json)
+
+
+def params_or_exit(op_name: str, params: dict, is_json: bool) -> Any:
+    """Parse and check *op_name*'s params before the board is looked up.
+
+    Commands that validate their arguments before finding the board keep that
+    order: an argument error wins over ``NOT_INITIALIZED``, as it always has.
+    """
+    from lattice.ops import get_operation, parse_params
+
+    try:
+        return parse_params(get_operation(op_name).Params, params, op_name=op_name)
+    except OpError as exc:
+        output_error(exc.message, exc.code, is_json)
+
+
+def provenance_params(
+    model: str | None,
+    session: str | None,
+    triggered_by: str | None,
+    on_behalf_of: str | None,
+    reason: str | None,
+) -> dict:
+    """The ``common_options`` provenance flags as operation params."""
+    return {
+        "model": model,
+        "session": session,
+        "triggered_by": triggered_by,
+        "on_behalf_of": on_behalf_of,
+        "reason": reason,
+    }

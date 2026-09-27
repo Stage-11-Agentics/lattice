@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 from pathlib import Path
 
@@ -11,68 +10,15 @@ import click
 from lattice.cli.helpers import (
     common_options,
     json_envelope,
-    load_project_config,
     output_error,
     output_result,
-    read_snapshot_or_exit,
-    require_actor,
     require_root,
-    resolve_task_id,
-    validate_actor_format_or_exit,
 )
 from lattice.cli.main import cli
-from lattice.core.events import create_event
+from lattice.cli.ops_bridge import provenance_params, run_operation
 from lattice.core.stats import load_all_snapshots
-from lattice.storage.operations import TaskMutationDecision, mutate_task
+from lattice.ops.task_file_link import resolve_to_relative
 from lattice.storage.readers import read_task_events
-
-
-def _resolve_to_relative(lattice_dir: Path, filepath: str) -> str:
-    """Resolve a filepath to a project-relative path.
-
-    The project root is the parent of the .lattice/ directory.
-
-    Raises ``ValueError`` if the path escapes the project root (absolute
-    path outside the tree, or relative path with ``../`` traversal).
-    """
-    project_root = lattice_dir.parent
-
-    path = Path(filepath)
-
-    if path.is_absolute():
-        try:
-            rel = str(path.resolve().relative_to(project_root.resolve()))
-        except ValueError:
-            raise ValueError(f"Path '{filepath}' is outside the project root.") from None
-    else:
-        # Collapse ../  segments and check for traversal
-        normalized = os.path.normpath(filepath)
-        if normalized.startswith(".."):
-            raise ValueError(f"Path '{filepath}' escapes the project root.")
-        rel = normalized
-
-    # Strip leading ./ if present
-    if rel.startswith("./") or rel.startswith(".\\"):
-        rel = rel[2:]
-
-    return rel
-
-
-def _validate_file_paths(paths: list[str], is_json: bool) -> None:
-    """Validate file paths for basic safety."""
-    for p in paths:
-        if not p or not p.strip():
-            output_error(
-                "File path must not be empty.",
-                "VALIDATION_ERROR",
-                is_json,
-            )
-        if "\x00" in p or any(0 <= ord(c) <= 31 for c in p if c != "\n"):
-            output_error(
-                f"File path contains control characters: {p!r}.",
-                "VALIDATION_ERROR",
-                is_json,
-            )
 
 
 # ---------------------------------------------------------------------------
@@ -97,60 +43,20 @@ def file_link(
 ) -> None:
     """Link file(s) to a task to record decision provenance."""
     is_json = output_json
-
-    lattice_dir = require_root(is_json)
-    config = load_project_config(lattice_dir)
-    actor = require_actor(is_json)
-    if on_behalf_of is not None:
-        validate_actor_format_or_exit(on_behalf_of, is_json)
-
-    task_id = resolve_task_id(lattice_dir, task_id, is_json)
-
-    # Validate paths
-    paths_list = list(filepaths)
-    _validate_file_paths(paths_list, is_json)
-
-    # Resolve to project-relative paths
-    try:
-        relative_paths = [_resolve_to_relative(lattice_dir, p) for p in paths_list]
-    except ValueError as exc:
-        output_error(str(exc), "VALIDATION_ERROR", is_json)
-
-    read_snapshot_or_exit(lattice_dir, task_id, is_json)
-
-    def decide(context):  # noqa: ANN001, ANN202
-        snapshot = context.snapshot
-        assert snapshot is not None
-        existing = set(snapshot.get("linked_files", []))
-        new_paths = [path for path in relative_paths if path not in existing]
-        if not new_paths:
-            output_error(
-                "All specified files are already linked to this task.",
-                "CONFLICT",
-                is_json,
-            )
-        event = create_event(
-            type="file_linked",
-            task_id=task_id,
-            actor=actor,
-            data={"paths": new_paths},
-            model=model,
-            session=session,
-            triggered_by=triggered_by,
-            on_behalf_of=on_behalf_of,
-            reason=provenance_reason,
-        )
-        return TaskMutationDecision(events=[event], value=new_paths)
-
-    result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
-    updated_snapshot = result.snapshot
-    new_paths = result.callback_value
-
-    # Output
-    paths_display = ", ".join(new_paths)
+    result = run_operation(
+        "task.file_link",
+        {
+            "task": task_id,
+            "filepaths": list(filepaths),
+            **provenance_params(model, session, triggered_by, on_behalf_of, provenance_reason),
+        },
+        is_json,
+    )
+    task_id = result.value["id"]
+    paths = result.events[-1]["data"]["paths"]
     output_result(
-        data=updated_snapshot,
-        human_message=f"Linked {len(new_paths)} file(s) to {task_id}: {paths_display}",
+        data=result.value,
+        human_message=f"Linked {len(paths)} file(s) to {task_id}: {', '.join(paths)}",
         quiet_value=task_id,
         is_json=is_json,
         is_quiet=quiet,
@@ -179,58 +85,20 @@ def file_unlink(
 ) -> None:
     """Unlink file(s) from a task."""
     is_json = output_json
-
-    lattice_dir = require_root(is_json)
-    config = load_project_config(lattice_dir)
-    actor = require_actor(is_json)
-    if on_behalf_of is not None:
-        validate_actor_format_or_exit(on_behalf_of, is_json)
-
-    task_id = resolve_task_id(lattice_dir, task_id, is_json)
-
-    # Resolve to project-relative paths
-    paths_list = list(filepaths)
-    _validate_file_paths(paths_list, is_json)
-    try:
-        relative_paths = [_resolve_to_relative(lattice_dir, p) for p in paths_list]
-    except ValueError as exc:
-        output_error(str(exc), "VALIDATION_ERROR", is_json)
-
-    read_snapshot_or_exit(lattice_dir, task_id, is_json)
-
-    def decide(context):  # noqa: ANN001, ANN202
-        snapshot = context.snapshot
-        assert snapshot is not None
-        existing = set(snapshot.get("linked_files", []))
-        to_remove = [path for path in relative_paths if path in existing]
-        if not to_remove:
-            output_error(
-                "None of the specified files are linked to this task.",
-                "NOT_FOUND",
-                is_json,
-            )
-        event = create_event(
-            type="file_unlinked",
-            task_id=task_id,
-            actor=actor,
-            data={"paths": to_remove},
-            model=model,
-            session=session,
-            triggered_by=triggered_by,
-            on_behalf_of=on_behalf_of,
-            reason=provenance_reason,
-        )
-        return TaskMutationDecision(events=[event], value=to_remove)
-
-    result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
-    updated_snapshot = result.snapshot
-    to_remove = result.callback_value
-
-    # Output
-    paths_display = ", ".join(to_remove)
+    result = run_operation(
+        "task.file_unlink",
+        {
+            "task": task_id,
+            "filepaths": list(filepaths),
+            **provenance_params(model, session, triggered_by, on_behalf_of, provenance_reason),
+        },
+        is_json,
+    )
+    task_id = result.value["id"]
+    paths = result.events[-1]["data"]["paths"]
     output_result(
-        data=updated_snapshot,
-        human_message=f"Unlinked {len(to_remove)} file(s) from {task_id}: {paths_display}",
+        data=result.value,
+        human_message=f"Unlinked {len(paths)} file(s) from {task_id}: {', '.join(paths)}",
         quiet_value=task_id,
         is_json=is_json,
         is_quiet=quiet,
@@ -332,7 +200,7 @@ def explain_cmd(
 
     # Resolve to project-relative path
     try:
-        rel_path = _resolve_to_relative(lattice_dir, filepath)
+        rel_path = resolve_to_relative(lattice_dir, filepath)
     except ValueError as exc:
         output_error(str(exc), "VALIDATION_ERROR", is_json)
 
