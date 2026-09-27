@@ -5,18 +5,22 @@ counters and active session tracking.  Each active session is a JSON file
 named ``<disambiguated_name>.json``.  Ended sessions move to
 ``sessions/archive/``.
 
-All writes to the session index are lock-protected via the ``sessions_index``
-lock key.
+Every write to the index or a session file (start, touch, end) holds the
+``sessions_index`` lock. A session written inside an operation records the
+operation's ``origin`` (SPEC §4): the start's, replaced by the end's when the
+session is archived. A touch changes only ``last_active``.
 """
 
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 
 from lattice.core.actors import ActorIdentity, validate_base_name, validate_session_creation
 from lattice.core.events import utc_now
 from lattice.core.ids import generate_session_id
+from lattice.core.origin import current_origin
 from lattice.storage.fs import atomic_write, ensure_dir, unlink_path
 from lattice.storage.locks import lattice_lock
 
@@ -54,6 +58,13 @@ def _write_index(lattice_dir: Path, index: dict) -> None:
     path = lattice_dir / _INDEX_FILE
     content = json.dumps(index, sort_keys=True, indent=2) + "\n"
     atomic_write(path, content)
+
+
+def _stamp_origin(data: dict) -> None:
+    """Record the current operation's origin on a session record, if any."""
+    origin = current_origin()
+    if origin is not None:
+        data["origin"] = copy.deepcopy(origin)
 
 
 def _next_serial(index: dict, base_name: str) -> int:
@@ -198,6 +209,7 @@ def create_session(
         session_data["started_at"] = now
         session_data["last_active"] = now
         session_data["status"] = "active"
+        _stamp_origin(session_data)
 
         session_path = lattice_dir / _SESSIONS_DIR / f"{disambiguated}.json"
         atomic_write(session_path, json.dumps(session_data, sort_keys=True, indent=2) + "\n")
@@ -218,14 +230,24 @@ def resolve_session(lattice_dir: Path, name: str) -> dict | None:
 
 
 def touch_session(lattice_dir: Path, name: str) -> bool:
-    """Update ``last_active`` on a session.  Returns False if session not found."""
+    """Update ``last_active`` on a session.  Returns False if session not found.
+
+    Holds the ``sessions_index`` lock for the read-modify-write, so a touch
+    never overwrites a concurrent touch and never resurrects a session that
+    ``end_session`` has just archived (SPEC §3.7 step 4).
+    """
     path = lattice_dir / _SESSIONS_DIR / f"{name}.json"
-    try:
-        data = json.loads(path.read_text())
-    except (FileNotFoundError, OSError):
+    if not path.exists():
         return False
-    data["last_active"] = utc_now()
-    atomic_write(path, json.dumps(data, sort_keys=True, indent=2) + "\n")
+    locks_dir = lattice_dir / "locks"
+    ensure_dir(locks_dir)
+    with lattice_lock(locks_dir, _LOCK_KEY):
+        try:
+            data = json.loads(path.read_text())
+        except (FileNotFoundError, OSError):
+            return False
+        data["last_active"] = utc_now()
+        atomic_write(path, json.dumps(data, sort_keys=True, indent=2) + "\n")
     return True
 
 
@@ -256,6 +278,7 @@ def end_session(
         data["ended_at"] = utc_now()
         if reason:
             data["end_reason"] = reason
+        _stamp_origin(data)
 
         # Get session ID for archive filename
         session_id = data.get("session", "unknown")
