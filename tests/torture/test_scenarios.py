@@ -29,6 +29,7 @@ from lattice.server.testing import make_root
 from tests.torture.harness import (
     Client,
     ServerProcess,
+    board_events,
     bound_checkout,
     chmod_tree_writable,
     git,
@@ -105,14 +106,11 @@ def writer_steps(w: int, tasks: int, writes: int, actor: str) -> list[dict]:
 
 def run_writers(
     work: Path,
-    writers: list[tuple[Client, Path, str]],
+    writers: list[tuple[Client, Path, list[dict]]],
     poll_dirs: list[tuple[Client, list[Path]]],
-    *,
-    tasks: int,
-    writes: int,
 ) -> tuple[list[dict], list[dict]]:
-    """Run one scripted writer per ``(client, cwd, actor)`` (*writes* in total) and
-    one poller per ``(client, dirs)``; return all write records and all polls."""
+    """Run one scripted writer per ``(client, cwd, steps)``, all starting at once,
+    and one poller per ``(client, dirs)``; return all write records and all polls."""
     stop = work / "stop-polling"
     pollers = [
         start_scripted(
@@ -128,20 +126,19 @@ def run_writers(
         for n, (client, dirs) in enumerate(poll_dirs)
     ]
     start_at = time.time() + 2.0  # every writer starts at once
-    per_writer = writes // len(writers)
     procs = [
         start_scripted(
             client,
             {
                 "mode": "write",
                 "cwd": str(cwd),
-                "steps": writer_steps(w, tasks, per_writer, actor),
+                "steps": steps,
                 "out": str(work / f"writer-{w}.jsonl"),
                 "start_at": start_at,
             },
             work / f"writer-{w}",
         )
-        for w, (client, cwd, actor) in enumerate(writers)
+        for w, (client, cwd, steps) in enumerate(writers)
     ]
     try:
         wait_all(procs, timeout=400)
@@ -153,7 +150,7 @@ def run_writers(
     polls = [p for n in range(len(poll_dirs)) for p in read_jsonl(work / f"poll-{n}.jsonl")]
     failed = [r for r in records if r["exit"] != 0]
     assert not failed, failed[:3]
-    assert len(records) == per_writer * len(writers)
+    assert len(records) == sum(len(steps) for _, _, steps in writers)
     poll_errors = [p for p in polls if "error" in p]
     assert not poll_errors, poll_errors[:3]
     return records, polls
@@ -247,10 +244,11 @@ def test_w(tmp_path: Path) -> None:
         dirs = [repo, *worktrees]
         records, polls = run_writers(
             tmp_path,
-            [(alice, wt, f"agent:writer-{n}") for n, wt in enumerate(worktrees)],
+            [
+                (alice, wt, writer_steps(n, 4, 40, f"agent:writer-{n}"))
+                for n, wt in enumerate(worktrees)
+            ],
             [(alice, dirs)],
-            tasks=4,
-            writes=200,
         )
         worst = assert_fresh(records, polls, dirs)
         print(f"W worst visibility delay per directory: {worst}")
@@ -343,11 +341,15 @@ def test_b(tmp_path: Path) -> None:
 
             records, polls = run_writers(
                 tmp_path,
-                [(laptop, wt, f"agent:laptop-{n}") for n, wt in enumerate(local)]
-                + [(box, clone, f"agent:box-{n}") for n, clone in enumerate(remote_clones)],
+                [
+                    (laptop, wt, writer_steps(n, 3, 36, f"agent:laptop-{n}"))
+                    for n, wt in enumerate(local)
+                ]
+                + [
+                    (box, clone, writer_steps(3 + n, 3, 36, f"agent:box-{n}"))
+                    for n, clone in enumerate(remote_clones)
+                ],
                 [(laptop, [repo, *local]), (box, remote_clones)],
-                tasks=3,
-                writes=216,
             )
             dirs = [repo, *local, *remote_clones]
             worst = assert_fresh(records, polls, dirs)
@@ -371,5 +373,142 @@ def test_b(tmp_path: Path) -> None:
     finally:
         if follower is not None:
             stop_process(follower)
+        server.stop()
+        chmod_tree_writable(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# T
+# ---------------------------------------------------------------------------
+
+#: Five people on three machines: (user index, machine / reported host).
+TEAM = [(0, "host-a"), (1, "host-a"), (2, "host-b"), (3, "host-b"), (4, "host-c")]
+TICKETS_EACH = 2
+
+
+def lifecycle_steps(user: int) -> list[dict]:
+    """Two tickets from creation to ``done`` by one person and their agent."""
+    agent, human = f"agent:u{user}-dev", f"human:u{user}"
+    steps: list[dict] = []
+    for k in range(TICKETS_EACH):
+        name = f"t{k}"
+        task = f"{{{name}}}"
+        steps += [
+            {
+                "args": ["create", f"T u{user} ticket {k}", "--actor", human, "--json"],
+                "save": name,
+            },
+            {"args": ["status", task, "in_planning", "--actor", agent, "--json"]},
+            {
+                "args": ["plan", "write", task, "--stdin", "--actor", agent, "--json"],
+                "input": f"# u{user} ticket {k}\n\n1. Build it.\n",
+            },
+            {"args": ["status", task, "planned", "--no-auto-review", "--actor", agent, "--json"]},
+            {"args": ["status", task, "in_progress", "--actor", agent, "--json"]},
+            {"args": ["comment", task, "implemented", "--actor", agent, "--json"]},
+            {"args": ["status", task, "review", "--no-auto-review", "--actor", agent, "--json"]},
+            {
+                "args": [
+                    "complete",
+                    task,
+                    "--review",
+                    f"Reviewed u{user} ticket {k}: builds, tests pass.",
+                    "--actor",
+                    human,
+                    "--json",
+                ]
+            },
+        ]
+    return steps
+
+
+def test_t(tmp_path: Path) -> None:
+    server = ServerProcess(make_root(tmp_path, projects={}))
+    server.start()
+    try:
+        people = [
+            server.client(
+                tmp_path / f"home-u{user}", user=f"human:u{user}", machine=host, host=host
+            )
+            for user, host in TEAM
+        ]
+        _origin, repo = tracked_board_repo(people[0], tmp_path)
+        # host-b cloned the tracked board before the move and has used it locally.
+        clone_b = tmp_path / "clone-b"
+        git(tmp_path, "clone", "-q", str(_origin), str(clone_b))
+        assert len(lattice_json(people[2], clone_b, "list")) == 3
+
+        move_board(server, people[0], repo, tmp_path)
+
+        # host-b pulls the move: git removes the tracked board files, and the binding
+        # adopts what is left as an empty cache (SPEC §9.3). host-c clones afterwards.
+        git(clone_b, "pull", "-q", "--no-rebase")
+        assert git(clone_b, "ls-files", ".lattice") == ""
+        clone_c = tmp_path / "clone-c"
+        git(tmp_path, "clone", "-q", str(_origin), str(clone_c))
+        checkouts = {"host-a": repo, "host-b": clone_b, "host-c": clone_c}
+        for host, checkout in checkouts.items():
+            who = people[[h for _, h in TEAM].index(host)]
+            assert_matches_server(who, checkout, server)
+
+        worktrees = {}
+        for user, host in TEAM:
+            wt = tmp_path / f"wt-u{user}"
+            git(checkouts[host], "worktree", "add", "-q", "-b", f"u{user}-work", str(wt))
+            worktrees[user] = wt
+        polling = []
+        for host, checkout in checkouts.items():
+            members = [user for user, h in TEAM if h == host]
+            polling.append((people[members[0]], [checkout, *(worktrees[u] for u in members)]))
+        records, polls = run_writers(
+            tmp_path,
+            [(people[user], worktrees[user], lifecycle_steps(user)) for user, _ in TEAM],
+            polling,
+        )
+        worst = freshness(records, polls)
+        assert all(delay < float("inf") for delay in worst.values()), worst
+        print(f"T worst visibility delay per directory: {worst}")
+
+        # Everyone sees the full current state: ten tickets done, on every checkout.
+        for (user, _), person in zip(TEAM, people, strict=True):
+            assert_matches_server(person, worktrees[user], server)
+            listed = lattice_json(person, worktrees[user], "list", "--status", "done")
+            assert sorted(r["title"] for r in listed) == sorted(
+                f"T u{u} ticket {k}" for u, _ in TEAM for k in range(TICKETS_EACH)
+            )
+            assert lattice_paths_in_status(worktrees[user]) == []
+
+        # Every event of the ten tickets names the right user and machine.
+        created = {
+            e["task_id"]: int(e["data"]["title"].split()[1][1:])
+            for e in board_events(server.board())
+            if e["type"] == "task_created" and e["data"]["title"].startswith("T u")
+        }
+        assert len(created) == len(TEAM) * TICKETS_EACH
+        checked = 0
+        for event in board_events(server.board()):
+            if event["task_id"] not in created:
+                continue
+            user = created[event["task_id"]]
+            host = TEAM[user][1]
+            origin = event["origin"]
+            assert event["actor"] in (f"human:u{user}", f"agent:u{user}-dev"), event
+            assert origin["authenticated"]["user"] == f"human:u{user}", event
+            assert origin["authenticated"]["machine"] == host, event
+            reported = origin["reported"]
+            assert reported["host"] == host, event
+            assert Path(reported["worktree"]) == worktrees[user].resolve(), event
+            assert reported["branch"] == f"u{user}-work", event
+            checked += 1
+        assert checked >= len(created) * len(lifecycle_steps(0)) // TICKETS_EACH
+        # The tracked history kept its local origin: nothing claimed it for a token.
+        pre_move = [
+            e
+            for e in board_events(server.board())
+            if e["task_id"] not in created and "authenticated" in e.get("origin", {})
+        ]
+        assert pre_move == []
+        assert_doctor_clean(people[4], worktrees[4], server)
+    finally:
         server.stop()
         chmod_tree_writable(tmp_path)
