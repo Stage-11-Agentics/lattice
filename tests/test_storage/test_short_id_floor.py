@@ -220,3 +220,29 @@ class TestFloorPrimitives:
         short_id, index = allocate_short_id(board / LATTICE_DIR, "LAT")
         assert short_id == "LAT-3"
         assert "LAT-3" not in index["map"]
+
+
+def test_backfill_issues_above_the_log_floor(tmp_path: Path) -> None:
+    """``backfill-ids`` scans once and still never reissues a logged ID."""
+    ensure_lattice_dirs(tmp_path)
+    lattice_dir = tmp_path / LATTICE_DIR
+    atomic_write(lattice_dir / "config.json", serialize_config(dict(default_config())))
+    (lattice_dir / "events" / "_lifecycle.jsonl").touch()
+    tasks = [_create(tmp_path, f"Task {n}") for n in range(1, 4)]
+    assert all(task.get("short_id") is None for task in tasks)
+    log = lattice_dir / "events" / f"{tasks[0]['id']}.jsonl"
+    event = create_event(
+        type="task_short_id_assigned",
+        task_id=tasks[0]["id"],
+        actor="human:test",
+        data={"short_id": "LAT-2"},
+    )
+    with log.open("a", encoding="utf-8") as handle:
+        handle.write(serialize_event(event))
+
+    _run(tmp_path, "backfill-ids", "--code", "LAT")
+    short_ids = {
+        json.loads((lattice_dir / "tasks" / f"{t['id']}.json").read_text())["short_id"]
+        for t in tasks
+    }
+    assert short_ids == {"LAT-2", "LAT-3", "LAT-4"}

@@ -18,6 +18,7 @@ from lattice.core.config import configured_event_prefix, serialize_config, valid
 from lattice.core.events import create_event
 from lattice.storage.fs import atomic_write
 from lattice.storage.operations import TaskMutationDecision, mutate_task
+from lattice.storage.short_ids import max_observed_short_ids, split_short_id
 
 
 def _collect_tasks_missing_short_id(lattice_dir: Path) -> list[dict]:
@@ -118,6 +119,10 @@ def backfill_ids(
     prefix = configured_event_prefix(config)
     assert prefix is not None
 
+    # One scan for the whole backfill, advanced as IDs are issued, instead of a
+    # rescan of every log per task.
+    floor = max_observed_short_ids(lattice_dir)
+
     for snap, is_archived in tasks:
         task_ulid = snap["id"]
 
@@ -144,8 +149,12 @@ def backfill_ids(
             source="archived" if is_archived else "active",
             project_prefix=prefix,
             allow_short_id_backfill=True,
+            short_id_floor=floor,
             run_hooks=True,
         )
+        parsed = split_short_id(result.callback_value)
+        if parsed is not None and parsed[1] > floor.get(parsed[0], 0):
+            floor[parsed[0]] = parsed[1]
         if not result.idempotent:
             assigned.append(result.callback_value)
 
