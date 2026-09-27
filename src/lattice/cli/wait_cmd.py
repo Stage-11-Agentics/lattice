@@ -17,10 +17,24 @@ from lattice.cli.helpers import (
 )
 from lattice.cli.main import cli
 from lattice.core.config import resolve_status_input
+from lattice.core.errors import OpError
 from lattice.core.event_stream import _check_fswatch, stream_events
+from lattice.remote.hosted_watch import event_source, hosted_read, is_hosted
 
 
 def _check_tasks_status(
+    lattice_dir: Path,
+    task_ids: list[str],
+    target_status: str,
+) -> tuple[list[str], list[str]]:
+    """:func:`_read_tasks_status` as one read: on a hosted checkout under the
+    cache's shared read lock, so a sync applying meanwhile is seen whole or not
+    at all, never an old snapshot of one task beside a new one of another."""
+    with hosted_read(lattice_dir):
+        return _read_tasks_status(lattice_dir, task_ids, target_status)
+
+
+def _read_tasks_status(
     lattice_dir: Path,
     task_ids: list[str],
     target_status: str,
@@ -98,27 +112,31 @@ def wait_cmd(
     is_json = output_json
     lattice_dir = require_root(is_json)
 
-    # Resolve display names (e.g., "shipped" → "done") to canonical slugs
-    config = load_project_config(lattice_dir)
-    target_status = resolve_status_input(config, target_status) or target_status
-
-    # Parse and resolve task IDs
-    raw_ids = [t.strip() for t in task_ids_str.split(",") if t.strip()]
-    if not raw_ids:
-        output_error("No task IDs provided.", "MISSING_ARGS", is_json)
-        sys.exit(1)
-
     task_ids: list[str] = []
     short_id_map: dict[str, str] = {}  # full_id -> short_id
-    for raw in raw_ids:
-        full_id = resolve_task_id(lattice_dir, raw, is_json)
-        task_ids.append(full_id)
-        short_id_map[full_id] = raw
+    try:
+        with hosted_read(lattice_dir):
+            # Resolve display names (e.g., "shipped" → "done") to canonical slugs
+            config = load_project_config(lattice_dir)
+            target_status = resolve_status_input(config, target_status) or target_status
 
-    total = len(task_ids)
+            # Parse and resolve task IDs
+            raw_ids = [t.strip() for t in task_ids_str.split(",") if t.strip()]
+            if not raw_ids:
+                output_error("No task IDs provided.", "MISSING_ARGS", is_json)
+                sys.exit(1)
 
-    # Check if already satisfied
-    done, pending = _check_tasks_status(lattice_dir, task_ids, target_status)
+            for raw in raw_ids:
+                full_id = resolve_task_id(lattice_dir, raw, is_json)
+                task_ids.append(full_id)
+                short_id_map[full_id] = raw
+
+        total = len(task_ids)
+
+        # Check if already satisfied
+        done, pending = _check_tasks_status(lattice_dir, task_ids, target_status)
+    except OpError as exc:
+        output_error(exc.message, exc.code, is_json)
     if not pending:
         _emit_result(done, pending, target_status, short_id_map, is_json, quiet)
         return
@@ -129,18 +147,21 @@ def wait_cmd(
             done_names = ", ".join(short_id_map.get(t, t) for t in done)
             click.echo(f"  Already {target_status}: {done_names}")
 
-    if not _check_fswatch() and not quiet and not is_json:
+    if not is_hosted(lattice_dir) and not _check_fswatch() and not quiet and not is_json:
         click.echo("  (fswatch not found, using poll fallback)")
 
     start_time = time.monotonic()
 
     try:
-        for event in stream_events(
+        for event in event_source(
+            stream_events,
             lattice_dir,
             task_filter=task_ids,
             type_filter=["status_changed"],
             poll_interval=poll_fallback,
             timeout=timeout,
+            # Hosted: the first catch-up may bring the target state itself.
+            ready=lambda: not _check_tasks_status(lattice_dir, task_ids, target_status)[1],
         ):
             # Only act on transitions to the target status
             if event.get("data", {}).get("to") != target_status:
@@ -156,18 +177,23 @@ def wait_cmd(
 
     except KeyboardInterrupt:
         pass
+    except OpError as exc:
+        output_error(exc.message, exc.code, is_json)
 
     # Stream ended (timeout reached or generator exhausted)
     elapsed = time.monotonic() - start_time
-    if timeout > 0 and elapsed >= timeout:
-        _handle_timeout(lattice_dir, task_ids, target_status, short_id_map, is_json, quiet)
-    else:
-        # Generator ended without all tasks completing
-        done, pending = _check_tasks_status(lattice_dir, task_ids, target_status)
-        if not pending:
-            _emit_result(done, pending, target_status, short_id_map, is_json, quiet)
-        else:
+    try:
+        if timeout > 0 and elapsed >= timeout:
             _handle_timeout(lattice_dir, task_ids, target_status, short_id_map, is_json, quiet)
+        else:
+            # Generator ended without all tasks completing
+            done, pending = _check_tasks_status(lattice_dir, task_ids, target_status)
+            if not pending:
+                _emit_result(done, pending, target_status, short_id_map, is_json, quiet)
+            else:
+                _handle_timeout(lattice_dir, task_ids, target_status, short_id_map, is_json, quiet)
+    except OpError as exc:
+        output_error(exc.message, exc.code, is_json)
 
 
 def _emit_result(

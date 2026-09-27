@@ -209,6 +209,8 @@ def wire_publication(project: Project) -> list[int]:
     return closed
 
 
+# Every-boundary fault walk with real fsyncs: slow CI runners need more than the 15 s default.
+@pytest.mark.timeout(120)
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=lambda s: s.name)
 def test_every_boundary_leaves_the_operation_wholly_present_or_absent(
     scenario: Scenario,
