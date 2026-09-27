@@ -56,9 +56,11 @@ def _check_actor_first(board: LocalBoard, provenance: dict, is_json: bool) -> No
     here keeps an actor error fatal (not one failure per task) and ahead of the
     ``--stale`` scan and the no-ID check.
     """
+    if is_hosted(board):
+        # The writer resolves and authorizes the actor (SPEC §3.7): on a hosted
+        # checkout that is the server, which also defaults a missing one (§9.5).
+        return
     caller = caller_from_context()
-    if is_hosted(board) and caller.actor is None and caller.actor_name is None:
-        return  # the server defaults the actor (SPEC §9.5)
     try:
         if caller.actor_name is not None:
             check_path_component(caller.actor_name, "session name")

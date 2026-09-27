@@ -364,10 +364,13 @@ LOCAL_ONLY_COMMANDS: tuple[str, ...] = (
 """Commands that operate directly on a data directory, refused on a hosted checkout."""
 
 
-def hosted_binding(start: Path) -> str | None:
-    """The ``<alias>/<project>`` a checkout at *start* is bound to, or ``None``
-    for a local board or no board.
+def hosted_binding(start: Path | None) -> str | None:
+    """The ``<alias>/<project>`` a checkout is bound to, or ``None`` for a local
+    board or no board.
 
+    ``start=None`` is the command's own board: the cwd, honoring LATTICE_ROOT
+    (an invalid LATTICE_ROOT is ``NOT_INITIALIZED``, never "not hosted"). A path
+    is an explicit target (``init --path``), resolved without LATTICE_ROOT.
     Classification needs no network and no ``fcntl``, so a bound checkout is
     recognized on every platform. ``BINDING_CONFLICT`` propagates: a binding
     beside a local board is refused, never treated as local.
@@ -375,9 +378,12 @@ def hosted_binding(start: Path) -> str | None:
     from lattice.remote.binding import classify
 
     try:
-        root = find_root(Path(start))
-    except LatticeRootError:
-        return None
+        if start is None:
+            root = find_root(Path.cwd())
+        else:
+            root = find_root(Path(start), honor_env=False)
+    except LatticeRootError as exc:
+        raise OpError("NOT_INITIALIZED", str(exc)) from exc
     if root is None:
         return None
     hosted = classify(root)
@@ -407,14 +413,16 @@ def check_local_only(
     command: str,
     start: Path | None = None,
     *,
-    binding_of: Callable[[Path], str | None] = hosted_binding,
+    binding_of: Callable[[Path | None], str | None] = hosted_binding,
 ) -> None:
     """Refuse a ``LOCAL_ONLY_COMMANDS`` entry on a hosted checkout (``LOCAL_ONLY``).
 
-    *binding_of* is the hosted-checkout predicate (default :func:`hosted_binding`).
+    *start* is an explicit target path (``init``, ``demo init``); ``None`` means
+    the command's own board (the cwd, honoring LATTICE_ROOT). *binding_of* is
+    the hosted-checkout predicate (default :func:`hosted_binding`).
     """
     if command not in LOCAL_ONLY_COMMANDS:
         raise ValueError(f"{command!r} is not a local-only command")
-    binding = binding_of(Path.cwd() if start is None else Path(start))
+    binding = binding_of(None if start is None else Path(start))
     if binding is not None:
         raise local_only_error(command, binding)

@@ -158,3 +158,48 @@ def test_cli_refuses_a_binding_beside_a_local_board(
     assert result.exit_code == 1, result.output
     assert "Moving a board" in result.output
     assert sorted(p.name for p in (tmp_path / ".lattice").iterdir()) == before
+
+
+@pytest.mark.parametrize("lattice_root", ["other-board", "missing-dir"])
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["init", "--path", "<bound>", "--actor", "human:a", "--project-code", "X"],
+        ["demo", "init", "--path", "<bound>", "--no-dashboard"],
+    ],
+    ids=["init", "demo-init"],
+)
+def test_explicit_target_ignores_lattice_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, argv: list[str], lattice_root: str
+) -> None:
+    """An explicit ``--path`` is checked itself: a LATTICE_ROOT naming another
+    board, or an invalid one, never makes a bound checkout look local."""
+    import json
+
+    from click.testing import CliRunner
+
+    from lattice.cli.main import cli
+    from lattice.storage.board_init import create_board
+
+    bound = tmp_path / "bound"
+    bound.mkdir()
+    (bound / ".lattice-remote.json").write_text(json.dumps({"remote": "home", "project": "proj"}))
+    other = tmp_path / "other-board"
+    other.mkdir()
+    create_board(other, project_code="OTH", actor="human:a")
+    monkeypatch.setenv("LATTICE_ROOT", str(tmp_path / lattice_root))
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(cli, [str(bound) if a == "<bound>" else a for a in argv])
+    assert result.exit_code == 1, result.output
+    assert "'home/proj'" in result.output
+    assert not (bound / ".lattice").exists()
+
+
+def test_an_invalid_lattice_root_is_not_swallowed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LATTICE_ROOT", str(tmp_path / "missing"))
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(OpError) as exc:
+        check_local_only("rebuild")
+    assert exc.value.code == "NOT_INITIALIZED"

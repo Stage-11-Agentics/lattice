@@ -115,3 +115,31 @@ def test_plan_gate_on_a_hosted_board_names_plan_write(
     assert error["message"].endswith(
         "Write the plan with `lattice plan write DEM-1 --file <path>`."
     )
+
+
+def test_archive_leaves_name_resolution_to_the_server(hosted_env: HostedEnv, repo: Path) -> None:
+    """SPEC §3.7: the writer resolves ``--name``. A session the server has and
+    this cache has not yet synced (a live follower means no catch-up) works."""
+    import os
+
+    (repo / ".lattice" / "cache" / "follower.json").write_text(
+        json.dumps({"pid": os.getpid(), "stream_live_until": "2999-01-01T00:00:00Z"})
+    )
+    hosted_env.server_op(
+        "session.start", {"name": "Argus", "model": "m", "framework": "claude-code"}
+    )
+    assert not [p for p in (repo / ".lattice" / "sessions").rglob("*") if p.is_file()]
+    for args in (("archive", "DEM-1"), ("unarchive", "DEM-1"), ("archive", "DEM-2", "DEM-3")):
+        result = run_cli(repo, *args, "--name", "Argus-1", "--json")
+        assert result.exit_code == 0, (args, result.output)
+    archived = [e for e in _events(hosted_env, "DEM-2") if e["type"] == "task_archived"]
+    assert archived and archived[-1]["actor"]["name"] == "Argus-1"
+
+
+def _events(env: HostedEnv, short_id: str) -> list[dict]:
+    ids = json.loads((env.board / "ids.json").read_text())["map"]
+    task_id = ids[short_id]
+    path = env.board / "archive" / "events" / f"{task_id}.jsonl"
+    if not path.exists():
+        path = env.board / "events" / f"{task_id}.jsonl"
+    return [json.loads(line) for line in path.read_text().splitlines()]

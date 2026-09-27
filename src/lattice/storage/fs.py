@@ -362,11 +362,13 @@ def ensure_lattice_dirs(root: Path) -> None:
         )
 
 
-def find_root(start: Path | None = None) -> Path | None:
+def find_root(start: Path | None = None, *, honor_env: bool = True) -> Path | None:
     """Find the project root containing .lattice/.
 
     Checks LATTICE_ROOT env var first. If set, validates it and returns
-    the path or raises an error (no fallback to walk-up).
+    the path or raises an error (no fallback to walk-up). With
+    ``honor_env=False`` (an explicit target path, such as ``init --path``),
+    LATTICE_ROOT is not consulted.
 
     Otherwise, walks up from start (defaults to cwd) looking for .lattice/.
     Mirrors ``git rev-parse --show-toplevel``: when start is inside a git
@@ -380,7 +382,7 @@ def find_root(start: Path | None = None) -> Path | None:
     Raises:
         LatticeRootError: If LATTICE_ROOT is set but invalid.
     """
-    env_root = os.environ.get(LATTICE_ROOT_ENV)
+    env_root = os.environ.get(LATTICE_ROOT_ENV) if honor_env else None
     if env_root is not None:
         if not env_root:
             raise LatticeRootError("LATTICE_ROOT is set but empty")
