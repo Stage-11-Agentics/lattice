@@ -44,7 +44,9 @@ def assemble(project: Any, query: dict[str, str]) -> dict[str, Any]:
     if journal.head_hash:
         body["head_hash"] = journal.head_hash
     if query.get("manifest") == "1":
-        files = {rel: _file(p.read_bytes(), inline=False) for rel, p in durable_files(board).items()}
+        files = {
+            rel: _file(p.read_bytes(), inline=False) for rel, p in durable_files(board).items()
+        }
         body.update(reset=True, files=files, removed=[])
         return body
     try:

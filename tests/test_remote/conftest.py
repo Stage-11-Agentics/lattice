@@ -27,6 +27,7 @@ from lattice.remote import cache, http
 from lattice.server import admin, tokens
 from lattice.server.testing import BoardServer, ServerHandle, make_root, running_server
 from lattice.storage.board_init import create_board
+from tests.test_remote.hosted import hosted_env  # noqa: F401 - H-11 fixtures
 from tests.test_remote.stream_stub import StubServer as StreamStubServer
 from tests.test_remote.stub_sync_server import StubServer, durable_files, running_stub
 
@@ -134,4 +135,3 @@ def stream_stub() -> Iterator[StreamStubServer]:
     server.files = {"config.json": b'{"project_code": "DEM"}\n', "events/T1.jsonl": b""}
     with server.running():
         yield server
-from tests.test_remote.hosted import hosted_env  # noqa: F401 - H-11 end-to-end fixture
