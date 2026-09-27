@@ -1,0 +1,20 @@
+# logrotate rule for the Lattice server's log (Linux). A template: replace the
+# path and user with yours, then install as /etc/logrotate.d/lattice-server.
+#
+# The server holds its stdout open (lattice-server.service.example appends it
+# to this file), so rotate with copytruncate: the file is copied, then
+# truncated in place, and the server keeps writing to the same file. A line
+# written in the instant between copy and truncate can be lost; the log is
+# operational, not the audit record (that is the board and its audit history).
+
+/var/log/lattice-server/server.log {
+    su lattice lattice
+    daily
+    maxsize 100M
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}

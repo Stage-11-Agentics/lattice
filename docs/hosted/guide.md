@@ -533,7 +533,7 @@ Everything you and your agents do locally works the same: `create`, `status`, `c
   ```
 
   `context write` and `board write` take no `--actor`; on a server they are attributed to your token's user. `lattice board write` writes files under `orchestration/` (an orchestrator's run-state and working files) and loose files directly under `plans/` or `notes/`. There is no remove; overwrite instead. If an edit gets into the cache anyway (after a `chmod`, or as root), the next command moves it to `.lattice/cache/rescued/<time>/` and says so. It is never silently discarded; write it back with `lattice plan write`.
-- **`--actor` is optional** when your token has exactly one actor without a wildcard. A person token (user plus `agent:*`) still needs `--actor` or a default in the repository.
+- **`--actor` is optional.** Without it, the server acts as your token's one actor pattern without a wildcard: the person for a person token (`human:alice`, beside `agent:*`), the seat's actor for a seat token. Agents should still pass their own `--actor agent:<id>`, so the board shows which agent did what.
 - **Maintenance commands** (`init`, `rebuild`, `doctor --fix`, `backfill-ids`, `migrate`) refuse with `LOCAL_ONLY`; they run on the server host (section 7). `lattice doctor` without `--fix` runs on the cache and also compares every file with the server's copy.
 - **Hooks** configured on the board run on your machine only if your remote sets `run_board_hooks: true`. The server runs no hooks and spawns no agents.
 - **Plugins.** An operation from a plugin package runs on a hosted board only if the plugin is installed on the server (section 19).
