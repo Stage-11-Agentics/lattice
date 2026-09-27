@@ -360,7 +360,7 @@ class Transaction:
             _fault("finish.index")
             assert self.receipt_path is not None
             key = (self.token_id, self.op_id)
-            project.index[key] = IndexEntry(
+            entry = IndexEntry(
                 fp=self.fp,
                 epoch=self.epoch,
                 seq=self.seq,
@@ -368,6 +368,8 @@ class Transaction:
                 offset=self.receipt_len,
                 length=len(self._receipt_bytes),
             )
+            with project.index_lock:
+                project.index[key] = entry
             project.op_seqs[key] = self.seq
             self.done.add("index")
         if "undo_delete" not in self.done:

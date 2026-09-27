@@ -239,6 +239,11 @@ class Project:
         #: current epoch's op-status map, ``(token_id, op_id) -> seq`` (SPEC §8.6).
         #: Filled as operations commit, and rebuilt from disk at every load.
         self.index: dict[tuple[str | None, str], IndexEntry] = {}
+        #: Guards every change to ``index`` (a commit's insert, expiry, the load's
+        #: rebuild). Never the work lock: op status reads without admission.
+        #: The index is only ever changed in place under it, never replaced from
+        #: a lock-free path, so no committed entry can be lost (AC-46).
+        self.index_lock = threading.Lock()
         self.op_seqs: dict[tuple[str | None, str], int] = {}
         #: The finalized memory (journal index, manifest, floors, watched baselines),
         #: published by one assignment per committed line; ``None`` until loaded.
@@ -384,7 +389,9 @@ class Project:
             self._mark_unavailable(f"{exc}; " + recovery.recover_hint(self.slug))
             return None
         index, op_seqs, orphans = recovery.rebuild_index(board, journal)
-        self.index = index
+        with self.index_lock:
+            self.index.clear()
+            self.index.update(index)
         self._receipt_day = self._index_day = recovery.utc_today()
         if settled.committed or settled.rolled_back or orphans:
             self.log.info(
@@ -735,22 +742,25 @@ class Project:
         )
 
     def expire_index(self) -> None:
-        """Forget index entries whose receipt is past retention (SPEC §8.6). Runs
-        before every replay lookup and op-status read, decided by date alone,
-        so neither the order of requests nor a receipt file that could not be
-        deleted ever lets an expired operation replay."""
+        """Forget index entries whose receipt is past retention (SPEC §8.6), decided
+        by date alone, so a receipt file that could not be deleted never lets an
+        expired operation replay. Runs before every replay lookup (under the work
+        lock); deletes the expired keys in place under :attr:`index_lock`, so an
+        entry a commit inserts meanwhile is never lost."""
         today = recovery.utc_today()
         if today == self._index_day:
             return
-        pruned = recovery.unexpired_index(self.index, today)
-        if len(pruned) != len(self.index):
-            self.log.info(
-                "receipts_expired_from_index",
-                project=self.slug,
-                entries=len(self.index) - len(pruned),
-            )
-        self.index = pruned  # one assignment: op status reads it without the lock
-        self._index_day = today
+        with self.index_lock:
+            expired = [
+                key
+                for key, entry in self.index.items()
+                if recovery.receipt_expired(entry.receipt, today)
+            ]
+            for key in expired:
+                del self.index[key]
+            self._index_day = today
+        if expired:
+            self.log.info("receipts_expired_from_index", project=self.slug, entries=len(expired))
 
     def _retain_receipts(self) -> None:
         """Receipt retention (SPEC §8.6): on the first write of each UTC day, delete
@@ -901,10 +911,12 @@ class Project:
     def op_status(self, token_id: str | None, op_id: str) -> dict:
         """The outcome of one of *token_id*'s operations. Reads only memory, the
         committed receipt line, and retained epoch journals (which never change),
-        so it needs no lock."""
+        so it needs no lock, and it changes nothing: an entry past retention is
+        simply not used (its result is gone; the journals still say committed)."""
         key = (token_id, op_id)
-        self.expire_index()
         known = self.index.get(key)
+        if known is not None and recovery.receipt_expired(known.receipt):
+            known = None
         if known is not None:
             data: dict[str, Any] = {"state": "committed", "epoch": known.epoch, "seq": known.seq}
             try:

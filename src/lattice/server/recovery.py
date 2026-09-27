@@ -265,15 +265,6 @@ def expired_receipt_files(board: Path, today: date | None = None) -> list[Path]:
     return [directory / name for name in names if receipt_expired(name, today)]
 
 
-def unexpired_index(
-    index: dict[tuple[str | None, str], IndexEntry], today: date | None = None
-) -> dict[tuple[str | None, str], IndexEntry]:
-    """*index* without the entries whose receipt file is past retention, decided by
-    date alone, so a receipt file that could not be deleted never replays."""
-    today = today or utc_today()
-    return {k: v for k, v in index.items() if not receipt_expired(v.receipt, today)}
-
-
 def rebuild_index(
     board: Path, journal: Journal, today: date | None = None
 ) -> tuple[dict[tuple[str | None, str], IndexEntry], dict[tuple[str | None, str], int], int]:

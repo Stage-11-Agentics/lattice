@@ -741,3 +741,52 @@ def test_a_failed_receipt_deletion_never_lets_the_expired_operation_replay(
     assert "receipt_retention_failed" in [e["event"] for e in _log_events(project)]
     run(project, request("task.create", {"title": "next"}))  # retention retried
     assert not expired.exists()
+
+
+def test_op_status_at_rollover_never_loses_an_entry_committed_meanwhile(
+    fresh: Fresh, projects: list[Project], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review round 2: op status runs without the work lock. Paused in the middle
+    of its expiry check at a day rollover while a write commits, it must not
+    discard that write's index entry: the write's retry replays, applied once."""
+    import threading
+
+    from lattice.server import recovery
+
+    root, project = _loaded(fresh, projects)
+    old = request("task.create", {"title": "old"})
+    run(project, old)
+    receipts = board_of(root) / "hosted" / "receipts"
+    (today,) = receipts.glob("*.jsonl")
+    today.rename(receipts / "2000-01-01.jsonl")  # the old operation is past retention
+    old_key = (old.token_id, old.caller.origin["op_id"])
+    project.index[old_key] = replace(project.index[old_key], receipt="2000-01-01.jsonl")
+    project._index_day = None  # noqa: SLF001 - the day rolled over; no expiry has run
+
+    paused, resume = threading.Event(), threading.Event()
+    real_expired = recovery.receipt_expired
+
+    def gated(name: str, today=None) -> bool:  # noqa: ANN001
+        if threading.current_thread().name == "op-status" and not paused.is_set():
+            paused.set()
+            assert resume.wait(5)
+        return real_expired(name, today)
+
+    monkeypatch.setattr(recovery, "receipt_expired", gated)
+    status: dict = {}
+    reader = threading.Thread(
+        target=lambda: status.update(project.op_status(*old_key)), name="op-status"
+    )
+    reader.start()
+    assert paused.wait(5)  # op status is mid-check, holding no lock
+    new = request("task.create", {"title": "committed meanwhile"})
+    first = run(project, new)  # commits and inserts its index entry now
+    resume.set()
+    reader.join(timeout=5)
+
+    retry = run(project, new)
+    assert retry.replayed and retry.seq == first.seq
+    ops = [x["op_id"] for x in journal_lines(root)]
+    assert ops.count(new.caller.origin["op_id"]) == 1
+    assert status["state"] == "committed" and "result" not in status  # expired: no result
+    assert old_key not in project.index
