@@ -1,6 +1,9 @@
 """AC-9 (H-10b part): deterministic interleavings of the syncer with the read
 helpers. A reader holding ``read_lock`` never sees a sync half-applied, in
-either order, and two syncs never interleave (the CLI-level cases are H-12's)."""
+either order, and two syncs never interleave (the CLI-level cases are H-12's).
+
+The real server (``server``) serves every case except the two that hold a sync
+answer mid-flight, which need the stub's gate (``stub``)."""
 
 from __future__ import annotations
 
@@ -12,7 +15,8 @@ import pytest
 
 from lattice.remote import cache
 from lattice.storage.operations import read_task_authority, resolve_task_prose_path
-from tests.test_remote.conftest import assert_mirror, create_task
+from lattice.server.testing import BoardServer
+from tests.test_remote.conftest import assert_mirror, create_task, record_requests
 from tests.test_remote.stub_sync_server import StubServer
 
 WAIT = 5.0
@@ -59,24 +63,24 @@ def _applied_marks(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return marks
 
 
-def _unarchive_pending(client: Path, stub: StubServer) -> str:
+def _unarchive_pending(client: Path, server: BoardServer) -> str:
     """An archived task in the cache, with its unarchive waiting on the server."""
-    task = create_task(stub)
-    stub.op("task.archive", {"task": task})
+    task = create_task(server)
+    server.op("task.archive", {"task": task})
     cache.catch_up(client)
-    stub.op("task.unarchive", {"task": task})
+    server.op("task.unarchive", {"task": task})
     return task
 
 
 def test_reader_between_enumerations_holds_off_an_unarchive(
-    client_root: Path, stub: StubServer, monkeypatch: pytest.MonkeyPatch
+    client: Path, server: BoardServer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    task = _unarchive_pending(client_root, stub)
+    task = _unarchive_pending(client, server)
     marks = _applied_marks(monkeypatch)
     paused, resume = threading.Event(), threading.Event()
 
     def reader() -> list[str]:
-        with cache.read_lock(client_root) as lattice:
+        with cache.read_lock(client) as lattice:
             active = _task_ids(lattice / "events")
             paused.set()
             resume.wait(WAIT)
@@ -87,7 +91,7 @@ def test_reader_between_enumerations_holds_off_an_unarchive(
     read = _Thread(reader)
     read.start()
     assert paused.wait(WAIT)
-    sync = _Thread(lambda: cache.catch_up(client_root, bulk=True))
+    sync = _Thread(lambda: cache.catch_up(client, bulk=True))
     sync.start()
     time.sleep(0.2)
     assert "applying_written" not in marks  # the apply waits for the reader
@@ -97,19 +101,19 @@ def test_reader_between_enumerations_holds_off_an_unarchive(
     assert read.error is None and sync.error is None
     assert read.result == ["archived"]  # exactly once, in one placement
     assert sync.result.kind == "applied"
-    assert read_task_authority(client_root / ".lattice", task).location == "active"
-    assert_mirror(client_root, stub)
+    assert read_task_authority(client / ".lattice", task).location == "active"
+    assert_mirror(client, server)
 
 
 def test_reader_between_plan_resolution_and_read_holds_off_an_unarchive(
-    client_root: Path, stub: StubServer, monkeypatch: pytest.MonkeyPatch
+    client: Path, server: BoardServer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    task = _unarchive_pending(client_root, stub)
+    task = _unarchive_pending(client, server)
     marks = _applied_marks(monkeypatch)
     paused, resume = threading.Event(), threading.Event()
 
     def reader() -> bytes:
-        with cache.read_lock(client_root) as lattice:
+        with cache.read_lock(client) as lattice:
             path, _authority = resolve_task_prose_path(lattice, task, "plan")
             assert path is not None
             paused.set()
@@ -119,7 +123,7 @@ def test_reader_between_plan_resolution_and_read_holds_off_an_unarchive(
     read = _Thread(reader)
     read.start()
     assert paused.wait(WAIT)
-    sync = _Thread(lambda: cache.catch_up(client_root, bulk=True))
+    sync = _Thread(lambda: cache.catch_up(client, bulk=True))
     sync.start()
     time.sleep(0.2)
     assert "applying_written" not in marks
@@ -129,22 +133,22 @@ def test_reader_between_plan_resolution_and_read_holds_off_an_unarchive(
     assert read.error is None, read.error
     assert read.result is not None
     assert sync.result.kind == "applied"
-    assert (client_root / ".lattice" / "plans" / f"{task}.md").exists()
-    assert_mirror(client_root, stub)
+    assert (client / ".lattice" / "plans" / f"{task}.md").exists()
+    assert_mirror(client, server)
 
 
 def test_a_reader_arriving_mid_apply_waits_and_sees_the_whole_result(
-    client_root: Path, stub: StubServer, monkeypatch: pytest.MonkeyPatch
+    client: Path, server: BoardServer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    task = _unarchive_pending(client_root, stub)
+    task = _unarchive_pending(client, server)
     reached, release = _seam_gate(monkeypatch, "file_written")
-    sync = _Thread(lambda: cache.catch_up(client_root, bulk=True))
+    sync = _Thread(lambda: cache.catch_up(client, bulk=True))
     sync.start()
     assert reached.wait(WAIT)  # the apply is half done
     entered = threading.Event()
 
     def reader() -> tuple[set[str], set[str], str]:
-        with cache.read_lock(client_root) as lattice:
+        with cache.read_lock(client) as lattice:
             entered.set()
             return (
                 _task_ids(lattice / "events"),
@@ -162,7 +166,7 @@ def test_a_reader_arriving_mid_apply_waits_and_sees_the_whole_result(
     assert sync.error is None and read.error is None, (sync.error, read.error)
     active, archived, location = read.result
     assert (task in active, task in archived, location) == (True, False, "active")
-    assert_mirror(client_root, stub)
+    assert_mirror(client, server)
 
 
 @pytest.mark.parametrize("reset_first", [False, True], ids=["delta", "epoch-reset"])
@@ -238,34 +242,34 @@ def test_clear_waits_for_a_sync_in_flight(client_root: Path, stub: StubServer) -
 
 
 def test_a_sync_waits_for_a_clear_in_progress(
-    client_root: Path, stub: StubServer, monkeypatch: pytest.MonkeyPatch
+    client: Path, server: BoardServer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    create_task(stub)
-    cache.catch_up(client_root)
+    create_task(server)
+    cache.catch_up(client)
     reached, release = _seam_gate(monkeypatch, "clear_deleted")
-    clear = _Thread(lambda: cache.clear_cache(client_root))
+    clear = _Thread(lambda: cache.clear_cache(client))
     clear.start()
     assert reached.wait(WAIT)  # deleted, marker not yet written, locks held
-    before = len(stub.arrivals)
-    sync = _Thread(lambda: cache.catch_up(client_root, bulk=True))
+    calls = record_requests(monkeypatch)
+    sync = _Thread(lambda: cache.catch_up(client, bulk=True))
     sync.start()
     time.sleep(0.2)
-    assert len(stub.arrivals) == before  # the sync has not begun
+    assert calls == []  # the sync has not begun
     release.set()
     clear.join(WAIT)
     sync.join(WAIT)
     assert clear.error is None and sync.error is None, (clear.error, sync.error)
     assert sync.result.kind == "applied"  # a reset from the routing marker
-    assert_mirror(client_root, stub)
+    assert_mirror(client, server)
 
 
-def test_clear_waits_for_a_reader(client_root: Path, stub: StubServer) -> None:
-    create_task(stub)
-    cache.catch_up(client_root)
+def test_clear_waits_for_a_reader(client: Path, server: BoardServer) -> None:
+    create_task(server)
+    cache.catch_up(client)
     paused, resume = threading.Event(), threading.Event()
 
     def reader() -> set[str]:
-        with cache.read_lock(client_root) as lattice:
+        with cache.read_lock(client) as lattice:
             paused.set()
             resume.wait(WAIT)
             return _task_ids(lattice / "events")
@@ -273,31 +277,31 @@ def test_clear_waits_for_a_reader(client_root: Path, stub: StubServer) -> None:
     read = _Thread(reader)
     read.start()
     assert paused.wait(WAIT)
-    clear = _Thread(lambda: cache.clear_cache(client_root))
+    clear = _Thread(lambda: cache.clear_cache(client))
     clear.start()
     time.sleep(0.2)
-    assert not _cleared(client_root)
+    assert not _cleared(client)
     resume.set()
     read.join(WAIT)
     clear.join(WAIT)
     assert read.error is None and clear.error is None
     assert len(read.result) == 1  # the reader saw the whole board
-    assert _cleared(client_root)
+    assert _cleared(client)
 
 
 def test_a_reader_arriving_mid_clear_waits_for_the_final_tree(
-    client_root: Path, stub: StubServer, monkeypatch: pytest.MonkeyPatch
+    client: Path, server: BoardServer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    create_task(stub)
-    cache.catch_up(client_root)
+    create_task(server)
+    cache.catch_up(client)
     reached, release = _seam_gate(monkeypatch, "clear_deleted")
-    clear = _Thread(lambda: cache.clear_cache(client_root))
+    clear = _Thread(lambda: cache.clear_cache(client))
     clear.start()
     assert reached.wait(WAIT)
     entered = threading.Event()
 
     def reader() -> bool:
-        with cache.read_lock(client_root) as lattice:
+        with cache.read_lock(client) as lattice:
             entered.set()
             return (lattice / "cache" / "state.json").exists()
 
@@ -314,24 +318,24 @@ def test_a_reader_arriving_mid_clear_waits_for_the_final_tree(
 
 @pytest.mark.parametrize("binding", [True, False], ids=["bound", "marker-only"])
 def test_clear_forget_versus_a_sync_arriving_at_its_end(
-    client_root: Path, stub: StubServer, monkeypatch: pytest.MonkeyPatch, binding: bool
+    client: Path, server: BoardServer, monkeypatch: pytest.MonkeyPatch, binding: bool
 ) -> None:
     """The sync arrives after everything is deleted but before clear releases its
     locks: it waits on the same lock files, then routes by what is on disk."""
-    create_task(stub)
-    cache.catch_up(client_root)
+    create_task(server)
+    cache.catch_up(client)
     if not binding:
-        (client_root / cache.BINDING_FILE).unlink()  # routed by the marker alone
+        (client / cache.BINDING_FILE).unlink()  # routed by the marker alone
     reached, release = _seam_gate(monkeypatch, "clear_finished")
-    clear = _Thread(lambda: cache.clear_cache(client_root, forget=True))
+    clear = _Thread(lambda: cache.clear_cache(client, forget=True))
     clear.start()
     assert reached.wait(WAIT)
-    before = len(stub.arrivals)
-    sync = _Thread(lambda: cache.catch_up(client_root, bulk=True))
+    calls = record_requests(monkeypatch)
+    sync = _Thread(lambda: cache.catch_up(client, bulk=True))
     sync.start()
     time.sleep(0.2)
-    assert len(stub.arrivals) == before  # waiting on clear's locks
-    assert not (client_root / ".lattice" / "cache").exists()  # nothing recreated meanwhile
+    assert calls == []  # waiting on clear's locks
+    assert not (client / ".lattice" / "cache").exists()  # nothing recreated meanwhile
     release.set()
     clear.join(WAIT)
     sync.join(WAIT)
@@ -339,7 +343,7 @@ def test_clear_forget_versus_a_sync_arriving_at_its_end(
     if binding:
         assert sync.error is None, sync.error
         assert sync.result.kind == "applied"  # a first sync from the binding
-        assert_mirror(client_root, stub)
+        assert_mirror(client, server)
     else:
         assert sync.error is not None and sync.error.code == "NOT_HOSTED"
-        assert not (client_root / ".lattice" / "cache").exists()
+        assert not (client / ".lattice" / "cache").exists()

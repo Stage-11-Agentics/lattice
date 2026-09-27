@@ -1,5 +1,8 @@
 """``lattice doctor`` on a cache: its read-only checks, then every synced file
-against the server's manifest (SPEC §9.6)."""
+against the server's manifest (SPEC §9.6).
+
+Correct answers come from the real server (``server``); forced manifest
+answers and the head race from the stub (``stub``)."""
 
 from __future__ import annotations
 
@@ -12,6 +15,7 @@ from click.testing import CliRunner
 
 from lattice.cli.main import cli
 from lattice.remote import cache
+from lattice.server.testing import BoardServer
 from tests.test_remote.conftest import create_task
 from tests.test_remote.stub_sync_server import StubServer
 
@@ -32,23 +36,23 @@ def _stealth_edit(path: Path, data: bytes) -> None:
     os.chmod(path.parent, 0o500)
 
 
-def test_a_clean_cache_matches(client_root: Path, stub: StubServer) -> None:
-    create_task(stub)
-    cache.catch_up(client_root)
-    result = _doctor(client_root)
+def test_a_clean_cache_matches(client: Path, server: BoardServer) -> None:
+    create_task(server)
+    cache.catch_up(client)
+    result = _doctor(client)
     assert result.exit_code == 0, result.output
     assert "Cache matches the server" in result.output
-    data = json.loads(_doctor(client_root, "--json").stdout)["data"]
+    data = json.loads(_doctor(client, "--json").stdout)["data"]
     assert [f for f in data["findings"] if f["check"].startswith("cache_")] == []
 
 
-def test_a_stealth_edit_is_reported(client_root: Path, stub: StubServer) -> None:
-    task = create_task(stub)
-    cache.catch_up(client_root)
-    target = client_root / ".lattice" / "context.md"
+def test_a_stealth_edit_is_reported(client: Path, server: BoardServer) -> None:
+    task = create_task(server)
+    cache.catch_up(client)
+    target = client / ".lattice" / "context.md"
     original = target.read_bytes()
     _stealth_edit(target, bytes(reversed(original)))
-    result = _doctor(client_root, "--json")
+    result = _doctor(client, "--json")
     assert result.exit_code == 1
     findings = json.loads(result.stdout)["data"]["findings"]
     assert {
@@ -61,12 +65,12 @@ def test_a_stealth_edit_is_reported(client_root: Path, stub: StubServer) -> None
 
 
 def test_an_unreachable_server_is_a_warning(
-    client_root: Path, stub: StubServer, monkeypatch: pytest.MonkeyPatch
+    client: Path, server: BoardServer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    create_task(stub)
-    cache.catch_up(client_root)
+    create_task(server)
+    cache.catch_up(client)
     monkeypatch.setenv("LATTICE_REMOTE_TEAM_URL", "http://127.0.0.1:9")
-    result = _doctor(client_root, "--json")
+    result = _doctor(client, "--json")
     assert result.exit_code == 0, result.output
     findings = json.loads(result.stdout)["data"]["findings"]
     assert [f["check"] for f in findings if f["check"].startswith("cache_")] == [
@@ -139,15 +143,15 @@ def test_a_hard_manifest_failure_is_an_error(
     "unset,code", [("LATTICE_REMOTE_TEAM_URL", "REMOTE_NOT_CONFIGURED"), (None, "TOKEN_ENV_UNSET")]
 )
 def test_a_remote_configuration_error_is_an_error(
-    client_root: Path, stub: StubServer, monkeypatch: pytest.MonkeyPatch, unset, code: str
+    client: Path, server: BoardServer, monkeypatch: pytest.MonkeyPatch, unset, code: str
 ) -> None:  # noqa: ANN001
-    create_task(stub)
-    cache.catch_up(client_root)
+    create_task(server)
+    cache.catch_up(client)
     if unset:
         monkeypatch.delenv(unset)
     else:
         monkeypatch.setenv("LATTICE_REMOTE_TEAM_HEADERS", '{"X-Proxy": "UNSET_PROXY_VAR"}')
-    result = _doctor(client_root, "--json")
+    result = _doctor(client, "--json")
     assert result.exit_code == 1
     assert json.loads(result.stdout)["error"]["code"] == code
 
@@ -167,15 +171,15 @@ def test_a_busy_server_is_a_warning(client_root: Path, stub: StubServer, answer:
 
 
 def test_an_interrupted_cache_is_an_error_offline(
-    client_root: Path, stub: StubServer, monkeypatch: pytest.MonkeyPatch
+    client: Path, server: BoardServer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    create_task(stub)
-    cache.catch_up(client_root)
-    (client_root / ".lattice" / "cache" / "applying").write_text(
-        json.dumps({"remote": "team", "project": "demo"})
+    create_task(server)
+    cache.catch_up(client)
+    (client / ".lattice" / "cache" / "applying").write_text(
+        json.dumps({"remote": "team", "project": server.slug})
     )
     monkeypatch.setenv("LATTICE_REMOTE_TEAM_URL", "http://127.0.0.1:9")
-    result = _doctor(client_root, "--json")
+    result = _doctor(client, "--json")
     assert result.exit_code == 1
     assert json.loads(result.stdout)["error"]["code"] == "CACHE_INCOMPLETE"
 
@@ -186,15 +190,15 @@ def test_an_interrupted_cache_is_an_error_offline(
 
 
 def test_an_apply_waits_for_the_whole_doctor_scan(
-    client_root: Path, stub: StubServer, monkeypatch: pytest.MonkeyPatch
+    client: Path, server: BoardServer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import threading
     import time
 
     from lattice.cli import integrity_cmds
 
-    task = create_task(stub)
-    cache.catch_up(client_root)
+    task = create_task(server)
+    cache.catch_up(client)
     marks: list[str] = []
     monkeypatch.setattr(cache, "_seam", marks.append)
     started: list[threading.Thread] = []
@@ -203,8 +207,8 @@ def test_an_apply_waits_for_the_whole_doctor_scan(
     def enumerate_then_race(lattice_dir: Path) -> list[Path]:
         files = real(lattice_dir)
         if not started:  # after the first enumeration, before any read
-            stub.op("task.archive", {"task": task})
-            sync = threading.Thread(target=lambda: cache.catch_up(client_root, bulk=True))
+            server.op("task.archive", {"task": task})
+            sync = threading.Thread(target=lambda: cache.catch_up(client, bulk=True))
             sync.start()
             started.append(sync)
             time.sleep(0.3)
@@ -212,13 +216,13 @@ def test_an_apply_waits_for_the_whole_doctor_scan(
         return files
 
     monkeypatch.setattr(integrity_cmds, "_collect_task_files", enumerate_then_race)
-    result = _doctor(client_root, "--json")
+    result = _doctor(client, "--json")
     started[0].join(5)
     assert result.exit_code == 0, result.output
     findings = json.loads(result.stdout)["data"]["findings"]
     assert [f for f in findings if f["level"] == "error"] == []
     assert "applying_written" in marks  # the archive applied once doctor finished
-    assert (client_root / ".lattice" / "archive" / "tasks" / f"{task}.json").exists()
+    assert (client / ".lattice" / "archive" / "tasks" / f"{task}.json").exists()
 
 
 def test_a_server_integrity_error_fails_doctor(client_root: Path, stub: StubServer) -> None:

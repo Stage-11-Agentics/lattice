@@ -1,4 +1,7 @@
-"""catch_up against the stub: first sync, deltas, appends, relocation, outcomes."""
+"""catch_up: first sync, deltas, appends, relocation, outcomes.
+
+Correct answers come from the real server (``server``); forced answers from
+the stub (``stub``)."""
 
 from __future__ import annotations
 
@@ -10,10 +13,12 @@ from pathlib import Path
 
 import pytest
 
+import lattice
 from lattice.core.errors import OpError
 from lattice.remote import cache
 from lattice.storage.ownership import board_state
-from tests.test_remote.conftest import assert_mirror, create_task
+from lattice.server.testing import BoardServer
+from tests.test_remote.conftest import assert_mirror, create_task, record_requests
 from tests.test_remote.stub_sync_server import StubServer
 
 
@@ -21,76 +26,85 @@ def _state(client: Path) -> dict:
     return json.loads((client / ".lattice" / "cache" / "state.json").read_text())
 
 
-def test_first_sync_mirrors_the_board(client_root: Path, stub: StubServer) -> None:
-    create_task(stub)
-    outcome = cache.catch_up(client_root)
+def test_first_sync_mirrors_the_board(client: Path, server: BoardServer) -> None:
+    create_task(server)
+    outcome = cache.catch_up(client)
     assert outcome.kind == "applied"
-    assert outcome.head_seq == stub.head == 1
+    head = server.sync()
+    assert outcome.head_seq == head["head_seq"] == 1
     assert outcome.synced_at
-    assert_mirror(client_root, stub)
-    state = _state(client_root)
-    assert state["remote"] == "team" and state["project"] == "demo"
-    assert state["epoch"] == stub.epoch and state["head_hash"] == stub.head_hash()
-    assert state["server_version"] == "2.0.0.dev0+stub"
-    assert state["fingerprint"] == cache.fingerprint(client_root / ".lattice")
-    assert not (client_root / ".lattice" / "cache" / "applying").exists()
-    assert board_state(client_root / ".lattice") == "cache"
+    assert_mirror(client, server)
+    state = _state(client)
+    assert state["remote"] == "team" and state["project"] == server.slug
+    assert state["epoch"] == head["epoch"] and state["head_hash"] == head["head_hash"]
+    assert state["server_version"] == lattice.__version__
+    assert state["fingerprint"] == cache.fingerprint(client / ".lattice")
+    assert not (client / ".lattice" / "cache" / "applying").exists()
+    assert board_state(client / ".lattice") == "cache"
     for name in cache.RUNTIME_DIRS:
-        assert (client_root / ".lattice" / name).is_dir()
+        assert (client / ".lattice" / name).is_dir()
     for name in cache.STANDARD_DIRS:
-        assert (client_root / ".lattice" / name).is_dir()
+        assert (client / ".lattice" / name).is_dir()
 
 
-def test_nothing_new_is_unchanged(client_root: Path, stub: StubServer) -> None:
-    cache.catch_up(client_root)
-    first = _state(client_root)
-    outcome = cache.catch_up(client_root)
+def test_nothing_new_is_unchanged(
+    client: Path, server: BoardServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    create_task(server)
+    cache.catch_up(client)
+    first = _state(client)
+    calls = record_requests(monkeypatch)
+    outcome = cache.catch_up(client)
     assert outcome.kind == "unchanged"
     assert outcome.head_seq == first["head_seq"]
-    assert stub.arrivals[-1][0] == "sync"
-    assert stub.arrivals[-1][1]["since"] == str(first["head_seq"])
+    assert [path for path, _ in calls] == [
+        f"/v1/projects/{server.slug}/sync?since={first['head_seq']}&epoch={first['epoch']}"
+        f"&hash={first['head_hash']}"
+    ]
 
 
-def test_delta_with_an_append_sends_only_new_bytes(client_root: Path, stub: StubServer) -> None:
-    task = create_task(stub)
-    cache.catch_up(client_root)
-    captured: list[dict] = []
-    stub.fault.mutate_sync = captured.append
-    stub.op("task.comment", {"task": task, "text": "hello there"})
-    assert cache.catch_up(client_root).kind == "applied"
+def test_delta_with_an_append_sends_only_new_bytes(
+    client: Path, server: BoardServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    task = create_task(server)
+    cache.catch_up(client)
     log = f"events/{task}.jsonl"
-    entry = captured[-1]["files"][log]
-    assert entry["append_from"] > 0
-    assert_mirror(client_root, stub)
+    before = (client / ".lattice" / log).stat().st_size
+    server.op("task.comment", {"task": task, "text": "hello there"})
+    calls = record_requests(monkeypatch)
+    assert cache.catch_up(client).kind == "applied"
+    entry = calls[0][1].data()["files"][log]
+    assert entry["append_from"] == before  # only the new bytes travelled
+    assert_mirror(client, server)
 
 
-def test_archive_relocation_and_unarchive(client_root: Path, stub: StubServer) -> None:
-    task = create_task(stub)
-    cache.catch_up(client_root)
-    stub.op("task.archive", {"task": task})
-    cache.catch_up(client_root)
-    assert_mirror(client_root, stub)
-    assert not (client_root / ".lattice" / "tasks" / f"{task}.json").exists()
-    assert (client_root / ".lattice" / "archive" / "tasks" / f"{task}.json").exists()
-    stub.op("task.unarchive", {"task": task})
-    cache.catch_up(client_root)
-    assert_mirror(client_root, stub)
+def test_archive_relocation_and_unarchive(client: Path, server: BoardServer) -> None:
+    task = create_task(server)
+    cache.catch_up(client)
+    server.op("task.archive", {"task": task})
+    cache.catch_up(client)
+    assert_mirror(client, server)
+    assert not (client / ".lattice" / "tasks" / f"{task}.json").exists()
+    assert (client / ".lattice" / "archive" / "tasks" / f"{task}.json").exists()
+    server.op("task.unarchive", {"task": task})
+    cache.catch_up(client)
+    assert_mirror(client, server)
 
 
 @pytest.mark.parametrize("umask", [0o022, 0o077, 0o000])
 def test_modes_are_explicit_whatever_the_umask(
-    client_root: Path, stub: StubServer, umask: int
+    client: Path, server: BoardServer, umask: int
 ) -> None:
-    task = create_task(stub)
+    task = create_task(server)
     old = os.umask(umask)
     try:
-        cache.catch_up(client_root)
-        stub.op("task.comment", {"task": task, "text": "x"})
-        stub.commit(write={"resources/r1/meta.json": b"{}"})
-        cache.catch_up(client_root)
+        cache.catch_up(client)
+        server.op("task.comment", {"task": task, "text": "x"})
+        server.op("resource.create", {"name": "r1"})  # a new nested directory
+        cache.catch_up(client)
     finally:
         os.umask(old)
-    lattice = client_root / ".lattice"
+    lattice = client / ".lattice"
 
     def mode(p: Path) -> int:
         return stat.S_IMODE(os.lstat(p).st_mode)
@@ -104,16 +118,16 @@ def test_modes_are_explicit_whatever_the_umask(
 
 
 def test_unreachable_leaves_the_cache_alone(
-    client_root: Path, stub: StubServer, monkeypatch
+    client: Path, server: BoardServer, monkeypatch
 ) -> None:
-    cache.catch_up(client_root)
-    before = cache.fingerprint(client_root / ".lattice")
+    cache.catch_up(client)
+    before = cache.fingerprint(client / ".lattice")
     monkeypatch.setenv("LATTICE_REMOTE_TEAM_URL", "http://127.0.0.1:9")
-    outcome = cache.catch_up(client_root)
+    outcome = cache.catch_up(client)
     assert outcome.kind == "unreachable"
-    assert outcome.head_seq == 1 - 1 or outcome.head_seq == _state(client_root)["head_seq"]
+    assert outcome.head_seq == _state(client)["head_seq"]
     assert "cannot reach team" in outcome.detail
-    assert cache.fingerprint(client_root / ".lattice") == before
+    assert cache.fingerprint(client / ".lattice") == before
 
 
 @pytest.mark.parametrize("code,kind", [("BOARD_BUSY", "busy"), ("RATE_LIMITED", "busy")])
@@ -137,32 +151,32 @@ def test_a_server_5xx_envelope_is_unreachable(client_root: Path, stub: StubServe
     assert cache.catch_up(client_root).kind == "unreachable"
 
 
-def test_a_client_error_raises(client_root: Path, stub: StubServer, monkeypatch) -> None:
+def test_a_client_error_raises(client: Path, server: BoardServer, monkeypatch) -> None:
     monkeypatch.setenv("LATTICE_REMOTE_TEAM_TOKEN", "wrong")
     with pytest.raises(OpError) as err:
-        cache.catch_up(client_root)
+        cache.catch_up(client)
     assert err.value.code == "UNAUTHENTICATED"
 
 
 def test_the_probe_returns_busy_while_another_sync_holds_the_lock(
-    client_root: Path, stub: StubServer, monkeypatch
+    client: Path, server: BoardServer, monkeypatch
 ) -> None:
-    cache.catch_up(client_root)
+    cache.catch_up(client)
     monkeypatch.setattr(cache, "PROBE_SECONDS", 0.3)
-    fd = cache._lock(client_root / ".lattice" / "locks" / "cache_sync.lock", True, None)
+    fd = cache._lock(client / ".lattice" / "locks" / "cache_sync.lock", True, None)
     try:
-        outcome = cache.catch_up(client_root)
+        outcome = cache.catch_up(client)
     finally:
         os.close(fd)
     assert outcome.kind == "busy"
 
 
-def test_bulk_waits_for_the_lock(client_root: Path, stub: StubServer) -> None:
-    cache.catch_up(client_root)
-    create_task(stub)
-    fd = cache._lock(client_root / ".lattice" / "locks" / "cache_sync.lock", True, None)
+def test_bulk_waits_for_the_lock(client: Path, server: BoardServer) -> None:
+    cache.catch_up(client)
+    create_task(server)
+    fd = cache._lock(client / ".lattice" / "locks" / "cache_sync.lock", True, None)
     result: list = []
-    thread = threading.Thread(target=lambda: result.append(cache.catch_up(client_root, bulk=True)))
+    thread = threading.Thread(target=lambda: result.append(cache.catch_up(client, bulk=True)))
     thread.start()
     thread.join(0.3)
     assert thread.is_alive()
@@ -178,24 +192,24 @@ def test_not_hosted(tmp_path: Path) -> None:
 
 
 def test_a_local_board_beside_a_binding_is_never_synced_over(
-    client_root: Path, stub: StubServer
+    client: Path, server: BoardServer
 ) -> None:
     from lattice.storage.board_init import create_board
 
-    create_board(client_root, project_code="LOC")
+    create_board(client, project_code="LOC")
     with pytest.raises(OpError) as err:
-        cache.catch_up(client_root)
+        cache.catch_up(client)
     assert err.value.code == "BINDING_CONFLICT"
-    assert not (client_root / ".lattice" / "cache").exists()
+    assert not (client / ".lattice" / "cache").exists()
 
 
-def test_remote_not_configured(client_root: Path, stub: StubServer, monkeypatch) -> None:
+def test_remote_not_configured(client: Path, server: BoardServer, monkeypatch) -> None:
     monkeypatch.delenv("LATTICE_REMOTE_TEAM_URL")
     with pytest.raises(OpError) as err:
-        cache.catch_up(client_root)
+        cache.catch_up(client)
     assert err.value.code == "REMOTE_NOT_CONFIGURED"
     assert "lattice remote add team" in err.value.message
-    assert not (client_root / ".lattice").exists()
+    assert not (client / ".lattice").exists()
 
 
 @pytest.mark.parametrize(

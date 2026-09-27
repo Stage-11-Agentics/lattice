@@ -1,7 +1,10 @@
 """AC-47 (H-10b rows): after a sync every board file matches the server byte for
 byte; a local edit is moved aside and reported, never silently discarded; the
 cache refuses edits; bad deltas are rejected whole; interrupted applies are
-detected and repaired; ``cache clear`` never deletes a local board."""
+detected and repaired; ``cache clear`` never deletes a local board.
+
+Correct answers come from the real server (``server``); malformed or forced
+answers from the stub (``stub``)."""
 
 from __future__ import annotations
 
@@ -20,8 +23,15 @@ from click.testing import CliRunner
 from lattice.cli.main import cli
 from lattice.core.errors import OpError
 from lattice.remote import cache
-from tests.test_remote.conftest import PROJECT, assert_mirror, bind, create_task, tree_hashes
-from tests.test_remote.stub_sync_server import StubServer, running_stub
+from lattice.server.testing import BoardServer, ServerHandle
+from tests.test_remote.conftest import (
+    assert_mirror,
+    bind,
+    create_task,
+    new_project,
+    tree_hashes,
+)
+from tests.test_remote.stub_sync_server import StubServer
 
 RESCUE_LINE = "locally edited board file(s) moved to"
 
@@ -49,8 +59,8 @@ def _edit(path: Path, data: bytes) -> None:
     os.chmod(path.parent, 0o500)
 
 
-def _synced(client: Path, stub: StubServer) -> str:
-    task = create_task(stub)
+def _synced(client: Path, server: BoardServer | StubServer) -> str:
+    task = create_task(server)
     assert cache.catch_up(client).kind == "applied"
     return task
 
@@ -61,44 +71,44 @@ def _synced(client: Path, stub: StubServer) -> str:
 
 
 def test_a_local_edit_is_rescued_and_reset(
-    client_root: Path, stub: StubServer, capsys: pytest.CaptureFixture[str]
+    client: Path, server: BoardServer, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    task = _synced(client_root, stub)
-    target = _lattice(client_root) / "tasks" / f"{task}.json"
+    task = _synced(client, server)
+    target = _lattice(client) / "tasks" / f"{task}.json"
     original = target.read_bytes()
     _edit(target, original + b" ")
-    assert cache.catch_up(client_root).kind == "applied"
+    assert cache.catch_up(client).kind == "applied"
     err = capsys.readouterr().err
     assert err.count(RESCUE_LINE) == 1
     assert "1 locally edited board file(s)" in err
     assert "lattice plan write <task> --file <path>" in err
     assert target.read_bytes() == original
-    rescued = _rescued(client_root)
+    rescued = _rescued(client)
     assert list(rescued.values()) == [original + b" "]
     assert next(iter(rescued)).endswith(f"tasks/{task}.json")
-    assert_mirror(client_root, stub)
+    assert_mirror(client, server)
 
 
 def test_an_orchestration_file_is_synced_protected_and_rescued(
-    client_root: Path, stub: StubServer, capsys: pytest.CaptureFixture[str]
+    client: Path, server: BoardServer, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    stub.commit(write={"orchestration/run-state.md": b"# run\n"})
-    cache.catch_up(client_root)
-    target = _lattice(client_root) / "orchestration" / "run-state.md"
+    server.op("board.file_write", {"path": "orchestration/run-state.md", "file": "# run\n"})
+    cache.catch_up(client)
+    target = _lattice(client) / "orchestration" / "run-state.md"
     assert stat.S_IMODE(target.stat().st_mode) == 0o400
     assert stat.S_IMODE(target.parent.stat().st_mode) == 0o500
     with pytest.raises(PermissionError):
         target.write_text("edited")
     _edit(target, b"# edited locally\n")
-    assert cache.catch_up(client_root).kind == "applied"
+    assert cache.catch_up(client).kind == "applied"
     assert RESCUE_LINE in capsys.readouterr().err
     assert target.read_bytes() == b"# run\n"
-    assert list(_rescued(client_root).values()) == [b"# edited locally\n"]
+    assert list(_rescued(client).values()) == [b"# edited locally\n"]
 
 
-def test_the_cache_refuses_edits(client_root: Path, stub: StubServer) -> None:
-    task = _synced(client_root, stub)
-    tasks = _lattice(client_root) / "tasks"
+def test_the_cache_refuses_edits(client: Path, server: BoardServer) -> None:
+    task = _synced(client, server)
+    tasks = _lattice(client) / "tasks"
     target = tasks / f"{task}.json"
     with pytest.raises(PermissionError):
         target.write_text("direct write")
@@ -106,44 +116,44 @@ def test_the_cache_refuses_edits(client_root: Path, stub: StubServer) -> None:
         (tasks / "tmp.save").write_text("rename-based save")
     with pytest.raises(PermissionError):
         (tasks / "new.json").write_text("new file")
-    assert cache.catch_up(client_root).kind == "unchanged"
+    assert cache.catch_up(client).kind == "unchanged"
 
 
 def test_a_rename_save_of_config_is_detected_and_rescued(
-    client_root: Path, stub: StubServer, capsys: pytest.CaptureFixture[str]
+    client: Path, server: BoardServer, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    _synced(client_root, stub)
-    config = _lattice(client_root) / "config.json"
+    _synced(client, server)
+    config = _lattice(client) / "config.json"
     original = config.read_bytes()
     tmp = config.with_name("config.json.swp")
     tmp.write_bytes(b'{"edited": true}\n')
     os.replace(tmp, config)  # the directory is writable: an editor's save succeeds
-    assert cache.catch_up(client_root).kind == "applied"
+    assert cache.catch_up(client).kind == "applied"
     assert RESCUE_LINE in capsys.readouterr().err
     assert config.read_bytes() == original
-    assert list(_rescued(client_root).values()) == [b'{"edited": true}\n']
-    assert_mirror(client_root, stub)
+    assert list(_rescued(client).values()) == [b'{"edited": true}\n']
+    assert_mirror(client, server)
 
 
-def test_a_file_the_reset_lacks_is_rescued(client_root: Path, stub: StubServer) -> None:
-    _synced(client_root, stub)
-    notes = _lattice(client_root) / "notes"
+def test_a_file_the_reset_lacks_is_rescued(client: Path, server: BoardServer) -> None:
+    _synced(client, server)
+    notes = _lattice(client) / "notes"
     os.chmod(notes, 0o700)
     (notes / "mine.md").write_text("my notes")
     os.chmod(notes, 0o500)
-    cache.catch_up(client_root)
+    cache.catch_up(client)
     assert not (notes / "mine.md").exists()
-    assert list(_rescued(client_root).values()) == [b"my notes"]
+    assert list(_rescued(client).values()) == [b"my notes"]
 
 
 def test_no_rescue_when_nothing_was_edited(
-    client_root: Path, stub: StubServer, capsys: pytest.CaptureFixture[str]
+    client: Path, server: BoardServer, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    _synced(client_root, stub)
-    create_task(stub, "second")
-    assert cache.catch_up(client_root).kind == "applied"
+    _synced(client, server)
+    create_task(server, "second")
+    assert cache.catch_up(client).kind == "applied"
     assert RESCUE_LINE not in capsys.readouterr().err
-    assert _rescued(client_root) == {}
+    assert _rescued(client) == {}
 
 
 # ---------------------------------------------------------------------------
@@ -312,17 +322,17 @@ def body_sha(stub: StubServer, rel: str) -> str:
 
 
 @pytest.mark.parametrize("umask", [0o022, 0o077])
-def test_effective_modes(client_root: Path, stub: StubServer, umask: int) -> None:
-    task = create_task(stub)
+def test_effective_modes(client: Path, server: BoardServer, umask: int) -> None:
+    task = create_task(server)
     old = os.umask(umask)
     try:
-        cache.catch_up(client_root)
-        stub.op("task.comment", {"task": task, "text": "x"})
-        stub.commit(write={"resources/r1/meta.json": b"{}"})
-        cache.catch_up(client_root)
+        cache.catch_up(client)
+        server.op("task.comment", {"task": task, "text": "x"})
+        server.op("resource.create", {"name": "r1"})  # a new nested directory
+        cache.catch_up(client)
     finally:
         os.umask(old)
-    lattice = _lattice(client_root)
+    lattice = _lattice(client)
 
     def mode(p: Path) -> int:
         return stat.S_IMODE(os.lstat(p).st_mode)
@@ -335,17 +345,17 @@ def test_effective_modes(client_root: Path, stub: StubServer, umask: int) -> Non
 
 
 def test_review_state_and_an_auto_review_spawn_work_on_a_fresh_cache(
-    client_root: Path, stub: StubServer
+    client: Path, server: BoardServer
 ) -> None:
     from lattice.cli import auto_review
     from lattice.core.review import read_review_state, write_review_state
 
-    task = _synced(client_root, stub)
-    lattice = _lattice(client_root)
+    task = _synced(client, server)
+    lattice = _lattice(client)
     write_review_state(lattice, {"task_id": task, "status": "running"})
     assert read_review_state(lattice, task)["status"] == "running"
-    other = create_task(stub, "second")
-    cache.catch_up(client_root)
+    other = create_task(server, "second")
+    cache.catch_up(client)
     with patch.object(auto_review, "find_lattice_executable", return_value="/usr/bin/true"):
         result = auto_review.auto_fire_review(
             lattice,
@@ -369,60 +379,55 @@ def _clear(client: Path, *args: str) -> object:
     return CliRunner().invoke(cli, ["cache", "clear", *args], env={"LATTICE_ROOT": str(client)})
 
 
-def test_cache_clear_keeps_rescued_and_the_marker(client_root: Path, stub: StubServer) -> None:
-    task = _synced(client_root, stub)
-    _edit(_lattice(client_root) / "tasks" / f"{task}.json", b"edited")
-    cache.catch_up(client_root)
-    (client_root / cache.BINDING_FILE).unlink()  # a branch without the binding
-    result = _clear(client_root)
+def test_cache_clear_keeps_rescued_and_the_marker(client: Path, server: BoardServer) -> None:
+    task = _synced(client, server)
+    _edit(_lattice(client) / "tasks" / f"{task}.json", b"edited")
+    cache.catch_up(client)
+    (client / cache.BINDING_FILE).unlink()  # a branch without the binding
+    result = _clear(client)
     assert result.exit_code == 0, result.output
     assert "kept rescued board files" in result.stderr
-    lattice = _lattice(client_root)
+    lattice = _lattice(client)
     assert sorted(p.name for p in lattice.iterdir()) == ["cache", "locks"]  # runtime locks stay
     assert sorted(p.name for p in (lattice / "cache").iterdir()) == ["rescued", "state.json"]
     assert json.loads((lattice / "cache" / "state.json").read_text()) == {
-        "project": PROJECT,
+        "project": server.slug,
         "remote": "team",
     }
-    assert list(_rescued(client_root).values()) == [b"edited"]
+    assert list(_rescued(client).values()) == [b"edited"]
     # Routing survives through the marker; the next sync resets from scratch.
-    outcome = cache.catch_up(client_root)
+    outcome = cache.catch_up(client)
     assert outcome.kind == "applied"
-    assert_mirror(client_root, stub)
+    assert_mirror(client, server)
 
 
-def test_cache_clear_json(client_root: Path, stub: StubServer) -> None:
-    _synced(client_root, stub)
-    result = _clear(client_root, "--json")
+def test_cache_clear_json(client: Path, server: BoardServer) -> None:
+    _synced(client, server)
+    result = _clear(client, "--json")
     assert result.exit_code == 0
     data = json.loads(result.stdout)["data"]
     assert data == {
         "forgot": False,
         "kept": [],
-        "project": PROJECT,
+        "project": server.slug,
         "remote": "team",
-        "root": str(client_root),
+        "root": str(client),
     }
 
 
 def test_cache_clear_forget_then_another_project(
-    tmp_path: Path, client_root: Path, stub: StubServer, monkeypatch: pytest.MonkeyPatch
+    client: Path, server: BoardServer, live_server: ServerHandle, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _synced(client_root, stub)
-    result = _clear(client_root, "--forget")
+    _synced(client, server)
+    result = _clear(client, "--forget")
     assert result.exit_code == 0, result.output
-    assert sorted(p.name for p in _lattice(client_root).iterdir()) == ["locks"]
-    assert cache.cache_identity(client_root) is not None  # the committed binding alone
-    other_root = tmp_path / "other-project"
-    other_root.mkdir()
-    from lattice.storage.board_init import create_board
-
-    create_board(other_root, project_code="OTH", actor="human:stub")
-    with running_stub(other_root, slug=PROJECT, token="other-token") as other:
-        create_task(other, "from the other project")
-        bind(client_root, other.url, other.token, monkeypatch)
-        assert cache.catch_up(client_root).kind == "applied"
-        assert_mirror(client_root, other)
+    assert sorted(p.name for p in _lattice(client).iterdir()) == ["locks"]
+    assert cache.cache_identity(client) is not None  # the committed binding alone
+    other = new_project(live_server, code="OTH")
+    create_task(other, "from the other project")
+    bind(client, other.url, other.token, monkeypatch, project=other.slug)
+    assert cache.catch_up(client).kind == "applied"
+    assert_mirror(client, other)
 
 
 @pytest.mark.parametrize("args", [(), ("--forget",), ("--json",)])
@@ -481,7 +486,7 @@ def kill_sync_at(root: Path, step: str, nth: int = 1) -> None:
 
 
 def _assert_offline_read_fails_then_online_repairs(
-    client: Path, stub: StubServer, monkeypatch: pytest.MonkeyPatch
+    client: Path, server: BoardServer | StubServer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     assert (_lattice(client) / "cache" / "applying").exists()
     monkeypatch.setenv("LATTICE_REMOTE_TEAM_URL", "http://127.0.0.1:9")
@@ -491,74 +496,74 @@ def _assert_offline_read_fails_then_online_repairs(
         pass
     assert err.value.code == "CACHE_INCOMPLETE"
     assert "lattice sync" in err.value.message
-    monkeypatch.setenv("LATTICE_REMOTE_TEAM_URL", stub.url)
+    monkeypatch.setenv("LATTICE_REMOTE_TEAM_URL", server.url)
     assert cache.catch_up(client).kind == "applied"
     with cache.read_lock(client):
         pass
-    assert_mirror(client, stub)
+    assert_mirror(client, server)
 
 
 def test_killed_during_the_first_sync(
-    client_root: Path, stub: StubServer, monkeypatch: pytest.MonkeyPatch
+    client: Path, server: BoardServer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     for n in range(3):
-        create_task(stub, f"task {n}")
-    kill_sync_at(client_root, "file_written", 2)
-    applying = json.loads((_lattice(client_root) / "cache" / "applying").read_text())
-    assert (applying["remote"], applying["project"]) == ("team", PROJECT)
+        create_task(server, f"task {n}")
+    kill_sync_at(client, "file_written", 2)
+    applying = json.loads((_lattice(client) / "cache" / "applying").read_text())
+    assert (applying["remote"], applying["project"]) == ("team", server.slug)
     assert applying["kind"] == "reset"
-    assert not (_lattice(client_root) / "cache" / "state.json").exists()
+    assert not (_lattice(client) / "cache" / "state.json").exists()
     # Routed as hosted by the leftover alone, even without the binding.
-    (client_root / cache.BINDING_FILE).unlink()
-    assert cache.cache_identity(client_root) == ("team", PROJECT)
-    _assert_offline_read_fails_then_online_repairs(client_root, stub, monkeypatch)
+    (client / cache.BINDING_FILE).unlink()
+    assert cache.cache_identity(client) == ("team", server.slug)
+    _assert_offline_read_fails_then_online_repairs(client, server, monkeypatch)
 
 
 def test_killed_during_an_archive_relocation(
-    client_root: Path, stub: StubServer, monkeypatch: pytest.MonkeyPatch
+    client: Path, server: BoardServer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    task = _synced(client_root, stub)
-    stub.op("task.archive", {"task": task})
-    kill_sync_at(client_root, "file_written", 1)
-    _assert_offline_read_fails_then_online_repairs(client_root, stub, monkeypatch)
-    assert (_lattice(client_root) / "archive" / "tasks" / f"{task}.json").exists()
+    task = _synced(client, server)
+    server.op("task.archive", {"task": task})
+    kill_sync_at(client, "file_written", 1)
+    _assert_offline_read_fails_then_online_repairs(client, server, monkeypatch)
+    assert (_lattice(client) / "archive" / "tasks" / f"{task}.json").exists()
 
 
 def test_killed_during_a_reset(
-    client_root: Path, stub: StubServer, monkeypatch: pytest.MonkeyPatch
+    client: Path, server: BoardServer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _synced(client_root, stub)
-    create_task(stub, "second")
-    stub.start_epoch()  # the next sync is a reset
-    kill_sync_at(client_root, "file_written", 2)
-    _assert_offline_read_fails_then_online_repairs(client_root, stub, monkeypatch)
+    _synced(client, server)
+    create_task(server, "second")
+    server.rotate_epoch()  # the next sync is a reset
+    kill_sync_at(client, "file_written", 2)
+    _assert_offline_read_fails_then_online_repairs(client, server, monkeypatch)
 
 
 @pytest.mark.parametrize(
     "step", ["rescue_copied", "rescue_renamed", "rescue_dir_synced", "rescue_unlinked"]
 )
 def test_a_rescue_survives_a_kill_at_every_step(
-    client_root: Path, stub: StubServer, monkeypatch: pytest.MonkeyPatch, step: str
+    client: Path, server: BoardServer, monkeypatch: pytest.MonkeyPatch, step: str
 ) -> None:
-    task = _synced(client_root, stub)
-    target = _lattice(client_root) / "tasks" / f"{task}.json"
+    task = _synced(client, server)
+    target = _lattice(client) / "tasks" / f"{task}.json"
     _edit(target, b"precious local edit")
-    kill_sync_at(client_root, step)
+    kill_sync_at(client, step)
     # Never lost: the edit is at its source, in the rescue directory, or both.
     at_source = target.exists() and target.read_bytes() == b"precious local edit"
-    assert at_source or b"precious local edit" in _rescued(client_root).values()
-    assert cache.catch_up(client_root).kind == "applied"
-    assert b"precious local edit" in _rescued(client_root).values()
-    assert_mirror(client_root, stub)
+    assert at_source or b"precious local edit" in _rescued(client).values()
+    assert cache.catch_up(client).kind == "applied"
+    assert b"precious local edit" in _rescued(client).values()
+    assert_mirror(client, server)
 
 
 def test_a_planted_symlink_and_fifo_are_removed_through_the_primitive(
-    tmp_path: Path, client_root: Path, stub: StubServer, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, client: Path, server: BoardServer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from lattice.storage import fs
 
-    _synced(client_root, stub)
-    lattice = _lattice(client_root)
+    _synced(client, server)
+    lattice = _lattice(client)
     outside = tmp_path / "outside-target.txt"
     outside.write_text("not board data")
     os.chmod(lattice / "tasks", 0o700)
@@ -570,7 +575,7 @@ def test_a_planted_symlink_and_fifo_are_removed_through_the_primitive(
     removed: list[str] = []
     real = fs.unlink_entry
     monkeypatch.setattr(cache, "unlink_entry", lambda p: (removed.append(Path(p).name), real(p)))
-    assert cache.catch_up(client_root).kind == "applied"  # the tree changed: a reset
+    assert cache.catch_up(client).kind == "applied"  # the tree changed: a reset
     assert sorted(removed) == ["pipe", "planted.json"]
     assert not os.path.lexists(lattice / "tasks" / "planted.json")
     assert not os.path.lexists(lattice / "notes" / "pipe")
@@ -578,7 +583,7 @@ def test_a_planted_symlink_and_fifo_are_removed_through_the_primitive(
     rescued = lattice / "cache" / "rescued"
     links = [p for p in rescued.rglob("planted.json")]
     assert len(links) == 1 and links[0].is_symlink() and os.readlink(links[0]) == str(outside)
-    assert_mirror(client_root, stub)
+    assert_mirror(client, server)
 
 
 @pytest.mark.parametrize(

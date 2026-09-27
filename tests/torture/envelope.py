@@ -1,75 +1,59 @@
-"""Boards at SPEC §8.8's supported size, written straight to disk for the stub.
+"""Real boards at SPEC §8.8's supported size, built through operations.
 
-The client only sees files and their hashes, so the torture tests build the
-envelope quickly from synthetic task files instead of 2,000 real operations.
+The board is written locally with ``lattice.ops.execute`` (fast: no server
+round trip per write), then served by the real server through
+``serve_board(source=...)``, which places it with a fresh journal.
 """
 
 from __future__ import annotations
 
-import json
-import os
 from pathlib import Path
 
 from ulid import ULID
 
+from lattice.ops import Caller, execute
+from lattice.storage.board_init import create_board
+
 MIB = 1024 * 1024
+_COMMENT = 60_000  # bytes of text per comment that grows the hot log
+_PLAN = 5 * MIB  # bytes per padding plan
 
 
-def task_id() -> str:
-    return f"task_{ULID()}"
+def _op(board: Path, name: str, params: dict) -> object:
+    caller = Caller(actor="human:envelope", origin={"op_id": f"op_{ULID()}"})
+    return execute(board, name, params, caller, run_hooks=False)
 
 
-def event_line(task: str, n: int, pad: int = 0) -> bytes:
-    event = {
-        "id": f"ev_{ULID()}",
-        "task_id": task,
-        "type": "comment_added",
-        "data": {"body": f"comment {n} " + "x" * pad},
-    }
-    return (json.dumps(event, sort_keys=True, separators=(",", ":")) + "\n").encode()
+def durable_bytes(board: Path) -> int:
+    from tests.test_remote.stub_sync_server import durable_files
+
+    return sum(path.stat().st_size for path in durable_files(board).values())
 
 
 def build_envelope(
-    lattice_dir: Path,
+    root: Path,
     *,
     tasks: int = 2000,
     hot_log_bytes: int = 4 * MIB,
     total_bytes: int | None = None,
 ) -> str:
-    """Write *tasks* tasks (snapshot, log, plan) under *lattice_dir*, one of them
-    with a log of *hot_log_bytes*, padded with artifact payloads to reach
+    """Create a board under *root* with *tasks* tasks, one whose event log holds
+    *hot_log_bytes* of real comments, padded with real plans until it holds
     *total_bytes* of durable data. Returns the hot task's ID."""
-    for rel in ("tasks", "events", "plans", "artifacts/payload"):
-        (lattice_dir / rel).mkdir(parents=True, exist_ok=True)
-    written = 0
-    hot = ""
-    for n in range(tasks):
-        task = task_id()
-        hot = hot or task
-        snapshot = json.dumps({"id": task, "title": f"Task {n}", "status": "backlog"}) + "\n"
-        (lattice_dir / "tasks" / f"{task}.json").write_text(snapshot)
-        log = event_line(task, 0, pad=200)
-        (lattice_dir / "events" / f"{task}.jsonl").write_bytes(log)
-        plan = f"# Task {n}\n\nPlan text.\n"
-        (lattice_dir / "plans" / f"{task}.md").write_text(plan)
-        written += len(snapshot) + len(log) + len(plan)
-    hot_path = lattice_dir / "events" / f"{hot}.jsonl"
-    with open(hot_path, "ab") as fh:
-        n = 1
-        while hot_path.stat().st_size < hot_log_bytes:
-            line = event_line(hot, n, pad=1000)
-            fh.write(line)
-            fh.flush()
-            written += len(line)
-            n += 1
+    root.mkdir(parents=True, exist_ok=True)
+    create_board(root, project_code="ENV", actor="human:envelope")
+    board = root / ".lattice"
+    ids = [_op(board, "task.create", {"title": f"Task {n}"}).task["id"] for n in range(tasks)]
+    hot = ids[0]
+    hot_log = board / "events" / f"{hot}.jsonl"
+    n = 0
+    while hot_log.stat().st_size < hot_log_bytes:
+        _op(board, "task.comment", {"task": hot, "text": f"history {n} " + "x" * _COMMENT})
+        n += 1
     if total_bytes:
-        chunk = 4 * MIB
-        index = 0
-        while written < total_bytes:
-            size = min(chunk, total_bytes - written)
-            (lattice_dir / "artifacts" / "payload" / f"pad_{index:04d}.bin").write_bytes(
-                os.urandom(size)
-            )
-            written += size
+        index = 1
+        while durable_bytes(board) < total_bytes:
+            plan = f"# Plan {index}\n\n" + "p" * _PLAN
+            _op(board, "task.plan_write", {"task": ids[index], "file": plan})
             index += 1
     return hot
