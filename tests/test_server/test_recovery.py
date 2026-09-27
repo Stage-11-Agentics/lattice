@@ -13,8 +13,10 @@ log left, strict discovery and doctor clean, and a retry of the same
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Iterator
 from io import StringIO
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -25,9 +27,19 @@ from lattice.server import admin
 from lattice.server.log import ServerLog
 from lattice.server.project import Project
 from lattice.server.testing import make_root
+from lattice.storage.ownership import offline_maintenance
 from lattice.storage.operations import discover_task_authorities
-from tests.test_server.faults import CrashSnapshots, install, load_project, request, run
+from tests.test_server.conftest import board_hash
+from tests.test_server.faults import (
+    CrashSnapshots,
+    Injector,
+    install,
+    load_project,
+    request,
+    run,
+)
 from tests.test_server.test_transactions import (
+    SCENARIO,
     SCENARIOS,
     SLUG,
     Fresh,
@@ -283,3 +295,383 @@ def test_an_undo_log_without_a_seq_quarantines_until_project_recover(
     projects.append(loaded)
     assert loaded.state == "loaded" and loaded.journal.epoch != epoch  # maintenance
     doctor_clean(root)
+
+
+# ---------------------------------------------------------------------------
+# Startup rollback is strictly durable and resumable (plan review finding 2)
+# ---------------------------------------------------------------------------
+
+
+def _dead_write(
+    fresh: Fresh, projects: list[Project], monkeypatch: pytest.MonkeyPatch
+) -> tuple[Path, dict, object]:
+    """A root whose last write died after changing board files (an archive with
+    notes: appends, copies, and an unlink), its lease released. Returns the root,
+    the state before that write, and the write."""
+    root, project, build = _prepared(fresh, projects, SCENARIO["task.archive"])
+    before = state(root)
+    write = build()
+    _killed_write(monkeypatch, project, write, "receipt.write")
+    assert undo_logs(root) and state(root)["board"] != before["board"]
+    project.release()
+    projects.remove(project)
+    return root, before, write
+
+
+def test_a_directory_fsync_failure_during_startup_rollback_keeps_the_undo_log(
+    fresh: Fresh, projects: list[Project], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import lattice.storage.fs as fs
+
+    root, before, _write = _dead_write(fresh, projects, monkeypatch)
+    hosted = board_of(root) / "hosted"
+    real = fs._fsync_directory
+
+    def failing(path: Path, *, strict: bool = False) -> None:
+        if not Path(path).resolve().is_relative_to(hosted.resolve()):
+            raise OSError(5, "injected directory fsync failure")
+        real(path, strict=strict)
+
+    with monkeypatch.context() as m:
+        m.setattr(fs, "_fsync_directory", failing)
+        failed = _restart(root)
+    assert failed.state == "unavailable"
+    assert undo_logs(root)  # never deleted before every restoration is durable
+    loaded = _restart(root)  # the next load resumes the rollback
+    projects.append(loaded)
+    assert loaded.state == "loaded", loaded.reason
+    assert undo_logs(root) == [] and state(root) == before
+    doctor_clean(root)
+
+
+def test_a_restart_in_the_middle_of_a_startup_rollback_resumes_it(
+    fresh: Fresh, projects: list[Project], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    root, before, write = _dead_write(fresh, projects, monkeypatch)
+    crashes = CrashSnapshots(root, tmp_path / "mid-rollback")
+    with monkeypatch.context() as m:
+        install(m, crashes)  # type: ignore[arg-type]
+        recovering = _restart(root)
+    recovering.release()
+    labels = [label for label, _ in crashes.snapshots]
+    # Distinct disk states only: the one before the undo log's deletion equals
+    # the one after the last restoration's directory fsync.
+    assert any(label.startswith("recover.rollback") for label in labels)
+    assert len(labels) > 3
+    for label, crashed in crashes.snapshots:
+        restarted = _restart(crashed)
+        try:
+            assert restarted.state == "loaded", (label, restarted.reason)
+            assert undo_logs(crashed) == [], label
+            assert state(crashed) == before, label
+            retry = run(restarted, write)  # type: ignore[arg-type]
+            assert not retry.replayed, label
+        finally:
+            restarted.release()
+
+
+# ---------------------------------------------------------------------------
+# Rotation, torn tails, missing journal
+# ---------------------------------------------------------------------------
+
+
+def test_a_crash_after_each_rotation_step_is_completed_at_startup(
+    fresh: Fresh, projects: list[Project], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import shutil
+
+    import lattice.server.journal as journal_module
+
+    root, project = _loaded(fresh, projects)
+    write = request("task.create", {"title": "before rotation"})
+    committed = run(project, write)
+    old_epoch = project.journal.epoch
+    snapshots: list[tuple[str, Path]] = []
+
+    def after(name: str, fn):  # noqa: ANN001, ANN202
+        def wrapped(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+            result = fn(*args, **kwargs)
+            target = tmp_path / f"rot-{len(snapshots)}"
+            shutil.copytree(root, target, symlinks=True)
+            snapshots.append((f"after {name} {Path(args[0]).name}", target))
+            return result
+
+        return wrapped
+
+    with monkeypatch.context() as m:
+        for name in ("atomic_write", "_rename", "unlink_path"):
+            m.setattr(journal_module, name, after(name, getattr(journal_module, name)))
+        with project.locked():
+            project.journal = project.journal.rotate()
+    new_epoch = project.journal.epoch
+    assert [label.split()[1] for label, _ in snapshots] == [
+        "atomic_write",  # 1. rotation.json
+        "_rename",  # 2. journal.jsonl -> journal.<old>.jsonl
+        "atomic_write",  # 3. journal_meta.json
+        "atomic_write",  # 4. journal.jsonl
+        "unlink_path",  # 5. rotation.json removed
+    ]
+    for label, crashed in snapshots:
+        restarted = _restart(crashed)
+        try:
+            assert restarted.state == "loaded", (label, restarted.reason)
+            assert restarted.journal.epoch == new_epoch, label
+            hosted = board_of(crashed) / "hosted"
+            assert not (hosted / "rotation.json").exists(), label
+            assert (hosted / f"journal.{old_epoch}.jsonl").exists(), label
+            replay = run(restarted, write)
+            assert replay.replayed and replay.seq == committed.seq, label
+        finally:
+            restarted.release()
+
+
+@pytest.mark.parametrize("which", ["journal", "receipt", "undo"])
+def test_torn_tails_are_dropped_at_startup(
+    which: str, fresh: Fresh, projects: list[Project], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, project = _loaded(fresh, projects)
+    create(project)
+    before = state(root)
+    point = {"journal": "journal.write", "receipt": "receipt.write", "undo": "undo.write"}[which]
+    # The second undo write is the first entry after the header: a torn entry
+    # guards a change that was never made.
+    occurrence = 2 if which == "undo" else 1
+
+    import lattice.server.transactions as transactions
+
+    seen = {"n": 0}
+
+    def torn(name: str, **ctx: object) -> None:
+        if name == point:
+            seen["n"] += 1
+            if seen["n"] == occurrence:
+                data = ctx["data"]
+                os.write(ctx["fd"], data[: len(data) // 2])  # type: ignore[arg-type, index]
+                raise Crash(point)
+
+    with monkeypatch.context() as m:
+        m.setattr(transactions, "_fault", torn)
+        m.setattr(
+            transactions.Transaction,
+            "recover",
+            lambda self: (_ for _ in ()).throw(transactions.Quarantine("killed")),
+        )
+        with pytest.raises(BaseException):  # noqa: B017
+            run(project, request("task.create", {"title": "torn"}))
+    project.release()
+    projects.remove(project)
+    restarted = _restart(root)
+    projects.append(restarted)
+    assert restarted.state == "loaded", restarted.reason
+    assert state(root) == before and undo_logs(root) == []
+    doctor_clean(root)
+
+
+def test_a_missing_journal_with_undo_logs_waits_for_recover_keep(
+    fresh: Fresh, projects: list[Project], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _before, _write = _dead_write(fresh, projects, monkeypatch)
+    hosted = board_of(root) / "hosted"
+    changed = board_hash(root, SLUG)
+    (hosted / "journal.jsonl").unlink()
+    quarantined = _restart(root)
+    assert quarantined.state == "unavailable"
+    assert "--rollback | --keep" in (quarantined.reason or "")
+    assert undo_logs(root)
+
+    result = admin.recover_project(root, SLUG, "keep")
+    assert len(result["kept"]) == 1 and undo_logs(root) == []
+    assert board_hash(root, SLUG) == changed  # kept as they were
+    assert (hosted / "maintenance.json").exists()
+    loaded = _restart(root)
+    projects.append(loaded)
+    assert loaded.state == "loaded", loaded.reason
+    assert loaded.journal.head_seq == 0
+
+
+def test_a_missing_journal_without_undo_logs_rotates(
+    fresh: Fresh, projects: list[Project]
+) -> None:
+    root, project = _loaded(fresh, projects)
+    create(project)
+    project.release()
+    projects.remove(project)
+    (board_of(root) / "hosted" / "journal.jsonl").unlink()
+    loaded = _restart(root)
+    projects.append(loaded)
+    assert loaded.state == "loaded" and loaded.journal.head_seq == 0
+    assert "journal_missing" in [e["event"] for e in _log_events(loaded)]
+
+
+# ---------------------------------------------------------------------------
+# Maintenance, restores, foreign appends (AC-23)
+# ---------------------------------------------------------------------------
+
+
+def test_a_restart_after_offline_maintenance_rotates_the_epoch(
+    fresh: Fresh, projects: list[Project]
+) -> None:
+    root, project = _loaded(fresh, projects)
+    write = request("task.create", {"title": "kept"})
+    run(project, write)
+    old_epoch = project.journal.epoch
+    project.release()
+    projects.remove(project)
+    board = board_of(root)
+    with offline_maintenance(board, "doctor --fix"):
+        pass  # the record alone: the maintenance command changed nothing here
+    loaded = _restart(root)
+    projects.append(loaded)
+    assert loaded.journal.epoch != old_epoch
+    assert not (board / "hosted" / "maintenance.json").exists()
+    assert run(loaded, write).replayed  # rotation does not affect deduplication
+
+
+def _shut_down_cleanly(project: Project) -> None:
+    with project.locked():
+        project.write_clean_shutdown()
+    project.release()
+
+
+def test_clean_shutdown_is_recorded_and_cleared(fresh: Fresh, projects: list[Project]) -> None:
+    root, project = _loaded(fresh, projects)
+    create(project)
+    epoch = project.journal.epoch
+    projects.remove(project)
+    _shut_down_cleanly(project)
+    meta = json.loads((board_of(root) / "hosted" / "journal_meta.json").read_text())
+    assert meta["clean_shutdown"]["head_seq"] == 1
+    assert len(meta["clean_shutdown"]["tree_fingerprint"]) == 32
+    loaded = _restart(root)
+    projects.append(loaded)
+    assert loaded.journal.epoch == epoch  # nothing changed: same history
+    meta = json.loads((board_of(root) / "hosted" / "journal_meta.json").read_text())
+    assert meta["clean_shutdown"] is None
+
+
+def test_a_changed_tree_after_a_clean_shutdown_rotates(
+    fresh: Fresh, projects: list[Project]
+) -> None:
+    root, project = _loaded(fresh, projects)
+    task = create(project)["task"]["id"]
+    epoch = project.journal.epoch
+    projects.remove(project)
+    _shut_down_cleanly(project)
+    plan = board_of(root) / "plans" / f"{task}.md"
+    os.utime(plan, ns=(plan.stat().st_atime_ns, plan.stat().st_mtime_ns + 1_000_000_000))
+    loaded = _restart(root)
+    projects.append(loaded)
+    assert loaded.journal.epoch != epoch
+    assert "restore_rotation" in [e["event"] for e in _log_events(loaded)]
+
+
+def test_a_restore_with_mtimes_preserved_keeps_the_epoch(
+    fresh: Fresh, projects: list[Project], tmp_path: Path
+) -> None:
+    import shutil
+
+    root, project = _loaded(fresh, projects)
+    create(project)
+    epoch = project.journal.epoch
+    projects.remove(project)
+    _shut_down_cleanly(project)
+    restored = tmp_path / "restored"
+    shutil.copytree(root, restored, symlinks=True)  # copy2: mtimes preserved
+    loaded = _restart(restored)
+    projects.append(loaded)
+    assert loaded.journal.epoch == epoch
+
+
+def test_a_foreign_append_after_a_crash_is_journaled_as_external(
+    fresh: Fresh, projects: list[Project]
+) -> None:
+    root, project = _loaded(fresh, projects)
+    task = create(project)["task"]["id"]
+    project.release()  # no clean shutdown: as after a crash
+    projects.remove(project)
+    log = board_of(root) / "events" / f"{task}.jsonl"
+    event = json.loads(log.read_text().splitlines()[0])
+    event.update(id="ev_01J9Z0000000000000000000ZZ", type="comment_added", data={"body": "x"})
+    with open(log, "a") as fh:
+        fh.write(json.dumps(event, sort_keys=True) + "\n")
+    loaded = _restart(root)
+    projects.append(loaded)
+    line = journal_lines(root)[-1]
+    rel = f"events/{task}.jsonl"
+    assert line["op"] == "external" and line["paths"] == [rel]
+    assert line["lengths"] == {rel: log.stat().st_size}
+    assert "external_change" in [e["event"] for e in _log_events(loaded)]
+    again = _restart(root, loaded)  # now known: journaled once
+    projects.remove(loaded)
+    projects.append(again)
+    assert [x["op"] for x in journal_lines(root)].count("external") == 1
+
+
+def test_an_archived_then_appended_log_is_not_foreign(
+    fresh: Fresh, projects: list[Project]
+) -> None:
+    """A log relocated by a journaled operation has no append base; its later,
+    journaled appends must not look foreign."""
+    root, project = _loaded(fresh, projects)
+    task = create(project)["task"]["id"]
+    run(project, request("task.archive", {"task": task}))
+    run(project, request("task.unarchive", {"task": task}))
+    run(project, request("task.comment", {"task": task, "text": "after"}))
+    head = project.journal.head_seq
+    loaded = _restart(root, project)
+    projects.remove(project)
+    projects.append(loaded)
+    assert loaded.journal.head_seq == head
+
+
+# ---------------------------------------------------------------------------
+# Quarantine, then reload or restart; receipt retention
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("recovery_point", ["recover.rollback", "recover.undo_delete"])
+@pytest.mark.parametrize("how", ["reload", "restart"])
+def test_a_quarantined_project_recovers_on_its_next_load(
+    recovery_point: str,
+    how: str,
+    fresh: Fresh,
+    projects: list[Project],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, project, build = _prepared(fresh, projects, SCENARIO["task.archive"])
+    before = state(root)
+    with monkeypatch.context() as m:
+        install(m, Injector("receipt.fsync").also(recovery_point))
+        with pytest.raises(OpError):
+            run(project, build())
+    assert project.state == "unavailable" and undo_logs(root)
+    if how == "reload":
+        project.load()  # what 'project reload' runs after its unload
+        loaded = project
+    else:
+        projects.remove(project)
+        loaded = _restart(root, project)
+        projects.append(loaded)
+    assert loaded.state == "loaded", loaded.reason
+    assert undo_logs(root) == [] and state(root) == before
+    doctor_clean(root)
+    run(loaded, build())
+
+
+def test_receipts_past_retention_are_deleted_on_the_first_write_of_a_day(
+    fresh: Fresh, projects: list[Project]
+) -> None:
+    root, project = _loaded(fresh, projects)
+    old = request("task.create", {"title": "old"})
+    run(project, old)
+    receipts = board_of(root) / "hosted" / "receipts"
+    (today,) = receipts.glob("*.jsonl")
+    today.rename(receipts / "2000-01-01.jsonl")
+    key = (old.token_id, old.caller.origin["op_id"])
+    project.index[key] = replace(project.index[key], receipt="2000-01-01.jsonl")
+    project._receipt_day = "1999-12-31.jsonl"  # noqa: SLF001 - as if yesterday
+    run(project, request("task.create", {"title": "today"}))
+    assert not (receipts / "2000-01-01.jsonl").exists()
+    assert key not in project.index
+    retried = run(project, old)  # past retention: it runs again (SPEC §8.6)
+    assert not retried.replayed
