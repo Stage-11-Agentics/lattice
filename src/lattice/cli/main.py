@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import NoReturn
 
 import click
 
@@ -17,7 +18,7 @@ from lattice.cli.maintenance import (
     offline_maintenance_option,
     refuse_on_hosted_checkout,
 )
-from lattice.core.errors import BoardWriteError, HostedReadError, TaskErased
+from lattice.core.errors import OpError
 from lattice.core.ids import generate_task_id, validate_actor
 from lattice.storage.board_init import create_board
 from lattice.storage.fs import LATTICE_DIR
@@ -249,10 +250,11 @@ def _seed_example_tasks(lattice_dir: Path, config: dict) -> None:
 
 
 class _LatticeGroup(click.Group):
-    """The root group. A storage primitive's refusal (a cache, a server-owned
-    board, a path outside the board), the write path's ``TASK_ERASED``, or a
-    hosted read phase's failure reaches a command as an exception; render it
-    as that command's error, not a traceback."""
+    """The root group. An ``OpError`` a command does not render itself (a storage
+    primitive's refusal, the write path's ``TASK_ERASED``, a hosted read
+    phase's failure, a hosted layout refusal from a runtime writer) or an
+    ``OSError`` on a hosted checkout's read-only mirror reaches it as an
+    exception; render it as that command's error, not a traceback."""
 
     def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
         ctx.meta["lattice.argv"] = tuple(args)
@@ -261,10 +263,34 @@ class _LatticeGroup(click.Group):
     def invoke(self, ctx: click.Context):  # noqa: ANN201
         try:
             return super().invoke(ctx)
-        except (BoardWriteError, TaskErased, HostedReadError) as exc:
-            from lattice.cli.helpers import output_error
+        except OpError as exc:
+            _render(ctx, exc)
+        except Exception as exc:
+            # A hosted checkout's read-only mirror refused this process a path
+            # (an OSError, or one a replay wrapped); anything else is re-raised.
+            from lattice.remote.cache_paths import cache_access_error
 
-            output_error(exc.message, exc.code, "--json" in ctx.meta.get("lattice.argv", ()))
+            mapped = cache_access_error(exc)
+            if mapped is None:
+                raise
+            _render(ctx, mapped, hosted=True)
+
+
+def _render(ctx: click.Context, exc: OpError, *, hosted: bool = False) -> NoReturn:
+    """Print *exc* as the command's error. A hosted message can quote the
+    binding (SPEC §4), so output is scrubbed first: always for a *hosted* error
+    (a cache error can come before anything imported the session, during
+    classification), else whenever a hosted session is loaded; a local board's
+    error imports nothing hosted."""
+    from lattice.cli.helpers import output_error
+
+    if hosted:
+        from lattice.remote import session as loaded
+    else:
+        loaded = sys.modules.get("lattice.remote.session")
+    if loaded is not None:
+        loaded.scrub_output()
+    output_error(exc.message, exc.code, "--json" in ctx.meta.get("lattice.argv", ()))
 
 
 def _end_hosted_command() -> None:

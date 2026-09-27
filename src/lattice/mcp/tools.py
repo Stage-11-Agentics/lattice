@@ -88,12 +88,24 @@ def _call() -> Iterator[None]:
     server lives across many calls, so each call starts with that state
     forgotten (its first read catches up) and releases the read lock when it
     returns, so no sync waits on an idle server. On a local board it is a no-op.
+
+    Anywhere in the call, a path in a hosted checkout's cache this process
+    cannot use (an ``OSError``, or one a replay wrapped) is reported as the
+    ``LatticeToolError`` of its ``BOARD_IS_CACHE``, never a raw exception.
     """
     from lattice.remote import session
+    from lattice.remote.cache_paths import cache_access_error
 
     session.reset_process_state()
     try:
         yield
+    except LatticeToolError:
+        raise
+    except Exception as exc:
+        mapped = cache_access_error(exc)
+        if mapped is None:
+            raise
+        raise LatticeToolError(mapped.code, mapped.message, mapped.details) from exc
     finally:
         session.reset_process_state()
 

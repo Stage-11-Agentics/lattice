@@ -438,7 +438,8 @@ def _write_cache_file(lattice_dir: Path, name: str, text: str) -> None:
     """Replace ``cache/<name>`` atomically, never through a symlink."""
     fd = _dir_fd(lattice_dir, "cache")
     try:
-        cache_paths.write_file(fd, name, text.encode("utf-8"))
+        with cache_paths.naming(lattice_dir / "cache" / name):
+            cache_paths.write_file(fd, name, text.encode("utf-8"))
     finally:
         os.close(fd)
 
@@ -450,7 +451,8 @@ def _remove_cache_file(lattice_dir: Path, name: str) -> None:
     except FileNotFoundError:
         return
     try:
-        cache_paths.remove_file(fd, name)
+        with cache_paths.naming(lattice_dir / "cache" / name):
+            cache_paths.remove_file(fd, name)
     finally:
         os.close(fd)
 
@@ -468,7 +470,10 @@ def _lock(path: Path, exclusive: bool, deadline: float | None) -> int | None:
     while True:
         dir_fd = _dir_fd(lattice_dir, path.parent.name)
         try:
-            fd = os.open(name, os.O_RDWR | os.O_CREAT | cache_paths.NOFOLLOW, 0o600, dir_fd=dir_fd)
+            with cache_paths.naming(path):
+                fd = os.open(
+                    name, os.O_RDWR | os.O_CREAT | cache_paths.NOFOLLOW, 0o600, dir_fd=dir_fd
+                )
         except BaseException:
             os.close(dir_fd)
             raise
@@ -486,7 +491,8 @@ def _lock(path: Path, exclusive: bool, deadline: float | None) -> int | None:
                             return None
                         time.sleep(0.02)
             try:
-                here = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+                with cache_paths.naming(path):
+                    here = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
                 same = os.fstat(fd).st_ino == here.st_ino
             except FileNotFoundError:
                 same = False
