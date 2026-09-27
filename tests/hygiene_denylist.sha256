@@ -1,0 +1,7 @@
+# G-3 denylist: sha256(salt + string) per line. Add with:
+#   uv run python -m tests.hygiene add '<string>'
+salt:54a0e62abe866558f99d6ef0b2d773d1
+2be4d5fcfc3ceba55e620da53723a2fded5b4d86e404001b4f2d70165e3c9451
+61248f9851156d90e6daccfb93781b14f3012cd95aa9b5842d6246e65944c872
+2bd71b9fdc9d51c21bf05ec5779e40c8b26ff4e66273e312462a8a692f5d016e
+0ddf2a88684d06f8da04de48f1b4d5785966ceec12c834dc7957bc81cb22f78b
