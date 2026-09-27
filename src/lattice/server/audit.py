@@ -13,16 +13,22 @@ index from that listing alone (``read-tree --empty``, ``update-index
 hide nothing, and ``hosted/``, runtime, temporary, and unmanaged paths can
 never enter. The project directory's ``.gitignore`` is still the SPEC's
 allowlist, for a human running ``git status``; the committer does not depend
-on it. A stat cache means only changed files are rehashed.
+on it. A stat cache means only changed files are rehashed. The listing and
+hashing run in a stage worker process (:class:`Stager`), never on a server
+thread, where each file's syscalls would wait behind the request threads for
+the GIL while the work lock is held.
 
 **The committer.** One :class:`AuditCommitter` per loaded project:
 
 - :meth:`AuditCommitter.notify` is called under the project's work lock for
   every journaled line;
 - ``debounce_seconds`` after the last write, and at most
-  ``max_interval_seconds`` after the first uncommitted one, its thread takes
-  the work lock and stages. An operation holds that lock for its whole
-  transaction, so staging never sees a partial one;
+  ``max_interval_seconds`` after the first uncommitted one, its thread
+  prehashes the changed files with the board still live, then takes the work
+  lock and stages, hashing only what changed since the prehash. An operation
+  holds that lock for its whole transaction, so staging never sees a partial
+  one. ``audit_commit`` reports ``prehash_ms``, ``lock_wait_ms``, ``stage_ms``
+  (the lock hold), and ``commit_ms``;
 - outside the lock it commits (``audit: seq <a>-<b> (<n> ops)``, with
   ``Lattice-Epoch`` and ``Lattice-Seq`` trailers naming the last journaled
   line it covers). A failed stage or commit is requeued and retried with
