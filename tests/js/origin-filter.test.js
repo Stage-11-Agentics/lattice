@@ -47,7 +47,7 @@ test("values with reserved characters round-trip", () => {
   assert.strictEqual(back.get("user"), null);
 });
 
-test("worktree paths normalize as os.path.abspath does for absolute paths", () => {
+test("worktree paths normalize as the CLI's --worktree does for absolute paths", () => {
   const cases = [
     ["/srv/wt/", "/srv/wt"],
     ["/srv//wt", "/srv/wt"],
@@ -56,11 +56,17 @@ test("worktree paths normalize as os.path.abspath does for absolute paths", () =
     ["/..", "/"],
     ["/", "/"],
     ["///srv", "/srv"],
-    ["//srv/wt", "//srv/wt"],
+    ["//srv/wt", "/srv/wt"],
     ["relative/wt", "relative/wt"],
   ];
   for (const [input, expected] of cases) {
     assert.strictEqual(of.normalizeWorktree(input), expected, input);
   }
   assert.strictEqual(of.originFiltersFromSearch("?worktree=%2Fsrv%2Fwt%2F").worktree, "/srv/wt");
+});
+
+test("an absent tag/actor selection is kept only under an origin filter", () => {
+  assert.strictEqual(of.keepsAbsentSelection(of.originFiltersFromSearch("")), false);
+  assert.strictEqual(of.keepsAbsentSelection(null), false);
+  assert.strictEqual(of.keepsAbsentSelection(of.originFiltersFromSearch("?tag=x&machine=m2")), true);
 });

@@ -8,14 +8,14 @@
 
 var ORIGIN_FILTER_KEYS = ["machine", "user", "worktree"];
 
-// An absolute POSIX worktree path normalized as the CLI's os.path.abspath
-// normalizes one: repeated and trailing slashes dropped, "." and ".." folded
-// (a leading "//" is kept, as POSIX allows). Anything else is returned as is:
+// An absolute POSIX worktree path normalized lexically as the CLI's
+// --worktree is (and the API's): repeated and trailing slashes dropped, "."
+// and ".." folded. Anything else is returned as is, and the API refuses it:
 // the page has no current directory to resolve a relative path against.
 function normalizeWorktree(path) {
   var raw = String(path);
   if (raw.charAt(0) !== "/") return raw;
-  var lead = raw.slice(0, 2) === "//" && raw.charAt(2) !== "/" ? "//" : "/";
+  var lead = "/";
   var out = [];
   raw.split("/").forEach(function(part) {
     if (part === "" || part === ".") return;
@@ -45,6 +45,15 @@ function originFilterCount(filters) {
   return n;
 }
 
+// Whether a tag, assignee or creator selection absent from the loaded tasks
+// stays selected. Unfiltered, the loaded tasks are the whole board, so an
+// absent value is stale and clears. Under an origin filter they are a subset:
+// absence proves nothing, and the selection stays so the filters AND (to an
+// empty board when they are disjoint).
+function keepsAbsentSelection(originFilters) {
+  return originFilterCount(originFilters) > 0;
+}
+
 // The API path to fetch: "/api/tasks" gains the set origin filters as its
 // query; every other path, or no filter set, is returned unchanged.
 function withOriginFilters(path, filters) {
@@ -60,6 +69,7 @@ if (typeof module !== "undefined" && module.exports) {
     normalizeWorktree: normalizeWorktree,
     originFiltersFromSearch: originFiltersFromSearch,
     originFilterCount: originFilterCount,
+    keepsAbsentSelection: keepsAbsentSelection,
     withOriginFilters: withOriginFilters,
   };
 }

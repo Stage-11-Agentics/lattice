@@ -14,6 +14,7 @@ Nothing here writes a board: writes run through ``board.execute``.
 from __future__ import annotations
 
 import json
+import posixpath
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -174,8 +175,41 @@ def get_config(ld: Path) -> dict:
 
 
 #: ``/api/tasks`` query parameters that filter by origin, as ``lattice list``
-#: names them (``--machine``, ``--user``, ``--worktree``).
-ORIGIN_FILTER_PARAMS = ("machine", "user", "worktree")
+#: names them (``--machine``, ``--user``, ``--worktree``), with the longest
+#: value each accepts.
+ORIGIN_FILTER_LIMITS = {"machine": 256, "user": 256, "worktree": 1024}
+
+
+def origin_filter_params(query: dict[str, list[str]]) -> dict[str, str]:
+    """The origin filters of a ``/api/tasks`` query, validated and normalized.
+
+    An empty value is no filter. The worktree must be absolute and is
+    normalized lexically as the CLI's ``--worktree`` is (``abspath``, then
+    ``resolve`` also folds a leading ``//``), so a trailing slash, repeated
+    slash or ``.``/``..`` segment matches as in the CLI. A relative
+    path, ``~``, or a symlink alias is the CLI's client-side resolution and
+    cannot be done here: a server never resolves a caller's path against its
+    own filesystem, so a relative worktree is refused and a symlink alias
+    matches nothing.
+    """
+    params: dict[str, str] = {}
+    for key, limit in ORIGIN_FILTER_LIMITS.items():
+        values = query.get(key)
+        if not values:
+            continue
+        value = values[0]
+        if len(value) > limit:
+            raise ApiError(
+                400, "VALIDATION_ERROR", f"{key} filter is longer than {limit} characters"
+            )
+        if key == "worktree":
+            if not value.startswith("/"):
+                raise ApiError(
+                    400, "VALIDATION_ERROR", f"worktree filter must be an absolute path: '{value}'"
+                )
+            value = "/" + posixpath.normpath(value).lstrip("/")
+        params[key] = value
+    return params
 
 
 def get_tasks(
@@ -190,8 +224,8 @@ def get_tasks(
     *machine*, *user* and *worktree* filter as ``lattice list`` does: a task
     matches when one event in its log carries an origin satisfying every one
     given (:func:`origin_matches`), so a task written before v2 never matches.
-    The worktree is matched as given: the caller sends the recorded path, since
-    a path is never resolved against the serving machine's filesystem.
+    The worktree is matched as given; :func:`origin_filter_params` normalizes
+    a query's.
     """
     authorities = discover_task_authorities(ld, include_archived=False)
     if machine is not None or user is not None or worktree is not None:
@@ -512,8 +546,7 @@ def route_get(
         if path == "/api/config":
             return ok(get_config(ld))
         if path == "/api/tasks":
-            origin_filters = {k: query[k][0] for k in ORIGIN_FILTER_PARAMS if k in query}
-            return ok(get_tasks(ld, **origin_filters))
+            return ok(get_tasks(ld, **origin_filter_params(query)))
         if path == "/api/stats":
             return ok(get_stats(ld))
         if path == "/api/activity":

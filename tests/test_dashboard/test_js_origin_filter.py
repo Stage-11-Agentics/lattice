@@ -24,6 +24,7 @@ IDENTIFIERS = [
     "normalizeWorktree",
     "originFiltersFromSearch",
     "originFilterCount",
+    "keepsAbsentSelection",
     "withOriginFilters",
 ]
 

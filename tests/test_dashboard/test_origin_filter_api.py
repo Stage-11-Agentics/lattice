@@ -137,14 +137,53 @@ def test_and_with_status(board: dict) -> None:  # noqa: F811
     )
 
 
-def test_worktree_is_matched_as_given(board: dict, tmp_path: Path) -> None:  # noqa: F811
-    """The server never resolves a path on its own filesystem: the page sends
-    the recorded path (normalized lexically, static/origin-filter.js)."""
+def test_absolute_worktree_normalizes_as_the_cli(board: dict) -> None:  # noqa: F811
+    repo = str(board["repo"].resolve())
+    for worktree in (
+        "/srv/wt-auth/",
+        "/srv//wt-auth",
+        "/srv/./wt-auth/.",
+        "/srv/other/../wt-auth",
+        "//srv/wt-auth",
+        repo + "/",
+        repo + "/sub/..",
+    ):
+        expected = _cli_ids(board, "--worktree", worktree)
+        assert _api_ids(board, worktree=worktree) == expected, worktree
+    assert _api_ids(board, worktree="/srv/wt-auth/") == [board["served"]]
+
+
+def _refused(board: dict, **params: str) -> str:  # noqa: F811
+    response = api.route_get(_ld(board), "/api/tasks", urlencode(params))
+    assert response.status == 400, response.envelope
+    assert response.envelope["ok"] is False
+    assert response.envelope["error"]["code"] == "VALIDATION_ERROR"
+    return response.envelope["error"]["message"]
+
+
+def test_client_relative_worktree_is_refused(board: dict) -> None:  # noqa: F811
+    """The CLI resolves ``.`` and ``~`` against the caller's directory; a
+    server cannot, so the API refuses them rather than silently missing."""
+    for worktree in (".", "wt", "~/wt"):
+        assert "absolute path" in _refused(board, worktree=worktree)
+
+
+def test_symlink_alias_is_not_resolved(board: dict, tmp_path: Path) -> None:  # noqa: F811
+    """The CLI resolves a symlink on the caller's machine; the server never
+    resolves a caller's path on its own filesystem, so an alias misses."""
     link = tmp_path / "link"
     link.symlink_to(board["repo"])
+    assert _cli_ids(board, "--worktree", str(link)) == [board["local"]]
     assert _api_ids(board, worktree=str(link)) == []
-    assert _api_ids(board, worktree=".") == []
-    assert _api_ids(board, worktree="/srv/wt-auth") == [board["served"]]
+
+
+def test_length_caps(board: dict) -> None:  # noqa: F811
+    assert _api_ids(board, machine="m" * 256) == []
+    assert _api_ids(board, user="u" * 256) == []
+    assert _api_ids(board, worktree="/" + "w" * 1023) == []
+    assert "256" in _refused(board, machine="m" * 257)
+    assert "256" in _refused(board, user="u" * 257)
+    assert "1024" in _refused(board, worktree="/" + "w" * 1024)
 
 
 def test_over_http(board: dict) -> None:  # noqa: F811
