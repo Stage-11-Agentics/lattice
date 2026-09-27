@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from lattice.ops.base import CommonParams, OpContext, OpError, OpResult, operation
-from lattice.ops.task_file_link import relative_file_paths
+from lattice.ops.task_file_link import check_file_paths
 from lattice.storage.operations import TaskMutationDecision
 
 
@@ -25,7 +25,7 @@ class FileUnlink:
 
     def run(self, ctx: OpContext, p: FileUnlinkParams) -> OpResult:
         task_id = ctx.resolve_task(p.task)
-        relative_paths = relative_file_paths(ctx.lattice_dir, p.filepaths)
+        relative_paths = check_file_paths(p.filepaths)
         ctx.require_active(task_id)
 
         def decide(context):  # noqa: ANN001, ANN202

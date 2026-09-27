@@ -161,11 +161,49 @@ class TestFileLink:
             "None of the specified files are linked to this task.",
         )
 
-    def test_absolute_path_inside_the_project(self, board: LocalBoard) -> None:
-        a = _task(board)
+    def test_absolute_path_is_refused_even_inside_the_project(self, board: LocalBoard) -> None:
+        # The operation cannot know the caller's checkout; the CLI makes
+        # absolute paths relative before calling.
         inside = str(board.root / "src" / "x.py")
-        result = _run(board, "task.file_link", {"task": a, "filepaths": [inside]})
-        assert result.events[0]["data"] == {"paths": ["src/x.py"]}
+        err = _error(board, "task.file_link", {"task": _task(board), "filepaths": [inside]})
+        assert (err.code, err.message) == (
+            "VALIDATION_ERROR",
+            f"Path '{inside}' is outside the project root.",
+        )
+
+    def test_path_checks_touch_no_filesystem(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import os
+        import pathlib
+
+        from lattice.ops.task_file_link import check_file_paths
+
+        def boom(*args: object, **kwargs: object) -> None:
+            raise AssertionError("filesystem access")
+
+        for name in ("resolve", "exists", "stat", "is_absolute", "absolute"):
+            monkeypatch.setattr(pathlib.Path, name, boom)
+        for name in ("realpath", "abspath", "exists", "lexists"):
+            monkeypatch.setattr(os.path, name, boom)
+        monkeypatch.setattr(os, "stat", boom)
+        monkeypatch.setattr(os, "getcwd", boom)
+
+        assert check_file_paths(("src/a.py", "./b/./c.py", "d")) == ["src/a.py", "b/c.py", "d"]
+        for path, message in (
+            (
+                "/srv/lattice/project/a.py",
+                "Path '/srv/lattice/project/a.py' is outside the project root.",
+            ),
+            ("\\\\host\\share\\a.py", "Path '\\\\host\\share\\a.py' is outside the project root."),
+            ("C:\\x\\a.py", "Path 'C:\\x\\a.py' is outside the project root."),
+            ("../a.py", "Path '../a.py' escapes the project root."),
+            ("src/../../a.py", "Path 'src/../../a.py' escapes the project root."),
+            ("src/../a.py", "Path 'src/../a.py' escapes the project root."),
+            ("src\\..\\a.py", "Path 'src\\..\\a.py' escapes the project root."),
+            ("a\x00b", "File path contains control characters: 'a\\x00b'."),
+        ):
+            with pytest.raises(OpError) as exc:
+                check_file_paths((path,))
+            assert (exc.value.code, exc.value.message) == ("VALIDATION_ERROR", message), path
 
     @pytest.mark.parametrize(
         ("path", "message"),
@@ -192,6 +230,80 @@ class TestFileLink:
         _archive(board, a)
         err = _error(board, "task.file_link", {"task": a, "filepaths": ["y"]})
         assert (err.code, err.message) == ("NOT_FOUND", f"Task {a} not found.")
+
+
+class TestFileLinkCli:
+    """The CLI normalizes paths against the caller's checkout, exactly as before."""
+
+    def _cli(self, root: Path, *args: str, json_mode: bool = False):  # noqa: ANN202
+        from click.testing import CliRunner
+
+        from lattice.cli.main import cli
+
+        extra = ["--json"] if json_mode else []
+        return CliRunner().invoke(
+            cli, [*args, "--actor", "agent:t", *extra], env={"LATTICE_ROOT": str(root)}
+        )
+
+    def test_absolute_and_relative_inputs(self, board: LocalBoard) -> None:
+        import json
+
+        a = _task(board)
+        inside = str(board.root / "src" / "x.py")
+        result = self._cli(board.root, "file-link", a, inside, "./src/../y.py", "src/./z.py")
+        assert result.exit_code == 0, result.output
+        assert result.output == f"Linked 3 file(s) to {a}: src/x.py, y.py, src/z.py\n"
+
+        result = self._cli(board.root, "file-unlink", a, inside, json_mode=True)
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output)["data"]["linked_files"] == ["y.py", "src/z.py"]
+
+    @pytest.mark.parametrize(
+        ("path", "message"),
+        [
+            ("/elsewhere/x.py", "Path '/elsewhere/x.py' is outside the project root."),
+            ("../outside.py", "Path '../outside.py' escapes the project root."),
+            ("a/../../x.py", "Path 'a/../../x.py' escapes the project root."),
+            ("..foo", "Path '..foo' escapes the project root."),
+            ("./a\x01", "File path contains control characters: './a\\x01'."),
+            ("  ", "File path must not be empty."),
+        ],
+    )
+    def test_rejections_unchanged(self, board: LocalBoard, path: str, message: str) -> None:
+        import json
+
+        a = _task(board)
+        for command in ("file-link", "file-unlink"):
+            plain = self._cli(board.root, command, a, "ok.py", path)
+            assert (plain.exit_code, plain.output) == (1, f"Error: {message}\n")
+            envelope = self._cli(board.root, command, a, "ok.py", path, json_mode=True)
+            assert envelope.exit_code == 1
+            assert json.loads(envelope.output)["error"] == {
+                "code": "VALIDATION_ERROR",
+                "message": message,
+            }
+
+
+class TestCorruptLog:
+    def test_link_family_reports_integrity_error(self, board: LocalBoard) -> None:
+        a, b = _task(board), _task(board)
+        _corrupt(board, a)
+        for op, params in (
+            ("task.link", {"type": "blocks", "target_task": b}),
+            ("task.unlink", {"type": "blocks", "target_task": b}),
+            ("task.branch_link", {"branch": "x"}),
+            ("task.branch_unlink", {"branch": "x"}),
+            ("task.file_link", {"filepaths": ["x"]}),
+            ("task.file_unlink", {"filepaths": ["x"]}),
+        ):
+            err = _error(board, op, {"task": a, **params})
+            assert err.code == "INTEGRITY_ERROR", op
+            assert "invalid JSONL record" in err.message, op
+
+
+def _corrupt(board: LocalBoard, task_id: str) -> None:
+    with (board.lattice_dir / "events" / f"{task_id}.jsonl").open("a") as f:
+        f.write("{not json\n")
 
 
 def _archive(board: LocalBoard, task_id: str) -> None:

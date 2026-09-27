@@ -11,6 +11,11 @@ from lattice.ops.value_errors import mutate_mapping_value_errors
 from lattice.storage.operations import TaskMutationDecision
 
 
+def check_role_flags(role: str | None, clear_role: bool) -> None:
+    if role is not None and clear_role:
+        raise OpError("VALIDATION_ERROR", "--role and --clear-role are mutually exclusive.")
+
+
 @dataclass(frozen=True, kw_only=True)
 class CommentEditParams(CommonParams):
     task: str
@@ -21,8 +26,7 @@ class CommentEditParams(CommonParams):
     clear_role: bool = False
 
     def check(self) -> None:
-        if self.role is not None and self.clear_role:
-            raise OpError("VALIDATION_ERROR", "--role and --clear-role are mutually exclusive.")
+        check_role_flags(self.role, self.clear_role)
         if self.new_text is not None and self.file is not None:
             raise OpError("VALIDATION_ERROR", "Provide either NEW_TEXT or --file, not both.")
         if self.new_text is None and self.file is None:
@@ -71,8 +75,7 @@ class CommentEdit:
                 return TaskMutationDecision(idempotent=True)
             return TaskMutationDecision(events=[ctx.event("comment_edited", task_id, data, p)])
 
-        # Today's mapping: every ValueError from the write, a missing or
-        # archived task included, is a VALIDATION_ERROR.
+        # Today's mapping: a rule ValueError from the write is a VALIDATION_ERROR.
         result = mutate_mapping_value_errors(ctx, task_id, decide, "VALIDATION_ERROR")
         return OpResult(
             task=result.snapshot,

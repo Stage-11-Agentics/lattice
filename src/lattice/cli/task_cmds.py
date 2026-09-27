@@ -22,10 +22,11 @@ from lattice.cli.helpers import (
 )
 from lattice.storage.operations import TaskMutationDecision, mutate_task
 from lattice.cli.main import cli
-from lattice.cli.ops_bridge import board_or_exit, params_or_exit, run_operation
+from lattice.cli.ops_bridge import board_or_exit, check_or_exit, params_or_exit, run_operation
 from lattice.core.comments import (
     validate_comment_body,
 )
+from lattice.ops.task_comment_edit import check_role_flags
 from lattice.core.config import (
     VALID_COMPLEXITIES,
     VALID_PRIORITIES,
@@ -957,15 +958,19 @@ def comment_edit(
 ) -> None:
     """Edit an existing comment on a task."""
     is_json = output_json
-    # --role with --clear-role, and NEW_TEXT with --file (both or neither), are
-    # argument problems, checked before the board in that order.
+    # Today's argument order: --role with --clear-role, then NEW_TEXT or --file
+    # (exactly one, and the file is read only then); all before the board.
+    check_or_exit(is_json, check_role_flags, role, clear_role)
+    body = resolve_body(
+        new_text, file_path, is_json, what="the new comment text", arg_label="NEW_TEXT"
+    )
     params = params_or_exit(
         "task.comment_edit",
         {
             "task": task_id,
             "comment_id": comment_id,
-            "new_text": new_text,
-            "file": Path(file_path).read_text(encoding="utf-8") if file_path else None,
+            "new_text": body if file_path is None else None,
+            "file": body if file_path is not None else None,
             "role": role,
             "clear_role": clear_role,
             **_provenance(model, session, triggered_by, on_behalf_of, provenance_reason),

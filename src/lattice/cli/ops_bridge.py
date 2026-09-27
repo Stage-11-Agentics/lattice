@@ -87,3 +87,12 @@ def provenance_params(
         "on_behalf_of": on_behalf_of,
         "reason": reason,
     }
+
+
+def check_or_exit(is_json: bool, check: Any, *args: Any) -> None:
+    """Run one of an operation's input checks now, so it keeps its place in the
+    command's argument order (for example, before a ``--file`` is read)."""
+    try:
+        check(*args)
+    except OpError as exc:
+        output_error(exc.message, exc.code, is_json)

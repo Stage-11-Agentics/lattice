@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -15,10 +16,59 @@ from lattice.cli.helpers import (
     require_root,
 )
 from lattice.cli.main import cli
-from lattice.cli.ops_bridge import provenance_params, run_operation
+from lattice.cli.ops_bridge import board_or_exit, provenance_params, run_operation
 from lattice.core.stats import load_all_snapshots
-from lattice.ops.task_file_link import resolve_to_relative
 from lattice.storage.readers import read_task_events
+
+
+def resolve_to_relative(lattice_dir: Path, filepath: str) -> str:
+    """Resolve a filepath to a project-relative path.
+
+    The project root is the parent of the .lattice/ directory.
+
+    Raises ``ValueError`` if the path escapes the project root (absolute
+    path outside the tree, or relative path with ``../`` traversal).
+    """
+    project_root = lattice_dir.parent
+
+    path = Path(filepath)
+
+    if path.is_absolute():
+        try:
+            rel = str(path.resolve().relative_to(project_root.resolve()))
+        except ValueError:
+            raise ValueError(f"Path '{filepath}' is outside the project root.") from None
+    else:
+        # Collapse ../  segments and check for traversal
+        normalized = os.path.normpath(filepath)
+        if normalized.startswith(".."):
+            raise ValueError(f"Path '{filepath}' escapes the project root.")
+        rel = normalized
+
+    # Strip leading ./ if present
+    if rel.startswith("./") or rel.startswith(".\\"):
+        rel = rel[2:]
+
+    return rel
+
+
+def _client_relative(lattice_dir: Path, filepaths: tuple[str, ...]) -> list[str]:
+    """Normalize each path against this checkout, a client-local fact.
+
+    A path this cannot normalize (empty, a control character, outside the
+    project) is passed through unchanged: the operation refuses it with the
+    message and in the order the command always used.
+    """
+    paths = []
+    for path in filepaths:
+        if not path.strip() or any(0 <= ord(c) <= 31 for c in path if c != "\n"):
+            paths.append(path)
+            continue
+        try:
+            paths.append(resolve_to_relative(lattice_dir, path))
+        except ValueError:
+            paths.append(path)
+    return paths
 
 
 # ---------------------------------------------------------------------------
@@ -43,14 +93,16 @@ def file_link(
 ) -> None:
     """Link file(s) to a task to record decision provenance."""
     is_json = output_json
+    board = board_or_exit(is_json)
     result = run_operation(
         "task.file_link",
         {
             "task": task_id,
-            "filepaths": list(filepaths),
+            "filepaths": _client_relative(board.lattice_dir, filepaths),
             **provenance_params(model, session, triggered_by, on_behalf_of, provenance_reason),
         },
         is_json,
+        board=board,
     )
     task_id = result.value["id"]
     paths = result.events[-1]["data"]["paths"]
@@ -85,14 +137,16 @@ def file_unlink(
 ) -> None:
     """Unlink file(s) from a task."""
     is_json = output_json
+    board = board_or_exit(is_json)
     result = run_operation(
         "task.file_unlink",
         {
             "task": task_id,
-            "filepaths": list(filepaths),
+            "filepaths": _client_relative(board.lattice_dir, filepaths),
             **provenance_params(model, session, triggered_by, on_behalf_of, provenance_reason),
         },
         is_json,
+        board=board,
     )
     task_id = result.value["id"]
     paths = result.events[-1]["data"]["paths"]

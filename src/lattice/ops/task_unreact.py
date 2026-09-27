@@ -36,6 +36,6 @@ class Unreact:
             data = {"comment_id": p.comment_id, "emoji": p.emoji}
             return TaskMutationDecision(events=[ctx.event("reaction_removed", task_id, data, p)])
 
-        # Today's mapping: every ValueError from the write is NOT_FOUND.
+        # Today's mapping: a rule ValueError from the write is NOT_FOUND.
         result = mutate_mapping_value_errors(ctx, task_id, decide, "NOT_FOUND")
         return OpResult(task=result.snapshot, events=result.appended_events, value=result.snapshot)

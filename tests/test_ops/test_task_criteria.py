@@ -143,3 +143,32 @@ class TestCriterionEditRetire:
         assert err.message == "Provide acceptance-criterion outcome as OUTCOME or via --file."
         err = _error(board, "task.criterion_retire", {"task": "NOPE-1", "criterion_id": "!"})
         assert err.message.startswith("Criterion ID must match")
+
+
+class TestStorageErrors:
+    def test_missing_archived_and_corrupt(self, board: LocalBoard, task: str) -> None:
+        from click.testing import CliRunner
+
+        from lattice.cli.main import cli
+
+        missing = "task_01JZZZZZZZZZZZZZZZZZZZZZZZ"
+        corrupt = _run(board, "task.create", {"title": "c"}).value["id"]
+        _run(board, "task.criterion_add", {"task": corrupt, "outcome": "x", "id": "c"})
+        with (board.lattice_dir / "events" / f"{corrupt}.jsonl").open("a") as f:
+            f.write("{not json\n")
+        result = CliRunner().invoke(
+            cli, ["archive", task, "--actor", "agent:t"], env={"LATTICE_ROOT": str(board.root)}
+        )
+        assert result.exit_code == 0, result.output
+        for op, extra in (
+            ("task.criterion_add", {"outcome": "y"}),
+            ("task.criterion_edit", {"criterion_id": "c", "outcome": "y"}),
+            ("task.criterion_retire", {"criterion_id": "c"}),
+        ):
+            err = _error(board, op, {"task": missing, **extra})
+            assert (err.code, err.message) == ("NOT_FOUND", f"Task {missing} does not exist."), op
+            err = _error(board, op, {"task": task, **extra})
+            assert (err.code, err.message) == ("NOT_FOUND", f"Task {task} is archived."), op
+            err = _error(board, op, {"task": corrupt, **extra})
+            assert err.code == "INTEGRITY_ERROR", op
+            assert "invalid JSONL record" in err.message, op

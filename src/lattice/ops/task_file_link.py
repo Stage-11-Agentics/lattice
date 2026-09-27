@@ -2,48 +2,40 @@
 
 from __future__ import annotations
 
-import os
+import posixpath
+import re
 from dataclasses import dataclass
-from pathlib import Path
 
 from lattice.ops.base import CommonParams, OpContext, OpError, OpResult, operation
 from lattice.storage.operations import TaskMutationDecision
 
 
-def resolve_to_relative(lattice_dir: Path, filepath: str) -> str:
-    """Resolve a filepath to a path relative to the project root (``.lattice/``'s parent).
+_DRIVE_RE = re.compile(r"^[A-Za-z]:")
 
-    Raises ``ValueError`` if the path escapes the project root (an absolute
-    path outside the tree, or a relative path with ``../`` traversal).
+
+def check_file_paths(filepaths: tuple[str, ...]) -> list[str]:
+    """Check caller-supplied project-relative paths syntactically; return them canonical.
+
+    Normalizing a path against a checkout is the client's job (the CLI does it
+    against the caller's checkout before calling). The operation never touches
+    the filesystem: it refuses an empty path or a control character, then, in
+    order, an absolute path and a path that climbs out with ``..``, with the
+    messages the CLI has always shown for those inputs.
     """
-    project_root = lattice_dir.parent
-    path = Path(filepath)
-    if path.is_absolute():
-        try:
-            rel = str(path.resolve().relative_to(project_root.resolve()))
-        except ValueError:
-            raise ValueError(f"Path '{filepath}' is outside the project root.") from None
-    else:
-        normalized = os.path.normpath(filepath)
-        if normalized.startswith(".."):
-            raise ValueError(f"Path '{filepath}' escapes the project root.")
-        rel = normalized
-    if rel.startswith("./") or rel.startswith(".\\"):
-        rel = rel[2:]
-    return rel
-
-
-def relative_file_paths(lattice_dir: Path, filepaths: tuple[str, ...]) -> list[str]:
-    """Check each path for basic safety, then resolve them all project-relative."""
     for path in filepaths:
         if not path or not path.strip():
             raise OpError("VALIDATION_ERROR", "File path must not be empty.")
         if "\x00" in path or any(0 <= ord(c) <= 31 for c in path if c != "\n"):
             raise OpError("VALIDATION_ERROR", f"File path contains control characters: {path!r}.")
-    try:
-        return [resolve_to_relative(lattice_dir, path) for path in filepaths]
-    except ValueError as exc:
-        raise OpError("VALIDATION_ERROR", str(exc)) from exc
+    canonical = []
+    for path in filepaths:
+        if path.startswith(("/", "\\")) or _DRIVE_RE.match(path):
+            raise OpError("VALIDATION_ERROR", f"Path '{path}' is outside the project root.")
+        normalized = posixpath.normpath(path)
+        if normalized.startswith("..") or ".." in re.split(r"[/\\]", path):
+            raise OpError("VALIDATION_ERROR", f"Path '{path}' escapes the project root.")
+        canonical.append(normalized)
+    return canonical
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -62,7 +54,7 @@ class FileLink:
 
     def run(self, ctx: OpContext, p: FileLinkParams) -> OpResult:
         task_id = ctx.resolve_task(p.task)
-        relative_paths = relative_file_paths(ctx.lattice_dir, p.filepaths)
+        relative_paths = check_file_paths(p.filepaths)
         ctx.require_active(task_id)
 
         def decide(context):  # noqa: ANN001, ANN202

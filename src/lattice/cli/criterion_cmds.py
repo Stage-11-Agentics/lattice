@@ -4,19 +4,25 @@ from __future__ import annotations
 
 import copy
 import json
-from pathlib import Path
 
 import click
 
 from lattice.cli.helpers import (
     common_options,
+    resolve_body,
     output_error,
     output_result,
     require_root,
     resolve_task_id,
 )
 from lattice.cli.main import cli
-from lattice.cli.ops_bridge import params_or_exit, provenance_params, run_operation
+from lattice.cli.ops_bridge import (
+    check_or_exit,
+    params_or_exit,
+    provenance_params,
+    run_operation,
+)
+from lattice.ops.task_criterion_add import check_criterion_id
 from lattice.core.acceptance_criteria import criterion_without_history
 from lattice.storage.operations import read_task_authority
 
@@ -24,10 +30,6 @@ from lattice.storage.operations import read_task_authority
 @cli.group("criterion")
 def criterion_group() -> None:
     """Manage optional task-local acceptance criteria."""
-
-
-def _file_text(file_path: str | None) -> str | None:
-    return Path(file_path).read_text(encoding="utf-8") if file_path is not None else None
 
 
 @criterion_group.command("add")
@@ -57,12 +59,17 @@ def criterion_add(
     """Add an observable outcome to a task."""
     is_json = output_json
     # The outcome and the ID are argument problems, checked before the board.
+    # Today's argument order: OUTCOME or --file (exactly one, and the file is
+    # read only then), the outcome's prose, then --id; all before the board.
+    body = resolve_body(
+        outcome, file_path, is_json, what="acceptance-criterion outcome", arg_label="OUTCOME"
+    )
     params = params_or_exit(
         "task.criterion_add",
         {
             "task": task_id,
-            "outcome": outcome,
-            "file": _file_text(file_path),
+            "outcome": body if file_path is None else None,
+            "file": body if file_path is not None else None,
             "id": criterion_id,
             **provenance_params(model, session, triggered_by, on_behalf_of, provenance_reason),
         },
@@ -108,14 +115,22 @@ def criterion_edit(
 ) -> None:
     """Revise an active criterion's outcome prose."""
     is_json = output_json
-    # The ID and the outcome are argument problems, checked before the board.
+    # Today's argument order: the criterion ID, then OUTCOME or --file (exactly
+    # one, and the file is read only then), then the prose; all before the board.
+    check_or_exit(is_json, check_criterion_id, criterion_id)
+    try:
+        body = resolve_body(
+            outcome, file_path, is_json, what="acceptance-criterion outcome", arg_label="OUTCOME"
+        )
+    except ValueError as exc:  # an undecodable file, as this command always reported it
+        output_error(str(exc), "VALIDATION_ERROR", is_json)
     params = params_or_exit(
         "task.criterion_edit",
         {
             "task": task_id,
             "criterion_id": criterion_id,
-            "outcome": outcome,
-            "file": _file_text(file_path),
+            "outcome": body if file_path is None else None,
+            "file": body if file_path is not None else None,
             **provenance_params(model, session, triggered_by, on_behalf_of, provenance_reason),
         },
         is_json,

@@ -117,18 +117,42 @@ class TestCommentEdit:
         )
         assert err.code == "VALIDATION_ERROR"
 
-    def test_missing_task_keeps_validation_error(self, board: LocalBoard) -> None:
-        # Today's mapping: the write's placement error is a VALIDATION_ERROR.
+    def test_storage_errors_map_as_spec_3_1(self, board: LocalBoard, task: str) -> None:
+        # Storage errors are not rule errors (G-6): a missing or archived task
+        # is NOT_FOUND, a log that fails strict replay is INTEGRITY_ERROR.
         missing = "task_01JZZZZZZZZZZZZZZZZZZZZZZZ"
-        for op, extra in (
-            ("task.comment_edit", {"new_text": "x"}),
-            ("task.comment_delete", {}),
-            ("task.react", {"emoji": "rocket"}),
-        ):
+        corrupt = _run(board, "task.create", {"title": "c"}).value["id"]
+        cid = _comment(board, corrupt)
+        _corrupt(board, corrupt)
+        _archive(board, task)
+        for op, extra in _COMMENT_OPS:
             err = _error(board, op, {"task": missing, "comment_id": "ev_x", **extra})
-            assert err.code == "VALIDATION_ERROR", op
-        err = _error(board, "task.unreact", {"task": missing, "comment_id": "ev_x", "emoji": "r"})
-        assert err.code == "NOT_FOUND"
+            assert (err.code, err.message) == ("NOT_FOUND", f"Task {missing} does not exist."), op
+            err = _error(board, op, {"task": task, "comment_id": "ev_x", **extra})
+            assert (err.code, err.message) == ("NOT_FOUND", f"Task {task} is archived."), op
+            err = _error(board, op, {"task": corrupt, "comment_id": cid, **extra})
+            assert err.code == "INTEGRITY_ERROR", op
+            assert "invalid JSONL record" in err.message, op
+
+
+_COMMENT_OPS = (
+    ("task.comment_edit", {"new_text": "x"}),
+    ("task.comment_delete", {}),
+    ("task.react", {"emoji": "rocket"}),
+    ("task.unreact", {"emoji": "rocket"}),
+)
+
+
+def _corrupt(board: LocalBoard, task_id: str) -> None:
+    with (board.lattice_dir / "events" / f"{task_id}.jsonl").open("a") as f:
+        f.write("{not json\n")
+
+
+def _archive(board: LocalBoard, task_id: str) -> None:
+    result = CliRunner().invoke(
+        cli, ["archive", task_id, "--actor", "agent:t"], env={"LATTICE_ROOT": str(board.root)}
+    )
+    assert result.exit_code == 0, result.output
 
 
 class TestCommentDelete:
@@ -227,3 +251,128 @@ class TestArgumentsBeforeBoard:
             "code": "VALIDATION_ERROR",
             "message": message,
         }
+
+
+class TestFileReadAfterArgumentRules:
+    """``--file`` is read only once every earlier argument rule has passed."""
+
+    @pytest.fixture()
+    def files(self, tmp_path: Path) -> dict[str, str]:
+        (tmp_path / "adir").mkdir()
+        (tmp_path / "undecodable.txt").write_bytes(b"\xff\xfe\xfa")
+        return {"dir": str(tmp_path / "adir"), "bad": str(tmp_path / "undecodable.txt")}
+
+    def _invoke(self, board: LocalBoard, args: list[str], json_mode: bool):  # noqa: ANN202
+        extra = ["--json"] if json_mode else []
+        return CliRunner().invoke(
+            cli, [*args, "--actor", "agent:t", *extra], env={"LATTICE_ROOT": str(board.root)}
+        )
+
+    @pytest.mark.parametrize("json_mode", [False, True])
+    @pytest.mark.parametrize("kind", ["dir", "bad"])
+    @pytest.mark.parametrize(
+        ("args", "message"),
+        [
+            (
+                ["criterion", "add", "{task}", "inline", "--file", "{file}"],
+                "Provide either OUTCOME or --file, not both.",
+            ),
+            (
+                ["criterion", "edit", "{task}", "c", "inline", "--file", "{file}"],
+                "Provide either OUTCOME or --file, not both.",
+            ),
+            (
+                ["criterion", "edit", "{task}", "Bad Id!", "--file", "{file}"],
+                "Criterion ID must match ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$.",
+            ),
+            (
+                ["comment-edit", "{task}", "ev_x", "inline", "--file", "{file}"],
+                "Provide either NEW_TEXT or --file, not both.",
+            ),
+            (
+                [
+                    "comment-edit",
+                    "{task}",
+                    "ev_x",
+                    "--file",
+                    "{file}",
+                    "--role",
+                    "r",
+                    "--clear-role",
+                ],
+                "--role and --clear-role are mutually exclusive.",
+            ),
+        ],
+    )
+    def test_earlier_rule_wins_over_an_unreadable_file(
+        self,
+        board: LocalBoard,
+        task: str,
+        files: dict[str, str],
+        kind: str,
+        args: list[str],
+        message: str,
+        json_mode: bool,
+    ) -> None:
+        argv = [a.format(task=task, file=files[kind]) for a in args]
+        result = self._invoke(board, argv, json_mode)
+        assert result.exit_code == 1
+        if json_mode:
+            assert json.loads(result.output)["error"] == {
+                "code": "VALIDATION_ERROR",
+                "message": message,
+            }
+        else:
+            assert result.output == f"Error: {message}\n"
+
+    @pytest.mark.parametrize("json_mode", [False, True])
+    @pytest.mark.parametrize(
+        ("kind", "exc_type"), [("dir", IsADirectoryError), ("bad", UnicodeDecodeError)]
+    )
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ["criterion", "add", "{task}", "--file", "{file}"],
+            ["comment-edit", "{task}", "ev_x", "--file", "{file}"],
+        ],
+    )
+    def test_unreadable_file_alone_fails_as_before(
+        self,
+        board: LocalBoard,
+        task: str,
+        files: dict[str, str],
+        kind: str,
+        exc_type: type,
+        args: list[str],
+        json_mode: bool,
+    ) -> None:
+        # As before v2, the read error propagates (exit 1) and nothing is written.
+        before = (board.lattice_dir / "events" / f"{task}.jsonl").read_bytes()
+        argv = [a.format(task=task, file=files[kind]) for a in args]
+        result = self._invoke(board, argv, json_mode)
+        assert result.exit_code == 1
+        assert isinstance(result.exception, exc_type)
+        assert (board.lattice_dir / "events" / f"{task}.jsonl").read_bytes() == before
+
+    @pytest.mark.parametrize("json_mode", [False, True])
+    def test_criterion_edit_file_errors_as_before(
+        self, board: LocalBoard, task: str, files: dict[str, str], json_mode: bool
+    ) -> None:
+        # criterion edit always caught ValueError around the read: an
+        # undecodable file is a VALIDATION_ERROR, a directory still raises.
+        argv = ["criterion", "edit", task, "c", "--file", files["bad"]]
+        result = self._invoke(board, argv, json_mode)
+        assert result.exit_code == 1
+        message = "'utf-8' codec can't decode byte 0xff in position 0: invalid start byte"
+        if json_mode:
+            assert json.loads(result.output)["error"] == {
+                "code": "VALIDATION_ERROR",
+                "message": message,
+            }
+        else:
+            assert result.output == f"Error: {message}\n"
+        result = self._invoke(
+            board, ["criterion", "edit", task, "c", "--file", files["dir"]], json_mode
+        )
+        assert result.exit_code == 1
+        assert isinstance(result.exception, IsADirectoryError)
