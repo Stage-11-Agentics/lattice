@@ -9,10 +9,12 @@ paths, which held two descriptors per task, failed with EMFILE.
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import sys
 import textwrap
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -134,6 +136,32 @@ class TestTaskGate:
                     pass  # pragma: no cover
         with all_task_locks(tmp_path, timeout=0.2):
             pass
+
+
+@pytest.mark.parametrize(
+    ("holder", "then"),
+    [
+        ('task_locks(locks_dir, ["task_a"])', "board"),
+        ("all_task_locks(locks_dir)", "task"),
+    ],
+    ids=["task-holder-killed", "board-holder-killed"],
+)
+def test_a_killed_holder_releases_the_gate(tmp_path: Path, holder: str, then: str) -> None:
+    """SIGKILL frees the gate with the process: the opposite mode acquires at once,
+    though ``task_gate.lock`` stays on disk (a stale gate file never wedges a board)."""
+    proc = _holder(tmp_path, holder)
+    proc.send_signal(signal.SIGKILL)
+    assert proc.wait(timeout=10) == -signal.SIGKILL
+    assert (tmp_path / "task_gate.lock").exists()
+    started = time.monotonic()
+    lock = (
+        all_task_locks(tmp_path, timeout=2)
+        if then == "board"
+        else task_locks(tmp_path, ["task_a"], timeout=2)
+    )
+    with lock:
+        pass
+    assert time.monotonic() - started < 1.0
 
 
 def _write_board(lattice_dir: Path, count: int) -> None:
