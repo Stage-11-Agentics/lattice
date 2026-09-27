@@ -56,6 +56,7 @@ from tests.test_server.faults import (
 )
 
 SLUG = "alpha"
+NO_AUDIT = {"audit": {"enabled": False}}
 
 
 # ---------------------------------------------------------------------------
@@ -65,8 +66,10 @@ SLUG = "alpha"
 
 @pytest.fixture(scope="module")
 def template(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """The server root each case copies. No audit repository: these projects load
+    without a committer, and its ``.git`` was most of what every case copied."""
     base = tmp_path_factory.mktemp("txn-template")
-    return make_root(base, projects={SLUG: {"code": "ALP"}})
+    return make_root(base, projects={SLUG: {"code": "ALP"}}, config=NO_AUDIT)
 
 
 class Fresh:

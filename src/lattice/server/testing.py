@@ -173,7 +173,7 @@ def running_server(
     log_level: str = "debug",
     startup_timeout: float = 10.0,
     wait_prewarm: bool = True,
-    control_poll_seconds: float = 0.05,
+    control_poll_seconds: float = 0.01,
     heartbeat_seconds: float | None = None,
 ) -> Iterator[ServerHandle]:
     """Serve *root* on ``127.0.0.1`` in a background thread until the block exits.

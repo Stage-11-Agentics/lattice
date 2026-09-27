@@ -47,6 +47,7 @@ from tests.test_server.test_transactions import (
     Scenario,
     _prepared,
     board_of,
+    NO_AUDIT,
     create,
     doctor_clean,
     journal_lines,
@@ -57,8 +58,11 @@ from tests.test_server.test_transactions import (
 
 @pytest.fixture(scope="module")
 def template(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """No audit repository, as in ``test_transactions.py``'s template."""
     return make_root(
-        tmp_path_factory.mktemp("recovery-template"), projects={SLUG: {"code": "ALP"}}
+        tmp_path_factory.mktemp("recovery-template"),
+        projects={SLUG: {"code": "ALP"}},
+        config=NO_AUDIT,
     )
 
 
