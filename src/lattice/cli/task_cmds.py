@@ -28,17 +28,12 @@ from lattice.core.comments import (
 )
 from lattice.ops.task_comment_edit import check_role_flags
 from lattice.core.config import (
-    VALID_COMPLEXITIES,
-    VALID_PRIORITIES,
-    VALID_URGENCIES,
     get_configured_roles,
     get_valid_transitions,
     validate_completion_policy,
-    validate_task_type,
     validate_transition,
 )
 from lattice.core.events import create_event, utc_now
-from lattice.core.ids import validate_actor
 from lattice.core.tasks import apply_event_to_snapshot
 
 logger = logging.getLogger(__name__)
@@ -159,22 +154,20 @@ def create(
 
 
 # ---------------------------------------------------------------------------
-# Updatable field names for `lattice update`
-# ---------------------------------------------------------------------------
-
-_UPDATABLE_FIELDS = frozenset(
-    {"title", "description", "priority", "urgency", "complexity", "type", "tags"}
-)
-
-_REDIRECT_FIELDS = {
-    "status": "Use 'lattice status' to change status.",
-    "assigned_to": "Use 'lattice assign' to change assignment.",
-}
-
-
-# ---------------------------------------------------------------------------
 # lattice update
 # ---------------------------------------------------------------------------
+
+
+def _echo_no_change(message: str, is_json: bool, quiet: bool) -> None:
+    """Print an idempotent no-op the way update, edit-description and assign always have."""
+    if is_json:
+        click.echo(
+            json.dumps({"ok": True, "data": {"message": message}}, sort_keys=True, indent=2) + "\n"
+        )
+    elif quiet:
+        click.echo("ok")
+    else:
+        click.echo(message)
 
 
 @cli.command()
@@ -199,147 +192,22 @@ def update(
     description-only edits.
     """
     is_json = output_json
-
-    lattice_dir = require_root(is_json)
-    config = load_project_config(lattice_dir)
-    actor = require_actor(is_json)
-    if on_behalf_of is not None:
-        validate_actor_format_or_exit(on_behalf_of, is_json)
-
-    task_id = resolve_task_id(lattice_dir, task_id, is_json)
-
-    if not pairs:
-        output_error("No field=value pairs provided.", "VALIDATION_ERROR", is_json)
-
-    # Parse field=value pairs — split on first '=' only
-    parsed: list[tuple[str, str]] = []
-    for pair in pairs:
-        if "=" not in pair:
-            output_error(
-                f"Invalid field=value pair: '{pair}'. Expected format: field=value.",
-                "VALIDATION_ERROR",
-                is_json,
-            )
-        field, value = pair.split("=", 1)
-        parsed.append((field, value))
-
-    # Validate fields and normalize caller values before entering storage.
-    shared_ts = utc_now()
-    normalized: list[tuple[str, object]] = []
-    for field, value in parsed:
-        # Reject status and assigned_to with helpful messages
-        if field in _REDIRECT_FIELDS:
-            output_error(_REDIRECT_FIELDS[field], "VALIDATION_ERROR", is_json)
-
-        # Handle custom_fields.* dot notation
-        if field.startswith("custom_fields."):
-            key = field[len("custom_fields.") :]
-            if not key:
-                output_error(
-                    "Invalid custom field: 'custom_fields.' requires a key name.",
-                    "VALIDATION_ERROR",
-                    is_json,
-                )
-            normalized.append((field, value))
-            continue
-
-        if field not in _UPDATABLE_FIELDS:
-            valid = ", ".join(sorted(_UPDATABLE_FIELDS))
-            output_error(
-                f"Unknown or non-updatable field: '{field}'. "
-                f"Updatable fields: {valid}. Use custom_fields.<key> for custom data.",
-                "VALIDATION_ERROR",
-                is_json,
-            )
-
-        # Validate enum fields
-        if field == "priority" and value not in VALID_PRIORITIES:
-            valid = ", ".join(VALID_PRIORITIES)
-            output_error(
-                f"Invalid priority: '{value}'. Valid priorities: {valid}.",
-                "VALIDATION_ERROR",
-                is_json,
-            )
-        if field == "urgency" and value not in VALID_URGENCIES:
-            valid = ", ".join(VALID_URGENCIES)
-            output_error(
-                f"Invalid urgency: '{value}'. Valid urgencies: {valid}.",
-                "VALIDATION_ERROR",
-                is_json,
-            )
-        if field == "complexity" and value not in VALID_COMPLEXITIES:
-            valid = ", ".join(VALID_COMPLEXITIES)
-            output_error(
-                f"Invalid complexity: '{value}'. Valid complexities: {valid}.",
-                "VALIDATION_ERROR",
-                is_json,
-            )
-        if field == "type" and not validate_task_type(config, value):
-            valid = ", ".join(config.get("task_types", []))
-            output_error(
-                f"Invalid task type: '{value}'. Valid types: {valid}.", "VALIDATION_ERROR", is_json
-            )
-
-        if field == "tags":
-            new_value = [t.strip() for t in value.split(",") if t.strip()]
-        else:
-            new_value = value
-        normalized.append((field, new_value))
-
-    def decide(context):  # noqa: ANN001, ANN202
-        snapshot = context.snapshot
-        assert snapshot is not None
-        events: list[dict] = []
-        for field, new_value in normalized:
-            if field.startswith("custom_fields."):
-                key = field[len("custom_fields.") :]
-                old_value = (snapshot.get("custom_fields") or {}).get(key)
-            elif field == "tags":
-                old_value = snapshot.get("tags")
-            else:
-                old_value = snapshot.get(field)
-            if (old_value or []) == new_value if field == "tags" else old_value == new_value:
-                continue
-            events.append(
-                create_event(
-                    type="field_updated",
-                    task_id=task_id,
-                    actor=actor,
-                    data={"field": field, "from": old_value, "to": new_value},
-                    ts=shared_ts,
-                    model=model,
-                    session=session,
-                    triggered_by=triggered_by,
-                    on_behalf_of=on_behalf_of,
-                    reason=provenance_reason,
-                )
-            )
-            snapshot = apply_event_to_snapshot(snapshot, events[-1])
-        return TaskMutationDecision(
-            events=events,
-            value=[event["data"]["field"] for event in events],
-            idempotent=not events,
-        )
-
-    result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
-    field_names = result.callback_value
-    if not field_names:
-        if is_json:
-            click.echo(
-                json.dumps(
-                    {"ok": True, "data": {"message": "No changes"}}, sort_keys=True, indent=2
-                )
-                + "\n"
-            )
-        elif quiet:
-            click.echo("ok")
-        else:
-            click.echo("No changes")
+    result = run_operation(
+        "task.update",
+        {
+            "task": task_id,
+            "pairs": list(pairs),
+            **_provenance(model, session, triggered_by, on_behalf_of, provenance_reason),
+        },
+        is_json,
+    )
+    if result.idempotent:
+        _echo_no_change("No changes", is_json, quiet)
         return
-
+    field_names = [event["data"]["field"] for event in result.events]
     output_result(
-        data=result.snapshot,
-        human_message=f"Updated task {task_id}: {', '.join(field_names)}",
+        data=result.value,
+        human_message=f"Updated task {result.value['id']}: {', '.join(field_names)}",
         quiet_value="ok",
         is_json=is_json,
         is_quiet=quiet,
@@ -373,55 +241,21 @@ def edit_description(
     need field=value escaping.
     """
     is_json = output_json
-
-    lattice_dir = require_root(is_json)
-    config = load_project_config(lattice_dir)
-    actor = require_actor(is_json)
-    if on_behalf_of is not None:
-        validate_actor_format_or_exit(on_behalf_of, is_json)
-
-    task_id = resolve_task_id(lattice_dir, task_id, is_json)
-
-    new_value = description
-
-    def decide(context):  # noqa: ANN001, ANN202
-        snapshot = context.snapshot
-        assert snapshot is not None
-        old_value = snapshot.get("description")
-        if old_value == new_value:
-            return TaskMutationDecision(idempotent=True)
-        event = create_event(
-            type="field_updated",
-            task_id=task_id,
-            actor=actor,
-            data={"field": "description", "from": old_value, "to": new_value},
-            ts=utc_now(),
-            model=model,
-            session=session,
-            triggered_by=triggered_by,
-            on_behalf_of=on_behalf_of,
-            reason=provenance_reason,
-        )
-        return TaskMutationDecision(events=[event])
-
-    result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
+    result = run_operation(
+        "task.edit_description",
+        {
+            "task": task_id,
+            "description": description,
+            **_provenance(model, session, triggered_by, on_behalf_of, provenance_reason),
+        },
+        is_json,
+    )
     if result.idempotent:
-        if is_json:
-            click.echo(
-                json.dumps(
-                    {"ok": True, "data": {"message": "No changes"}}, sort_keys=True, indent=2
-                )
-                + "\n"
-            )
-        elif quiet:
-            click.echo("ok")
-        else:
-            click.echo("No changes")
+        _echo_no_change("No changes", is_json, quiet)
         return
-
     output_result(
-        data=result.snapshot,
-        human_message=f"Updated description on {task_id}",
+        data=result.value,
+        human_message=f"Updated description on {result.value['id']}",
         quiet_value="ok",
         is_json=is_json,
         is_quiet=quiet,
@@ -751,9 +585,6 @@ def status_cmd(
 # ---------------------------------------------------------------------------
 
 
-_UNASSIGN_SENTINELS = frozenset({"none", "unassigned", "-"})
-
-
 @cli.command()
 @click.argument("task_id")
 @click.argument("actor_id")
@@ -771,74 +602,23 @@ def assign(
 ) -> None:
     """Assign a task to an actor. Use 'none', 'unassigned', or '-' to unassign."""
     is_json = output_json
-
-    lattice_dir = require_root(is_json)
-    config = load_project_config(lattice_dir)
-    actor = require_actor(is_json)
-    if on_behalf_of is not None:
-        validate_actor_format_or_exit(on_behalf_of, is_json)
-
-    task_id = resolve_task_id(lattice_dir, task_id, is_json)
-
-    # Check for unassignment sentinel values
-    is_unassign = actor_id.lower() in _UNASSIGN_SENTINELS
-    target_actor: str | None = None if is_unassign else actor_id
-
-    # Validate assignee actor format (skip for unassignment)
-    if not is_unassign and not validate_actor(actor_id):
-        output_error(
-            f"Invalid actor format: '{actor_id}'. "
-            "Expected prefix:identifier (e.g., human:atin, agent:claude). "
-            "Use 'none', 'unassigned', or '-' to unassign.",
-            "INVALID_ACTOR",
-            is_json,
-        )
-
-    def decide(context):  # noqa: ANN001, ANN202
-        snapshot = context.snapshot
-        assert snapshot is not None
-        current_assigned = snapshot.get("assigned_to")
-        if current_assigned == target_actor:
-            return TaskMutationDecision(value=current_assigned, idempotent=True)
-        event = create_event(
-            type="assignment_changed",
-            task_id=task_id,
-            actor=actor,
-            data={"from": current_assigned, "to": target_actor},
-            model=model,
-            session=session,
-            triggered_by=triggered_by,
-            on_behalf_of=on_behalf_of,
-            reason=provenance_reason,
-        )
-        return TaskMutationDecision(events=[event], value=current_assigned)
-
-    result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
-    current_assigned = result.callback_value
+    result = run_operation(
+        "task.assign",
+        {
+            "task": task_id,
+            "actor_id": actor_id,
+            **_provenance(model, session, triggered_by, on_behalf_of, provenance_reason),
+        },
+        is_json,
+    )
     if result.idempotent:
-        if is_unassign:
-            label = "Already unassigned"
-        else:
-            label = f"Already assigned to {target_actor}"
-        if is_json:
-            click.echo(
-                json.dumps(
-                    {"ok": True, "data": {"message": label}},
-                    sort_keys=True,
-                    indent=2,
-                )
-                + "\n"
-            )
-        elif quiet:
-            click.echo("ok")
-        else:
-            click.echo(label)
+        _echo_no_change(result.value["message"], is_json, quiet)
         return
-
-    from_label = current_assigned or "unassigned"
-    to_label = target_actor or "unassigned"
+    change = result.events[-1]["data"]
+    from_label = change["from"] or "unassigned"
+    to_label = change["to"] or "unassigned"
     output_result(
-        data=result.snapshot,
+        data=result.value,
         human_message=f"Assigned: {from_label} -> {to_label}",
         quiet_value="ok",
         is_json=is_json,

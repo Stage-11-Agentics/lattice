@@ -2,29 +2,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import click
 
-from lattice.cli.helpers import (
-    common_options,
-    load_project_config,
-    output_error,
-    output_result,
-    read_snapshot_or_exit,
-    require_actor,
-    require_root,
-    resolve_body,
-    resolve_task_id,
-    validate_actor_format_or_exit,
-)
+from lattice.cli.helpers import common_options, output_result
 from lattice.cli.main import cli
-from lattice.core.events import create_event, get_actor_display
-from lattice.storage.operations import TaskMutationDecision, mutate_task
-
-_REASON_REQUIRED = (
-    "REASON is required when setting the needs_human flag. "
-    "Say exactly what you need from the human, in one line "
-    "(as an argument, or via --file)."
-)
+from lattice.cli.ops_bridge import run_operation
 
 
 def _notify_c11(snapshot: dict, *, flagged: bool) -> None:
@@ -75,117 +59,40 @@ def needs_human_cmd(
         lattice needs-human LAT-42 --clear --note "chose google" --actor human:atin
     """
     is_json = output_json
-
-    lattice_dir = require_root(is_json)
-    config = load_project_config(lattice_dir)
-    actor = require_actor(is_json)
-    if on_behalf_of is not None:
-        validate_actor_format_or_exit(on_behalf_of, is_json)
-
-    task_id = resolve_task_id(lattice_dir, task_id, is_json)
-    read_snapshot_or_exit(lattice_dir, task_id, is_json)
-
+    # The file is read here (its text is the operation's input); both, neither
+    # and the clear/set mix are checked by the operation, in today's order.
+    file_text = Path(file_path).read_text(encoding="utf-8") if file_path is not None else None
+    result = run_operation(
+        "task.needs_human",
+        {
+            "task": task_id,
+            "flag_reason": reason,
+            "file": file_text,
+            "clear": clear_flag,
+            "note": note,
+            "model": model,
+            "session": session,
+            "triggered_by": triggered_by,
+            "on_behalf_of": on_behalf_of,
+            "reason": provenance_reason,
+        },
+        is_json,
+    )
+    updated = result.value
+    display_id = updated.get("short_id") or updated["id"]
     if clear_flag:
-        if reason is not None or file_path is not None:
-            output_error(
-                "REASON / --file is only for setting the flag. To clear, use "
-                "--clear (optionally with --note).",
-                "VALIDATION_ERROR",
-                is_json,
-            )
-
-        def decide_clear(context):  # noqa: ANN001, ANN202
-            snapshot = context.snapshot
-            assert snapshot is not None
-            current = snapshot.get("needs_human")
-            display_id = snapshot.get("short_id") or task_id
-            if not current:
-                output_error(
-                    f"Task {display_id} does not have the needs_human flag set.",
-                    "FLAG_NOT_SET",
-                    is_json,
-                )
-            event = create_event(
-                type="needs_human_cleared",
-                task_id=task_id,
-                actor=actor,
-                data={"note": note},
-                model=model,
-                session=session,
-                triggered_by=triggered_by,
-                on_behalf_of=on_behalf_of,
-                reason=provenance_reason,
-            )
-            return TaskMutationDecision(events=[event], value=display_id)
-
-        result = mutate_task(lattice_dir, task_id, decide_clear, config, run_hooks=True)
-        updated = result.snapshot
-        display_id = result.callback_value
         _notify_c11(updated, flagged=False)
         note_msg = f"  Note: {note}" if note else ""
-        output_result(
-            data=updated,
-            human_message=f"needs_human cleared ({display_id}){note_msg}",
-            quiet_value="ok",
-            is_json=is_json,
-            is_quiet=quiet,
+        human_message = f"needs_human cleared ({display_id}){note_msg}"
+    else:
+        _notify_c11(updated, flagged=True)
+        need = result.events[-1]["data"]["reason"]
+        human_message = (
+            f"needs_human set ({display_id}, status stays {updated.get('status')})\n  Need: {need}"
         )
-        return
-
-    if note is not None:
-        output_error(
-            "--note is only for clearing the flag. To set, pass a REASON.",
-            "VALIDATION_ERROR",
-            is_json,
-        )
-    reason = resolve_body(
-        reason,
-        file_path,
-        is_json,
-        what="the reason",
-        arg_label="REASON",
-        missing_message=_REASON_REQUIRED,
-    ).strip()
-    if not reason:
-        output_error(_REASON_REQUIRED, "VALIDATION_ERROR", is_json)
-
-    def decide_flag(context):  # noqa: ANN001, ANN202
-        snapshot = context.snapshot
-        assert snapshot is not None
-        current = snapshot.get("needs_human")
-        display_id = snapshot.get("short_id") or task_id
-        if current:
-            flagged_by = get_actor_display(current.get("flagged_by"))
-            output_error(
-                f"Task {display_id} already has the needs_human flag set "
-                f"(by {flagged_by} since {current.get('since')}: "
-                f"{current.get('reason')}). Clear it first with --clear.",
-                "FLAG_ALREADY_SET",
-                is_json,
-            )
-        event = create_event(
-            type="needs_human_flagged",
-            task_id=task_id,
-            actor=actor,
-            data={"reason": reason},
-            model=model,
-            session=session,
-            triggered_by=triggered_by,
-            on_behalf_of=on_behalf_of,
-            reason=provenance_reason,
-        )
-        return TaskMutationDecision(
-            events=[event],
-            value=(display_id, snapshot.get("status")),
-        )
-
-    result = mutate_task(lattice_dir, task_id, decide_flag, config, run_hooks=True)
-    updated = result.snapshot
-    display_id, status = result.callback_value
-    _notify_c11(updated, flagged=True)
     output_result(
         data=updated,
-        human_message=(f"needs_human set ({display_id}, status stays {status})\n  Need: {reason}"),
+        human_message=human_message,
         quiet_value="ok",
         is_json=is_json,
         is_quiet=quiet,
