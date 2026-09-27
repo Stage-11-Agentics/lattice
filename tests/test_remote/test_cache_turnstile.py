@@ -218,3 +218,48 @@ def test_a_forked_child_does_not_inherit_the_parents_nesting(
         timeout=50,
     )
     assert proc.returncode == 0, proc.stderr
+
+
+# ---------------------------------------------------------------------------
+# Under the read lock the cache is frozen: no per-task storage locks
+# ---------------------------------------------------------------------------
+
+
+def test_a_read_under_the_cache_read_lock_takes_no_task_locks(
+    client_root: Path, stub: StubServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the syncer's exclusive apply changes a cache, so a thread holding
+    the shared read lock resolves tasks without the per-task file locks (on a
+    1,000-task board they were most of a ``list``)."""
+    from lattice.storage import locks
+    from lattice.storage.operations import discover_task_authorities
+
+    taken: list[list[str]] = []
+    real = locks.multi_lock
+
+    def recording(locks_dir, keys, timeout=10):  # noqa: ANN001, ANN202
+        taken.append(sorted(keys))
+        return real(locks_dir, keys, timeout)
+
+    monkeypatch.setattr(locks, "multi_lock", recording)
+    create_task(stub)
+    create_task(stub, "second")
+    cache.catch_up(client_root)
+    taken.clear()
+    with cache.read_lock(client_root) as lattice_dir:
+        found = discover_task_authorities(lattice_dir)
+        assert taken == []  # frozen: no task locks
+        with locks.task_locks(lattice_dir / "locks", ["task_x"], extra_keys=["extra"]):
+            pass
+        assert taken == [["events_task_x", "extra", "tasks_task_x"]]  # extra keys still lock
+    assert len(found) == 2
+
+    # Another thread, not holding the read lock, still locks; so does this one after.
+    taken.clear()
+    with cache.read_lock(client_root):
+        thread = _Thread(lambda: discover_task_authorities(client_root / ".lattice"))
+        thread.start()
+        thread.join(WAIT)
+    assert thread.error is None and len(taken) == 2
+    discover_task_authorities(client_root / ".lattice")
+    assert len(taken) == 4

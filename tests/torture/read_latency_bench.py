@@ -105,6 +105,12 @@ def done():
     with open(os.environ["BENCH_TRACE"], "a") as fh:
         fh.write(json.dumps(acc) + "\n")
 atexit.register(done)
+if os.environ.get("BENCH_PROFILE"):
+    import cProfile
+    profiler = cProfile.Profile()
+    profiler.enable()
+    atexit.register(lambda: profiler.dump_stats(
+        f"{os.environ['BENCH_PROFILE']}.{sys.argv[1]}.{os.getpid()}"))
 cli(prog_name="lattice")
 """
 
@@ -162,13 +168,13 @@ def main() -> None:
     server = ServerProcess(make_root(work, projects={PROJECT: {"code": "DEM"}}))
     server.start()
     try:
-        loader = server.mint(user="human:loader", machine="loader")
+        loaders = [server.mint(user="human:loader", machine=f"loader-{n}") for n in range(8)]
 
         def create(n: int) -> str:
             status, body = server.op(
                 "task.create",
                 {"title": f"Bench task {n}", "description": "x" * 200},
-                token=loader,
+                token=loaders[n % len(loaders)],
                 actor="agent:loader",
                 op_id=generate_op_id(),
             )

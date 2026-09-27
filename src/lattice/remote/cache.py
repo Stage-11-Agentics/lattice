@@ -73,6 +73,7 @@ from lattice.core.errors import OpError
 from lattice.remote import cache_paths, http
 from lattice.remote.config import resolve_remote
 from lattice.storage.fs import atomic_write, ensure_dir, unlink_entry
+from lattice.storage.locks import frozen_board
 from lattice.storage.ownership import PathClass, classify_path, syncing_board
 
 LATTICE_DIR = ".lattice"
@@ -582,7 +583,10 @@ def read_lock(hosted_root: Path) -> Iterator[Path]:
                 f"run `lattice sync` when {name} is back.",
                 {"root": str(hosted_root)},
             )
-        yield lattice_dir
+        # Only the syncer's exclusive apply changes a cache, so while this
+        # lock is held the per-task storage locks have no writer to exclude.
+        with frozen_board(locks):
+            yield lattice_dir
     finally:
         counts[key] -= 1
         os.close(fd)
