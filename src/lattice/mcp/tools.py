@@ -125,31 +125,6 @@ def _resolve_task_id(lattice_dir: Path, raw_id: str) -> str:
     raise ValueError(f"Invalid task ID format: '{raw_id}'.")
 
 
-def _update_pairs(fields: dict) -> list[str]:
-    """``lattice_update``'s ``fields`` as ``task.update``'s ``field=value`` pairs.
-
-    Values are text, as on the command line: a list of tags is joined with
-    commas, a number or boolean is written as JSON, and ``None``, a list for
-    any other field, or an object is refused, as is a name holding ``=``
-    (it would split into another field).
-    """
-    pairs: list[str] = []
-    for name, value in fields.items():
-        if "=" in name:
-            raise LatticeToolError("VALIDATION_ERROR", f"Invalid field name: '{name}'.")
-        if name == "tags" and isinstance(value, list) and all(isinstance(t, str) for t in value):
-            value = ",".join(value)
-        elif isinstance(value, bool | int | float):
-            value = json.dumps(value)
-        elif not isinstance(value, str):
-            raise LatticeToolError(
-                "VALIDATION_ERROR",
-                f"Invalid value for '{name}': expected text (as with 'lattice update').",
-            )
-        pairs.append(f"{name}={value}")
-    return pairs
-
-
 # ---------------------------------------------------------------------------
 # Write tools
 # ---------------------------------------------------------------------------
@@ -276,7 +251,8 @@ def lattice_update(
     ] = None,
 ) -> dict:
     """Update task fields. Returns the updated snapshot."""
-    params = {"task": task_id, "pairs": _update_pairs(fields)}
+    # JSON values travel as they are: a custom field keeps its type (SPEC §12).
+    params = {"task": task_id, "fields": fields}
     result = _execute(lattice_root, "task.update", params, actor)
     if result.idempotent:
         return {"message": "No changes", "snapshot": result.task}

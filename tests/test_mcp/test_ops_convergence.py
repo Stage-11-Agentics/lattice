@@ -174,24 +174,93 @@ class TestWritesAreOperations:
 
         assert info.value.code == "INVALID_ACTOR"
 
-    def test_update_values_are_text_like_the_cli(
-        self, lattice_env: Path, lattice_dir: Path
-    ) -> None:
+    def test_update_keeps_json_values(self, lattice_env: Path, lattice_dir: Path) -> None:
+        """``custom_fields`` is an open object: MCP values round-trip with their types."""
         task = lattice_create(title="Fields", actor=ACTOR)
+        values = {
+            "custom_fields.points": 3,
+            "custom_fields.ratio": 0.5,
+            "custom_fields.done": True,
+            "custom_fields.off": False,
+            "custom_fields.meta": {"a": 1, "nested": {"b": [1, "two", None]}},
+            "custom_fields.list": [1, {"c": 2}],
+            "custom_fields.a=b": "eq",
+            "custom_fields.x=": {"k": "v"},
+            "custom_fields.text": "3",
+        }
 
-        snapshot = lattice_update(
-            task_id=task["id"],
-            actor=ACTOR,
-            fields={"tags": ["a", "b"], "custom_fields.points": 3},
+        snapshot = lattice_update(task_id=task["id"], actor=ACTOR, fields=values)
+
+        expected = {name[len("custom_fields.") :]: value for name, value in values.items()}
+        assert snapshot["custom_fields"] == expected
+        # Stored that way too: the event data and the replayed snapshot on disk.
+        updates = [e for e in _events(lattice_dir, task["id"]) if e["type"] == "field_updated"]
+        assert {e["data"]["field"]: e["data"]["to"] for e in updates} == values
+        assert lattice_show(task_id=task["id"], include_events=False)["custom_fields"] == expected
+
+        cleared = lattice_update(
+            task_id=task["id"], actor=ACTOR, fields={"custom_fields.points": None}
+        )
+        assert cleared["custom_fields"]["points"] is None
+
+    def test_update_tags_as_list_or_text(self, lattice_env: Path) -> None:
+        task = lattice_create(title="Tags", actor=ACTOR)
+
+        listed = lattice_update(task_id=task["id"], actor=ACTOR, fields={"tags": ["a", "b"]})
+        assert listed["tags"] == ["a", "b"]
+        texted = lattice_update(task_id=task["id"], actor=ACTOR, fields={"tags": "c, d"})
+        assert texted["tags"] == ["c", "d"]
+        same = lattice_update(task_id=task["id"], actor=ACTOR, fields={"tags": ["c", "d"]})
+        assert same["message"] == "No changes"
+
+    def test_update_rules_still_apply_to_typed_values(self, lattice_env: Path) -> None:
+        task = lattice_create(title="Rules", actor=ACTOR)
+
+        for fields, code in (
+            ({}, "VALIDATION_ERROR"),
+            ({"priority": 3}, "VALIDATION_ERROR"),
+            ({"priority": "urgent"}, "VALIDATION_ERROR"),
+            ({"status": "done"}, "VALIDATION_ERROR"),
+            ({"nope": 1}, "VALIDATION_ERROR"),
+            ({"custom_fields.": 1}, "VALIDATION_ERROR"),
+        ):
+            with pytest.raises(LatticeToolError) as info:
+                lattice_update(task_id=task["id"], actor=ACTOR, fields=fields)
+            assert info.value.code == code, fields
+
+    def test_cli_update_values_stay_text(self, lattice_env: Path) -> None:
+        """The CLI keeps parsing ``field=value`` text exactly as before."""
+        from click.testing import CliRunner
+
+        from lattice.cli.main import cli
+
+        task = lattice_create(title="CLI", actor=ACTOR)
+        result = CliRunner().invoke(
+            cli,
+            [
+                "update",
+                task["id"],
+                "custom_fields.points=3",
+                "custom_fields.a=b=c",
+                "tags=x,y",
+                "--actor",
+                ACTOR,
+                "--json",
+            ],
         )
 
-        assert snapshot["tags"] == ["a", "b"]
-        assert snapshot["custom_fields"]["points"] == "3"
-        with pytest.raises(LatticeToolError) as info:
-            lattice_update(task_id=task["id"], actor=ACTOR, fields={"custom_fields.x": {"a": 1}})
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)["data"]
+        assert data["custom_fields"] == {"points": "3", "a": "b=c"}
+        assert data["tags"] == ["x", "y"]
+
+    def test_update_refuses_pairs_and_fields_together(self, lattice_dir: Path) -> None:
+        from lattice.ops import OpError, get_operation, parse_params
+
+        params_cls = get_operation("task.update").Params
+        with pytest.raises(OpError, match="not both") as info:
+            parse_params(params_cls, {"task": "T-1", "pairs": ["a=b"], "fields": {"a": 1}})
         assert info.value.code == "VALIDATION_ERROR"
-        with pytest.raises(LatticeToolError, match="Invalid field name"):
-            lattice_update(task_id=task["id"], actor=ACTOR, fields={"custom_fields.a=b": "c"})
 
     def test_no_private_rules_or_storage_writes_in_mcp(self) -> None:
         """The tools module reaches the board only through operations and reads."""
