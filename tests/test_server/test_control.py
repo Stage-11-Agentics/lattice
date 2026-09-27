@@ -403,3 +403,61 @@ def test_graceful_shutdown_records_clean_shutdown(root: Path) -> None:
 def _meta(root: Path, slug: str = "alpha") -> dict:
     path = root / "projects" / slug / ".lattice" / "hosted" / "journal_meta.json"
     return json.loads(path.read_text())
+
+
+def _record_phases(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, bool, bool]]:
+    """Wrap the shutdown phases to record ``(name, work lock held, lease held)``.
+    The audit-commit stand-in takes the work lock itself, as H-16's committer
+    will: holding it there would deadlock (review round 1)."""
+    from lattice.server import registry as registry_module
+
+    seen: list[tuple[str, bool, bool]] = []
+    wrapped = []
+    for name, phase, locked in registry_module.SHUTDOWN_PHASES:
+
+        def recorder(reg, project, _name=name, _phase=phase):  # noqa: ANN001, ANN202
+            seen.append((_name, project.work.locked(), project.holds_lease))
+            if _name == "audit_commit":
+                assert project.work.acquire(timeout=2), "audit commit cannot take the work lock"
+                project.work.release()
+            _phase(reg, project)
+
+        wrapped.append((name, recorder, locked))
+    monkeypatch.setattr(registry_module, "SHUTDOWN_PHASES", tuple(wrapped))
+    return seen
+
+
+def test_shutdown_phases_run_in_the_ruled_order(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Drain, audit staged under the work lock, audit committed outside it,
+    clean_shutdown, then the lease released (H-16 coordination ruling)."""
+    token = mint(root)
+    seen = _record_phases(monkeypatch)
+    with running_server(root) as server:
+        create_task(server, token)
+    per_project = [
+        ("audit_stage", True, True),
+        ("audit_commit", False, True),
+        ("clean_shutdown", True, True),
+    ]
+    assert seen == per_project * 2  # alpha, then beta
+    assert _meta(root)["clean_shutdown"]["head_seq"] == 1
+    assert _lease_free(root, "alpha")
+
+
+def test_unload_runs_the_same_phases_before_releasing_the_lease(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    token = mint(root)
+    with running_server(root) as server:
+        create_task(server, token)
+        seen = _record_phases(monkeypatch)
+        assert _admin(root, "unload", "alpha")[0] == 0
+        assert [name for name, _, _ in seen] == ["audit_stage", "audit_commit", "clean_shutdown"]
+        assert [locked for _, locked, _ in seen] == [True, False, True]
+        assert all(lease for _, _, lease in seen)
+        assert _lease_free(root, "alpha")
+        assert _meta(root)["clean_shutdown"]["head_seq"] == 1
+        code, out = _admin(root, "load", "alpha")
+        assert code == 0 and out["data"]["head_seq"] == 1  # unchanged tree: same epoch

@@ -164,10 +164,9 @@ class ProjectRegistry:
             project.broadcaster.close_all()
 
     async def stop(self) -> None:
-        """Graceful shutdown, in named phases (SPEC §8.11): stop the background
-        tasks; drain (take each project's admission, so its in-flight operation
-        finishes and no other starts); the final audit commit (H-16's hook);
-        write ``clean_shutdown``; release the lease."""
+        """Graceful shutdown (SPEC §8.11): stop the background tasks, then for each
+        project drain (take its admission, so its in-flight operation finishes
+        and no other starts) and run :data:`SHUTDOWN_PHASES`, then release."""
         for task in self._tasks:
             task.cancel()
         for task in self._tasks:
@@ -182,19 +181,27 @@ class ProjectRegistry:
         set_unknown_type_reporter(None)
         self.write_status(stopped=True)
 
-    def _shut_down(self, project: Project) -> None:
-        with project.work:
-            for phase in SHUTDOWN_PHASES:
-                try:
+    def _shut_down(self, project: Project, *, unload: bool = False) -> None:
+        """Run :data:`SHUTDOWN_PHASES` (the caller holds admission: drained), then
+        release the lease, or for ``project unload`` also close the streams and
+        hold the project unloaded. Each phase takes the work lock only if it
+        says so: the audit commit runs outside it, because the committer needs
+        it (H-16). A failed phase is logged; the lease is released regardless."""
+        for name, phase, under_work_lock in SHUTDOWN_PHASES:
+            try:
+                if under_work_lock:
+                    with project.work:
+                        phase(self, project)
+                else:
                     phase(self, project)
-                except Exception as exc:  # noqa: BLE001 - every project still releases
-                    self.log.error(
-                        "shutdown_phase_failed",
-                        project=project.slug,
-                        phase=phase.__name__,
-                        error=repr(exc),
-                    )
-            if project.holds_lease:
+            except Exception as exc:  # noqa: BLE001 - every project still releases
+                self.log.error(
+                    "shutdown_phase_failed", project=project.slug, phase=name, error=repr(exc)
+                )
+        with project.work:
+            if unload:
+                project.unload()
+            elif project.holds_lease:
                 project.release()
 
     def _report_unknown_type(self, etype: str) -> None:
@@ -299,8 +306,8 @@ class ProjectRegistry:
         raise OpError("VALIDATION_ERROR", f"unsupported control action {action!r}")
 
     def _unload(self, project: Project) -> dict:
-        with project.work:
-            project.unload()
+        # Drained by the caller's admission; then the same phases as a shutdown.
+        self._shut_down(project, unload=True)
         # Answer only once the lease is provably free (SPEC §8.2).
         if not admin.try_owner_flock_free(project.board):
             raise OpError(
@@ -363,8 +370,13 @@ class ProjectRegistry:
             self.log.warning("status_write_failed", error=str(exc))
 
 
-def final_audit(registry: ProjectRegistry, project: Project) -> None:
-    """The final audit commit (SPEC §8.10): H-16 connects its committer here."""
+def stage_audit(registry: ProjectRegistry, project: Project) -> None:
+    """Stage the final audit commit (SPEC §8.10), under the work lock: H-16's hook."""
+
+
+def commit_audit(registry: ProjectRegistry, project: Project) -> None:
+    """Commit the staged audit and stop the project's committer, outside the work
+    lock (the committer takes it): H-16's hook."""
 
 
 def clean_shutdown(registry: ProjectRegistry, project: Project) -> None:
@@ -375,13 +387,11 @@ def clean_shutdown(registry: ProjectRegistry, project: Project) -> None:
         )
 
 
-def release_lease(registry: ProjectRegistry, project: Project) -> None:
-    project.release()
-
-
-#: The per-project shutdown phases, in order, run under the work lock after drain.
-SHUTDOWN_PHASES: tuple[Callable[[ProjectRegistry, Project], None], ...] = (
-    final_audit,
-    clean_shutdown,
-    release_lease,
+#: The per-project phases of a graceful shutdown and of ``project unload``, in
+#: order, after drain: ``(name, phase, under the work lock)``. The lease is
+#: released after the last one (:meth:`ProjectRegistry._shut_down`).
+SHUTDOWN_PHASES: tuple[tuple[str, Callable[[ProjectRegistry, Project], None], bool], ...] = (
+    ("audit_stage", stage_audit, True),
+    ("audit_commit", commit_audit, False),
+    ("clean_shutdown", clean_shutdown, True),
 )
