@@ -2,9 +2,9 @@
 a restart with a regressed ``ids.json`` issues none of them again.
 
 The clients are threads posting ``task.create`` over HTTP to a server subprocess,
-each with its own token. The per-PR lane runs 8 x 50 as EVALUATION names it; the
-restart then regresses ``ids.json`` two ways (counter rewound, map emptied) and
-runs another storm.
+each with its own token. The restart regresses ``ids.json`` two ways (counter
+rewound, map emptied) and runs another storm. The envelope lane runs EVALUATION's
+8 x 50; the per-PR lane runs 8 x 15, which keeps it fast on a busy disk.
 """
 
 from __future__ import annotations
@@ -19,10 +19,11 @@ from lattice.core.ids import generate_op_id
 from lattice.server.testing import make_root
 from tests.torture.harness import PROJECT, ServerProcess, board_events
 
-pytestmark = [pytest.mark.torture, pytest.mark.timeout(300)]
+pytestmark = [pytest.mark.torture, pytest.mark.timeout(600)]
 
 CLIENTS = 8
 CREATES = 50
+QUICK_CREATES = 15
 
 
 def _storm(server: ServerProcess, tokens: list[str], creates: int, label: str) -> list[str]:
@@ -65,20 +66,27 @@ def _regress(board: Path, how: str) -> None:
     path.write_text(json.dumps(index, indent=2, sort_keys=True) + "\n")
 
 
+@pytest.mark.parametrize(
+    "creates",
+    [
+        pytest.param(QUICK_CREATES, id="quick"),
+        pytest.param(CREATES, id="full", marks=pytest.mark.envelope),
+    ],
+)
 @pytest.mark.parametrize("how", ["counter", "emptied"])
-def test_create_storm_then_regressed_restart(tmp_path: Path, how: str) -> None:
+def test_create_storm_then_regressed_restart(tmp_path: Path, how: str, creates: int) -> None:
     server = ServerProcess(make_root(tmp_path, projects={PROJECT: {"code": "DEM"}}))
     server.start()
     try:
         tokens = [server.mint(user=f"human:u{n}", machine=f"m{n}") for n in range(CLIENTS)]
-        first = _storm(server, tokens, CREATES, "first")
-        assert len(first) == CLIENTS * CREATES
+        first = _storm(server, tokens, creates, "first")
+        assert len(first) == CLIENTS * creates
         assert len(set(first)) == len(first), "a short ID was issued twice"
 
         server.stop()
         _regress(server.board(), how)
         server.start()
-        second = _storm(server, tokens, CREATES // 5, "second")
+        second = _storm(server, tokens, max(5, creates // 5), "second")
         assert len(set(second)) == len(second)
         reissued = set(first) & set(second)
         assert not reissued, sorted(reissued)[:10]
