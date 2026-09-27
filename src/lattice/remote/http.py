@@ -23,6 +23,7 @@ carrying the server's code, message, and details.
 from __future__ import annotations
 
 import contextlib
+import functools
 import http.client
 import json
 import math
@@ -278,9 +279,19 @@ class _HTTPHandler(urllib.request.HTTPHandler):
         return self.do_open(_connection_class(http.client.HTTPConnection, self._holder), req)
 
 
+@functools.cache
+def _tls_context() -> Any:
+    """The default TLS context, built once per process: building one loads the
+    system's CA store, which cost every request about 10 ms (for an ``http://``
+    URL too, since urllib builds its HTTPS handler regardless)."""
+    import ssl
+
+    return ssl.create_default_context()
+
+
 class _HTTPSHandler(urllib.request.HTTPSHandler):
     def __init__(self, holder: _Socket):
-        super().__init__()
+        super().__init__(context=_tls_context())
         self._holder = holder
 
     def https_open(self, req):
