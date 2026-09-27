@@ -21,7 +21,10 @@ board it does not own:
   for the whole operation); outside a scope it is the prefix of the path up to
   its *first* ``.lattice`` component, so ``a/.lattice/../../b/.lattice/x``
   cannot reach a sibling board. A path with no ``.lattice`` component and no
-  scope is not a board path and is written unchecked.
+  scope is not a board path and is written unchecked. Markers and classes are
+  checked against every ``.lattice`` directory enclosing the resolved target
+  within that board, so a board kept under a directory that is itself named
+  ``.lattice`` is still checked as itself.
 - **Flags** are ``contextvars`` values holding the resolved ``.lattice/`` they
   apply to, never process globals: :func:`owning_board` (the server that holds
   the owner lease), :func:`syncing_board` (the cache syncer), and the
@@ -234,16 +237,27 @@ def check_board_writable(lattice_dir: Path) -> None:
 
 @dataclass(frozen=True)
 class BoardTarget:
-    """A primitive's target, resolved against its board."""
+    """A primitive's target, resolved against the board it is confined to.
 
-    board: Path  # the board's resolved .lattice/
+    ``classes`` holds the target's class relative to every ``.lattice``
+    directory that encloses it within that board, outermost first: normally
+    one entry, more only when a board lives under an ancestor that is itself
+    named ``.lattice``. Every one of them is checked, so a write can never be
+    classified against the wrong board and slip past its markers.
+    """
+
+    board: Path  # the resolved .lattice/ the write is confined to
     path: Path  # the target, resolved
-    relative: PurePath
-    path_class: PathClass
+    classes: tuple[tuple[Path, PathClass], ...]
+
+    @property
+    def path_class(self) -> PathClass:
+        """The class relative to the innermost enclosing ``.lattice`` (its own board)."""
+        return self.classes[-1][1]
 
     @property
     def recorded(self) -> bool:
-        return self.path_class in RECORDED_CLASSES
+        return any(cls in RECORDED_CLASSES for _board, cls in self.classes)
 
 
 def locate(path: Path) -> BoardTarget | None:
@@ -264,20 +278,29 @@ def locate(path: Path) -> BoardTarget | None:
             f"Refusing to write {path}: it resolves to {resolved}, outside the board {board}.",
             {"reason": "PATH_OUTSIDE_BOARD", "board": str(board)},
         )
-    relative = resolved.relative_to(board)
-    return BoardTarget(board, resolved, relative, classify_path(relative))
+    enclosing = [board] + [
+        candidate
+        for candidate in (*reversed(resolved.parents), resolved)
+        if candidate.name == _LATTICE_DIR
+        and candidate != board
+        and candidate.is_relative_to(board)
+    ]
+    classes = tuple((b, classify_path(resolved.relative_to(b))) for b in enclosing)
+    return BoardTarget(board, resolved, classes)
 
 
 def check_write(target: BoardTarget) -> None:
     """Refuse a write this context may not make to *target* (SPEC §6.2)."""
-    if target.path_class in RECORDED_CLASSES:
-        _check_markers(target.board, target.path)
-    elif target.path_class is PathClass.SERVER_CONTROL:
-        if not (_set_for(_OWNER, target.board) or _set_for(_MAINTENANCE, target.board)):
+    for board, path_class in target.classes:
+        if path_class in RECORDED_CLASSES:
+            _check_markers(board, target.path)
+        elif path_class is PathClass.SERVER_CONTROL and not (
+            _set_for(_OWNER, board) or _set_for(_MAINTENANCE, board)
+        ):
             raise BoardIsHosted(
                 f"Refusing to write {target.path}: hosted/ is written only by the "
                 "owning server and by offline maintenance.",
-                {"board": str(target.board), "path": str(target.path)},
+                {"board": str(board), "path": str(target.path)},
             )
 
 

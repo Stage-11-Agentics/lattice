@@ -16,7 +16,7 @@ import pytest
 
 from lattice.core.errors import BoardIsCache, BoardIsHosted, BoardPathError, OpError
 from lattice.ops import Caller, OpResult, execute
-from lattice.storage.fs import atomic_write, ensure_dir, jsonl_append, unlink_path
+from lattice.storage.fs import atomic_write, ensure_dir, jsonl_append, recording, unlink_path
 from lattice.storage.operations import read_task_authority
 from lattice.storage.ownership import (
     PathClass,
@@ -608,3 +608,21 @@ def test_cli_attach_leaves_no_payload_on_a_marked_board(
     assert result.exit_code == 1
     assert json.loads(result.output)["error"]["code"] == MARKERS[marker][1]
     assert _durable_tree(board) == before
+
+
+@pytest.mark.parametrize("marker", sorted(MARKERS))
+def test_board_under_an_ancestor_named_lattice_is_still_checked(
+    tmp_path: Path, marker: str
+) -> None:
+    """A board kept below a directory that is itself named ``.lattice`` is
+    classified against its own ``.lattice/`` too, so its markers still refuse."""
+    board = tmp_path / ".lattice" / "projects" / "apollo" / ".lattice"
+    (board / "plans").mkdir(parents=True)
+    _plant(board, marker)
+    with pytest.raises(MARKERS[marker][0]):
+        atomic_write(board / "plans" / "x.md", "x")
+    assert not (board / "plans" / "x.md").exists()
+    writer = owning_board if marker == "hosted" else syncing_board
+    with recording() as recorder, writer(board):
+        atomic_write(board / "plans" / "x.md", "x")
+    assert recorder.relative_paths(board) == ["plans/x.md"]
