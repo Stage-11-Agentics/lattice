@@ -72,6 +72,26 @@ def serve(root: Path, *, host: str | None = None, port: int | None = None) -> No
             timeout_graceful_shutdown=30,
             server_header=False,
         )
-        uvicorn.Server(uv_config).run()
+        _server_class()(uv_config).run()
     finally:
         os.close(fd)
+
+
+def _server_class() -> type:
+    """uvicorn's server, except that a graceful SIGTERM exits 0 (SPEC §8.11).
+
+    uvicorn re-raises a captured signal after its graceful shutdown, so the
+    process would end with 143. SIGINT keeps that behavior.
+    """
+    import signal
+
+    import uvicorn
+
+    class Server(uvicorn.Server):
+        def handle_exit(self, sig: int, frame: object) -> None:
+            super().handle_exit(sig, frame)
+            captured = getattr(self, "_captured_signals", None)
+            if sig == signal.SIGTERM and captured and captured[-1] == sig:
+                captured.pop()
+
+    return Server
