@@ -331,7 +331,11 @@ class StubServer:
 
     def file_bytes(self, rel: str, digest: str | None) -> tuple[int, bytes | dict]:
         with self.lock:
-            if classify_path(rel) not in (PathClass.DURABLE, PathClass.WORKSPACE) or ".." in rel:
+            if (
+                classify_path(rel) not in (PathClass.DURABLE, PathClass.WORKSPACE)
+                or ".." in rel.split("/")
+                or rel.startswith("/")
+            ):
                 return 404, {"code": "NOT_FOUND", "message": f"no board file {rel}"}
             path = self.board / rel
             if not path.is_file():

@@ -578,3 +578,46 @@ def test_a_planted_symlink_and_fifo_are_removed_through_the_primitive(
     links = [p for p in rescued.rglob("planted.json")]
     assert len(links) == 1 and links[0].is_symlink() and os.readlink(links[0]) == str(outside)
     assert_mirror(client_root, stub)
+
+
+@pytest.mark.parametrize(
+    "head_hash",
+    [None, "", "ABCDEF0123456789ABCDEF0123456789", "0" * 31, "0" * 33, "g" * 32, 7],
+    ids=["missing", "empty", "uppercase", "short", "long", "not-hex", "not-a-string"],
+)
+def test_a_bad_head_hash_at_a_nonzero_head_is_rejected(
+    client_root: Path, stub: StubServer, head_hash: object
+) -> None:
+    create_task(stub)
+
+    def mutate(body: dict) -> None:
+        if head_hash is None:
+            body.pop("head_hash", None)
+        else:
+            body["head_hash"] = head_hash
+
+    stub.fault.mutate_sync = mutate
+    with pytest.raises(OpError) as err:
+        cache.catch_up(client_root)
+    assert err.value.details["reason"] == "MALFORMED_SYNC"
+    assert not (_lattice(client_root) / "cache" / "state.json").exists()
+
+
+def test_a_head_hash_at_head_zero_is_rejected(client_root: Path, stub: StubServer) -> None:
+    assert stub.head == 0
+    stub.fault.mutate_sync = lambda body: body.update(head_hash="0" * 32)
+    with pytest.raises(OpError) as err:
+        cache.catch_up(client_root)
+    assert err.value.details["reason"] == "MALFORMED_SYNC"
+    stub.fault.mutate_sync = None
+    assert cache.catch_up(client_root).kind == "applied"  # absent at head 0 is fine
+
+
+def test_a_file_name_containing_two_dots_is_a_legal_board_path(
+    client_root: Path, stub: StubServer
+) -> None:
+    stub.inline_file_bytes = 4  # travel through the files endpoint
+    stub.commit(write={"notes/a..b.md": b"two dots, one segment\n"})
+    assert cache.catch_up(client_root).kind == "applied"
+    assert (_lattice(client_root) / "notes" / "a..b.md").read_bytes() == b"two dots, one segment\n"
+    assert_mirror(client_root, stub)

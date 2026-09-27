@@ -49,6 +49,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import secrets
 import shutil
 import stat
@@ -103,6 +104,8 @@ PROBE_SECONDS = 5.0
 #: Whole cycles a sync may restart after a hash mismatch or a stale ``href``.
 MAX_CYCLES = 3
 _SHA256_CHARS = frozenset("0123456789abcdef")
+#: A journal line hash (SPEC §8.8): the first 32 hex characters of a SHA-256.
+_LINE_HASH_RE = re.compile(r"[0-9a-f]{32}")
 
 OutcomeKind = Literal["applied", "unchanged", "unreachable", "busy", "incomplete"]
 
@@ -330,8 +333,10 @@ def _parse_delta(
         raise malformed("no epoch")
     if not isinstance(head, int) or isinstance(head, bool) or head < 0:
         raise malformed("no head_seq")
-    if head_hash is not None and not isinstance(head_hash, str):
-        raise malformed("head_hash is not a string")
+    if head > 0 and not (isinstance(head_hash, str) and _LINE_HASH_RE.fullmatch(head_hash)):
+        raise malformed("head_hash must be 32 lowercase hex characters at a nonzero head")
+    if head == 0 and head_hash is not None:
+        raise malformed("head_hash must be absent at head 0")
     if not isinstance(reset, bool) or not isinstance(files, dict) or not isinstance(removed, list):
         raise malformed("reset, files, or removed has the wrong type")
     entries: list[_Entry] = []
