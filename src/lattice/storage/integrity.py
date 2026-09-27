@@ -644,11 +644,14 @@ def check_board(lattice_dir: Path, *, fix: bool = False) -> DoctorReport:
         json_files.append(config_path)
 
     json_ok = True
+    config: object = None  # config.json as parsed here; a parse failure is a finding
     for jf in json_files:
         try:
             data = json.loads(jf.read_text())
             # Store snapshot data for later checks
-            if jf.parent.name in ("tasks",) and jf.suffix == ".json":
+            if jf == config_path:
+                config = data
+            elif jf.parent.name in ("tasks",) and jf.suffix == ".json":
                 snapshots[jf.stem] = data
                 known_task_ids.add(jf.stem)
             elif jf.parent.parent.name == "archive" and jf.parent.name == "tasks":
@@ -940,8 +943,7 @@ def check_board(lattice_dir: Path, *, fix: bool = False) -> DoctorReport:
     # Check 10: Short ID / alias integrity
     # -----------------------------------------------------------------
     alias_ok = True
-    config = json.loads((lattice_dir / "config.json").read_text())
-    event_prefix = configured_event_prefix(config)
+    event_prefix = configured_event_prefix(config if isinstance(config, dict) else {})
     has_project_code = event_prefix is not None
     ids_json_path = lattice_dir / "ids.json"
 

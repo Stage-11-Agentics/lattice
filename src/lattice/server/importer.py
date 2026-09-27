@@ -5,14 +5,18 @@ it. In order:
 
 1. Check the arguments, and refuse an existing slug, before anything is read.
 2. Scan the source's ``.lattice/`` through directory descriptors opened with
-   ``O_NOFOLLOW``: every durable or workspace path (SPEC §6.1) must be a real
-   directory or a regular file, else ``VALIDATION_ERROR`` naming it. The scan
-   records each copied path's identity and lists every path it will not copy.
+   ``O_NOFOLLOW``, descending every real directory and classifying every path
+   on its own (SPEC §6.1). A durable or workspace path must be a real
+   directory or a regular file, else ``VALIDATION_ERROR`` naming it; a
+   directory that cannot be read refuses the same way, because the import
+   must name every path it does not move. The scan records the identity of
+   every path, copied or not, and of the board directory itself.
 3. Copy each durable regular file byte for byte into a staging board under
    ``projects/.importing-<slug>-<id>/``, reading it through the same
    descriptor walk and checking its identity before and after the read.
-4. Scan the source again; any added, removed, or changed durable path means a
-   writer is still running, so the import refuses (``CONFLICT``).
+4. Open the source's ``.lattice/`` again and rescan it: any change to the
+   board directory or to any path under it means a writer is still running,
+   so the import refuses (``CONFLICT``).
 5. Run doctor's board checks on the staged copy, which holds exactly the bytes
    imported; any error refuses (``INTEGRITY_ERROR``) with every finding.
 6. Rebuild the task-derived files with the short-ID log floor (SPEC §5).
@@ -58,11 +62,13 @@ _COPIED_CLASSES = frozenset({PathClass.DURABLE, PathClass.WORKSPACE})
 _PROSE_DIRS = (("plans",), ("notes",), ("archive", "plans"), ("archive", "notes"))
 _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
 _FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+_ROOT = "."
 
 
 @dataclass(frozen=True)
 class _Identity:
-    """What the scan saw at a path: a directory's (dev, ino), a file's plus size and mtime."""
+    """What the scan saw at a path (``lstat``): kind, device, inode, and for
+    anything but a directory its size and mtime."""
 
     kind: str
     dev: int
@@ -74,15 +80,55 @@ class _Identity:
     def of(cls, st: os.stat_result) -> _Identity:
         if stat.S_ISDIR(st.st_mode):
             return cls("dir", st.st_dev, st.st_ino)
-        return cls("file", st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+        kind = (
+            "file" if stat.S_ISREG(st.st_mode) else "link" if stat.S_ISLNK(st.st_mode) else "other"
+        )
+        return cls(kind, st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
 
 
 @dataclass
 class _Scan:
-    #: Every durable and workspace path to copy (relative, POSIX), with its identity.
-    copied: dict[str, _Identity] = field(default_factory=dict)
-    #: Every other path, with its class: ``(path, class)``; directories end in ``/``.
-    not_copied: list[tuple[str, str]] = field(default_factory=list)
+    """Every path under the board (relative, POSIX), with its class and identity.
+
+    ``"."`` is the board directory itself.
+    """
+
+    entries: dict[str, tuple[PathClass, _Identity]] = field(default_factory=dict)
+
+    def identity(self, path: str) -> _Identity | None:
+        entry = self.entries.get(path)
+        return entry[1] if entry else None
+
+    @property
+    def copied_files(self) -> list[str]:
+        return [
+            path
+            for path, (path_class, identity) in self.entries.items()
+            if path_class in _COPIED_CLASSES and identity.kind == "file"
+        ]
+
+    @property
+    def copied_dirs(self) -> list[str]:
+        """Durable directories, and any directory that holds a copied file, parents first."""
+        wanted = {
+            path
+            for path, (path_class, identity) in self.entries.items()
+            if path != _ROOT and path_class in _COPIED_CLASSES and identity.kind == "dir"
+        }
+        for path in self.copied_files:
+            wanted.update(p.as_posix() for p in PurePosixPath(path).parents if p.parts)
+        return sorted(wanted, key=lambda p: (p.count("/"), p))
+
+    @property
+    def not_copied(self) -> list[tuple[str, str]]:
+        """``(path, class)`` for every path the import does not move; directories end in ``/``."""
+        created = set(self.copied_dirs)
+        rows = []
+        for path, (path_class, identity) in self.entries.items():
+            if path == _ROOT or path_class in _COPIED_CLASSES or path in created:
+                continue
+            rows.append((f"{path}/" if identity.kind == "dir" else path, path_class.value))
+        return sorted(rows)
 
 
 def _unsafe(path: str, what: str) -> OpError:
@@ -107,8 +153,8 @@ def _changed(path: str) -> OpError:
 def _unreadable(path: str, exc: OSError) -> OpError:
     return OpError(
         "VALIDATION_ERROR",
-        f"Import refused: cannot read .lattice/{path} ({exc.strerror or exc}); nothing was "
-        "created.",
+        f"Import refused: cannot read .lattice/{path} ({exc.strerror or exc}), so the import "
+        "cannot list every path it would leave behind; nothing was created.",
         {"path": path},
     )
 
@@ -130,72 +176,41 @@ def _open_dir(parent_fd: int, name: str, rel: str, expected: _Identity | None) -
 
 
 def _scan(lattice_fd: int) -> _Scan:
-    """Walk the board below *lattice_fd* without following links (step 2)."""
+    """Walk the whole board below *lattice_fd* without following links (step 2)."""
     scan = _Scan()
-
-    def entries(dir_fd: int, rel: PurePosixPath) -> list[tuple[str, os.stat_result]]:
-        try:
-            names = sorted(os.listdir(dir_fd))
-            return [(name, os.stat(name, dir_fd=dir_fd, follow_symlinks=False)) for name in names]
-        except OSError as exc:
-            raise _unreadable(rel.as_posix() if rel.parts else ".", exc) from None
-
-    def skipped(dir_fd: int, rel: PurePosixPath, path_class: str) -> None:
-        """List everything under a skipped real directory, never following a link."""
-        try:
-            listing = entries(dir_fd, rel)
-        except OpError:
-            return  # an unreadable skipped directory is listed by itself
-        for name, st in listing:
-            child = rel / name
-            if stat.S_ISDIR(st.st_mode):
-                scan.not_copied.append((f"{child.as_posix()}/", path_class))
-                try:
-                    fd = os.open(name, _DIR_FLAGS, dir_fd=dir_fd)
-                except OSError:
-                    continue
-                try:
-                    skipped(fd, child, path_class)
-                finally:
-                    os.close(fd)
-            else:
-                scan.not_copied.append((child.as_posix(), path_class))
+    scan.entries[_ROOT] = (PathClass.DURABLE, _Identity.of(os.fstat(lattice_fd)))
 
     def visit(dir_fd: int, rel: PurePosixPath) -> None:
-        for name, st in entries(dir_fd, rel):
+        where = rel.as_posix() if rel.parts else _ROOT
+        try:
+            names = sorted(os.listdir(dir_fd))
+        except OSError as exc:
+            raise _unreadable(where, exc) from None
+        for name in names:
             child = rel / name
             path = child.as_posix()
+            try:
+                st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                raise _changed(path) from None
+            except OSError as exc:
+                raise _unreadable(path, exc) from None
             path_class = classify_path(child)
-            is_dir = stat.S_ISDIR(st.st_mode)
-            if path_class not in _COPIED_CLASSES:
-                scan.not_copied.append((f"{path}/" if is_dir else path, path_class.value))
-                if is_dir:
-                    try:
-                        fd = os.open(name, _DIR_FLAGS, dir_fd=dir_fd)
-                    except OSError:
-                        continue  # listed by itself; nothing under it is copied
-                    try:
-                        skipped(fd, child, path_class.value)
-                    finally:
-                        os.close(fd)
-                continue
-            if stat.S_ISLNK(st.st_mode):
-                raise _unsafe(path, "is a symbolic link")
-            if is_dir:
-                identity = _Identity.of(st)
-                scan.copied[path] = identity
+            identity = _Identity.of(st)
+            if path_class in _COPIED_CLASSES:
+                if identity.kind == "link":
+                    raise _unsafe(path, "is a symbolic link")
+                if identity.kind == "other":
+                    raise _unsafe(path, "is not a regular file or a directory")
+            scan.entries[path] = (path_class, identity)
+            if identity.kind == "dir":
                 fd = _open_dir(dir_fd, name, path, identity)
                 try:
                     visit(fd, child)
                 finally:
                     os.close(fd)
-            elif stat.S_ISREG(st.st_mode):
-                scan.copied[path] = _Identity.of(st)
-            else:
-                raise _unsafe(path, "is not a regular file or a directory")
 
     visit(lattice_fd, PurePosixPath())
-    scan.not_copied.sort()
     return scan
 
 
@@ -207,7 +222,7 @@ def _read_file(lattice_fd: int, path: str, scan: _Scan) -> bytes:
         dir_fd = lattice_fd
         for depth, name in enumerate(parts[:-1], start=1):
             rel = "/".join(parts[:depth])
-            dir_fd = _open_dir(dir_fd, name, rel, scan.copied.get(rel))
+            dir_fd = _open_dir(dir_fd, name, rel, scan.identity(rel))
             fds.append(dir_fd)
         try:
             fd = os.open(parts[-1], _FILE_FLAGS, dir_fd=dir_fd)
@@ -216,7 +231,7 @@ def _read_file(lattice_fd: int, path: str, scan: _Scan) -> bytes:
                 raise _changed(path) from None
             raise _unreadable(path, exc) from None
         fds.append(fd)
-        expected = scan.copied[path]
+        expected = scan.identity(path)
         before = os.fstat(fd)
         if not stat.S_ISREG(before.st_mode) or _Identity.of(before) != expected:
             raise _changed(path)
@@ -249,33 +264,49 @@ def _open_source(source: Path) -> int:
             {"path": str(source)},
         ) from None
     if stat.S_ISLNK(st.st_mode):
-        raise _unsafe(".", "(the board directory itself) is a symbolic link")
+        raise _unsafe(_ROOT, "(the board directory itself) is a symbolic link")
     if not stat.S_ISDIR(st.st_mode):
-        raise _unsafe(".", "(the board directory itself) is not a directory")
+        raise _unsafe(_ROOT, "(the board directory itself) is not a directory")
     try:
         parent = os.open(source, os.O_RDONLY | os.O_DIRECTORY)
     except OSError as exc:
-        raise _unreadable(".", exc) from None
+        raise _unreadable(_ROOT, exc) from None
     try:
-        return _open_dir(parent, LATTICE_DIR, ".", _Identity.of(st))
+        return _open_dir(parent, LATTICE_DIR, _ROOT, _Identity.of(st))
     finally:
         os.close(parent)
 
 
+def _source_unchanged(source: Path, scan: _Scan) -> None:
+    """Reopen the board by its path and rescan it; refuse on any difference (step 4)."""
+    try:
+        fd = _open_source(source)
+    except OpError as exc:
+        if exc.code == "NOT_FOUND" or exc.details.get("path") == _ROOT:
+            raise _changed(_ROOT) from None
+        raise
+    try:
+        rescan = _scan(fd)
+    finally:
+        os.close(fd)
+    if rescan.entries != scan.entries:
+        for path in sorted(scan.entries.keys() | rescan.entries.keys()):
+            if scan.entries.get(path) != rescan.entries.get(path):
+                raise _changed(path)
+
+
 def _non_canonical(scan: _Scan) -> list[str]:
     """Files under the prose directories that are not ``<task_id>.md`` for a task of the board."""
+    files = scan.copied_files
     task_ids = {
         PurePosixPath(path).stem
-        for path, identity in scan.copied.items()
-        if identity.kind == "file"
-        and PurePosixPath(path).parent.as_posix() in ("events", "archive/events")
+        for path in files
+        if PurePosixPath(path).parent.as_posix() in ("events", "archive/events")
         and PurePosixPath(path).name.startswith("task_")
         and path.endswith(".jsonl")
     }
     listed = []
-    for path, identity in scan.copied.items():
-        if identity.kind != "file":
-            continue
+    for path in files:
         parts = PurePosixPath(path).parts
         for prose in _PROSE_DIRS:
             if parts[: len(prose)] != prose:
@@ -346,20 +377,24 @@ def import_project(root: Path, slug: str, source: Path) -> dict:
     board = staging / LATTICE_DIR
     try:
         scan = _scan(lattice_fd)
+        if scan.identity("config.json") is None:
+            raise OpError(
+                "VALIDATION_ERROR",
+                "Import refused: .lattice/config.json is missing, so this is not a whole "
+                "board; nothing was created.",
+                {"path": "config.json"},
+            )
         with owning_board(board):
             ensure_dir(board / HOSTED_DIR)
             fd = try_owner_flock(board)
             if fd is None:  # a fresh directory nobody else knows about
                 raise OpError("BOARD_BUSY", f"could not lock {board}")
             try:
-                for path, identity in scan.copied.items():
-                    if identity.kind == "dir":
-                        ensure_dir(board / path)
-                    else:
-                        atomic_write(board / path, _read_file(lattice_fd, path, scan))
-                rescan = _scan(lattice_fd)
-                if rescan.copied != scan.copied:
-                    raise _changed(_first_difference(scan, rescan))
+                for path in scan.copied_dirs:
+                    ensure_dir(board / path)
+                for path in scan.copied_files:
+                    atomic_write(board / path, _read_file(lattice_fd, path, scan))
+                _source_unchanged(source, scan)
                 report = check_board(board)
                 findings = [_clean(f, board, source / LATTICE_DIR) for f in report.findings]
                 if report.errors:
@@ -384,15 +419,14 @@ def import_project(root: Path, slug: str, source: Path) -> dict:
     finally:
         os.close(lattice_fd)
 
-    config_code = _project_code(final / LATTICE_DIR)
     return {
         "slug": slug,
         "path": str(final),
         "source": str(source),
-        "project_code": config_code,
+        "project_code": _project_code(final / LATTICE_DIR),
         "epoch": journal.epoch,
         "head_seq": 0,
-        "copied": sum(1 for i in scan.copied.values() if i.kind == "file"),
+        "copied": len(scan.copied_files),
         "not_copied": [{"path": p, "class": c} for p, c in scan.not_copied],
         "non_canonical": _non_canonical(scan),
         "doctor": {
@@ -401,13 +435,6 @@ def import_project(root: Path, slug: str, source: Path) -> dict:
         },
         "move_steps": _move_steps(slug),
     }
-
-
-def _first_difference(before: _Scan, after: _Scan) -> str:
-    for path in sorted(set(before.copied) | set(after.copied)):
-        if before.copied.get(path) != after.copied.get(path):
-            return path
-    return "."
 
 
 def _project_code(board: Path) -> str | None:

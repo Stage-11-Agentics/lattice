@@ -179,3 +179,24 @@ def test_import_repair_touches_only_task_derived_files(tmp_path: Path) -> None:
     assert _cli("rebuild", "--all", root=src).exit_code == 0
     assert (board / "plans" / f"{one}.md").exists()
     assert resource.read_bytes() != after[str(resource.relative_to(board))]
+
+
+@pytest.mark.parametrize("mode", ["plain", "json"])
+def test_doctor_reports_a_malformed_config_instead_of_crashing(tmp_path: Path, mode: str) -> None:
+    """The scan parses config.json once: a parse failure is its json_parse finding (exit 1),
+    and the short-ID checks run without a project code. Before the scan moved, the second
+    parse raised, so doctor exited 1 with a traceback and no report."""
+    src, _ids = _board(tmp_path)
+    (src / ".lattice" / "config.json").write_text("{broken\n")
+    report = check_board(src / ".lattice")
+    assert [(f["check"], f["level"]) for f in report.findings] == [("json_parse", "error")]
+    args = ["doctor"] + (["--json"] if mode == "json" else [])
+    result = CliRunner().invoke(cli, args, env={"LATTICE_ROOT": str(src)})
+    assert result.exit_code == 1
+    assert isinstance(result.exception, SystemExit)
+    if mode == "json":
+        payload = json.loads(result.output)
+        assert payload["data"]["summary"]["errors"] == 1
+    else:
+        assert "⚠ Invalid JSON in config.json" in result.output
+        assert result.output.rstrip().endswith("1 error found.")

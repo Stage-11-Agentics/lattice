@@ -112,6 +112,12 @@ def _build_source(base: Path) -> Path:
     (board / "archive" / "notes" / "scratch" / "x.md").write_text("loose\n")
     (board / "reviews").mkdir()
     (board / "reviews" / "r1.md").write_text("an old review\n")
+    # Every path is classified on its own (SPEC §6.1): a temp-looking name under an
+    # unmanaged directory is temporary; a file under a temp-looking directory in
+    # plans/ is durable, so it is copied (and its directory created).
+    (board / "reviews" / ".tmp.x").write_text("temp\n")
+    (board / "plans" / ".tmp.bucket").mkdir()
+    (board / "plans" / ".tmp.bucket" / "loose.md").write_text("kept\n")
     (board / "exports" / "sub").mkdir(parents=True)
     (board / "exports" / "sub" / "x.txt").write_text("export\n")
     (board / "runner.log").write_text("log\n")
@@ -225,6 +231,7 @@ def test_import_copies_every_durable_file_byte_for_byte(root: Path, source: Path
         ("runner.log", "unmanaged"),
         ("locks/", "runtime"),
         ("events/.tmp.abc", "temporary"),
+        ("reviews/.tmp.x", "temporary"),
     ):
         assert row in not_copied
     assert [row["path"] for row in data["not_copied"]] == sorted(
@@ -232,7 +239,13 @@ def test_import_copies_every_durable_file_byte_for_byte(root: Path, source: Path
     )
     for path in ("reviews", "exports", "runner.log", "events/.tmp.abc"):
         assert not (board / path).exists()
-    assert data["non_canonical"] == ["archive/notes/scratch/x.md", "plans/review-pack.md"]
+    assert data["non_canonical"] == [
+        "archive/notes/scratch/x.md",
+        "plans/.tmp.bucket/loose.md",
+        "plans/review-pack.md",
+    ]
+    assert (board / "plans" / ".tmp.bucket" / "loose.md").read_text() == "kept\n"
+    assert "plans/.tmp.bucket/" not in {row["path"] for row in data["not_copied"]}
     assert (board / "plans" / "review-pack.md").read_text() == "review pack\n"
 
     # A clean board with a new epoch at head 0, its baseline covering every log.
@@ -386,6 +399,57 @@ def test_a_board_that_fails_doctor_is_refused_with_its_findings(
 
 
 @pytest.mark.parametrize("as_json", [True, False], ids=["json", "plain"])
+def test_a_malformed_config_is_refused_with_the_doctor_finding(
+    root: Path, source: Path, as_json: bool
+) -> None:
+    (source / ".lattice" / "config.json").write_text("{broken\n")
+    before = _tree(source)
+    result = _import(root, source, as_json=as_json)
+    assert result.exit_code == 1
+    if as_json:
+        error = json.loads(result.output)["error"]
+        assert error["code"] == "INTEGRITY_ERROR"
+        assert [f["check"] for f in error["details"]["findings"] if f["level"] == "error"] == [
+            "json_parse"
+        ]
+        assert "Invalid JSON in config.json" in error["details"]["findings"][0]["message"]
+    else:
+        assert "fails lattice doctor (1 error)" in result.output
+        assert "error: Invalid JSON in config.json" in result.output
+    _assert_nothing_created(root)
+    assert _tree(source) == before
+
+
+def test_a_board_without_config_json_is_refused(root: Path, source: Path) -> None:
+    (source / ".lattice" / "config.json").unlink()
+    result = _import(root, source)
+    assert result.exit_code == 1
+    error = json.loads(result.output)["error"]
+    assert error["code"] == "VALIDATION_ERROR" and error["details"]["path"] == "config.json"
+    _assert_nothing_created(root)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads any directory")
+@pytest.mark.parametrize("where", ["reviews/private", "notes/sub"], ids=["unmanaged", "durable"])
+def test_an_unreadable_directory_is_refused_naming_it(
+    root: Path, source: Path, where: str
+) -> None:
+    locked = source / ".lattice" / where
+    locked.mkdir()
+    (locked / "inside.md").write_text("x\n")
+    locked.chmod(0)
+    try:
+        result = _import(root, source)
+    finally:
+        locked.chmod(0o755)
+    assert result.exit_code == 1
+    error = json.loads(result.output)["error"]
+    assert error["code"] == "VALIDATION_ERROR" and error["details"]["path"] == where
+    assert f".lattice/{where}" in error["message"]
+    _assert_nothing_created(root)
+
+
+@pytest.mark.parametrize("as_json", [True, False], ids=["json", "plain"])
 def test_an_existing_slug_is_refused_and_left_alone(
     root: Path, source: Path, as_json: bool
 ) -> None:
@@ -484,6 +548,35 @@ def test_a_file_added_during_the_copy_is_refused(
     assert result.exit_code == 1
     error = json.loads(result.output)["error"]
     assert error["code"] == "CONFLICT" and error["details"]["path"] == "notes/late.md"
+    _assert_nothing_created(root)
+
+
+def test_an_unmanaged_file_added_during_the_copy_is_refused(
+    root: Path, source: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    late = source / ".lattice" / "reviews" / "late.md"
+    _hook_first_read(monkeypatch, lambda: late.write_text("late\n"))
+    result = _import(root, source)
+    assert result.exit_code == 1
+    error = json.loads(result.output)["error"]
+    assert error["code"] == "CONFLICT" and error["details"]["path"] == "reviews/late.md"
+    _assert_nothing_created(root)
+
+
+def test_a_board_directory_replaced_during_the_copy_is_refused(
+    root: Path, source: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    board = source / ".lattice"
+
+    def replace() -> None:  # an identical tree under a new inode
+        board.rename(source / "old-board")
+        shutil.copytree(source / "old-board", board, symlinks=True, copy_function=shutil.copy2)
+
+    _hook_first_read(monkeypatch, replace)
+    result = _import(root, source)
+    assert result.exit_code == 1
+    error = json.loads(result.output)["error"]
+    assert error["code"] == "CONFLICT" and error["details"]["path"] == "."
     _assert_nothing_created(root)
 
 
