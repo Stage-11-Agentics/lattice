@@ -26,7 +26,8 @@ from lattice.core.errors import OpError
 from lattice.core.ids import validate_id
 from lattice.dashboard import api
 from lattice.dashboard.api import MAX_REQUEST_BODY_BYTES, ApiError, ApiResponse
-from lattice.storage.operations import resolve_task_prose_path, scaffold_plan
+from lattice.core.plans import scaffold_plan_text
+from lattice.storage.operations import resolve_task_prose_path
 
 __all__ = ["MAX_REQUEST_BODY_BYTES", "STATIC_DIR", "create_server", "origin_allowed"]
 
@@ -269,8 +270,12 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
                 self._send_error(400, "BAD_REQUEST", "Invalid JSON in request body")
                 return None
 
-        def _execute(self, request: api.WriteRequest) -> None:
-            """Run *request*'s operation on the board as a browser write."""
+        def _run(self, request: api.WriteRequest) -> Any:
+            """Run *request*'s operation on the board as a browser write.
+
+            Returns the ``OpResult``; on a refusal or failure, sends the error
+            response and returns ``None``.
+            """
             from lattice.ops import Caller
 
             try:
@@ -278,22 +283,25 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
                     actor=self._target.actor_for(request.actor),
                     origin={"reported": browser_reported_origin()},
                 )
-                result = self._target.board.execute(request.op_name, request.params, caller)
+                return self._target.board.execute(request.op_name, request.params, caller)
             except OpError as exc:
                 refused = api.write_error(request, exc)
                 self._send(ApiResponse(refused.status, refused.envelope()))
-                return
             except Exception as exc:  # noqa: BLE001 - the page gets an envelope, never a reset
                 self._send_error(500, "WRITE_ERROR", f"Failed to write: {exc}")
-                return
-            status, data = request.render(result)
-            self._send(api.ok(data, status))
+            return None
+
+        def _execute(self, request: api.WriteRequest) -> None:
+            result = self._run(request)
+            if result is not None:
+                status, data = request.render(result)
+                self._send(api.ok(data, status))
 
         def _open_prose(self, task_id: str, kind: str) -> None:
             """Open a task's notes or plan file in the system's default editor.
 
-            A missing plan of an active task is scaffolded first, so the user
-            lands in a useful template. A bound checkout's cache is read-only,
+            A missing plan of an active task is scaffolded first (through
+            ``task.plan_write``), so the user lands in a useful template. A bound checkout's cache is read-only,
             so there is nothing to open there (``LOCAL_ONLY``).
             """
             if not validate_id(task_id, "task"):
@@ -316,15 +324,27 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
                 if authority.location != "active":
                     self._send_error(404, "NOT_FOUND", f"Task {task_id} not found")
                     return
+                # A missing plan is scaffolded through the plan-write operation,
+                # like any other dashboard write (SPEC §10).
                 snapshot = authority.snapshot
-                scaffold_plan(
-                    ld,
-                    task_id,
+                scaffold = scaffold_plan_text(
                     snapshot.get("title", "Untitled"),
                     snapshot.get("short_id"),
                     snapshot.get("description"),
                 )
-                path = ld / "plans" / f"{task_id}.md"
+                request = api.WriteRequest(
+                    "task.plan_write",
+                    {"task": task_id, "stdin": scaffold},
+                    None,
+                    lambda result: (200, result.value),
+                    task_id,
+                )
+                if not self._run(request):
+                    return
+                path, _ = resolve_task_prose_path(ld, task_id, kind)
+                if path is None:
+                    self._send_error(404, "NOT_FOUND", f"Task {task_id} not found")
+                    return
 
             resolved = path.resolve()
             if not resolved.is_relative_to(ld.resolve()):

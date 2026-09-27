@@ -67,7 +67,7 @@ var CV2_STATUS_COLORS = {
 var CV2_NEEDS_HUMAN_COLOR = '#f59e0b';
 function _cv2NodeColor(node) {
   if (node && node.needs_human) return CV2_NEEDS_HUMAN_COLOR;
-  return CV2_STATUS_COLORS[node && node.status] || '#64748b';
+  return ownValue(CV2_STATUS_COLORS, node && node.status) || '#64748b';
 }
 
 /* Gold "ready now" halo (Stage 11 accent). A node earns it only when it is
@@ -1009,7 +1009,7 @@ function _cv2UpdateHover(e) {
 
     tooltip.innerHTML = '<div class="cv2-tooltip-header">'
       + '<span class="cv2-tooltip-id">' + _cv2Esc(node.short_id || '') + '</span>'
-      + '<span class="cv2-tooltip-status" style="color:' + statusColor + '">' + _cv2Esc(statusName) + '</span>'
+      + '<span class="cv2-tooltip-status" style="color:' + _cv2Esc(statusColor) + '">' + _cv2Esc(statusName) + '</span>'
       + '</div>'
       + '<div class="cv2-tooltip-title">' + _cv2Esc(node.title || 'Untitled') + '</div>'
       + '<div class="cv2-tooltip-meta">' + _cv2Esc(priorityLabel) + ' &middot; ' + _cv2Esc(typeLabel) + '</div>'
@@ -1141,9 +1141,7 @@ function _cv2CreateHUD() {
   var statuses = Object.keys(CV2_STATUS_COLORS);
   for (var i = 0; i < statuses.length; i++) {
     var s = statuses[i];
-    legendHTML += '<div class="cv2-legend-item">'
-      + '<span class="cv2-legend-dot" style="background:' + CV2_STATUS_COLORS[s] + '"></span>'
-      + '<span>' + _cv2GetStatusDisplayName(s) + '</span></div>';
+    legendHTML += legendItemHtml('cv2-legend-item', 'cv2-legend-dot', CV2_STATUS_COLORS[s], _cv2GetStatusDisplayName(s));
   }
   legendHTML += '<div class="cv2-legend-item cv2-legend-ready">'
     + '<span class="cv2-legend-ring"></span>'
@@ -1153,9 +1151,7 @@ function _cv2CreateHUD() {
   var edgeTypes = Object.keys(CV2_EDGE_COLORS);
   for (var i = 0; i < edgeTypes.length; i++) {
     var et = edgeTypes[i];
-    legendHTML += '<div class="cv2-legend-item">'
-      + '<span class="cv2-legend-line" style="background:' + CV2_EDGE_COLORS[et] + '"></span>'
-      + '<span>' + et.replace(/_/g, ' ') + '</span></div>';
+    legendHTML += legendItemHtml('cv2-legend-item', 'cv2-legend-line', CV2_EDGE_COLORS[et], et.replace(/_/g, ' '));
   }
   legend.innerHTML = legendHTML;
   container.appendChild(legend);

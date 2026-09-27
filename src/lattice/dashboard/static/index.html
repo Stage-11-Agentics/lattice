@@ -2229,10 +2229,7 @@ var cubeCurrentRevision = null;
 
 // --- Status display names ---
 function getStatusDisplayName(slug) {
-  if (!slug) return "";
-  var dn = config && config.workflow && config.workflow.display_names;
-  if (dn && dn[slug]) return dn[slug];
-  return slug.replace(/_/g, " ");
+  return statusDisplayName(config && config.workflow, slug);
 }
 
 // --- Status descriptions (operational contract for each status) ---
@@ -3402,7 +3399,7 @@ function openWebDetailPane(taskId) {
     // Status bar
     html += '<div class="pane-status-bar">';
     if (task.status) html += '<span class="badge" style="background:' + esc(getLaneColor(task.status)) + ';color:#fff;padding:2px 8px;border-radius:4px;font-size:.8rem" title="' + esc(getStatusDescription(task.status)) + '">' + esc(getStatusDisplayName(task.status)) + '</span>';
-    if (task.priority) html += '<span class="badge pri-' + esc(task.priority) + '" style="padding:2px 8px;border-radius:4px;font-size:.8rem">' + esc(task.priority) + '</span>';
+    if (task.priority) html += '<span class="badge pri-' + classToken(task.priority) + '" style="padding:2px 8px;border-radius:4px;font-size:.8rem">' + esc(task.priority) + '</span>';
     if (task.type) html += '<span class="badge type-badge" style="padding:2px 8px;border-radius:4px;font-size:.8rem">' + esc(task.type) + '</span>';
     html += '</div>';
 
@@ -3854,7 +3851,7 @@ function _renderPanelContent(taskId, task, events) {
   } else {
     html += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">';
     if (task.status) html += '<span class="badge" style="background:' + esc(getLaneColor(task.status)) + ';color:#fff;padding:2px 8px;border-radius:4px;font-size:.8rem" title="' + esc(getStatusDescription(task.status)) + '">' + esc(getStatusDisplayName(task.status)) + '</span>';
-    if (task.priority) html += '<span class="badge pri-' + esc(task.priority) + '" style="padding:2px 8px;border-radius:4px;font-size:.8rem">' + esc(task.priority) + '</span>';
+    if (task.priority) html += '<span class="badge pri-' + classToken(task.priority) + '" style="padding:2px 8px;border-radius:4px;font-size:.8rem">' + esc(task.priority) + '</span>';
     if (task.type) html += '<span class="badge type-badge" style="padding:2px 8px;border-radius:4px;font-size:.8rem">' + esc(task.type) + '</span>';
     html += ' <span class="archived-badge">ARCHIVED</span></div>';
   }
@@ -4300,7 +4297,7 @@ function _structureRenderFrame() {
     cells.forEach(function(c) {
       var energy = Number(c.energy) || 0;
       var energyPct = Math.max(0, Math.min(100, energy));
-      var statusClass = "structure-status-" + _structureEscape(c.status || "unknown");
+      var statusClass = "structure-status-" + classToken(c.status || "unknown");
       var taskCell;
       if (c.current_task) {
         taskCell = '<a href="#/task/' + _structureEscape(c.current_task) + '" style="color:var(--accent-primary)">' + _structureEscape(c.current_task) + '</a>';
@@ -4465,9 +4462,10 @@ function updateProjectBranding() {
 
 function getLaneColor(status) {
   var dc = getDashboardConfig();
-  if (dc.lane_colors && dc.lane_colors[status]) return dc.lane_colors[status];
-  var themeDefaults = LANE_COLORS_BY_THEME[getTheme()] || DEFAULT_LANE_COLORS;
-  return themeDefaults[status] || "#6c757d";
+  var custom = ownValue(dc.lane_colors, status);
+  if (typeof custom === "string" && custom) return custom;
+  var themeDefaults = ownValue(LANE_COLORS_BY_THEME, getTheme()) || DEFAULT_LANE_COLORS;
+  return ownValue(themeDefaults, status) || "#6c757d";
 }
 
 // --- Per-lane organization (sort + group) ---
@@ -4689,7 +4687,7 @@ function applyBackgroundImage() {
   var app = document.getElementById("app");
   var bg = getBackgroundImage();
   if (bg) {
-    app.style.backgroundImage = "url(" + bg + ")";
+    app.style.backgroundImage = "url(" + JSON.stringify(bg) + ")";
     app.style.backgroundSize = "cover";
     app.style.backgroundPosition = "center";
     app.style.backgroundRepeat = "no-repeat";
@@ -4909,7 +4907,7 @@ function renderBoardCard(t) {
     var nhReason = (t.needs_human && t.needs_human.reason) ? String(t.needs_human.reason) : "Needs human attention";
     html += '<span class="needs-human-badge" title="' + esc(nhReason) + '">Needs Human</span>';
   }
-  if (t.priority) html += '<span class="badge pri-' + esc(t.priority) + '">' + esc(t.priority) + "</span>";
+  if (t.priority) html += '<span class="badge pri-' + classToken(t.priority) + '">' + esc(t.priority) + "</span>";
   if (t.type) html += '<span class="badge type-badge">' + esc(t.type) + "</span>";
   if (t.has_active_session) html += '<span class="active-badge"><span class="active-dot"></span>Active</span>';
   html += renderActorPairHTML(t.created_by, t.assigned_to);
@@ -4977,11 +4975,8 @@ function renderBoard() {
   html += '<div class="board" style="grid-template-columns:' + colWidths + '">';
   allStatuses.forEach(function(status) {
     var items = grouped[status] || [];
-    var cls = "status-" + status.replace(/\s+/g,"_");
-    if (items.length === 0) cls += " empty-col";
     var laneColor = getLaneColor(status);
-    html += '<div class="board-col ' + cls + '" data-status="' + esc(status) + '"';
-    html += '>';
+    html += boardColumnOpenTag(status, items.length === 0);
     html += '<div class="board-col-header" style="background:' + esc(laneColor) + ';color:var(--text-on-lane)" title="' + esc(getStatusDescription(status)) + '">';
     html += '<span>' + esc(getStatusDisplayName(status)) + '</span>';
     html += '<span class="count">' + items.length + '</span>';
@@ -5419,7 +5414,7 @@ function applyListFilters() {
     html += "<td>" + esc(t.title || "Untitled") + (t.archived ? ' <span class="archived-badge">archived</span>' : "") + (t.comment_count ? ' <span style="color:var(--text-muted);font-size:.75rem" title="' + t.comment_count + ' comment' + (t.comment_count === 1 ? '' : 's') + '">\uD83D\uDCAC ' + t.comment_count + '</span>' : '') + "</td>";
     html += "<td>" + esc(t.status || "") + (t.has_active_session ? ' <span class="active-badge"><span class="active-dot"></span>Active</span>' : "") + "</td>";
     html += "<td>";
-    if (t.priority) html += '<span class="badge pri-' + esc(t.priority) + '">' + esc(t.priority) + "</span>";
+    if (t.priority) html += '<span class="badge pri-' + classToken(t.priority) + '">' + esc(t.priority) + "</span>";
     html += "</td>";
     html += "<td>" + esc(t.type || "") + "</td>";
     html += "<td>" + renderActorChip(t.assigned_to, "assignee", true) + "</td>";
@@ -5504,7 +5499,7 @@ async function renderDetail(taskId) {
     } else {
       html += '<div class="detail-meta">';
       if (task.status) html += '<span class="badge badge-stat" title="' + esc(getStatusDescription(task.status)) + '">' + esc(getStatusDisplayName(task.status)) + '</span>';
-      if (task.priority) html += '<span class="badge pri-' + esc(task.priority) + '">' + esc(task.priority) + '</span>';
+      if (task.priority) html += '<span class="badge pri-' + classToken(task.priority) + '">' + esc(task.priority) + '</span>';
       if (task.type) html += '<span class="badge type-badge">' + esc(task.type) + '</span>';
       html += '</div>';
     }
@@ -6297,8 +6292,8 @@ function _renderActivityFilterBar() {
 }
 
 function _renderActivityItem(ev, taskIdMap) {
-  var typeLabel = EVENT_TYPE_LABELS[ev.type] || ev.type.replace(/_/g, " ");
-  var typeColor = EVENT_TYPE_COLORS[ev.type] || "var(--surface-raised)";
+  var typeLabel = ownValue(EVENT_TYPE_LABELS, ev.type) || String(ev.type || "").replace(/_/g, " ");
+  var typeColor = ownValue(EVENT_TYPE_COLORS, ev.type) || "var(--surface-raised)";
   var taskLabel = taskIdMap[ev.task_id] || (ev.task_id ? ev.task_id.slice(0,12) + "\u2026" : "");
   var ts = timeAgo(ev.ts);
 
@@ -6313,7 +6308,7 @@ function _renderActivityItem(ev, taskIdMap) {
   // Actor first (leftmost)
   html += '<span class="activity-item-actor" data-filter-actor="' + esc(ev.actor || '') + '" title="' + esc(ev.actor || '') + '">' + esc(ev.actor || '') + '</span>';
   html += '<div class="activity-item-top">';
-  html += '<span class="activity-type-badge" style="background:' + typeColor + ';color:#fff" data-filter-type="' + esc(ev.type || '') + '" title="' + esc(ev.type || '') + '">' + esc(typeLabel) + '</span>';
+  html += '<span class="activity-type-badge" style="background:' + esc(typeColor) + ';color:#fff" data-filter-type="' + esc(ev.type || '') + '" title="' + esc(ev.type || '') + '">' + esc(typeLabel) + '</span>';
   html += '<a href="#/task/' + esc(ev.task_id || '') + '" style="font-weight:600;color:var(--accent-primary);white-space:nowrap">' + esc(taskLabel) + '</a>';
   html += '<span class="activity-item-summary">' + eventSummary(ev) + '</span>';
   html += '</div>';

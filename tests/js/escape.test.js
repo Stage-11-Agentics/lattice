@@ -13,7 +13,16 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const STATIC = path.join(__dirname, "..", "..", "src", "lattice", "dashboard", "static");
-const { esc, basePath, apiUrl } = require(path.join(STATIC, "escape.js"));
+const {
+  esc,
+  classToken,
+  ownValue,
+  statusDisplayName,
+  legendItemHtml,
+  boardColumnOpenTag,
+  basePath,
+  apiUrl,
+} = require(path.join(STATIC, "escape.js"));
 
 // Every script the page loads from this repo, plus the page itself.
 const PAGE_FILES = [
@@ -63,6 +72,91 @@ test("esc: hostile board text cannot leave a quoted attribute or open a tag", ()
 
 test("esc: ampersands are escaped first, so entities are not double-decoded", () => {
   assert.equal(esc("&#39;"), "&amp;#39;");
+});
+
+// Hostile workflow labels and statuses (review round 1): they must render as
+// text and never open a tag, leave an attribute, or add an event handler.
+const HOSTILE_LABELS = [
+  "</span><img src=x onerror=alert(1)>",
+  'x"onmouseover="alert(1)',
+  "x' onmouseover='alert(1)",
+  "in progress<script>alert(1)</script>",
+  "a b\tc",
+  "constructor",
+  "__proto__",
+];
+
+// Every tag in `html` is one of `tags`, its attributes are well-formed quoted
+// name="value" pairs from `attrs`, no attribute is an event handler, every
+// class is a safe token list, and no text holds a raw "<" or ">".
+function assertSafeMarkup(html, tags, attrs) {
+  const tagRe = /<\/?([a-zA-Z0-9]+)([^>]*)>/g;
+  let m;
+  let last = 0;
+  while ((m = tagRe.exec(html))) {
+    const text = html.slice(last, m.index);
+    assert.ok(!/[<>]/.test(text), `raw markup in text ${JSON.stringify(text)}`);
+    last = tagRe.lastIndex;
+    assert.ok(tags.includes(m[1].toLowerCase()), `unexpected tag <${m[1]}> in ${html}`);
+    const attrText = m[2];
+    assert.ok(/^(\s+[a-z-]+="[^"<>]*")*\s*$/.test(attrText), `malformed attributes: ${attrText}`);
+    for (const a of attrText.matchAll(/([a-z-]+)="([^"]*)"/g)) {
+      assert.ok(attrs.includes(a[1]), `unexpected attribute ${a[1]} in ${html}`);
+      assert.ok(!/^on/i.test(a[1]), `event handler attribute ${a[1]}`);
+      if (a[1] === "class") assert.ok(/^[a-z0-9_ -]*$/.test(a[2]), `unsafe class "${a[2]}"`);
+    }
+  }
+  assert.ok(!/[<>]/.test(html.slice(last)), "raw markup after the last tag");
+}
+
+test("classToken: only [a-z0-9_-], whitespace as _", () => {
+  assert.equal(classToken("in_progress"), "in_progress");
+  assert.equal(classToken("In Progress"), "in_progress");
+  assert.equal(classToken('x"onmouseover="alert(1)'), "x-onmouseover--alert-1-");
+  assert.equal(classToken(null), "");
+  for (const s of HOSTILE_LABELS) assert.ok(/^[a-z0-9_-]*$/.test(classToken(s)), s);
+});
+
+test("ownValue: never reaches Object.prototype", () => {
+  assert.equal(ownValue({ a: 1 }, "a"), 1);
+  assert.equal(ownValue({}, "constructor"), undefined);
+  assert.equal(ownValue({}, "__proto__"), undefined);
+  assert.equal(ownValue(null, "a"), undefined);
+});
+
+test("statusDisplayName: display_names entry, else the slug; prototype keys ignored", () => {
+  const wf = { display_names: { in_progress: "Doing" } };
+  assert.equal(statusDisplayName(wf, "in_progress"), "Doing");
+  assert.equal(statusDisplayName(wf, "needs_review"), "needs review");
+  assert.equal(statusDisplayName(wf, "constructor"), "constructor");
+  assert.equal(statusDisplayName(undefined, "x_y"), "x y");
+  assert.equal(statusDisplayName(wf, ""), "");
+});
+
+test("legendItemHtml: hostile display names and colours render as text", () => {
+  for (const label of HOSTILE_LABELS) {
+    const wf = { display_names: { s: label } };
+    const html = legendItemHtml(
+      "cv2-legend-item",
+      "cv2-legend-dot",
+      label,
+      statusDisplayName(wf, "s")
+    );
+    assertSafeMarkup(html, ["div", "span"], ["class", "style"]);
+    assert.ok(html.includes(esc(label)), html);
+  }
+});
+
+test("boardColumnOpenTag: a hostile status is a class token and an escaped data attribute", () => {
+  for (const status of HOSTILE_LABELS) {
+    const html = boardColumnOpenTag(status, status.length % 2 === 0);
+    assertSafeMarkup(html, ["div"], ["class", "data-status"]);
+    assert.ok(html.includes(' data-status="' + esc(status) + '"'), html);
+  }
+  assert.equal(
+    boardColumnOpenTag("in_progress", true),
+    '<div class="board-col status-in_progress empty-col" data-status="in_progress">'
+  );
 });
 
 test("basePath: the page's directory, always slash-terminated", () => {

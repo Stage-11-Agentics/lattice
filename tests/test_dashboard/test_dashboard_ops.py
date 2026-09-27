@@ -545,3 +545,84 @@ class TestBoundCheckoutSeam:
         assert status == 400
         assert body["error"]["code"] == "MISSING_ACTOR"
         assert board.calls == [] and board_bytes(ld) == before
+
+
+# ---------------------------------------------------------------------------
+# open-plans scaffolds a missing plan through the operation path (SPEC §10)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def local_recording_dash(populated_lattice_dir, monkeypatch):
+    """A local dashboard over a recording board; opening an editor is recorded, not run."""
+    from lattice.dashboard import server as server_module
+    from lattice.dashboard.server import DashboardBoard
+
+    opened: list[list[str]] = []
+    monkeypatch.setattr(server_module.subprocess, "Popen", lambda cmd, **kw: opened.append(cmd))
+    monkeypatch.setattr(server_module.platform, "system", lambda: "Darwin")
+
+    def no_direct_scaffold(*args: object, **kwargs: object) -> None:
+        raise AssertionError("open-plans wrote the plan outside an operation")
+
+    monkeypatch.setattr("lattice.storage.operations.scaffold_plan", no_direct_scaffold)
+
+    ld, ids = populated_lattice_dir
+    board = _RecordingBoard(ld)
+    server = create_server(ld, "127.0.0.1", 0, board=DashboardBoard(board))
+    thread = threading.Thread(
+        target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
+    )
+    thread.start()
+    try:
+        yield server.server_address[1], ld, ids, board, opened
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+class TestOpenPlans:
+    def test_missing_plan_is_scaffolded_by_task_plan_write(self, local_recording_dash):
+        from lattice.core.plans import scaffold_plan_text
+
+        port, ld, ids, board, opened = local_recording_dash
+        task = ids["backlog"]
+        plan = ld / "plans" / f"{task}.md"
+        assert not plan.exists()
+        before = len(events_of(ld, task))
+
+        status, body = post(port, f"/api/tasks/{task}/open-plans", {})
+
+        assert status == 200, body
+        ((op, params, caller),) = board.calls
+        assert (op, params["task"]) == ("task.plan_write", task)
+        assert caller.actor == "dashboard:web"
+        assert caller.origin["reported"]["source"] == "browser"
+        assert plan.read_text() == scaffold_plan_text(
+            "Fix login redirect", None, "Redirect fails after OAuth."
+        )
+        (written,) = events_of(ld, task)[before:]
+        assert written["type"] == "plan_written"
+        _assert_browser_origin(written, "task.plan_write")
+        assert opened == [["open", str(plan.resolve())]]
+
+    def test_existing_plan_is_opened_without_a_write(self, local_recording_dash):
+        port, ld, ids, board, opened = local_recording_dash
+        task = ids["backlog"]
+        plan = ld / "plans" / f"{task}.md"
+        plan.write_text("# Plan\n\nReal.\n")
+        status, _ = post(port, f"/api/tasks/{task}/open-plans", {})
+        assert status == 200
+        assert board.calls == []
+        assert opened == [["open", str(plan.resolve())]]
+
+    def test_scaffold_still_counts_as_scaffold_for_the_plan_gate(self, local_recording_dash):
+        port, _ld, ids, _board, _opened = local_recording_dash
+        task = ids["backlog"]
+        post(port, f"/api/tasks/{task}/open-plans", {})
+        for step in ("in_planning", "planned"):
+            post(port, f"/api/tasks/{task}/status", {"status": step})
+        status, body = post(port, f"/api/tasks/{task}/status", {"status": "in_progress"})
+        assert status == 422
+        assert body["error"]["code"] == "PLAN_REQUIRED"

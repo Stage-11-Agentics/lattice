@@ -360,7 +360,7 @@ function CSS3DRenderer() {
  * ----------------------------------------------------------------------- */
 
 function cube3dStatusColor(status) {
-  return CUBE3D_STATUS_COLORS[status] || '#6b7280';
+  return ownValue(CUBE3D_STATUS_COLORS, status) || '#6b7280';
 }
 
 /* needs_human is an orthogonal flag: when set, override status color with amber. */
@@ -669,10 +669,7 @@ function _cube3dCreateHUD() {
   var legendHtml = '<div class="cube3d-legend">';
   legendHtml += '<div class="cube3d-legend-title">Statuses</div>';
   statuses.forEach(function(s) {
-    var c = cube3dStatusColor(s);
-    legendHtml += '<div class="cube3d-legend-item">'
-      + '<span class="cube3d-legend-dot" style="background:' + c + '"></span>'
-      + '<span>' + s.replace(/_/g, ' ') + '</span></div>';
+    legendHtml += legendItemHtml('cube3d-legend-item', 'cube3d-legend-dot', cube3dStatusColor(s), getStatusDisplayName(s));
   });
   legendHtml += '<div class="cube3d-legend-divider"></div>';
   legendHtml += '<div class="cube3d-legend-title">Edges</div>';
@@ -684,9 +681,7 @@ function _cube3dCreateHUD() {
   };
   for (var et in edgeTypes) {
     if (edgeTypes.hasOwnProperty(et)) {
-      legendHtml += '<div class="cube3d-legend-item">'
-        + '<span class="cube3d-legend-line" style="background:' + CUBE3D_EDGE_COLORS[et] + '"></span>'
-        + '<span>' + edgeTypes[et] + '</span></div>';
+      legendHtml += legendItemHtml('cube3d-legend-item', 'cube3d-legend-line', CUBE3D_EDGE_COLORS[et], edgeTypes[et]);
     }
   }
   legendHtml += '</div>';
@@ -875,7 +870,7 @@ function _cube3dShowCard(node) {
   el.style.borderLeftColor = statusColor;
   el.innerHTML = '<div class="cube3d-card-header">'
     + '<span class="cube3d-card-id">' + esc(node.short_id || node.id.substring(0, 8)) + '</span>'
-    + '<span class="cube3d-card-status" style="background:' + statusColor + '">'
+    + '<span class="cube3d-card-status" style="background:' + esc(statusColor) + '">'
     + esc(getStatusDisplayName(node.status || '')) + '</span>'
     + '</div>'
     + '<div class="cube3d-card-title">' + esc(node.title || 'Untitled') + '</div>'
@@ -937,7 +932,7 @@ function _cube3dRenderWorkspacePanel(node, fullData) {
   var html = '<div class="cube3d-workspace-header">'
     + '<span class="cube3d-workspace-id">'
     + esc(node.short_id || node.id.substring(0, 12)) + '</span>'
-    + '<span class="cube3d-workspace-status" style="background:' + statusColor + '">'
+    + '<span class="cube3d-workspace-status" style="background:' + esc(statusColor) + '">'
     + esc(getStatusDisplayName(node.status || '')) + '</span>'
     + '</div>'
     + '<div class="cube3d-workspace-title">'

@@ -23,7 +23,16 @@ NODE_TEST_FILE = REPO_ROOT / "tests" / "js" / "escape.test.js"
 STATIC = REPO_ROOT / "src" / "lattice" / "dashboard" / "static"
 INDEX_HTML = STATIC / "index.html"
 
-ESCAPE_IDENTIFIERS = ["esc", "basePath", "apiUrl"]
+ESCAPE_IDENTIFIERS = [
+    "esc",
+    "classToken",
+    "ownValue",
+    "statusDisplayName",
+    "legendItemHtml",
+    "boardColumnOpenTag",
+    "basePath",
+    "apiUrl",
+]
 
 
 def _definition_pattern(name: str) -> str:
@@ -75,3 +84,18 @@ def test_assets_and_api_calls_use_the_base_path() -> None:
     assert (
         re.search(r"fetch\(", html.replace("fetch(apiUrl(BASE_PATH, path), opts)", "")) is None
     ), "every fetch goes through api()/apiPost(), which resolve against the base path"
+
+
+def test_status_and_legend_markup_goes_through_the_tested_helpers() -> None:
+    """Where workflow statuses and display names reach markup (review round 1)."""
+    html = INDEX_HTML.read_text()
+    assert "html += boardColumnOpenTag(status, items.length === 0);" in html
+    assert "return statusDisplayName(config && config.workflow, slug);" in html
+    assert not re.search(r'"status-"\s*\+\s*status', html), (
+        "board lane class built from a raw status"
+    )
+    assert not re.search(r"pri-' \+ esc\(", html), "priority class must be a classToken"
+    for name in ("cube-v2.js", "cube3d.js"):
+        js = (STATIC / name).read_text()
+        assert js.count("legendItemHtml(") >= 2, f"{name} legends must use legendItemHtml"
+        assert 'legend-dot" style="background:\' +' not in js
