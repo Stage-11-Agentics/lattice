@@ -91,3 +91,46 @@ def test_a_death_just_before_the_deadline_is_not_dropped(ctx) -> None:
     with pytest.raises(pytest.fail.Exception, match=r"exited \(4\) without a report"):
         _run_for(0.75, results, {5: child}, stop, grace=0.5)
     assert time.monotonic() - started < 3
+
+
+# ---------------------------------------------------------------------------
+# The clients' separate filesystem (EVALUATION AC-42, PR #90): fails, never skips
+# ---------------------------------------------------------------------------
+
+
+def test_the_device_policy_refuses_one_filesystem_and_accepts_two(tmp_path) -> None:
+    from tests.torture.client_fs import assert_separate_filesystems
+
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    with pytest.raises(AssertionError, match="are on one filesystem"):
+        assert_separate_filesystems(a, b, device=lambda _p: 7)
+    assert_separate_filesystems(a, b, device=lambda p: 1 if p == a else 2)
+
+
+def test_the_client_directory_is_removed_however_the_block_ends(tmp_path) -> None:
+    from contextlib import contextmanager
+
+    from tests.torture.client_fs import separate_client_filesystem
+
+    @contextmanager
+    def fake_mount():
+        yield tmp_path
+
+    with pytest.raises(RuntimeError), separate_client_filesystem(fake_mount) as path:
+        (path / "mirror").mkdir()
+        raise RuntimeError("the run failed")
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_no_separate_filesystem_is_a_failure_not_a_skip(monkeypatch) -> None:
+    import sys
+
+    from tests.torture import client_fs
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(client_fs.os, "access", lambda *_a: False)
+    with pytest.raises(AssertionError, match="/dev/shm is not a writable directory"):
+        with client_fs.platform_mount():
+            pass
