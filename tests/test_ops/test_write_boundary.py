@@ -59,7 +59,9 @@ RAW_WRITERS: dict[str, str] = {
     "lattice.cli.review_cmds": "the review text's temp file in the system temp dir",
     "lattice.core.agent_spawn": "the spawn prompt and output temp files (tmp-prompts/, runtime)",
     "lattice.core.review": "review_state/ records, failures.jsonl and temp prompts (runtime)",
-    "lattice.integrations.c11": "the c11 bridge's state file in the user's data dir",
+    "lattice.integrations.c11": "the c11 bridge's state file in the user's data dir, and the "
+    "trident pane's prompt under <cwd>/.lattice/tmp-prompts/ (runtime; refused on a hosted "
+    "checkout whose .lattice is not a real directory, SPEC §9.4)",
     "lattice.remote.cache": "cache control (SPEC §6.1): cache/incoming staging, cache/rescued, "
     "cache/applying, cache/unreachable_until",
     "lattice.remote.acked": "cache/acked.jsonl and its lock (cache control, SPEC §6.1, §9.2)",

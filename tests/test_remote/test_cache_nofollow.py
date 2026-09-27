@@ -326,3 +326,43 @@ def test_a_normal_cache_is_unchanged_by_the_guard(hosted_env: HostedEnv, synced:
         assert directory.stat().st_mode & 0o777 == 0o700
     assert run_cli(synced, "cache", "clear").exit_code == 0
     assert run_cli(synced, "list").exit_code == 0
+
+
+@pytest.mark.parametrize(("component", "kind"), SHAPES)
+def test_a_trident_pane_never_writes_its_prompt_through_the_reviewed_checkout(
+    component: str,
+    kind: str,
+    hosted_env: HostedEnv,
+    synced: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Triple review hands a ``--worktree`` distinct from the task's board to the
+    c11 pane, which writes its prompt under ``<worktree>/.lattice/tmp-prompts/``.
+    A bound worktree whose ``.lattice`` or ``cache`` is unsafe is refused before
+    any pane is created or any prompt written, from a safe board too."""
+    import lattice.cli.c11_bridge as bridge
+    import lattice.integrations.c11 as c11
+    from lattice.core import review
+
+    kept = _make_shape(synced, component, kind, tmp_path / "outside")
+    before = [_snapshot(path) for path in kept]
+    panes: list[str] = []
+    monkeypatch.setenv("C11_WORKSPACE_ID", "workspace:1")
+    monkeypatch.setattr(bridge, "c11_available", lambda: True)
+    monkeypatch.setattr(c11, "_new_pane", lambda *a, **k: panes.append("new-pane"))
+
+    ok, message = c11.spawn_one_in_current_workspace(
+        "prompt", tab_title="t", description="d", cwd=synced
+    )
+    assert not ok and "a hosted checkout's cache must be a real directory" in message
+
+    board = tmp_path / "safe-board" / ".lattice"
+    board.mkdir(parents=True)
+    ok, message = review.run_triple_review(
+        board, "task_x", "code-review", "agent:dev", short_id="DEM-1", worktree=synced
+    )
+    assert not ok and "a hosted checkout's cache must be a real directory" in message
+    assert panes == []
+    assert not (board / "review_state").exists()
+    assert [_snapshot(path) for path in kept] == before
