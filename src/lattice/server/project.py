@@ -31,7 +31,7 @@ from typing import Any, TypeVar
 from lattice.core.config import serialize_config
 from lattice.core.errors import OpError
 from lattice.core.ids import generate_op_id
-from lattice.ops.base import Caller, OpResult, execute
+from lattice.ops.base import Caller, OpResult, check_path_component, execute
 from lattice.server import control
 from lattice.server.floors import ShortIdFloors
 from lattice.server.journal import (
@@ -48,7 +48,12 @@ from lattice.server.log import ServerLog
 from lattice.storage.fs import MutationKind, atomic_write, ensure_dir, recording, unlink_path
 from lattice.storage.locks import LockTimeout
 from lattice.storage.operations import AuthoritativeLogError, discover_task_authorities
-from lattice.storage.ownership import owning_board, release_owner_flock, try_owner_flock
+from lattice.storage.ownership import (
+    board_scope,
+    owning_board,
+    release_owner_flock,
+    try_owner_flock,
+)
 
 T = TypeVar("T")
 
@@ -60,6 +65,7 @@ STATES = (LOADED, LOADING, UNLOADED, UNAVAILABLE)
 CONFIG_WRITING_OPS = frozenset(
     {"board.set_project_code", "board.set_subproject_code", "board.set_dashboard_config"}
 )
+CONFIG_WRITERS = CONFIG_WRITING_OPS | {"server.set_config"}
 
 #: Files an admin may edit by hand while the server runs; detected by stat at
 #: each admission and journaled as ``external`` (SPEC §8.7).
@@ -97,6 +103,49 @@ def _stat_key(path: Path) -> tuple[int, int, int] | None:
     except OSError:
         return None
     return (st.st_mtime_ns, st.st_size, st.st_ino)
+
+
+class MutationTracker:
+    """The write recorder's callback for one server write.
+
+    Keeps every mutation kind per path, in order, and refuses any mutation of
+    ``config.json`` by an operation that may not change it (SPEC §3.9): the
+    three board-config operations (whose own key checks apply) and the
+    server's ``server.set_config``.
+    """
+
+    def __init__(self, board: Path, op: str) -> None:
+        self.board = board.resolve()
+        self.op = op
+        self.config_path = self.board / "config.json"
+        self.kinds: dict[Path, list[str]] = {}
+
+    def __call__(self, path: Path, kind: MutationKind) -> None:
+        if path == self.config_path and self.op not in CONFIG_WRITERS:
+            raise OpError(
+                "FORBIDDEN",
+                f"operation {self.op} may not change config.json; board configuration "
+                "changes only through 'lattice server project config' on the server host.",
+                {"reason": "CONFIG_ADMIN_ONLY", "kind": kind},
+            )
+        self.kinds.setdefault(path, []).append(kind)
+
+    def relative_paths(self) -> list[str]:
+        return sorted(_relative(self.board, p) for p in self.kinds)
+
+    def lengths(self) -> dict[str, int]:
+        """Length after the write of every log this write only appended to (and that
+        still exists): the journal's ``lengths`` (SPEC §8.6). A path with any
+        other mutation (created whole, replaced, unlinked) is in ``paths`` only."""
+        lengths: dict[str, int] = {}
+        for path, kinds in self.kinds.items():
+            if not all(k == "append" for k in kinds):
+                continue
+            try:
+                lengths[_relative(self.board, path)] = path.stat().st_size
+            except FileNotFoundError:
+                continue
+        return dict(sorted(lengths.items()))
 
 
 class Project:
@@ -302,78 +351,86 @@ class Project:
 
         This is the one function H-22a wraps in a transaction.
         """
-        assert self.journal is not None
-        board = self.board
-        config_path = (board / "config.json").resolve()
-        appended: set[Path] = set()
-        touched: list[Path] = []
-
-        def before_mutation(path: Path, kind: MutationKind) -> None:
-            if path == config_path and kind in ("create", "replace"):
-                if request.op not in CONFIG_WRITING_OPS:
-                    raise OpError(
-                        "FORBIDDEN",
-                        f"operation {request.op} may not change config.json; board "
-                        "configuration changes only through "
-                        "'lattice server project config' on the server host.",
-                        {"reason": "CONFIG_ADMIN_ONLY"},
-                    )
-            if kind == "append":
-                appended.add(path)
-            touched.append(path)
-
-        if request.caller.actor_name is not None and request.authorize_identity is not None:
-            request.authorize_identity(self.session_permission_identity(request.caller.actor_name))
-
+        tracker = MutationTracker(self.board, request.op)
+        caller = request.caller
+        if caller.actor_name is not None and request.authorize_identity is not None:
+            # SPEC §3.1, §3.7: validate the name, resolve, authorize; execute touches.
+            check_path_component(caller.actor_name, "session name")
+            request.authorize_identity(self.session_permission_identity(caller.actor_name))
         try:
             result = execute(
-                board,
+                self.board,
                 request.op,
                 request.params,
-                request.caller,
+                caller,
                 run_hooks=False,
-                on_mutation=before_mutation,
+                on_mutation=tracker,
             )
         except BaseException:
-            if touched:
-                self.log.warning(
-                    "uncommitted_writes",
-                    project=self.slug,
-                    op=request.op,
-                    op_id=request.caller.origin.get("op_id"),
-                    paths=sorted({_relative(board, p) for p in touched}),
-                )
+            self._log_uncommitted(tracker, request.op, caller.origin.get("op_id"))
             raise
-        lengths = {}
-        for path in sorted(appended):
-            try:
-                lengths[_relative(board, path)] = path.stat().st_size
-            except OSError:
-                continue
         task_id = (result.task or {}).get("id")
         if task_id is None and result.events:
             task_id = result.events[0].get("task_id")
-        seq, line = self.journal.append(
-            {
-                "op": request.op,
-                "op_id": request.caller.origin.get("op_id"),
-                "fp": request.fp,
-                "token_id": request.token_id,
-                "task_id": task_id,
-                "event_ids": [e.get("id") for e in result.events],
-                "paths": list(result.paths),
-                "lengths": lengths,
-            }
+        seq, line = self._commit(
+            op=request.op,
+            op_id=caller.origin.get("op_id"),
+            fp=request.fp,
+            token_id=request.token_id,
+            task_id=task_id,
+            event_ids=[e.get("id") for e in result.events],
+            paths=list(result.paths),
+            tracker=tracker,
         )
         self.floors.observe_events(result.events)
-        self._remember_watched()
         return WriteOutcome(result=result, seq=seq, journal_line=line)
+
+    def _commit(
+        self,
+        *,
+        op: str,
+        op_id: str | None,
+        fp: str | None,
+        token_id: str | None,
+        task_id: str | None,
+        event_ids: list,
+        paths: list[str],
+        tracker: MutationTracker,
+    ) -> tuple[int, dict]:
+        """Append the journal line: the operation's commit point (SPEC §8.6 step 5)."""
+        assert self.journal is not None
+        seq, line = self.journal.append(
+            {
+                "op": op,
+                "op_id": op_id,
+                "fp": fp,
+                "token_id": token_id,
+                "task_id": task_id,
+                "event_ids": event_ids,
+                "paths": paths,
+                "lengths": tracker.lengths(),
+            }
+        )
+        self._remember_watched()
+        return seq, line
+
+    def _log_uncommitted(self, tracker: MutationTracker, op: str, op_id: str | None) -> None:
+        # H-22a replaces this with rollback from the undo log.
+        if tracker.kinds:
+            self.log.warning(
+                "uncommitted_writes",
+                project=self.slug,
+                op=op,
+                op_id=op_id,
+                paths=tracker.relative_paths(),
+            )
 
     def session_permission_identity(self, actor_name: str) -> str:
         """``agent:<base_name>`` of the session *actor_name* names (read only).
 
         The stand-in for H-5's step-3 hook: under the work lock nothing can
-        change the session between this read and ``execute``'s own.
+        change the session between this read and ``execute``'s own. The caller
+        has already checked *actor_name* is one safe path component.
         """
         from lattice.core.actors import build_actor_dict
         from lattice.storage.sessions import resolve_session
@@ -389,26 +446,33 @@ class Project:
     # -- server-started transactions -----------------------------------------
 
     def set_config(self, changes: dict[str, Any]) -> dict:
-        """Apply an allowlisted review-workflow change (SPEC §8.2) and journal it."""
-        assert self.journal is not None
+        """Apply an allowlisted review-workflow change (SPEC §8.2) and journal it.
+
+        The same owner, recorder, and journal seam as an operation, as
+        ``server.set_config`` with a server-minted ``op_id`` and ``token_id: null``.
+        """
+        op = "server.set_config"
+        op_id = generate_op_id()
+        tracker = MutationTracker(self.board, op)
         config = json.loads((self.board / "config.json").read_text(encoding="utf-8"))
         config.update(changes)
-        with recording() as recorder:
-            atomic_write(self.board / "config.json", serialize_config(config))
+        try:
+            with board_scope(self.board), recording(tracker) as recorder:
+                atomic_write(self.board / "config.json", serialize_config(config))
+        except BaseException:
+            self._log_uncommitted(tracker, op, op_id)
+            raise
         paths = recorder.relative_paths(self.board)
-        seq, _ = self.journal.append(
-            {
-                "op": "server.set_config",
-                "op_id": generate_op_id(),
-                "fp": fingerprint("server.set_config", {"set": changes}, None, None, {}, None),
-                "token_id": None,
-                "task_id": None,
-                "event_ids": [],
-                "paths": paths,
-                "lengths": {},
-            }
+        seq, _ = self._commit(
+            op=op,
+            op_id=op_id,
+            fp=fingerprint(op, {"set": changes}, None, None, {}, None),
+            token_id=None,
+            task_id=None,
+            event_ids=[],
+            paths=paths,
+            tracker=tracker,
         )
-        self._remember_watched()
         return {"project": self.slug, "set": changes, "seq": seq, "paths": paths}
 
     # -- reads -------------------------------------------------------------
