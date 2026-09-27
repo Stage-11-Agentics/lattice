@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from lattice.ops.base import CommonParams, OpContext, OpResult, operation
+from lattice.server import admin
 from lattice.server.testing import ServerHandle
 from lattice.server.transactions import read_receipt, read_undo_log
 from lattice.storage.fs import atomic_write, jsonl_append
@@ -30,7 +31,9 @@ def _op(server: ServerHandle, token: str, op: str, params: dict, op_id: str) -> 
     return status, body
 
 
-def test_a_legacy_utf8_receipt_reads_and_replays(server: ServerHandle, token: str) -> None:
+def test_a_legacy_utf8_receipt_reads_and_replays(
+    server: ServerHandle, token: str, root: Path
+) -> None:
     task = create_task(server, token)
     op_id = "op_01K5ZZZZZZZZZZZZZZZZZZZZZZ"
     params = {"task": task["id"], "text": UNICODE}
@@ -62,6 +65,14 @@ def test_a_legacy_utf8_receipt_reads_and_replays(server: ServerHandle, token: st
     receipt = read_receipt(board, project.index[key])
     assert receipt["result"] == first["data"]["result"]
     assert UNICODE.encode() in path.read_bytes()  # the file really is raw UTF-8 now
+
+    # H-22 rebuilds the idempotency index from the receipts on disk at load: a
+    # reload must read the legacy line and point at it.
+    admin.project_lifecycle(root, "alpha", "reload")
+    project = server.project("alpha")
+    rebuilt = project.index[key]
+    assert rebuilt.offset == offsets[rebuilt.seq][0]
+    assert read_receipt(board, rebuilt)["result"] == first["data"]["result"]
 
     status, again = _op(server, token, "task.comment", params, op_id)
     assert status == 200, again

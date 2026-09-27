@@ -58,12 +58,16 @@ RAW_WRITERS: dict[str, str] = {
     "lattice.integrations.c11": "the c11 bridge's state file in the user's data dir",
     "lattice.remote.cache": "cache control (SPEC §6.1): cache/incoming staging, cache/rescued, "
     "cache/applying, cache/unreachable_until",
+    "lattice.remote.acked": "cache/acked.jsonl and its lock (cache control, SPEC §6.1, §9.2)",
     "lattice.remote.config": "remotes.json in the user's config dir",
     "lattice.remote.session": "cache/unreachable_until and cache/acked.jsonl (cache control)",
     "lattice.server.control": "control requests under hosted/control (server control)",
     "lattice.server.journal": "the journal under hosted/ (server control)",
     "lattice.server.transactions": "undo logs and receipts under hosted/ (server control)",
     "lattice.server.admin": "the server root: server.json, projects/.creating-* staging",
+    "lattice.server.audit": "the project directory's .gitignore, outside the board (SPEC §8.10)",
+    "lattice.server.importer": "project import: reads the source without following links, "
+    "then renames or removes its projects/.importing-* staging (SPEC §11)",
     "lattice.server.testing": "server.json of a test server root (test helper)",
     "lattice.storage.agent_spawn": "the headless agent's prompt and log files (tmp-prompts/)",
     "lattice.storage.ownership": "the owner lease file hosted/owner.lock (server control)",
@@ -78,6 +82,11 @@ BOARD_OWNERS: dict[str, str] = {
     "lattice.server.journal": "the owning server: journal and epoch rotation (SPEC §8.6)",
     "lattice.server.admin": "project create and offline maintenance on the server host (§8.2)",
     "lattice.server.registry": "the owning server: server_status.json in the server root (SPEC §8.2)",
+    "lattice.server.recovery": "the owning server: startup recovery from undo logs, receipts, "
+    "and the journal (SPEC §8.7)",
+    "lattice.server.audit": "the owning server: hosted/audit.json settings (SPEC §8.10)",
+    "lattice.server.importer": "project import on the server host, doctor-gated, into its "
+    "staging board (SPEC §11)",
     "lattice.server.tokens": "tokens.json in the server root, outside any board (SPEC §8.3)",
     "lattice.remote.cache": "the cache syncer, the only writer of a cache (SPEC §6.2, §9.4)",
     "lattice.remote.follower": "the follower's cache/follower.json (cache control, SPEC §6.1, "
@@ -98,7 +107,6 @@ BOARD_OWNERS: dict[str, str] = {
 #: (operator ruling on PR #82): the converting ticket deletes its own entry.
 AWAITING_CONVERSION: dict[str, str] = {
     "lattice.dashboard.server": "H-13a (LAT-313): the dashboard's POSTs call operations",
-    "lattice.mcp.tools": "H-21 (LAT-315): the MCP tools call operations",
 }
 
 #: Methods that change the filesystem when the receiver is a path whose type the

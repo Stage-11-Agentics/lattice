@@ -219,9 +219,10 @@ def write_owned_review_state(lattice_dir: Path, state: dict, claim: str | None) 
 
 
 def take_over_review_state(lattice_dir: Path, state: dict) -> str:
-    """Write *state* as a new claim of the slot whatever it holds (an auto-fired
-    child adopting its parent's claim, or ``--force`` on a hosted checkout), and
-    return the new claim's token. The previous holder's later writes then no-op."""
+    """Write *state* as a new claim of the slot whatever it holds (``--force`` on a
+    hosted checkout), and return the new claim's token. The previous holder's later
+    writes then no-op. An auto-fired child adopting its parent's claim uses the
+    compare-and-swap :func:`adopt_review_state` instead."""
     claim = new_claim_token()
     with _state_lock(lattice_dir, state["task_id"]):
         write_review_state(lattice_dir, {**state, "claim": claim})
