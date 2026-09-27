@@ -65,14 +65,14 @@ def _parse(stamp: Any) -> datetime | None:
 
 
 def _ensure_cache_dir(cache_dir: Path) -> None:
-    """Create the cache's ``.lattice/`` and ``cache/`` where missing, 0700
-    whatever the umask; existing directories are left alone."""
+    """Create the cache's ``.lattice/`` and ``cache/`` where missing, and set
+    both to 0700 whatever the umask. An existing ``.lattice/`` may be a fresh
+    clone's runtime leftovers (SPEC §9.3), made with a looser mode."""
     for directory in (cache_dir.parent, cache_dir):
-        try:
+        with contextlib.suppress(FileExistsError):
             os.mkdir(directory, PRIVATE_DIR_MODE)
-        except FileExistsError:
-            continue
-        os.chmod(directory, PRIVATE_DIR_MODE)
+        if not os.path.islink(directory):
+            os.chmod(directory, PRIVATE_DIR_MODE)
 
 
 @contextlib.contextmanager

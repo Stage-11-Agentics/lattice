@@ -545,6 +545,35 @@ def test_a_ledger_only_cache_is_still_bootstrapped_by_the_next_command(
     """A client that dies in the post-write sync of its first write leaves a
     ``.lattice/`` holding only the ledger: not a cache marker, not board data.
     The next command bootstraps the cache with a reset, as for a fresh clone."""
+    repo = hosted_env.bind(make_repo(tmp_path / "fresh"))
+    _first_write_dies_syncing(hosted_env, repo, monkeypatch)
+    lattice_dir = repo / ".lattice"
+    left = sorted(p.relative_to(lattice_dir).as_posix() for p in lattice_dir.rglob("*"))
+    assert left == ["cache", "cache/acked.jsonl", "cache/acked.lock"]
+    _assert_next_command_bootstraps(repo)
+
+
+def test_runtime_leftovers_are_made_private_by_the_first_write(
+    hosted_env: HostedEnv, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A teammate's clone after the move keeps ignored runtime leftovers in a
+    0755 ``.lattice/`` (SPEC §9.3). A first write that dies in its post-write
+    sync still leaves ``.lattice/`` and ``cache/`` 0700 (SPEC §9.4)."""
+    repo = hosted_env.bind(make_repo(tmp_path / "fresh"))
+    lattice_dir = repo / ".lattice"
+    for leftover in (lattice_dir, lattice_dir / "locks", lattice_dir / ".daemon"):
+        leftover.mkdir()
+        leftover.chmod(0o755)
+    (lattice_dir / ".daemon" / "dashboard.log").write_text("old\n")
+    _first_write_dies_syncing(hosted_env, repo, monkeypatch)
+    for directory in (lattice_dir, lattice_dir / "cache"):
+        assert directory.stat().st_mode & 0o777 == 0o700
+    _assert_next_command_bootstraps(repo)
+
+
+def _first_write_dies_syncing(env: HostedEnv, repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``create`` as the checkout's first command, killed in its post-write
+    sync; the acknowledged write is in the ledger all the same."""
     from lattice.remote import session
 
     class Died(BaseException):
@@ -553,15 +582,16 @@ def test_a_ledger_only_cache_is_still_bootstrapped_by_the_next_command(
     def die(*_args: Any, **_kwargs: Any) -> bool:
         raise Died("killed during the post-write sync")
 
-    repo = hosted_env.bind(make_repo(tmp_path / "fresh"))
     with monkeypatch.context() as m:
         m.setattr(session, "catch_up_and_report", die)
         with pytest.raises(Died):
             run_cli(repo, "create", "Dies syncing", "--actor", "agent:dev")
-    lattice_dir = repo / ".lattice"
-    left = sorted(p.relative_to(lattice_dir).as_posix() for p in lattice_dir.rglob("*"))
-    assert left == ["cache", "cache/acked.jsonl", "cache/acked.lock"]
+    lines = acked.read(repo / ".lattice" / "cache")
+    assert [x["op_id"] for x in lines] == [journal(env)[-1]["op_id"]]
     session.reset_process_state()
+
+
+def _assert_next_command_bootstraps(repo: Path) -> None:
     listed = run_cli(repo, "list", "--json")
     assert listed.exit_code == 0, listed.output
     assert [t["title"] for t in json.loads(listed.stdout)["data"]] == ["Dies syncing"]
@@ -575,5 +605,9 @@ def test_the_ledger_creates_missing_directories_private(tmp_path: Path) -> None:
     (tmp_path / "checkout").mkdir()
     acked.record(cache, op_id="op_01J9Z0000000000000000000GG", project="p", epoch=None, seq=1)
     assert [x["op_id"] for x in acked.read(cache)] == ["op_01J9Z0000000000000000000GG"]
+    for directory in (cache.parent, cache):
+        assert directory.stat().st_mode & 0o777 == 0o700
+        directory.chmod(0o755)
+    acked.record(cache, op_id="op_01J9Z0000000000000000000HH", project="p", epoch=None, seq=2)
     for directory in (cache.parent, cache):
         assert directory.stat().st_mode & 0o777 == 0o700
