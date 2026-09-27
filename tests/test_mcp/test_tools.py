@@ -123,7 +123,8 @@ class TestUpdate:
 
     def test_update_rejects_status(self, lattice_env: Path):
         task = lattice_create(title="Status", actor="human:test")
-        with pytest.raises(ValueError, match="lattice_status"):
+        # The CLI's rule and wording (SPEC §12): status moves through lattice_status.
+        with pytest.raises(ValueError, match="to change status"):
             lattice_update(task_id=task["id"], actor="human:test", fields={"status": "done"})
 
     def test_update_custom_field(self, lattice_env: Path):
@@ -610,7 +611,7 @@ class TestAttach:
         event_count = len(event_path.read_text().splitlines())
         lattice_attach(**kwargs)
         assert len(event_path.read_text().splitlines()) == event_count
-        with pytest.raises(ValueError, match="different task-local linkage"):
+        with pytest.raises(ValueError, match="different role or criterion links"):
             lattice_attach(**kwargs, role="review")
 
     def test_same_artifact_can_link_to_a_second_task(
@@ -645,7 +646,7 @@ class TestAttach:
         source.write_text("no")
         metadata_before = set((lattice_dir / "artifacts" / "meta").glob("*"))
         payload_before = set((lattice_dir / "artifacts" / "payload").glob("*"))
-        with pytest.raises(ValueError, match="archived"):
+        with pytest.raises(ValueError, match="NOT_FOUND"):
             lattice_attach(
                 task_id=task["id"],
                 source=str(source),

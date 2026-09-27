@@ -320,8 +320,13 @@ class HostedBoard:
                 execute_hooks(config, self.cache_dir, event["task_id"], event)
 
 
-def resolve_board(start: Path | None = None) -> LocalBoard | HostedBoard:
+def resolve_board(
+    start: Path | None = None, *, honor_env: bool = True
+) -> LocalBoard | HostedBoard:
     """The board a write started in *start* (default: the cwd) belongs to.
+
+    ``honor_env=False`` ignores ``LATTICE_ROOT``: an MCP tool call that names its
+    ``lattice_root`` starts there, whatever the server process's environment.
 
     A hosted checkout (SPEC §9.3) resolves to a :class:`HostedBoard`. Raises
     ``OpError("NOT_INITIALIZED")`` when there is no board, and the routing and
@@ -330,7 +335,7 @@ def resolve_board(start: Path | None = None) -> LocalBoard | HostedBoard:
     """
     start_dir = Path.cwd() if start is None else Path(start)
     try:
-        root = find_root(start_dir)
+        root = find_root(start_dir, honor_env=honor_env)
     except LatticeRootError as exc:
         raise OpError("NOT_INITIALIZED", str(exc)) from exc
     if root is None:

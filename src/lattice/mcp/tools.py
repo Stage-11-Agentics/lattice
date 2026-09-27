@@ -1,73 +1,38 @@
-"""MCP tool registrations for Lattice — write and read operations."""
+"""MCP tool registrations for Lattice — write and read operations.
+
+Every write tool is a thin wrapper over a named operation (``lattice.ops``),
+exactly like the CLI command it mirrors: it resolves its board with
+``lattice.boards.resolve_board`` starting from the call's ``lattice_root``,
+builds the operation's params and ``Caller``, and returns the ``OpResult`` in
+the shape this tool has always returned. The rules (transition graph, plan
+gate, review-cycle limit, completion policies, validation) live in the
+operation only, so an MCP call is refused wherever the CLI is (SPEC §12,
+§14 G-6). Read tools catch the board up first (a no-op on a local board).
+
+Each call's ``lattice_root`` is its operation's starting directory, so the
+origin of every event names that call's own worktree and branch (SPEC §4),
+even when one server process writes to several checkouts.
+"""
 
 from __future__ import annotations
 
 import json
 import logging
-import mimetypes
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 from pydantic import Field
 
-from lattice.core.artifacts import ARTIFACT_TYPES, create_artifact_metadata, serialize_artifact
-from lattice.core.acceptance_criteria import (
-    allocate_criterion_id,
-    criterion_without_history,
-    find_criterion,
-    normalize_criterion_ids,
-    normalize_outcome,
-    validate_criterion_id,
-)
-from lattice.core.comments import (
-    materialize_comments,
-    validate_comment_body,
-    validate_comment_for_delete,
-    validate_comment_for_edit,
-    validate_comment_for_react,
-    validate_comment_for_reply,
-    validate_emoji,
-)
-from lattice.core.config import (
-    VALID_PRIORITIES,
-    VALID_URGENCIES,
-    configured_event_prefix,
-    get_configured_roles,
-    validate_completion_policy,
-    validate_status,
-    validate_task_type,
-    validate_transition,
-)
-from lattice.core.events import (
-    BUILTIN_EVENT_TYPES,
-    create_event,
-    get_actor_display,
-    validate_custom_event_type,
-)
-from lattice.core.ids import (
-    generate_artifact_id,
-    generate_task_id,
-    is_short_id,
-    validate_actor,
-    validate_id,
-)
-from lattice.core.relationships import RELATIONSHIP_TYPES, validate_relationship_type
-from lattice.core.tasks import apply_event_to_snapshot
+from lattice.boards import LocalBoard, git_worktree, resolve_board
+from lattice.core.acceptance_criteria import criterion_without_history
+from lattice.core.comments import materialize_comments
+from lattice.core.events import get_actor_display
+from lattice.core.ids import is_short_id, validate_id
 from lattice.mcp.server import mcp
-from lattice.storage.fs import (
-    atomic_write,
-    ensure_artifact_dirs,
-    find_root,
-)
-from lattice.storage.operations import (
-    AuthoritativeLogError,
-    TaskMutationDecision,
-    discover_task_authorities,
-    mutate_task,
-    read_task_authority,
-    scaffold_plan,
-)
-from lattice.storage.readers import read_task_events
+from lattice.ops import Caller, OpError, OpResult
+from lattice.storage.operations import discover_task_authorities, read_task_authority
 from lattice.storage.short_ids import resolve_short_id
 
 logger = logging.getLogger(__name__)
@@ -78,19 +43,66 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def _find_root(lattice_root: str | None = None) -> Path:
-    """Resolve the lattice root directory, returning the .lattice/ path."""
-    if lattice_root:
-        root = Path(lattice_root)
-        lattice_dir = root / ".lattice"
-        if not lattice_dir.is_dir():
-            raise ValueError(f"No .lattice/ directory found at {root}")
-        return lattice_dir
+class LatticeToolError(ValueError):
+    """A refused tool call: the operation's error code, message, and details.
 
-    root = find_root()
-    if root is None:
-        raise ValueError("No .lattice/ directory found. Run 'lattice init' first.")
-    return root / ".lattice"
+    A ``ValueError``, as every MCP tool error has always been; the message
+    leads with the code so an agent can tell ``PLAN_REQUIRED`` from
+    ``INVALID_TRANSITION`` without parsing prose.
+    """
+
+    def __init__(self, code: str, message: str, details: dict | None = None):
+        super().__init__(f"{code}: {message}")
+        self.code = code
+        self.message = message
+        self.details = details or {}
+
+
+@contextmanager
+def _tool_errors() -> Iterator[None]:
+    """Report an ``OpError`` as a ``LatticeToolError``."""
+    try:
+        yield
+    except OpError as exc:
+        raise LatticeToolError(exc.code, exc.message, exc.details) from exc
+
+
+def _board(lattice_root: str | None) -> LocalBoard:
+    """The board this call's starting directory belongs to.
+
+    ``lattice_root`` names the starting directory and wins over the server
+    process's ``LATTICE_ROOT``; without it the call starts in the cwd, where
+    ``LATTICE_ROOT`` applies as it does for the CLI.
+    """
+    with _tool_errors():
+        if lattice_root:
+            return resolve_board(Path(lattice_root), honor_env=False)
+        return resolve_board()
+
+
+def _execute(
+    lattice_root: str | None,
+    op_name: str,
+    params: dict,
+    actor: str,
+    *,
+    board: LocalBoard | None = None,
+    attestations: dict | None = None,
+    config: dict | None = None,
+) -> OpResult:
+    """Run *op_name* on the call's board as *actor*."""
+    board = board if board is not None else _board(lattice_root)
+    caller = Caller(actor=actor, attestations=attestations or {})
+    with _tool_errors():
+        return board.execute(op_name, params, caller, config=config)
+
+
+def _read_dir(lattice_root: str | None) -> Path:
+    """The call's board directory, caught up before it is read (SPEC §9.5)."""
+    board = _board(lattice_root)
+    with _tool_errors():
+        board.refresh()
+    return board.lattice_dir
 
 
 def _load_config(lattice_dir: Path) -> dict:
@@ -99,7 +111,7 @@ def _load_config(lattice_dir: Path) -> dict:
 
 
 def _resolve_task_id(lattice_dir: Path, raw_id: str) -> str:
-    """Resolve a short ID or ULID to the canonical task ULID."""
+    """Resolve a short ID or ULID to the canonical task ULID (read tools)."""
     if validate_id(raw_id, "task"):
         return raw_id
 
@@ -113,37 +125,26 @@ def _resolve_task_id(lattice_dir: Path, raw_id: str) -> str:
     raise ValueError(f"Invalid task ID format: '{raw_id}'.")
 
 
-def _read_snapshot(lattice_dir: Path, task_id: str) -> dict | None:
-    """Read an active task's event-authoritative snapshot."""
-    try:
-        authority = read_task_authority(lattice_dir, task_id, allow_missing=True)
-    except AuthoritativeLogError:
-        return None
-    if authority is None or authority.location != "active":
-        return None
-    return authority.snapshot
+def _update_pairs(fields: dict) -> list[str]:
+    """``lattice_update``'s ``fields`` as ``task.update``'s ``field=value`` pairs.
 
-
-def _read_snapshot_or_error(lattice_dir: Path, task_id: str) -> dict:
-    """Read a task snapshot or raise ValueError."""
-    snapshot = _read_snapshot(lattice_dir, task_id)
-    if snapshot is None:
-        raise ValueError(f"Task {task_id} not found.")
-    return snapshot
-
-
-def _validate_actor(actor: str) -> None:
-    """Validate actor format or raise ValueError."""
-    if not validate_actor(actor):
-        raise ValueError(
-            f"Invalid actor format: '{actor}'. "
-            "Expected prefix:identifier (e.g., human:atin, agent:claude)."
-        )
-
-
-def _read_events(lattice_dir: Path, task_id: str, is_archived: bool = False) -> list[dict]:
-    """Read all events for a task from the JSONL log."""
-    return read_task_events(lattice_dir, task_id, is_archived=is_archived)
+    Values are text, as on the command line: a list of tags is joined with
+    commas, a number or boolean is written as JSON, and ``None``, a list for
+    any other field, or an object is refused.
+    """
+    pairs: list[str] = []
+    for name, value in fields.items():
+        if name == "tags" and isinstance(value, list) and all(isinstance(t, str) for t in value):
+            value = ",".join(value)
+        elif isinstance(value, bool | int | float) and not isinstance(value, str):
+            value = json.dumps(value)
+        elif not isinstance(value, str):
+            raise LatticeToolError(
+                "VALIDATION_ERROR",
+                f"Invalid value for '{name}': expected text (as with 'lattice update').",
+            )
+        pairs.append(f"{name}={value}")
+    return pairs
 
 
 # ---------------------------------------------------------------------------
@@ -171,95 +172,17 @@ def lattice_create(
     ] = None,
 ) -> dict:
     """Create a new Lattice task. Returns the task snapshot."""
-    lattice_dir = _find_root(lattice_root)
-    config = _load_config(lattice_dir)
-    _validate_actor(actor)
-
-    # Apply defaults
-    if status is None:
-        status = config.get("default_status", "backlog")
-    if priority is None:
-        priority = config.get("default_priority", "medium")
-
-    # Validate inputs
-    if not validate_status(config, status):
-        valid = ", ".join(config.get("workflow", {}).get("statuses", []))
-        raise ValueError(f"Invalid status: '{status}'. Valid statuses: {valid}.")
-    if not validate_task_type(config, task_type):
-        valid = ", ".join(config.get("task_types", []))
-        raise ValueError(f"Invalid task type: '{task_type}'. Valid types: {valid}.")
-    if priority not in VALID_PRIORITIES:
-        valid = ", ".join(VALID_PRIORITIES)
-        raise ValueError(f"Invalid priority: '{priority}'. Valid priorities: {valid}.")
-    if assigned_to is not None and not validate_actor(assigned_to):
-        raise ValueError(f"Invalid assigned-to format: '{assigned_to}'.")
-
-    # Parse tags
-    tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
-
-    # Generate or validate task ID
-    if task_id is not None:
-        if not validate_id(task_id, "task"):
-            raise ValueError(f"Invalid task ID format: '{task_id}'.")
-    else:
-        task_id = generate_task_id()
-
-    prefix = configured_event_prefix(config)
-
-    requested_data: dict = {
+    params = {
         "title": title,
-        "status": status,
         "type": task_type,
         "priority": priority,
+        "status": status,
+        "description": description,
+        "tags": tags,
+        "assigned_to": assigned_to,
+        "id": task_id,
     }
-    if description is not None:
-        requested_data["description"] = description
-    if tag_list:
-        requested_data["tags"] = tag_list
-    if assigned_to is not None:
-        requested_data["assigned_to"] = assigned_to
-
-    compare_fields = (
-        "title",
-        "type",
-        "priority",
-        "status",
-        "description",
-        "tags",
-        "assigned_to",
-    )
-
-    def decide(context):  # noqa: ANN001, ANN202
-        if context.snapshot is not None:
-            existing_data = {name: context.events[0]["data"].get(name) for name in compare_fields}
-            new_data = {name: requested_data.get(name) for name in compare_fields}
-            existing_data["tags"] = existing_data.get("tags") or []
-            new_data["tags"] = new_data.get("tags") or []
-            if existing_data != new_data:
-                raise ValueError(f"Conflict: task {task_id} exists with different data.")
-            return TaskMutationDecision(idempotent=True)
-        event_data = dict(requested_data)
-        if context.reserved_short_id is not None:
-            event_data["short_id"] = context.reserved_short_id
-        event = create_event(type="task_created", task_id=task_id, actor=actor, data=event_data)
-        return TaskMutationDecision(events=[event])
-
-    snapshot = mutate_task(
-        lattice_dir,
-        task_id,
-        decide,
-        config,
-        source="absent",
-        may_emit_lifecycle=True,
-        project_prefix=prefix,
-        run_hooks=True,
-    ).snapshot
-    short_id = snapshot.get("short_id")
-
-    # Scaffold plan file
-    scaffold_plan(lattice_dir, task_id, title, short_id, description)
-
-    return snapshot
+    return _execute(lattice_root, "task.create", params, actor).task
 
 
 @mcp.tool()
@@ -275,36 +198,8 @@ def lattice_criterion_add(
     ] = None,
 ) -> dict:
     """Add an optional task-local acceptance criterion."""
-    lattice_dir = _find_root(lattice_root)
-    config = _load_config(lattice_dir)
-    _validate_actor(actor)
-    task_id = _resolve_task_id(lattice_dir, task_id)
-    outcome = normalize_outcome(outcome)
-    if criterion_id is not None:
-        validate_criterion_id(criterion_id)
-
-    def decide(context):  # noqa: ANN001, ANN202
-        snapshot = context.snapshot
-        assert snapshot is not None
-        chosen_id = criterion_id or allocate_criterion_id(snapshot.get("acceptance_criteria", []))
-        existing = find_criterion(snapshot, chosen_id)
-        if existing is not None:
-            if criterion_id is not None and existing["revisions"][0]["outcome"] == outcome:
-                return TaskMutationDecision(value=chosen_id, idempotent=True)
-            raise ValueError(
-                f"Acceptance criterion {chosen_id} already exists with different initial prose."
-            )
-        event = create_event(
-            "acceptance_criterion_added",
-            task_id,
-            actor,
-            {"criterion_id": chosen_id, "outcome": outcome, "revision": 1},
-        )
-        return TaskMutationDecision(events=[event], value=chosen_id)
-
-    result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
-    criterion = find_criterion(result.snapshot, result.callback_value)
-    return {"task_id": task_id, "criterion": criterion, "snapshot": result.snapshot}
+    params = {"task": task_id, "outcome": outcome, "id": criterion_id}
+    return _execute(lattice_root, "task.criterion_add", params, actor).value
 
 
 @mcp.tool()
@@ -318,42 +213,8 @@ def lattice_criterion_edit(
     ] = None,
 ) -> dict:
     """Revise an active task-local acceptance criterion."""
-    lattice_dir = _find_root(lattice_root)
-    config = _load_config(lattice_dir)
-    _validate_actor(actor)
-    task_id = _resolve_task_id(lattice_dir, task_id)
-    validate_criterion_id(criterion_id)
-    outcome = normalize_outcome(outcome)
-
-    def decide(context):  # noqa: ANN001, ANN202
-        snapshot = context.snapshot
-        assert snapshot is not None
-        criterion = find_criterion(snapshot, criterion_id)
-        if criterion is None:
-            raise ValueError(f"Acceptance criterion {criterion_id} not found.")
-        if criterion["retired"]:
-            raise ValueError(f"Acceptance criterion {criterion_id} is retired.")
-        if criterion["outcome"] == outcome:
-            return TaskMutationDecision(idempotent=True)
-        event = create_event(
-            "acceptance_criterion_edited",
-            task_id,
-            actor,
-            {
-                "criterion_id": criterion_id,
-                "from_outcome": criterion["outcome"],
-                "outcome": outcome,
-                "revision": criterion["revision"] + 1,
-            },
-        )
-        return TaskMutationDecision(events=[event])
-
-    result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
-    return {
-        "task_id": task_id,
-        "criterion": find_criterion(result.snapshot, criterion_id),
-        "snapshot": result.snapshot,
-    }
+    params = {"task": task_id, "criterion_id": criterion_id, "outcome": outcome}
+    return _execute(lattice_root, "task.criterion_edit", params, actor).value
 
 
 @mcp.tool()
@@ -366,34 +227,8 @@ def lattice_criterion_retire(
     ] = None,
 ) -> dict:
     """Retire a criterion without deleting its immutable history."""
-    lattice_dir = _find_root(lattice_root)
-    config = _load_config(lattice_dir)
-    _validate_actor(actor)
-    task_id = _resolve_task_id(lattice_dir, task_id)
-    validate_criterion_id(criterion_id)
-
-    def decide(context):  # noqa: ANN001, ANN202
-        snapshot = context.snapshot
-        assert snapshot is not None
-        criterion = find_criterion(snapshot, criterion_id)
-        if criterion is None:
-            raise ValueError(f"Acceptance criterion {criterion_id} not found.")
-        if criterion["retired"]:
-            raise ValueError(f"Acceptance criterion {criterion_id} is already retired.")
-        event = create_event(
-            "acceptance_criterion_retired",
-            task_id,
-            actor,
-            {"criterion_id": criterion_id, "revision": criterion["revision"]},
-        )
-        return TaskMutationDecision(events=[event])
-
-    result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
-    return {
-        "task_id": task_id,
-        "criterion": find_criterion(result.snapshot, criterion_id),
-        "snapshot": result.snapshot,
-    }
+    params = {"task": task_id, "criterion_id": criterion_id}
+    return _execute(lattice_root, "task.criterion_retire", params, actor).value
 
 
 @mcp.tool()
@@ -406,7 +241,7 @@ def lattice_criteria(
     ] = None,
 ) -> dict:
     """List criteria for an active or archived task."""
-    lattice_dir = _find_root(lattice_root)
+    lattice_dir = _read_dir(lattice_root)
     task_id = _resolve_task_id(lattice_dir, task_id)
     authority = read_task_authority(lattice_dir, task_id, allow_missing=True)
     if authority is None:
@@ -438,89 +273,11 @@ def lattice_update(
     ] = None,
 ) -> dict:
     """Update task fields. Returns the updated snapshot."""
-    lattice_dir = _find_root(lattice_root)
-    config = _load_config(lattice_dir)
-    _validate_actor(actor)
-    task_id = _resolve_task_id(lattice_dir, task_id)
-    if not fields:
-        raise ValueError("No fields provided to update.")
-
-    updatable = {"title", "description", "priority", "urgency", "type", "tags"}
-    redirect = {
-        "status": "Use lattice_status to change status.",
-        "assigned_to": "Use lattice_assign to change assignment.",
-    }
-
-    from lattice.core.events import utc_now
-
-    shared_ts = utc_now()
-    normalized: list[tuple[str, object]] = []
-    for field, value in fields.items():
-        if field in redirect:
-            raise ValueError(redirect[field])
-
-        if field.startswith("custom_fields."):
-            key = field[len("custom_fields.") :]
-            if not key:
-                raise ValueError("Invalid custom field: 'custom_fields.' requires a key name.")
-            normalized.append((field, value))
-            continue
-
-        if field not in updatable:
-            valid = ", ".join(sorted(updatable))
-            raise ValueError(
-                f"Unknown or non-updatable field: '{field}'. Updatable fields: {valid}. "
-                "Use custom_fields.<key> for custom data."
-            )
-
-        # Validate enum fields
-        if field == "priority" and value not in VALID_PRIORITIES:
-            raise ValueError(f"Invalid priority: '{value}'. Valid: {', '.join(VALID_PRIORITIES)}.")
-        if field == "urgency" and value not in VALID_URGENCIES:
-            raise ValueError(f"Invalid urgency: '{value}'. Valid: {', '.join(VALID_URGENCIES)}.")
-        if field == "type" and not validate_task_type(config, value):
-            raise ValueError(
-                f"Invalid task type: '{value}'. Valid: {', '.join(config.get('task_types', []))}."
-            )
-
-        if field == "tags":
-            if isinstance(value, str):
-                new_value = [t.strip() for t in value.split(",") if t.strip()]
-            else:
-                new_value = value
-        else:
-            new_value = value
-        normalized.append((field, new_value))
-
-    def decide(context):  # noqa: ANN001, ANN202
-        snapshot = context.snapshot
-        assert snapshot is not None
-        events: list[dict] = []
-        for field, new_value in normalized:
-            if field.startswith("custom_fields."):
-                old_value = (snapshot.get("custom_fields") or {}).get(
-                    field[len("custom_fields.") :]
-                )
-            else:
-                old_value = snapshot.get(field)
-            comparable_old = old_value or [] if field == "tags" else old_value
-            if comparable_old == new_value:
-                continue
-            event = create_event(
-                type="field_updated",
-                task_id=task_id,
-                actor=actor,
-                data={"field": field, "from": old_value, "to": new_value},
-                ts=shared_ts,
-            )
-            events.append(event)
-            snapshot = apply_event_to_snapshot(snapshot, event)
-        return TaskMutationDecision(events=events, idempotent=not events)
-
-    result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
+    params = {"task": task_id, "pairs": _update_pairs(fields)}
+    result = _execute(lattice_root, "task.update", params, actor)
     if result.idempotent:
-        return {"message": "No changes", "snapshot": result.snapshot}
-    return result.snapshot
+        return {"message": "No changes", "snapshot": result.task}
+    return result.task
 
 
 @mcp.tool()
@@ -534,49 +291,54 @@ def lattice_status(
         str | None, Field(description="Path to project directory containing .lattice/")
     ] = None,
 ) -> dict:
-    """Change a task's status. Returns the updated snapshot."""
-    lattice_dir = _find_root(lattice_root)
-    config = _load_config(lattice_dir)
-    _validate_actor(actor)
-    task_id = _resolve_task_id(lattice_dir, task_id)
-    if not validate_status(config, new_status):
-        valid = ", ".join(config.get("workflow", {}).get("statuses", []))
-        raise ValueError(f"Invalid status: '{new_status}'. Valid statuses: {valid}.")
+    """Change a task's status with the CLI's rules. Returns the updated snapshot.
 
-    def decide(context):  # noqa: ANN001, ANN202
-        snapshot = context.snapshot
-        assert snapshot is not None
-        current_status = snapshot["status"]
-        if current_status == new_status:
-            return TaskMutationDecision(idempotent=True)
-        if not validate_transition(config, current_status, new_status):
-            if not force:
-                raise ValueError(
-                    f"Invalid transition from {current_status} to {new_status}. "
-                    "Set force=True and provide a reason to override."
-                )
-            if not reason:
-                raise ValueError("reason is required when force=True.")
-        policy_ok, policy_failures = validate_completion_policy(config, snapshot, new_status)
-        if not policy_ok:
-            if not force:
-                raise ValueError(
-                    f"Completion policy not satisfied: {'; '.join(policy_failures)}. "
-                    "Set force=True and provide a reason to override."
-                )
-            if not reason:
-                raise ValueError("reason is required when force=True.")
-        event_data: dict = {"from": current_status, "to": new_status}
-        if force:
-            event_data["force"] = True
-            event_data["reason"] = reason
-        event = create_event(type="status_changed", task_id=task_id, actor=actor, data=event_data)
-        return TaskMutationDecision(events=[event])
+    The transition graph, the plan gate, the review-cycle limit, and the
+    completion policies apply as they do for ``lattice status``; ``force``
+    with a ``reason`` overrides them as ``--force --reason`` does.
+    """
+    from lattice.cli.attestations import completion_attestations
+    from lattice.core.attestations import STALE_ATTESTATION
+    from lattice.core.config import resolve_status_input
 
-    result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
+    board = _board(lattice_root)
+    config = board.load_config()
+    target_status = resolve_status_input(config, new_status)
+    worktree = git_worktree(board.start)
+    params = {"task": task_id, "new_status": new_status, "force": force, "reason": reason}
+
+    # The same attestation and single stale-retry as the CLI (SPEC §3.4),
+    # computed in this call's worktree rather than the server's cwd.
+    for attempt in range(2):
+        if attempt:
+            with _tool_errors():
+                board.refresh()
+        attestations = (
+            completion_attestations(board, config, task_id, target_status, worktree=worktree)
+            if worktree is not None
+            else {}
+        )
+        try:
+            result = _execute(
+                lattice_root,
+                "task.status",
+                params,
+                actor,
+                board=board,
+                attestations=attestations,
+                config=config,
+            )
+        except LatticeToolError as exc:
+            stale = exc.code == "COMPLETION_BLOCKED" and (
+                exc.details.get("reason") == STALE_ATTESTATION
+            )
+            if stale and attempt == 0:
+                continue
+            raise
+        break
     if result.idempotent:
-        return {"message": f"Already at status {new_status}", "snapshot": result.snapshot}
-    return result.snapshot
+        return {"message": f"Already at status {result.task['status']}", "snapshot": result.task}
+    return result.task
 
 
 @mcp.tool()
@@ -589,30 +351,11 @@ def lattice_assign(
     ] = None,
 ) -> dict:
     """Assign a task to an actor. Returns the updated snapshot."""
-    lattice_dir = _find_root(lattice_root)
-    config = _load_config(lattice_dir)
-    _validate_actor(actor)
-    _validate_actor(assignee)
-    task_id = _resolve_task_id(lattice_dir, task_id)
-
-    def decide(context):  # noqa: ANN001, ANN202
-        snapshot = context.snapshot
-        assert snapshot is not None
-        current_assigned = snapshot.get("assigned_to")
-        if current_assigned == assignee:
-            return TaskMutationDecision(idempotent=True)
-        event = create_event(
-            type="assignment_changed",
-            task_id=task_id,
-            actor=actor,
-            data={"from": current_assigned, "to": assignee},
-        )
-        return TaskMutationDecision(events=[event])
-
-    result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
+    params = {"task": task_id, "actor_id": assignee}
+    result = _execute(lattice_root, "task.assign", params, actor)
     if result.idempotent:
-        return {"message": f"Already assigned to {assignee}", "snapshot": result.snapshot}
-    return result.snapshot
+        return {"message": f"Already assigned to {assignee}", "snapshot": result.task}
+    return result.task
 
 
 @mcp.tool()
@@ -637,36 +380,14 @@ def lattice_comment(
     ] = None,
 ) -> dict:
     """Add a comment to a task. Returns the updated snapshot."""
-    lattice_dir = _find_root(lattice_root)
-    config = _load_config(lattice_dir)
-    _validate_actor(actor)
-    task_id = _resolve_task_id(lattice_dir, task_id)
-    text = validate_comment_body(text)
-
-    # Validate role against configured completion policy roles
-    if role is not None:
-        configured_roles = get_configured_roles(config)
-        if configured_roles and role not in configured_roles:
-            raise ValueError(
-                f"Unknown role: '{role}'. Valid roles: {', '.join(sorted(configured_roles))}."
-            )
-
-    def decide(context):  # noqa: ANN001, ANN202
-        snapshot = context.snapshot
-        assert snapshot is not None
-        normalized_ids = normalize_criterion_ids(criterion_ids, snapshot=snapshot)
-        event_data: dict = {"body": text}
-        if parent_id is not None:
-            validate_comment_for_reply(list(context.events), parent_id)
-            event_data["parent_id"] = parent_id
-        if role is not None:
-            event_data["role"] = role
-        if normalized_ids:
-            event_data["criterion_ids"] = normalized_ids
-        event = create_event(type="comment_added", task_id=task_id, actor=actor, data=event_data)
-        return TaskMutationDecision(events=[event])
-
-    return mutate_task(lattice_dir, task_id, decide, config, run_hooks=True).snapshot
+    params = {
+        "task": task_id,
+        "text": text,
+        "reply_to": parent_id,
+        "role": role,
+        "criterion": list(criterion_ids or []),
+    }
+    return _execute(lattice_root, "task.comment", params, actor).task
 
 
 @mcp.tool()
@@ -686,45 +407,13 @@ def lattice_link(
     ] = None,
 ) -> dict:
     """Create a relationship between two tasks. Returns the updated source snapshot."""
-    lattice_dir = _find_root(lattice_root)
-    config = _load_config(lattice_dir)
-    _validate_actor(actor)
-    source_id = _resolve_task_id(lattice_dir, source_id)
-    target_id = _resolve_task_id(lattice_dir, target_id)
-
-    if not validate_relationship_type(relationship_type):
-        raise ValueError(
-            f"Invalid relationship type: '{relationship_type}'. "
-            f"Valid: {', '.join(sorted(RELATIONSHIP_TYPES))}."
-        )
-
-    if source_id == target_id:
-        raise ValueError("Cannot create a relationship from a task to itself.")
-
-    target_authority = read_task_authority(lattice_dir, target_id, allow_missing=True)
-    if target_authority is None or target_authority.location != "active":
-        raise ValueError(f"Target task {target_id} not found.")
-
-    event_data: dict = {"type": relationship_type, "target_task_id": target_id}
-    if note is not None:
-        event_data["note"] = note
-
-    def decide(context):  # noqa: ANN001, ANN202
-        snapshot = context.snapshot
-        assert snapshot is not None
-        if any(
-            rel["type"] == relationship_type and rel["target_task_id"] == target_id
-            for rel in snapshot.get("relationships_out", [])
-        ):
-            raise ValueError(
-                f"Duplicate: {relationship_type} relationship to {target_id} already exists."
-            )
-        event = create_event(
-            type="relationship_added", task_id=source_id, actor=actor, data=event_data
-        )
-        return TaskMutationDecision(events=[event])
-
-    return mutate_task(lattice_dir, source_id, decide, config, run_hooks=True).snapshot
+    params = {
+        "task": source_id,
+        "type": relationship_type,
+        "target_task": target_id,
+        "note": note,
+    }
+    return _execute(lattice_root, "task.link", params, actor).task
 
 
 @mcp.tool()
@@ -738,35 +427,8 @@ def lattice_unlink(
     ] = None,
 ) -> dict:
     """Remove a relationship between two tasks. Returns the updated source snapshot."""
-    lattice_dir = _find_root(lattice_root)
-    config = _load_config(lattice_dir)
-    _validate_actor(actor)
-    source_id = _resolve_task_id(lattice_dir, source_id)
-    target_id = _resolve_task_id(lattice_dir, target_id)
-
-    if not validate_relationship_type(relationship_type):
-        raise ValueError(
-            f"Invalid relationship type: '{relationship_type}'. "
-            f"Valid: {', '.join(sorted(RELATIONSHIP_TYPES))}."
-        )
-
-    event_data: dict = {"type": relationship_type, "target_task_id": target_id}
-
-    def decide(context):  # noqa: ANN001, ANN202
-        snapshot = context.snapshot
-        assert snapshot is not None
-        found = any(
-            rel["type"] == relationship_type and rel["target_task_id"] == target_id
-            for rel in snapshot.get("relationships_out", [])
-        )
-        if not found:
-            raise ValueError(f"No {relationship_type} relationship to {target_id}.")
-        event = create_event(
-            type="relationship_removed", task_id=source_id, actor=actor, data=event_data
-        )
-        return TaskMutationDecision(events=[event])
-
-    return mutate_task(lattice_dir, source_id, decide, config, run_hooks=True).snapshot
+    params = {"task": source_id, "type": relationship_type, "target_task": target_id}
+    return _execute(lattice_root, "task.unlink", params, actor).task
 
 
 @mcp.tool()
@@ -792,136 +454,40 @@ def lattice_attach(
     ] = None,
 ) -> dict:
     """Attach a file or URL to a task as an artifact. Returns the artifact metadata."""
-    lattice_dir = _find_root(lattice_root)
-    config = _load_config(lattice_dir)
-    _validate_actor(actor)
-    task_id = _resolve_task_id(lattice_dir, task_id)
+    from lattice.ops.task_attach import SOURCE_NOT_FOUND, encode_payload
 
-    def validate_target(context):  # noqa: ANN001, ANN202
-        snapshot = context.snapshot
-        assert snapshot is not None
-        normalize_criterion_ids(criterion_ids, snapshot=snapshot)
-        return TaskMutationDecision(idempotent=True)
-
-    mutate_task(lattice_dir, task_id, validate_target, config, run_hooks=True)
-    is_url = source.startswith("http://") or source.startswith("https://")
-
-    if role is not None:
-        configured_roles = get_configured_roles(config)
-        if configured_roles and role not in configured_roles:
-            raise ValueError(
-                f"Unknown role: '{role}'. Valid roles: {', '.join(sorted(configured_roles))}."
-            )
-
-    if art_type is None:
-        art_type = "reference" if is_url else "file"
-    if art_type not in ARTIFACT_TYPES:
-        raise ValueError(
-            f"Invalid artifact type: '{art_type}'. Valid: {', '.join(sorted(ARTIFACT_TYPES))}."
-        )
-
-    art_id = artifact_id or generate_artifact_id()
-    if not validate_id(art_id, "art"):
-        raise ValueError(f"Invalid artifact ID format: '{art_id}'.")
-
-    if title is None:
-        title = source if is_url else Path(source).name
-
-    # meta/ and payload/ are scaffolded at init but empty dirs aren't
-    # git-tracked, so cloned installs may lack them (LAT-239).
-    ensure_artifact_dirs(lattice_dir)
-
-    # File handling
-    content_type: str | None = None
-    size_bytes: int | None = None
-    payload_file: str | None = None
-    custom_fields: dict | None = None
-
-    meta_path = lattice_dir / "artifacts" / "meta" / f"{art_id}.json"
-    existing_metadata = (
-        json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else None
-    )
-
-    if existing_metadata is not None:
-        conflict = (
-            existing_metadata.get("type") != art_type or existing_metadata.get("title") != title
-        )
-        if is_url:
-            conflict = conflict or (
-                (existing_metadata.get("custom_fields") or {}).get("url") != source
-            )
-        else:
-            expected_payload = f"{art_id}{Path(source).suffix}"
-            conflict = conflict or (
-                (existing_metadata.get("payload") or {}).get("file") != expected_payload
-            )
-        if conflict:
-            raise ValueError(f"Conflict: artifact {art_id} exists with different data.")
-    elif is_url:
-        custom_fields = {"url": source}
-    else:
+    params: dict[str, Any] = {
+        "task": task_id,
+        "source": source,
+        "type": art_type,
+        "title": title,
+        "summary": summary,
+        "role": role,
+        "criterion": list(criterion_ids or []),
+        "id": artifact_id,
+    }
+    board = _board(lattice_root)
+    # A readable file travels as its content (SPEC §3.8), read only after
+    # every rule that comes before it has passed, as the CLI does: a call with
+    # the bare path writes nothing and is refused for want of the content.
+    if not source.startswith(("http://", "https://")):
         src_path = Path(source)
-        if not src_path.is_file():
-            raise ValueError(f"Source file not found: '{source}'.")
-        dest_path = lattice_dir / "artifacts" / "payload" / f"{art_id}{src_path.suffix}"
-        atomic_write(dest_path, src_path.read_bytes())
-        guessed_type, _ = mimetypes.guess_type(src_path.name)
-        content_type = guessed_type
-        size_bytes = src_path.stat().st_size
-        payload_file = f"{art_id}{src_path.suffix}"
-
-    event_for_metadata = create_event(
-        type="artifact_attached",
-        task_id=task_id,
-        actor=actor,
-        data={"artifact_id": art_id},
-    )
-
-    metadata = existing_metadata or create_artifact_metadata(
-        art_id,
-        art_type,
-        title,
-        created_by=actor,
-        created_at=event_for_metadata["ts"],
-        summary=summary,
-        payload_file=payload_file,
-        content_type=content_type,
-        size_bytes=size_bytes,
-        custom_fields=custom_fields,
-    )
-
-    # Write artifact metadata
-    if existing_metadata is None:
-        atomic_write(meta_path, serialize_artifact(metadata))
-
-    def decide(context):  # noqa: ANN001, ANN202
-        snapshot = context.snapshot
-        assert snapshot is not None
-        normalized_ids = normalize_criterion_ids(criterion_ids, snapshot=snapshot)
-        requested_key = (role, normalized_ids)
-        for existing_event in context.events:
-            if existing_event.get("type") != "artifact_attached":
-                continue
-            data = existing_event.get("data", {})
-            if data.get("artifact_id") != art_id:
-                continue
-            if (data.get("role"), data.get("criterion_ids", [])) != requested_key:
-                raise ValueError(
-                    f"Artifact {art_id} is already attached with different task-local linkage."
-                )
-            return TaskMutationDecision(idempotent=True)
-        event_data: dict = {"artifact_id": art_id}
-        if role is not None:
-            event_data["role"] = role
-        if normalized_ids:
-            event_data["criterion_ids"] = normalized_ids
-        event = create_event(
-            type="artifact_attached", task_id=task_id, actor=actor, data=event_data
-        )
-        return TaskMutationDecision(events=[event])
-
-    mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
-    return metadata
+        if src_path.is_file():
+            try:
+                _execute(lattice_root, "task.attach", params, actor, board=board)
+            except LatticeToolError as exc:
+                if exc.details.get("reason") != SOURCE_NOT_FOUND:
+                    raise
+            try:
+                content = src_path.read_bytes()
+            except OSError as exc:
+                raise LatticeToolError(
+                    "VALIDATION_ERROR",
+                    f"Cannot read source file '{source}': {exc.strerror or exc}.",
+                ) from exc
+            params["source"] = None
+            params["payload"] = encode_payload(src_path.name, content)
+    return _execute(lattice_root, "task.attach", params, actor, board=board).value
 
 
 @mcp.tool()
@@ -933,30 +499,7 @@ def lattice_archive(
     ] = None,
 ) -> dict:
     """Archive a task. Returns the archive event."""
-    lattice_dir = _find_root(lattice_root)
-    config = _load_config(lattice_dir)
-    _validate_actor(actor)
-    task_id = _resolve_task_id(lattice_dir, task_id)
-
-    def decide(context):  # noqa: ANN001, ANN202
-        if context.location == "archived":
-            existing = next(
-                event for event in reversed(context.events) if event["type"] == "task_archived"
-            )
-            return TaskMutationDecision(value=existing, idempotent=True)
-        event = create_event(type="task_archived", task_id=task_id, actor=actor, data={})
-        return TaskMutationDecision(events=[event], value=event)
-
-    return mutate_task(
-        lattice_dir,
-        task_id,
-        decide,
-        config,
-        source="either",
-        destination="archived",
-        may_emit_lifecycle=True,
-        run_hooks=True,
-    ).callback_value
+    return _execute(lattice_root, "task.archive", {"task": task_id}, actor).value
 
 
 @mcp.tool()
@@ -968,49 +511,7 @@ def lattice_unarchive(
     ] = None,
 ) -> dict:
     """Restore an archived task to active status. Returns the unarchive event."""
-    lattice_dir = _find_root(lattice_root)
-    config = _load_config(lattice_dir)
-    _validate_actor(actor)
-    task_id = _resolve_task_id(lattice_dir, task_id)
-
-    def decide(context):  # noqa: ANN001, ANN202
-        if context.location == "active":
-            existing = next(
-                (
-                    event
-                    for event in reversed(context.events)
-                    if event["type"] == "task_unarchived"
-                ),
-                context.events[0],
-            )
-            return TaskMutationDecision(value=existing, idempotent=True)
-        event = create_event(type="task_unarchived", task_id=task_id, actor=actor, data={})
-        return TaskMutationDecision(events=[event], value=event)
-
-    return mutate_task(
-        lattice_dir,
-        task_id,
-        decide,
-        config,
-        source="either",
-        destination="active",
-        may_emit_lifecycle=True,
-        run_hooks=True,
-    ).callback_value
-
-
-def _validate_branch_name(branch: str) -> None:
-    """Validate a branch name for safety.
-
-    Rejects empty/whitespace-only names, names starting with ``-``
-    (git flag injection), and names containing ASCII control characters.
-    """
-    if not branch or not branch.strip():
-        raise ValueError("Branch name must not be empty or whitespace-only.")
-    if branch.startswith("-"):
-        raise ValueError(f"Branch name must not start with '-': '{branch}'.")
-    if any(0 <= ord(c) <= 31 for c in branch):
-        raise ValueError(f"Branch name must not contain control characters: '{branch!r}'.")
+    return _execute(lattice_root, "task.unarchive", {"task": task_id}, actor).value
 
 
 @mcp.tool()
@@ -1024,37 +525,8 @@ def lattice_branch_link(
     ] = None,
 ) -> dict:
     """Link a git branch to a task. Returns the updated snapshot."""
-    # Input validation
-    _validate_branch_name(branch)
-    # Normalize empty repo to None
-    if repo is not None and not repo.strip():
-        repo = None
-
-    lattice_dir = _find_root(lattice_root)
-    config = _load_config(lattice_dir)
-    _validate_actor(actor)
-    task_id = _resolve_task_id(lattice_dir, task_id)
-    _read_snapshot_or_error(lattice_dir, task_id)
-
-    event_data: dict = {"branch": branch}
-    if repo is not None:
-        event_data["repo"] = repo
-
-    def decide(context):  # noqa: ANN001, ANN202
-        snapshot = context.snapshot
-        assert snapshot is not None
-        # Reject duplicates: same (branch, repo) pair
-        for bl in snapshot.get("branch_links", []):
-            if bl["branch"] == branch and bl.get("repo") == repo:
-                repo_display = f" (repo: {repo})" if repo else ""
-                raise ValueError(
-                    f"Duplicate: branch '{branch}'{repo_display} already linked to {task_id}."
-                )
-
-        event = create_event(type="branch_linked", task_id=task_id, actor=actor, data=event_data)
-        return TaskMutationDecision(events=[event])
-
-    return mutate_task(lattice_dir, task_id, decide, config, run_hooks=True).snapshot
+    params = {"task": task_id, "branch": branch, "repo": repo}
+    return _execute(lattice_root, "task.branch_link", params, actor).task
 
 
 @mcp.tool()
@@ -1068,40 +540,8 @@ def lattice_branch_unlink(
     ] = None,
 ) -> dict:
     """Unlink a git branch from a task. Returns the updated snapshot."""
-    # Input validation
-    _validate_branch_name(branch)
-    # Normalize empty repo to None
-    if repo is not None and not repo.strip():
-        repo = None
-
-    lattice_dir = _find_root(lattice_root)
-    config = _load_config(lattice_dir)
-    _validate_actor(actor)
-    task_id = _resolve_task_id(lattice_dir, task_id)
-    _read_snapshot_or_error(lattice_dir, task_id)
-
-    event_data: dict = {"branch": branch}
-    if repo is not None:
-        event_data["repo"] = repo
-
-    def decide(context):  # noqa: ANN001, ANN202
-        snapshot = context.snapshot
-        assert snapshot is not None
-        # Check the branch link exists
-        found = False
-        for bl in snapshot.get("branch_links", []):
-            if bl["branch"] == branch and bl.get("repo") == repo:
-                found = True
-                break
-
-        if not found:
-            repo_display = f" (repo: {repo})" if repo else ""
-            raise ValueError(f"No branch link '{branch}'{repo_display} on {task_id}.")
-
-        event = create_event(type="branch_unlinked", task_id=task_id, actor=actor, data=event_data)
-        return TaskMutationDecision(events=[event])
-
-    return mutate_task(lattice_dir, task_id, decide, config, run_hooks=True).snapshot
+    params = {"task": task_id, "branch": branch, "repo": repo}
+    return _execute(lattice_root, "task.branch_unlink", params, actor).task
 
 
 @mcp.tool()
@@ -1115,28 +555,12 @@ def lattice_event(
     ] = None,
 ) -> dict:
     """Record a custom event on a task. Event type must start with x_. Returns the event."""
-    lattice_dir = _find_root(lattice_root)
-    config = _load_config(lattice_dir)
-    _validate_actor(actor)
-    task_id = _resolve_task_id(lattice_dir, task_id)
-
-    if event_type in BUILTIN_EVENT_TYPES:
-        raise ValueError(
-            f"Event type '{event_type}' is reserved. Custom types must start with 'x_'."
-        )
-    if not validate_custom_event_type(event_type):
-        raise ValueError(
-            f"Invalid custom event type: '{event_type}'. Custom types must start with 'x_'."
-        )
-
-    event_data = data if data is not None else {}
-
-    def decide(context):  # noqa: ANN001, ANN202
-        event = create_event(type=event_type, task_id=task_id, actor=actor, data=event_data)
-        return TaskMutationDecision(events=[event], value=event)
-
-    result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
-    return result.callback_value
+    params = {
+        "task": task_id,
+        "event_type": event_type,
+        "data": json.dumps(data) if data is not None else None,
+    }
+    return _execute(lattice_root, "task.event", params, actor).value
 
 
 @mcp.tool()
@@ -1158,45 +582,14 @@ def lattice_comment_edit(
     ] = None,
 ) -> dict:
     """Edit an existing comment body or role. Returns the updated snapshot."""
-    lattice_dir = _find_root(lattice_root)
-    config = _load_config(lattice_dir)
-    _validate_actor(actor)
-    task_id = _resolve_task_id(lattice_dir, task_id)
-    new_text = validate_comment_body(new_text)
-
-    if role is not None and clear_role:
-        raise ValueError("role and clear_role are mutually exclusive.")
-    if role is not None:
-        configured_roles = get_configured_roles(config)
-        if configured_roles and role not in configured_roles:
-            raise ValueError(
-                f"Unknown role: '{role}'. Valid roles: {', '.join(sorted(configured_roles))}."
-            )
-
-    def decide(context):  # noqa: ANN001, ANN202
-        previous_body, previous_role = validate_comment_for_edit(list(context.events), comment_id)
-        role_requested = role is not None or clear_role
-        target_role = None if clear_role else role
-        if previous_body == new_text and (not role_requested or previous_role == target_role):
-            return TaskMutationDecision(idempotent=True)
-        event_data: dict = {
-            "comment_id": comment_id,
-            "body": new_text,
-            "previous_body": previous_body,
-        }
-        if role_requested:
-            event_data["role"] = target_role
-            if previous_role != target_role:
-                event_data["previous_role"] = previous_role
-        event = create_event(
-            type="comment_edited",
-            task_id=task_id,
-            actor=actor,
-            data=event_data,
-        )
-        return TaskMutationDecision(events=[event])
-
-    return mutate_task(lattice_dir, task_id, decide, config, run_hooks=True).snapshot
+    params = {
+        "task": task_id,
+        "comment_id": comment_id,
+        "new_text": new_text,
+        "role": role,
+        "clear_role": clear_role,
+    }
+    return _execute(lattice_root, "task.comment_edit", params, actor).task
 
 
 @mcp.tool()
@@ -1209,22 +602,8 @@ def lattice_comment_delete(
     ] = None,
 ) -> dict:
     """Soft-delete a comment on a task. Returns the updated snapshot."""
-    lattice_dir = _find_root(lattice_root)
-    config = _load_config(lattice_dir)
-    _validate_actor(actor)
-    task_id = _resolve_task_id(lattice_dir, task_id)
-
-    def decide(context):  # noqa: ANN001, ANN202
-        validate_comment_for_delete(list(context.events), comment_id)
-        event = create_event(
-            type="comment_deleted",
-            task_id=task_id,
-            actor=actor,
-            data={"comment_id": comment_id},
-        )
-        return TaskMutationDecision(events=[event])
-
-    return mutate_task(lattice_dir, task_id, decide, config, run_hooks=True).snapshot
+    params = {"task": task_id, "comment_id": comment_id}
+    return _execute(lattice_root, "task.comment_delete", params, actor).task
 
 
 @mcp.tool()
@@ -1240,38 +619,11 @@ def lattice_react(
     ] = None,
 ) -> dict:
     """Add a reaction to a comment. Idempotent — duplicate reactions are no-ops. Returns the updated snapshot."""
-    lattice_dir = _find_root(lattice_root)
-    config = _load_config(lattice_dir)
-    _validate_actor(actor)
-    task_id = _resolve_task_id(lattice_dir, task_id)
-    if not validate_emoji(emoji):
-        raise ValueError(
-            f"Invalid emoji: '{emoji}'. Must be 1-50 alphanumeric, underscore, or hyphen characters."
-        )
-
-    def decide(context):  # noqa: ANN001, ANN202
-        events = list(context.events)
-        validate_comment_for_react(events, comment_id)
-        for comment in materialize_comments(events):
-            candidates = [comment, *comment.get("replies", [])]
-            if any(
-                candidate["id"] == comment_id
-                and actor in candidate.get("reactions", {}).get(emoji, [])
-                for candidate in candidates
-            ):
-                return TaskMutationDecision(idempotent=True)
-        event = create_event(
-            type="reaction_added",
-            task_id=task_id,
-            actor=actor,
-            data={"comment_id": comment_id, "emoji": emoji},
-        )
-        return TaskMutationDecision(events=[event])
-
-    result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
+    params = {"task": task_id, "comment_id": comment_id, "emoji": emoji}
+    result = _execute(lattice_root, "task.react", params, actor)
     if result.idempotent:
-        return {"message": "Reaction already exists", "snapshot": result.snapshot}
-    return result.snapshot
+        return {"message": "Reaction already exists", "snapshot": result.task}
+    return result.task
 
 
 @mcp.tool()
@@ -1287,35 +639,8 @@ def lattice_unreact(
     ] = None,
 ) -> dict:
     """Remove a reaction from a comment. Returns the updated snapshot."""
-    lattice_dir = _find_root(lattice_root)
-    config = _load_config(lattice_dir)
-    _validate_actor(actor)
-    task_id = _resolve_task_id(lattice_dir, task_id)
-    if not validate_emoji(emoji):
-        raise ValueError(
-            f"Invalid emoji: '{emoji}'. Must be 1-50 alphanumeric, underscore, or hyphen characters."
-        )
-
-    def decide(context):  # noqa: ANN001, ANN202
-        events = list(context.events)
-        validate_comment_for_react(events, comment_id)
-        found = any(
-            candidate["id"] == comment_id
-            and actor in candidate.get("reactions", {}).get(emoji, [])
-            for comment in materialize_comments(events)
-            for candidate in [comment, *comment.get("replies", [])]
-        )
-        if not found:
-            raise ValueError(f"No '{emoji}' reaction by {actor} on comment {comment_id}.")
-        event = create_event(
-            type="reaction_removed",
-            task_id=task_id,
-            actor=actor,
-            data={"comment_id": comment_id, "emoji": emoji},
-        )
-        return TaskMutationDecision(events=[event])
-
-    return mutate_task(lattice_dir, task_id, decide, config, run_hooks=True).snapshot
+    params = {"task": task_id, "comment_id": comment_id, "emoji": emoji}
+    return _execute(lattice_root, "task.unreact", params, actor).task
 
 
 # ---------------------------------------------------------------------------
@@ -1331,7 +656,7 @@ def lattice_comments(
     ] = None,
 ) -> list[dict]:
     """List comments on a task with threading, edit history, and reactions. Returns materialized comment tree."""
-    lattice_dir = _find_root(lattice_root)
+    lattice_dir = _read_dir(lattice_root)
     task_id = _resolve_task_id(lattice_dir, task_id)
 
     authority = read_task_authority(lattice_dir, task_id, allow_missing=True)
@@ -1352,7 +677,7 @@ def lattice_list(
     ] = None,
 ) -> list[dict]:
     """List active Lattice tasks with optional filters. Returns list of task snapshots."""
-    lattice_dir = _find_root(lattice_root)
+    lattice_dir = _read_dir(lattice_root)
     snapshots = [
         authority.snapshot
         for authority in discover_task_authorities(lattice_dir, include_archived=False)
@@ -1387,7 +712,7 @@ def lattice_show(
     ] = None,
 ) -> dict:
     """Show detailed task information including events. Returns full task data."""
-    lattice_dir = _find_root(lattice_root)
+    lattice_dir = _read_dir(lattice_root)
     task_id = _resolve_task_id(lattice_dir, task_id)
 
     authority = read_task_authority(lattice_dir, task_id, allow_missing=True)
@@ -1429,7 +754,7 @@ def lattice_config(
     ] = None,
 ) -> dict:
     """Read the Lattice project configuration. Returns the config.json contents."""
-    lattice_dir = _find_root(lattice_root)
+    lattice_dir = _read_dir(lattice_root)
     return _load_config(lattice_dir)
 
 
@@ -1441,7 +766,7 @@ def lattice_doctor(
     ] = None,
 ) -> dict:
     """Check Lattice data integrity. Returns a diagnostic report."""
-    lattice_dir = _find_root(lattice_root)
+    lattice_dir = _read_dir(lattice_root)
     issues: list[dict] = []
 
     # Check config

@@ -46,14 +46,18 @@ def completion_attestations(
     target_status: str,
     *,
     prospective: list[str] | None = None,
+    worktree: Path | None = None,
 ) -> dict:
     """``{"reachable_review_commits": [...]}`` when the policy for *target_status*
     requires a reachable review commit and the command runs in a git worktree;
-    ``{}`` otherwise (the policy then reports it lacks repository context)."""
+    ``{}`` otherwise (the policy then reports it lacks repository context).
+
+    *worktree* defaults to the cwd's; the MCP server passes the one its tool
+    call's ``lattice_root`` names."""
     policy = config.get("workflow", {}).get("completion_policies", {}).get(target_status, {})
     if not policy.get("require_reachable_review_commit"):
         return {}
-    worktree = caller_worktree()
+    worktree = worktree if worktree is not None else caller_worktree()
     if worktree is None:
         return {}
     snapshot = _read_snapshot(board.lattice_dir, raw_task)

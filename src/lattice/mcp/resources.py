@@ -7,7 +7,6 @@ from pathlib import Path
 
 from lattice.core.ids import is_short_id, validate_id
 from lattice.mcp.server import mcp
-from lattice.storage.fs import find_root
 from lattice.storage.operations import (
     discover_task_authorities,
     read_task_authority,
@@ -22,11 +21,16 @@ from lattice.storage.short_ids import resolve_short_id
 
 
 def _find_root_dir() -> Path:
-    """Resolve the .lattice/ directory."""
-    root = find_root()
-    if root is None:
-        raise ValueError("No .lattice/ directory found.")
-    return root / ".lattice"
+    """Resolve the .lattice/ directory, caught up before it is read (SPEC §12)."""
+    from lattice.boards import resolve_board
+    from lattice.ops import OpError
+
+    try:
+        board = resolve_board()
+        board.refresh()
+    except OpError as exc:
+        raise ValueError(exc.message) from exc
+    return board.lattice_dir
 
 
 def _resolve_task_id(lattice_dir: Path, raw_id: str) -> str:
