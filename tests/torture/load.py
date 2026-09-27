@@ -21,6 +21,9 @@ Roles and cadence (the same shape as H-13b's harness):
   :data:`READ_INTERVAL_SECONDS`, so each read is a catch-up plus a ``list``
   (SPEC §9.5). Readers start staggered across one interval.
 - A **follower** is ``lattice sync --follow`` on its own checkout.
+- A **viewer** (H-13b) is a process standing in for a browser on the hosted
+  dashboard (``tests/torture/viewer.py``): it logs in, holds a session stream,
+  and refetches the page's panels once per journal entry, without coalescing.
 - A **writer** is a thread with one keep-alive HTTP connection, posting one
   mixed operation (with an ``op_id``) every :data:`WRITE_INTERVAL_SECONDS`;
   its latency is one operation's round trip, what ``HostedBoard.execute`` waits
@@ -28,8 +31,9 @@ Roles and cadence (the same shape as H-13b's harness):
 
 Every reader, follower, writer, and loader has its own token, as separate
 machines would (one token would hit ``max_inflight_per_token`` and the per-token
-rate). A reader or follower that dies fails the run at once; every reader ends
-its output with a ``done`` line.
+rate). A reader, follower, or viewer that dies fails the run at once; every
+reader and viewer ends its output with a ``done`` line, so a death just before
+the window closes still fails the run.
 
 **Client filesystem (EVALUATION AC-42).** The clients stand in for separate
 machines, so their checkouts and caches live on a filesystem other than the
@@ -71,11 +75,17 @@ from tests.torture.harness import (
     lattice_json,
     spawn_lattice,
     stop_process,
+    track,
 )
 from tests.torture.rehearsal import read_jsonl, start_scripted
 
 READ_INTERVAL_SECONDS = 5.0
 WRITE_INTERVAL_SECONDS = 0.2
+#: A viewer's budget, after the stop, to refetch every entry it already received.
+VIEWER_DRAIN_SECONDS = 120.0
+#: What the page refetches per entry: the board, stats, activity, and config panels.
+VIEWER_PANELS = ("/api/tasks", "/api/stats", "/api/activity", "/api/config")
+VIEWER = Path(__file__).with_name("viewer.py")
 
 
 #: The macOS RAM disk's size: room for 30 caches of a 1,000-task board and more.
@@ -307,6 +317,42 @@ class LoadRig:
             readers.append((proc, path, out))
         return readers
 
+    def start_viewers(self, n: int) -> list[tuple[subprocess.Popen, Path]]:
+        """*n* hosted-dashboard viewers, each its own process and token, until
+        :meth:`stop_viewers`."""
+        viewers = []
+        for k in range(n):
+            out = self.work / f"viewer-{k}.json"
+            spec = self.work / f"viewer-{k}.spec.json"
+            spec.write_text(
+                json.dumps(
+                    {
+                        "url": self.server.url,
+                        "port": self.server.port,
+                        "project": PROJECT,
+                        "token": self.server.mint(user="human:viewer", machine=f"viewer-{k}"),
+                        "out": str(out),
+                        "stop": str(self.work / "stop-readers"),
+                        "drain": VIEWER_DRAIN_SECONDS,
+                        "panels": list(VIEWER_PANELS),
+                    }
+                )
+            )
+            log = open(self.work / f"viewer-{k}.log", "wb")  # noqa: SIM115 - the child owns it
+            try:
+                proc = track(
+                    subprocess.Popen(
+                        [sys.executable, str(VIEWER), str(spec)],
+                        stdout=log,
+                        stderr=subprocess.STDOUT,
+                    )
+                )
+            finally:
+                log.close()
+            self.procs.append(proc)
+            viewers.append((proc, out))
+        return viewers
+
     # -- writers ------------------------------------------------------------
 
     def run_writers(self, n: int, *, seconds: float) -> list[float]:
@@ -380,6 +426,14 @@ class LoadRig:
             rows += [line for line in lines if "cwd" in line]
         return rows
 
+    def stop_viewers(self, viewers: list[tuple[subprocess.Popen, Path]]) -> list[dict]:
+        """Stop the viewers (with the readers' stop file); every one must exit 0
+        with its ``done`` report. Returns the reports (``received``, ``refetched``)."""
+        (self.work / "stop-readers").write_text("")
+        return [
+            viewer_report(proc, out, timeout=VIEWER_DRAIN_SECONDS + 60) for proc, out in viewers
+        ]
+
     def close(self) -> None:
         """Stop every child and the server, then remove the client filesystem, even
         if a step fails."""
@@ -390,6 +444,15 @@ class LoadRig:
             self.server.stop()
         finally:
             self.cleanup.close()
+
+
+def viewer_report(proc: subprocess.Popen, out: Path, *, timeout: float) -> dict:
+    """Wait for one viewer and return its report; fails unless it exited 0 with
+    ``done``, however late it died."""
+    proc.wait(timeout=timeout)
+    report = json.loads(out.read_text()) if out.exists() else {}
+    assert proc.returncode == 0 and report.get("done"), (proc.args, proc.returncode, report)
+    return report
 
 
 def _mixed_op(rng: random.Random, tasks: list[str], w: int, k: int) -> tuple[str, dict]:
