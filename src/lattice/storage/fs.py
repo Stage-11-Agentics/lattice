@@ -10,6 +10,13 @@ from pathlib import Path
 LATTICE_DIR = ".lattice"
 LATTICE_ROOT_ENV = "LATTICE_ROOT"
 
+#: Lattice v2's committed binding: the checkout's board lives on a Lattice
+#: server, and ``.lattice/`` is v2's read-only cache of it.
+BINDING_FILE = ".lattice-remote.json"
+#: v2's machine-local cache markers; they route a checkout as hosted even on a
+#: branch that does not carry the binding.
+_CACHE_MARKERS = ("state.json", "applying")
+
 
 def _fsync_directory(path: Path) -> None:
     """Fsync a directory to ensure metadata (e.g. renames) is durable.
@@ -144,8 +151,12 @@ def find_root(start: Path | None = None) -> Path | None:
     Returns:
         Path to the directory containing .lattice/, or None if not found.
 
+    A root bound to a Lattice server (v2) is refused rather than returned:
+    its ``.lattice/`` is v2's read-only cache, not a v1 board.
+
     Raises:
         LatticeRootError: If LATTICE_ROOT is set but invalid.
+        BoundCheckoutError: If the root is bound to a Lattice server.
     """
     env_root = os.environ.get(LATTICE_ROOT_ENV)
     if env_root is not None:
@@ -156,6 +167,7 @@ def find_root(start: Path | None = None) -> Path | None:
             raise LatticeRootError(
                 f"LATTICE_ROOT points to a path that does not exist: {env_root}"
             )
+        refuse_bound(env_path)
         if not (env_path / LATTICE_DIR).is_dir():
             raise LatticeRootError(
                 f"LATTICE_ROOT points to a directory with no {LATTICE_DIR}/ inside: {env_root}"
@@ -169,7 +181,9 @@ def find_root(start: Path | None = None) -> Path | None:
         current = primary
 
     while True:
-        if (current / LATTICE_DIR).is_dir():
+        # A v2 binding marks a root too, before its cache exists.
+        if (current / LATTICE_DIR).is_dir() or (current / BINDING_FILE).is_file():
+            refuse_bound(current)
             return current
         parent = current.parent
         if parent == current:
@@ -218,6 +232,40 @@ def _git_primary_worktree(start: Path) -> Path | None:
 
 class LatticeRootError(Exception):
     """Raised when LATTICE_ROOT env var is set but invalid."""
+
+
+class BoundCheckoutError(LatticeRootError):
+    """Raised when the project root is bound to a Lattice server.
+
+    Lattice v2 keeps a bound checkout's board on the server and ``.lattice/``
+    as a read-only cache of it. This v1 lattice reads neither, so it refuses
+    the checkout before touching it.
+    """
+
+    code = "BOUND_CHECKOUT"
+
+
+def bound_reason(root: Path) -> str | None:
+    """Why *root* is a Lattice v2 checkout, or ``None`` when it is not."""
+    if (root / BINDING_FILE).exists():
+        return (
+            f"this checkout is bound to a Lattice server ({BINDING_FILE}). "
+            "This lattice is v1; install Lattice v2 to use it."
+        )
+    cache_dir = root / LATTICE_DIR / "cache"
+    if any((cache_dir / name).exists() for name in _CACHE_MARKERS):
+        return (
+            f"this checkout holds a Lattice server cache ({LATTICE_DIR}/cache). "
+            "This lattice is v1; install Lattice v2 to use it."
+        )
+    return None
+
+
+def refuse_bound(root: Path) -> None:
+    """Raise :class:`BoundCheckoutError` when *root* is a Lattice v2 checkout."""
+    reason = bound_reason(Path(root))
+    if reason is not None:
+        raise BoundCheckoutError(reason)
 
 
 def jsonl_append(

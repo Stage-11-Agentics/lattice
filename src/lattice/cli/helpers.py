@@ -9,7 +9,7 @@ from typing import NoReturn
 import click
 
 from lattice.core.ids import is_short_id, validate_actor, validate_id
-from lattice.storage.fs import LATTICE_DIR, LatticeRootError, find_root
+from lattice.storage.fs import LATTICE_DIR, BoundCheckoutError, LatticeRootError, find_root
 from lattice.storage.operations import (
     AuthoritativeLogError,
     mutate_task_events,  # noqa: F401 - CLI re-export
@@ -53,6 +53,8 @@ def require_root(is_json: bool = False) -> Path:
     """Find .lattice/ directory or exit with error."""
     try:
         root = find_root()
+    except BoundCheckoutError as e:
+        output_error(str(e), e.code, is_json)
     except LatticeRootError as e:
         output_error(str(e), "NOT_INITIALIZED", is_json)
     if root is None:
