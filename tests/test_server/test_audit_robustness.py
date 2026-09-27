@@ -14,8 +14,6 @@ import shutil
 import subprocess
 import threading
 import time
-from collections.abc import Callable
-from datetime import datetime
 from io import StringIO
 from pathlib import Path
 
@@ -575,13 +573,34 @@ def test_redact_replaces_whole_urls() -> None:
 # ---------------------------------------------------------------------------
 
 
+class FakeClock:
+    """The committer's clock (``audit.time``): frozen, moved only by the test in
+    whole milliseconds, until released to real time from where it stood."""
+
+    def __init__(self) -> None:
+        self.ms = 0
+        self._offset: float | None = None
+
+    def monotonic(self) -> float:
+        if self._offset is None:
+            return self.ms / 1000
+        return time.monotonic() + self._offset
+
+    def release(self) -> None:
+        self._offset = self.ms / 1000 - time.monotonic()
+
+
 def test_commits_keep_to_max_interval_while_a_push_stalls(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Continuous writes with a debounce that never elapses: commits still land
-    every ``max_interval_seconds``, and keep landing while one push is held.
-    Every wait is on a condition (the push started; three more commits), never on
-    a wall-clock window, so a loaded machine only makes it slower."""
+    """Continuous writes with a debounce that never elapses: a commit lands as
+    soon as ``max_interval_seconds`` has passed since the first uncommitted write,
+    never before, and commits keep landing while one push is held.
+
+    The committer runs on a fake clock the test moves one write (40 ms) at a
+    time, so the bound is exact whatever the load: at the first write at or past
+    the interval the test waits for the commit with the clock stopped, and a
+    committer that waited longer than the interval would never commit."""
     shim = install_git_shim(tmp_path, monkeypatch)
     root = make_root(tmp_path, projects={"alpha": {"code": "ALP"}})
     directory = root / "projects" / "alpha"
@@ -591,44 +610,51 @@ def test_commits_keep_to_max_interval_while_a_push_stalls(
         max_interval_seconds=0.3,
         push={"remote": "backup", "branch": "audit"},
     )
+    interval_ms, step_ms = 300, 40
+    clock = FakeClock()
+    monkeypatch.setattr(audit, "time", clock)
     project, stream = direct_project(root, "alpha", config)
     committer = project.committer
-    written = 0
-
-    def write_until(condition: Callable[[], bool]) -> None:
-        nonlocal written
-        deadline = time.monotonic() + 10  # a safety bound only
-        while not condition():
-            assert time.monotonic() < deadline, (committer.commits, written)
-            written += 1
-            run(project, request("task.create", {"title": f"t{written}"}))
-            time.sleep(0.03)
-
+    # The load's reconcile opens the first interval, at the load's instant.
+    first_ms: int | None = clock.ms
+    gaps_ms: list[int] = []
+    held_at: int | None = None
     shim.stall.write_text("")
     try:
-        write_until(lambda: committer.maintenance.push_attempts >= 1)  # the push is held
-        held_at = committer.commits
-        write_until(lambda: committer.commits >= held_at + 3)
-        # All of them landed during the one held push.
+        for written in range(1, 200):  # a safety bound only
+            clock.ms += step_ms
+            run(project, request("task.create", {"title": f"t{written}"}))
+            if first_ms is None:
+                first_ms = clock.ms
+            if clock.ms - first_ms < interval_ms:
+                assert committer.commits == len(gaps_ms), ("committed early", clock.ms)
+                continue
+            assert wait_for(lambda: committer.commits == len(gaps_ms) + 1, timeout=10), (
+                "no commit once the max interval passed",
+                clock.ms,
+                first_ms,
+            )
+            gaps_ms.append(clock.ms - first_ms)
+            first_ms = None
+            if held_at is None and committer.maintenance.push_attempts >= 1:
+                held_at = len(gaps_ms)  # the push is held from here on
+            if held_at is not None and len(gaps_ms) >= held_at + 3:
+                break
+        # All of the later ones landed during the one held push.
+        assert held_at is not None and len(gaps_ms) >= held_at + 3, (held_at, gaps_ms)
         assert committer.maintenance.push_attempts == 1
-        stalled_commits = committer.commits
     finally:
+        clock.release()
         shim.stall.unlink()
         close(project)
-    assert stalled_commits >= 4, stalled_commits
+    # Each commit came at the first write at or past the interval: never later.
+    assert all(interval_ms <= gap < interval_ms + step_ms for gap in gaps_ms), gaps_ms
     # Several commits landed during one stalled push; each still got its own gc.
     assert committer.maintenance.gc_runs == committer.commits, (
         committer.maintenance.gc_runs,
         committer.commits,
     )
-    stamps = [
-        datetime.fromisoformat(line["ts"].replace("Z", "+00:00")).timestamp()
-        for line in events(stream, "audit_commit")
-        if not line["final"]
-    ]
-    # Never the debounce: the max interval made every one of these commits.
-    gaps = [b - a for a, b in zip(stamps, stamps[1:], strict=False)]
-    assert gaps and max(gaps) < config.debounce_seconds, gaps
+    assert len([x for x in events(stream, "audit_commit") if not x["final"]]) == len(gaps_ms)
     assert len(commits(directory)) >= 4
 
 

@@ -222,9 +222,15 @@ def test_a_hand_edit_during_an_operation_is_not_adopted(root: Path) -> None:
     Gate.reset()
     with running_server(root) as server:
         board = root / "projects" / "alpha" / ".lattice"
-        slow = threading.Thread(
-            target=server.op, args=("alpha", "xtest.gate", {}), kwargs={"token": token}
-        )
+        outcome: list[object] = []
+
+        def gated() -> None:
+            try:
+                outcome.append(server.op("alpha", "xtest.gate", {}, token=token)[0])
+            except BaseException as exc:  # noqa: BLE001 - surfaced by the assert below
+                outcome.append(repr(exc))
+
+        slow = threading.Thread(target=gated)
         slow.start()
         try:
             # Inside the operation, past its admission check: the edit lands during it.
@@ -232,7 +238,9 @@ def test_a_hand_edit_during_an_operation_is_not_adopted(root: Path) -> None:
             (board / "context.md").write_text("# Edited while the op ran\n")
         finally:
             Gate.released.set()
-        slow.join()
+            slow.join(timeout=30)  # a safety bound only
+        assert not slow.is_alive(), "the gated operation never finished"
+        assert outcome == [200]
         create_task(server, token)
         entries = [(x["op"], x["paths"]) for x in _journal(root)]
         assert entries[0][0] == "xtest.gate"
@@ -257,16 +265,20 @@ def _lease_free(root: Path, slug: str) -> bool:
 
 
 def _steady_writer(server, token: str, slug: str, stop):  # noqa: ANN001, ANN202
-    """Write to *slug* until *stop* is set; returns (statuses, slowest seconds)."""
-    statuses: list[int] = []
+    """Write to *slug* until *stop* is set; returns (statuses, slowest seconds). An
+    exception in the writer lands in *statuses* as its ``repr``."""
+    statuses: list[int | str] = []
     slowest = [0.0]
 
     def loop() -> None:
-        while not stop.is_set():
-            started = time.monotonic()
-            status, _, _ = server.op(slug, "task.create", {"title": "steady"}, token=token)
-            slowest[0] = max(slowest[0], time.monotonic() - started)
-            statuses.append(status)
+        try:
+            while not stop.is_set():
+                started = time.monotonic()
+                status, _, _ = server.op(slug, "task.create", {"title": "steady"}, token=token)
+                slowest[0] = max(slowest[0], time.monotonic() - started)
+                statuses.append(status)
+        except BaseException as exc:  # noqa: BLE001 - surfaced by the caller's assert
+            statuses.append(repr(exc))
 
     return loop, statuses, slowest
 
@@ -314,7 +326,8 @@ def test_unload_offline_maintenance_then_load_while_others_serve(root: Path) -> 
             create_task(server, token, "alpha")
         finally:
             stop.set()
-            writer.join()
+            writer.join(timeout=30)  # a safety bound only
+    assert not writer.is_alive(), "the background writer never stopped"
     assert statuses and set(statuses) == {200}
     assert slowest[0] < 1.0
 

@@ -78,6 +78,13 @@ def test_event_applied_by_another_process_is_still_printed(tmp_path, stream_stub
 
 def test_shorter_log_after_reset_does_not_suppress_later_events(tmp_path, stream_stub) -> None:
     syncer = StubSyncer(stream_stub.url)
+    syncs: list[str] = []
+
+    def catch_up(root, *, bulk=False):
+        outcome = syncer(root, bulk=bulk)
+        syncs.append(outcome.kind)
+        return outcome
+
     long_log = b"".join(_line(n) for n in range(1, 11))
     stream_stub.files["events/T1.jsonl"] = long_log
     (tmp_path / LATTICE_DIR).mkdir()
@@ -96,13 +103,20 @@ def test_shorter_log_after_reset_does_not_suppress_later_events(tmp_path, stream
         tmp_path,
         stub_remote(stream_stub.url),
         SLUG,
-        catch_up=syncer,
+        catch_up=catch_up,
         read_lock=recording_lock,
         timeout=12,
-        heartbeat_seconds=0.2,
+        # Long enough that a loaded machine never finds the stream silent and
+        # polls: only the stream's messages trigger syncs.
+        heartbeat_seconds=10,
     )
     thread = _collect(gen, events, 1)
+    # The follower's own first sync after connecting, and its scan, are done
+    # before the reset: under load that sync otherwise ran after the rotation,
+    # applied the new epoch ahead of the reset message, and the reset's resync
+    # then took the offsets after the append (a separate follower race).
     assert wait_for(lambda: len(stream_stub.subscribers) == 1, 5)
+    assert wait_for(lambda: len(syncs) >= 2 and len(scanned) >= 2, 5), (syncs, scanned)
 
     # The history is rebuilt: T1's log is now one line, far shorter than before.
     stream_stub.rotate_epoch({"config.json": b"{}\n", "events/T1.jsonl": _line(50)})

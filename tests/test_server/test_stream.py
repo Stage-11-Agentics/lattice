@@ -182,19 +182,22 @@ def test_twenty_concurrent_writers_deliver_strictly_increasing_seqs(board: Board
         failures: list[object] = []
 
         def write(task: str, minted: dict) -> None:
-            actor = minted["record"]["user"]
-            start.wait()
-            for n in range(per_writer):
-                status, _, body = board.handle.op(
-                    "demo",
-                    "task.comment",
-                    {"task": task, "text": str(n)},
-                    token=minted["token"],
-                    actor=actor,
-                )
-                if status != 200:
-                    failures.append(body)
-                    return
+            try:
+                actor = minted["record"]["user"]
+                start.wait(timeout=30)  # a safety bound only
+                for n in range(per_writer):
+                    status, _, body = board.handle.op(
+                        "demo",
+                        "task.comment",
+                        {"task": task, "text": str(n)},
+                        token=minted["token"],
+                        actor=actor,
+                    )
+                    if status != 200:
+                        failures.append(body)
+                        return
+            except BaseException as exc:  # noqa: BLE001 - surfaced by the assert below
+                failures.append(repr(exc))
 
         threads = [
             threading.Thread(target=write, args=(task, minted))
@@ -203,7 +206,8 @@ def test_twenty_concurrent_writers_deliver_strictly_increasing_seqs(board: Board
         for thread in threads:
             thread.start()
         for thread in threads:
-            thread.join()
+            thread.join(timeout=30)  # a safety bound only
+        assert not [t for t in threads if t.is_alive()], "a writer never finished"
         assert failures == []
         seqs = journal_seqs(reader, 20 * per_writer, timeout=30)
     assert seqs == list(range(head + 1, head + 1 + 20 * per_writer))

@@ -380,10 +380,12 @@ def writers() -> frozenset[str]:
     return frozenset(storage_writers())
 
 
-def cache_writers() -> set[str]:
+@functools.cache
+def cache_writers() -> frozenset[str]:
     """The cache_paths writer primitives and every cache_paths function that uses
-    one (``opened_dir`` through ``open_dir`` through ``open_child``)."""
-    module = MODULES[CACHE_PATHS_MODULE]
+    one (``opened_dir`` through ``open_dir`` through ``open_child``), computed
+    once, on first use."""
+    module = modules()[CACHE_PATHS_MODULE]
     definitions = {f"{module.name}.{name}": node for name, node in _definitions(module).items()}
     writers = {f"{CACHE_PATHS_MODULE}.{name}" for name in CACHE_PRIMITIVES}
     changed = True
@@ -393,16 +395,13 @@ def cache_writers() -> set[str]:
             if key not in writers and _writer_uses(module, node, writers):
                 writers.add(key)
                 changed = True
-    return writers
-
-
-CACHE_WRITERS = cache_writers()
+    return frozenset(writers)
 
 
 def cache_writer_calls(module: Module) -> list[str]:
     return [
         f"{module.name}:{line}: {writer}"
-        for line, writer in _writer_uses(module, module.tree, CACHE_WRITERS)
+        for line, writer in _writer_uses(module, module.tree, cache_writers())
     ]
 
 
@@ -454,7 +453,7 @@ def test_board_writers_are_called_only_behind_operations() -> None:
 def test_cache_writers_are_called_only_by_the_client_cache() -> None:
     offenders = [
         hit
-        for module in MODULES.values()
+        for module in modules().values()
         if module.name != CACHE_PATHS_MODULE and module.name not in CACHE_OWNERS
         for hit in cache_writer_calls(module)
     ]
@@ -466,8 +465,8 @@ def test_cache_writers_are_called_only_by_the_client_cache() -> None:
 
 
 def test_the_scan_sees_the_cache_writers() -> None:
-    assert f"{CACHE_PATHS_MODULE}.opened_dir" in CACHE_WRITERS  # through open_dir
-    assert f"{CACHE_PATHS_MODULE}.read_file" not in CACHE_WRITERS
+    assert f"{CACHE_PATHS_MODULE}.opened_dir" in cache_writers()  # through open_dir
+    assert f"{CACHE_PATHS_MODULE}.read_file" not in cache_writers()
     module = load_module(
         "lattice.cli.example",
         Path("example.py"),
@@ -502,8 +501,8 @@ def test_every_listed_module_still_needs_its_entry() -> None:
         assert not modules()[name].inside_boundary
     assert not set(BOARD_OWNERS) & set(AWAITING_CONVERSION)
     for name in CACHE_OWNERS:
-        assert name in MODULES, f"CACHE_OWNERS names a missing module {name}"
-        assert cache_writer_calls(MODULES[name]), f"{name} no longer writes the cache; remove it"
+        assert name in modules(), f"CACHE_OWNERS names a missing module {name}"
+        assert cache_writer_calls(modules()[name]), f"{name} no longer writes the cache; remove it"
 
 
 def _scan(source: str, name: str = "lattice.cli.example") -> tuple[list[str], list[str]]:
