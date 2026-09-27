@@ -149,16 +149,31 @@ class DiskFloor:
             )
 
 
+_NOT_JSON = object()
+
+
 def check_event_data_cap(op_name: str, params: object, limit: int) -> None:
     """``task.event`` refuses ``data`` whose canonical JSON exceeds *limit* bytes
     (SPEC §8.1, ``max_event_data_bytes``), before the operation runs."""
     if op_name != "task.event" or not isinstance(params, dict) or "data" not in params:
         return
-    size = len(
-        json.dumps(
-            params["data"], sort_keys=True, separators=(",", ":"), ensure_ascii=False
-        ).encode("utf-8")
+    data = params["data"]
+    if isinstance(data, str):
+        # The operation's ``data`` param is ``--data``'s JSON text; the cap is on
+        # the data it holds. Text that is not JSON is measured as sent (the
+        # operation refuses it anyway).
+        try:
+            data = json.loads(data)
+        except ValueError:
+            data = _NOT_JSON
+    text = (
+        params["data"]
+        if data is _NOT_JSON
+        else json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     )
+    # UTF-8 bytes; a lone surrogate (valid in JSON as an escape, not encodable in
+    # UTF-8) counts as its six-byte ``\\uXXXX`` escape.
+    size = len(text.encode("utf-8", errors="backslashreplace"))
     if size > limit:
         raise OpError(
             "PAYLOAD_TOO_LARGE",

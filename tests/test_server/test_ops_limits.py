@@ -3,11 +3,15 @@ cap (AC-15) and the server-chosen artifact payload name (G-1)."""
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from lattice.core.artifacts import payload_storage_name
 from lattice.core.errors import OpError
 from lattice.server.limits import check_event_data_cap
+from tests.test_remote.hosted import hosted_env  # noqa: F401 - fixture
 
 
 def test_event_data_cap() -> None:
@@ -24,6 +28,19 @@ def test_event_data_cap() -> None:
     # multi-byte characters count as bytes
     with pytest.raises(OpError):
         check_event_data_cap("task.event", {"data": "é" * 40}, 64)
+    # --data travels as JSON text: its data is measured, not the text as typed
+    text = '{ "b" : 1,  "a" : [1, 2] }'
+    check_event_data_cap("task.event", {"data": text}, size)
+    with pytest.raises(OpError):
+        check_event_data_cap("task.event", {"data": text}, size - 1)
+    # non-ASCII counts as UTF-8; a lone surrogate (valid JSON, not UTF-8) as its escape
+    check_event_data_cap("task.event", {"data": '{"k":"éé"}'}, len('{"k":""}') + 4)
+    with pytest.raises(OpError):
+        check_event_data_cap("task.event", {"data": '{"k":"éé"}'}, len('{"k":""}') + 3)
+    lone = '{"k":"\\ud800"}'  # the JSON text holds the escape
+    check_event_data_cap("task.event", {"data": lone}, len('{"k":""}') + 6)
+    with pytest.raises(OpError):
+        check_event_data_cap("task.event", {"data": lone}, len('{"k":""}') + 5)
     # other operations and events without data are not checked
     check_event_data_cap("task.comment", {"data": "x" * 1000}, 1)
     check_event_data_cap("task.event", {"type": "x_t"}, 1)
@@ -47,3 +64,89 @@ def test_payload_name_is_server_chosen(filename: str, expected: str) -> None:
     name = payload_storage_name("art_1", filename)
     assert name == expected
     assert "/" not in name and ".." not in name
+
+
+# ---------------------------------------------------------------------------
+# End to end (H-12): through a bound checkout
+# ---------------------------------------------------------------------------
+
+
+def _event_data(size: int) -> str:
+    """``--data`` text (with the spaces a person types) whose canonical JSON is *size* bytes."""
+    overhead = len('{"k":""}')
+    return '{"k": "' + "v" * (size - overhead) + '"}'
+
+
+def test_task_event_data_cap_through_a_bound_checkout(hosted_env, tmp_path: Path) -> None:  # noqa: F811
+    """AC-15: ``lattice event`` with data over ``max_event_data_bytes`` fails with
+    ``PAYLOAD_TOO_LARGE`` and writes nothing; data at the limit is accepted. The
+    limit applies to the data's canonical JSON, not to how the text was typed."""
+    from tests.test_remote.hosted import events_of, make_repo, run_cli
+
+    limit = 64 * 1024
+    repo = make_repo(tmp_path / "repo")
+    assert run_cli(repo, "remote", "attach", "team", "demo").exit_code == 0
+    assert run_cli(repo, "create", "Evented", "--actor", "agent:dev").exit_code == 0
+    before = len(events_of(hosted_env, "DEM-1"))
+
+    over = run_cli(
+        repo, "event", "DEM-1", "x_big", "--data", _event_data(limit + 1), "--actor", "agent:dev"
+    )
+    assert over.exit_code == 1
+    assert "PAYLOAD_TOO_LARGE" not in over.stdout  # plain output: the message only
+    assert f"this server's limit is {limit} bytes" in over.stderr
+    as_json = run_cli(
+        repo,
+        "event",
+        "DEM-1",
+        "x_big",
+        "--data",
+        _event_data(limit + 1),
+        "--actor",
+        "agent:dev",
+        "--json",
+    )
+    assert as_json.exit_code == 1
+    assert json.loads(as_json.stdout)["error"]["code"] == "PAYLOAD_TOO_LARGE"
+    assert len(events_of(hosted_env, "DEM-1")) == before
+
+    at_limit = run_cli(
+        repo, "event", "DEM-1", "x_big", "--data", _event_data(limit), "--actor", "agent:dev"
+    )
+    assert at_limit.exit_code == 0, at_limit.output
+    assert [e["type"] for e in events_of(hosted_env, "DEM-1")].count("x_big") == 1
+
+
+def test_task_event_data_with_non_ascii_and_a_lone_surrogate_through_a_bound_checkout(
+    hosted_env,  # noqa: F811
+    tmp_path: Path,
+) -> None:
+    """The cap counts UTF-8 bytes at the limit boundary, and a lone escaped surrogate
+    (valid JSON the local CLI accepts) is measured as its escape, never a 500."""
+    from tests.test_remote.hosted import events_of, make_repo, run_cli
+
+    limit = 64 * 1024
+    repo = make_repo(tmp_path / "repo")
+    assert run_cli(repo, "remote", "attach", "team", "demo").exit_code == 0
+    assert run_cli(repo, "create", "Evented", "--actor", "agent:dev").exit_code == 0
+    overhead = len('{"k":""}')
+
+    def event(text: str) -> tuple[int, dict]:
+        result = run_cli(
+            repo, "event", "DEM-1", "x_text", "--data", text, "--actor", "agent:dev", "--json"
+        )
+        return result.exit_code, json.loads(result.stdout)
+
+    at_limit = '{"k": "' + "é" * ((limit - overhead) // 2) + '"}'
+    assert event(at_limit)[0] == 0
+    code, body = event('{"k": "' + "é" * ((limit - overhead) // 2) + 'x"}')
+    assert (code, body["error"]["code"]) == (1, "PAYLOAD_TOO_LARGE")
+
+    code, body = event('{"k": "\\ud800"}')
+    assert code == 0, body
+    texts = [e["data"] for e in events_of(hosted_env, "DEM-1") if e["type"] == "x_text"]
+    assert texts[-1] == {"k": "\ud800"}
+    lone_at_limit = '{"k": "' + "\\ud800" + "v" * (limit - overhead - 6) + '"}'
+    assert event(lone_at_limit)[0] == 0
+    code, body = event('{"k": "' + "\\ud800" + "v" * (limit - overhead - 5) + '"}')
+    assert (code, body["error"]["code"]) == (1, "PAYLOAD_TOO_LARGE")

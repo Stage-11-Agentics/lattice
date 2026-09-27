@@ -28,18 +28,20 @@ from lattice.core.review import (
     DEFAULT_MAX_DIFF_CHARS,
     DEFAULT_MAX_DIFF_LINES,
     DiffResolution,
+    adopt_review_state,
     cap_diff,
     cap_diff_chars,
     claim_review_state,
     cleanup_temp_files,
-    clear_review_state,
+    clear_owned_review_state,
     is_review_abandoned,
     last_failure_for_task,
     read_review_state,
     run_single_review,
     run_triple_review,
     resolve_diff,
-    write_review_state,
+    take_over_review_state,
+    write_owned_review_state,
 )
 from lattice.templates import load_review_template
 
@@ -151,8 +153,14 @@ def _claim_or_refuse(
     review_type: str,
     triggered_by: str | None,
     is_json: bool,
-) -> None:
+    override: bool = False,
+) -> str | None:
     """Claim ``review_state`` for this review subprocess, or exit with a clear error.
+    Returns the claim's token: every later write of the record, and its final
+    clear, is conditional on still holding it (``write_owned_review_state``).
+
+    *override* (``--force`` on a hosted checkout, SPEC §3.4) takes the record over
+    whatever it holds, so no refusal applies.
 
     Implements the LAT-211 plan-review finding 3 ordering: read existing
     state *before* calling :func:`claim_review_state`. If the existing
@@ -175,6 +183,19 @@ def _claim_or_refuse(
     (or returns the structured error for ``--json``) on contention.
     """
     existing = read_review_state(lattice_dir, task_id)
+    if override:
+        return take_over_review_state(
+            lattice_dir,
+            {
+                "task_id": task_id,
+                "mode": mode,
+                "review_type": review_type,
+                "started_at": _now_iso(),
+                "started_by_pid": os.getpid(),
+                "auto_fired": triggered_by is not None,
+                "agents": [],
+            },
+        )
     if (
         triggered_by is not None
         and isinstance(existing, dict)
@@ -191,8 +212,11 @@ def _claim_or_refuse(
             "auto_fired": True,
             "agents": [],
         }
-        write_review_state(lattice_dir, adopted)
-        return
+        adopted_claim = adopt_review_state(lattice_dir, adopted, existing)
+        if adopted_claim is not None:
+            return adopted_claim
+        # The record changed since we read it (a --force takeover landed): do not
+        # displace it; claim normally, which refuses while its holder is alive.
 
     claimed, holder = claim_review_state(
         lattice_dir,
@@ -203,7 +227,7 @@ def _claim_or_refuse(
         auto_fired=triggered_by is not None,
     )
     if claimed:
-        return
+        return (holder or {}).get("claim")
 
     holder = holder or {}
     holder_pid = holder.get("started_by_pid")
@@ -223,6 +247,99 @@ def _claim_or_refuse(
         f"{log_hint}"
     )
     output_error(msg, "REVIEW_IN_FLIGHT", is_json)
+
+
+def _hosted(lattice_dir: Path) -> bool:
+    """True when *lattice_dir* is a hosted checkout's cache (SPEC §9.3)."""
+    from lattice.remote.binding import classify
+
+    try:
+        return classify(lattice_dir.parent) is not None
+    except Exception:  # noqa: BLE001 - routing already succeeded; a board read decides nothing
+        return False
+
+
+def _task_events(lattice_dir: Path, task_id: str) -> list[dict]:
+    from lattice.storage.readers import read_task_events
+
+    events = read_task_events(lattice_dir, task_id)
+    return events or read_task_events(lattice_dir, task_id, is_archived=True)
+
+
+def _board_gates(lattice_dir: Path, task_id: str, config: dict) -> tuple[list[dict], list[Any]]:
+    """The task's events and each review gate's state read from the board (SPEC §3.4)."""
+    from lattice.boards import reported_origin
+    from lattice.core.hosted_review import GATE_ROLES, gate_state
+
+    events = _task_events(lattice_dir, task_id)
+    local = read_review_state(lattice_dir, task_id)
+    this_host = reported_origin(lattice_dir.parent).get("host")
+    now = datetime.now(timezone.utc)
+    gates = []
+    for review_type in GATE_ROLES:
+        gate = gate_state(
+            events,
+            review_type,
+            this_host=this_host,
+            has_local_record=isinstance(local, dict)
+            and (local.get("review_type") or review_type) == review_type,
+            timeout_seconds=int(config.get("review_timeout_seconds", 600)),
+            now=now,
+        )
+        if gate is not None:
+            gates.append(gate)
+    return events, gates
+
+
+def _refuse_if_in_flight_on_board(
+    lattice_dir: Path,
+    task_id: str,
+    *,
+    review_type: str,
+    config: dict,
+    triggered_by: str | None,
+    force: bool,
+    is_json: bool,
+) -> None:
+    """On a hosted checkout, refuse while a spawn of this gate, newer than the gate's
+    last artifact, is younger than ``review_timeout_seconds`` (SPEC §3.4); ``--force``
+    overrides. The auto-fired child is never refused by its own spawn."""
+    from lattice.core.hosted_review import RUNNING, is_own_spawn
+
+    if force or not _hosted(lattice_dir):
+        return
+    events, gates = _board_gates(lattice_dir, task_id, config)
+    for gate in gates:
+        # A spawn this machine holds a record of is today's local check (_claim_or_refuse).
+        if gate.review_type != review_type or gate.state != RUNNING:
+            continue
+        if not is_own_spawn(events, gate, triggered_by):
+            output_error(
+                f"A {review_type} of this task is already in flight: {gate.message()}. "
+                f"Use 'lattice review-status {task_id}' to monitor, or pass --force to "
+                "run another.",
+                "REVIEW_IN_FLIGHT",
+                is_json,
+            )
+
+
+def _end_read_phase(lattice_dir: Path) -> None:
+    """Release a hosted cache's shared read lock before the review runs (SPEC §9.4).
+
+    The review's reads are done; the agent run can take minutes, and the review's
+    own writes (``lattice attach`` in a subprocess, the failure comment) end in a
+    sync that takes the lock exclusively, which would wait on this process for
+    ever. A no-op on a local board.
+    """
+    from lattice.remote.session import release_read_lock
+
+    release_read_lock(lattice_dir.parent)
+
+
+_FORCE_HELP = (
+    "On a hosted checkout, run even while a review of this gate spawned on any "
+    "machine is still in flight."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -259,6 +376,7 @@ def _claim_or_refuse(
     help="Resolve the diff and print the resolution plus the assembled prompt, then exit. "
     "Claims no review slot, spawns no agent, attaches no artifact.",
 )
+@click.option("--force", is_flag=True, default=False, help=_FORCE_HELP)
 @common_options
 def code_review(
     task_id: str,
@@ -267,6 +385,7 @@ def code_review(
     head: str | None,
     worktree: Path | None,
     dry_run: bool,
+    force: bool,
     model: str | None,
     session: str | None,
     output_json: bool,
@@ -292,12 +411,26 @@ def code_review(
     if mode is None:
         mode = config.get("review_mode", "single")
 
+    if not dry_run:
+        _refuse_if_in_flight_on_board(
+            lattice_dir,
+            task_id,
+            review_type="code-review",
+            config=config,
+            triggered_by=triggered_by,
+            force=force,
+            is_json=is_json,
+        )
+
+    # SPEC §3.4: on a hosted checkout --force overrides every in-flight refusal.
+    override = force and _hosted(lattice_dir)
+
     # Inline-mode contention check: even though inline never claims, refuse
     # if a non-inline review is in flight so the operator doesn't run two
     # reviews in parallel by accident.
     if mode == "inline" and not dry_run:
         existing = read_review_state(lattice_dir, task_id)
-        if isinstance(existing, dict):
+        if isinstance(existing, dict) and not override:
             from lattice.core.review import pid_alive
 
             holder_pid = existing.get("started_by_pid")
@@ -330,18 +463,20 @@ def code_review(
     assert reviewed_worktree is not None
 
     actor: str | dict | None = None
+    claim: str | None = None
     if not dry_run:
         actor = require_actor(is_json)
         # Claim the in-flight slot (or adopt the parent's claim when this is
         # an auto-fired child invoked with --triggered-by). A dry run claims
         # nothing, so it never contends with a real review.
-        _claim_or_refuse(
+        claim = _claim_or_refuse(
             lattice_dir,
             task_id,
             mode=mode,
             review_type="code-review",
             triggered_by=triggered_by,
             is_json=is_json,
+            override=override,
         )
 
     resolution = resolve_diff(
@@ -360,6 +495,7 @@ def code_review(
                 actor=actor,
                 config=config,
                 auto_fired=triggered_by is not None,
+                claim=claim,
             )
         output_error(resolution.error, resolution.error_code or "DIFF_RESOLUTION_FAILED", is_json)
 
@@ -426,6 +562,7 @@ def code_review(
                 actor=actor,
                 config=config,
                 auto_fired=triggered_by is not None,
+                claim=claim,
             )
         output_error(str(exc), "HEAD_SHA_UNKNOWN", is_json)
 
@@ -459,6 +596,7 @@ def code_review(
 
     assert actor is not None
     timeout = config.get("review_timeout_seconds", 600)
+    _end_read_phase(lattice_dir)
 
     if mode == "single":
         _run_single_and_store(
@@ -477,6 +615,7 @@ def code_review(
             worktree=reviewed_worktree,
             reviewed_header=evidence_header,
             auto_fired=triggered_by is not None,
+            claim=claim,
         )
 
     elif mode == "triple":
@@ -492,6 +631,7 @@ def code_review(
             head=resolution.head_ref,
             head_sha=resolution.head_sha,
             worktree=reviewed_worktree,
+            claim=claim,
         )
 
 
@@ -508,10 +648,12 @@ def code_review(
     default=None,
     help="Review mode (overrides config). One of: inline, single, triple.",
 )
+@click.option("--force", is_flag=True, default=False, help=_FORCE_HELP)
 @common_options
 def plan_review(
     task_id: str,
     mode: str | None,
+    force: bool,
     model: str | None,
     session: str | None,
     output_json: bool,
@@ -547,9 +689,22 @@ def plan_review(
         )
     plan_content = plan_path.read_text(encoding="utf-8")
 
+    _refuse_if_in_flight_on_board(
+        lattice_dir,
+        task_id,
+        review_type="plan-review",
+        config=config,
+        triggered_by=triggered_by,
+        force=force,
+        is_json=is_json,
+    )
+
+    # SPEC §3.4: on a hosted checkout --force overrides every in-flight refusal.
+    override = force and _hosted(lattice_dir)
+
     if mode == "inline":
         existing = read_review_state(lattice_dir, task_id)
-        if isinstance(existing, dict):
+        if isinstance(existing, dict) and not override:
             from lattice.core.review import pid_alive
 
             holder_pid = existing.get("started_by_pid")
@@ -578,13 +733,14 @@ def plan_review(
 
     actor = require_actor(is_json)
 
-    _claim_or_refuse(
+    claim = _claim_or_refuse(
         lattice_dir,
         task_id,
         mode=mode,
         review_type="plan-review",
         triggered_by=triggered_by,
         is_json=is_json,
+        override=override,
     )
 
     # Load and fill plan review template
@@ -600,6 +756,7 @@ def plan_review(
 
     plan_approval = config.get("plan_approval", "auto")
     timeout = config.get("review_timeout_seconds", 600)
+    _end_read_phase(lattice_dir)
 
     if mode == "single":
         art_id = _run_single_and_store(
@@ -616,6 +773,7 @@ def plan_review(
             config=config,
             timeout=timeout,
             auto_fired=triggered_by is not None,
+            claim=claim,
         )
         if art_id and plan_approval == "human":
             _flag_needs_human(lattice_dir, task_id, actor, is_json)
@@ -634,6 +792,7 @@ def plan_review(
             is_json=is_json,
             quiet=quiet,
             base=None,
+            claim=claim,
         )
 
 
@@ -680,7 +839,12 @@ def review_status(task_id: str, output_json: bool) -> None:
     lattice_dir = require_root(is_json)
     task_id = resolve_task_id(lattice_dir, task_id, is_json)
 
+    if _hosted(lattice_dir) and _report_board_gates(lattice_dir, task_id, is_json):
+        return
+
     state = read_review_state(lattice_dir, task_id)
+    if state is not None:
+        state.pop("claim", None)  # the slot's ownership token, not status
     if state is None:
         # No in-flight record. Distinguish: a completed review (artifact exists),
         # a *failed* review whose state was cleared by an older path (surface it
@@ -797,6 +961,45 @@ def review_status(task_id: str, output_json: bool) -> None:
             click.echo(f"    {name:<10} {status} ({elapsed}){suffix}")
 
 
+def _report_board_gates(lattice_dir: Path, task_id: str, is_json: bool) -> bool:
+    """On a hosted checkout, report every gate whose latest spawn has no artifact and
+    is not this machine's own (SPEC §3.4): running while younger than the review
+    timeout, failed after. Returns False when there is none, and the local report
+    (this machine's ``review_state``, the artifacts, ``failures.jsonl``) applies."""
+    from lattice.core.hosted_review import FAILED, RUNNING
+
+    config = load_project_config(lattice_dir)
+    _, gates = _board_gates(lattice_dir, task_id, config)
+    remote = [g for g in gates if g.state in (RUNNING, FAILED)]
+    if not remote:
+        return False
+    if is_json:
+        data = {
+            "task_id": task_id,
+            "status": RUNNING if any(g.state == RUNNING for g in remote) else FAILED,
+            "source": "board",
+            "gates": [
+                {
+                    "review_type": g.review_type,
+                    "status": g.state,
+                    "host": g.host,
+                    "spawned_at": g.spawned_at,
+                    "timeout_seconds": g.timeout_seconds,
+                    "message": g.message(),
+                }
+                for g in remote
+            ],
+        }
+        click.echo(json.dumps({"ok": True, "data": data}, indent=2))
+        return True
+    click.echo(f"Review status for {task_id}")
+    for gate in remote:
+        click.echo(f"  {gate.review_type}: {gate.message()}")
+        if gate.state == FAILED:
+            click.echo(f"  Re-run with:  lattice {gate.review_type} {task_id}")
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -831,7 +1034,7 @@ def _report_review_failure(
     Best-effort by construction: reporting a failure must never raise over the
     top of the failure it is reporting, so every step is guarded.
     """
-    from lattice.boards import LocalBoard
+    from lattice.boards import resolve_board
     from lattice.cli.auto_review import log_path_for
     from lattice.ops import Caller, OpError
 
@@ -846,8 +1049,8 @@ def _report_review_failure(
         body_lines.append(f"Spawn log: {log_path}")
     body = "\n".join(body_lines)
 
-    # Both writes are operations on this board, as the reviewer's identity.
-    board = LocalBoard(root=lattice_dir.parent, start=Path.cwd())
+    # Both writes are operations on this board (on a hosted checkout, through
+    # the server), as the reviewer's identity.
     caller = (
         Caller(actor_name=actor.get("name") or actor.get("base_name"))
         if isinstance(actor, dict)
@@ -855,6 +1058,12 @@ def _report_review_failure(
     )
 
     try:
+        board = resolve_board()
+    except Exception:  # noqa: BLE001 — never mask the review failure
+        board = None
+    try:
+        if board is None:
+            raise OpError("NOT_INITIALIZED", "no board")
         board.execute("task.comment", {"task": task_id, "text": body}, caller, config=config)
     except Exception:  # noqa: BLE001 — never mask the review failure
         click.echo("Warning: could not record the review failure as a comment.", err=True)
@@ -871,6 +1080,8 @@ def _report_review_failure(
         else f"Auto-fired {review_type} failed ({message}) — task is unreviewed."
     )
     try:
+        if board is None:
+            raise OpError("NOT_INITIALIZED", "no board")
         board.execute(
             "task.needs_human",
             {"task": task_id, "flag_reason": flag_reason},
@@ -894,6 +1105,7 @@ def _record_resolution_failure(
     actor: str | dict,
     config: dict,
     auto_fired: bool,
+    claim: str | None = None,
 ) -> None:
     """Make a failed diff resolution as visible as a failed review agent.
 
@@ -924,7 +1136,8 @@ def _record_resolution_failure(
     state.setdefault("started_by_pid", os.getpid())
     state.setdefault("auto_fired", auto_fired)
     try:
-        write_review_state(lattice_dir, state)
+        # Only while this review still holds the slot (a --force takeover owns it now).
+        write_owned_review_state(lattice_dir, state, claim)
     except Exception:  # noqa: BLE001 — never mask the resolution failure
         click.echo("Warning: could not record the failed review state.", err=True)
 
@@ -957,6 +1170,7 @@ def _run_single_and_store(
     worktree: Path | None = None,
     reviewed_header: str | None = None,
     auto_fired: bool = False,
+    claim: str | None = None,
 ) -> str | None:
     """Run single-agent review, store artifact, print result. Returns artifact ID or None."""
     click.echo(f"Running {review_type} (single mode)...")
@@ -969,6 +1183,7 @@ def _run_single_and_store(
         actor=actor,
         timeout=timeout,
         worktree=worktree,
+        claim=claim,
     )
 
     if not success:
@@ -1025,6 +1240,7 @@ def _spawn_triple_pane(
     head: str | None = None,
     head_sha: str | None = None,
     worktree: Path | None = None,
+    claim: str | None = None,
 ) -> None:
     """Spawn a c11 pane that runs the trident review. Fire-and-forget.
 
@@ -1048,11 +1264,12 @@ def _spawn_triple_pane(
         head_sha=head_sha,
         short_id=short_id,
         worktree=worktree,
+        claim=claim,
     )
 
     if not success:
         # Release the parent claim so retries aren't blocked by a phantom record.
-        clear_review_state(lattice_dir, task_id)
+        clear_owned_review_state(lattice_dir, task_id, claim)
         if is_json:
             click.echo(
                 json.dumps(
@@ -1244,18 +1461,14 @@ def _compute_elapsed_str(
 
 
 def _check_review_artifacts(lattice_dir: Path, task_id: str) -> bool:
-    """Check if any review artifacts exist for a task."""
-    artifacts_dir = lattice_dir / "artifacts" / task_id
-    if not artifacts_dir.exists():
-        return False
-    # Check for any files with review-related roles
-    for f in artifacts_dir.iterdir():
-        if f.suffix == ".json":
-            try:
-                meta = json.loads(f.read_text(encoding="utf-8"))
-                role = meta.get("role", "")
-                if "review" in role:
-                    return True
-            except (json.JSONDecodeError, OSError):
-                continue
+    """Check if any review artifacts are attached to a task.
+
+    Read from the task's ``artifact_attached`` events: artifact metadata lives
+    under ``artifacts/meta/`` keyed by artifact ID, never per task.
+    """
+    for event in _task_events(lattice_dir, task_id):
+        if event.get("type") == "artifact_attached":
+            role = (event.get("data") or {}).get("role") or ""
+            if "review" in role:
+                return True
     return False

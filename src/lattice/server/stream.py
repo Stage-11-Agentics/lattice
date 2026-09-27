@@ -47,8 +47,9 @@ RAW_SEND = "lattice.raw_send"
 
 
 def frame(event: str, data: Any, event_id: str | None = None) -> bytes:
-    """One SSE event. JSON escapes every line break, so ``data`` is one line."""
-    text = json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    """One SSE event. JSON escapes every line break, so ``data`` is one line; and
+    every non-ASCII character, so event data holding a lone surrogate still encodes."""
+    text = json.dumps(data, sort_keys=True, separators=(",", ":"))
     head = f"id: {event_id}\n" if event_id is not None else ""
     return f"{head}event: {event}\ndata: {text}\n\n".encode()
 

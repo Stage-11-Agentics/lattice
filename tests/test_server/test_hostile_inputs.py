@@ -1,6 +1,6 @@
 """G-1 over HTTP: hostile names never build a path, and nothing outside the target
-board's durable paths changes. (The attach-payload case is H-12's; its naming rule is
-unit-tested in test_ops_limits.py.)"""
+board's durable paths changes. (The attach payload's naming rule is unit-tested in
+test_ops_limits.py.)"""
 
 from __future__ import annotations
 
@@ -69,3 +69,30 @@ def test_hostile_resource_names_are_refused(server: ServerHandle, root: Path, na
         assert status == 400 and body["error"]["code"] == "VALIDATION_ERROR", (op, body)
     assert _outside_target(root) == before
     assert not list((root / "projects" / "alpha" / ".lattice" / "resources").iterdir())
+
+
+def test_attach_payload_named_to_escape_is_stored_under_the_server_chosen_name(
+    server: ServerHandle, root: Path
+) -> None:
+    """An attach payload named ``../../x.md`` is stored at
+    ``artifacts/payload/<artifact_id>.md``; nothing outside the target board's
+    durable paths changes (H-12)."""
+    from lattice.ops.task_attach import encode_payload
+    from tests.test_server.conftest import create_task
+
+    token = mint(root)
+    task = create_task(server, token)
+    before = _outside_target(root)
+    status, _, body = server.op(
+        "alpha",
+        "task.attach",
+        {"task": task["id"], "payload": encode_payload("../../x.md", b"# escaped?\n")},
+        token=token,
+        actor="agent:dev",
+    )
+    assert status == 200, body
+    art_id = body["data"]["result"]["value"]["id"]
+    stored = root / "projects" / "alpha" / ".lattice" / "artifacts" / "payload" / f"{art_id}.md"
+    assert stored.read_bytes() == b"# escaped?\n"
+    assert _outside_target(root) == before
+    assert not list(root.parent.rglob("x.md"))

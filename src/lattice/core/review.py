@@ -16,12 +16,15 @@ still expect the pre-LAT-205 contract.
 
 from __future__ import annotations
 
+import contextlib
 import glob as glob_mod
 import json
 import os
+import secrets
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -177,6 +180,82 @@ def clear_review_state(lattice_dir: Path, task_id: str) -> None:
     path.unlink(missing_ok=True)
 
 
+def new_claim_token() -> str:
+    """A fresh generation token for one claim of a task's review slot."""
+    return secrets.token_hex(8)
+
+
+@contextlib.contextmanager
+def _state_lock(lattice_dir: Path, task_id: str) -> Iterator[None]:
+    from lattice.storage.locks import lattice_lock
+
+    locks_dir = lattice_dir / "locks"
+    locks_dir.mkdir(exist_ok=True)
+    with lattice_lock(locks_dir, f"review_state_{task_id}"):
+        yield
+
+
+def _owns(lattice_dir: Path, task_id: str, claim: str) -> bool:
+    current = read_review_state(lattice_dir, task_id)
+    return isinstance(current, dict) and current.get("claim") == claim
+
+
+def write_owned_review_state(lattice_dir: Path, state: dict, claim: str | None) -> bool:
+    """Write *state* only while the record is still this claim's.
+
+    A review whose slot was taken over (``--force`` on a hosted checkout, SPEC
+    §3.4) must not overwrite the new holder's record. *claim* ``None`` (a caller
+    that never claimed) writes unconditionally, as before. Returns whether it wrote.
+    """
+    if claim is None:
+        write_review_state(lattice_dir, state)
+        return True
+    task_id = state["task_id"]
+    with _state_lock(lattice_dir, task_id):
+        if not _owns(lattice_dir, task_id, claim):
+            return False
+        write_review_state(lattice_dir, {**state, "claim": claim})
+        return True
+
+
+def take_over_review_state(lattice_dir: Path, state: dict) -> str:
+    """Write *state* as a new claim of the slot whatever it holds (``--force`` on a
+    hosted checkout), and return the new claim's token. The previous holder's later
+    writes then no-op. An auto-fired child adopting its parent's claim uses the
+    compare-and-swap :func:`adopt_review_state` instead."""
+    claim = new_claim_token()
+    with _state_lock(lattice_dir, state["task_id"]):
+        write_review_state(lattice_dir, {**state, "claim": claim})
+    return claim
+
+
+def adopt_review_state(lattice_dir: Path, state: dict, observed: dict) -> str | None:
+    """Take the slot over from *observed* (the auto-fired child adopting its
+    parent's claim), as a compare-and-swap under the per-task lock: only if the
+    record is still exactly what the child read. Returns the new claim's token, or
+    ``None`` when the record changed in between (a hosted ``--force`` took the
+    slot), so the child follows the normal claim path instead of displacing it."""
+    claim = new_claim_token()
+    with _state_lock(lattice_dir, state["task_id"]):
+        if read_review_state(lattice_dir, state["task_id"]) != observed:
+            return None
+        write_review_state(lattice_dir, {**state, "claim": claim})
+    return claim
+
+
+def clear_owned_review_state(lattice_dir: Path, task_id: str, claim: str | None) -> bool:
+    """Remove the record only while it is still this claim's (see
+    :func:`write_owned_review_state`). Returns whether it removed it."""
+    if claim is None:
+        clear_review_state(lattice_dir, task_id)
+        return True
+    with _state_lock(lattice_dir, task_id):
+        if not _owns(lattice_dir, task_id, claim):
+            return False
+        clear_review_state(lattice_dir, task_id)
+        return True
+
+
 def pid_alive(pid: int) -> bool:
     """Return True if ``pid`` refers to a live process on this machine.
 
@@ -217,30 +296,31 @@ def claim_review_state(
     Returns ``(True, written_state)`` on success or ``(False, existing_state)``
     on contention.
 
-    Note: this is *not* a true compare-and-swap. ``write_review_state`` does
-    an atomic temp-file replace, but the read-decide-write window is not
-    locked. Two callers passing the read check within microseconds will both
-    write — last writer wins. The realistic race is handled in §5 of the
-    LAT-211 plan (see module-level docstring); the residual race spawns
-    duplicate work but never corrupts state.
+    The read-decide-write runs under the task's review-state lock, the same lock
+    every takeover (:func:`take_over_review_state`, :func:`adopt_review_state`) and
+    every owned write or clear takes, so two claimers cannot both win: the second
+    sees the first's live record and is refused. The new record carries a fresh
+    claim token (``"claim"``).
     """
-    existing = read_review_state(lattice_dir, task_id)
-    if existing is not None:
-        holder = existing.get("started_by_pid")
-        if isinstance(holder, int) and holder != started_by_pid and pid_alive(holder):
-            return False, existing
-        # Otherwise: stale (no PID field, dead PID, or our own PID) — reclaim.
+    with _state_lock(lattice_dir, task_id):
+        existing = read_review_state(lattice_dir, task_id)
+        if existing is not None:
+            holder = existing.get("started_by_pid")
+            if isinstance(holder, int) and holder != started_by_pid and pid_alive(holder):
+                return False, existing
+            # Otherwise: stale (no PID field, dead PID, or our own PID) — reclaim.
 
-    new_state: dict[str, Any] = {
-        "task_id": task_id,
-        "mode": mode,
-        "review_type": review_type,
-        "started_at": _now_iso(),
-        "started_by_pid": started_by_pid,
-        "auto_fired": auto_fired,
-        "agents": [],
-    }
-    write_review_state(lattice_dir, new_state)
+        new_state: dict[str, Any] = {
+            "task_id": task_id,
+            "mode": mode,
+            "review_type": review_type,
+            "started_at": _now_iso(),
+            "started_by_pid": started_by_pid,
+            "auto_fired": auto_fired,
+            "agents": [],
+            "claim": new_claim_token(),
+        }
+        write_review_state(lattice_dir, new_state)
     return True, new_state
 
 
@@ -1004,6 +1084,7 @@ def run_single_review(
     actor: str | dict,
     timeout: int = DEFAULT_AGENT_TIMEOUT,
     worktree: Path | None = None,
+    claim: str | None = None,
 ) -> tuple[bool, str, str | None]:
     """Run a single-agent review via ``agent_spawn.spawn_one``.
 
@@ -1011,6 +1092,10 @@ def run_single_review(
     terminal window. The agent runs in a ``subprocess.run`` and the CLI
     blocks until it finishes. Returns ``(success, message,
     output_text_or_None)``.
+
+    *claim* is the token of the caller's claim of the review slot: every state
+    write and the final clear happen only while the record is still that claim's,
+    so a review whose slot was taken over leaves the new holder's record alone.
     """
     from lattice.storage.agent_spawn import HeadlessBackend
 
@@ -1030,7 +1115,7 @@ def run_single_review(
             {"name": "claude", "status": "running", "started_at": started_at, "artifact_id": None}
         ],
     }
-    write_review_state(lattice_dir, state)
+    write_owned_review_state(lattice_dir, state, claim)
 
     tmp = _make_prompt_dir(lattice_dir, prefix="review-")
     agent_dir = tmp / "claude"
@@ -1057,7 +1142,7 @@ def run_single_review(
         finished_at = _now_iso()
         state["agents"][0]["status"] = "done" if result.success else "failed"
         state["agents"][0]["finished_at"] = finished_at
-        write_review_state(lattice_dir, state)
+        write_owned_review_state(lattice_dir, state, claim)
 
         if not result.success:
             actor_str = _extract_actor_str(actor)
@@ -1086,10 +1171,10 @@ def run_single_review(
                 "duration_seconds": round(result.duration_seconds, 1),
                 "stderr_tail": result.stderr_tail,
             }
-            write_review_state(lattice_dir, state)
+            write_owned_review_state(lattice_dir, state, claim)
             return False, message, None
 
-        clear_review_state(lattice_dir, task_id)
+        clear_owned_review_state(lattice_dir, task_id, claim)
         return True, "Review complete.", result.output_text
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -1199,6 +1284,7 @@ def run_triple_review(
     head_sha: str | None = None,
     short_id: str | None = None,
     worktree: Path | None = None,
+    claim: str | None = None,
 ) -> tuple[bool, str]:
     """Spawn a c11 pane that runs /trident-{type}-review and applies fixes inline.
 
@@ -1266,7 +1352,7 @@ def run_triple_review(
             }
         ],
     }
-    write_review_state(lattice_dir, state)
+    write_owned_review_state(lattice_dir, state, claim)
 
     return (
         True,

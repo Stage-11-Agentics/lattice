@@ -89,9 +89,9 @@ def receipt_file_name(now: datetime | None = None) -> str:
 
 
 def _dumps(value: Any) -> bytes:
-    return (
-        json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n"
-    ).encode("utf-8")
+    # ASCII escapes: event data may hold a lone surrogate (valid JSON, e.g. from
+    # ``--data '{"k": "\\ud800"}'``), which has no UTF-8 encoding.
+    return (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode("ascii")
 
 
 def _size(path: Path) -> int | None:
