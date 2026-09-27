@@ -99,6 +99,9 @@ def done():
     acc["client"] = time.monotonic() - t1
     acc["imports"] = t1 - t0
     acc["cmd"] = sys.argv[1]
+    import resource
+    usage = resource.getrusage(resource.RUSAGE_SELF)
+    acc["cpu"] = usage.ru_utime + usage.ru_stime
     with open(os.environ["BENCH_TRACE"], "a") as fh:
         fh.write(json.dumps(acc) + "\n")
 atexit.register(done)
@@ -137,7 +140,7 @@ def phases(rows: list[dict], cmd: str) -> str:
     mine = [r for r in rows if r["cmd"] == cmd]
     if not mine:
         return f"{cmd}: no traces"
-    keys = ("client", "catch_up", "lock_sync", "lock_rw", "http", "apply", "fsync")
+    keys = ("client", "cpu", "catch_up", "lock_sync", "lock_rw", "http", "apply", "fsync")
     means = " ".join(f"{k}={sum(r[k] for r in mine) / len(mine) * 1000:.0f}" for k in keys)
     fsyncs = sum(r["fsyncs"] for r in mine) / len(mine)
     syncs = sum(r["syncs"] for r in mine) / len(mine)

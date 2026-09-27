@@ -117,7 +117,8 @@ _LINE_HASH_RE = re.compile(r"[0-9a-f]{32}")
 OutcomeKind = Literal["applied", "unchanged", "unreachable", "busy", "incomplete"]
 
 #: Test seam: called with a step name at each crash-relevant point of a sync
-#: (``applying_written``, ``rescue_copied``, ``rescue_renamed``,
+#: (``sync_ticket`` and ``sync_ticket_taken`` around publishing the ticket,
+#: ``applying_written``, ``rescue_copied``, ``rescue_renamed``,
 #: ``rescue_dir_synced``, ``rescue_unlinked``, ``file_written``, ``removed``,
 #: ``modes_restored``, ``state_written``). ``None`` in production.
 _seam: Callable[[str], None] | None = None
@@ -887,6 +888,7 @@ class _Syncer:
             self.ticket = None  # unpublished: nobody may adopt this sync
             return
         self.ticket = ticket
+        _step("sync_ticket_taken")
 
     def finish_ticket(self, outcome: SyncOutcome) -> None:
         """Record this sync's outcome under its own ticket, unless the record
