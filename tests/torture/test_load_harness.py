@@ -1,0 +1,72 @@
+"""The AC-42 harness never loses a child (H-13b round 4): a child that reports
+during the run, or exits without a report, fails the test at once. Default
+suite: these use short sleeps and a short flush grace."""
+
+from __future__ import annotations
+
+import multiprocessing
+import time
+
+import pytest
+
+from tests.torture.test_load import _collect, _run_for
+
+
+def _report_error(out) -> None:
+    out.put((7, "viewer", 0, 0, ['OSError(49, "Can\'t assign requested address")']))
+
+
+def _silent_death() -> None:
+    import os
+
+    os._exit(3)
+
+
+def _sleep() -> None:
+    time.sleep(30)
+
+
+@pytest.fixture()
+def ctx():
+    return multiprocessing.get_context("spawn")
+
+
+def test_a_child_that_exits_without_a_report_fails_the_run_fast(ctx) -> None:
+    stop, results = ctx.Event(), ctx.Queue()
+    child = ctx.Process(target=_silent_death, daemon=True)
+    child.start()
+    started = time.monotonic()
+    with pytest.raises(pytest.fail.Exception, match=r"exited \(3\) without a report"):
+        _run_for(30, results, {4: child}, stop, grace=0.3)
+    assert time.monotonic() - started < 5
+    assert stop.is_set()
+
+
+def test_a_child_reporting_during_the_run_fails_it_with_the_error(ctx) -> None:
+    stop, results = ctx.Event(), ctx.Queue()
+    child = ctx.Process(target=_report_error, args=(results,), daemon=True)
+    child.start()
+    with pytest.raises(pytest.fail.Exception, match="assign requested address"):
+        _run_for(30, results, {7: child}, stop, grace=0.3)
+    child.join(timeout=5)
+
+
+def test_collect_fails_fast_on_a_silent_death(ctx) -> None:
+    stop, results = ctx.Event(), ctx.Queue()
+    child = ctx.Process(target=_silent_death, daemon=True)
+    child.start()
+    started = time.monotonic()
+    with pytest.raises(pytest.fail.Exception, match="without a report"):
+        _collect(results, {1: child}, stop, until=time.monotonic() + 60, grace=0.3)
+    assert time.monotonic() - started < 5
+
+
+def test_a_living_child_does_not_fail_the_run(ctx) -> None:
+    stop, results = ctx.Event(), ctx.Queue()
+    child = ctx.Process(target=_sleep, daemon=True)
+    child.start()
+    try:
+        _run_for(0.5, results, {2: child}, stop, grace=0.3)
+    finally:
+        child.kill()
+        child.join(timeout=5)

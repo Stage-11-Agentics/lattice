@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import json
+import os
 import sys
 from collections.abc import Generator, Mapping
 from dataclasses import dataclass, field
@@ -360,6 +361,8 @@ class AuthorityCache:
         self.bytes = 0
         self.scope: object = None
         self._fresh: set[tuple[str, bool]] = set()
+        #: Discovery results of the current scope, by ``(lattice_dir, include_archived)``.
+        self._discovered: dict[tuple[str, bool], list[ResolvedTaskAuthority]] = {}
         self._entries: OrderedDict[
             tuple[str, bool], tuple[tuple[bytes | None, bytes | None], ResolvedTaskAuthority]
         ] = OrderedDict()
@@ -369,16 +372,38 @@ class AuthorityCache:
         if scope != self.scope:
             self.scope = scope
             self._fresh = set()
+            self._discovered = {}
 
     @staticmethod
     def _sources(lattice_dir: Path, task_id: str) -> tuple[bytes | None, bytes | None]:
+        """Both event logs' bytes (``None`` when absent); plain ``os`` calls, since
+        this runs for every task of every scope."""
+        base = os.fspath(lattice_dir)
         out: list[bytes | None] = []
-        for location in ("active", "archived"):
+        for directory in ("events", "archive/events"):
             try:
-                out.append(_location_paths(lattice_dir, task_id, location)["event"].read_bytes())
+                fd = os.open(f"{base}/{directory}/{task_id}.jsonl", os.O_RDONLY)
             except FileNotFoundError:
                 out.append(None)
+                continue
+            try:
+                chunks = []
+                while chunk := os.read(fd, 1 << 20):
+                    chunks.append(chunk)
+            finally:
+                os.close(fd)
+            out.append(b"".join(chunks))
         return out[0], out[1]
+
+    def discovered(
+        self, lattice_dir: Path, include_archived: bool, discover: Callable[[], list]
+    ) -> list[ResolvedTaskAuthority]:
+        """One discovery per scope and argument set (nothing changes within a scope)."""
+        key = (os.fspath(lattice_dir), include_archived)
+        found = self._discovered.get(key)
+        if found is None:
+            found = self._discovered[key] = discover()
+        return list(found)
 
     def read(
         self, lattice_dir: Path, task_id: str, allow_missing: bool
@@ -470,7 +495,27 @@ def discover_task_authorities(
     IDs are collected from both placements first, then each task is resolved
     through :func:`read_task_authority`. Split copies therefore yield one
     logical task at the placement selected by immutable history.
+
+    Inside :func:`authority_cache`, one scope discovers once per argument set.
     """
+    cache = _AUTHORITY_CACHE.get()
+    if cache is not None:
+        # Discovery without archived tasks resolves the same IDs and keeps the
+        # active placements, so it is the full discovery filtered.
+        found = cache.discovered(
+            lattice_dir,
+            True,
+            lambda: _discover_task_authorities(lattice_dir, include_archived=True),
+        )
+        return found if include_archived else [a for a in found if a.location == "active"]
+    return _discover_task_authorities(lattice_dir, include_archived=include_archived)
+
+
+def _discover_task_authorities(
+    lattice_dir: Path,
+    *,
+    include_archived: bool = True,
+) -> list[ResolvedTaskAuthority]:
     active_task_ids: set[str] = set()
     archived_task_ids: set[str] = set()
     event_dirs = [

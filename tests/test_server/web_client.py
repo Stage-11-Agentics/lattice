@@ -13,6 +13,12 @@ from lattice.server.testing import ServerHandle
 
 SESSION_COOKIE = "lattice_session"
 
+#: Failures that mean a kept-alive connection went stale before any response
+#: byte arrived (``RemoteDisconnected`` is raised only when the status line never
+#: started). ``IncompleteRead``, ``BadStatusLine``, ``LineTooLong`` and the like
+#: are protocol failures and are never retried.
+STALE_CONNECTION = (http.client.RemoteDisconnected, BrokenPipeError, ConnectionResetError)
+
 
 @dataclass
 class WebResponse:
@@ -61,14 +67,20 @@ class WebClient:
             if self._conn is None:
                 self._conn = http.client.HTTPConnection("127.0.0.1", self.server.port, timeout=30)
             try:
-                self._conn.request(method, path, body=body, headers=headers)
-                resp = self._conn.getresponse()
-                raw = resp.read()
-            except (OSError, http.client.HTTPException):
+                try:
+                    self._conn.request(method, path, body=body, headers=headers)
+                    resp = self._conn.getresponse()
+                except STALE_CONNECTION:
+                    # The server closed the idle connection before sending one byte
+                    # of a response: only a reused connection's GET may try again.
+                    self.close()
+                    if attempt == 2 or not reused or method != "GET":
+                        raise
+                    continue
+                raw = resp.read()  # a truncated or malformed response always propagates
+            except BaseException:
                 self.close()
-                if attempt == 2 or not reused or method != "GET":
-                    raise
-                continue
+                raise
             if resp.getheader("connection", "").lower() == "close":
                 self.close()
             return resp.status, raw, resp.getheaders()

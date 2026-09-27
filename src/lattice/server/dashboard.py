@@ -236,7 +236,14 @@ def _api_path(request: Request) -> str:
 
 def _compute(project: Project, path: str, query: str) -> CachedRead:
     response = api.route_get(project.board, path, query, None)
-    return CachedRead(response.status, response.body(), dict(response.headers))
+    # The local dashboard's JSON, compact: the same document, serialized by the C
+    # encoder (an indented dump runs the pure-Python one, the largest cost per head).
+    body = (
+        b""
+        if response.envelope is None
+        else json.dumps(response.envelope, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
+    return CachedRead(response.status, body, dict(response.headers))
 
 
 async def api_get(request: Request, state: ServerState) -> Response:
