@@ -157,8 +157,31 @@ class FakeCache:
         return SyncOutcome("applied" if changed else "unchanged", self.head, "t")
 
 
-def _run(follower: Follower):
-    thread = threading.Thread(target=follower.run, daemon=True)
+class FollowerThread(threading.Thread):
+    """Runs ``follower.run`` and keeps whatever it raised, so a test whose follower
+    died fails with that traceback instead of a timeout (:meth:`check`)."""
+
+    def __init__(self, follower: Follower) -> None:
+        super().__init__(daemon=True)
+        self.follower = follower
+        self.failure: BaseException | None = None
+
+    def run(self) -> None:
+        try:
+            self.follower.run()
+        except BaseException as exc:  # noqa: BLE001 - surfaced by check()
+            self.failure = exc
+
+    def check(self) -> None:
+        """Raise the follower's exception, or fail if it returned without being stopped."""
+        if self.failure is not None:
+            raise AssertionError("the follower thread died") from self.failure
+        if not self.is_alive() and not self.follower.stopped:
+            raise AssertionError("the follower thread exited without stop()")
+
+
+def _run(follower: Follower) -> FollowerThread:
+    thread = FollowerThread(follower)
     thread.start()
     return thread
 
@@ -433,6 +456,30 @@ def test_fatal_sync_error_ends_the_follower_with_it(tmp_path, code) -> None:
         thread.join(2)
 
 
+class Heartbeats:
+    """Heartbeats on a :class:`ScriptedStream` every *interval*, naming *head()*,
+    as a real server sends them (SPEC §8.9). A scripted stream on its own falls
+    silent after its last pushed event, and a silent stream is, correctly, a
+    reason to poll and never extend freshness."""
+
+    def __init__(self, stream: ScriptedStream, interval: float, head) -> None:
+        self._stream, self._interval, self._head = stream, interval, head
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._interval):
+            self._stream.push(_hb(self._head()))
+
+    def __enter__(self) -> Heartbeats:
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._stop.set()
+        self._thread.join(2)
+
+
 def test_nonfatal_hard_error_clears_and_backs_off(tmp_path) -> None:
     error = OpError("INTEGRITY_ERROR", "delta rejected", {"reason": "HASH_MISMATCH"})
     cache = RaisingCache(error, head=0)
@@ -440,24 +487,70 @@ def test_nonfatal_hard_error_clears_and_backs_off(tmp_path) -> None:
     follower = _follower(tmp_path, cache, stream, heartbeat_seconds=0.1, max_backoff=0.4)
     thread = _run(follower)
     try:
-        assert wait_for(lambda: live_follower(tmp_path), 1)
-        cache.raising = True
-        for seq in range(1, 30):  # a steady stream of triggers
-            stream.push(_entry(seq))
-            time.sleep(0.05)
-            assert not live_follower(tmp_path)
-        assert thread.is_alive()
-        gaps = [b - a for a, b in zip(cache.times, cache.times[1:])]
-        assert len(cache.times) >= 3
-        assert gaps[-1] >= 0.35, gaps  # backed off to the cap, not once per entry
-        assert follower.last_sync_error.startswith("INTEGRITY_ERROR")
-        cache.raising = False
-        cache.server_head = 29
-        stream.push(_hb(29))
-        assert wait_for(lambda: live_follower(tmp_path), 5)
+        with Heartbeats(stream, 0.1, lambda: cache.server_head):
+            assert wait_for(lambda: live_follower(tmp_path), 1)
+            cache.raising = True
+            for seq in range(1, 30):  # a steady stream of triggers
+                cache.server_head = seq
+                stream.push(_entry(seq))
+                time.sleep(0.05)
+                assert not live_follower(tmp_path)
+            thread.check()
+            assert thread.is_alive()
+            gaps = [b - a for a, b in zip(cache.times, cache.times[1:])]
+            assert len(cache.times) >= 3
+            assert gaps[-1] >= 0.35, gaps  # backed off to the cap, not once per entry
+            assert follower.last_sync_error.startswith("INTEGRITY_ERROR")
+            cache.raising = False
+            # Recovery: the next sync after the backoff succeeds, and the next
+            # heartbeat at the cache's head extends freshness.
+            assert wait_for(lambda: live_follower(tmp_path), 5), (
+                thread.failure,
+                follower.polling,
+                follower.cache_head,
+                follower.announced,
+            )
+            thread.check()
+            assert follower.cache_head == follower.announced == 29
     finally:
         follower.stop()
         thread.join(2)
+    thread.check()
+
+
+def test_a_stream_silent_while_backing_off_polls_until_it_delivers_again(tmp_path) -> None:
+    """The case behind the macOS failure of the test above (round 4): the stream
+    goes silent while a sync backoff is pending. The follower is alive and falls
+    back to polling; the polled sync catches the cache up but never extends
+    freshness (AC-45). The next heartbeat at the cache's head extends it at once,
+    with no extra sync."""
+    cache = RaisingCache(OpError("INTEGRITY_ERROR", "delta rejected"), head=0)
+    stream = ScriptedStream([_hb(0)])
+    follower = _follower(tmp_path, cache, stream, heartbeat_seconds=0.1, max_backoff=0.4)
+    thread = _run(follower)
+    try:
+        assert wait_for(lambda: live_follower(tmp_path), 1)
+        cache.raising = True
+        for seq in range(1, 4):  # three failures: the backoff reaches its 0.4 s cap
+            stream.push(_entry(seq))
+            n = len(cache.times)
+            assert wait_for(lambda: len(cache.times) > n, 2)
+        cache.raising = False
+        cache.server_head = 3
+        stream.push(_hb(3))  # then the stream falls silent, with ~0.4 s of backoff ahead
+        assert wait_for(lambda: follower.polling and follower.cache_head == 3, 2)
+        assert wait_for(lambda: live_follower(tmp_path), 0.3) is None
+        thread.check()
+        assert thread.is_alive()
+        calls = cache.calls
+        stream.push(_hb(3))  # the stream delivers again
+        assert wait_for(lambda: live_follower(tmp_path), 1)
+        assert not follower.polling
+        assert cache.calls == calls  # a heartbeat at the cache's head needs no sync
+    finally:
+        follower.stop()
+        thread.join(2)
+    thread.check()
 
 
 class FiniteStream:

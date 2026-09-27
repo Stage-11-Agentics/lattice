@@ -20,7 +20,7 @@ from lattice.cli.main import cli
 from lattice.core.config import resolve_status_input
 from lattice.core.errors import OpError
 from lattice.core.event_stream import stream_events
-from lattice.remote.hosted_watch import event_source
+from lattice.remote.hosted_watch import event_source, hosted_read
 
 
 def _format_human(event: dict) -> str:
@@ -187,16 +187,21 @@ def watch_cmd(
     """
     is_json = output_json
     lattice_dir = require_root(is_json)
-    config = load_project_config(lattice_dir)
-
-    # Resolve --status filter to canonical slug
-    if status_filter is not None:
-        status_filter = resolve_status_input(config, status_filter) or status_filter
-
-    # Resolve --task filter to ULIDs
     task_filter: list[str] | None = None
-    if task_str is not None:
-        task_filter = _resolve_task_ids(lattice_dir, task_str, is_json)
+    try:
+        # One read: on a hosted checkout, under the cache's shared read lock.
+        with hosted_read(lattice_dir):
+            config = load_project_config(lattice_dir)
+
+            # Resolve --status filter to canonical slug
+            if status_filter is not None:
+                status_filter = resolve_status_input(config, status_filter) or status_filter
+
+            # Resolve --task filter to ULIDs
+            if task_str is not None:
+                task_filter = _resolve_task_ids(lattice_dir, task_str, is_json)
+    except OpError as exc:
+        output_error(exc.message, exc.code, is_json)
 
     # Determine event type filter — if --status is given without --type,
     # implicitly restrict to status_changed.

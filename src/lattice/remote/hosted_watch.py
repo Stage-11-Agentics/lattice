@@ -14,6 +14,7 @@ it, or a poll found it.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import queue
 import threading
@@ -238,3 +239,13 @@ def event_source(
         timeout=timeout,
         ready=ready,
     )
+
+
+def hosted_read(lattice_dir: Path) -> contextlib.AbstractContextManager[object]:
+    """Hold the cache's shared read lock across one read of a hosted board
+    (SPEC §9.4), so the read sees one whole cache state and never a sync
+    half-applied; a no-op on a local board. May raise ``CACHE_INCOMPLETE``."""
+    root = hosted_root_of(Path(lattice_dir).parent)
+    if root is None:
+        return contextlib.nullcontext()
+    return cache.read_lock(root)
