@@ -147,7 +147,7 @@ def link(
         )
         return TaskMutationDecision(events=[event])
 
-    updated_snapshot = mutate_task(lattice_dir, task_id, decide, config).snapshot
+    updated_snapshot = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True).snapshot
 
     # Output
     output_result(
@@ -235,7 +235,7 @@ def unlink(
         )
         return TaskMutationDecision(events=[event])
 
-    updated_snapshot = mutate_task(lattice_dir, task_id, decide, config).snapshot
+    updated_snapshot = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True).snapshot
 
     # Output
     output_result(
@@ -317,7 +317,7 @@ def branch_link(
         )
         return TaskMutationDecision(events=[event])
 
-    updated_snapshot = mutate_task(lattice_dir, task_id, decide, config).snapshot
+    updated_snapshot = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True).snapshot
 
     # Output
     repo_display = f" (repo: {repo})" if repo else ""
@@ -405,7 +405,7 @@ def branch_unlink(
         )
         return TaskMutationDecision(events=[event])
 
-    updated_snapshot = mutate_task(lattice_dir, task_id, decide, config).snapshot
+    updated_snapshot = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True).snapshot
 
     # Output
     repo_display = f" (repo: {repo})" if repo else ""

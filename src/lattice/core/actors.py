@@ -193,3 +193,23 @@ def parse_legacy_actor(actor_str: str) -> dict:
         "name": identifier,
         "model": "human" if prefix == "human" else identifier,
     }
+
+
+def build_actor_dict(session_data: dict) -> dict:
+    """Build the structured actor stored in events from a session record.
+
+    The single place that maps session fields to the actor identity dict;
+    every session resolution path uses it.
+    """
+    d: dict = {
+        "name": session_data["name"],
+        "base_name": session_data["base_name"],
+        "serial": session_data["serial"],
+        "session": session_data["session"],
+        "model": session_data["model"],
+    }
+    if session_data.get("framework"):
+        d["framework"] = session_data["framework"]
+    if session_data.get("agent_type"):
+        d["agent_type"] = session_data["agent_type"]
+    return d

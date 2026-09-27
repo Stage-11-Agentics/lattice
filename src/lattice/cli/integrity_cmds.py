@@ -1131,6 +1131,7 @@ def _rebuild_task(lattice_dir: Path, task_id: str) -> dict:
         task_id,
         lambda _context: TaskMutationDecision(idempotent=True),
         source="either",
+        run_hooks=False,
     )
     return result.snapshot
 

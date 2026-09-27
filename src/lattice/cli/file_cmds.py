@@ -142,7 +142,7 @@ def file_link(
         )
         return TaskMutationDecision(events=[event], value=new_paths)
 
-    result = mutate_task(lattice_dir, task_id, decide, config)
+    result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
     updated_snapshot = result.snapshot
     new_paths = result.callback_value
 
@@ -222,7 +222,7 @@ def file_unlink(
         )
         return TaskMutationDecision(events=[event], value=to_remove)
 
-    result = mutate_task(lattice_dir, task_id, decide, config)
+    result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
     updated_snapshot = result.snapshot
     to_remove = result.callback_value
 

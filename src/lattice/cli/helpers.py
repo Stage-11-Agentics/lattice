@@ -8,7 +8,10 @@ from typing import NoReturn
 
 import click
 
+from lattice.core.actors import build_actor_dict
+from lattice.core.errors import OpError
 from lattice.core.ids import is_short_id, validate_actor, validate_id
+from lattice.core.plans import is_scaffold_plan  # noqa: F401 - CLI re-export
 from lattice.storage.fs import LATTICE_DIR, LatticeRootError, find_root
 from lattice.storage.operations import (
     AuthoritativeLogError,
@@ -23,25 +26,7 @@ from lattice.storage.short_ids import resolve_short_id as _resolve_short
 # ---------------------------------------------------------------------------
 
 
-def _build_actor_dict(session_data: dict) -> dict:
-    """Build a structured actor dict from session data.
-
-    This is the single place that maps session fields to the actor
-    identity dict stored in events.  All session resolution paths
-    must use this function.
-    """
-    d: dict = {
-        "name": session_data["name"],
-        "base_name": session_data["base_name"],
-        "serial": session_data["serial"],
-        "session": session_data["session"],
-        "model": session_data["model"],
-    }
-    if session_data.get("framework"):
-        d["framework"] = session_data["framework"]
-    if session_data.get("agent_type"):
-        d["agent_type"] = session_data["agent_type"]
-    return d
+_build_actor_dict = build_actor_dict
 
 
 # ---------------------------------------------------------------------------
@@ -461,56 +446,6 @@ def list_all_resources(lattice_dir: Path) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-def is_scaffold_plan(content: str, *, description: str | None = None) -> bool:
-    """Return True when plan content still matches the default scaffold placeholders.
-
-    The scaffold is minimal: just ``# <title>`` and optionally the task
-    description as a paragraph.  A plan that has been "filled in" will
-    contain sub-headings, lists, code fences, or other structural
-    elements — OR plain-text content that differs from the auto-generated
-    description paragraph.
-
-    When *description* is provided, a plan consisting only of heading +
-    that exact description text is still considered scaffold.  Without
-    *description*, any non-empty text beyond the heading is accepted as
-    a real plan (one-line plans are valid).
-    """
-    stripped = content.strip()
-    if not stripped:
-        return True
-    lines = stripped.splitlines()
-    # Must start with a heading to look like a scaffold at all.
-    if not lines[0].startswith("# "):
-        return False
-
-    # Collect non-empty, non-heading body lines.
-    body_lines = [lt for line in lines[1:] if (lt := line.strip())]
-
-    if not body_lines:
-        # Only a heading, no body → still scaffold.
-        return True
-
-    # If there's structural markdown content, it's definitely filled in.
-    for lt in body_lines:
-        if lt.startswith(("## ", "### ", "- ", "* ", "```")):
-            return False
-        if len(lt) > 2 and lt[0].isdigit() and ". " in lt[:5]:
-            return False
-
-    # Plain text exists. If we have the original description, check whether
-    # the body is just the auto-generated description (still scaffold).
-    if description:
-        body_text = "\n".join(body_lines)
-        desc_text = "\n".join(
-            lt for line in description.strip().splitlines() if (lt := line.strip())
-        )
-        if body_text == desc_text:
-            return True  # Body is just the description → scaffold.
-
-    # Plain text that isn't the auto-generated description → real plan.
-    return False
-
-
 def check_plan_gate(
     lattice_dir: Path,
     task_id: str,
@@ -523,70 +458,19 @@ def check_plan_gate(
     authoritative_snapshot: dict | None = None,
     authoritative_location: str | None = None,
 ) -> None:
-    """Block transition to in_progress if the plan file is still scaffold.
-
-    Does nothing if *target_status* is not ``in_progress``, if the workflow
-    has no planning swimlane (no ``in_planning`` status — e.g. the linear
-    status preset, which has no plan ritual), or if *force* is True (with a
-    reason).  Calls ``output_error`` (which raises SystemExit) when the gate
-    fires.
-    """
-    if target_status != "in_progress":
-        return
-    if "in_planning" not in config.get("workflow", {}).get("statuses", []):
-        return
-    if force:
-        if not reason:
-            output_error(
-                "--reason is required with --force.",
-                "VALIDATION_ERROR",
-                is_json,
-            )
-        return
-
-    if authoritative_snapshot is None:
-        from lattice.storage.operations import resolve_task_prose_path
-
-        plan_path, authority = resolve_task_prose_path(lattice_dir, task_id, "plan")
-        authoritative_snapshot = authority.snapshot
-    else:
-        base = lattice_dir / "archive" if authoritative_location == "archived" else lattice_dir
-        other_base = (
-            lattice_dir if authoritative_location == "archived" else lattice_dir / "archive"
-        )
-        target = base / "plans" / f"{task_id}.md"
-        other = other_base / "plans" / f"{task_id}.md"
-        if target.exists() and other.exists() and target.read_bytes() != other.read_bytes():
-            output_error(
-                f"Plan files diverge for {task_id}; manual recovery is required.",
-                "INTEGRITY_ERROR",
-                is_json,
-            )
-        plan_path = target if target.exists() else other if other.exists() else None
-    if plan_path is None:
-        output_error(
-            f"Plan file missing for {task_id}. "
-            "Write a plan before moving to in_progress. "
-            "Override with --force --reason.",
-            "PLAN_REQUIRED",
-            is_json,
-        )
+    """The plan gate for commands not yet converted to operations; exits on refusal."""
+    from lattice.ops.plan_gate import check_plan_gate as _check_plan_gate
 
     try:
-        content = plan_path.read_text(encoding="utf-8")
-    except OSError:
-        return  # Can't read → don't block (filesystem issue, not a planning issue)
-
-    # Load the task description so we can distinguish "plan is just the
-    # auto-generated description" from "plan has real content".
-    description: str | None = None
-    description = authoritative_snapshot.get("description")
-
-    if is_scaffold_plan(content, description=description):
-        output_error(
-            f"Plan for {task_id} is still scaffold. "
-            "Write the plan (even one line) before moving to in_progress. "
-            "Override with --force --reason.",
-            "PLAN_REQUIRED",
-            is_json,
+        _check_plan_gate(
+            lattice_dir,
+            task_id,
+            target_status,
+            config,
+            force=force,
+            reason=reason,
+            authoritative_snapshot=authoritative_snapshot,
+            authoritative_location=authoritative_location,
         )
+    except OpError as exc:
+        output_error(exc.message, exc.code, is_json)

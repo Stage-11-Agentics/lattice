@@ -49,7 +49,9 @@ def _create_task(ld: Path, task_id: str) -> None:
             "type": "task",
         },
     )
-    mutate_task_events(ld, task_id, [event], source="absent", may_emit_lifecycle=True)
+    mutate_task_events(
+        ld, task_id, [event], source="absent", may_emit_lifecycle=True, run_hooks=False
+    )
 
 
 def _write_corrupt_status_log(ld: Path, task_id: str, location: str) -> tuple[Path, str]:
@@ -138,6 +140,7 @@ class TestMutateTask:
             [event],
             source="absent",
             may_emit_lifecycle=True,
+            run_hooks=False,
         )
 
         # Snapshot written
@@ -173,6 +176,7 @@ class TestMutateTask:
             [event],
             source="absent",
             may_emit_lifecycle=True,
+            run_hooks=False,
         )
 
         lifecycle_path = ld / "events" / "_lifecycle.jsonl"
@@ -197,7 +201,9 @@ class TestMutateTask:
                 "type": "task",
             },
         )
-        mutate_task_events(ld, task_id, [create_ev], source="absent", may_emit_lifecycle=True)
+        mutate_task_events(
+            ld, task_id, [create_ev], source="absent", may_emit_lifecycle=True, run_hooks=False
+        )
 
         lifecycle_before = (ld / "events" / "_lifecycle.jsonl").read_text()
 
@@ -208,7 +214,7 @@ class TestMutateTask:
             actor="human:test",
             data={"body": "test comment"},
         )
-        mutate_task_events(ld, task_id, [comment_ev])
+        mutate_task_events(ld, task_id, [comment_ev], run_hooks=False)
 
         lifecycle_after = (ld / "events" / "_lifecycle.jsonl").read_text()
         assert lifecycle_after == lifecycle_before  # unchanged
@@ -228,7 +234,9 @@ class TestMutateTask:
                 "type": "task",
             },
         )
-        mutate_task_events(ld, task_id, [create_ev], source="absent", may_emit_lifecycle=True)
+        mutate_task_events(
+            ld, task_id, [create_ev], source="absent", may_emit_lifecycle=True, run_hooks=False
+        )
 
         # Two field updates in one call
         ev1 = create_event(
@@ -243,7 +251,7 @@ class TestMutateTask:
             actor="human:test",
             data={"field": "priority", "from": "medium", "to": "high"},
         )
-        mutate_task_events(ld, task_id, [ev1, ev2])
+        mutate_task_events(ld, task_id, [ev1, ev2], run_hooks=False)
 
         event_path = ld / "events" / f"{task_id}.jsonl"
         lines = event_path.read_text().strip().split("\n")
@@ -271,6 +279,7 @@ class TestMutateTask:
             lambda context: TaskMutationDecision(idempotent=True),
             source="absent",
             may_emit_lifecycle=True,
+            run_hooks=False,
         )
 
         assert result.idempotent is True
@@ -295,7 +304,7 @@ class TestMutateTask:
             return TaskMutationDecision()
 
         try:
-            mutate_task(ld, task_id, callback)
+            mutate_task(ld, task_id, callback, run_hooks=False)
         except AuthoritativeLogError:
             pass
         else:
@@ -327,6 +336,7 @@ class TestMutateTask:
             source="absent",
             may_emit_lifecycle=True,
             project_prefix="LAT",
+            run_hooks=False,
         )
 
         index = json.loads((ld / "ids.json").read_text())
@@ -363,6 +373,7 @@ class TestMutateTask:
                 source="absent",
                 may_emit_lifecycle=True,
                 project_prefix="LAT",
+                run_hooks=False,
             ).snapshot["short_id"]
 
         with ThreadPoolExecutor(max_workers=8) as pool:
@@ -400,7 +411,7 @@ class TestMutateTask:
                 actor="human:test",
                 data={"body": "React here"},
             )
-            mutate_task_events(ld, task_id, [comment])
+            mutate_task_events(ld, task_id, [comment], run_hooks=False)
             comment_id = comment["id"]
 
         barrier = Barrier(2)
@@ -480,6 +491,7 @@ class TestMutateTask:
                 source="either" if operation == "archive" else "active",
                 destination="archived" if operation == "archive" else None,
                 may_emit_lifecycle=operation == "archive",
+                run_hooks=False,
             )
 
         with ThreadPoolExecutor(max_workers=2) as pool:
@@ -669,7 +681,7 @@ class TestMutateTask:
             "human:test",
             {"comment_id": comment["id"]},
         )
-        mutate_task_events(ld, task_id, [comment, reaction, delete])
+        mutate_task_events(ld, task_id, [comment, reaction, delete], run_hooks=False)
         event_path = ld / "events" / f"{task_id}.jsonl"
         duplicate = create_event(
             "comment_deleted",
@@ -736,11 +748,11 @@ class TestMutateTask:
             "edit_after_delete",
             "reaction_after_delete",
         }:
-            mutate_task_events(ld, task_id, [comment, delete])
+            mutate_task_events(ld, task_id, [comment, delete], run_hooks=False)
         elif scenario == "duplicate_reaction_remove":
-            mutate_task_events(ld, task_id, [comment, reaction, remove_reaction])
+            mutate_task_events(ld, task_id, [comment, reaction, remove_reaction], run_hooks=False)
         elif scenario == "multi_delete_then_edit":
-            mutate_task_events(ld, task_id, [comment])
+            mutate_task_events(ld, task_id, [comment], run_hooks=False)
         elif scenario == "duplicate_archive":
             mutate_task_events(
                 ld,
@@ -749,6 +761,7 @@ class TestMutateTask:
                 source="either",
                 destination="archived",
                 may_emit_lifecycle=True,
+                run_hooks=False,
             )
         elif scenario == "duplicate_unarchive":
             mutate_task_events(
@@ -758,6 +771,7 @@ class TestMutateTask:
                 source="either",
                 destination="archived",
                 may_emit_lifecycle=True,
+                run_hooks=False,
             )
             mutate_task_events(
                 ld,
@@ -766,6 +780,7 @@ class TestMutateTask:
                 source="either",
                 destination="active",
                 may_emit_lifecycle=True,
+                run_hooks=False,
             )
 
         if scenario == "duplicate_delete":
@@ -848,6 +863,7 @@ class TestMutateTask:
                 source=source,
                 destination=destination,
                 may_emit_lifecycle=may_emit_lifecycle,
+                run_hooks=True,
             )
 
         assert _task_durable_bytes(ld, task_id) == before
@@ -904,6 +920,7 @@ class TestMutateTask:
                 source="either",
                 destination="archived",
                 may_emit_lifecycle=True,
+                run_hooks=False,
             )
 
         fired = False
@@ -923,6 +940,7 @@ class TestMutateTask:
                 source="either",
                 destination="archived" if direction == "archive" else "active",
                 may_emit_lifecycle=True,
+                run_hooks=False,
             )
         assert fired is True
 
@@ -937,6 +955,7 @@ class TestMutateTask:
             source="either",
             destination="archived" if direction == "archive" else "active",
             may_emit_lifecycle=True,
+            run_hooks=False,
         )
         authority = read_task_authority(ld, task_id)
         assert authority is not None
@@ -1010,6 +1029,7 @@ class TestMutateTask:
             source="either",
             destination="archived",
             may_emit_lifecycle=True,
+            run_hooks=False,
         )
         event_path = ld / "archive" / "events" / f"{task_id}.jsonl"
         event_before = event_path.read_bytes()
@@ -1049,6 +1069,7 @@ class TestMutateTask:
             source="either",
             destination="archived",
             may_emit_lifecycle=True,
+            run_hooks=False,
         )
         assert result.idempotent is True
         assert event_path.read_bytes() == event_before
@@ -1093,6 +1114,7 @@ class TestMutateTask:
                 source="either",
                 destination="archived",
                 may_emit_lifecycle=True,
+                run_hooks=False,
             )
         observed: list[str] = []
 
@@ -1121,6 +1143,7 @@ class TestMutateTask:
             source="either",
             destination="archived" if direction == "archive" else "active",
             may_emit_lifecycle=True,
+            run_hooks=True,
         )
         assert observed == [event_type]
 
@@ -1176,7 +1199,7 @@ def test_production_cli_stateful_callbacks_race_under_authority_lock(
     comment_id: str | None = None
     if operation in {"comment_edit", "comment_delete", "reaction"}:
         comment = create_event("comment_added", task_id, "human:test", {"body": "original"})
-        mutate_task_events(ld, task_id, [comment])
+        mutate_task_events(ld, task_id, [comment], run_hooks=False)
         comment_id = comment["id"]
     if operation == "complete":
         mutate_task_events(
@@ -1190,6 +1213,7 @@ def test_production_cli_stateful_callbacks_race_under_authority_lock(
                     {"from": "backlog", "to": "review"},
                 )
             ],
+            run_hooks=False,
         )
 
     commands = {

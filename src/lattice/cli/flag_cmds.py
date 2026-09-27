@@ -118,7 +118,7 @@ def needs_human_cmd(
             )
             return TaskMutationDecision(events=[event], value=display_id)
 
-        result = mutate_task(lattice_dir, task_id, decide_clear, config)
+        result = mutate_task(lattice_dir, task_id, decide_clear, config, run_hooks=True)
         updated = result.snapshot
         display_id = result.callback_value
         _notify_c11(updated, flagged=False)
@@ -179,7 +179,7 @@ def needs_human_cmd(
             value=(display_id, snapshot.get("status")),
         )
 
-    result = mutate_task(lattice_dir, task_id, decide_flag, config)
+    result = mutate_task(lattice_dir, task_id, decide_flag, config, run_hooks=True)
     updated = result.snapshot
     display_id, status = result.callback_value
     _notify_c11(updated, flagged=True)

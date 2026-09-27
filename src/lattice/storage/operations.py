@@ -10,10 +10,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal
 
+from lattice.core.errors import StateConflict
 from lattice.core.events import LIFECYCLE_EVENT_TYPES, serialize_event
+from lattice.core.origin import stamp_origin
 from lattice.core.comments import materialize_comments, validate_comment_for_delete
 from lattice.core.comments import validate_comment_for_edit, validate_comment_for_react
-from lattice.core.tasks import apply_event_to_snapshot, serialize_snapshot
+from lattice.core.tasks import FromMismatchError, apply_event_to_snapshot, serialize_snapshot
 from lattice.storage.fs import atomic_write, jsonl_append
 from lattice.storage.hooks import execute_hooks
 from lattice.storage.locks import lattice_lock, multi_lock
@@ -35,6 +37,10 @@ class AuthoritativeLogError(ValueError):
         super().__init__(details)
         self.path = path
         self.line = line
+
+
+class TaskPlacementError(AuthoritativeLogError):
+    """The task is absent, or not at the placement the mutation requires."""
 
 
 @dataclass(frozen=True)
@@ -640,13 +646,21 @@ def mutate_task(
     callback: MutationCallback,
     config: dict | None = None,
     *,
+    run_hooks: bool,
+    expect_last_event_id: str | None = None,
     source: TaskSource = "active",
     destination: TaskLocation | None = None,
     may_emit_lifecycle: bool = False,
     project_prefix: str | None = None,
     allow_short_id_backfill: bool = False,
 ) -> TaskMutationResult:
-    """Replay, validate, mutate, and materialize one task under stable locks."""
+    """Replay, validate, mutate, and materialize one task under stable locks.
+
+    ``run_hooks``: run the board's hooks from *config* for each appended event
+    after the locks are released (a server passes ``False`` and still passes
+    *config* for its rules). ``expect_last_event_id``: raise ``CONFLICT``
+    before the callback runs unless the task's last event is this one.
+    """
     locks_dir = lattice_dir / "locks"
     lock_keys = [f"events_{task_id}", f"tasks_{task_id}"]
     if may_emit_lifecycle:
@@ -669,11 +683,20 @@ def mutate_task(
         )
         if authority is not None:
             if source == "active" and authority.location != "active":
-                raise AuthoritativeLogError(f"Task {task_id} is archived.")
+                raise TaskPlacementError(f"Task {task_id} is archived.")
             if source == "archived" and authority.location != "archived":
-                raise AuthoritativeLogError(f"Task {task_id} is active.")
+                raise TaskPlacementError(f"Task {task_id} is active.")
         elif source not in {"absent", "either"}:
-            raise AuthoritativeLogError(f"Task {task_id} does not exist.")
+            raise TaskPlacementError(f"Task {task_id} does not exist.")
+
+        if expect_last_event_id is not None:
+            found = authority.snapshot.get("last_event_id") if authority is not None else None
+            if found != expect_last_event_id:
+                raise StateConflict(
+                    f"Task {task_id} changed: expected last event {expect_last_event_id}, "
+                    f"found {found}.",
+                    authority.snapshot if authority is not None else None,
+                )
 
         preexisting_snapshot_drift = False
         if authority is not None:
@@ -714,6 +737,7 @@ def mutate_task(
         logical_location = current_location
         requested_location = destination or current_location
         for event in decision.events:
+            stamp_origin(event)
             if event.get("task_id") != task_id:
                 raise ValueError("mutation event task_id does not match target task")
             if event.get("id") in seen_ids:
@@ -723,7 +747,13 @@ def mutate_task(
             if working is None and event.get("type") != "task_created":
                 raise ValueError("first task event must be task_created")
             _validate_semantic_event(validation_events, event, logical_location)
-            working = apply_event_to_snapshot(working, event)
+            try:
+                working = apply_event_to_snapshot(working, event)
+            except FromMismatchError as exc:
+                raise StateConflict(
+                    str(exc),
+                    authority.snapshot if authority is not None else None,
+                ) from exc
             validation_events.append(event)
             seen_ids.add(event["id"])
             if event["type"] == "task_archived":
@@ -747,16 +777,18 @@ def mutate_task(
             event_path.parent.mkdir(parents=True, exist_ok=True)
             atomic_write(event_path, authority.event_bytes)
             placement_reconciled = True
-        for event in decision.events:
+        if decision.events:
+            # One write and one fsync for the whole decision; the bytes equal
+            # appending the events one at a time.
             jsonl_append(
                 event_path,
-                serialize_event(event),
+                "".join(serialize_event(event) for event in decision.events),
                 after_write=lambda: _mutation_boundary(
                     "task_event_appended", lattice_dir, task_id
                 ),
                 after_fsync=lambda: _mutation_boundary("task_event_fsynced", lattice_dir, task_id),
             )
-            appended_events.append(event)
+            appended_events.extend(decision.events)
 
         authoritative_bytes = event_path.read_bytes()
         lifecycle_path = lattice_dir / "events" / "_lifecycle.jsonl"
@@ -788,7 +820,7 @@ def mutate_task(
 
     assert final_snapshot is not None and final_location is not None
     _mutation_boundary("locks_released_and_durable", lattice_dir, task_id)
-    if config:
+    if run_hooks and config:
         for event in appended_events:
             execute_hooks(config, lattice_dir, task_id, event)
     return TaskMutationResult(
@@ -809,6 +841,7 @@ def mutate_task_events(
     events: list[dict],
     config: dict | None = None,
     *,
+    run_hooks: bool,
     source: TaskSource = "active",
     destination: TaskLocation | None = None,
     may_emit_lifecycle: bool = False,
@@ -819,6 +852,7 @@ def mutate_task_events(
         task_id,
         lambda _context: TaskMutationDecision(events=events),
         config,
+        run_hooks=run_hooks,
         source=source,
         destination=destination,
         may_emit_lifecycle=may_emit_lifecycle,
@@ -914,6 +948,7 @@ def write_resource_event(
     snapshot: dict,
     config: dict | None = None,
     *,
+    run_hooks: bool,
     _caller_holds_lock: bool = False,
 ) -> None:
     """Write resource event(s) and snapshot atomically with proper locking.
@@ -921,6 +956,8 @@ def write_resource_event(
     This is the canonical write path for all resource mutations.
 
     Args:
+        run_hooks: Run the board's resource hooks from *config* after the
+            locks are released.
         _caller_holds_lock: If True, skip acquiring the resource lock (caller
             already holds it via ``resource_write_context``).  The event-file
             lock is still acquired independently.
@@ -941,11 +978,14 @@ def write_resource_event(
     resource_dir = lattice_dir / "resources" / resource_name
     resource_dir.mkdir(parents=True, exist_ok=True)
 
+    for event in events:
+        stamp_origin(event)
+
     def _do_writes() -> None:
-        # Event-first: append to per-resource event log
+        # Event-first: append to per-resource event log, one write for all
         event_path = lattice_dir / "events" / f"{resource_id}.jsonl"
-        for event in events:
-            jsonl_append(event_path, serialize_event(event))
+        if events:
+            jsonl_append(event_path, "".join(serialize_event(event) for event in events))
 
         # Then materialize snapshot
         snapshot_path = resource_dir / "resource.json"
@@ -963,7 +1003,7 @@ def write_resource_event(
             _do_writes()
 
     # Fire hooks after locks are released (data is durable)
-    if config:
+    if run_hooks and config:
         from lattice.storage.hooks import execute_resource_hooks
 
         for event in events:

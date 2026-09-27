@@ -113,7 +113,7 @@ def criterion_add(
         return TaskMutationDecision(events=[event], value=chosen_id)
 
     try:
-        result = mutate_task(lattice_dir, task_id, decide, config)
+        result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
     except ValueError as exc:
         output_error(str(exc), "VALIDATION_ERROR", is_json)
     chosen_id = (
@@ -203,7 +203,7 @@ def criterion_edit(
         return TaskMutationDecision(events=[event])
 
     try:
-        result = mutate_task(lattice_dir, task_id, decide, config)
+        result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
     except ValueError as exc:
         output_error(str(exc), "VALIDATION_ERROR", is_json)
     criterion = find_criterion(result.snapshot, criterion_id)
@@ -265,7 +265,7 @@ def criterion_retire(
         return TaskMutationDecision(events=[event])
 
     try:
-        result = mutate_task(lattice_dir, task_id, decide, config)
+        result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
     except ValueError as exc:
         output_error(str(exc), "VALIDATION_ERROR", is_json)
     criterion = find_criterion(result.snapshot, criterion_id)

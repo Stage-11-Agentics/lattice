@@ -253,6 +253,7 @@ def lattice_create(
         source="absent",
         may_emit_lifecycle=True,
         project_prefix=prefix,
+        run_hooks=True,
     ).snapshot
     short_id = snapshot.get("short_id")
 
@@ -302,7 +303,7 @@ def lattice_criterion_add(
         )
         return TaskMutationDecision(events=[event], value=chosen_id)
 
-    result = mutate_task(lattice_dir, task_id, decide, config)
+    result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
     criterion = find_criterion(result.snapshot, result.callback_value)
     return {"task_id": task_id, "criterion": criterion, "snapshot": result.snapshot}
 
@@ -348,7 +349,7 @@ def lattice_criterion_edit(
         )
         return TaskMutationDecision(events=[event])
 
-    result = mutate_task(lattice_dir, task_id, decide, config)
+    result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
     return {
         "task_id": task_id,
         "criterion": find_criterion(result.snapshot, criterion_id),
@@ -388,7 +389,7 @@ def lattice_criterion_retire(
         )
         return TaskMutationDecision(events=[event])
 
-    result = mutate_task(lattice_dir, task_id, decide, config)
+    result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
     return {
         "task_id": task_id,
         "criterion": find_criterion(result.snapshot, criterion_id),
@@ -517,7 +518,7 @@ def lattice_update(
             snapshot = apply_event_to_snapshot(snapshot, event)
         return TaskMutationDecision(events=events, idempotent=not events)
 
-    result = mutate_task(lattice_dir, task_id, decide, config)
+    result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
     if result.idempotent:
         return {"message": "No changes", "snapshot": result.snapshot}
     return result.snapshot
@@ -573,7 +574,7 @@ def lattice_status(
         event = create_event(type="status_changed", task_id=task_id, actor=actor, data=event_data)
         return TaskMutationDecision(events=[event])
 
-    result = mutate_task(lattice_dir, task_id, decide, config)
+    result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
     if result.idempotent:
         return {"message": f"Already at status {new_status}", "snapshot": result.snapshot}
     return result.snapshot
@@ -609,7 +610,7 @@ def lattice_assign(
         )
         return TaskMutationDecision(events=[event])
 
-    result = mutate_task(lattice_dir, task_id, decide, config)
+    result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
     if result.idempotent:
         return {"message": f"Already assigned to {assignee}", "snapshot": result.snapshot}
     return result.snapshot
@@ -666,7 +667,7 @@ def lattice_comment(
         event = create_event(type="comment_added", task_id=task_id, actor=actor, data=event_data)
         return TaskMutationDecision(events=[event])
 
-    return mutate_task(lattice_dir, task_id, decide, config).snapshot
+    return mutate_task(lattice_dir, task_id, decide, config, run_hooks=True).snapshot
 
 
 @mcp.tool()
@@ -724,7 +725,7 @@ def lattice_link(
         )
         return TaskMutationDecision(events=[event])
 
-    return mutate_task(lattice_dir, source_id, decide, config).snapshot
+    return mutate_task(lattice_dir, source_id, decide, config, run_hooks=True).snapshot
 
 
 @mcp.tool()
@@ -766,7 +767,7 @@ def lattice_unlink(
         )
         return TaskMutationDecision(events=[event])
 
-    return mutate_task(lattice_dir, source_id, decide, config).snapshot
+    return mutate_task(lattice_dir, source_id, decide, config, run_hooks=True).snapshot
 
 
 @mcp.tool()
@@ -803,7 +804,7 @@ def lattice_attach(
         normalize_criterion_ids(criterion_ids, snapshot=snapshot)
         return TaskMutationDecision(idempotent=True)
 
-    mutate_task(lattice_dir, task_id, validate_target, config)
+    mutate_task(lattice_dir, task_id, validate_target, config, run_hooks=True)
     is_url = source.startswith("http://") or source.startswith("https://")
 
     if role is not None:
@@ -920,7 +921,7 @@ def lattice_attach(
         )
         return TaskMutationDecision(events=[event])
 
-    mutate_task(lattice_dir, task_id, decide, config)
+    mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
     return metadata
 
 
@@ -955,6 +956,7 @@ def lattice_archive(
         source="either",
         destination="archived",
         may_emit_lifecycle=True,
+        run_hooks=True,
     ).callback_value
 
 
@@ -994,6 +996,7 @@ def lattice_unarchive(
         source="either",
         destination="active",
         may_emit_lifecycle=True,
+        run_hooks=True,
     ).callback_value
 
 
@@ -1052,7 +1055,7 @@ def lattice_branch_link(
         event = create_event(type="branch_linked", task_id=task_id, actor=actor, data=event_data)
         return TaskMutationDecision(events=[event])
 
-    return mutate_task(lattice_dir, task_id, decide, config).snapshot
+    return mutate_task(lattice_dir, task_id, decide, config, run_hooks=True).snapshot
 
 
 @mcp.tool()
@@ -1099,7 +1102,7 @@ def lattice_branch_unlink(
         event = create_event(type="branch_unlinked", task_id=task_id, actor=actor, data=event_data)
         return TaskMutationDecision(events=[event])
 
-    return mutate_task(lattice_dir, task_id, decide, config).snapshot
+    return mutate_task(lattice_dir, task_id, decide, config, run_hooks=True).snapshot
 
 
 @mcp.tool()
@@ -1133,7 +1136,7 @@ def lattice_event(
         event = create_event(type=event_type, task_id=task_id, actor=actor, data=event_data)
         return TaskMutationDecision(events=[event], value=event)
 
-    result = mutate_task(lattice_dir, task_id, decide, config)
+    result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
     return result.callback_value
 
 
@@ -1194,7 +1197,7 @@ def lattice_comment_edit(
         )
         return TaskMutationDecision(events=[event])
 
-    return mutate_task(lattice_dir, task_id, decide, config).snapshot
+    return mutate_task(lattice_dir, task_id, decide, config, run_hooks=True).snapshot
 
 
 @mcp.tool()
@@ -1222,7 +1225,7 @@ def lattice_comment_delete(
         )
         return TaskMutationDecision(events=[event])
 
-    return mutate_task(lattice_dir, task_id, decide, config).snapshot
+    return mutate_task(lattice_dir, task_id, decide, config, run_hooks=True).snapshot
 
 
 @mcp.tool()
@@ -1266,7 +1269,7 @@ def lattice_react(
         )
         return TaskMutationDecision(events=[event])
 
-    result = mutate_task(lattice_dir, task_id, decide, config)
+    result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
     if result.idempotent:
         return {"message": "Reaction already exists", "snapshot": result.snapshot}
     return result.snapshot
@@ -1313,7 +1316,7 @@ def lattice_unreact(
         )
         return TaskMutationDecision(events=[event])
 
-    return mutate_task(lattice_dir, task_id, decide, config).snapshot
+    return mutate_task(lattice_dir, task_id, decide, config, run_hooks=True).snapshot
 
 
 # ---------------------------------------------------------------------------

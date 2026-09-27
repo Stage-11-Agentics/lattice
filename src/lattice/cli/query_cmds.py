@@ -45,6 +45,7 @@ from lattice.storage.operations import (
     read_task_authority,
     resolve_task_prose_path,
 )
+from lattice.core.origin import format_origin_line
 from lattice.storage.readers import read_task_events
 
 read_snapshot = helpers.read_snapshot
@@ -249,7 +250,7 @@ def event_cmd(
         )
         return TaskMutationDecision(events=[event], value=event)
 
-    result = mutate_task(lattice_dir, task_id, decide, config)
+    result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
     event = result.callback_value
     if result.idempotent:
         output_result(
@@ -576,7 +577,7 @@ def next_cmd(
 
             return TaskMutationDecision(events=events)
 
-        selected = mutate_task(lattice_dir, task_id, decide, config).snapshot
+        selected = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True).snapshot
 
     display_id = selected.get("short_id") or task_id
     result_data = selected
@@ -1231,6 +1232,9 @@ def _print_human_show(
             ev_actor = get_actor_display(ev.get("actor", "?"))
             summary = _event_summary(ev, full)
             click.echo(f"  {ts}  {etype}  {summary}  by {ev_actor}")
+            origin_line = format_origin_line(ev)
+            if origin_line is not None:
+                click.echo(f"    {origin_line}")
             # Provenance line
             prov = ev.get("provenance")
             if prov:
