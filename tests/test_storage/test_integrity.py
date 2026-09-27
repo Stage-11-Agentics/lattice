@@ -186,13 +186,16 @@ def _break_config(board: Path, case: str) -> None:
     if case == "absent":
         config.unlink()
     else:
-        config.write_text({"malformed": "{broken\n", "not-an-object": "[]\n"}[case])
+        config.write_text(
+            {"malformed": "{broken\n", "not-an-object": "[]\n", "json-string": '"text"\n'}[case]
+        )
 
 
 CONFIG_CASES = {
     "malformed": ("json_parse", "Invalid JSON in config.json"),
     "absent": ("config", "config.json is missing; this board has no configuration"),
     "not-an-object": ("config", "config.json must hold a JSON object, not list"),
+    "json-string": ("config", "config.json must hold a JSON object, not str"),
 }
 
 

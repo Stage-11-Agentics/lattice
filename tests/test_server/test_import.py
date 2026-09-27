@@ -402,6 +402,7 @@ BROKEN_CONFIGS = {
     "malformed": ("{broken\n", "json_parse", "Invalid JSON in config.json"),
     "absent": (None, "config", "config.json is missing"),
     "not-an-object": ("[]\n", "config", "config.json must hold a JSON object, not list"),
+    "json-string": ('"text"\n', "config", "config.json must hold a JSON object, not str"),
 }
 
 
