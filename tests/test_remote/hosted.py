@@ -103,6 +103,10 @@ def tree_hash(root: Path) -> dict[str, str]:
     return found
 
 
+#: A server root whose projects have no audit repository (SPEC §8.10 is not their subject).
+NO_AUDIT = {"audit": {"enabled": False}}
+
+
 @dataclass
 class HostedEnv:
     tmp: Path
@@ -169,7 +173,9 @@ def hosted_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Host
     from lattice.remote import session
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    root = make_root(tmp_path, projects={PROJECT: {"code": "DEM"}})
+    # Audit off: no client test is about it, and each server stop's final audit
+    # commit and ``git gc`` were most of a test's teardown.
+    root = make_root(tmp_path, projects={PROJECT: {"code": "DEM"}}, config=NO_AUDIT)
     minted = tokens.create_token(root, user="human:alice", machine="laptop", projects=[PROJECT])
     monkeypatch.setenv(TOKEN_ENV, minted["token"])
     env = HostedEnv(tmp=tmp_path, server_root=root, token=minted["token"], monkeypatch=monkeypatch)

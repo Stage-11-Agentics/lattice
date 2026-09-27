@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import json
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -27,7 +28,18 @@ from lattice.remote import acked, cache, cache_paths, session
 from lattice.remote.binding import Hosted
 from lattice.remote.config import resolve_remote
 from lattice.remote.follower import Follower
-from tests.test_remote.hosted import PROJECT, REMOTE, HostedEnv, chmod_writable, make_repo, run_cli
+from lattice.server import tokens
+from lattice.server.testing import make_root, running_server
+from tests.test_remote.hosted import (
+    NO_AUDIT,
+    PROJECT,
+    REMOTE,
+    TOKEN_ENV,
+    HostedEnv,
+    chmod_writable,
+    make_repo,
+    run_cli,
+)
 
 SHAPES = [
     pytest.param(".lattice", "symlink", id="lattice-symlink"),
@@ -64,6 +76,58 @@ def synced(hosted_env: HostedEnv, tmp_path: Path) -> Path:
     assert run_cli(repo, "remote", "attach", REMOTE, PROJECT).exit_code == 0
     assert run_cli(repo, "create", "First", "--actor", "agent:dev").exit_code == 0
     session.reset_process_state()
+    return repo
+
+
+@pytest.fixture(scope="module")
+def _module_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[str, Any]]:
+    """One server and one synced checkout for the module's matrices, built on first
+    use (inside a test, so under its hermetic environment) and kept until the
+    module ends."""
+    shared: dict[str, Any] = {"base": tmp_path_factory.mktemp("nofollow")}
+    with ExitStack() as stack:
+        shared["stack"] = stack
+        yield shared
+
+
+@pytest.fixture()
+def shared_env(
+    _module_server: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> Iterator[HostedEnv]:
+    """``hosted_env`` for the matrices: the module's server, this test's environment."""
+    base: Path = _module_server["base"]
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(base / "config"))
+    if "env" not in _module_server:
+        root = make_root(base, projects={PROJECT: {"code": "DEM"}}, config=NO_AUDIT)
+        minted = tokens.create_token(
+            root, user="human:alice", machine="laptop", projects=[PROJECT]
+        )
+        env = HostedEnv(tmp=base, server_root=root, token=minted["token"], monkeypatch=monkeypatch)
+        env.handle = _module_server["stack"].enter_context(running_server(root))
+        env.write_remote()
+        _module_server["env"] = env
+    env = _module_server["env"]
+    monkeypatch.setenv(TOKEN_ENV, env.token)
+    session.reset_process_state()
+    try:
+        yield env
+    finally:
+        session.reset_process_state()
+
+
+@pytest.fixture()
+def shared_synced(_module_server: dict[str, Any], shared_env: HostedEnv, tmp_path: Path) -> Path:
+    """A byte copy of one synced checkout (attached, one task created and synced):
+    each case gets a complete cache without syncing its own."""
+    template = _module_server["base"] / "template"
+    if not template.exists():
+        repo = make_repo(_module_server["base"] / "building")
+        assert run_cli(repo, "remote", "attach", REMOTE, PROJECT).exit_code == 0
+        assert run_cli(repo, "create", "First", "--actor", "agent:dev").exit_code == 0
+        session.reset_process_state()
+        repo.rename(template)
+    repo = tmp_path / "repo"
+    shutil.copytree(template, repo, symlinks=True)
     return repo
 
 
@@ -250,16 +314,17 @@ def test_no_cache_writer_goes_through_a_symlink_or_a_file(
     component: str,
     kind: str,
     writer: Callable[[Path, HostedEnv, Any], None],
-    hosted_env: HostedEnv,
-    synced: Path,
+    shared_env: HostedEnv,
+    shared_synced: Path,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    synced = shared_synced
     kept = _make_shape(synced, component, kind, tmp_path / "outside")
     before = [_snapshot(path) for path in kept]
     capsys.readouterr()
     try:
-        writer(synced, hosted_env, capsys)
+        writer(synced, shared_env, capsys)
     finally:
         session.reset_process_state()
     assert [_snapshot(path) for path in kept] == before
@@ -337,8 +402,7 @@ def test_a_normal_cache_is_unchanged_by_the_guard(hosted_env: HostedEnv, synced:
 def test_a_trident_pane_never_writes_its_prompt_through_the_reviewed_checkout(
     component: str,
     kind: str,
-    hosted_env: HostedEnv,
-    synced: Path,
+    shared_synced: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -350,6 +414,7 @@ def test_a_trident_pane_never_writes_its_prompt_through_the_reviewed_checkout(
     import lattice.integrations.c11 as c11
     from lattice.core import review
 
+    synced = shared_synced
     kept = _make_shape(synced, component, kind, tmp_path / "outside")
     before = [_snapshot(path) for path in kept]
     panes: list[str] = []
