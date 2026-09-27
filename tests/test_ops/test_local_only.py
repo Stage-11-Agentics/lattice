@@ -1,7 +1,7 @@
 """SPEC §3.5: the local-only maintenance commands refuse a hosted checkout.
 
-No checkout is hosted until H-11 adds binding and routing, so the hosted
-predicate here is a stub.
+The predicate-level tests pass a stub predicate; the CLI tests at the end run
+each command in a real bound checkout.
 """
 
 from __future__ import annotations
@@ -59,7 +59,7 @@ def test_init_has_its_own_message(tmp_path: Path) -> None:
 @pytest.mark.parametrize("command", LOCAL_ONLY_COMMANDS)
 def test_local_checkout_allowed(tmp_path: Path, command: str) -> None:
     check_local_only(command, tmp_path, binding_of=local)
-    check_local_only(command, tmp_path)  # the default predicate: nothing is hosted yet
+    check_local_only(command, tmp_path)  # the default predicate: tmp_path is no checkout
 
 
 def test_predicate_sees_the_start_directory(tmp_path: Path) -> None:
@@ -72,3 +72,134 @@ def test_predicate_sees_the_start_directory(tmp_path: Path) -> None:
 def test_other_commands_are_not_local_only(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
         check_local_only("doctor", tmp_path, binding_of=bound)
+
+
+HOSTED_COMMANDS = [
+    ("init", ["init", "--actor", "human:a", "--project-code", "X"]),
+    ("demo init", ["demo", "init", "--no-dashboard"]),
+    ("rebuild", ["rebuild", "--all"]),
+    ("doctor --fix", ["doctor", "--fix"]),
+    ("backfill-ids", ["backfill-ids"]),
+    ("migrate needs-human", ["migrate", "needs-human"]),
+]
+
+
+@pytest.mark.parametrize(("command", "argv"), HOSTED_COMMANDS)
+def test_cli_refuses_on_a_bound_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: str, argv: list[str]
+) -> None:
+    """Refused before anything is read or fetched: the remote is not even
+    configured here, so a catch-up would fail differently."""
+    import json
+
+    from click.testing import CliRunner
+
+    from lattice.cli.main import cli
+
+    (tmp_path / ".lattice-remote.json").write_text(
+        json.dumps({"remote": "home", "project": "proj"})
+    )
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(cli, argv)
+    assert result.exit_code == 1, result.output
+    assert "'home/proj'" in result.output
+    if command == "init":
+        assert "its board lives on the server" in result.output
+    else:
+        assert f"'lattice {command}' is a local-only maintenance command" in result.output
+    assert not (tmp_path / ".lattice").exists()
+    assert hosted_binding(tmp_path) == "home/proj"
+
+
+@pytest.mark.parametrize(("command", "argv"), HOSTED_COMMANDS)
+def test_cli_refuses_on_a_bound_checkout_off_posix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: str, argv: list[str]
+) -> None:
+    """A bound checkout is recognized without fcntl (SPEC §6.2): off POSIX the
+    maintenance commands are still refused and create no local board."""
+    import json
+
+    from click.testing import CliRunner
+
+    from lattice.cli.main import cli
+    from lattice.remote import binding
+
+    monkeypatch.setattr(binding, "hosted_supported", lambda: False)
+    (tmp_path / ".lattice-remote.json").write_text(
+        json.dumps({"remote": "home", "project": "proj"})
+    )
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(cli, argv)
+    assert result.exit_code == 1, result.output
+    assert "'home/proj'" in result.output
+    assert not (tmp_path / ".lattice").exists()
+    assert not (tmp_path / "lattice-demo").exists()
+
+
+@pytest.mark.parametrize(("command", "argv"), HOSTED_COMMANDS)
+def test_cli_refuses_a_binding_beside_a_local_board(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: str, argv: list[str]
+) -> None:
+    """``BINDING_CONFLICT`` is never swallowed into "local"."""
+    import json
+
+    from click.testing import CliRunner
+
+    from lattice.cli.main import cli
+    from lattice.storage.board_init import create_board
+
+    create_board(tmp_path, project_code="LOC", actor="human:a")
+    (tmp_path / ".lattice-remote.json").write_text(
+        json.dumps({"remote": "home", "project": "proj"})
+    )
+    monkeypatch.chdir(tmp_path)
+    before = sorted(p.name for p in (tmp_path / ".lattice").iterdir())
+    result = CliRunner().invoke(cli, argv)
+    assert result.exit_code == 1, result.output
+    assert "Moving a board" in result.output
+    assert sorted(p.name for p in (tmp_path / ".lattice").iterdir()) == before
+
+
+@pytest.mark.parametrize("lattice_root", ["other-board", "missing-dir"])
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["init", "--path", "<bound>", "--actor", "human:a", "--project-code", "X"],
+        ["demo", "init", "--path", "<bound>", "--no-dashboard"],
+    ],
+    ids=["init", "demo-init"],
+)
+def test_explicit_target_ignores_lattice_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, argv: list[str], lattice_root: str
+) -> None:
+    """An explicit ``--path`` is checked itself: a LATTICE_ROOT naming another
+    board, or an invalid one, never makes a bound checkout look local."""
+    import json
+
+    from click.testing import CliRunner
+
+    from lattice.cli.main import cli
+    from lattice.storage.board_init import create_board
+
+    bound = tmp_path / "bound"
+    bound.mkdir()
+    (bound / ".lattice-remote.json").write_text(json.dumps({"remote": "home", "project": "proj"}))
+    other = tmp_path / "other-board"
+    other.mkdir()
+    create_board(other, project_code="OTH", actor="human:a")
+    monkeypatch.setenv("LATTICE_ROOT", str(tmp_path / lattice_root))
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(cli, [str(bound) if a == "<bound>" else a for a in argv])
+    assert result.exit_code == 1, result.output
+    assert "'home/proj'" in result.output
+    assert not (bound / ".lattice").exists()
+
+
+def test_an_invalid_lattice_root_is_not_swallowed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LATTICE_ROOT", str(tmp_path / "missing"))
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(OpError) as exc:
+        check_local_only("rebuild")
+    assert exc.value.code == "NOT_INITIALIZED"

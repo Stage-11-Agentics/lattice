@@ -24,6 +24,7 @@ from pathlib import Path
 from lattice.core.auto_review import (
     AUTO_REVIEW_ACTOR,
     DAEMON_DIR_NAME,
+    RUN_AUTO_REVIEWS_FALSE,
     resolve_mode,
     review_type_for_status,
     should_auto_fire,
@@ -99,6 +100,7 @@ def auto_fire_review(
     config: dict,
     no_auto_review_flag: bool,
     reviewed_worktree: Path | None = None,
+    declined_by_machine: bool = False,
 ) -> dict:
     """Spawn a detached ``lattice {code,plan}-review`` if gating allows.
 
@@ -136,6 +138,10 @@ def auto_fire_review(
     if not fire:
         assert skip_reason is not None
         return {"fired": False, "reason": skip_reason}
+    if declined_by_machine:
+        # The board's config asks for this review, but this machine's remote
+        # sets run_auto_reviews: false (SPEC §3.4).
+        return {"fired": False, "reason": RUN_AUTO_REVIEWS_FALSE}
 
     review_type = review_type_for_status(new_status)
     if review_type is None:

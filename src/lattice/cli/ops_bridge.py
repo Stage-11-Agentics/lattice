@@ -6,7 +6,7 @@ from typing import Any
 
 import click
 
-from lattice.boards import LocalBoard, resolve_board
+from lattice.boards import HostedBoard, LocalBoard, resolve_board
 from lattice.cli.helpers import output_error
 from lattice.ops import Caller, OpError, OpResult
 
@@ -23,12 +23,25 @@ def caller_from_context(**overrides: Any) -> Caller:
     return Caller(**fields)
 
 
-def board_or_exit(is_json: bool) -> LocalBoard:
-    """The board the cwd belongs to, or today's ``NOT_INITIALIZED`` error."""
+def board_or_exit(is_json: bool) -> LocalBoard | HostedBoard:
+    """The board the cwd belongs to, or today's ``NOT_INITIALIZED`` error.
+
+    On a hosted checkout, plain output shows other people's control characters
+    as U+FFFD from here on (SPEC §4), whatever the command prints."""
     try:
-        return resolve_board()
+        board = resolve_board()
     except OpError as exc:
         output_error(exc.message, exc.code, is_json)
+    if isinstance(board, HostedBoard):
+        from lattice.remote.session import scrub_stdout
+
+        scrub_stdout()
+    return board
+
+
+def is_hosted(board: object) -> bool:
+    """Whether *board* is a hosted checkout's board (writes go to a server)."""
+    return isinstance(board, HostedBoard)
 
 
 def run_operation(
@@ -37,7 +50,7 @@ def run_operation(
     is_json: bool,
     *,
     caller: Caller | None = None,
-    board: LocalBoard | None = None,
+    board: LocalBoard | HostedBoard | None = None,
     config: dict | None = None,
 ) -> OpResult:
     """Run *op_name* on *board* (default: the board the cwd belongs to).
@@ -103,7 +116,7 @@ def run_attested_operation(
     params: Any,
     is_json: bool,
     *,
-    board: LocalBoard,
+    board: LocalBoard | HostedBoard,
     attest: Any,
     config: dict | None = None,
 ) -> OpResult:

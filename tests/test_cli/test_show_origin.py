@@ -13,6 +13,8 @@ from click.testing import CliRunner
 
 from lattice.cli.main import cli
 from lattice.core.origin import format_origin_line
+from tests.test_remote.hosted import HostedEnv
+from tests.test_remote.hosted import hosted_env as hosted_env  # noqa: F401 - fixture
 
 ACTOR = "agent:o"
 
@@ -104,3 +106,48 @@ def test_show_prints_the_line_for_operation_events_only(
     events = as_json["data"]["events"]
     assert events[0]["origin"]["reported"]["branch"] == "feat/x"
     assert "origin" not in events[1]
+
+
+def test_hosted_plain_output_replaces_control_characters(
+    hosted_env: HostedEnv,  # noqa: F811 - the fixture imported above
+    tmp_path: Path,
+) -> None:
+    """On a hosted checkout, another user's terminal escape shows as U+FFFD in
+    plain output (SPEC §4); ``--json`` and local output are unchanged."""
+    from tests.test_remote.hosted import make_repo, run_cli
+
+    repo = make_repo(tmp_path / "repo")
+    assert run_cli(repo, "remote", "attach", "team", "demo").exit_code == 0
+    hostile = "red \x1b[31malert\x1b]0;pwned\x07 end\x9b2J\tkept\nline two"
+    hosted_env.server_op(
+        "task.create",
+        {"title": "Escape \x1b[2J title", "description": hostile},
+        actor="human:alice",
+    )
+
+    # color=True: click keeps escapes as it does for a terminal, so only the
+    # hosted scrubbing stands between them and the screen.
+    plain = run_cli(repo, "show", "DEM-1", color=True)
+    assert plain.exit_code == 0, plain.output
+    assert "\x1b" not in plain.stdout and "\x07" not in plain.stdout and "\x9b" not in plain.stdout
+    assert "red �[31malert�]0;pwned� end�2J\tkept" in plain.stdout
+    assert "line two" in plain.stdout
+    assert "Escape �[2J title" in plain.stdout
+
+    as_json = run_cli(repo, "show", "DEM-1", "--json")
+    data = json.loads(as_json.stdout)["data"]
+    assert data["title"] == "Escape \x1b[2J title"
+
+
+def test_local_plain_output_keeps_control_characters(tmp_path: Path) -> None:
+    """Local mode is unchanged (G-6): no scrubbing without a binding."""
+    from lattice.storage.board_init import create_board
+    from tests.test_remote.hosted import run_cli
+
+    create_board(tmp_path, project_code="LOC", actor="human:a")
+    assert (
+        run_cli(tmp_path, "create", "Local \x1b]0;t\x07 title", "--actor", "human:a").exit_code
+        == 0
+    )
+    plain = run_cli(tmp_path, "show", "LOC-1", color=True)
+    assert "Local \x1b]0;t\x07 title" in plain.stdout

@@ -27,6 +27,7 @@ from lattice.remote import cache, http
 from lattice.server import admin, tokens
 from lattice.server.testing import BoardServer, ServerHandle, make_root, running_server
 from lattice.storage.board_init import create_board
+from tests.test_remote.hosted import hosted_env, spawns  # noqa: F401 - H-11 fixtures
 from tests.test_remote.stream_stub import StubServer as StreamStubServer
 from tests.test_remote.stub_sync_server import StubServer, durable_files, running_stub
 

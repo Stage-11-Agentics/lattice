@@ -12,8 +12,12 @@ from lattice.core.config import (
     validate_project_code,
     validate_subproject_code,
 )
-from lattice.cli.maintenance import maintenance_gate, offline_maintenance_option
-from lattice.core.errors import BoardWriteError, TaskErased
+from lattice.cli.maintenance import (
+    maintenance_gate,
+    offline_maintenance_option,
+    refuse_on_hosted_checkout,
+)
+from lattice.core.errors import BoardWriteError, HostedReadError, TaskErased
 from lattice.core.ids import generate_task_id, validate_actor
 from lattice.storage.board_init import create_board
 from lattice.storage.fs import LATTICE_DIR
@@ -246,8 +250,8 @@ def _seed_example_tasks(lattice_dir: Path, config: dict) -> None:
 
 class _LatticeGroup(click.Group):
     """The root group. A storage primitive's refusal (a cache, a server-owned
-    board, a path outside the board) or the write path's ``TASK_ERASED``
-    reaches a command that is not yet an operation as an exception; render it
+    board, a path outside the board), the write path's ``TASK_ERASED``, or a
+    hosted read phase's failure reaches a command as an exception; render it
     as that command's error, not a traceback."""
 
     def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
@@ -257,10 +261,18 @@ class _LatticeGroup(click.Group):
     def invoke(self, ctx: click.Context):  # noqa: ANN201
         try:
             return super().invoke(ctx)
-        except (BoardWriteError, TaskErased) as exc:
+        except (BoardWriteError, TaskErased, HostedReadError) as exc:
             from lattice.cli.helpers import output_error
 
             output_error(exc.message, exc.code, "--json" in ctx.meta.get("lattice.argv", ()))
+
+
+def _end_hosted_command() -> None:
+    """Release a hosted read lock and forget per-command state (a no-op, and no
+    import, for a command that never touched a hosted checkout)."""
+    session = sys.modules.get("lattice.remote.session")
+    if session is not None:
+        session.reset_process_state()
 
 
 @click.group(cls=_LatticeGroup, invoke_without_command=True)
@@ -281,6 +293,7 @@ def cli(ctx: click.Context) -> None:
     from lattice.update_check import maybe_print_update_notice
 
     ctx.call_on_close(maybe_print_update_notice)
+    ctx.call_on_close(_end_hosted_command)
 
     if ctx.invoked_subcommand is not None:
         return
@@ -466,6 +479,7 @@ def init(
     """Initialize a new Lattice project."""
     root = Path(target_path)
     lattice_dir = root / LATTICE_DIR
+    refuse_on_hosted_checkout("init", False, root)
     maintenance_gate(lattice_dir, "init", False, offline_maintenance)
 
     # Idempotency: if .lattice/ already exists as a directory, skip (a server

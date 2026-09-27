@@ -163,21 +163,18 @@ def live_follower(hosted_root: Path, *, now: datetime | None = None) -> bool:
 
 
 def hosted_root_of(root: Path | None) -> Path | None:
-    """*root* if it is a hosted checkout whose cache :func:`cache.catch_up` would
-    sync, else ``None``: it names a remote and project (the cache marker or the
-    committed binding), and it is not a local board beside a binding (which
-    ``catch_up`` refuses with ``BINDING_CONFLICT``). H-11's routing replaces this.
+    """*root* if it is a hosted checkout (SPEC §9.3, decided by
+    :func:`lattice.remote.binding.classify`), else ``None``.
+
+    Raises ``BINDING_CONFLICT`` for a binding beside a local board, or a cache
+    marker naming another remote or project than the binding.
     """
-    if root is None or cache.cache_identity(root) is None:
+    if root is None:
         return None
-    lattice_dir = Path(root) / LATTICE_DIR
-    if (
-        lattice_dir.is_dir()
-        and not cache.has_cache_marker(lattice_dir)
-        and cache.synced_files(lattice_dir)
-    ):
-        return None
-    return Path(root)
+    from lattice.remote.binding import classify
+
+    hosted = classify(Path(root))
+    return hosted.root if hosted is not None else None
 
 
 def follow_target(hosted_root: Path) -> tuple[Remote, str]:

@@ -282,6 +282,12 @@ def compute_next_steps(
 
     if new_status == "in_planning":
         hint = f"Next: write the plan in plans/{task_id}.md, then move to planned."
+        if (lattice_dir / "cache" / "state.json").exists():
+            # A hosted cache is read-only: plans go through the server (SPEC §3.9).
+            hint = (
+                f"Next: write the plan with 'lattice plan write {label} --file <path>', "
+                "then move to planned."
+            )
         return hint, {
             "action": "write_plan",
             "plan_path": f"plans/{task_id}.md",
@@ -399,6 +405,12 @@ def compute_next_steps(
 # ---------------------------------------------------------------------------
 
 
+def _declines_auto_reviews(board: object) -> bool:
+    """A hosted board whose remote sets ``run_auto_reviews: false`` (SPEC §3.4)."""
+    remote = getattr(board, "remote", None)
+    return remote is not None and not remote.run_auto_reviews
+
+
 @cli.command("status")
 @click.argument("task_id")
 @click.argument("new_status")
@@ -500,6 +512,7 @@ def status_cmd(
                     config=config,
                     no_auto_review_flag=no_auto_review,
                     reviewed_worktree=reviewed_worktree,
+                    declined_by_machine=_declines_auto_reviews(board),
                 )
         except Exception as exc:  # noqa: BLE001 — never fail the transition
             logger.warning(

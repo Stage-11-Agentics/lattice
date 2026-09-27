@@ -10,7 +10,6 @@ the side effects.
 
 from __future__ import annotations
 
-
 # ---------------------------------------------------------------------------
 # Constants shared between the gating helper and the spawn helper
 # ---------------------------------------------------------------------------
@@ -144,6 +143,10 @@ def should_auto_fire(
 # ---------------------------------------------------------------------------
 
 
+#: Skip reason: a hosted checkout whose remote declines the board's auto-reviews.
+RUN_AUTO_REVIEWS_FALSE = "run_auto_reviews_false"
+
+
 def format_skip_reason(reason: str, *, holder_pid: int | None = None) -> str:
     """Return a human-readable one-liner explaining why auto-fire skipped.
 
@@ -152,6 +155,11 @@ def format_skip_reason(reason: str, *, holder_pid: int | None = None) -> str:
     not, why.  The returned string is suitable for appending to the
     existing next-step hint.
     """
+    if reason == RUN_AUTO_REVIEWS_FALSE:
+        return (
+            "auto-review skipped (this machine's remote sets run_auto_reviews: false; "
+            "run lattice code-review / plan-review by hand)"
+        )
     if reason == "inline_mode":
         return "auto-review skipped (inline mode)"
     if reason == "disabled_in_config":

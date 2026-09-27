@@ -27,6 +27,7 @@ EXPECTED_MODULES = [
     "migration_cmds",
     "prose_cmds",
     "query_cmds",
+    "remote_cmds",
     "resource_cmds",
     "review_cmds",
     "server_cmds",

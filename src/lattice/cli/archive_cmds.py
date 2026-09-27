@@ -16,7 +16,7 @@ from lattice.cli.helpers import (
     validate_actor_format_or_exit,
 )
 from lattice.cli.main import cli
-from lattice.cli.ops_bridge import board_or_exit, caller_from_context, run_operation
+from lattice.cli.ops_bridge import board_or_exit, caller_from_context, is_hosted, run_operation
 from lattice.ops import OpError, check_path_component
 from lattice.ops.base import check_board_writable, resolve_actor
 from lattice.ops.task_archive import UNRESOLVED_TASK
@@ -56,6 +56,10 @@ def _check_actor_first(board: LocalBoard, provenance: dict, is_json: bool) -> No
     here keeps an actor error fatal (not one failure per task) and ahead of the
     ``--stale`` scan and the no-ID check.
     """
+    if is_hosted(board):
+        # The writer resolves and authorizes the actor (SPEC §3.7): on a hosted
+        # checkout that is the server, which also defaults a missing one (§9.5).
+        return
     caller = caller_from_context()
     try:
         if caller.actor_name is not None:
@@ -75,7 +79,10 @@ _PER_TASK_CODES = frozenset({"NOT_FOUND", "CONFLICT"})
 def _check_writable_first(board: LocalBoard, is_json: bool) -> None:
     """Refuse a board this process may not write (a client cache, a server-owned
     board) once, before the actor check, the ``--stale`` scan, or any task, so
-    the refusal is typed even when there is nothing to move."""
+    the refusal is typed even when there is nothing to move. A hosted board's
+    writes go to its server, which decides (the cache is never written)."""
+    if is_hosted(board):
+        return
     try:
         check_board_writable(board.lattice_dir, caller_from_context())
     except OpError as exc:

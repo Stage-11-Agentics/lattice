@@ -85,6 +85,12 @@ class OpError(Exception):
         return f"OpError({self.code!r}, {self.message!r})"
 
 
+class HostedReadError(OpError):
+    """A hosted checkout's read phase failed (the cache could not be caught up
+    or is interrupted). Raised from ``HostedBoard.lattice_dir`` wherever a
+    command reads; the CLI renders it as that command's error."""
+
+
 def task_state_snapshot(snapshot: dict | None) -> dict | None:
     """The compact snapshot a task-state rejection carries, plus ``last_event_id``."""
     if snapshot is None:

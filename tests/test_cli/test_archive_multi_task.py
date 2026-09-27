@@ -109,9 +109,11 @@ def _tree(lattice_dir: Path) -> dict[str, bytes]:
     }
 
 
-_CODES = {"cache": "BOARD_IS_CACHE", "hosted": "BOARD_IS_HOSTED"}
+# A cache marker makes the checkout hosted (SPEC §9.3): its writes route to the
+# server, and this machine has no remote 'studio', so nothing reaches the board.
+_CODES = {"cache": "REMOTE_NOT_CONFIGURED", "hosted": "BOARD_IS_HOSTED"}
 _MESSAGES = {
-    "BOARD_IS_CACHE": "read-only mirror of studio/apollo",
+    "REMOTE_NOT_CONFIGURED": "no remote named 'studio' is configured on this machine",
     "BOARD_IS_HOSTED": "owned by a Lattice server (srv_1 on atlas pid 4242)",
 }
 
@@ -169,7 +171,7 @@ def test_unwritable_board_is_refused_before_the_actor(
 ) -> None:
     _plant(initialized_root / ".lattice", "cache")
     result = invoke("archive", "--stale", *(["--json"] if as_json else []))
-    _assert_typed(result, "BOARD_IS_CACHE", as_json)
+    _assert_typed(result, "REMOTE_NOT_CONFIGURED", as_json)
 
 
 @pytest.mark.parametrize("as_json", [False, True], ids=["plain", "json"])

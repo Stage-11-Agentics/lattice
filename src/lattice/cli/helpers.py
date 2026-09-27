@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import NoReturn
+from typing import TYPE_CHECKING, NoReturn
 
 import click
 
@@ -24,6 +24,8 @@ from lattice.storage.resources import (  # noqa: F401 - CLI re-export
 )
 from lattice.storage.short_ids import resolve_short_id as _resolve_short
 
+if TYPE_CHECKING:
+    from lattice.remote.binding import Hosted
 
 # ---------------------------------------------------------------------------
 # Session → actor dict helper (single source of truth)
@@ -50,7 +52,46 @@ def require_root(is_json: bool = False) -> Path:
             "NOT_INITIALIZED",
             is_json,
         )
+    hosted = hosted_or_exit(root, is_json)
+    if hosted is not None:
+        from lattice.remote.session import prepare_read
+
+        try:
+            return prepare_read(hosted, lock=not _long_running_command())
+        except OpError as exc:
+            output_error(exc.message, exc.code, is_json)
     return root / LATTICE_DIR
+
+
+#: Commands that run until stopped. They catch up before their first read like
+#: any command, but holding the cache's shared read lock for their lifetime
+#: would starve every sync on the machine, so they read without it.
+LONG_RUNNING_COMMANDS = frozenset({"dashboard", "watch", "wait"})
+
+
+def _long_running_command() -> bool:
+    ctx = click.get_current_context(silent=True)
+    while ctx is not None and ctx.parent is not None and ctx.parent.parent is not None:
+        ctx = ctx.parent
+    return ctx is not None and ctx.info_name in LONG_RUNNING_COMMANDS
+
+
+def hosted_or_exit(root: Path, is_json: bool) -> Hosted | None:
+    """The hosted identity of *root* (SPEC §9.3), ``None`` for a local board, or
+    the routing error printed as usual. Local boards import nothing hosted."""
+    from lattice.storage.fs import BINDING_FILE
+
+    if not (root / BINDING_FILE).exists() and not (root / LATTICE_DIR / "cache").is_dir():
+        return None
+    from lattice.remote.binding import classify, require_supported
+
+    try:
+        hosted = classify(root)
+        if hosted is not None:
+            require_supported()
+    except OpError as exc:
+        output_error(exc.message, exc.code, is_json)
+    return hosted
 
 
 def load_project_config(lattice_dir: Path) -> dict:
@@ -233,10 +274,19 @@ def require_actor(is_json: bool, *, optional: bool = False) -> str | dict | None
         result = resolve_actor(lattice_dir, Caller(actor=actor_str, actor_name=session_name))
     except OpError as exc:
         output_error(exc.message, exc.code, is_json)
-    if session_name is not None:
+    if session_name is not None and not _is_cache(lattice_dir):
+        # A hosted cache is read-only: only the writer (the server) touches
+        # sessions, so a read resolves the session without writing (SPEC §9.5).
         touch_session(lattice_dir, session_name)
     ctx.obj["_resolved_actor"] = result
     return result
+
+
+def _is_cache(lattice_dir: Path | None) -> bool:
+    if lattice_dir is None:
+        return False
+    cache_dir = Path(lattice_dir) / "cache"
+    return (cache_dir / "state.json").exists() or (cache_dir / "applying").exists()
 
 
 def validate_actor_format_or_exit(actor: str, is_json: bool) -> None:

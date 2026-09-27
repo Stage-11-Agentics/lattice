@@ -13,7 +13,11 @@ from lattice.cli.helpers import (
     require_root,
 )
 from lattice.cli.main import cli
-from lattice.cli.maintenance import maintenance_gate, offline_maintenance_option
+from lattice.cli.maintenance import (
+    maintenance_gate,
+    offline_maintenance_option,
+    refuse_on_hosted_checkout,
+)
 from lattice.core.config import configured_event_prefix, serialize_config, validate_project_code
 from lattice.core.errors import TaskErased
 from lattice.core.events import create_event
@@ -63,6 +67,7 @@ def backfill_ids(
 ) -> None:
     """Assign short IDs to existing tasks that don't have one."""
     is_json = output_json
+    refuse_on_hosted_checkout("backfill-ids", is_json)
     lattice_dir = require_root(is_json)
     maintenance_gate(lattice_dir, "backfill-ids", is_json, offline_maintenance)
     config = load_project_config(lattice_dir)
@@ -218,6 +223,7 @@ def migrate_needs_human(
     from lattice.core.comments import materialize_comments
 
     is_json = output_json
+    refuse_on_hosted_checkout("migrate needs-human", is_json)
     lattice_dir = require_root(is_json)
     maintenance_gate(lattice_dir, "migrate needs-human", is_json, offline_maintenance)
     config = load_project_config(lattice_dir)

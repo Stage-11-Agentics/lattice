@@ -12,7 +12,7 @@ from lattice.cli.helpers import json_envelope, output_error
 from lattice.cli.main import cli
 from lattice.core.errors import OpError
 from lattice.remote import cache
-from lattice.remote.follower import Follower, follow_target, hosted_root_of, succeeded
+from lattice.remote.follower import Follower, follow_target, succeeded
 
 NOT_HOSTED_MESSAGE = (
     "This checkout is not bound to a Lattice server; 'lattice sync' works only on a "
@@ -32,18 +32,17 @@ _FAILURES = {
 
 
 def _hosted_root_or_exit(is_json: bool) -> Path:
-    """``find_root``'s checkout (``LATTICE_ROOT``, the worktree jump, walking up),
-    or the cwd when it holds only a binding, if it is hosted (H-11 replaces this)."""
-    from lattice.storage.fs import LatticeRootError, find_root
+    """The hosted root the cwd routes to (SPEC §9.3: ``LATTICE_ROOT``, the
+    worktree jump, then walking up), or the routing error, or ``NOT_HOSTED``."""
+    from lattice.remote.binding import hosted_root
 
     try:
-        found = find_root()
-    except LatticeRootError:
-        found = None
-    root = hosted_root_of(found if found is not None else Path.cwd())
-    if root is None:
+        hosted = hosted_root(Path.cwd())
+    except OpError as exc:
+        output_error(exc.message, exc.code, is_json)
+    if hosted is None:
         output_error(NOT_HOSTED_MESSAGE, "NOT_HOSTED", is_json)
-    return root
+    return hosted.root
 
 
 def _alias(root: Path) -> str:

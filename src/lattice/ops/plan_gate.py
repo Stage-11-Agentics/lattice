@@ -58,7 +58,7 @@ def check_plan_gate(
             "PLAN_REQUIRED",
             f"Plan file missing for {task_id}. "
             "Write a plan before moving to in_progress. "
-            "Override with --force --reason.",
+            "Override with --force --reason." + _hosted_hint(lattice_dir, authoritative_snapshot),
             authoritative_snapshot,
         )
 
@@ -75,6 +75,15 @@ def check_plan_gate(
             "PLAN_REQUIRED",
             f"Plan for {task_id} is still scaffold. "
             "Write the plan (even one line) before moving to in_progress. "
-            "Override with --force --reason.",
+            "Override with --force --reason." + _hosted_hint(lattice_dir, authoritative_snapshot),
             authoritative_snapshot,
         )
+
+
+def _hosted_hint(lattice_dir: Path, snapshot: dict | None) -> str:
+    """On a server-owned board, the client's cache is read-only: name the command
+    that writes a plan (SPEC §3.9). Empty for a local board."""
+    if not (lattice_dir / "hosted" / "owner.json").exists():
+        return ""
+    task = (snapshot or {}).get("short_id") or (snapshot or {}).get("id") or "<task>"
+    return f" Write the plan with `lattice plan write {task} --file <path>`."
