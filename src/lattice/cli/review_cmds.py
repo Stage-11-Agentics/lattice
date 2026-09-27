@@ -225,6 +225,86 @@ def _claim_or_refuse(
     output_error(msg, "REVIEW_IN_FLIGHT", is_json)
 
 
+def _hosted(lattice_dir: Path) -> bool:
+    """True when *lattice_dir* is a hosted checkout's cache (SPEC §9.3)."""
+    from lattice.remote.binding import classify
+
+    try:
+        return classify(lattice_dir.parent) is not None
+    except Exception:  # noqa: BLE001 - routing already succeeded; a board read decides nothing
+        return False
+
+
+def _task_events(lattice_dir: Path, task_id: str) -> list[dict]:
+    from lattice.storage.readers import read_task_events
+
+    events = read_task_events(lattice_dir, task_id)
+    return events or read_task_events(lattice_dir, task_id, is_archived=True)
+
+
+def _board_gates(lattice_dir: Path, task_id: str, config: dict) -> tuple[list[dict], list[Any]]:
+    """The task's events and each review gate's state read from the board (SPEC §3.4)."""
+    from lattice.boards import reported_origin
+    from lattice.core.hosted_review import GATE_ROLES, gate_state
+
+    events = _task_events(lattice_dir, task_id)
+    local = read_review_state(lattice_dir, task_id)
+    this_host = reported_origin(lattice_dir.parent).get("host")
+    now = datetime.now(timezone.utc)
+    gates = []
+    for review_type in GATE_ROLES:
+        gate = gate_state(
+            events,
+            review_type,
+            this_host=this_host,
+            has_local_record=isinstance(local, dict)
+            and (local.get("review_type") or review_type) == review_type,
+            timeout_seconds=int(config.get("review_timeout_seconds", 600)),
+            now=now,
+        )
+        if gate is not None:
+            gates.append(gate)
+    return events, gates
+
+
+def _refuse_if_in_flight_on_board(
+    lattice_dir: Path,
+    task_id: str,
+    *,
+    review_type: str,
+    config: dict,
+    triggered_by: str | None,
+    force: bool,
+    is_json: bool,
+) -> None:
+    """On a hosted checkout, refuse while a spawn of this gate, newer than the gate's
+    last artifact, is younger than ``review_timeout_seconds`` (SPEC §3.4); ``--force``
+    overrides. The auto-fired child is never refused by its own spawn."""
+    from lattice.core.hosted_review import RUNNING, is_own_spawn
+
+    if force or not _hosted(lattice_dir):
+        return
+    events, gates = _board_gates(lattice_dir, task_id, config)
+    for gate in gates:
+        # A spawn this machine holds a record of is today's local check (_claim_or_refuse).
+        if gate.review_type != review_type or gate.state != RUNNING:
+            continue
+        if not is_own_spawn(events, gate, triggered_by):
+            output_error(
+                f"A {review_type} of this task is already in flight: {gate.message()}. "
+                f"Use 'lattice review-status {task_id}' to monitor, or pass --force to "
+                "run another.",
+                "REVIEW_IN_FLIGHT",
+                is_json,
+            )
+
+
+_FORCE_HELP = (
+    "On a hosted checkout, run even while a review of this gate spawned on any "
+    "machine is still in flight."
+)
+
+
 # ---------------------------------------------------------------------------
 # lattice code-review
 # ---------------------------------------------------------------------------
@@ -259,6 +339,7 @@ def _claim_or_refuse(
     help="Resolve the diff and print the resolution plus the assembled prompt, then exit. "
     "Claims no review slot, spawns no agent, attaches no artifact.",
 )
+@click.option("--force", is_flag=True, default=False, help=_FORCE_HELP)
 @common_options
 def code_review(
     task_id: str,
@@ -267,6 +348,7 @@ def code_review(
     head: str | None,
     worktree: Path | None,
     dry_run: bool,
+    force: bool,
     model: str | None,
     session: str | None,
     output_json: bool,
@@ -291,6 +373,17 @@ def code_review(
     # Resolve mode: CLI flag > config > default
     if mode is None:
         mode = config.get("review_mode", "single")
+
+    if not dry_run:
+        _refuse_if_in_flight_on_board(
+            lattice_dir,
+            task_id,
+            review_type="code-review",
+            config=config,
+            triggered_by=triggered_by,
+            force=force,
+            is_json=is_json,
+        )
 
     # Inline-mode contention check: even though inline never claims, refuse
     # if a non-inline review is in flight so the operator doesn't run two
@@ -508,10 +601,12 @@ def code_review(
     default=None,
     help="Review mode (overrides config). One of: inline, single, triple.",
 )
+@click.option("--force", is_flag=True, default=False, help=_FORCE_HELP)
 @common_options
 def plan_review(
     task_id: str,
     mode: str | None,
+    force: bool,
     model: str | None,
     session: str | None,
     output_json: bool,
@@ -546,6 +641,16 @@ def plan_review(
             is_json,
         )
     plan_content = plan_path.read_text(encoding="utf-8")
+
+    _refuse_if_in_flight_on_board(
+        lattice_dir,
+        task_id,
+        review_type="plan-review",
+        config=config,
+        triggered_by=triggered_by,
+        force=force,
+        is_json=is_json,
+    )
 
     if mode == "inline":
         existing = read_review_state(lattice_dir, task_id)
@@ -680,6 +785,9 @@ def review_status(task_id: str, output_json: bool) -> None:
     lattice_dir = require_root(is_json)
     task_id = resolve_task_id(lattice_dir, task_id, is_json)
 
+    if _hosted(lattice_dir) and _report_board_gates(lattice_dir, task_id, is_json):
+        return
+
     state = read_review_state(lattice_dir, task_id)
     if state is None:
         # No in-flight record. Distinguish: a completed review (artifact exists),
@@ -795,6 +903,45 @@ def review_status(task_id: str, output_json: bool) -> None:
             art_id = agent.get("artifact_id") or ""
             suffix = f"  artifact={art_id}" if art_id else ""
             click.echo(f"    {name:<10} {status} ({elapsed}){suffix}")
+
+
+def _report_board_gates(lattice_dir: Path, task_id: str, is_json: bool) -> bool:
+    """On a hosted checkout, report every gate whose latest spawn has no artifact and
+    is not this machine's own (SPEC §3.4): running while younger than the review
+    timeout, failed after. Returns False when there is none, and the local report
+    (this machine's ``review_state``, the artifacts, ``failures.jsonl``) applies."""
+    from lattice.core.hosted_review import FAILED, RUNNING
+
+    config = load_project_config(lattice_dir)
+    _, gates = _board_gates(lattice_dir, task_id, config)
+    remote = [g for g in gates if g.state in (RUNNING, FAILED)]
+    if not remote:
+        return False
+    if is_json:
+        data = {
+            "task_id": task_id,
+            "status": RUNNING if any(g.state == RUNNING for g in remote) else FAILED,
+            "source": "board",
+            "gates": [
+                {
+                    "review_type": g.review_type,
+                    "status": g.state,
+                    "host": g.host,
+                    "spawned_at": g.spawned_at,
+                    "timeout_seconds": g.timeout_seconds,
+                    "message": g.message(),
+                }
+                for g in remote
+            ],
+        }
+        click.echo(json.dumps({"ok": True, "data": data}, indent=2))
+        return True
+    click.echo(f"Review status for {task_id}")
+    for gate in remote:
+        click.echo(f"  {gate.review_type}: {gate.message()}")
+        if gate.state == FAILED:
+            click.echo(f"  Re-run with:  lattice {gate.review_type} {task_id}")
+    return True
 
 
 # ---------------------------------------------------------------------------
