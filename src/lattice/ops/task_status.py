@@ -118,7 +118,7 @@ class Status:
             # The reachable-review-commit policy judges the caller's
             # attestation, checked against the board as it is now (SPEC §3.4).
             policy = config.get("workflow", {}).get("completion_policies", {}).get(new_status, {})
-            attested = attested_review_commits(ctx, snapshot, policy, check_stale=not p.force)
+            attested = attested_review_commits(ctx, snapshot, policy)
             policy_ok, failures = validate_completion_policy(
                 config, snapshot, new_status, reachable_review_commits=attested
             )

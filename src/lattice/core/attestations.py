@@ -125,7 +125,8 @@ def stale_reason(entries: list[dict], snapshot: dict, marker_shas: list[str]) ->
     """Why *entries* do not describe the task as the board has it now, or ``None``.
 
     Every entry must name the task's current latest branch link, and the
-    entries must cover exactly the marker SHAs the board holds.
+    entries must cover exactly the marker SHAs the board holds, one entry per
+    marker.
     """
     branch = latest_branch(snapshot)
     for entry in entries:
@@ -135,6 +136,9 @@ def stale_reason(entries: list[dict], snapshot: dict, marker_shas: list[str]) ->
                 f"branch link is {branch!r}"
             )
     attested = [entry["sha"] for entry in entries]
+    duplicated = [sha for i, sha in enumerate(attested) if sha in attested[:i]]
+    if duplicated:
+        return f"attestation lists {duplicated[0]} more than once"
     missing = [sha for sha in marker_shas if sha not in attested]
     if missing:
         return f"attestation omits review marker {missing[0]}"

@@ -18,15 +18,15 @@ def attested_review_commits(
     policy: dict,
     *,
     prospective: list[str] | None = None,
-    check_stale: bool = True,
 ) -> list[dict] | None:
     """The caller's ``reachable_review_commits`` when *policy* needs them, else ``None``.
 
     ``None`` too when the caller sent none (it had no worktree); the policy
     then reports that it lacks repository context, as it always has. A
-    malformed attestation is ``VALIDATION_ERROR``. With *check_stale*, entries
-    that do not name the task's current latest branch link, or that do not
-    cover exactly the marker SHAs the board holds (plus *prospective*
+    malformed attestation is ``VALIDATION_ERROR``. Freshness is checked
+    always, ``--force`` included (force bypasses only the policy verdict):
+    entries that do not name the task's current latest branch link, or that do not
+    cover exactly the marker SHAs the board holds, one entry each (plus *prospective*
     payloads the operation is about to attach), are ``COMPLETION_BLOCKED``
     with ``details.reason`` ``STALE_ATTESTATION``: the client recomputes and
     retries once.
@@ -43,15 +43,13 @@ def attested_review_commits(
             "Malformed reachable_review_commits attestation: expected a list of "
             "{sha, branch, exists, reachable}.",
         )
-    if check_stale:
-        reason = stale_reason(
-            entries, snapshot, review_marker_shas(snapshot, ctx.lattice_dir, prospective)
+    reason = stale_reason(
+        entries, snapshot, review_marker_shas(snapshot, ctx.lattice_dir, prospective)
+    )
+    if reason is not None:
+        raise OpError(
+            "COMPLETION_BLOCKED",
+            f"Stale reachable_review_commits attestation: {reason}. Re-read the task and retry.",
+            {"reason": STALE_ATTESTATION, "snapshot": task_state_snapshot(snapshot)},
         )
-        if reason is not None:
-            raise OpError(
-                "COMPLETION_BLOCKED",
-                f"Stale reachable_review_commits attestation: {reason}. "
-                "Re-read the task and retry.",
-                {"reason": STALE_ATTESTATION, "snapshot": task_state_snapshot(snapshot)},
-            )
     return entries
