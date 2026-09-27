@@ -11,9 +11,14 @@ from dataclasses import dataclass
 
 from lattice.core.errors import OpError
 from lattice.ops.base import CommonParams, OpContext, OpResult, operation
-from lattice.storage.operations import AuthoritativeLogError, TaskMutationDecision
+from lattice.storage.operations import (
+    AuthoritativeLogError,
+    TaskMutationDecision,
+    TaskPlacementError,
+)
 
 UNRESOLVED_TASK = "UNRESOLVED_TASK"
+_NO_LOG = "no authoritative event log exists"
 
 
 def resolve_placement_task(ctx: OpContext, raw_id: str) -> str:
@@ -42,8 +47,14 @@ def move_task(
             destination=destination,
             may_emit_lifecycle=True,
         )
-    except (OpError, AuthoritativeLogError):
+    except OpError:
         raise
+    except AuthoritativeLogError as exc:
+        # An absent task (no log in either placement) is NOT_FOUND with today's
+        # message; any other unreplayable log reaches execute as INTEGRITY_ERROR.
+        if isinstance(exc, TaskPlacementError) or not str(exc).endswith(_NO_LOG):
+            raise
+        raise OpError("NOT_FOUND", str(exc)) from exc
     except ValueError as exc:
         code = "CONFLICT" if conflict_marker in str(exc) else "NOT_FOUND"
         raise OpError(code, str(exc)) from exc

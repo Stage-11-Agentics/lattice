@@ -9,39 +9,29 @@ import click
 
 from lattice.cli import helpers
 from lattice.cli.helpers import (
-    check_plan_gate,
     common_options,
     json_envelope,
     load_project_config,
     output_error,
     output_result,
-    read_snapshot_or_exit,
     require_actor,
     require_root,
     resolve_task_id,
-    validate_actor_format_or_exit,
 )
 from lattice.cli.main import cli
+from lattice.cli.ops_bridge import board_or_exit, caller_from_context, run_operation
 from lattice.core.comments import materialize_comments
 from lattice.core.config import get_valid_transitions, validate_status
-from lattice.core.events import (
-    BUILTIN_EVENT_TYPES,
-    create_event,
-    get_actor_display,
-    validate_custom_event_type,
-)
-from lattice.core.ids import extract_short_ids, validate_id
-from lattice.core.next import compute_claim_transitions, select_next
+from lattice.core.events import get_actor_display
+from lattice.core.ids import extract_short_ids
+from lattice.core.next import select_next
 from lattice.core.tasks import (
-    apply_event_to_snapshot,
     compact_snapshot,
     get_artifact_evidence_refs,
     is_backward_status_transition,
 )
 from lattice.storage.operations import (
-    TaskMutationDecision,
     discover_task_authorities,
-    mutate_task,
     read_task_authority,
     resolve_task_prose_path,
 )
@@ -171,100 +161,29 @@ def event_cmd(
     Built-in types like status_changed or task_created are reserved.
     """
     is_json = output_json
-
-    lattice_dir = require_root(is_json)
-    config = load_project_config(lattice_dir)
-    actor = require_actor(is_json)
-    if on_behalf_of is not None:
-        validate_actor_format_or_exit(on_behalf_of, is_json)
-
-    task_id = resolve_task_id(lattice_dir, task_id, is_json)
-
-    # Validate event type is custom (x_ prefix)
-    if event_type in BUILTIN_EVENT_TYPES:
-        output_error(
-            f"Event type '{event_type}' is reserved. Custom types must start with 'x_'.",
-            "VALIDATION_ERROR",
-            is_json,
-        )
-    if not validate_custom_event_type(event_type):
-        output_error(
-            f"Invalid custom event type: '{event_type}'. Custom types must start with 'x_'.",
-            "VALIDATION_ERROR",
-            is_json,
-        )
-
-    # Parse --data
-    event_data: dict = {}
-    if data_str is not None:
-        try:
-            event_data = json.loads(data_str)
-        except json.JSONDecodeError as exc:
-            output_error(
-                f"Invalid JSON in --data: {exc}",
-                "VALIDATION_ERROR",
-                is_json,
-            )
-        if not isinstance(event_data, dict):
-            output_error(
-                "--data must be a JSON object.",
-                "VALIDATION_ERROR",
-                is_json,
-            )
-
-    # Validate task exists
-    read_snapshot_or_exit(lattice_dir, task_id, is_json)
-
-    # Validate --id if provided
-    if ev_id is not None:
-        if not validate_id(ev_id, "ev"):
-            output_error(
-                f"Invalid event ID format: '{ev_id}'.",
-                "INVALID_ID",
-                is_json,
-            )
-
-    def decide(context):  # noqa: ANN001, ANN202
-        if ev_id is not None:
-            for existing in context.events:
-                if existing.get("id") != ev_id:
-                    continue
-                if existing.get("type") == event_type and existing.get("data") == event_data:
-                    return TaskMutationDecision(value=existing, idempotent=True)
-                output_error(
-                    f"Conflict: event {ev_id} exists with different data.",
-                    "CONFLICT",
-                    is_json,
-                )
-        event = create_event(
-            type=event_type,
-            task_id=task_id,
-            actor=actor,
-            data=event_data,
-            event_id=ev_id,
-            model=model,
-            session=session,
-            triggered_by=triggered_by,
-            on_behalf_of=on_behalf_of,
-            reason=provenance_reason,
-        )
-        return TaskMutationDecision(events=[event], value=event)
-
-    result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
-    event = result.callback_value
-    if result.idempotent:
-        output_result(
-            data=event,
-            human_message=f"Event {event['id']} already exists (idempotent).",
-            quiet_value=event["id"],
-            is_json=is_json,
-            is_quiet=quiet,
-        )
-        return
-
+    result = run_operation(
+        "task.event",
+        {
+            "task": task_id,
+            "event_type": event_type,
+            "data": data_str,
+            "id": ev_id,
+            "model": model,
+            "session": session,
+            "triggered_by": triggered_by,
+            "on_behalf_of": on_behalf_of,
+            "reason": provenance_reason,
+        },
+        is_json,
+    )
+    event = result.value
     output_result(
         data=event,
-        human_message=f"Recorded {event_type} on {task_id}",
+        human_message=(
+            f"Event {event['id']} already exists (idempotent)."
+            if result.idempotent
+            else f"Recorded {event_type} on {event['task_id']}"
+        ),
         quiet_value=event["id"],
         is_json=is_json,
         is_quiet=quiet,
@@ -462,31 +381,30 @@ def next_cmd(
     """
     is_json = output_json
 
-    lattice_dir = require_root(is_json)
-    config = load_project_config(lattice_dir)
+    if claim:
+        board = board_or_exit(is_json)
+        caller = caller_from_context()
+        if caller.actor is None and caller.actor_name is None:
+            output_error("--claim requires --actor or --name.", "VALIDATION_ERROR", is_json)
+        selected = run_operation(
+            "board.next_claim", {"status": status_csv}, is_json, caller=caller, board=board
+        ).value
+        lattice_dir = board.lattice_dir
+    else:
+        lattice_dir = require_root(is_json)
+        resolved_actor = require_actor(is_json, optional=True)
 
-    resolved_actor = require_actor(is_json, optional=True)
+        # Parse --status override
+        ready_statuses: frozenset[str] | None = None
+        if status_csv is not None:
+            ready_statuses = frozenset(s.strip() for s in status_csv.split(",") if s.strip())
 
-    if claim and resolved_actor is None:
-        output_error(
-            "--claim requires --actor or --name.",
-            "VALIDATION_ERROR",
-            is_json,
-        )
-
-    # Parse --status override
-    ready_statuses: frozenset[str] | None = None
-    if status_csv is not None:
-        ready_statuses = frozenset(s.strip() for s in status_csv.split(",") if s.strip())
-
-    # Load all active snapshots
-    active = [
-        authority.snapshot
-        for authority in discover_task_authorities(lattice_dir, include_archived=False)
-    ]
-
-    # Select next task
-    selected = select_next(active, actor=resolved_actor, ready_statuses=ready_statuses)
+        # Load all active snapshots
+        active = [
+            authority.snapshot
+            for authority in discover_task_authorities(lattice_dir, include_archived=False)
+        ]
+        selected = select_next(active, actor=resolved_actor, ready_statuses=ready_statuses)
 
     if selected is None:
         if is_json:
@@ -499,86 +417,6 @@ def next_cmd(
         return
 
     task_id = selected["id"]
-
-    # --claim: atomically assign + move to in_progress with valid transitions
-    if claim:
-        # Planning gate: block if plan is still scaffold
-        check_plan_gate(lattice_dir, task_id, "in_progress", is_json, config)
-
-        def decide(context):  # noqa: ANN001, ANN202
-            snapshot = context.snapshot
-            assert snapshot is not None
-            # Concurrent claim guard: reject if another agent claimed
-            # this task between our select_next() and lock acquisition.
-            from lattice.core.next import _actors_match
-
-            current_assigned = snapshot.get("assigned_to")
-            current_status = snapshot.get("status", "")
-            if current_assigned is not None and not _actors_match(
-                current_assigned, resolved_actor
-            ):
-                owner = get_actor_display(current_assigned)
-                output_error(
-                    f"Task already claimed by {owner}.",
-                    "ALREADY_CLAIMED",
-                    is_json,
-                )
-            if current_status in (
-                "in_progress",
-                "review",
-                "in_validation",
-                "pr_open",
-                "done",
-                "cancelled",
-            ):
-                if not _actors_match(current_assigned, resolved_actor):
-                    output_error(
-                        f"Task already in {current_status}.",
-                        "ALREADY_CLAIMED",
-                        is_json,
-                    )
-
-            events = []
-
-            # Assignment event (if not already assigned to this actor)
-            if not _actors_match(current_assigned, resolved_actor):
-                assign_event = create_event(
-                    type="assignment_changed",
-                    task_id=task_id,
-                    actor=resolved_actor,
-                    data={"from": current_assigned, "to": resolved_actor},
-                )
-                events.append(assign_event)
-                snapshot = apply_event_to_snapshot(snapshot, assign_event)
-
-            # Status transitions — compute valid path to in_progress
-            current_status = snapshot.get("status")
-            if current_status != "in_progress":
-                transitions = config.get("workflow", {}).get("transitions", {})
-                path = compute_claim_transitions(current_status, "in_progress", transitions)
-                if path is None:
-                    output_error(
-                        f"No valid transition path from {current_status} to in_progress.",
-                        "INVALID_TRANSITION",
-                        is_json,
-                    )
-                # Emit a status_changed event for each step in the path
-                prev_status = current_status
-                for next_status in path:
-                    status_event = create_event(
-                        type="status_changed",
-                        task_id=task_id,
-                        actor=resolved_actor,
-                        data={"from": prev_status, "to": next_status},
-                    )
-                    events.append(status_event)
-                    snapshot = apply_event_to_snapshot(snapshot, status_event)
-                    prev_status = next_status
-
-            return TaskMutationDecision(events=events)
-
-        selected = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True).snapshot
-
     display_id = selected.get("short_id") or task_id
     result_data = selected
     if is_json:
