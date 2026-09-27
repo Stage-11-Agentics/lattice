@@ -18,6 +18,10 @@
   already initialized, ``demo init`` refuses to overwrite it).
 
 Read-only ``doctor`` (no ``--fix``) is not gated.
+
+Before any of that, and before the command reads anything, a hosted checkout
+refuses them with ``LOCAL_ONLY`` (:func:`refuse_on_hosted_checkout`): their
+board lives on the server, and the message names the server-side procedure.
 """
 
 from __future__ import annotations
@@ -56,5 +60,16 @@ def maintenance_gate(
             click.get_current_context().with_resource(maintenance(lattice_dir, command))
         if lattice_dir.is_dir():
             check_board_writable(lattice_dir)
+    except OpError as exc:
+        output_error(exc.message, exc.code, is_json)
+
+
+def refuse_on_hosted_checkout(command: str, is_json: bool, start: Path | None = None) -> None:
+    """Exit with ``LOCAL_ONLY`` when *start* (default: the cwd) is a hosted
+    checkout (SPEC §3.5); ``init`` gets its own message."""
+    from lattice.boards import check_local_only
+
+    try:
+        check_local_only(command, start)
     except OpError as exc:
         output_error(exc.message, exc.code, is_json)

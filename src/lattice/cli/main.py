@@ -12,7 +12,11 @@ from lattice.core.config import (
     validate_project_code,
     validate_subproject_code,
 )
-from lattice.cli.maintenance import maintenance_gate, offline_maintenance_option
+from lattice.cli.maintenance import (
+    maintenance_gate,
+    offline_maintenance_option,
+    refuse_on_hosted_checkout,
+)
 from lattice.core.errors import BoardWriteError, TaskErased
 from lattice.core.ids import generate_task_id, validate_actor
 from lattice.storage.board_init import create_board
@@ -263,6 +267,14 @@ class _LatticeGroup(click.Group):
             output_error(exc.message, exc.code, "--json" in ctx.meta.get("lattice.argv", ()))
 
 
+def _end_hosted_command() -> None:
+    """Release a hosted read lock and forget per-command state (a no-op, and no
+    import, for a command that never touched a hosted checkout)."""
+    session = sys.modules.get("lattice.remote.session")
+    if session is not None:
+        session.reset_process_state()
+
+
 @click.group(cls=_LatticeGroup, invoke_without_command=True)
 @click.version_option(package_name="lattice-tracker")
 @click.pass_context
@@ -281,6 +293,7 @@ def cli(ctx: click.Context) -> None:
     from lattice.update_check import maybe_print_update_notice
 
     ctx.call_on_close(maybe_print_update_notice)
+    ctx.call_on_close(_end_hosted_command)
 
     if ctx.invoked_subcommand is not None:
         return
@@ -466,6 +479,7 @@ def init(
     """Initialize a new Lattice project."""
     root = Path(target_path)
     lattice_dir = root / LATTICE_DIR
+    refuse_on_hosted_checkout("init", False, root)
     maintenance_gate(lattice_dir, "init", False, offline_maintenance)
 
     # Idempotency: if .lattice/ already exists as a directory, skip (a server

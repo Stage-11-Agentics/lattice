@@ -14,7 +14,11 @@ from lattice.cli.helpers import (
     require_root,
 )
 from lattice.cli.main import cli
-from lattice.cli.maintenance import maintenance_gate, offline_maintenance_option
+from lattice.cli.maintenance import (
+    maintenance_gate,
+    offline_maintenance_option,
+    refuse_on_hosted_checkout,
+)
 from lattice.core.config import configured_event_prefix
 from lattice.core.errors import OpError
 from lattice.core.events import LIFECYCLE_EVENT_TYPES, serialize_event
@@ -573,6 +577,8 @@ def inspect_task_authority(
 def doctor(fix: bool, output_json: bool, offline_maintenance: bool) -> None:
     """Check project integrity and report issues."""
     is_json = output_json
+    if fix:
+        refuse_on_hosted_checkout("doctor --fix", is_json)
     lattice_dir = require_root(is_json)
     if fix or offline_maintenance:
         maintenance_gate(
@@ -1520,6 +1526,7 @@ def rebuild(
 ) -> None:
     """Rebuild task snapshots from event logs."""
     is_json = output_json
+    refuse_on_hosted_checkout("rebuild", is_json)
     lattice_dir = require_root(is_json)
     maintenance_gate(lattice_dir, "rebuild", is_json, offline_maintenance)
 

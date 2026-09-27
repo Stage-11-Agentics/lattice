@@ -80,6 +80,20 @@ def scrub_host_session_env(env: MutableMapping[str, str]) -> None:
     """
     for var in HOST_SESSION_ENV_VARS:
         env.pop(var, None)
+    scrub_remote_secrets(env)
+
+
+def scrub_remote_secrets(env: MutableMapping[str, str]) -> None:
+    """Remove a hosted remote's credentials from ``env`` in place (SPEC §3.4).
+
+    Every ``LATTICE_REMOTE_*`` variable, and every variable a configured remote
+    names for its token or a proxy header. A review agent or a hook command
+    never needs them; the ``lattice`` process that spawns it keeps them.
+    """
+    from lattice.remote.config import secret_env_names
+
+    for var in secret_env_names(env):
+        env.pop(var, None)
 
 
 #: ``env -u`` flags that strip :data:`HOST_SESSION_ENV_VARS`, for use as a

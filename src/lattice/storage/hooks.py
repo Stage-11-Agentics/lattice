@@ -162,11 +162,22 @@ def execute_resource_hooks(
         _run_hook(type_cmd, env, stdin_data)
 
 
+def _hook_base_env() -> dict[str, str]:
+    """This process's environment without any hosted remote's credentials: a
+    hook command never sees the token, ``LATTICE_REMOTE_*``, or a proxy header
+    variable (SPEC §3.4)."""
+    from lattice.core.agent_spawn import scrub_remote_secrets
+
+    env = os.environ.copy()
+    scrub_remote_secrets(env)
+    return env
+
+
 def _build_env(lattice_dir: Path, task_id: str, event: dict) -> dict[str, str]:
     """Build the environment dict for hook subprocesses."""
     from lattice.core.events import get_actor_display
 
-    env = os.environ.copy()
+    env = _hook_base_env()
     env["LATTICE_ROOT"] = str(lattice_dir.parent)
     env["LATTICE_DIR"] = str(lattice_dir)
     env["LATTICE_TASK_ID"] = task_id
@@ -185,7 +196,7 @@ def _build_resource_env(
     """Build the environment dict for resource hook subprocesses."""
     from lattice.core.events import get_actor_display
 
-    env = os.environ.copy()
+    env = _hook_base_env()
     env["LATTICE_ROOT"] = str(lattice_dir.parent)
     env["LATTICE_DIR"] = str(lattice_dir)
     env["LATTICE_RESOURCE_ID"] = resource_id

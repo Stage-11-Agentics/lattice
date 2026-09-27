@@ -55,8 +55,15 @@ class Remote:
 
     alias: str
     url: str
-    token: str | None = None
-    headers: Mapping[str, str] = field(default_factory=dict)
+    token: str | None = field(default=None, repr=False)
+    headers: Mapping[str, str] = field(default_factory=dict, repr=False)
+    #: Machine-local choices for this remote (SPEC §9.1): run the hosted board's
+    #: hooks here, run its auto-reviews here, allow plaintext to a non-loopback
+    #: host, and how long one operation may retry (SPEC §8.6).
+    run_board_hooks: bool = False
+    run_auto_reviews: bool = True
+    allow_plaintext: bool = False
+    retry_seconds: float = 30.0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "url", self.url.rstrip("/"))

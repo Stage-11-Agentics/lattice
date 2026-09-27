@@ -68,6 +68,8 @@ __all__ = [
 
 LATTICE_DIR = ".lattice"
 LATTICE_ROOT_ENV = "LATTICE_ROOT"
+#: The committed hosted binding (SPEC §9.2), at the root of a checkout.
+BINDING_FILE = ".lattice-remote.json"
 
 MutationKind = Literal["append", "create", "replace", "unlink"]
 
@@ -387,7 +389,7 @@ def find_root(start: Path | None = None) -> Path | None:
             raise LatticeRootError(
                 f"LATTICE_ROOT points to a path that does not exist: {env_root}"
             )
-        if not (env_path / LATTICE_DIR).is_dir():
+        if not (env_path / LATTICE_DIR).is_dir() and not (env_path / BINDING_FILE).is_file():
             raise LatticeRootError(
                 f"LATTICE_ROOT points to a directory with no {LATTICE_DIR}/ inside: {env_root}"
             )
@@ -400,7 +402,9 @@ def find_root(start: Path | None = None) -> Path | None:
         current = primary
 
     while True:
-        if (current / LATTICE_DIR).is_dir():
+        # A committed hosted binding marks a root too, before its cache exists
+        # (SPEC §9.3); which kind of root it is is decided by lattice.remote.binding.
+        if (current / LATTICE_DIR).is_dir() or (current / BINDING_FILE).is_file():
             return current
         parent = current.parent
         if parent == current:
@@ -435,6 +439,10 @@ def _git_primary_worktree(start: Path) -> Path | None:
             if not content.startswith(prefix):
                 return None
             gitdir = Path(content[len(prefix) :].strip())
+            if not gitdir.is_absolute():
+                # A relative gitdir is relative to the directory holding the
+                # .git file, never to the process cwd (SPEC §9.3).
+                gitdir = (current / gitdir).resolve()
             # gitdir points at <primary>/.git/worktrees/<name>; primary root
             # is two levels up from there.
             primary_git = gitdir.parent.parent

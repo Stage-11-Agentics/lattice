@@ -194,10 +194,113 @@ class LocalBoard:
         )
 
 
-def resolve_board(start: Path | None = None) -> LocalBoard:
+class HostedBoard:
+    """A board on a Lattice server, reached through this checkout's binding.
+
+    Writes go to the server as operations (SPEC §9.5); reads use the checkout's
+    cache, ``lattice_dir``. ``remote`` is resolved when the board is.
+    """
+
+    def __init__(self, hosted: Any, start: Path, remote: Any) -> None:
+        self.hosted = hosted
+        self.root: Path = hosted.root
+        self.start = start
+        self.remote = remote
+
+    @property
+    def lattice_dir(self) -> Path:
+        return self.root / LATTICE_DIR
+
+    @property
+    def label(self) -> str:
+        return self.hosted.label
+
+    def load_config(self) -> dict:
+        """The project's ``config.json`` from the cache, caught up first (the read
+        phase of a write command, SPEC §9.5)."""
+        import json
+
+        from lattice.remote import session
+
+        session.ensure_fresh(self.hosted)
+        with session.reading(self.hosted) as lattice_dir:
+            return json.loads((lattice_dir / "config.json").read_text())
+
+    def refresh(self) -> None:
+        """Catch the cache up before a retry (a stale attestation, SPEC §3.4)."""
+        from lattice.remote import session
+
+        session.catch_up_and_report(self.hosted, after_write=True)
+        session.mark_fresh(self.hosted)
+
+    def execute(
+        self, op_name: str, params: Any, caller: Any = None, *, config: dict | None = None
+    ) -> Any:
+        """Run *op_name* on the server and bring the cache up to it.
+
+        One operation call with one ``op_id`` (the caller's, when given), retried
+        per SPEC §8.6. A server rejection is the same ``OpError`` the command
+        prints locally. After success the cache catches up (a failure there is
+        only a notice) and the board's hooks run here when the remote sets
+        ``run_board_hooks``, from *config* (default: the synced ``config.json``).
+        """
+        from lattice.ops import Caller
+        from lattice.remote import session
+        from lattice.remote.client import post_operation, result_from_json, wire_params
+
+        caller = caller if caller is not None else Caller()
+        body: dict[str, Any] = {
+            "op_id": caller.origin.get("op_id") or generate_op_id(),
+            "params": wire_params(op_name, params),
+            "origin": {"reported": caller.origin.get("reported") or reported_origin(self.start)},
+        }
+        if caller.actor is not None:
+            body["actor"] = caller.actor
+        if caller.actor_name is not None:
+            body["actor_name"] = caller.actor_name
+        if caller.attestations:
+            body["attestations"] = caller.attestations
+        if caller.expect_last_event_id is not None:
+            body["expect"] = {"last_event_id": caller.expect_last_event_id}
+        session.release_read_lock(self.root)
+        session.check_protocol(self.hosted)
+        data = post_operation(self.remote, self.hosted.project, op_name, body)
+        session.close_unreachable_window(self.hosted)
+        result = result_from_json(data.get("result") or {})
+        session.catch_up_and_report(self.hosted, after_write=True)
+        session.mark_fresh(self.hosted)
+        if self.remote.run_board_hooks:
+            self._run_hooks(result, config)
+        return result
+
+    def _run_hooks(self, result: Any, config: dict | None) -> None:
+        import json
+
+        from lattice.storage.hooks import execute_hooks, execute_resource_hooks
+
+        if config is None:
+            try:
+                config = json.loads((self.lattice_dir / "config.json").read_text())
+            except (OSError, ValueError):
+                return
+        if not config.get("hooks"):
+            return
+        for event in result.events:
+            if result.resource_id and result.resource_name:
+                execute_resource_hooks(
+                    config, self.lattice_dir, result.resource_id, result.resource_name, event
+                )
+            elif event.get("task_id"):
+                execute_hooks(config, self.lattice_dir, event["task_id"], event)
+
+
+def resolve_board(start: Path | None = None) -> LocalBoard | HostedBoard:
     """The board a write started in *start* (default: the cwd) belongs to.
 
-    Raises ``OpError("NOT_INITIALIZED")`` when there is none.
+    A hosted checkout (SPEC §9.3) resolves to a :class:`HostedBoard`. Raises
+    ``OpError("NOT_INITIALIZED")`` when there is no board, and the routing and
+    first-contact errors (``BINDING_CONFLICT``, ``REMOTE_NOT_CONFIGURED``,
+    ``TOKEN_ENV_UNSET``, ``INSECURE_URL``, ``HOSTED_UNSUPPORTED_PLATFORM``).
     """
     start_dir = Path.cwd() if start is None else Path(start)
     try:
@@ -209,7 +312,15 @@ def resolve_board(start: Path | None = None) -> LocalBoard:
             "NOT_INITIALIZED",
             "Not a Lattice project (no .lattice/ found). Run 'lattice init' first.",
         )
-    return LocalBoard(root=root, start=start_dir)
+    from lattice.remote.binding import classify, require_supported
+
+    hosted = classify(root)
+    if hosted is None:
+        return LocalBoard(root=root, start=start_dir)
+    require_supported()
+    from lattice.remote.config import resolve_remote
+
+    return HostedBoard(hosted, start_dir, resolve_remote(hosted.remote))
 
 
 # ---------------------------------------------------------------------------
@@ -228,12 +339,16 @@ LOCAL_ONLY_COMMANDS: tuple[str, ...] = (
 
 
 def hosted_binding(start: Path) -> str | None:
-    """The ``<alias>/<project>`` a checkout at *start* is bound to, or ``None``.
+    """The ``<alias>/<project>`` a checkout at *start* is bound to, or ``None``
+    (a local board, no board, or a conflicted binding beside a local board,
+    whose maintenance stays local)."""
+    from lattice.remote.binding import hosted_root
 
-    No checkout is hosted until H-11 adds binding and routing; until then
-    every checkout is local.
-    """
-    return None
+    try:
+        hosted = hosted_root(start)
+    except OpError:
+        return None
+    return hosted.label if hosted is not None else None
 
 
 def local_only_error(command: str, binding: str) -> OpError:

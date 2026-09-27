@@ -8,7 +8,11 @@ from pathlib import Path
 import click
 
 from lattice.cli.main import cli
-from lattice.cli.maintenance import maintenance_gate, offline_maintenance_option
+from lattice.cli.maintenance import (
+    maintenance_gate,
+    offline_maintenance_option,
+    refuse_on_hosted_checkout,
+)
 from lattice.storage.ownership import is_hosted_scaffold
 from lattice.core.config import default_config, serialize_config
 from lattice.core.events import create_event
@@ -1501,6 +1505,7 @@ def demo_init(
         target_dir = Path.cwd() / "lattice-demo"
     else:
         target_dir = Path(target_path)
+    refuse_on_hosted_checkout("demo init", False, target_dir)
     maintenance_gate(target_dir / LATTICE_DIR, "demo init", False, offline_maintenance)
 
     # Check if already exists (a server project's hosted scaffold is not a board yet)
