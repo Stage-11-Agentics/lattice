@@ -41,7 +41,9 @@ def test_info_describes_the_server_and_the_caller(server: ServerHandle, root: Pa
     assert "sha256" not in data["identity"]
     assert "title" in data["ops"]["task.create"]
     assert "task_created" in data["event_types"]
-    assert data["audit"]["active"] is False
+    # Audit history is on by default; git is on PATH here (test_audit covers the
+    # git-missing case).
+    assert data["audit"] == {"configured": True, "active": True, "reason": None}
 
 
 def test_read_endpoints(server: ServerHandle, root: Path) -> None:

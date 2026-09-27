@@ -35,7 +35,8 @@ from lattice.core.config import serialize_config
 from lattice.core.errors import OpError
 from lattice.core.ids import generate_op_id
 from lattice.ops.base import Authorizer, Caller, OpResult, execute
-from lattice.server import control, recovery, transactions
+from lattice.server import audit, control, recovery, transactions
+from lattice.server.config import AuditConfig
 from lattice.server.floors import ShortIdFloors
 from lattice.server.journal import (
     HOSTED_DIR,
@@ -214,6 +215,7 @@ class Project:
         log: ServerLog,
         server_id: str,
         on_state_change: Callable[[], None] | None = None,
+        audit_config: AuditConfig | None = None,
     ) -> None:
         self.slug = slug
         self.directory = directory
@@ -257,6 +259,11 @@ class Project:
         #: Called when publication failed for a committed operation: close the
         #: project's open streams so followers reconnect and replay.
         self.close_streams: Callable[[], None] | None = self.broadcaster.close_all
+        #: The audit settings when this server keeps audit histories (SPEC §8.10),
+        #: else ``None``; the committer runs while the project is loaded.
+        self.audit_config = audit_config
+        self.committer: audit.AuditCommitter | None = None
+        self._audit_staged: audit.Staged | None = None
 
     # -- locking -----------------------------------------------------------
 
@@ -358,6 +365,7 @@ class Project:
         )
         self.broadcaster.announce(journal.epoch, journal.head_seq)
         ensure_dir(board / HOSTED_DIR / control.CONTROL_DIR)
+        self._start_audit()
         self._set_state(LOADED, None)
         self.log.info(
             "project_load", project=self.slug, epoch=journal.epoch, head_seq=journal.head_seq
@@ -441,6 +449,68 @@ class Project:
                 )
         return journal
 
+    # -- audit history (SPEC §8.10) -------------------------------------------
+
+    def _start_audit(self) -> None:
+        """Start the committer (under the work lock, at load, with the journal
+        loaded). A project made while audit was off gets its repository now. Then
+        reconcile: anything journaled after the last audited line (a crash before
+        the committer heard of it, a commit that failed before a restart) and any
+        change made while no committer ran is committed after the debounce. A git
+        failure here disables audit for this project with a warning; it never
+        fails the load."""
+        if self.audit_config is None or self.committer is not None or self.journal is None:
+            return
+        journal = self.journal
+        try:
+            created = audit.init_repo(
+                self.directory, epoch=journal.epoch, head_seq=journal.head_seq, gc=False
+            )
+        except audit.GitError as exc:
+            self.log.warning("audit_unavailable", project=self.slug, error=str(exc))
+            return
+        if created:
+            self.log.info("audit_repo_created", project=self.slug)
+        committer = audit.AuditCommitter(
+            self.slug, self.directory, self.work, self.audit_config, self.log
+        )
+        committer.reconcile(journal.epoch, journal.head_seq)
+        committer.start()
+        if created:
+            committer.maintenance.request()  # gc after the first commit, off the lock
+        self.committer = committer
+
+    def _journaled(self, seq: int) -> None:
+        """A journal line was committed (under the work lock): schedule an audit commit."""
+        if self.committer is not None:
+            journal = self.journal
+            self.committer.notify(seq, journal.epoch if journal is not None else None)
+
+    # Shutdown and unload (SPEC §8.10, §8.11), in order: drain operations (the
+    # admission lock); audit_stage() under the work lock; release the work lock;
+    # audit_commit_and_stop(); write clean_shutdown; release the lease.
+
+    def audit_stage(self) -> None:
+        """Step 1, under the work lock with no operation in flight: stage the board
+        for the final audit commit (and drain the committer thread)."""
+        if self.committer is not None:
+            self._audit_staged = self.committer.stage()
+
+    def audit_commit_and_stop(self) -> None:
+        """Step 2, outside the work lock: commit what :meth:`audit_stage` staged and
+        stop the committer (the final gc and push get a bounded wait)."""
+        committer, self.committer = self.committer, None
+        staged, self._audit_staged = self._audit_staged, None
+        if committer is not None:
+            committer.commit_and_stop(staged)
+
+    def _abandon_audit(self) -> None:
+        """Stop the committer without committing (the board is not trusted)."""
+        committer, self.committer = self.committer, None
+        self._audit_staged = None
+        if committer is not None:
+            committer.abandon()
+
     def _set_state(self, state: str, reason: str | None) -> None:
         """Change state and publish it (``server_status.json``, read by
         ``lattice server project list``)."""
@@ -488,6 +558,7 @@ class Project:
             self._state = replace(state, watched=_watched_after(self.board, state.watched, names))
 
     def _mark_unavailable(self, reason: str) -> None:
+        self._abandon_audit()
         self._set_state(UNAVAILABLE, reason)
         self.journal = None
         self._state = None
@@ -498,7 +569,16 @@ class Project:
         self.log.warning("project_unavailable", project=self.slug, reason=reason)
 
     def release(self) -> None:
-        """Release the owner lease (server shutdown)."""
+        """Release the owner lease (server shutdown, unload; under the work lock).
+
+        Run :meth:`audit_stage` and :meth:`audit_commit_and_stop` first. A caller
+        that did not still loses no audit work: the board is staged and committed
+        here, under the lock, before the lease goes."""
+        if self.committer is not None:
+            committer, self.committer = self.committer, None
+            staged = self._audit_staged or committer.stage()
+            self._audit_staged = None
+            committer.commit_and_stop(staged, join=False)
         self.broadcaster.close_all()
         if self._lease_fd is not None:
             release_owner_flock(self._lease_fd)
@@ -594,6 +674,7 @@ class Project:
                 f"finalizing external seq {seq} in memory failed: {describe_error(exc)}"
             )
             raise OpError("BOARD_UNAVAILABLE", f"project {self.slug} is unavailable") from exc
+        self._journaled(seq)
         self.log.warning("external_change", project=self.slug, paths=changed, seq=seq)
         try:
             self._publish(line)
@@ -732,6 +813,7 @@ class Project:
                 result_data = result_json(result)
                 txn.commit(entry, result_data, list(result.events))
                 txn.finish()
+                self._journaled(txn.seq)
             except BaseException as exc:
                 failure = exc
                 quarantine = self._recover(txn, exc)
@@ -807,6 +889,7 @@ class Project:
             )
             return problem
         if txn.committed:
+            self._journaled(txn.seq)
             self.log.error(
                 "transaction_finish_failed",
                 project=self.slug,

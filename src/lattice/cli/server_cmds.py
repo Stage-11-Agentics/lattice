@@ -411,6 +411,51 @@ def project_recover(slug: str, mode: str | None, root: str | None, is_json: bool
     _run(is_json, lambda: admin.recover_project(_root(root), slug, mode), render)
 
 
+@project_group.command("audit")
+@click.argument("slug")
+@click.option("--push-remote", default=None, metavar="NAME", help="Git remote to push to.")
+@click.option("--branch", default=None, metavar="B", help="Branch to push the history to.")
+@click.option("--no-push", is_flag=True, help="Never push this project's history.")
+@_root_option
+@_json_option
+def project_audit(
+    slug: str,
+    push_remote: str | None,
+    branch: str | None,
+    no_push: bool,
+    root: str | None,
+    is_json: bool,
+) -> None:
+    """Set where a project's audit history is pushed (.lattice/hosted/audit.json).
+
+    The remote must already exist in the project's repository
+    (git -C <root>/projects/<slug> remote add NAME URL).
+    """
+    from lattice.server import admin
+
+    def action() -> dict:
+        if no_push and (push_remote or branch):
+            raise OpError("VALIDATION_ERROR", "--no-push cannot be combined with --push-remote.")
+        if not no_push and not (push_remote and branch):
+            raise OpError(
+                "VALIDATION_ERROR",
+                "Give --push-remote NAME and --branch B together, or --no-push.",
+            )
+        push = None if no_push else {"remote": push_remote, "branch": branch}
+        return admin.set_project_audit(_root(root), slug, push)
+
+    def render(data: dict) -> str:
+        if data["push"] is None:
+            return f"Audit history of {slug} is not pushed."
+        push = data["push"]
+        return (
+            f"Audit history of {slug} pushes to {push['remote']} branch {push['branch']} "
+            "after each commit."
+        )
+
+    _run(is_json, action, render)
+
+
 # ---------------------------------------------------------------------------
 # Tokens
 # ---------------------------------------------------------------------------

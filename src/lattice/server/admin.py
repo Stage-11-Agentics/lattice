@@ -25,7 +25,7 @@ from filelock import FileLock
 from lattice.core.config import serialize_config, validate_project_code, validate_subproject_code
 from lattice.core.errors import OpError
 from lattice.core.ids import generate_instance_id
-from lattice.server import control
+from lattice.server import audit, control
 from lattice.server.config import (
     ADMIN_LOCK,
     PROJECTS_DIR,
@@ -250,6 +250,11 @@ def create_project(
         if value is not None and value not in CONFIG_CHOICES[key]:
             raise OpError("VALIDATION_ERROR", f"Invalid {key} {value!r}.")
 
+    try:
+        audit_config = load_config(root).audit
+    except ServerConfigError as exc:
+        raise OpError("VALIDATION_ERROR", f"{root / SERVER_JSON}: {exc}") from exc
+
     with admin_lock(root):
         final = project_dir(root, slug)
         if final.exists():
@@ -281,6 +286,7 @@ def create_project(
                     journal = seal_new_board(board)
                 finally:
                     release_owner_flock(fd)
+            audit_state = _create_audit_repo(staging, audit_config, epoch=journal.epoch)
             os.rename(staging, final)
         except BaseException:
             shutil.rmtree(staging, ignore_errors=True)
@@ -291,7 +297,28 @@ def create_project(
         "project_code": config.get("project_code"),
         "epoch": journal.epoch,
         "head_seq": 0,
+        "audit": audit_state,
     }
+
+
+def _create_audit_repo(
+    directory: Path, config: Any, *, epoch: str | None = None, head_seq: int = 0
+) -> dict:
+    """Make a new (or imported) project directory its audit repository (SPEC §8.10).
+
+    Audit off or git missing: no repository, and the reason. A git failure is
+    reported the same way rather than failing the create; the server makes the
+    repository when it next loads the project. *epoch* and *head_seq* name the
+    journal line the first commit covers (``project import`` passes its new epoch).
+    """
+    active, reason = audit.availability(config)
+    if not active:
+        return {"repo": False, "reason": reason}
+    try:
+        audit.init_repo(directory, epoch=epoch, head_seq=head_seq)
+    except audit.GitError as exc:
+        return {"repo": False, "reason": str(exc)}
+    return {"repo": True, "reason": None}
 
 
 def _read_owner(board: Path) -> dict:
@@ -701,3 +728,44 @@ def try_owner_flock_free(board: Path) -> bool:
         return False
     release_owner_flock(fd)
     return True
+
+
+# ---------------------------------------------------------------------------
+# Audit push target (SPEC §8.2 "project audit", §8.10)
+# ---------------------------------------------------------------------------
+
+
+def set_project_audit(
+    root: Path, slug: str, push: dict | None, *, wait_seconds: float = 30.0
+) -> dict:
+    """Write ``.lattice/hosted/audit.json``: the project's push target, overriding
+    ``audit.push`` (``None`` turns pushing off for this project).
+
+    With a server running: a control request, which the server applies under
+    the project's locks. With none: take the owner flock and write it. It is
+    server control data, not board data, so no epoch rotation follows.
+    """
+    root = Path(root)
+    directory = existing_project(root, slug)
+    board = directory / ".lattice"
+    settings = audit.validate_push_settings({"push": push})
+    if control.server_running(root):
+        answer = control.send_request(board, "set-audit", settings, wait_seconds=wait_seconds)
+        if not answer.get("ok"):
+            error = answer.get("error") or {}
+            raise OpError(error.get("code", "VALIDATION_ERROR"), error.get("message", "rejected"))
+        return {"via": "server", "slug": slug, "push": settings["push"]}
+    audit.check_remote(directory, settings)
+    with admin_lock(root):
+        fd = try_owner_flock(board)
+        if fd is None:
+            raise OpError(
+                "BOARD_BUSY",
+                f"a running process holds project '{slug}'; retry when it is done.",
+            )
+        try:
+            with owning_board(board):
+                audit.write_settings(board, settings)
+        finally:
+            release_owner_flock(fd)
+    return {"via": "offline", "slug": slug, "push": settings["push"]}
