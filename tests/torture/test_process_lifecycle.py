@@ -11,11 +11,7 @@ operation is ``xtest.sleep``, registered in the server process by
 from __future__ import annotations
 
 import json
-import os
 import signal
-import socket
-import subprocess
-import sys
 import threading
 import time
 from pathlib import Path
@@ -24,58 +20,16 @@ import pytest
 
 from lattice.server import control, tokens
 from lattice.server.testing import http_request, make_root, wait_for
+from tests.torture.processes import start_server, stop
 
 pytestmark = pytest.mark.torture
-
-LAUNCHER = Path(__file__).with_name("serve_with_test_ops.py")
-
-
-def _free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
-def _start(root: Path) -> tuple[subprocess.Popen, int]:
-    env = {k: v for k, v in os.environ.items() if not k.startswith("LATTICE_")}
-    for _attempt in range(5):
-        port = _free_port()
-        proc = subprocess.Popen(
-            [
-                sys.executable,
-                str(LAUNCHER),
-                "server",
-                "serve",
-                "--root",
-                str(root),
-                "--port",
-                str(port),
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-        )
-
-        def healthy(port: int = port) -> bool:
-            if proc.poll() is not None:
-                return True
-            try:
-                return http_request("GET", f"http://127.0.0.1:{port}/healthz", timeout=1)[0] == 200
-            except OSError:
-                return False
-
-        wait_for(healthy, timeout=15)
-        if proc.poll() is None:
-            return proc, port
-        proc.communicate(timeout=5)
-    raise AssertionError("serve did not start on any of five ports")
 
 
 @pytest.mark.timeout(60)
 def test_sigterm_during_a_slow_op_completes_it_then_exits_0(tmp_path: Path) -> None:
     root = make_root(tmp_path, projects={"alpha": {"code": "ALP"}, "beta": {"code": "BET"}})
     token = tokens.create_token(root, user="human:alice", machine="m", all_projects=True)["token"]
-    proc, port = _start(root)
+    proc, port = start_server(root)
     url = f"http://127.0.0.1:{port}"
     outcome: dict = {}
     try:
@@ -104,8 +58,7 @@ def test_sigterm_during_a_slow_op_completes_it_then_exits_0(tmp_path: Path) -> N
         exited_at = time.monotonic()
     finally:
         if proc.poll() is None:
-            proc.kill()
-            proc.communicate(timeout=5)
+            stop(proc)
 
     status, _, body = outcome["response"]
     assert status == 200, body  # the in-flight op completed
