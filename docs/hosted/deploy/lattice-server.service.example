@@ -34,6 +34,10 @@ StandardError=append:/var/log/lattice-server/server.log
 
 # SIGTERM is a graceful shutdown: in-flight writes finish (up to 30 s), streams
 # end, final audit commits run, then exit 0.
+# Open files: the server holds one descriptor per stream, lock, log, and audit
+# helper, and raises its own soft limit up to this hard limit (at most 65536).
+LimitNOFILE=65536
+
 KillSignal=SIGTERM
 TimeoutStopSec=60
 Restart=on-failure

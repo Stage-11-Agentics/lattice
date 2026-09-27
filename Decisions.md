@@ -1155,3 +1155,116 @@ Additionally, `lattice advance N` processed multiple tasks in a single context w
 - **Server:** `lattice server serve` raises its soft `RLIMIT_NOFILE` to
   `min(hard, 65536)` (10240 if macOS refuses), never lowering it, and logs
   `fd_limit` on the startup line.
+
+---
+
+## 2026-09-27: The hosted dashboard is the local page behind a cookie session (LAT-314)
+
+- **Decision:** the server serves each project's dashboard at `/p/<slug>/`
+  from the local dashboard's own assets and `dashboard/api.py`, reading the
+  authoritative board under admission and the work lock, memoized per load,
+  head, and query. Login exchanges a token for a `lattice_session` cookie
+  (`HttpOnly; SameSite=Strict`, `Secure` over HTTPS, 30 days, stored hashed,
+  dies with its token). The cookie authenticates only `/`, `/logout`,
+  `/p/<slug>/...`, and the stream; a present `Authorization` header is used
+  alone. Writes run as the token's browser actor with a `Lattice-Op-Id` the
+  page reuses on retry. The graph libraries are vendored, so no dashboard
+  loads anything from another site.
+- **Why:** one page and one read API for local, bound, and hosted keeps the
+  three from drifting. A token pasted once, never kept in the browser, gives a
+  browser the same identity and limits as a CLI without accounts. The memo
+  makes viewers cost one computation per write, which AC-42 needed.
+- **Consequence:** hosted pages cannot open files in an editor (`LOCAL_ONLY`)
+  or show git; a background image from another site does not load under the
+  CSP.
+
+---
+
+## 2026-09-27: Origin filters are matched on the server and never resolved there (LAT-321)
+
+- **Decision:** the dashboard filters by machine, user, and worktree through
+  `GET /api/tasks?machine=&user=&worktree=`, with the rule `lattice list`
+  uses. The page keeps the filters in its URL. The worktree must be absolute
+  and is normalized lexically; a relative path is refused (400), and values
+  are capped at 256 (machine, user) and 1024 (worktree) characters.
+- **Why:** every transport shares `dashboard/api.py`, so one match rule serves
+  local and hosted. A server never resolves a caller's path against its own
+  filesystem, so a symlinked path matches nothing rather than something wrong.
+
+---
+
+## 2026-09-27: An offline write says the server is not available, and waits once per outage (LAT-310, LAT-343)
+
+- **Decision:** a write that cannot reach the server prints progress to
+  stderr in both output modes ("server <alias> (<url>) is not available;
+  retrying for up to <n> s"), then fails with `SERVER_UNREACHABLE` in plain
+  words; the raw OS error moves to `--json` details. `retry_seconds` defaults
+  to 15. If the offline window (`cache/unreachable_until`) is already open, a
+  write whose first connection fails gives up at once. A write whose request
+  was sent always retries fully.
+- **Why:** operator ruling from CP1: a silent 30-second hang per write read as
+  a broken tool, and an agent issuing several writes against a stopped server
+  waited once per write. The request that was sent may have committed, so it
+  keeps the full retry and the `OUTCOME_UNKNOWN` path.
+- **Consequence:** G-8 allows the window file to change on an offline write;
+  nothing else is written.
+
+---
+
+## 2026-09-27: History damage is repaired by appending, before import (LAT-347)
+
+- **Decision:** `lattice doctor --fix --actor` (local only) repairs stale
+  `from` values with a `task_history_reconciled` event naming them, which
+  replay then accepts on exactly those events, plus ordinary events that
+  restore each field's visible value; duplicate and out-of-prefix short IDs
+  are reassigned with `task_short_id_assigned` `supersedes`. It never rewrites
+  or removes an event. Import stays a doctor-gated copy, and its refusal
+  names this step.
+- **Why:** H-14's dry run on real v1 boards found this damage. Accepting stale
+  `from` values at the import gate was rejected (those tasks already take no
+  write), and so was repair inside import (it would break AC-35's byte copy,
+  and local users with frozen tasks get the fix without hosting).
+- **Consequence:** G-6 gains the repair; a repaired log still fails v1's
+  strict replay at its stale event, as before.
+
+---
+
+## 2026-09-27: Forwarded headers count only from listed proxies (LAT-349)
+
+- **Decision:** `server.json`'s `trusted_proxies` lists proxy addresses or
+  CIDRs, default `[]`. `X-Forwarded-Proto` and `X-Forwarded-For` count only on
+  a connection from a listed peer; the client address is the rightmost
+  forwarded entry not in the list. uvicorn's proxy handling is configured
+  from the same list, never from its default or `FORWARDED_ALLOW_IPS`. The
+  pre-release boolean `trusted_proxy` is refused at startup.
+- **Why:** a server that binds an address other hosts can reach (a proxy on
+  another host dials it) would otherwise let any peer claim HTTPS and any
+  client address. The boolean had been parsed but never used.
+- **Consequence:** the guide tells an operator to bind only an address the
+  proxy can reach and to list only the proxy's address.
+
+---
+
+## 2026-09-27: Client cache writers never follow a symlink (LAT-337)
+
+- **Decision:** every client-side cache writer opens each directory with
+  `O_DIRECTORY | O_NOFOLLOW` relative to its parent and writes through the
+  descriptor. A `.lattice`, `cache/`, or runtime directory that is a symlink
+  or a file is refused up front with `BINDING_CONFLICT`
+  (`details.reason: UNSAFE_CACHE_PATH`), naming the path.
+- **Why:** a clone can commit `.lattice` as a symlink; following it would let
+  a sync write, chmod, or delete wherever it points. Local boards are
+  unaffected: the check runs only for bound or marked roots.
+
+---
+
+## 2026-09-27: The audit stage runs in its own process (LAT-340)
+
+- **Decision:** each project's audit committer stages through a worker
+  process that keeps a stat cache and prehashes changed files before the work
+  lock is taken; under the lock it hashes only what changed since.
+- **Why:** under AC-42 load, staging 3,700 files in a server thread held the
+  work lock for seconds while it waited for the GIL, stalling every request of
+  the project once a minute. A process has its own interpreter.
+- **Consequence:** `audit_commit` logs the cycle's timings, and any work-lock
+  hold of 1 s or more logs `work_lock_slow`.

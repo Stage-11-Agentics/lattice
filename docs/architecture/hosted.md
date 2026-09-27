@@ -45,6 +45,8 @@ agents, and never calls c11.
 | `importer.py` | `lattice server project import`: doctor gate, path refusal, copy, short-ID repair, new epoch |
 | `audit.py` | The per-project audit history: allowlist `.gitignore`, debounced commits, push, `git gc --auto` |
 | `floors.py` | Per-project short-ID floors, computed at load |
+| `dashboard.py` | `/p/<slug>/`: the dashboard page, assets, and `dashboard/api.py` reads (memoized per load, head, and query) and writes (operations as the browser actor, `Lattice-Op-Id` for retries) |
+| `web.py`, `sessions.py` | Login, logout, the index, `Origin` and content-type checks, CSP; `web_sessions.json` (hashes only, 30 days, dies with the token) |
 | `log.py` | JSON-lines log with token scrubbing |
 
 ### A write, end to end
@@ -82,8 +84,13 @@ failure), then build the short-ID floors, line hashes, and manifest.
 
 With `git` available, each `projects/<slug>/` is a git repository whose
 `.gitignore` allowlists only durable board paths. A per-project committer
-thread stages under the work lock and commits outside it, debounced, and may
-push to a configured remote.
+thread commits outside the work lock, debounced, and may push to a configured
+remote. Staging runs in a worker process per project (`sys.executable -c`),
+which keeps a stat cache and hashes changed files before the work lock is
+taken, so the lock is held only to stage what changed since (LAT-340). The
+worker is replaced if it dies and reaped before shutdown. `audit_commit` log
+lines carry the cycle's timings; any work-lock hold of 1 s or more logs
+`work_lock_slow`.
 
 ## Client (`src/lattice/remote/`)
 
@@ -97,6 +104,7 @@ Standard library only.
 | `cache.py` | Sync: fetch, verify (paths, hashes, append deltas), apply under `locks/cache_sync.lock` and the exclusive `cache_rw` lock; modes 0400/0500; the tamper fingerprint and `cache/rescued/`; `cache clear` |
 | `client.py` | Operation requests: local param checks, omitted defaults, `op_id` per call, retries, `OUTCOME_UNKNOWN`, op status |
 | `session.py` | The hosted read path of one CLI process: catch-up before reads, the offline and busy notices, version-skew lines |
+| `cache_paths.py` | Every cache write goes through directory descriptors opened `O_NOFOLLOW`: a `.lattice`, `cache/`, or runtime directory that is a symlink or a file is `BINDING_CONFLICT` (`UNSAFE_CACHE_PATH`), never followed |
 | `acked.py` | `cache/acked.jsonl` (each acknowledged write) and `lattice remote verify` |
 | `follower.py`, `stream.py`, `sse.py`, `hosted_watch.py` | `lattice sync --follow`, the stream reader with polling fallback, hosted `watch` / `wait` |
 
@@ -114,7 +122,10 @@ marker naming another project, is `BINDING_CONFLICT`.
 Before every read the client catches up (one sync call, 2 s connect and 5 s
 probe timeouts), unless a live follower is running (`cache/follower.json`
 fresh and its PID alive). Offline, it prints one line and reads the cache, and
-skips the network for 15 s. Readers hold the cache's `cache_rw` lock shared,
+skips the network for 15 s. A write retries for `retry_seconds` (15 s) with
+progress lines on stderr; if the offline window is already open, a write whose
+first connection fails gives up at once, so an outage costs one wait, not one
+per write. Readers hold the cache's `cache_rw` lock shared,
 so they never see a half-applied sync.
 
 ## Board ownership (`src/lattice/storage/ownership.py`, `storage/fs.py`)
@@ -137,3 +148,28 @@ decide what syncs, what is recorded, and what may be deleted: SPEC §6.1.
 `tests/test_remote/`, `tests/test_hygiene.py` (no deployment specifics in the
 repository), `tests/test_packaging.py` (the base install gains no dependency),
 and the torture suite (`-m torture`).
+
+## Proving the hosted docs
+
+The guide is checked by running it, not by reading it.
+
+- `tests/test_docs_hosted.py` (AC-32, default suite): the docs exist, every
+  `lattice ...` command the guide, API page, README, skills, and CLAUDE.md block
+  name resolves and its `--help` exits 0, and no document names a real host.
+- `scripts/run_hosted_guide.py`: runs every `bash` block of the guide in order,
+  as one shell session, under a scratch `HOME` with the repository's
+  `lattice` first on `PATH`. A block preceded by `<!-- guide: skip: <reason> -->`
+  is reported as skipped with that reason; other languages are shown files.
+  `uv run python scripts/run_hosted_guide.py --keep-going` for the guide;
+  add `--guide docs/hosted/api.md --setup scripts/hosted_api_setup.sh` for the
+  API page. Exit 0 when every runnable block passed.
+- `scripts/docs_agent_test.sh [OUT_DIR]` (AC-44): installs Lattice from the
+  checkout into a scratch venv, gives a fresh agent only `guide.md` and
+  `api.md` in an empty directory, and checks what it did: a server, project,
+  token, bound checkout and write; the section 1 worktree recipe on a fixture
+  with two linked worktrees; and the move back to local with a clean doctor.
+  The agent is a parameter: `AGENT_CMD` (default `claude`, given the prompt
+  with `-p`), `AGENT_ARGS`, `AGENT_TIMEOUT` (default 2700 s). Run it with an
+  agent from a different model family than the one that wrote the guide; the
+  transcript and results land in `OUT_DIR`. Needs network for the agent and
+  `uv`; it is not part of the default suite.

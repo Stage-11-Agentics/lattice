@@ -232,7 +232,7 @@ The server root is `--root`, else `$LATTICE_SERVER_ROOT`, else `$XDG_DATA_HOME/l
 {
   "bind": "127.0.0.1",
   "port": 8740,
-  "trusted_proxy": false,
+  "trusted_proxies": [],
   "public_origins": [],
   "log_level": "info",
   "audit": {"enabled": true, "debounce_seconds": 5, "max_interval_seconds": 60, "push": null},
@@ -254,13 +254,17 @@ The server root is `--root`, else `$LATTICE_SERVER_ROOT`, else `$XDG_DATA_HOME/l
 ```
 
 - `bind` and `port`: where the server listens. Keep `127.0.0.1` and put a reverse proxy in front (section 10), or bind a private-network address.
-- `trusted_proxy`: set `true` only behind a proxy you control; the server then honors `X-Forwarded-Proto` and `X-Forwarded-For`.
+- `trusted_proxies`: the addresses or CIDR ranges of your reverse proxies, for example `["127.0.0.1"]` for a proxy on the same host. The server honors `X-Forwarded-Proto` and `X-Forwarded-For` only on connections from those addresses and ignores them from every other peer. Leave it empty (the default) with no proxy. Section 10 says what to list.
 - `public_origins`: the browser origins of the dashboard when a proxy rewrites `Host`, for example `["https://lattice.example.internal"]`.
 - `limits`: what one token can take from the others. All projects share one process, one disk, and one memory. `lock_timeout_seconds` may not exceed 60. Below `min_free_disk_bytes` of free disk, writes fail with `STORAGE_LOW` and reads keep working.
 
 Edit `server.json` with the server stopped; the server reads it at start.
 
-The server logs one JSON object per line to stdout: requests, project loads, recovery, audit commits, lease changes. It never logs a token secret, a payload, or plan text.
+The server logs one JSON object per line to stdout: requests, project loads, recovery, audit commits, lease changes. It never logs a token secret, a payload, or plan text. A few lines worth knowing:
+
+- `startup` carries `fd_limit`. The server raises its own open-file limit at start, toward the hard limit and at most 65536 (10240 where macOS refuses more), and never lowers it. `before` is what the supervisor gave it. The service templates (section 9) raise the hard limit so the server can take what it asks for.
+- `audit_commit` carries the audit cycle's timings (`lock_wait_ms`, `prehash_ms`, `stage_ms`, `commit_ms`). The audit history is staged by a helper process per project (a child of the server running the server's Python, `-c` in `ps`), replaced if it dies and stopped with the server.
+- `work_lock_slow` names any hold of a project's work lock of 1 second or more, and the thread that held it. Every other request of that project waited on it.
 
 ## 7. Projects and their review workflow
 
@@ -351,7 +355,7 @@ lattice server token revoke "$SEAT_TOKEN_ID"
 
 Templates live in [`deploy/`](deploy/). Every path, user, and host in them is a placeholder: replace them before use.
 
-**Linux (systemd).** [`deploy/lattice-server.service.example`](deploy/lattice-server.service.example) runs the server as a dedicated user and appends its log to `/var/log/lattice-server/server.log`.
+**Linux (systemd).** [`deploy/lattice-server.service.example`](deploy/lattice-server.service.example) runs the server as a dedicated user, appends its log to `/var/log/lattice-server/server.log`, and sets `LimitNOFILE` so the server can hold one open file per stream, lock, and helper it needs.
 
 <!-- guide: skip: needs root and systemd on a real host -->
 ```bash
@@ -368,7 +372,7 @@ Log rotation: [`deploy/logrotate.example`](deploy/logrotate.example) rotates the
 
 Admin commands run as the service user, against the service's root: `sudo -u lattice lattice server token create --root /var/lib/lattice-server ...`, or set `LATTICE_SERVER_ROOT` in that user's shell.
 
-**macOS (launchd).** [`deploy/lattice-server.plist.example`](deploy/lattice-server.plist.example) is a LaunchDaemon (or, for a server that only runs while you are logged in, a LaunchAgent in `~/Library/LaunchAgents`). It records the server's PID in a file so log rotation can find it.
+**macOS (launchd).** [`deploy/lattice-server.plist.example`](deploy/lattice-server.plist.example) is a LaunchDaemon (or, for a server that only runs while you are logged in, a LaunchAgent in `~/Library/LaunchAgents`). It records the server's PID in a file so log rotation can find it. A launchd job starts with a limit of 256 open files, which a busy server outgrows; the template raises it with `SoftResourceLimits` and `HardResourceLimits` (`NumberOfFiles`).
 
 <!-- guide: skip: needs root and launchd on macOS -->
 ```bash
@@ -391,7 +395,33 @@ The server speaks plain HTTP. For anything beyond loopback or a private encrypte
 - **allow bodies** up to `limits.max_body_bytes` (16 MiB by default; attachments travel in the body);
 - **never redirect an API path** (`/v1/...`, `/healthz`) to a login page. The client refuses any redirect with `PROXY_REJECTED` and never sends its token to another location. If your proxy puts a login in front of the site, exempt `/v1/` from it, or give clients service credentials as headers (below).
 
-Set `"trusted_proxy": true` in `server.json` behind such a proxy, and list the dashboard's public origin in `public_origins`.
+**Tell the server about the proxy.** In `server.json`:
+
+- `bind`: an address the proxy can reach, and no wider. A proxy on the same host reaches `127.0.0.1`, the default. A proxy on another host needs the server's address on the network between them (a private or overlay network), never `0.0.0.0` on a public interface.
+- `trusted_proxies`: only the proxy's own address, as the server sees it. Never a whole network: any peer in the list can claim any client address and HTTPS. A token still gates every request either way; the list decides the logged client address and whether the dashboard's cookie is marked `Secure`.
+- `public_origins`: the dashboard's public origin.
+
+A proxy on the same host:
+
+```json
+{
+  "bind": "127.0.0.1",
+  "trusted_proxies": ["127.0.0.1"],
+  "public_origins": ["https://lattice.example.internal"]
+}
+```
+
+A proxy on another host, where `192.0.2.20` is the server's private address and `192.0.2.10` is the proxy's:
+
+```json
+{
+  "bind": "192.0.2.20",
+  "trusted_proxies": ["192.0.2.10"],
+  "public_origins": ["https://lattice.example.internal"]
+}
+```
+
+The proxy then forwards to `http://192.0.2.20:8740`. Merge these keys into your `server.json` and restart the server. The server refuses to start with the old `trusted_proxy` key from early v2 trials, and names `trusted_proxies`.
 
 nginx, as a sketch:
 
@@ -453,7 +483,7 @@ A remote is this machine's name for a server. `~/.config/lattice/remotes.json` (
       "run_board_hooks": false,
       "run_auto_reviews": true,
       "allow_plaintext": false,
-      "retry_seconds": 30
+      "retry_seconds": 15
     }
   }
 }
@@ -462,7 +492,7 @@ A remote is this machine's name for a server. `~/.config/lattice/remotes.json` (
 - `token`: a literal string (what `--token-stdin` stores) or `{"env": "VAR"}` (what `--token-env VAR` stores). With `--token-env`, the variable must be set in every shell that runs `lattice`, agents included.
 - `run_board_hooks` (default `false`): run the hosted board's hooks on this machine after its writes. A hosted board's hook commands are chosen by whoever administers the server, so this is opt-in.
 - `run_auto_reviews` (default `true`): set `false` to decline the board's automatic reviews on this machine (section 13).
-- `retry_seconds` (default 30): how long one write keeps retrying (section 18).
+- `retry_seconds` (default 15): how long one write keeps retrying while the server is not available (section 18).
 
 `lattice remote add ALIAS URL [--token-env VAR | --token-stdin] [--header NAME=ENVVAR]... [--allow-plaintext]` writes an entry. `lattice remote list` shows aliases and URLs, never tokens.
 
@@ -518,19 +548,55 @@ lattice sync --follow
 
 ### Dashboards
 
-`lattice dashboard` on a bound checkout works as locally, with a follower of its own, so it updates live. Its writes go to the server as your token's user when the token permits it (the "browser actor"), else as the token's default actor.
+**On a bound checkout.** `lattice dashboard` works as locally, with a follower of its own. The page checks the cache's position every second and refetches as soon as a write lands, from any machine. Its writes go to the server as your token's user when the token permits it (the "browser actor"), else as the token's default actor. On a local board the page refreshes every 5 seconds, as before.
 
-The server also serves each project's dashboard in the browser, with no checkout: open `<server url>/login`, paste a token, and pick a project at `/`; each project lives at `/p/<slug>/`. The session lasts 30 days and dies with its token. Behind a proxy that rewrites `Host`, list the public origin in `public_origins` (section 6). Moving a task in either dashboard starts no automatic review (section 13).
+**On the server.** The server serves each project's dashboard in the browser, with no checkout and no install:
+
+1. Open `<server url>/login` and paste a token. The token is checked, and the browser gets a session cookie; the token itself is not stored in the browser.
+2. `<server url>/` lists the projects the token may reach. Each project's dashboard is at `/p/<slug>/`. Opening one without a session sends you to the login first.
+3. The page follows the project's change stream and refetches on every write, so it is live. If the stream drops (a proxy that buffers it, say), it falls back to refreshing every 5 seconds.
+4. **Log out** ends the session. A session lasts 30 days and dies with its token: revoking the token (section 8) logs out every browser that used it.
+
+Writes from the hosted page are ordinary operations with the session's token, as the browser actor. The page gives each write one operation ID and reuses it on retry, so a double click or a retry after a lost answer applies once. Two things the hosted page cannot do: open a plan or notes file in your editor (use `lattice plan write` / `lattice notes write` from a checkout), and show git branches (the server has no worktree).
+
+Behind a proxy that rewrites `Host`, list the public origin in `public_origins` (section 6); without it, logins and writes are refused by the `Origin` check. Under the hosted page's content policy, a dashboard background image from another site does not load. Moving a task in either dashboard starts no automatic review (section 13).
+
+**Filtering by machine, user, and worktree.** Every dashboard, local or hosted, filters the board by where the work was done, as `lattice list --machine/--user/--worktree` does: a task matches when one of its events came from that machine, user, or worktree. On a hosted board, machine and user are the token's (`laptop`, `human:alice`); on a local board, the host name and OS user. Open the filter drawer's Origin section, or put the filters in the URL, which you can bookmark and share: `/p/demo/?machine=laptop&user=human:alice` hosted, `/?user=alice` locally. The origin filters combine with the drawer's other filters (all must match). A worktree filter is an absolute path, matched as recorded (`/home/alice/src/app`, trailing slashes and `.` or `..` segments folded). A relative path is refused; a path through a symlink matches nothing, because the server never looks at your filesystem.
+
+The API behind the page takes the same filters, with the token as a bearer, from any machine:
+
+```bash
+curl -s -H "Authorization: Bearer $(cat "$TRIAL/token")" \
+  "http://127.0.0.1:8740/p/demo/api/tasks?machine=laptop" | python3 -m json.tool | head -n 12
+curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' http://127.0.0.1:8740/p/demo/
+```
+
+The first prints the tasks written from the machine named `laptop`. The second shows that the page without a session redirects (303) to the login.
+
+**Nothing from the network.** The dashboard's graph libraries ship inside Lattice. Neither dashboard loads anything from another site, so it works offline and behind a strict firewall.
 
 ### Offline
 
-When the server is unreachable, reads show the cache and print one line to stderr:
+When the server is not available, **reads** show the cache and print one line to stderr:
 
 ```
 lattice: cannot reach team; showing cache as of 2026-09-27T10:15:02Z
 ```
 
-For 15 seconds after a failed attempt, reads skip the network entirely. `--json` output is unchanged. **Writes fail** with `SERVER_UNREACHABLE` and nothing is written anywhere; there is no offline queue. Retry when the server is back.
+For 15 seconds after a failed attempt, reads skip the network entirely. `--json` output is unchanged.
+
+**Writes** are not queued: a write needs the server. While it retries, it says so on stderr, in plain and `--json` modes alike (stdout stays clean):
+
+```
+lattice: server team (https://lattice.example.internal) is not available; retrying for up to 15 s
+lattice: team still not available (5 s of 15 s)
+lattice: team still not available (10 s of 15 s)
+Error: server team (https://lattice.example.internal) is not available. Nothing was written; run the command again when it is back.
+```
+
+It exits 1 with `SERVER_UNREACHABLE`, and nothing is written anywhere. `--json` adds `details` with `remote`, `url`, `waited_seconds`, and the raw `os_error`. When the server answered but was overloaded (429, 502, 503, 504), the progress lines say `busy` instead.
+
+You wait once per outage, not once per write: once a command has found the server down, a write in the next 15 seconds tries one connection and fails at once. Retry when the server is back (`curl <url>/healthz`, or any read that no longer prints the notice). A write whose request did reach the server always retries for the full time, because it may have been applied (section 18).
 
 ## 12. Working on a hosted checkout
 
@@ -603,7 +669,19 @@ Every token that should reach the new project needs it granted (section 8). Here
 lattice server token grant "$(cut -d_ -f2,3 "$TRIAL/token")" --project legacy
 ```
 
-From another machine, copy it with `rsync -a` or `scp -r`, preserving the tree. The import refuses a board that fails `lattice doctor` (fix it locally first and copy again), a symbolic link or special file under the board, and a slug that already exists. It never modifies its source and never changes the board's configuration, so the project keeps its review workflow and prompt overrides.
+From another machine, copy it with `rsync -a` or `scp -r`, preserving the tree. The import refuses a symbolic link or special file under the board, a slug that already exists, and a board that fails `lattice doctor`.
+
+**If the import refuses the board.** It prints doctor's findings and the next step. Boards written by several v1 agents at once often carry history damage: a status or assignment event whose recorded `from` disagrees with the task's state, or two tasks holding one short ID. Repair it on the **local** board, in the checkout (its writers are already stopped), with Lattice 2:
+
+<!-- guide: skip: only when the import refuses; the example board has no damage -->
+```bash
+cd "$TRIAL/legacy"
+lattice doctor --fix --actor human:alice
+lattice doctor
+```
+
+`doctor --fix --actor` only appends events: it never rewrites or removes one. Each task keeps the status, assignment, and fields the board showed before the repair; a task holding a duplicate or out-of-prefix short ID gets the next free one, and the old ID stays in its history. It prints each appended event, each reassignment as `old -> new` with the task's title, and each restored field. Without `--actor` it lists what it would append and changes nothing. Damage of any other kind it names and leaves alone. When `lattice doctor` is clean, commit nothing yet: copy the board to the server host again and repeat this step.
+ It never modifies its source and never changes the board's configuration, so the project keeps its review workflow and prompt overrides.
 
 Read the two lists it prints:
 
@@ -750,9 +828,9 @@ lattice remote verify
 
 ## 18. Unknown write outcomes
 
-A write retries on its own for up to `retry_seconds` (30 by default) on connection errors, timeouts, and 429, 502, 503, and 504 responses, reusing the same operation ID, so the server applies it at most once. When the retries run out:
+A write retries on its own for up to `retry_seconds` (15 by default) on connection errors, timeouts, and 429, 502, 503, and 504 responses, reusing the same operation ID, so the server applies it at most once. It prints its progress to stderr while it retries (section 11, Offline). When the retries run out:
 
-- `SERVER_UNREACHABLE`: no attempt reached the server. Nothing was written. Retry when it is back.
+- `SERVER_UNREACHABLE` ("server ... is not available. Nothing was written"): no attempt reached the server. Retry when it is back.
 - `OUTCOME_UNKNOWN`: a request reached the server but no answer came back. The server may have applied the write. The message names the operation ID. **Check before retrying**:
 
   <!-- guide: skip: needs an operation ID from a real OUTCOME_UNKNOWN -->
@@ -770,6 +848,7 @@ A write retries on its own for up to `retry_seconds` (30 by default) on connecti
 
 Upgrade the server with the same install command (section 5, add `--force` for `uv tool install`) and restart it. Clients upgrade independently.
 
+- **`server.json` from an early v2 trial** may hold `"trusted_proxy": false`. The server refuses to start with that key; replace it with `"trusted_proxies": []`, or with your proxy's address (section 10).
 - The server and clients speak protocol 1. A client and server on different protocols refuse each other before any write.
 - A client older than the server prints one line per command asking you to upgrade. When the server raises its minimum client version, older clients' writes fail with `CLIENT_TOO_OLD`, naming both versions.
 - A newer client works against an older server until it uses something the server lacks: `UNKNOWN_OP` or `UNSUPPORTED_PARAM`, naming both versions. Upgrade the server.
@@ -796,12 +875,12 @@ Upgrade the server with the same install command (section 5, add `--force` for `
 |---|---|---|
 | `REMOTE_NOT_CONFIGURED` | The binding names an alias this machine has no remote for | Run the printed `lattice remote add <alias> <url> --token-env <VAR>`; ask your server admin for the URL and a token |
 | `TOKEN_ENV_UNSET` | The token or a header comes from an environment variable that is unset or empty | Export the named variable in the shell (and in your agents' environment) |
-| `SERVER_UNREACHABLE` | No request reached the server; nothing was written | Check the server (`curl <url>/healthz`) and the network; retry |
+| `SERVER_UNREACHABLE` | The server is not available: no request reached it, and nothing was written. `--json` details name the remote, URL, and OS error | Check the server (`curl <url>/healthz`) and the network; retry |
 | `OUTCOME_UNKNOWN` | A write reached the server but no answer came back | `lattice remote op-status <op_id>` before retrying (section 18) |
 | `PROXY_REJECTED` | Something other than a Lattice server answered: a redirect, a login page, an error page | Fix the proxy: no redirects or login on `/v1/`; add service headers (section 10) |
 | `INSECURE_URL` | `http://` to a host that is not loopback | Use `https://`, or `--allow-plaintext` on an encrypted private network |
-| `BINDING_CONFLICT` | The checkout's binding meets a local board (a `.lattice/` with board files and no cache), or a cache of a different remote or project | A local board: follow section 14 to move it. Another project's cache: `lattice cache clear --forget`, then run the command again |
-| `BOARD_IS_CACHE` | Something tried to write the read-only cache directly | Write through the command (`plan write`, `notes write`, `board write`); the cache is written only by sync |
+| `BINDING_CONFLICT` | The checkout's binding meets a local board (a `.lattice/` with board files and no cache), or a cache of a different remote or project. With `details.reason` `UNSAFE_CACHE_PATH`: `.lattice`, its `cache/`, or a runtime directory is a symbolic link or a file, which Lattice never writes through | A local board: follow section 14 to move it. Another project's cache: `lattice cache clear --forget`, then run the command again. An unsafe path: remove it (the message names it), then run any command |
+| `BOARD_IS_CACHE` | Something tried to write the read-only cache directly. With `details.reason` `CACHE_ACCESS`: Lattice cannot read or write a path in the cache (its permissions were changed, or another user owns it, after a `sudo lattice` say) | Write through the command (`plan write`, `notes write`, `board write`); the cache is written only by sync. For `CACHE_ACCESS`: restore the path's permissions, or `lattice cache clear` and then any command to rebuild the cache |
 | `BOARD_IS_HOSTED` | Something tried to write a board the server owns, on the server host | Go through a bound checkout, or unload the project and use `--offline-maintenance` (section 7) |
 | `CACHE_INCOMPLETE` | A sync was interrupted mid-update and the server is unreachable | `lattice sync` when the server is back |
 | `NOT_HOSTED` | A hosted-only command (`cache clear`, `remote status`, `sync`) ran in a checkout that is not bound | Run it in a bound checkout |

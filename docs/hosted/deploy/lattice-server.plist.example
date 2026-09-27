@@ -58,6 +58,21 @@
     <key>Umask</key>
     <integer>63</integer>
 
+    <!-- Open files: launchd starts a job at 256, which a busy server outgrows.
+         The server raises its own soft limit up to the hard limit. macOS
+         refuses a limit above its per-process maximum; 10240 (OPEN_MAX) is
+         always accepted. -->
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>10240</integer>
+    </dict>
+    <key>HardResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>10240</integer>
+    </dict>
+
     <!-- The server logs one JSON object per line to stdout. -->
     <key>StandardOutPath</key>
     <string>/usr/local/var/log/lattice-server/server.log</string>

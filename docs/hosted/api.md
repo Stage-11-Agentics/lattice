@@ -40,7 +40,7 @@ export LATTICE_TOKEN="$(cat "$HOME/lattice-trial/token")"
 | `POST /logout` | session | End the dashboard session |
 | `GET /p/{slug}/`, `/p/{slug}/static/*`, `/p/{slug}/api/*` | session or token | The project's dashboard |
 
-A dashboard session cookie authenticates only `/`, `/p/<slug>/...`, and the stream. It never authenticates operations, sync, or files.
+A dashboard session cookie authenticates only `/`, `/logout`, `/p/<slug>/...`, and the stream. It never authenticates operations, sync, or files.
 
 ## GET /healthz
 
@@ -244,7 +244,30 @@ The list returns `{"tasks": [...]}`, compact snapshots, filtered by `status`, `a
 
 ## Dashboard routes
 
-`GET /login` serves a form; `POST /login` with a valid token (a form post from the same origin) sets the `lattice_session` cookie (`HttpOnly; SameSite=Strict`, `Secure` over HTTPS) for 30 days. `GET /` lists your projects; `/p/<slug>/` is each project's dashboard, whose `/p/<slug>/api/*` routes are the local dashboard's API served from the authoritative board. Cookie-authenticated POSTs need `Content-Type: application/json` and an `Origin` matching the host or `public_origins`. A dashboard write acts as the token's user when the token permits it (the "browser actor"); any actor in the request body is ignored. `POST /logout` ends the session. A session dies with its token.
+These serve the hosted dashboard (guide section 11, Dashboards). A script can use them with a bearer token, like any other route.
+
+**Login and sessions.**
+
+- `GET /login` serves a form. `POST /login` is a form post (`application/x-www-form-urlencoded`, at most 4 KiB) with `token` and optional `next` (a `/p/<slug>/` path). It checks the `Origin` first (403 `FORBIDDEN` from another site), then the token (401 with the form again if it is not valid), then sets the `lattice_session` cookie (`HttpOnly; SameSite=Strict; Path=/`, plus `Secure` over HTTPS) and redirects (303) to `next`, else `/`. The session lasts 30 days; the server stores only its hash, in `web_sessions.json`.
+- `POST /logout` with `Content-Type: application/json` and a body of `{}` ends the session and clears the cookie: `{"ok": true, "data": {"logged_out": true}}`.
+- `GET /` lists the projects the session's token may see. Without a session it redirects (303) to `/login`.
+- A session dies with its token. A request carrying a cookie that names no live session gets a clearing `Set-Cookie`.
+- The cookie authenticates only `/`, `/logout`, `/p/<slug>/...`, and the stream. When an `Authorization` header is present it is used alone, never falling back to the cookie.
+
+**A project's dashboard.**
+
+- `GET /p/<slug>/` serves the page (without a session: 303 to `/login?next=/p/<slug>/`); `GET /p/<slug>` redirects (308) to it. `/p/<slug>/static/*` serves its assets; nothing is loaded from another site.
+- `GET /p/<slug>/api/<path>` answers the local dashboard's read API on the server's board: `config`, `tasks`, `stats`, `activity`, `archived`, `graph`, `structure`, `tasks/<id>`, and the rest. Responses carry an `ETag`; send `If-None-Match` to get 304 when nothing changed. `api/git` reports `{"available": false, "reason": "hosted"}`.
+- `GET /p/<slug>/api/tasks` takes the origin filters `machine`, `user`, and `worktree`, as `lattice list --machine/--user/--worktree` (a task matches when one of its events carries every filter given; tasks written before v2 match nothing). On a hosted board, machine and user are the token's. An empty value is no filter. `worktree` must be an absolute path and is normalized lexically (repeated and trailing slashes, `.` and `..`); the server never resolves it against a filesystem, so a symlinked path matches nothing. Refusals, 400 `VALIDATION_ERROR`: a relative `worktree` ("worktree filter must be an absolute path"), and a value longer than 256 characters (`machine`, `user`) or 1024 (`worktree`).
+
+```bash
+curl -s -H "Authorization: Bearer $LATTICE_TOKEN" "$LATTICE_URL/p/demo/api/tasks?machine=laptop&user=human:alice"
+```
+
+- `POST /p/<slug>/api/<path>` runs the matching operation as the token's browser actor: the token's user when the token permits it, else its single default actor, else 400 `MISSING_ACTOR`. Any actor in the body is ignored. It needs `Content-Type: application/json` (415 otherwise) and, with a session cookie, an `Origin` equal to the server's own or listed in `public_origins` (403 otherwise, checked before anything else). Send a `Lattice-Op-Id: op_<ULID>` header per logical write and reuse it on retry, so a retry applies once; without it the server mints one and cannot deduplicate. `POST .../api/tasks/<id>/open-notes` and `open-plans` answer 400 `LOCAL_ONLY`: write plans and notes with `plan.write` and `notes.write`.
+- Responses outside `/v1` carry `X-Content-Type-Options: nosniff` and a `Content-Security-Policy` that allows only this server's own scripts, styles, images, and connections.
+
+**Live refresh.** The page follows `GET /v1/projects/<slug>/stream` with its session cookie and refetches on each entry; with the stream down, it polls every 5 seconds.
 
 ## Error codes
 
