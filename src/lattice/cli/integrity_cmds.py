@@ -31,7 +31,7 @@ from lattice.storage.operations import (
     parse_project_short_id,
     resolve_task_authority,
 )
-from lattice.storage.short_ids import save_id_index
+from lattice.storage.short_ids import max_observed_short_ids, save_id_index
 
 
 # ---------------------------------------------------------------------------
@@ -200,9 +200,14 @@ def _authority_log_context(authority: ResolvedTaskAuthority, short_id: object) -
 def _validate_authoritative_short_ids(
     authorities: dict[str, ResolvedTaskAuthority],
     prefix: str | None,
-) -> list[tuple[str, str, int, Path, int]]:
-    """Validate unique event-authoritative aliases with contextual failures."""
+) -> tuple[list[tuple[str, str, int, Path, int]], list[AuthoritativeLogError]]:
+    """Validate unique event-authoritative aliases, collecting every problem.
+
+    Returns the valid aliases (the first holder of a duplicated ID among them)
+    and one contextual error per malformed, out-of-prefix, or duplicate alias.
+    """
     validated: list[tuple[str, str, int, Path, int]] = []
+    problems: list[AuthoritativeLogError] = []
     seen: dict[str, tuple[str, Path, int]] = {}
     for task_id, authority in authorities.items():
         short_id = authority.snapshot.get("short_id")
@@ -210,12 +215,15 @@ def _validate_authoritative_short_ids(
         if short_id is None and prefix is None:
             continue
         if not isinstance(short_id, str):
-            raise AuthoritativeLogError(
-                f"task {task_id} has malformed authoritative short ID {short_id!r}; "
-                "manual immutable-log recovery required",
-                path=path,
-                line=line,
+            problems.append(
+                AuthoritativeLogError(
+                    f"task {task_id} has malformed authoritative short ID {short_id!r}; "
+                    "manual immutable-log recovery required",
+                    path=path,
+                    line=line,
+                )
             )
+            continue
         try:
             if prefix is not None:
                 suffix = parse_project_short_id(short_id, prefix)
@@ -223,29 +231,48 @@ def _validate_authoritative_short_ids(
                 parsed_prefix, suffix = parse_short_id(short_id)
                 if not parsed_prefix or suffix < 1:
                     raise ValueError(short_id)
-        except (AuthoritativeLogError, ValueError) as exc:
+        except (AuthoritativeLogError, ValueError):
             detail = (
                 f"task {task_id} has authoritative short ID {short_id!r} outside "
                 f"configured prefix {prefix!r}"
                 if prefix is not None
                 else f"task {task_id} has malformed authoritative short ID {short_id!r}"
             )
-            raise AuthoritativeLogError(
-                f"{detail}; manual immutable-log recovery required",
-                path=path,
-                line=line,
-            ) from exc
+            problems.append(
+                AuthoritativeLogError(
+                    f"{detail}; manual immutable-log recovery required",
+                    path=path,
+                    line=line,
+                )
+            )
+            continue
         previous = seen.get(short_id)
         if previous is not None and previous[0] != task_id:
-            raise AuthoritativeLogError(
-                f"duplicate authoritative short ID {short_id}: "
-                f"{previous[0]} at {previous[1]}:{previous[2]} and {task_id}; "
-                "manual immutable-log recovery required",
-                path=path,
-                line=line,
+            problems.append(
+                AuthoritativeLogError(
+                    f"duplicate authoritative short ID {short_id}: "
+                    f"{previous[0]} at {previous[1]}:{previous[2]} and {task_id}; "
+                    "manual immutable-log recovery required",
+                    path=path,
+                    line=line,
+                )
             )
+            continue
         seen[short_id] = (task_id, path, line)
         validated.append((short_id, task_id, suffix, path, line))
+    return validated, problems
+
+
+def _require_valid_short_ids(
+    authorities: dict[str, ResolvedTaskAuthority],
+    prefix: str | None,
+) -> list[tuple[str, str, int, Path, int]]:
+    """Return the validated aliases, or raise naming every problem (repair paths)."""
+    validated, problems = _validate_authoritative_short_ids(authorities, prefix)
+    if len(problems) == 1:
+        raise problems[0]
+    if problems:
+        raise AuthoritativeLogError("; ".join(str(problem) for problem in problems))
     return validated
 
 
@@ -808,19 +835,19 @@ def doctor(fix: bool, output_json: bool, offline_maintenance: bool) -> None:
 
     authoritative_short_ids: dict[str, tuple[str, Path, int]] = {}
     if has_project_code:
-        try:
-            validated_short_ids = _validate_authoritative_short_ids(authorities, event_prefix)
-        except AuthoritativeLogError as exc:
+        validated_short_ids, short_id_problems = _validate_authoritative_short_ids(
+            authorities, event_prefix
+        )
+        for problem in short_id_problems:
             alias_ok = False
             findings.append(
                 {
                     "level": "error",
                     "check": "alias_integrity",
-                    "message": str(exc),
+                    "message": str(problem),
                     "task_id": None,
                 }
             )
-            validated_short_ids = []
         for short_id, task_id_key, _suffix, log_path, short_id_line in validated_short_ids:
             authoritative_short_ids[short_id] = (task_id_key, log_path, short_id_line)
 
@@ -885,7 +912,29 @@ def doctor(fix: bool, output_json: bool, offline_maintenance: bool) -> None:
                     }
                 )
 
-        # Check: per-prefix next_seqs > max assigned per prefix
+        # Check: per-prefix next_seqs > max short-ID sequence in any task log
+        # (the allocation floor), then > max assigned in the map.
+        log_max = max_observed_short_ids(lattice_dir)
+        log_checked = set(next_seqs) | ({event_prefix} if event_prefix else set())
+        counter_behind_logs: set[str] = set()
+        for prefix in sorted(log_checked):
+            prefix_next = next_seqs.get(prefix, 1)
+            if prefix in log_max and log_max[prefix] >= prefix_next:
+                counter_behind_logs.add(prefix)
+                alias_ok = False
+                findings.append(
+                    {
+                        "level": "warning",
+                        "check": "alias_integrity",
+                        "message": (
+                            f"next_seqs['{prefix}'] ({prefix_next}) is at or below the max "
+                            f"short-ID seq in the event logs ({log_max[prefix]}); "
+                            "run lattice rebuild --all"
+                        ),
+                        "task_id": None,
+                    }
+                )
+
         prefix_max: dict[str, int] = {}
         for short_id in id_map:
             try:
@@ -896,7 +945,7 @@ def doctor(fix: bool, output_json: bool, offline_maintenance: bool) -> None:
                 pass
         for prefix, max_num in prefix_max.items():
             prefix_next = next_seqs.get(prefix, 1)
-            if max_num >= prefix_next:
+            if max_num >= prefix_next and prefix not in counter_behind_logs:
                 alias_ok = False
                 findings.append(
                     {
@@ -1214,7 +1263,7 @@ def _rebuild_id_index(lattice_dir: Path) -> None:
             authority = resolve_task_authority(lattice_dir, task_id)
             assert authority is not None
             authorities[task_id] = authority
-        validated = _validate_authoritative_short_ids(authorities, event_prefix)
+        validated = _require_valid_short_ids(authorities, event_prefix)
         save_id_index(lattice_dir, _build_rebuilt_id_index(current, validated))
 
 
@@ -1238,7 +1287,7 @@ def _rebuild_all_tasks_transaction(lattice_dir: Path) -> list[str]:
         # first snapshot, placement, lifecycle, or ids.json write.
         current_index = _load_strict_id_index(lattice_dir)
         event_prefix = configured_event_prefix(load_project_config(lattice_dir))
-        validated_short_ids = _validate_authoritative_short_ids(authorities, event_prefix)
+        validated_short_ids = _require_valid_short_ids(authorities, event_prefix)
         rebuilt_index = _build_rebuilt_id_index(current_index, validated_short_ids)
 
         lifecycle_by_id: dict[str, dict] = {}
