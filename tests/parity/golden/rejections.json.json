@@ -582,6 +582,52 @@
           "ok": true
         }
       }
+    },
+    {
+      "args": [
+        "code-review",
+        "PAR-1",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "DIFF_RESOLUTION_FAILED",
+            "message": "Not a git worktree: <ROOT>"
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "code-review",
+        "PAR-1",
+        "--worktree",
+        "<ROOT>/empty",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "DIFF_RESOLUTION_FAILED",
+            "message": "Not a git worktree: <ROOT>/empty"
+          },
+          "ok": false
+        }
+      }
     }
   ]
 }

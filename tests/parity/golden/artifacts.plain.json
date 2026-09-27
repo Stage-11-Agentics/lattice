@@ -481,6 +481,19 @@
         },
         {
           "actor": "agent:worker",
+          "data": {
+            "origin": "user-data",
+            "ts": "<TS>",
+            "type": "user"
+          },
+          "id": "<ID-25>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "x_payload"
+        },
+        {
+          "actor": "agent:worker",
           "data": {},
           "id": "<ID-7>",
           "schema_version": 1,
@@ -513,7 +526,7 @@
             "from": null,
             "to": "human:parity"
           },
-          "id": "<ID-25>",
+          "id": "<ID-26>",
           "schema_version": 1,
           "task_id": "<ID-8>",
           "ts": "<TS>",
@@ -527,7 +540,7 @@
             "reason": "straight to work",
             "to": "in_progress"
           },
-          "id": "<ID-26>",
+          "id": "<ID-27>",
           "provenance": {
             "reason": "straight to work"
           },
@@ -542,7 +555,7 @@
             "body": "Reviewed: all good.",
             "role": "review"
           },
-          "id": "<ID-27>",
+          "id": "<ID-28>",
           "schema_version": 1,
           "task_id": "<ID-8>",
           "ts": "<TS>",
@@ -554,7 +567,7 @@
             "from": "in_progress",
             "to": "review"
           },
-          "id": "<ID-28>",
+          "id": "<ID-29>",
           "schema_version": 1,
           "task_id": "<ID-8>",
           "ts": "<TS>",
@@ -566,7 +579,7 @@
             "artifact_id": "<ID-11>",
             "role": "review"
           },
-          "id": "<ID-29>",
+          "id": "<ID-30>",
           "schema_version": 1,
           "task_id": "<ID-8>",
           "ts": "<TS>",
@@ -578,7 +591,7 @@
             "from": "review",
             "to": "done"
           },
-          "id": "<ID-30>",
+          "id": "<ID-31>",
           "schema_version": 1,
           "task_id": "<ID-8>",
           "ts": "<TS>",
@@ -609,7 +622,7 @@
             "from": null,
             "to": "human:parity"
           },
-          "id": "<ID-31>",
+          "id": "<ID-32>",
           "schema_version": 1,
           "task_id": "<ID-9>",
           "ts": "<TS>",
@@ -623,7 +636,7 @@
             "reason": "straight to work",
             "to": "in_progress"
           },
-          "id": "<ID-32>",
+          "id": "<ID-33>",
           "provenance": {
             "reason": "straight to work"
           },
@@ -638,7 +651,7 @@
             "body": "Multi-paragraph review.\n\nSecond paragraph with `code`.",
             "role": "review"
           },
-          "id": "<ID-33>",
+          "id": "<ID-34>",
           "schema_version": 1,
           "task_id": "<ID-9>",
           "ts": "<TS>",
@@ -650,7 +663,7 @@
             "from": "in_progress",
             "to": "review"
           },
-          "id": "<ID-34>",
+          "id": "<ID-35>",
           "schema_version": 1,
           "task_id": "<ID-9>",
           "ts": "<TS>",
@@ -662,7 +675,7 @@
             "artifact_id": "<ID-12>",
             "role": "review"
           },
-          "id": "<ID-35>",
+          "id": "<ID-36>",
           "schema_version": 1,
           "task_id": "<ID-9>",
           "ts": "<TS>",
@@ -674,7 +687,7 @@
             "from": "review",
             "to": "done"
           },
-          "id": "<ID-36>",
+          "id": "<ID-37>",
           "schema_version": 1,
           "task_id": "<ID-9>",
           "ts": "<TS>",
@@ -905,7 +918,7 @@
         "done_at": "<TS>",
         "evidence_refs": [
           {
-            "id": "<ID-27>",
+            "id": "<ID-28>",
             "role": "review",
             "source_type": "comment"
           },
@@ -916,7 +929,7 @@
           }
         ],
         "id": "<ID-8>",
-        "last_event_id": "<ID-30>",
+        "last_event_id": "<ID-31>",
         "last_status_changed_at": "<TS>",
         "linked_files": [],
         "priority": "medium",
@@ -946,7 +959,7 @@
         "done_at": "<TS>",
         "evidence_refs": [
           {
-            "id": "<ID-33>",
+            "id": "<ID-34>",
             "role": "review",
             "source_type": "comment"
           },
@@ -957,7 +970,7 @@
           }
         ],
         "id": "<ID-9>",
-        "last_event_id": "<ID-36>",
+        "last_event_id": "<ID-37>",
         "last_status_changed_at": "<TS>",
         "linked_files": [],
         "priority": "medium",
@@ -1280,6 +1293,26 @@
       "stdout": {
         "lines": [
           "Recorded x_deploy on <ID-1>"
+        ]
+      }
+    },
+    {
+      "args": [
+        "event",
+        "PAR-1",
+        "x_payload",
+        "--data",
+        "{\"type\": \"user\", \"ts\": \"<TS>\", \"origin\": \"user-data\"}",
+        "--actor",
+        "agent:worker"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Recorded x_payload on <ID-1>"
         ]
       }
     },

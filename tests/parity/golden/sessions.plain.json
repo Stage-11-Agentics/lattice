@@ -1204,7 +1204,7 @@
       },
       "stdout": {
         "lines": [
-          "Acquired 'lock-s' (expires <REMAINING>)"
+          "Acquired 'lock-s' (expires 5m)"
         ]
       }
     },

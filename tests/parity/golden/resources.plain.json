@@ -744,7 +744,7 @@
       },
       "stdout": {
         "lines": [
-          "Acquired 'lock-a' (expires <REMAINING>)"
+          "Acquired 'lock-a' (expires 10m)"
         ]
       }
     },
@@ -762,7 +762,7 @@
       },
       "stdout": {
         "lines": [
-          "Acquired 'lock-a' (expires <REMAINING>)"
+          "Acquired 'lock-a' (expires 10m)"
         ]
       }
     },
@@ -777,7 +777,7 @@
       "exit_code": 1,
       "stderr": {
         "lines": [
-          "Error: Resource 'lock-a' is not available. Held by agent:worker (<ID-1>) since <AGO>, expires <REMAINING>"
+          "Error: Resource 'lock-a' is not available. Held by agent:worker (<ID-1>) since 0s ago, expires 10m"
         ]
       },
       "stdout": {
@@ -889,7 +889,7 @@
       },
       "stdout": {
         "lines": [
-          "Acquired 'lock-a' (expires <REMAINING>)"
+          "Acquired 'lock-a' (expires 10m)"
         ]
       }
     },
@@ -967,8 +967,29 @@
       },
       "stdout": {
         "lines": [
-          "Acquired 'lock-b' (expires <REMAINING>)"
+          "Acquired 'lock-b' (expires 5m)"
         ]
+      }
+    },
+    {
+      "args": [
+        "resource",
+        "acquire",
+        "lock-b",
+        "--wait",
+        "--timeout",
+        "0",
+        "--actor",
+        "agent:other"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Timed out waiting for resource 'lock-b' after 0s."
+        ]
+      },
+      "stdout": {
+        "lines": []
       }
     },
     {

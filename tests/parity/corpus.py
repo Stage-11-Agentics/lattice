@@ -3,9 +3,10 @@
 Each scenario runs on a fresh ``lattice init --project-code PAR`` board (auto-review
 disabled in config), once plain and once with ``--json`` on every command that
 has it (``record.py``). Together the scenarios exercise every board-writing
-command of ``docs/hosted/SPEC.md`` §3.3 except ``code-review`` / ``plan-review``
-(they spawn agents; ``tests/fixtures/fake_agent.py`` covers them), every
-rejection code of SPEC §3.1 the CLI emits today (``REQUIRED_CODES``),
+command of ``docs/hosted/SPEC.md`` §3.3 except the review runs of ``code-review``
+/ ``plan-review`` (their rejections are covered, including a failed agent run
+through ``tests/fixtures/fake_agent.py``), every rejection code of SPEC §3.1 the
+CLI emits today (``REQUIRED_CODES``),
 ``status --force --reason``, ``--name`` session actors, the dashboard settings
 POST, and board hooks (the sentinel scenario).
 
@@ -15,7 +16,12 @@ step runs so the same step works in both modes:
 - ``<<root>>``: the board's project root (a temp dir);
 - ``<<task:PAR-1>>``: the task's ULID;
 - ``<<event:PAR-1:comment_added:0>>``: the ID of the task's first event of that type;
-- ``<<artifact:PAR-1:0>>``: the ID of the task's first attached artifact.
+- ``<<artifact:PAR-1:0>>``: the ID of the task's first attached artifact;
+- ``<<python>>``, ``<<repo>>``, ``<<path>>``: the running interpreter, the
+  repository root, and the caller's ``PATH`` (for agent shims).
+
+Every scenario runs under a frozen clock (``record.FROZEN_NOW``), so output that
+renders durations against the clock is deterministic without normalizing it.
 
 Scenario names are the golden file stems (``golden/<name>.<plain|json>.json``).
 Adding a step changes the golden; re-record with ``python -m tests.parity.record``.
@@ -43,6 +49,14 @@ class WriteFile:
 
     path: str
     text: str
+    executable: bool = False
+
+
+@dataclass(frozen=True)
+class Git:
+    """Run ``git <args>`` in the board root, with fixed identity and dates (stable SHAs)."""
+
+    args: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -58,7 +72,7 @@ class DashboardPost:
     body: Any
 
 
-Step = Cli | WriteFile | DeleteFile | DashboardPost
+Step = Cli | WriteFile | DeleteFile | Git | DashboardPost
 
 
 @dataclass(frozen=True)
@@ -465,6 +479,14 @@ ARTIFACTS = Scenario(
         c("criterion", "add", "PAR-1", "Report exists", "--id", "report", *H),
         c("attach", "PAR-1", "--inline", "evidence", "--criterion", "report", *A),
         c("event", "PAR-1", "x_deploy", "--data", '{"env": "staging", "n": 1}', *A),
+        c(
+            "event",
+            "PAR-1",
+            "x_payload",
+            "--data",
+            '{"type": "user", "ts": "2026-01-01T00:00:00Z", "origin": "user-data"}',
+            *A,
+        ),
         c("event", "PAR-1", "x_deploy", "--id", "ev_01JCCCCCCCCCCCCCCCCCCCCCCC", *A),
         c("event", "PAR-1", "x_deploy", "--id", "ev_01JCCCCCCCCCCCCCCCCCCCCCCC", *A),
         c("event", "PAR-1", "status_changed", *A),
@@ -577,6 +599,7 @@ RESOURCES = Scenario(
         c("resource", "acquire", "auto-made", "--wait", "--timeout", "1", *A),
         c("resource", "create", "lock-b", *H),
         c("resource", "acquire", "lock-b", "--wait", "--timeout", "1", *A),
+        c("resource", "acquire", "lock-b", "--wait", "--timeout", "0", *B),
         c("resource", "acquire", "stale-lock", *A),
         c("resource", "heartbeat", "stale-lock", *A),
         c("resource", "acquire", "stale-lock", *B),
@@ -679,6 +702,8 @@ REJECTIONS = Scenario(
         c("status", "PAR-1", "in_planning", "--actor", "agent:"),
         c("status", "PAR-1", "in_planning", "--on-behalf-of", "bad", *H),
         c("status", "PAR-1", "in_planning", "--triggered-by", "not-an-event", *H),
+        c("code-review", "PAR-1", *H),
+        c("code-review", "PAR-1", "--worktree", "<<root>>/empty", *H),
     ),
 )
 
@@ -731,6 +756,48 @@ HOOKS = Scenario(
     ),
 )
 
+REVIEW_STATE_HELD = (
+    '{"agents": [], "auto_fired": false, "mode": "single", "review_type": "plan-review", '
+    '"started_at": "2026-06-01T11:59:00Z", "started_by_pid": 1, "task_id": "<<task:PAR-1>>"}\n'
+)
+
+# A stand-in `claude` first on PATH: the existing fake agent, told to fail.
+FAILING_AGENT = """#!/bin/sh
+LATTICE_FAKE_BEHAVIOR=fail LATTICE_AGENT_OUTPUT=/dev/null exec "<<python>>" \\
+  "<<repo>>/tests/fixtures/fake_agent.py"
+"""
+
+REVIEWS = Scenario(
+    name="reviews",
+    description="code-review / plan-review rejections: in-flight, failed agent, empty diff",
+    steps=(
+        c("create", "Reviewed task", *H),
+        plan("PAR-1"),
+        # pid 1 is always alive, so the recorded holder is a live other process.
+        WriteFile(".lattice/review_state/<<task:PAR-1>>.json", REVIEW_STATE_HELD),
+        c("plan-review", "PAR-1", "--mode", "single", *A),
+        c("plan-review", "PAR-1", "--mode", "inline", *A),
+        c("code-review", "PAR-1", "--mode", "inline", *A),
+        DeleteFile(".lattice/review_state/<<task:PAR-1>>.json"),
+        WriteFile("bin/claude", FAILING_AGENT, executable=True),
+        c(
+            "plan-review",
+            "PAR-1",
+            "--mode",
+            "single",
+            *A,
+            env={"PATH": "<<root>>/bin:<<path>>"},
+        ),
+        Git(("init", "-q", "-b", "main")),
+        WriteFile("src.txt", "base\n"),
+        Git(("add", "src.txt")),
+        Git(("commit", "-q", "-m", "base")),
+        c("code-review", "PAR-1", "--base", "main", "--head", "main", *A),
+        c("code-review", "PAR-1", "--head", "no-such-branch", *A),
+        c("code-review", "PAR-1", "--base", "no-such-base", "--head", "main", *A),
+    ),
+)
+
 DASHBOARD = Scenario(
     name="dashboard_settings",
     description="the dashboard settings POST through the in-process dashboard server",
@@ -777,6 +844,9 @@ MAINTENANCE = Scenario(
         c("backfill-ids"),
         c("migrate", "needs-human", "--dry-run"),
         c("migrate", "needs-human", *H),
+        WriteFile(".lattice/events/<<task:PAR-2>>.jsonl", "{not json\n"),
+        c("rebuild", "<<task:PAR-2>>"),
+        c("rebuild", "--all"),
     ),
 )
 
@@ -797,15 +867,26 @@ SCENARIOS: tuple[Scenario, ...] = (
     PROJECT_CODES,
     REJECTIONS,
     HOOKS,
+    REVIEWS,
     DASHBOARD,
     MAINTENANCE,
 )
 
-# Every rejection code of SPEC §3.1 that the CLI emits today and that a
-# corpus-able command can reach (review-only client codes excluded: they need
-# a spawned agent or a real git diff). test_local_parity asserts each appears.
+# Every rejection code of SPEC §3.1 that the CLI emits today. test_local_parity
+# asserts each appears in the goldens. One is left out because no CLI input can
+# reach it deterministically:
+# - HEAD_SHA_UNKNOWN: the head ref is verified with the same rev-parse before its
+#   SHA is read, so only a ref moving mid-command reaches it. Covered by
+#   TestFailedReviewIsVisible::test_unknown_head_sha_fails_before_writing_an_artifact
+#   in tests/test_cli/test_review_cmds.py (patched resolve_diff).
 REQUIRED_CODES = frozenset(
     {
+        "TIMEOUT",
+        "REBUILD_ERROR",
+        "REVIEW_IN_FLIGHT",
+        "REVIEW_FAILED",
+        "DIFF_RESOLUTION_FAILED",
+        "EMPTY_DIFF",
         "VALIDATION_ERROR",
         "MISSING_ARGS",
         "INVALID_ID",

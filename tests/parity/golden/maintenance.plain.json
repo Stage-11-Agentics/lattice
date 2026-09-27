@@ -208,19 +208,7 @@
     "events/<ID-2>.jsonl": {
       "jsonl": [
         {
-          "actor": "human:parity",
-          "data": {
-            "priority": "medium",
-            "short_id": "PAR-2",
-            "status": "backlog",
-            "title": "Maintained two",
-            "type": "task"
-          },
-          "id": "<ID-5>",
-          "schema_version": 1,
-          "task_id": "<ID-2>",
-          "ts": "<TS>",
-          "type": "task_created"
+          "unparsed": "{not json"
         }
       ]
     },
@@ -583,6 +571,39 @@
         "lines": [
           "Nothing to migrate — instance already uses the needs_human flag."
         ]
+      }
+    },
+    {
+      "write_file": ".lattice/events/<ID-2>.jsonl"
+    },
+    {
+      "args": [
+        "rebuild",
+        "<ID-2>"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: <ROOT>/.lattice/events/<ID-2>.jsonl: invalid JSONL record: Expecting property name enclosed in double quotes: line 1 column 2 (char 1) (line 1)"
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "rebuild",
+        "--all"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Rebuild refused malformed or divergent authority: Authoritative log error for <ID-2>: <ROOT>/.lattice/events/<ID-2>.jsonl: invalid JSONL record: Expecting property name enclosed in double quotes: line 1 column 2 (char 1) (line 1). Rebuild will refuse to overwrite data; manual recovery is required.; <ID-2>: no valid authoritative event log"
+        ]
+      },
+      "stdout": {
+        "lines": []
       }
     }
   ]

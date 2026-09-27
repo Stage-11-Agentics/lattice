@@ -21,7 +21,7 @@
         "default_priority": "medium",
         "default_status": "backlog",
         "done_display": "grouped",
-        "instance_id": "<ID-2>",
+        "instance_id": "<ID-3>",
         "plan_approval": "auto",
         "plan_review_mode": "single",
         "project_code": "PAR",
@@ -183,44 +183,58 @@
             "priority": "medium",
             "short_id": "PAR-1",
             "status": "backlog",
-            "title": "Waited on",
+            "title": "Reviewed task",
             "type": "task"
           },
-          "id": "<ID-3>",
+          "id": "<ID-2>",
           "schema_version": 1,
           "task_id": "<ID-1>",
           "ts": "<TS>",
           "type": "task_created"
         },
         {
-          "actor": "human:parity",
+          "actor": "agent:worker",
           "data": {
-            "from": null,
-            "to": "human:parity"
+            "body": "Automated review failed: plan-review — Agent 'claude': exited with code 1. fake_agent: simulated failure\n\nNo review artifact was produced, so this task has NOT been reviewed.\nRe-run with: lattice plan-review <ID-1>"
           },
           "id": "<ID-4>",
-          "provenance": {
-            "triggered_by": "not-an-event"
-          },
           "schema_version": 1,
           "task_id": "<ID-1>",
           "ts": "<TS>",
-          "type": "assignment_changed"
+          "type": "comment_added"
         },
         {
-          "actor": "human:parity",
+          "actor": "agent:worker",
           "data": {
-            "from": "backlog",
-            "to": "in_planning"
+            "body": "Automated review failed: code-review — Diff for 'main...main' is empty — no changes on this range. The head is most likely already merged into the base (or identical to it); pass --base <merge-base> to review it anyway. If the code under review lives elsewhere, pass --base/--head to name the range, or --worktree <path> to diff from that checkout. Refusing to review an empty diff.\n\nNo review artifact was produced, so this task has NOT been reviewed.\nRe-run with: lattice code-review <ID-1>"
           },
           "id": "<ID-5>",
-          "provenance": {
-            "triggered_by": "not-an-event"
-          },
           "schema_version": 1,
           "task_id": "<ID-1>",
           "ts": "<TS>",
-          "type": "status_changed"
+          "type": "comment_added"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "body": "Automated review failed: code-review — Head ref 'no-such-branch' does not resolve in <ROOT>. Check the ref name.\n\nNo review artifact was produced, so this task has NOT been reviewed.\nRe-run with: lattice code-review <ID-1>"
+          },
+          "id": "<ID-6>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "comment_added"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "body": "Automated review failed: code-review — Base ref 'no-such-base' does not resolve in <ROOT>. Check the ref name.\n\nNo review artifact was produced, so this task has NOT been reviewed.\nRe-run with: lattice code-review <ID-1>"
+          },
+          "id": "<ID-7>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "comment_added"
         }
       ]
     },
@@ -232,10 +246,10 @@
             "priority": "medium",
             "short_id": "PAR-1",
             "status": "backlog",
-            "title": "Waited on",
+            "title": "Reviewed task",
             "type": "task"
           },
-          "id": "<ID-3>",
+          "id": "<ID-2>",
           "schema_version": 1,
           "task_id": "<ID-1>",
           "ts": "<TS>",
@@ -256,15 +270,19 @@
     },
     "plans/<ID-1>.md": {
       "lines": [
-        "# PAR-1: Waited on"
+        "# Plan",
+        "",
+        "## Approach",
+        "",
+        "- Do the work in one careful pass."
       ]
     },
     "tasks/<ID-1>.json": {
       "json": {
         "acceptance_criteria": [],
-        "assigned_to": "human:parity",
+        "assigned_to": null,
         "branch_links": [],
-        "comment_count": 0,
+        "comment_count": 4,
         "complexity": null,
         "created_at": "<TS>",
         "created_by": "human:parity",
@@ -273,7 +291,7 @@
         "done_at": null,
         "evidence_refs": [],
         "id": "<ID-1>",
-        "last_event_id": "<ID-5>",
+        "last_event_id": "<ID-7>",
         "last_status_changed_at": "<TS>",
         "linked_files": [],
         "priority": "medium",
@@ -281,18 +299,18 @@
         "reopened_count": 0,
         "schema_version": 1,
         "short_id": "PAR-1",
-        "status": "in_planning",
+        "status": "backlog",
         "tags": null,
-        "title": "Waited on",
+        "title": "Reviewed task",
         "type": "task",
         "updated_at": "<TS>",
         "urgency": null
       }
     }
   },
-  "description": "rejection codes not reached elsewhere: uninitialized root, wait, surfaces",
-  "mode": "plain",
-  "scenario": "rejections",
+  "description": "code-review / plan-review rejections: in-flight, failed agent, empty diff",
+  "mode": "json",
+  "scenario": "reviews",
   "steps": [
     {
       "args": [
@@ -322,205 +340,249 @@
       }
     },
     {
-      "write_file": "empty/.keep"
-    },
-    {
       "args": [
         "create",
-        "Nowhere",
+        "Reviewed task",
         "--actor",
-        "human:parity"
-      ],
-      "exit_code": 1,
-      "stderr": {
-        "lines": [
-          "Error: LATTICE_ROOT points to a directory with no .lattice/ inside: <ROOT>/empty"
-        ]
-      },
-      "stdout": {
-        "lines": []
-      }
-    },
-    {
-      "args": [
-        "status",
-        "PAR-1",
-        "planned",
-        "--actor",
-        "human:parity"
-      ],
-      "exit_code": 1,
-      "stderr": {
-        "lines": [
-          "Error: LATTICE_ROOT points to a directory with no .lattice/ inside: <ROOT>/empty"
-        ]
-      },
-      "stdout": {
-        "lines": []
-      }
-    },
-    {
-      "args": [
-        "create",
-        "Waited on",
-        "--actor",
-        "human:parity"
+        "human:parity",
+        "--json"
       ],
       "exit_code": 0,
       "stderr": {
         "lines": []
       },
       "stdout": {
-        "lines": [
-          "Created task PAR-1 (<ID-1>) \"Waited on\"",
-          "  status: backlog  priority: medium  type: task"
-        ]
+        "json": {
+          "data": {
+            "acceptance_criteria": [],
+            "assigned_to": null,
+            "branch_links": [],
+            "comment_count": 0,
+            "complexity": null,
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "custom_fields": {},
+            "description": null,
+            "done_at": null,
+            "evidence_refs": [],
+            "id": "<ID-1>",
+            "last_event_id": "<ID-2>",
+            "last_status_changed_at": "<TS>",
+            "linked_files": [],
+            "priority": "medium",
+            "relationships_out": [],
+            "reopened_count": 0,
+            "schema_version": 1,
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "tags": null,
+            "title": "Reviewed task",
+            "type": "task",
+            "updated_at": "<TS>",
+            "urgency": null
+          },
+          "ok": true
+        }
       }
     },
     {
-      "args": [
-        "wait",
-        ",",
-        "--status",
-        "done"
-      ],
-      "exit_code": 1,
-      "stderr": {
-        "lines": [
-          "Error: No task IDs provided."
-        ]
-      },
-      "stdout": {
-        "lines": []
-      }
+      "write_file": ".lattice/plans/<ID-1>.md"
+    },
+    {
+      "write_file": ".lattice/review_state/<ID-1>.json"
     },
     {
       "args": [
-        "wait",
-        "NOPE-1",
-        "--status",
-        "done"
-      ],
-      "exit_code": 1,
-      "stderr": {
-        "lines": [
-          "Error: Short ID 'NOPE-1' not found."
-        ]
-      },
-      "stdout": {
-        "lines": []
-      }
-    },
-    {
-      "args": [
-        "claim",
+        "plan-review",
         "PAR-1",
+        "--mode",
+        "single",
         "--actor",
-        "human:parity"
+        "agent:worker",
+        "--json"
       ],
       "exit_code": 1,
       "stderr": {
-        "lines": [
-          "Error: No surface specified. Provide --surface or run inside c11 (C11_SURFACE_ID must be set)."
-        ]
+        "lines": []
       },
       "stdout": {
-        "lines": []
+        "json": {
+          "error": {
+            "code": "REVIEW_IN_FLIGHT",
+            "message": "A review is already in flight for this task (pid 1, started <TS>, auto_fired=False).  Use 'lattice review-status <ID-1>' to monitor, or wait for it to complete."
+          },
+          "ok": false
+        }
       }
     },
     {
       "args": [
-        "status",
+        "plan-review",
         "PAR-1",
-        "in_planning",
+        "--mode",
+        "inline",
         "--actor",
-        "agent:"
+        "agent:worker",
+        "--json"
       ],
       "exit_code": 1,
       "stderr": {
-        "lines": [
-          "Error: Invalid actor format: 'agent:'. Expected prefix:identifier (e.g., human:atin, agent:claude)."
-        ]
-      },
-      "stdout": {
-        "lines": []
-      }
-    },
-    {
-      "args": [
-        "status",
-        "PAR-1",
-        "in_planning",
-        "--on-behalf-of",
-        "bad",
-        "--actor",
-        "human:parity"
-      ],
-      "exit_code": 1,
-      "stderr": {
-        "lines": [
-          "Error: Invalid actor format: 'bad'. Expected prefix:identifier (e.g., human:atin, agent:claude)."
-        ]
-      },
-      "stdout": {
-        "lines": []
-      }
-    },
-    {
-      "args": [
-        "status",
-        "PAR-1",
-        "in_planning",
-        "--triggered-by",
-        "not-an-event",
-        "--actor",
-        "human:parity"
-      ],
-      "exit_code": 0,
-      "stderr": {
         "lines": []
       },
       "stdout": {
-        "lines": [
-          "Status: backlog -> in_planning (PAR-1)  (auto-assigned to human:parity)",
-          "  Next: write the plan in plans/<ID-1>.md, then move to planned."
-        ]
+        "json": {
+          "error": {
+            "code": "REVIEW_IN_FLIGHT",
+            "message": "A review is already in flight for this task (pid 1, started <TS>, auto_fired=False)."
+          },
+          "ok": false
+        }
       }
     },
     {
       "args": [
         "code-review",
         "PAR-1",
+        "--mode",
+        "inline",
         "--actor",
-        "human:parity"
+        "agent:worker",
+        "--json"
       ],
       "exit_code": 1,
       "stderr": {
-        "lines": [
-          "Error: Not a git worktree: <ROOT>"
-        ]
+        "lines": []
       },
       "stdout": {
+        "json": {
+          "error": {
+            "code": "REVIEW_IN_FLIGHT",
+            "message": "A review is already in flight for this task (pid 1, started <TS>, auto_fired=False)."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "delete_file": ".lattice/review_state/<ID-1>.json"
+    },
+    {
+      "write_file": "bin/claude"
+    },
+    {
+      "args": [
+        "plan-review",
+        "PAR-1",
+        "--mode",
+        "single",
+        "--actor",
+        "agent:worker",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
         "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Running plan-review (single mode)...",
+          "{",
+          "  \"error\": {",
+          "    \"code\": \"REVIEW_FAILED\",",
+          "    \"message\": \"Review failed: Agent 'claude': exited with code 1. fake_agent: simulated failure\"",
+          "  },",
+          "  \"ok\": false",
+          "}",
+          ""
+        ]
+      }
+    },
+    {
+      "git": "init -q -b main"
+    },
+    {
+      "write_file": "src.txt"
+    },
+    {
+      "git": "add src.txt"
+    },
+    {
+      "git": "commit -q -m base"
+    },
+    {
+      "args": [
+        "code-review",
+        "PAR-1",
+        "--base",
+        "main",
+        "--head",
+        "main",
+        "--actor",
+        "agent:worker",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "EMPTY_DIFF",
+            "message": "Diff for 'main...main' is empty — no changes on this range. The head is most likely already merged into the base (or identical to it); pass --base <merge-base> to review it anyway. If the code under review lives elsewhere, pass --base/--head to name the range, or --worktree <path> to diff from that checkout. Refusing to review an empty diff."
+          },
+          "ok": false
+        }
       }
     },
     {
       "args": [
         "code-review",
         "PAR-1",
-        "--worktree",
-        "<ROOT>/empty",
+        "--head",
+        "no-such-branch",
         "--actor",
-        "human:parity"
+        "agent:worker",
+        "--json"
       ],
       "exit_code": 1,
       "stderr": {
-        "lines": [
-          "Error: Not a git worktree: <ROOT>/empty"
-        ]
+        "lines": []
       },
       "stdout": {
+        "json": {
+          "error": {
+            "code": "HEAD_REF_UNRESOLVABLE",
+            "message": "Head ref 'no-such-branch' does not resolve in <ROOT>. Check the ref name."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "code-review",
+        "PAR-1",
+        "--base",
+        "no-such-base",
+        "--head",
+        "main",
+        "--actor",
+        "agent:worker",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
         "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "BASE_REF_UNRESOLVABLE",
+            "message": "Base ref 'no-such-base' does not resolve in <ROOT>. Check the ref name."
+          },
+          "ok": false
+        }
       }
     }
   ]

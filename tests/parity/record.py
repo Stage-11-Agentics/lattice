@@ -10,14 +10,22 @@ Normalization is applied identically when recording and when comparing:
 
 - JSON and JSONL are parsed and kept as objects (the golden is re-dumped with
   sorted keys), so key order and indentation never matter;
-- the ``origin`` key is dropped from events and session files (v2 adds it);
+- the top-level ``origin`` key (v2 adds it) is dropped at known event
+  boundaries only: each record of a board ``.jsonl`` event log, a session file
+  under ``sessions/``, the hook sentinel's stdin event, and the ``data`` event
+  (or list of events) printed by ``EVENT_DATA_COMMANDS`` under ``--json``. It
+  is never stripped from an arbitrary nested object, so user data keeps it;
 - each distinct ULID-shaped token (``task_…``, ``ev_…``, ``art_…``, ``res_…``,
   ``inst_…``, or bare) becomes ``<ID-n>`` in first-seen order, scanning the
   steps in order and then the board files in sorted path order;
 - RFC 3339 timestamps become ``<TS>``;
-- the temporary board root becomes ``<ROOT>``;
-- relative ages in resource messages (``3s ago``, ``expires 10m``) become
-  ``<AGO>`` / ``expires <REMAINING>``, since they move with the wall clock.
+- the temporary board root becomes ``<ROOT>``.
+
+Nothing else is normalized. Output that renders a duration against the clock
+(resource ``since 3s ago`` / ``expires 10m``) is made deterministic by a frozen
+scenario clock instead: while a scenario runs, every name in
+``FROZEN_CLOCK_TARGETS`` returns ``FROZEN_NOW``. Code that moves the wall-clock
+read these durations use must keep it patchable there (add its name).
 
 Record (rewrite) goldens from the current code::
 
@@ -36,6 +44,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -53,6 +62,7 @@ from tests.parity.corpus import (
     Cli,
     DashboardPost,
     DeleteFile,
+    Git,
     Scenario,
     WriteFile,
 )
@@ -80,10 +90,31 @@ DURABLE_FILES = ("config.json", "ids.json", "context.md", ".gitignore")
 ULID_RE = re.compile(r"(?<![0-9A-Za-z])(?:[a-z]+_)?([0-7][0-9A-HJKMNP-TV-Z]{25})(?![0-9A-Za-z])")
 TS_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})")
 PLACEHOLDER_RE = re.compile(r"<<([^<>]+)>>")
-# Relative ages printed by resource commands ("since 0s ago", "expires 10m") depend on
-# the wall clock between two commands, so they are normalized like timestamps.
-AGO_RE = re.compile(r"\b\d+[smh] ago\b")
-REMAINING_RE = re.compile(r"\bexpires \d+[smh]\b")
+
+# Commands whose --json ``data`` is an event (or a list of events).
+EVENT_DATA_COMMANDS = frozenset({"event", "archive", "unarchive"})
+
+# The frozen scenario clock: the wall-clock reads resource code uses for
+# acquired/expires times and for rendering "since 3s ago" / "expires 10m" (and,
+# through core.events.utc_now, every event timestamp). Other code still reads the
+# real clock (archive --stale's cutoff, review-status elapsed times). FROZEN_NOW
+# lies after any real run date, so those comparisons see a just-written event as
+# recent, exactly as an unfrozen run does.
+FROZEN_NOW = "2100-01-01T00:00:00Z"
+FROZEN_CLOCK_TARGETS = ("lattice.core.events.utc_now", "lattice.core.resources._utc_now")
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+# Fixed identity and dates, so commits made by Git steps have stable SHAs.
+GIT_ENV = {
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_AUTHOR_NAME": "Parity",
+    "GIT_AUTHOR_EMAIL": "parity@example.invalid",
+    "GIT_COMMITTER_NAME": "Parity",
+    "GIT_COMMITTER_EMAIL": "parity@example.invalid",
+    "GIT_AUTHOR_DATE": "2026-06-01T12:00:00+00:00",
+    "GIT_COMMITTER_DATE": "2026-06-01T12:00:00+00:00",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -103,9 +134,7 @@ class Normalizer:
         for root in self._roots:
             value = value.replace(root, "<ROOT>")
         value = ULID_RE.sub(self._id, value)
-        value = TS_RE.sub("<TS>", value)
-        value = AGO_RE.sub("<AGO>", value)
-        return REMAINING_RE.sub("expires <REMAINING>", value)
+        return TS_RE.sub("<TS>", value)
 
     def _id(self, match: re.Match[str]) -> str:
         body = match.group(1)
@@ -116,7 +145,6 @@ class Normalizer:
     def obj(self, value: Any) -> Any:
         """Normalize a parsed JSON value, visiting object keys in sorted order."""
         if isinstance(value, dict):
-            value = _drop_origin(value)
             out: dict[str, Any] = {}
             for key in sorted(value):
                 norm_key = self.text(key)
@@ -128,14 +156,18 @@ class Normalizer:
             return self.text(value)
         return value
 
-    def output(self, raw: str) -> dict[str, Any]:
+    def output(self, raw: str, *, command: str | None = None) -> dict[str, Any]:
         """Normalize a stdout/stderr stream: parsed JSON when it is JSON, else lines."""
         stripped = raw.strip()
         if stripped[:1] in ("{", "["):
             try:
-                return {"json": self.obj(json.loads(stripped))}
+                parsed = json.loads(stripped)
             except ValueError:
                 pass
+            else:
+                if command in EVENT_DATA_COMMANDS:
+                    parsed = _strip_envelope_events(parsed)
+                return {"json": self.obj(parsed)}
         return {"lines": [self.text(line) for line in raw.splitlines()]}
 
     def sentinel_line(self, line: str) -> Any:
@@ -181,11 +213,16 @@ def _strip_origin(value: Any) -> Any:
     return value
 
 
-def _drop_origin(value: dict) -> dict:
-    """Drop ``origin`` from an event-shaped object wherever it appears."""
-    if "origin" in value and "type" in value and "ts" in value:
-        return {k: v for k, v in value.items() if k != "origin"}
-    return value
+def _strip_envelope_events(envelope: Any) -> Any:
+    """Drop top-level ``origin`` from the event(s) an ``EVENT_DATA_COMMANDS`` envelope carries."""
+    if not isinstance(envelope, dict) or "data" not in envelope:
+        return envelope
+    data = envelope["data"]
+    if isinstance(data, list):
+        data = [_strip_origin(item) for item in data]
+    else:
+        data = _strip_origin(data)
+    return {**envelope, "data": data}
 
 
 # ---------------------------------------------------------------------------
@@ -234,6 +271,8 @@ def _base_env(root: Path) -> dict[str, str | None]:
             "XDG_DATA_HOME": str(home / ".local" / "share"),
             "XDG_CACHE_HOME": str(home / ".cache"),
             "TZ": "UTC",
+            # git never looks above the board root, wherever the temp dir lives.
+            "GIT_CEILING_DIRECTORIES": str(root.parent),
         }
     )
     return env
@@ -291,6 +330,12 @@ class _Board:
         kind, _, rest = token.partition(":")
         if kind == "root":
             return str(self.root)
+        if kind == "python":
+            return sys.executable
+        if kind == "repo":
+            return str(REPO_ROOT)
+        if kind == "path":
+            return os.environ.get("PATH", "")
         if kind == "task":
             return self.task_id(rest)
         if kind == "event":
@@ -352,33 +397,56 @@ def run_scenario(scenario: Scenario, root: Path, *, mode: str) -> dict[str, Any]
             entry["exception"] = f"{type(exc).__name__}: {exc}"
         return entry
 
-    # Step 0: a fresh board, then the scenario's config patch (auto-review off always).
-    raw_steps.append(invoke(init_args(root)))
-    _patch_config(board.lattice_dir, scenario.config, root)
-
-    for step in scenario.steps:
-        if isinstance(step, Cli):
-            if mode == "json" and step.plain_only:
-                continue
-            args = [board.expand(a) for a in step.args]
-            if mode == "json" and _json_capable(args):
-                args.append("--json")
-            step_env = {k: board.expand(v) for k, v in step.env.items()} if step.env else None
-            raw_steps.append(invoke(args, stdin=step.stdin, step_env=step_env))
-        elif isinstance(step, WriteFile):
-            path = root / board.expand(step.path)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(board.expand(step.text), encoding="utf-8")
-            raw_steps.append({"write_file": board.expand(step.path)})
-        elif isinstance(step, DeleteFile):
-            (root / board.expand(step.path)).unlink()
-            raw_steps.append({"delete_file": board.expand(step.path)})
-        elif isinstance(step, DashboardPost):
-            raw_steps.append(_dashboard_post(board.lattice_dir, step.path, step.body, env))
-        else:  # pragma: no cover - corpus authoring error
-            raise TypeError(f"unknown step {step!r}")
-
+    with _frozen_clock():
+        # Step 0: a fresh board, then the scenario's config patch (auto-review off always).
+        raw_steps.append(invoke(init_args(root)))
+        _patch_config(board.lattice_dir, scenario.config, root)
+        for step in scenario.steps:
+            raw_steps.extend(_run_step(step, mode, root, board, env, invoke))
     return _normalize_capture(scenario, mode, root, raw_steps)
+
+
+@contextlib.contextmanager
+def _frozen_clock() -> Iterator[None]:
+    from unittest import mock
+
+    with contextlib.ExitStack() as stack:
+        for target in FROZEN_CLOCK_TARGETS:
+            stack.enter_context(mock.patch(target, lambda: FROZEN_NOW))
+        yield
+
+
+def _run_step(step, mode, root, board, env, invoke) -> list[dict[str, Any]]:  # noqa: ANN001
+    if isinstance(step, Cli):
+        if mode == "json" and step.plain_only:
+            return []
+        args = [board.expand(a) for a in step.args]
+        if mode == "json" and _json_capable(args):
+            args.append("--json")
+        step_env = {k: board.expand(v) for k, v in step.env.items()} if step.env else None
+        return [invoke(args, stdin=step.stdin, step_env=step_env)]
+    if isinstance(step, WriteFile):
+        path = root / board.expand(step.path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(board.expand(step.text), encoding="utf-8")
+        if step.executable:
+            path.chmod(0o755)
+        return [{"write_file": board.expand(step.path)}]
+    if isinstance(step, DeleteFile):
+        (root / board.expand(step.path)).unlink()
+        return [{"delete_file": board.expand(step.path)}]
+    if isinstance(step, Git):
+        args = [board.expand(a) for a in step.args]
+        git_env = {k: v for k, v in {**os.environ, **env, **GIT_ENV}.items() if v is not None}
+        proc = subprocess.run(
+            ["git", *args], cwd=root, env=git_env, capture_output=True, text=True, check=False
+        )
+        if proc.returncode != 0:  # pragma: no cover - corpus authoring error
+            raise RuntimeError(f"git {' '.join(args)} failed: {proc.stderr}")
+        return [{"git": " ".join(args)}]
+    if isinstance(step, DashboardPost):
+        return [_dashboard_post(board.lattice_dir, step.path, step.body, env)]
+    raise TypeError(f"unknown step {step!r}")  # pragma: no cover - corpus authoring error
 
 
 def _stderr(result: Any) -> str:
@@ -463,7 +531,7 @@ def _normalize_capture(
             step: dict[str, Any] = {
                 "args": [norm.text(a) for a in raw["args"]],
                 "exit_code": raw["exit_code"],
-                "stdout": norm.output(raw["stdout"]),
+                "stdout": norm.output(raw["stdout"], command=raw["args"][0]),
                 "stderr": norm.output(raw["stderr"]),
             }
             if "exception" in raw:

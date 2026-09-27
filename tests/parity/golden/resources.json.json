@@ -909,7 +909,7 @@
         "json": {
           "error": {
             "code": "RESOURCE_HELD",
-            "message": "Resource 'lock-a' is not available. Held by agent:worker (<ID-1>) since <AGO>, expires <REMAINING>"
+            "message": "Resource 'lock-a' is not available. Held by agent:worker (<ID-1>) since 0s ago, expires 10m"
           },
           "ok": false
         }
@@ -1253,6 +1253,32 @@
             "updated_at": "<TS>"
           },
           "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "resource",
+        "acquire",
+        "lock-b",
+        "--wait",
+        "--timeout",
+        "0",
+        "--actor",
+        "agent:other",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "TIMEOUT",
+            "message": "Timed out waiting for resource 'lock-b' after 0s."
+          },
+          "ok": false
         }
       }
     },

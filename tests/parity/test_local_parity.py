@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -59,6 +60,9 @@ def test_corpus_covers_every_rejection_code() -> None:
                 body = step.get(stream, {}).get("json")
                 if isinstance(body, dict) and body.get("ok") is False:
                     seen.add(body["error"]["code"])
+                # Some commands print progress before their JSON envelope.
+                for line in step.get(stream, {}).get("lines", []):
+                    seen.update(re.findall(r'"code": "([A-Z_]+)"', line))
     assert REQUIRED_CODES <= seen, f"codes never recorded: {sorted(REQUIRED_CODES - seen)}"
 
 

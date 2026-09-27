@@ -208,19 +208,7 @@
     "events/<ID-3>.jsonl": {
       "jsonl": [
         {
-          "actor": "human:parity",
-          "data": {
-            "priority": "medium",
-            "short_id": "PAR-2",
-            "status": "backlog",
-            "title": "Maintained two",
-            "type": "task"
-          },
-          "id": "<ID-4>",
-          "schema_version": 1,
-          "task_id": "<ID-3>",
-          "ts": "<TS>",
-          "type": "task_created"
+          "unparsed": "{not json"
         }
       ]
     },
@@ -710,6 +698,49 @@
             "tasks_migrated": []
           },
           "ok": true
+        }
+      }
+    },
+    {
+      "write_file": ".lattice/events/<ID-3>.jsonl"
+    },
+    {
+      "args": [
+        "rebuild",
+        "<ID-3>",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "REBUILD_ERROR",
+            "message": "<ROOT>/.lattice/events/<ID-3>.jsonl: invalid JSONL record: Expecting property name enclosed in double quotes: line 1 column 2 (char 1) (line 1)"
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "rebuild",
+        "--all",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "REBUILD_ERROR",
+            "message": "Rebuild refused malformed or divergent authority: Authoritative log error for <ID-3>: <ROOT>/.lattice/events/<ID-3>.jsonl: invalid JSONL record: Expecting property name enclosed in double quotes: line 1 column 2 (char 1) (line 1). Rebuild will refuse to overwrite data; manual recovery is required.; <ID-3>: no valid authoritative event log"
+          },
+          "ok": false
         }
       }
     }
