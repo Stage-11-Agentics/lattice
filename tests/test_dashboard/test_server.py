@@ -39,7 +39,7 @@ def _post(base_url: str, path: str, data: dict) -> tuple[int, dict | str]:
     req = Request(
         f"{base_url}{path}",
         data=payload,
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", "Origin": base_url},
         method="POST",
     )
     try:
@@ -66,7 +66,7 @@ def _post_raw(
     req = Request(
         f"{base_url}{path}",
         data=raw_bytes,
-        headers={"Content-Type": content_type},
+        headers={"Content-Type": content_type, "Origin": base_url},
         method="POST",
     )
     try:
@@ -488,7 +488,7 @@ class TestActivityEndpoint:
 
     def test_activity_same_second_ties_follow_log_within_task_and_id_across_tasks(self):
         """Same-second events of one task sort by log position, not by ULID."""
-        from lattice.dashboard.server import _sort_activity_newest_first
+        from lattice.dashboard.api import sort_activity_newest_first as _sort_activity_newest_first
 
         tied = "2025-02-01T00:00:00Z"
         # Task A's log: archived then unarchived, but archived holds the larger ID.
@@ -817,7 +817,8 @@ class TestPostTaskStatus:
         assert last_event["actor"] == "dashboard:web"
 
     def test_event_written_on_transition(self, dashboard_server):
-        """A status_changed event should be appended to the event log."""
+        """The move writes the CLI's events: entering active work unassigned
+        auto-assigns the mover first, then the status_changed event."""
         base_url, ld, ids = dashboard_server
         task_id = ids["backlog"]
 
@@ -835,7 +836,8 @@ class TestPostTaskStatus:
         )
 
         lines_after = events_path.read_text().strip().split("\n")
-        assert len(lines_after) == len(lines_before) + 1
+        assert len(lines_after) == len(lines_before) + 2
+        assert json.loads(lines_after[-2])["type"] == "assignment_changed"
 
         new_event = json.loads(lines_after[-1])
         assert new_event["type"] == "status_changed"
@@ -844,7 +846,8 @@ class TestPostTaskStatus:
         assert new_event["actor"] == "dashboard:web"
 
     def test_invalid_transition(self, dashboard_server):
-        """An invalid transition should return 400 with INVALID_TRANSITION."""
+        """An invalid transition is the CLI's 422 INVALID_TRANSITION, naming the
+        CLI override (the dashboard has no force control)."""
         base_url, _ld, ids = dashboard_server
         task_id = ids["backlog"]  # backlog -> done is NOT valid
 
@@ -856,9 +859,10 @@ class TestPostTaskStatus:
                 "actor": "dashboard:web",
             },
         )
-        assert status == 400
+        assert status == 422
         assert body["ok"] is False
         assert body["error"]["code"] == "INVALID_TRANSITION"
+        assert "--force --reason" in body["error"]["message"]
 
     def test_force_transition_succeeds(self, dashboard_server):
         """Force=true with reason should bypass invalid transition."""
@@ -997,7 +1001,7 @@ class TestPostTaskStatus:
             },
         )
         assert status == 400
-        assert body["error"]["code"] == "VALIDATION_ERROR"
+        assert body["error"]["code"] == "INVALID_ACTOR"
 
     def test_invalid_json_body(self, dashboard_server):
         """Malformed JSON body should return 400."""
@@ -1039,6 +1043,9 @@ class TestPostTaskStatus:
         assert status == 200
         assert body["data"]["status"] == "planned"
 
+        # The plan gate applies, as in the CLI: write a plan first.
+        (ld / "plans" / f"{task_id}.md").write_text("# Plan\n\nFix the redirect.\n")
+
         # planned -> in_progress
         status, body = _post(
             base_url,
@@ -1061,7 +1068,8 @@ class TestPostTaskStatus:
         assert status == 200
         assert body["data"]["status"] == "review"
 
-        # review -> done
+        # review -> done: the completion policy applies, as in the CLI (no
+        # review artifact yet), and the refusal names the CLI override.
         status, body = _post(
             base_url,
             f"/api/tasks/{task_id}/status",
@@ -1069,8 +1077,9 @@ class TestPostTaskStatus:
                 "status": "done",
             },
         )
-        assert status == 200
-        assert body["data"]["status"] == "done"
+        assert status == 422
+        assert body["error"]["code"] == "COMPLETION_BLOCKED"
+        assert "lattice status" in body["error"]["message"]
 
 
 # ---------------------------------------------------------------------------
@@ -1441,6 +1450,7 @@ class TestPayloadSizeLimit:
         small_body = b'{"status":"in_planning"}'
         conn.putrequest("POST", url)
         conn.putheader("Content-Type", "application/json")
+        conn.putheader("Origin", base_url)
         conn.putheader("Content-Length", str(MAX_REQUEST_BODY_BYTES + 1))
         conn.endheaders(small_body)
 

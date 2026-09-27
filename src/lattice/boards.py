@@ -142,6 +142,13 @@ def reported_origin(start: Path) -> dict[str, str]:
     return fields
 
 
+def browser_reported_origin() -> dict[str, str]:
+    """What a dashboard reports for a write made from a browser: this process's
+    ``host``, ``os_user``, and ``client_version``, with ``source: "browser"``
+    and no worktree or branch (SPEC §4)."""
+    return {**_process_origin(), "source": "browser"}
+
+
 # ---------------------------------------------------------------------------
 # Boards
 # ---------------------------------------------------------------------------
