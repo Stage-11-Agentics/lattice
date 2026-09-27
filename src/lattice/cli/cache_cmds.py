@@ -45,8 +45,14 @@ def cache() -> None:
 def clear(forget: bool, is_json: bool) -> None:
     """Delete the cache; the next command resyncs it from the server."""
     from lattice.remote.cache import clear_cache, not_hosted
+    from lattice.remote.session import scrub_output
 
     root = _hosted_root()
+    if root is not None and (
+        (root / ".lattice-remote.json").exists() or (root / ".lattice" / "cache").is_dir()
+    ):
+        # The names it prints come from the binding and the cache (SPEC §4).
+        scrub_output()
     try:
         if root is None:
             raise not_hosted(Path.cwd())

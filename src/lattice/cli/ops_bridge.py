@@ -31,6 +31,10 @@ def board_or_exit(is_json: bool) -> LocalBoard | HostedBoard:
     try:
         board = resolve_board()
     except OpError as exc:
+        if exc.code != "NOT_INITIALIZED":  # a routing error about a binding (SPEC §4)
+            from lattice.remote.session import scrub_output
+
+            scrub_output()
         output_error(exc.message, exc.code, is_json)
     if isinstance(board, HostedBoard):
         from lattice.remote.session import scrub_output

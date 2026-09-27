@@ -431,7 +431,13 @@ _originals: dict[str, TextIO] = {}
 
 def scrub_output() -> None:
     """Scrub this command's plain stdout **and** stderr (SPEC §4): a
-    server-derived error message can carry other people's text too."""
+    server-derived error message can carry other people's text too.
+
+    Called by every path that routes a command to a hosted checkout, as soon as
+    it knows (``prepare_read``, ``board_or_exit``, ``lattice sync``, ``lattice
+    remote ...``, ``lattice cache clear``), and before a routing error about a
+    binding is printed (it quotes the committed binding, other people's text).
+    Undone at command end by :func:`reset_process_state`."""
     for name in ("stdout", "stderr"):
         stream = getattr(sys, name)
         if isinstance(stream, _ScrubbingStream):

@@ -227,6 +227,8 @@ def remote_attach(alias: str, project: str, output_json: bool) -> None:
     from lattice.remote.config import resolve_remote
 
     is_json = output_json
+    # attach talks to a server and prints what it answers (SPEC §4).
+    session.scrub_output()
     try:
         require_supported("lattice remote attach")
         remote = resolve_remote(alias)
@@ -311,11 +313,16 @@ def remote_attach(alias: str, project: str, output_json: bool) -> None:
 
 def _hosted_or_exit(is_json: bool):  # noqa: ANN202 - Hosted
     from lattice.remote.binding import hosted_root
+    from lattice.remote.session import scrub_output
 
     try:
         hosted = hosted_root(Path.cwd())
     except OpError as exc:
+        scrub_output()  # the message quotes the binding (SPEC §4)
         _fail(exc, is_json)
+    if hosted is not None:
+        # From here on this command prints server-supplied text (SPEC §4).
+        scrub_output()
     if hosted is None:
         output_error(
             "This checkout is not bound to a Lattice server. Bind it with "

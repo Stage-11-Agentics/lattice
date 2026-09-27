@@ -27,11 +27,12 @@ response also carries ``Cache-Control: no-store``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import json
 import re
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -625,6 +626,29 @@ async def projects(request: Request, state: ServerState) -> Response:
     return await _with_token(request, state, run)
 
 
+@contextlib.contextmanager
+def pending_op(state: ServerState, key: tuple[str, str, str] | None) -> Iterator[None]:
+    """Count *key* as pending for the block (SPEC §8.6, op status).
+
+    Entered before admission; left however the block ends: the finish step has
+    recorded the commit, or the request was rolled back, rejected, timed out on
+    the lock, or cancelled (a ``CancelledError`` at an ``await`` inside the
+    block unwinds through here too). ``None`` (no client ``op_id``) never joins.
+    """
+    if key is None:
+        yield
+        return
+    state.pending_ops[key] = state.pending_ops.get(key, 0) + 1
+    try:
+        yield
+    finally:
+        left = state.pending_ops[key] - 1
+        if left:
+            state.pending_ops[key] = left
+        else:
+            del state.pending_ops[key]
+
+
 async def op_request(request: Request, state: ServerState) -> Response:
     slug = request.path_params["slug"]
     op_name = request.path_params["op"]
@@ -652,17 +676,10 @@ async def op_request(request: Request, state: ServerState) -> Response:
                 return project.run_write(write)
 
         # A request without a client op_id has nothing to look up (SPEC §8.4).
-        pending = (slug, token.id, write.caller.origin["op_id"]) if body.get("op_id") else None
-        if pending is not None:
-            state.pending_ops[pending] = state.pending_ops.get(pending, 0) + 1
-        try:
+        key = (slug, token.id, write.caller.origin["op_id"]) if body.get("op_id") else None
+        with pending_op(state, key):
             async with state.registry.admitted(project):
                 outcome = await in_worker(work)
-        finally:
-            if pending is not None:
-                left = state.pending_ops.pop(pending) - 1
-                if left:
-                    state.pending_ops[pending] = left
         log_fields["seq"] = outcome.seq
         if outcome.replayed:
             log_fields["replayed"] = True
