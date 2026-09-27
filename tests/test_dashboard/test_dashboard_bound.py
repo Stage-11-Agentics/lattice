@@ -70,13 +70,14 @@ def bound_repo(env: HostedEnv, tmp_path: Path) -> tuple[Path, str]:
     return repo, json.loads(created.output)["data"]["id"]
 
 
-def use_token(env: HostedEnv, actors: tuple[str, ...]) -> None:
-    """Point the remote at a token for ``human:alice`` with *actors*."""
+def use_token(env: HostedEnv, actors: tuple[str, ...]) -> str:
+    """Point the remote at a token for ``human:alice`` with *actors*; returns its id."""
     minted = tokens.create_token(
         env.server_root, user="human:alice", machine="laptop", actors=actors, projects=["demo"]
     )
     env.monkeypatch.setenv(TOKEN_ENV, minted["token"])
     session.reset_process_state()
+    return minted["record"]["id"]
 
 
 @pytest.mark.parametrize("actors", [("human:alice",), ("human:alice", "agent:*")])
@@ -154,3 +155,55 @@ def test_open_plans_is_local_only_on_a_bound_checkout(
         status, body = request(port, "POST", f"/api/tasks/{task}/open-plans", {})
     assert status == 400
     assert body["error"]["code"] == "LOCAL_ONLY"
+
+
+def test_the_browser_actor_follows_the_token_as_it_is_rescoped(
+    hosted_env: HostedEnv, tmp_path: Path
+) -> None:
+    """The browser actor is read for every write, never cached: re-scoping the
+    token while the dashboard runs changes who the next write is attributed to."""
+    token_id = use_token(hosted_env, ("agent:owner-3",))
+    repo = hosted_env.bind(make_repo(tmp_path / "repo"))
+    hosted_env.server_op("task.create", {"title": "Seed"}, actor="agent:owner-3")
+    assert run_cli(repo, "list").exit_code == 0
+    task = json.loads((repo / ".lattice" / "ids.json").read_text())["map"]["DEM-1"]
+    root = hosted_env.server_root
+
+    def comment(text: str) -> tuple[int, dict]:
+        return request(port, "POST", f"/api/tasks/{task}/comment", {"body": text})
+
+    def comment_actors() -> list[str]:
+        return [e["actor"] for e in events_of(hosted_env, "DEM-1") if e["type"] == "comment_added"]
+
+    with dashboard(repo) as port:
+        # Only agent:owner-3 is permitted: the token's default actor writes.
+        assert comment("as the seat")[0] == 200
+        # human:alice (the token's user) is granted: she is the browser actor now.
+        tokens.grant(root, token_id, actors=("human:alice",))
+        assert comment("as the user")[0] == 200
+        # Nothing browser-capable left: refused, nothing written.
+        tokens.grant(root, token_id, actors=("agent:*",))
+        tokens.ungrant(root, token_id, actors=("human:alice", "agent:owner-3"))
+        status, body = comment("as nobody")
+        assert status == 400
+        assert body["error"]["code"] == "MISSING_ACTOR"
+
+    assert comment_actors() == ["agent:owner-3", "human:alice"]
+
+
+def test_an_unreachable_server_refuses_the_write_before_anything_is_sent(
+    hosted_env: HostedEnv, tmp_path: Path
+) -> None:
+    repo, task = bound_repo(hosted_env, tmp_path)
+    # Stopped before the dashboard starts: no follower holds a stream the
+    # server's shutdown would wait for. The dashboard still serves the cache.
+    hosted_env.stop()
+    try:
+        with dashboard(repo) as port:
+            assert request(port, "GET", "/api/tasks")[0] == 200
+            status, body = request(port, "POST", f"/api/tasks/{task}/comment", {"body": "x"})
+    finally:
+        hosted_env.start()
+    assert status == 503
+    assert body["error"]["code"] == "SERVER_UNREACHABLE"
+    assert [e["type"] for e in events_of(hosted_env, "DEM-1")] == ["task_created"]

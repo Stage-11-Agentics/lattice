@@ -20,12 +20,13 @@ from lattice.dashboard.server import DashboardBoard
 
 
 class BrowserActor:
-    """The browser actor of a remote's token, fetched from ``/v1/info`` once.
+    """The browser actor of a remote's token, read from ``/v1/info`` for every write.
 
-    Resolved on the first write rather than at startup, so a dashboard started
-    while the server is unreachable still serves the cache; a failed fetch
-    (``SERVER_UNREACHABLE``) or a token with no browser actor
-    (``MISSING_ACTOR``) refuses that write and is tried again on the next.
+    Never cached: a token can be re-scoped while the dashboard runs (an actor
+    granted or removed changes which actor a browser writes as, SPEC §8.3),
+    and dashboard writes are human-paced, so one extra request per write is
+    cheap. An unreachable server (``SERVER_UNREACHABLE``) or a token with no
+    browser actor (``MISSING_ACTOR``) refuses the write before anything is sent.
     """
 
     def __init__(self, remote: Any, info_getter: Callable[[Any], dict] | None = None) -> None:
@@ -35,15 +36,10 @@ class BrowserActor:
             info_getter = get_info
         self._remote = remote
         self._get_info = info_getter
-        self._lock = threading.Lock()
-        self._actor: str | None = None
 
     def __call__(self) -> str:
-        with self._lock:
-            if self._actor is None:
-                identity = self._get_info(self._remote).get("identity") or {}
-                self._actor = api.browser_actor(identity)
-            return self._actor
+        identity = self._get_info(self._remote).get("identity") or {}
+        return api.browser_actor(identity)
 
 
 def _notice(line: str) -> None:
