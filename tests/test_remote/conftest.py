@@ -27,6 +27,7 @@ from lattice.remote import cache, http
 from lattice.server import admin, tokens
 from lattice.server.testing import BoardServer, ServerHandle, make_root, running_server
 from lattice.storage.board_init import create_board
+from tests.test_remote.stream_stub import StubServer as StreamStubServer
 from tests.test_remote.stub_sync_server import StubServer, durable_files, running_stub
 
 REMOTE = "team"
@@ -124,3 +125,12 @@ def tree_hashes(lattice_dir: Path) -> dict[str, str]:
 def assert_mirror(client: Path, server: StubServer | BoardServer) -> None:
     """The cache holds exactly the server's synced files, byte for byte."""
     assert tree_hashes(client / ".lattice") == tree_hashes(server.board)
+
+
+@pytest.fixture()
+def stream_stub() -> Iterator[StreamStubServer]:
+    """H-10c: a §8.8/§8.9 stub for the follower's fault cases (proxies, forced failures)."""
+    server = StreamStubServer(heartbeat_seconds=0.2)
+    server.files = {"config.json": b'{"project_code": "DEM"}\n', "events/T1.jsonl": b""}
+    with server.running():
+        yield server
