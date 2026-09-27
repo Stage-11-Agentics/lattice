@@ -46,6 +46,14 @@ class ServerHandle:
     _server: Any = field(default=None, repr=False)
 
     @property
+    def state(self) -> Any:
+        """The app's :class:`lattice.server.app.ServerState`."""
+        return self.app.state
+
+    def project(self, slug: str) -> Any:
+        return self.state.registry.get(slug)
+
+    @property
     def log_lines(self) -> list[dict]:
         return [json.loads(line) for line in self.log_stream.getvalue().splitlines() if line]
 
@@ -151,8 +159,14 @@ def running_server(
     config: dict | None = None,
     log_level: str = "debug",
     startup_timeout: float = 10.0,
+    wait_prewarm: bool = True,
 ) -> Iterator[ServerHandle]:
-    """Serve *root* on ``127.0.0.1`` in a background thread until the block exits."""
+    """Serve *root* on ``127.0.0.1`` in a background thread until the block exits.
+
+    By default it returns once the startup prewarm has loaded every project, so
+    a test's first request never races a project load; pass
+    ``wait_prewarm=False`` to observe the prewarm itself.
+    """
     import uvicorn
 
     from lattice.server.app import create_app
@@ -194,6 +208,11 @@ def running_server(
         url=f"http://127.0.0.1:{port}", root=root, port=port, log_stream=stream, app=app
     )
     handle._server = server
+    if wait_prewarm and not wait_for(handle.state.registry.prewarm_done.is_set, startup_timeout):
+        server.should_exit = True
+        thread.join(timeout=10)
+        os.close(fd)
+        raise RuntimeError("test server did not finish its prewarm")
     try:
         yield handle
     finally:
