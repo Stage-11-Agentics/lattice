@@ -27,7 +27,7 @@ from lattice.core.tasks import apply_event_to_snapshot
 from lattice.ops.attestation_check import attested_review_commits
 from lattice.ops.base import CommonParams, OpContext, OpError, OpResult, operation
 from lattice.storage.fs import atomic_write, ensure_artifact_dirs
-from lattice.storage.operations import TaskMutationDecision
+from lattice.storage.operations import TaskMutationDecision, read_task_authority
 
 _COMMIT_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
@@ -164,5 +164,9 @@ class Complete:
             )
             return TaskMutationDecision(events=events, value=current_status)
 
+        # A task with no log at all is absent, not corrupt (an archived one is
+        # reported by the mutation with its placement message).
+        if read_task_authority(ctx.lattice_dir, task_id, allow_missing=True) is None:
+            raise OpError("NOT_FOUND", f"Task {task_id} not found.")
         result = ctx.mutate(task_id, decide)
         return OpResult(task=result.snapshot, events=result.appended_events, value=result.snapshot)

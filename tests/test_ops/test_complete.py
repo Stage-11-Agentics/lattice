@@ -121,3 +121,13 @@ def test_accepted_completion_writes_payload_before_events(board: LocalBoard) -> 
     meta = json.loads((lattice_dir / "artifacts" / "meta" / f"{art_id}.json").read_text())
     assert meta["created_at"] == result.events[0]["ts"]
     assert len({e["ts"] for e in result.events}) == 1
+
+
+def test_missing_and_archived_tasks_are_not_found(board: LocalBoard) -> None:
+    missing = "task_01AAAAAAAAAAAAAAAAAAAAAAAA"
+    err = _refuse(board, {"task": missing, "review": "ok"})
+    assert (err.code, err.message) == ("NOT_FOUND", f"Task {missing} not found.")
+    task_id = _task(board, "review")
+    board.execute("task.archive", {"task": task_id}, Caller(actor="agent:t"))
+    err = _refuse(board, {"task": task_id, "review": "ok"})
+    assert (err.code, err.message) == ("NOT_FOUND", f"Task {task_id} is archived.")
