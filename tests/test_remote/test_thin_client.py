@@ -95,3 +95,24 @@ def test_thin_client_from_a_git_clone_of_the_bound_repository(
     agent_loop(hosted_env, clone, home)
     # The board never shows up in git.
     assert git(clone, "status", "--porcelain") == "?? evidence.txt"
+
+
+def test_a_write_as_the_first_command_is_recorded_for_verify(
+    hosted_env: HostedEnv, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fresh checkout's first command is a write, before any sync has made the
+    cache: the acknowledged write still lands in ``cache/acked.jsonl`` (SPEC §9.5)
+    with no notice, and the first sync then adopts the checkout as a cache."""
+    thin_box(hosted_env, tmp_path, monkeypatch)
+    checkout = hosted_env.bind(make_repo(tmp_path / "first-write"))
+    assert not (checkout / ".lattice").exists()
+    created = run_cli(checkout, "create", "First", "--actor", "agent:box", "--json")
+    assert created.exit_code == 0, created.output
+    assert "could not record" not in created.stderr
+    op_ids = [
+        json.loads(line)["op_id"]
+        for line in (checkout / ".lattice" / "cache" / "acked.jsonl").read_text().splitlines()
+    ]
+    assert len(op_ids) == 1
+    shown = run_cli(checkout, "show", json.loads(created.stdout)["data"]["short_id"], "--json")
+    assert shown.exit_code == 0, shown.output

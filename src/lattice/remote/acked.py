@@ -80,6 +80,12 @@ def record(cache_dir: Path, *, op_id: str, project: str, epoch: str | None, seq:
         "at": _stamp(_now()),
     }
     data = (json.dumps(line, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    # A write can be a fresh checkout's first command, before any sync has made
+    # the cache: create the cache-control directory (and .lattice/) owner-only.
+    for directory in (cache_dir.parent, cache_dir):
+        if not directory.is_dir():
+            directory.mkdir(exist_ok=True)
+            os.chmod(directory, 0o700)
     with _locked(cache_dir):
         fd = os.open(cache_dir / ACKED_FILE, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o600)
         try:
