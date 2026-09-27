@@ -828,7 +828,7 @@ lattice remote verify
 
 ## 18. Unknown write outcomes
 
-A write retries on its own for up to `retry_seconds` (15 by default) on connection errors, timeouts, and 429, 502, 503, and 504 responses, reusing the same operation ID, so the server applies it at most once. It prints its progress to stderr while it retries (section 11, Offline). When the retries run out:
+A write retries on its own for up to `retry_seconds` (15 by default) on connection errors, timeouts, and 429, 502, 503, and 504 responses, reusing the same operation ID, so the server applies it at most once. It prints its progress to stderr while it retries (section 11, Offline). When a request reached the server and no answer has come back yet, the line says so instead: `lattice: still waiting for team to answer (20 s); if the request reached it, the write may have applied`. When the retries run out:
 
 - `SERVER_UNREACHABLE` ("server ... is not available. Nothing was written"): no attempt reached the server. Retry when it is back.
 - `OUTCOME_UNKNOWN`: a request reached the server but no answer came back. The server may have applied the write. The message names the operation ID. **Check before retrying**:
@@ -849,6 +849,7 @@ A write retries on its own for up to `retry_seconds` (15 by default) on connecti
 Upgrade the server with the same install command (section 5, add `--force` for `uv tool install`) and restart it. Clients upgrade independently.
 
 - **`server.json` from an early v2 trial** may hold `"trusted_proxy": false`. The server refuses to start with that key; replace it with `"trusted_proxies": []`, or with your proxy's address (section 10).
+- **Every machine that works in a bound checkout needs Lattice 2.** A recent Lattice 1 refuses a bound checkout with `BOUND_CHECKOUT`; an older one reads the read-only cache as if it were a board and fails on its first write. Upgrade it (section 5).
 - The server and clients speak protocol 1. A client and server on different protocols refuse each other before any write.
 - A client older than the server prints one line per command asking you to upgrade. When the server raises its minimum client version, older clients' writes fail with `CLIENT_TOO_OLD`, naming both versions.
 - A newer client works against an older server until it uses something the server lacks: `UNKNOWN_OP` or `UNSUPPORTED_PARAM`, naming both versions. Upgrade the server.
@@ -880,9 +881,10 @@ Upgrade the server with the same install command (section 5, add `--force` for `
 | `PROXY_REJECTED` | Something other than a Lattice server answered: a redirect, a login page, an error page | Fix the proxy: no redirects or login on `/v1/`; add service headers (section 10) |
 | `INSECURE_URL` | `http://` to a host that is not loopback | Use `https://`, or `--allow-plaintext` on an encrypted private network |
 | `BINDING_CONFLICT` | The checkout's binding meets a local board (a `.lattice/` with board files and no cache), or a cache of a different remote or project. With `details.reason` `UNSAFE_CACHE_PATH`: `.lattice`, its `cache/`, or a runtime directory is a symbolic link or a file, which Lattice never writes through | A local board: follow section 14 to move it. Another project's cache: `lattice cache clear --forget`, then run the command again. An unsafe path: remove it (the message names it), then run any command |
-| `BOARD_IS_CACHE` | Something tried to write the read-only cache directly. With `details.reason` `CACHE_ACCESS`: Lattice cannot read or write a path in the cache (its permissions were changed, or another user owns it, after a `sudo lattice` say) | Write through the command (`plan write`, `notes write`, `board write`); the cache is written only by sync. For `CACHE_ACCESS`: restore the path's permissions, or `lattice cache clear` and then any command to rebuild the cache |
+| `BOARD_IS_CACHE` | Something tried to write the read-only cache directly. With `details.reason` `CACHE_ACCESS`: Lattice cannot read or write a path in the cache (its permissions were changed, or another user owns it, after a `sudo lattice` say) | Write through the command (`plan write`, `notes write`, `board write`); the cache is written only by sync. For `CACHE_ACCESS`: Lattice already gives its own directories back their 0700 when you own them; for anything else, restore the path's permissions, or `lattice cache clear` and then any command to rebuild the cache |
 | `BOARD_IS_HOSTED` | Something tried to write a board the server owns, on the server host | Go through a bound checkout, or unload the project and use `--offline-maintenance` (section 7) |
 | `CACHE_INCOMPLETE` | A sync was interrupted mid-update and the server is unreachable | `lattice sync` when the server is back |
+| `BOUND_CHECKOUT` | Printed by Lattice 1, not 2: the checkout is bound to a server, which Lattice 1 cannot use | Install Lattice 2 on this machine (section 5); check with `lattice --version` |
 | `NOT_HOSTED` | A hosted-only command (`cache clear`, `remote status`, `sync`) ran in a checkout that is not bound | Run it in a bound checkout |
 | `HOSTED_UNSUPPORTED_PLATFORM` | Hosted mode on a platform other than macOS or Linux | Use macOS or Linux; local Lattice still works here |
 | `LOCAL_ONLY` | A maintenance command on a hosted checkout | Run it on the server host with `--offline-maintenance` (section 7) |
