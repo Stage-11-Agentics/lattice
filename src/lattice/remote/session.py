@@ -46,6 +46,8 @@ _fresh: set[Path] = set()
 _locks: dict[Path, contextlib.ExitStack] = {}
 #: Roots whose version lines this process already printed.
 _announced: set[Path] = set()
+#: Whether this process filters unknown-event warnings by the server's types.
+_filtering_types = False
 
 
 def reset_process_state() -> None:
@@ -55,9 +57,12 @@ def reset_process_state() -> None:
     _fresh.clear()
     _announced.clear()
     _restore_stdout()
-    from lattice.core.tasks import set_unknown_type_reporter
+    global _filtering_types
+    if _filtering_types:
+        from lattice.core.tasks import set_unknown_type_reporter
 
-    set_unknown_type_reporter(None)
+        set_unknown_type_reporter(None)
+        _filtering_types = False
 
 
 def _cache_dir(hosted: Hosted) -> Path:
@@ -281,7 +286,10 @@ def announce_versions(hosted: Hosted) -> dict:
 
 
 def _suppress_server_types(known: set[str]) -> None:
+    global _filtering_types
     from lattice.core.tasks import _print_unknown_type, set_unknown_type_reporter
+
+    _filtering_types = True
 
     def report(etype: str) -> None:
         if etype not in known:
