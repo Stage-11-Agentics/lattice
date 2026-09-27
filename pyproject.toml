@@ -60,10 +60,13 @@ packages = ["src/lattice"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-m 'not torture and not perf'"
 timeout = 15
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "timeout: marks tests with a timeout",
+    "torture: slow concurrency, crash, and load tests (uv run pytest -m torture)",
+    "perf: timing checks on the reference machine (uv run pytest -m perf tests/perf)",
 ]
 
 # mypy: relaxed from strict=true (LAT-228). The codebase was never annotated

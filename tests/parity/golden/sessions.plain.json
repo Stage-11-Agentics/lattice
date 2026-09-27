@@ -1,0 +1,1333 @@
+{
+  "board": {
+    ".gitignore": {
+      "lines": [
+        "# Ephemeral Lattice runtime state — not part of the durable board.",
+        "# The board (tasks/ events/ plans/ artifacts/ ids.json config.json)",
+        "# stays tracked: it is the audit log and cross-machine coordination",
+        "# state. The paths below are mutated constantly and must never",
+        "# diverge per-worktree or collide on merge.",
+        "review_state/",
+        "tmp-prompts/",
+        ".daemon/",
+        "locks/"
+      ]
+    },
+    "artifacts/meta/<ID-8>.json": {
+      "json": {
+        "created_at": "<TS>",
+        "created_by": "Argus-1",
+        "custom_fields": {},
+        "id": "<ID-8>",
+        "model": null,
+        "payload": {
+          "content_type": "text/markdown",
+          "file": "<ID-8>.md",
+          "size_bytes": 15
+        },
+        "schema_version": 1,
+        "sensitive": false,
+        "summary": "Session review.",
+        "tags": [],
+        "title": "Review findings",
+        "token_usage": null,
+        "type": "note"
+      }
+    },
+    "artifacts/payload/<ID-8>.md": {
+      "lines": [
+        "Session review."
+      ]
+    },
+    "config.json": {
+      "json": {
+        "auto_code_review_on_transition": false,
+        "auto_plan_review_on_transition": false,
+        "default_actor": "human:parity",
+        "default_priority": "medium",
+        "default_status": "backlog",
+        "done_display": "grouped",
+        "instance_id": "<ID-9>",
+        "plan_approval": "auto",
+        "plan_review_mode": "single",
+        "project_code": "PAR",
+        "review_max_diff_chars": 120000,
+        "review_max_diff_lines": 5000,
+        "review_mode": "single",
+        "review_timeout_seconds": 600,
+        "schema_version": 1,
+        "status_preset": "stage11",
+        "task_types": [
+          "task",
+          "bug",
+          "spike",
+          "chore"
+        ],
+        "workflow": {
+          "completion_policies": {
+            "done": {
+              "require_roles": [
+                "review"
+              ]
+            },
+            "pr_open": {
+              "require_roles": [
+                "validation"
+              ]
+            }
+          },
+          "descriptions": {
+            "backlog": "Task is captured but no work has started. No planning, no implementation.",
+            "blocked": "Work cannot proceed due to an external dependency or unresolved issue.",
+            "cancelled": "Work has been abandoned. No further action will be taken.",
+            "done": "Work is reviewed, merged, and shipped. No further action needed.",
+            "in_planning": "Design, dialogue, and scoping underway. No implementation code should be written yet.",
+            "in_progress": "Implementation is actively underway. Code is being written, tested, or integrated.",
+            "in_validation": "End-to-end validation is underway. The change is being exercised against a running system — browser automation, simulator flows, curl — before the PR opens. The bar: 'I saw it work,' not 'I think it should work.'",
+            "planned": "Plan is written and approved. Ready for implementation but work has not started.",
+            "pr_open": "PR is open and awaiting human review, CI, or merge. Local review and validation artifacts are recorded.",
+            "review": "Local review is underway. A review sub-agent is examining the diff before validation begins."
+          },
+          "roles": [
+            "review",
+            "plan-review",
+            "review-individual",
+            "validation"
+          ],
+          "statuses": [
+            "backlog",
+            "in_planning",
+            "planned",
+            "in_progress",
+            "review",
+            "in_validation",
+            "pr_open",
+            "done",
+            "blocked",
+            "cancelled"
+          ],
+          "transitions": {
+            "backlog": [
+              "in_planning",
+              "planned",
+              "cancelled"
+            ],
+            "blocked": [
+              "in_planning",
+              "planned",
+              "in_progress",
+              "in_validation",
+              "pr_open",
+              "cancelled"
+            ],
+            "cancelled": [],
+            "done": [],
+            "in_planning": [
+              "planned",
+              "cancelled"
+            ],
+            "in_progress": [
+              "review",
+              "blocked",
+              "cancelled"
+            ],
+            "in_validation": [
+              "pr_open",
+              "in_progress",
+              "in_planning",
+              "blocked",
+              "cancelled"
+            ],
+            "planned": [
+              "in_progress",
+              "review",
+              "blocked",
+              "cancelled"
+            ],
+            "pr_open": [
+              "done",
+              "in_progress",
+              "review",
+              "blocked",
+              "cancelled"
+            ],
+            "review": [
+              "in_validation",
+              "pr_open",
+              "done",
+              "in_progress",
+              "in_planning",
+              "cancelled"
+            ]
+          },
+          "universal_targets": [
+            "cancelled"
+          ],
+          "wip_limits": {
+            "in_progress": 10,
+            "in_validation": 5,
+            "pr_open": 10,
+            "review": 5
+          }
+        },
+        "workflow_preset": "classic"
+      }
+    },
+    "context.md": {
+      "lines": [
+        "# Instance Context",
+        "",
+        "<!-- Every lattice instance exists for a reason — a convergence of intention",
+        "     and infrastructure. This file declares that reason. Agents and humans",
+        "     read it to understand the purpose, conventions, and relationships",
+        "     of this particular node in the lattice. -->",
+        "",
+        "## Purpose",
+        "",
+        "<!-- What does this instance observe? What project, team, or domain",
+        "     does it serve? Declare the scope of attention. -->",
+        "",
+        "## Related Instances",
+        "",
+        "<!-- If this node coordinates with other lattice instances, name them here.",
+        "     Include instance_id, instance_name, and the nature of the relationship.",
+        "     The lattice is stronger when its nodes are aware of each other. -->",
+        "",
+        "## Conventions",
+        "",
+        "<!-- Every instance develops its own rhythms — workflow conventions,",
+        "     naming patterns, status meanings that diverge from defaults.",
+        "     Record them here so that new minds arriving in this context",
+        "     can orient immediately. -->"
+      ]
+    },
+    "events/<ID-4>.jsonl": {
+      "jsonl": [
+        {
+          "actor": {
+            "agent_type": "advance",
+            "base_name": "Argus",
+            "framework": "claude-code",
+            "model": "claude-opus-5-5",
+            "name": "Argus-1",
+            "serial": 1,
+            "session": "<ID-1>"
+          },
+          "data": {
+            "priority": "medium",
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "title": "Session task",
+            "type": "task"
+          },
+          "id": "<ID-10>",
+          "schema_version": 1,
+          "task_id": "<ID-4>",
+          "ts": "<TS>",
+          "type": "task_created"
+        },
+        {
+          "actor": {
+            "agent_type": "advance",
+            "base_name": "Argus",
+            "framework": "claude-code",
+            "model": "claude-opus-5-5",
+            "name": "Argus-1",
+            "serial": 1,
+            "session": "<ID-1>"
+          },
+          "data": {
+            "body": "From a session"
+          },
+          "id": "<ID-16>",
+          "schema_version": 1,
+          "task_id": "<ID-4>",
+          "ts": "<TS>",
+          "type": "comment_added"
+        },
+        {
+          "actor": {
+            "agent_type": "advance",
+            "base_name": "Argus",
+            "framework": "claude-code",
+            "model": "claude-opus-5-5",
+            "name": "Argus-1",
+            "serial": 1,
+            "session": "<ID-1>"
+          },
+          "data": {
+            "from": null,
+            "to": {
+              "agent_type": "advance",
+              "base_name": "Argus",
+              "framework": "claude-code",
+              "model": "claude-opus-5-5",
+              "name": "Argus-1",
+              "serial": 1,
+              "session": "<ID-1>"
+            }
+          },
+          "id": "<ID-17>",
+          "schema_version": 1,
+          "task_id": "<ID-4>",
+          "ts": "<TS>",
+          "type": "assignment_changed"
+        },
+        {
+          "actor": {
+            "agent_type": "advance",
+            "base_name": "Argus",
+            "framework": "claude-code",
+            "model": "claude-opus-5-5",
+            "name": "Argus-1",
+            "serial": 1,
+            "session": "<ID-1>"
+          },
+          "data": {
+            "force": true,
+            "from": "backlog",
+            "reason": "session work",
+            "to": "in_progress"
+          },
+          "id": "<ID-18>",
+          "provenance": {
+            "reason": "session work"
+          },
+          "schema_version": 1,
+          "task_id": "<ID-4>",
+          "ts": "<TS>",
+          "type": "status_changed"
+        },
+        {
+          "actor": {
+            "agent_type": "advance",
+            "base_name": "Argus",
+            "framework": "claude-code",
+            "model": "claude-opus-5-5",
+            "name": "Argus-1",
+            "serial": 1,
+            "session": "<ID-1>"
+          },
+          "data": {
+            "reason": "Session asks"
+          },
+          "id": "<ID-19>",
+          "schema_version": 1,
+          "task_id": "<ID-4>",
+          "ts": "<TS>",
+          "type": "needs_human_flagged"
+        },
+        {
+          "actor": {
+            "base_name": "Human",
+            "model": "human",
+            "name": "Human-1",
+            "serial": 1,
+            "session": "<ID-3>"
+          },
+          "data": {
+            "from": {
+              "agent_type": "advance",
+              "base_name": "Argus",
+              "framework": "claude-code",
+              "model": "claude-opus-5-5",
+              "name": "Argus-1",
+              "serial": 1,
+              "session": "<ID-1>"
+            },
+            "to": "human:atin"
+          },
+          "id": "<ID-20>",
+          "schema_version": 1,
+          "task_id": "<ID-4>",
+          "ts": "<TS>",
+          "type": "assignment_changed"
+        },
+        {
+          "actor": {
+            "agent_type": "advance",
+            "base_name": "Argus",
+            "framework": "claude-code",
+            "model": "claude-opus-5-5",
+            "name": "Argus-1",
+            "serial": 1,
+            "session": "<ID-1>"
+          },
+          "data": {
+            "body": "Session review.",
+            "role": "review"
+          },
+          "id": "<ID-21>",
+          "schema_version": 1,
+          "task_id": "<ID-4>",
+          "ts": "<TS>",
+          "type": "comment_added"
+        },
+        {
+          "actor": {
+            "agent_type": "advance",
+            "base_name": "Argus",
+            "framework": "claude-code",
+            "model": "claude-opus-5-5",
+            "name": "Argus-1",
+            "serial": 1,
+            "session": "<ID-1>"
+          },
+          "data": {
+            "from": "in_progress",
+            "to": "review"
+          },
+          "id": "<ID-22>",
+          "schema_version": 1,
+          "task_id": "<ID-4>",
+          "ts": "<TS>",
+          "type": "status_changed"
+        },
+        {
+          "actor": {
+            "agent_type": "advance",
+            "base_name": "Argus",
+            "framework": "claude-code",
+            "model": "claude-opus-5-5",
+            "name": "Argus-1",
+            "serial": 1,
+            "session": "<ID-1>"
+          },
+          "data": {
+            "artifact_id": "<ID-8>",
+            "role": "review"
+          },
+          "id": "<ID-23>",
+          "schema_version": 1,
+          "task_id": "<ID-4>",
+          "ts": "<TS>",
+          "type": "artifact_attached"
+        },
+        {
+          "actor": {
+            "agent_type": "advance",
+            "base_name": "Argus",
+            "framework": "claude-code",
+            "model": "claude-opus-5-5",
+            "name": "Argus-1",
+            "serial": 1,
+            "session": "<ID-1>"
+          },
+          "data": {
+            "from": "review",
+            "to": "done"
+          },
+          "id": "<ID-24>",
+          "schema_version": 1,
+          "task_id": "<ID-4>",
+          "ts": "<TS>",
+          "type": "status_changed"
+        }
+      ]
+    },
+    "events/<ID-5>.jsonl": {
+      "jsonl": [
+        {
+          "actor": {
+            "agent_type": "advance",
+            "base_name": "Argus",
+            "framework": "claude-code",
+            "model": "claude-opus-5-5",
+            "name": "Argus-1",
+            "serial": 1,
+            "session": "<ID-1>"
+          },
+          "data": {
+            "priority": "medium",
+            "short_id": "PAR-2",
+            "status": "backlog",
+            "title": "Both",
+            "type": "task"
+          },
+          "id": "<ID-11>",
+          "schema_version": 1,
+          "task_id": "<ID-5>",
+          "ts": "<TS>",
+          "type": "task_created"
+        }
+      ]
+    },
+    "events/<ID-6>.jsonl": {
+      "jsonl": [
+        {
+          "actor": {
+            "agent_type": "advance",
+            "base_name": "Argus",
+            "framework": "claude-code",
+            "model": "claude-opus-5-5",
+            "name": "Argus-1",
+            "serial": 1,
+            "session": "<ID-1>"
+          },
+          "data": {
+            "max_holders": 1,
+            "name": "lock-s",
+            "ttl_seconds": 300
+          },
+          "id": "<ID-13>",
+          "resource_id": "<ID-6>",
+          "schema_version": 1,
+          "ts": "<TS>",
+          "type": "resource_created"
+        },
+        {
+          "actor": {
+            "agent_type": "advance",
+            "base_name": "Argus",
+            "framework": "claude-code",
+            "model": "claude-opus-5-5",
+            "name": "Argus-1",
+            "serial": 1,
+            "session": "<ID-1>"
+          },
+          "data": {
+            "expires_at": "<TS>",
+            "holder": {
+              "agent_type": "advance",
+              "base_name": "Argus",
+              "framework": "claude-code",
+              "model": "claude-opus-5-5",
+              "name": "Argus-1",
+              "serial": 1,
+              "session": "<ID-1>"
+            }
+          },
+          "id": "<ID-14>",
+          "resource_id": "<ID-6>",
+          "schema_version": 1,
+          "ts": "<TS>",
+          "type": "resource_acquired"
+        },
+        {
+          "actor": {
+            "agent_type": "advance",
+            "base_name": "Argus",
+            "framework": "claude-code",
+            "model": "claude-opus-5-5",
+            "name": "Argus-1",
+            "serial": 1,
+            "session": "<ID-1>"
+          },
+          "data": {
+            "holder": {
+              "agent_type": "advance",
+              "base_name": "Argus",
+              "framework": "claude-code",
+              "model": "claude-opus-5-5",
+              "name": "Argus-1",
+              "serial": 1,
+              "session": "<ID-1>"
+            }
+          },
+          "id": "<ID-15>",
+          "resource_id": "<ID-6>",
+          "schema_version": 1,
+          "ts": "<TS>",
+          "type": "resource_released"
+        }
+      ]
+    },
+    "events/<ID-7>.jsonl": {
+      "jsonl": [
+        {
+          "actor": {
+            "base_name": "Argus",
+            "framework": "codex-cli",
+            "model": "claude-opus-5-5",
+            "name": "Argus-2",
+            "serial": 2,
+            "session": "<ID-2>"
+          },
+          "data": {
+            "priority": "medium",
+            "short_id": "PAR-3",
+            "status": "backlog",
+            "title": "Second session",
+            "type": "task"
+          },
+          "id": "<ID-12>",
+          "schema_version": 1,
+          "task_id": "<ID-7>",
+          "ts": "<TS>",
+          "type": "task_created"
+        }
+      ]
+    },
+    "events/_lifecycle.jsonl": {
+      "jsonl": [
+        {
+          "actor": {
+            "agent_type": "advance",
+            "base_name": "Argus",
+            "framework": "claude-code",
+            "model": "claude-opus-5-5",
+            "name": "Argus-1",
+            "serial": 1,
+            "session": "<ID-1>"
+          },
+          "data": {
+            "priority": "medium",
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "title": "Session task",
+            "type": "task"
+          },
+          "id": "<ID-10>",
+          "schema_version": 1,
+          "task_id": "<ID-4>",
+          "ts": "<TS>",
+          "type": "task_created"
+        },
+        {
+          "actor": {
+            "agent_type": "advance",
+            "base_name": "Argus",
+            "framework": "claude-code",
+            "model": "claude-opus-5-5",
+            "name": "Argus-1",
+            "serial": 1,
+            "session": "<ID-1>"
+          },
+          "data": {
+            "priority": "medium",
+            "short_id": "PAR-2",
+            "status": "backlog",
+            "title": "Both",
+            "type": "task"
+          },
+          "id": "<ID-11>",
+          "schema_version": 1,
+          "task_id": "<ID-5>",
+          "ts": "<TS>",
+          "type": "task_created"
+        },
+        {
+          "actor": {
+            "base_name": "Argus",
+            "framework": "codex-cli",
+            "model": "claude-opus-5-5",
+            "name": "Argus-2",
+            "serial": 2,
+            "session": "<ID-2>"
+          },
+          "data": {
+            "priority": "medium",
+            "short_id": "PAR-3",
+            "status": "backlog",
+            "title": "Second session",
+            "type": "task"
+          },
+          "id": "<ID-12>",
+          "schema_version": 1,
+          "task_id": "<ID-7>",
+          "ts": "<TS>",
+          "type": "task_created"
+        }
+      ]
+    },
+    "ids.json": {
+      "json": {
+        "map": {
+          "PAR-1": "<ID-4>",
+          "PAR-2": "<ID-5>",
+          "PAR-3": "<ID-7>"
+        },
+        "next_seqs": {
+          "PAR": 4
+        },
+        "schema_version": 2
+      }
+    },
+    "plans/<ID-4>.md": {
+      "lines": [
+        "# PAR-1: Session task"
+      ]
+    },
+    "plans/<ID-5>.md": {
+      "lines": [
+        "# PAR-2: Both"
+      ]
+    },
+    "plans/<ID-7>.md": {
+      "lines": [
+        "# PAR-3: Second session"
+      ]
+    },
+    "resources/lock-s/resource.json": {
+      "json": {
+        "created_at": "<TS>",
+        "created_by": {
+          "agent_type": "advance",
+          "base_name": "Argus",
+          "framework": "claude-code",
+          "model": "claude-opus-5-5",
+          "name": "Argus-1",
+          "serial": 1,
+          "session": "<ID-1>"
+        },
+        "description": null,
+        "holders": [],
+        "id": "<ID-6>",
+        "last_event_id": "<ID-15>",
+        "max_holders": 1,
+        "name": "lock-s",
+        "schema_version": 1,
+        "ttl_seconds": 300,
+        "updated_at": "<TS>"
+      }
+    },
+    "sessions/Argus-2.json": {
+      "json": {
+        "base_name": "Argus",
+        "framework": "codex-cli",
+        "last_active": "<TS>",
+        "model": "claude-opus-5-5",
+        "name": "Argus-2",
+        "serial": 2,
+        "session": "<ID-2>",
+        "started_at": "<TS>",
+        "status": "active"
+      }
+    },
+    "sessions/Human-1.json": {
+      "json": {
+        "base_name": "Human",
+        "last_active": "<TS>",
+        "model": "human",
+        "name": "Human-1",
+        "serial": 1,
+        "session": "<ID-3>",
+        "started_at": "<TS>",
+        "status": "active"
+      }
+    },
+    "sessions/archive/Argus-1_<ID-1>.json": {
+      "json": {
+        "agent_type": "advance",
+        "base_name": "Argus",
+        "end_reason": "done for the day",
+        "ended_at": "<TS>",
+        "framework": "claude-code",
+        "last_active": "<TS>",
+        "model": "claude-opus-5-5",
+        "name": "Argus-1",
+        "parent": "human:atin",
+        "prompt": "lattice",
+        "serial": 1,
+        "session": "<ID-1>",
+        "started_at": "<TS>",
+        "status": "ended"
+      }
+    },
+    "sessions/index.json": {
+      "json": {
+        "active_sessions": {
+          "Argus-2": "<ID-2>",
+          "Human-1": "<ID-3>"
+        },
+        "serial_counters": {
+          "Argus": 2,
+          "Human": 1
+        }
+      }
+    },
+    "tasks/<ID-4>.json": {
+      "json": {
+        "acceptance_criteria": [],
+        "assigned_to": "human:atin",
+        "branch_links": [],
+        "comment_count": 2,
+        "complexity": null,
+        "created_at": "<TS>",
+        "created_by": {
+          "agent_type": "advance",
+          "base_name": "Argus",
+          "framework": "claude-code",
+          "model": "claude-opus-5-5",
+          "name": "Argus-1",
+          "serial": 1,
+          "session": "<ID-1>"
+        },
+        "custom_fields": {},
+        "description": null,
+        "done_at": "<TS>",
+        "evidence_refs": [
+          {
+            "id": "<ID-21>",
+            "role": "review",
+            "source_type": "comment"
+          },
+          {
+            "id": "<ID-8>",
+            "role": "review",
+            "source_type": "artifact"
+          }
+        ],
+        "id": "<ID-4>",
+        "last_event_id": "<ID-24>",
+        "last_status_changed_at": "<TS>",
+        "linked_files": [],
+        "needs_human": {
+          "flagged_by": {
+            "agent_type": "advance",
+            "base_name": "Argus",
+            "framework": "claude-code",
+            "model": "claude-opus-5-5",
+            "name": "Argus-1",
+            "serial": 1,
+            "session": "<ID-1>"
+          },
+          "reason": "Session asks",
+          "since": "<TS>"
+        },
+        "priority": "medium",
+        "relationships_out": [],
+        "reopened_count": 0,
+        "schema_version": 1,
+        "short_id": "PAR-1",
+        "status": "done",
+        "tags": null,
+        "title": "Session task",
+        "type": "task",
+        "updated_at": "<TS>",
+        "urgency": null
+      }
+    },
+    "tasks/<ID-5>.json": {
+      "json": {
+        "acceptance_criteria": [],
+        "assigned_to": null,
+        "branch_links": [],
+        "comment_count": 0,
+        "complexity": null,
+        "created_at": "<TS>",
+        "created_by": {
+          "agent_type": "advance",
+          "base_name": "Argus",
+          "framework": "claude-code",
+          "model": "claude-opus-5-5",
+          "name": "Argus-1",
+          "serial": 1,
+          "session": "<ID-1>"
+        },
+        "custom_fields": {},
+        "description": null,
+        "done_at": null,
+        "evidence_refs": [],
+        "id": "<ID-5>",
+        "last_event_id": "<ID-11>",
+        "last_status_changed_at": "<TS>",
+        "linked_files": [],
+        "priority": "medium",
+        "relationships_out": [],
+        "reopened_count": 0,
+        "schema_version": 1,
+        "short_id": "PAR-2",
+        "status": "backlog",
+        "tags": null,
+        "title": "Both",
+        "type": "task",
+        "updated_at": "<TS>",
+        "urgency": null
+      }
+    },
+    "tasks/<ID-7>.json": {
+      "json": {
+        "acceptance_criteria": [],
+        "assigned_to": null,
+        "branch_links": [],
+        "comment_count": 0,
+        "complexity": null,
+        "created_at": "<TS>",
+        "created_by": {
+          "base_name": "Argus",
+          "framework": "codex-cli",
+          "model": "claude-opus-5-5",
+          "name": "Argus-2",
+          "serial": 2,
+          "session": "<ID-2>"
+        },
+        "custom_fields": {},
+        "description": null,
+        "done_at": null,
+        "evidence_refs": [],
+        "id": "<ID-7>",
+        "last_event_id": "<ID-12>",
+        "last_status_changed_at": "<TS>",
+        "linked_files": [],
+        "priority": "medium",
+        "relationships_out": [],
+        "reopened_count": 0,
+        "schema_version": 1,
+        "short_id": "PAR-3",
+        "status": "backlog",
+        "tags": null,
+        "title": "Second session",
+        "type": "task",
+        "updated_at": "<TS>",
+        "urgency": null
+      }
+    }
+  },
+  "description": "session start/end and --name session actors on writing commands",
+  "mode": "plain",
+  "scenario": "sessions",
+  "steps": [
+    {
+      "args": [
+        "init",
+        "--path",
+        "<ROOT>",
+        "--actor",
+        "human:parity",
+        "--project-code",
+        "PAR",
+        "--no-setup-claude",
+        "--no-setup-agents",
+        "--no-seed"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "",
+          ".lattice/ created — a mind now has a place to remember.",
+          "Default actor: human:parity",
+          "Project code: PAR",
+          "Workflow statuses: stage11 (10 statuses)"
+        ]
+      }
+    },
+    {
+      "args": [
+        "session",
+        "start",
+        "--name",
+        "Argus",
+        "--model",
+        "claude-opus-5-5",
+        "--framework",
+        "claude-code",
+        "--agent-type",
+        "advance",
+        "--prompt",
+        "lattice",
+        "--parent",
+        "human:atin"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Session created: Argus-1",
+          "  Serial: 1",
+          "  Session ID: <ID-1>",
+          "  Model: claude-opus-5-5",
+          "  Framework: claude-code"
+        ]
+      }
+    },
+    {
+      "args": [
+        "session",
+        "start",
+        "--name",
+        "Argus",
+        "--model",
+        "claude-opus-5-5",
+        "--framework",
+        "codex-cli"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Session created: Argus-2",
+          "  Serial: 2 (1 previous Argus session(s))",
+          "  Session ID: <ID-2>",
+          "  Model: claude-opus-5-5",
+          "  Framework: codex-cli"
+        ]
+      }
+    },
+    {
+      "args": [
+        "session",
+        "start",
+        "--name",
+        "Human",
+        "--model",
+        "human"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Session created: Human-1",
+          "  Serial: 1",
+          "  Session ID: <ID-3>",
+          "  Model: human"
+        ]
+      }
+    },
+    {
+      "args": [
+        "session",
+        "start",
+        "--name",
+        "NoFramework",
+        "--model",
+        "claude-opus-5-5"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Framework is required for agent actors (e.g., --framework claude-code)."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "session",
+        "start",
+        "--name",
+        "Bad/Name",
+        "--model",
+        "human"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Invalid name 'Bad/Name': must not contain whitespace or slashes."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "create",
+        "Session task",
+        "--name",
+        "Argus-1"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Created task PAR-1 (<ID-4>) \"Session task\"",
+          "  status: backlog  priority: medium  type: task"
+        ]
+      }
+    },
+    {
+      "args": [
+        "comment",
+        "PAR-1",
+        "From a session",
+        "--name",
+        "Argus-1"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Comment added to <ID-4>"
+        ]
+      }
+    },
+    {
+      "args": [
+        "status",
+        "PAR-1",
+        "in_progress",
+        "--force",
+        "--reason",
+        "session work",
+        "--name",
+        "Argus-1"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Status: backlog -> in_progress (PAR-1)  (auto-assigned to {'name': 'Argus-1', 'base_name': 'Argus', 'serial': 1, 'session': '<ID-1>', 'model': 'claude-opus-5-5', 'framework': 'claude-code', 'agent_type': 'advance'})",
+          "  Next: implement the plan, then move to review."
+        ]
+      }
+    },
+    {
+      "args": [
+        "needs-human",
+        "PAR-1",
+        "Session asks",
+        "--name",
+        "Argus-1"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "needs_human set (PAR-1, status stays in_progress)",
+          "  Need: Session asks"
+        ]
+      }
+    },
+    {
+      "args": [
+        "assign",
+        "PAR-1",
+        "human:atin",
+        "--name",
+        "Human-1"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Assigned: {'agent_type': 'advance', 'base_name': 'Argus', 'framework': 'claude-code', 'model': 'claude-opus-5-5', 'name': 'Argus-1', 'serial': 1, 'session': '<ID-1>'} -> human:atin"
+        ]
+      }
+    },
+    {
+      "args": [
+        "complete",
+        "PAR-1",
+        "--review",
+        "Session review.",
+        "--name",
+        "Argus-1"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Completed PAR-1: 4 events (in_progress -> review -> done)"
+        ]
+      }
+    },
+    {
+      "args": [
+        "create",
+        "Ghost task",
+        "--name",
+        "Ghost"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: No active session named 'Ghost'. Start one with 'lattice session start'."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "create",
+        "Both",
+        "--name",
+        "Argus-1",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Created task PAR-2 (<ID-5>) \"Both\"",
+          "  status: backlog  priority: medium  type: task"
+        ]
+      }
+    },
+    {
+      "args": [
+        "resource",
+        "create",
+        "lock-s",
+        "--name",
+        "Argus-1"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Created resource 'lock-s' (<ID-6>)"
+        ]
+      }
+    },
+    {
+      "args": [
+        "resource",
+        "acquire",
+        "lock-s",
+        "--name",
+        "Argus-1"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Acquired 'lock-s' (expires 5m)"
+        ]
+      }
+    },
+    {
+      "args": [
+        "resource",
+        "release",
+        "lock-s",
+        "--name",
+        "Argus-1"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Released 'lock-s'"
+        ]
+      }
+    },
+    {
+      "args": [
+        "session",
+        "end",
+        "Argus-1",
+        "--reason",
+        "done for the day"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Session ended: Argus-1",
+          "  Reason: done for the day"
+        ]
+      }
+    },
+    {
+      "args": [
+        "session",
+        "end",
+        "Argus-1"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: No active session named 'Argus-1'."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "create",
+        "Base name only",
+        "--name",
+        "Argus"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: No active session named 'Argus'. Start one with 'lattice session start'."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "create",
+        "Second session",
+        "--name",
+        "Argus-2"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Created task PAR-3 (<ID-7>) \"Second session\"",
+          "  status: backlog  priority: medium  type: task"
+        ]
+      }
+    },
+    {
+      "args": [
+        "create",
+        "After end",
+        "--name",
+        "Argus-1"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: No active session named 'Argus-1'. Start one with 'lattice session start'."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "session",
+        "end",
+        "Ghost"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: No active session named 'Ghost'."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    }
+  ]
+}

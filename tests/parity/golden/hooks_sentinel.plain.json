@@ -1,0 +1,1211 @@
+{
+  "board": {
+    ".gitignore": {
+      "lines": [
+        "# Ephemeral Lattice runtime state — not part of the durable board.",
+        "# The board (tasks/ events/ plans/ artifacts/ ids.json config.json)",
+        "# stays tracked: it is the audit log and cross-machine coordination",
+        "# state. The paths below are mutated constantly and must never",
+        "# diverge per-worktree or collide on merge.",
+        "review_state/",
+        "tmp-prompts/",
+        ".daemon/",
+        "locks/"
+      ]
+    },
+    "artifacts/meta/<ID-3>.json": {
+      "json": {
+        "created_at": "<TS>",
+        "created_by": "agent:worker",
+        "custom_fields": {},
+        "id": "<ID-3>",
+        "model": null,
+        "payload": {
+          "content_type": "text/markdown",
+          "file": "<ID-3>.md",
+          "size_bytes": 14
+        },
+        "schema_version": 1,
+        "sensitive": false,
+        "summary": "Hooked review.",
+        "tags": [],
+        "title": "Review findings",
+        "token_usage": null,
+        "type": "note"
+      }
+    },
+    "artifacts/payload/<ID-3>.md": {
+      "lines": [
+        "Hooked review."
+      ]
+    },
+    "config.json": {
+      "json": {
+        "auto_code_review_on_transition": false,
+        "auto_plan_review_on_transition": false,
+        "default_actor": "human:parity",
+        "default_priority": "medium",
+        "default_status": "backlog",
+        "done_display": "grouped",
+        "hooks": {
+          "on": {
+            "comment_added": "sh <ROOT>/hook.sh on comment_added",
+            "resource_acquired": "sh <ROOT>/hook.sh on resource_acquired",
+            "status_changed": "sh <ROOT>/hook.sh on status_changed"
+          },
+          "post_event": "sh <ROOT>/hook.sh post_event",
+          "transitions": {
+            "* -> *": "sh <ROOT>/hook.sh transition any",
+            "* -> planned": "sh <ROOT>/hook.sh transition any-to-planned",
+            "backlog -> in_planning": "sh <ROOT>/hook.sh transition exact",
+            "planned -> *": "sh <ROOT>/hook.sh transition planned-to-any"
+          }
+        },
+        "instance_id": "<ID-4>",
+        "plan_approval": "auto",
+        "plan_review_mode": "single",
+        "project_code": "PAR",
+        "review_max_diff_chars": 120000,
+        "review_max_diff_lines": 5000,
+        "review_mode": "single",
+        "review_timeout_seconds": 600,
+        "schema_version": 1,
+        "status_preset": "stage11",
+        "task_types": [
+          "task",
+          "bug",
+          "spike",
+          "chore"
+        ],
+        "workflow": {
+          "completion_policies": {
+            "done": {
+              "require_roles": [
+                "review"
+              ]
+            },
+            "pr_open": {
+              "require_roles": [
+                "validation"
+              ]
+            }
+          },
+          "descriptions": {
+            "backlog": "Task is captured but no work has started. No planning, no implementation.",
+            "blocked": "Work cannot proceed due to an external dependency or unresolved issue.",
+            "cancelled": "Work has been abandoned. No further action will be taken.",
+            "done": "Work is reviewed, merged, and shipped. No further action needed.",
+            "in_planning": "Design, dialogue, and scoping underway. No implementation code should be written yet.",
+            "in_progress": "Implementation is actively underway. Code is being written, tested, or integrated.",
+            "in_validation": "End-to-end validation is underway. The change is being exercised against a running system — browser automation, simulator flows, curl — before the PR opens. The bar: 'I saw it work,' not 'I think it should work.'",
+            "planned": "Plan is written and approved. Ready for implementation but work has not started.",
+            "pr_open": "PR is open and awaiting human review, CI, or merge. Local review and validation artifacts are recorded.",
+            "review": "Local review is underway. A review sub-agent is examining the diff before validation begins."
+          },
+          "roles": [
+            "review",
+            "plan-review",
+            "review-individual",
+            "validation"
+          ],
+          "statuses": [
+            "backlog",
+            "in_planning",
+            "planned",
+            "in_progress",
+            "review",
+            "in_validation",
+            "pr_open",
+            "done",
+            "blocked",
+            "cancelled"
+          ],
+          "transitions": {
+            "backlog": [
+              "in_planning",
+              "planned",
+              "cancelled"
+            ],
+            "blocked": [
+              "in_planning",
+              "planned",
+              "in_progress",
+              "in_validation",
+              "pr_open",
+              "cancelled"
+            ],
+            "cancelled": [],
+            "done": [],
+            "in_planning": [
+              "planned",
+              "cancelled"
+            ],
+            "in_progress": [
+              "review",
+              "blocked",
+              "cancelled"
+            ],
+            "in_validation": [
+              "pr_open",
+              "in_progress",
+              "in_planning",
+              "blocked",
+              "cancelled"
+            ],
+            "planned": [
+              "in_progress",
+              "review",
+              "blocked",
+              "cancelled"
+            ],
+            "pr_open": [
+              "done",
+              "in_progress",
+              "review",
+              "blocked",
+              "cancelled"
+            ],
+            "review": [
+              "in_validation",
+              "pr_open",
+              "done",
+              "in_progress",
+              "in_planning",
+              "cancelled"
+            ]
+          },
+          "universal_targets": [
+            "cancelled"
+          ],
+          "wip_limits": {
+            "in_progress": 10,
+            "in_validation": 5,
+            "pr_open": 10,
+            "review": 5
+          }
+        },
+        "workflow_preset": "classic"
+      }
+    },
+    "context.md": {
+      "lines": [
+        "# Instance Context",
+        "",
+        "<!-- Every lattice instance exists for a reason — a convergence of intention",
+        "     and infrastructure. This file declares that reason. Agents and humans",
+        "     read it to understand the purpose, conventions, and relationships",
+        "     of this particular node in the lattice. -->",
+        "",
+        "## Purpose",
+        "",
+        "<!-- What does this instance observe? What project, team, or domain",
+        "     does it serve? Declare the scope of attention. -->",
+        "",
+        "## Related Instances",
+        "",
+        "<!-- If this node coordinates with other lattice instances, name them here.",
+        "     Include instance_id, instance_name, and the nature of the relationship.",
+        "     The lattice is stronger when its nodes are aware of each other. -->",
+        "",
+        "## Conventions",
+        "",
+        "<!-- Every instance develops its own rhythms — workflow conventions,",
+        "     naming patterns, status meanings that diverge from defaults.",
+        "     Record them here so that new minds arriving in this context",
+        "     can orient immediately. -->"
+      ]
+    },
+    "events/<ID-1>.jsonl": {
+      "jsonl": [
+        {
+          "actor": "human:parity",
+          "data": {
+            "priority": "medium",
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "title": "Hooked task",
+            "type": "task"
+          },
+          "id": "<ID-5>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "task_created"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "from": null,
+            "to": "human:parity"
+          },
+          "id": "<ID-9>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "assignment_changed"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "from": "backlog",
+            "to": "in_planning"
+          },
+          "id": "<ID-10>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "status_changed"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "from": "in_planning",
+            "to": "planned"
+          },
+          "id": "<ID-11>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "status_changed"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "body": "Hooked comment"
+          },
+          "id": "<ID-12>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "comment_added"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "reason": "Hooked flag"
+          },
+          "id": "<ID-13>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "needs_human_flagged"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "force": true,
+            "from": "planned",
+            "reason": "hooked force",
+            "to": "in_progress"
+          },
+          "id": "<ID-14>",
+          "provenance": {
+            "reason": "hooked force"
+          },
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "status_changed"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "body": "Hooked review.",
+            "role": "review"
+          },
+          "id": "<ID-15>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "comment_added"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "from": "in_progress",
+            "to": "review"
+          },
+          "id": "<ID-16>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "status_changed"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "artifact_id": "<ID-3>",
+            "role": "review"
+          },
+          "id": "<ID-17>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "artifact_attached"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "from": "review",
+            "to": "done"
+          },
+          "id": "<ID-18>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "status_changed"
+        }
+      ]
+    },
+    "events/<ID-2>.jsonl": {
+      "jsonl": [
+        {
+          "actor": "human:parity",
+          "data": {
+            "max_holders": 1,
+            "name": "hooked-lock",
+            "ttl_seconds": 300
+          },
+          "id": "<ID-6>",
+          "resource_id": "<ID-2>",
+          "schema_version": 1,
+          "ts": "<TS>",
+          "type": "resource_created"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "expires_at": "<TS>",
+            "holder": "agent:worker"
+          },
+          "id": "<ID-7>",
+          "resource_id": "<ID-2>",
+          "schema_version": 1,
+          "ts": "<TS>",
+          "type": "resource_acquired"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "holder": "agent:worker"
+          },
+          "id": "<ID-8>",
+          "resource_id": "<ID-2>",
+          "schema_version": 1,
+          "ts": "<TS>",
+          "type": "resource_released"
+        }
+      ]
+    },
+    "events/_lifecycle.jsonl": {
+      "jsonl": [
+        {
+          "actor": "human:parity",
+          "data": {
+            "priority": "medium",
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "title": "Hooked task",
+            "type": "task"
+          },
+          "id": "<ID-5>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "task_created"
+        }
+      ]
+    },
+    "ids.json": {
+      "json": {
+        "map": {
+          "PAR-1": "<ID-1>"
+        },
+        "next_seqs": {
+          "PAR": 2
+        },
+        "schema_version": 2
+      }
+    },
+    "plans/<ID-1>.md": {
+      "lines": [
+        "# PAR-1: Hooked task"
+      ]
+    },
+    "resources/hooked-lock/resource.json": {
+      "json": {
+        "created_at": "<TS>",
+        "created_by": "human:parity",
+        "description": null,
+        "holders": [],
+        "id": "<ID-2>",
+        "last_event_id": "<ID-8>",
+        "max_holders": 1,
+        "name": "hooked-lock",
+        "schema_version": 1,
+        "ttl_seconds": 300,
+        "updated_at": "<TS>"
+      }
+    },
+    "tasks/<ID-1>.json": {
+      "json": {
+        "acceptance_criteria": [],
+        "assigned_to": "human:parity",
+        "branch_links": [],
+        "comment_count": 2,
+        "complexity": null,
+        "created_at": "<TS>",
+        "created_by": "human:parity",
+        "custom_fields": {},
+        "description": null,
+        "done_at": "<TS>",
+        "evidence_refs": [
+          {
+            "id": "<ID-15>",
+            "role": "review",
+            "source_type": "comment"
+          },
+          {
+            "id": "<ID-3>",
+            "role": "review",
+            "source_type": "artifact"
+          }
+        ],
+        "id": "<ID-1>",
+        "last_event_id": "<ID-18>",
+        "last_status_changed_at": "<TS>",
+        "linked_files": [],
+        "needs_human": {
+          "flagged_by": "agent:worker",
+          "reason": "Hooked flag",
+          "since": "<TS>"
+        },
+        "priority": "medium",
+        "relationships_out": [],
+        "reopened_count": 0,
+        "schema_version": 1,
+        "short_id": "PAR-1",
+        "status": "done",
+        "tags": null,
+        "title": "Hooked task",
+        "type": "task",
+        "updated_at": "<TS>",
+        "urgency": null
+      }
+    }
+  },
+  "description": "post_event, on.<type>, and transitions hooks fire in a fixed set and order",
+  "mode": "plain",
+  "scenario": "hooks_sentinel",
+  "sentinel": [
+    "HOOK post_event | type=task_created task=<ID-1> event=<ID-5> actor=human:parity root=<ROOT> dir=<ROOT>/.lattice from= to= res=/",
+    {
+      "stdin": {
+        "actor": "human:parity",
+        "data": {
+          "priority": "medium",
+          "short_id": "PAR-1",
+          "status": "backlog",
+          "title": "Hooked task",
+          "type": "task"
+        },
+        "id": "<ID-5>",
+        "schema_version": 1,
+        "task_id": "<ID-1>",
+        "ts": "<TS>",
+        "type": "task_created"
+      }
+    },
+    "HOOK post_event | type=assignment_changed task=<ID-1> event=<ID-9> actor=human:parity root=<ROOT> dir=<ROOT>/.lattice from= to= res=/",
+    {
+      "stdin": {
+        "actor": "human:parity",
+        "data": {
+          "from": null,
+          "to": "human:parity"
+        },
+        "id": "<ID-9>",
+        "schema_version": 1,
+        "task_id": "<ID-1>",
+        "ts": "<TS>",
+        "type": "assignment_changed"
+      }
+    },
+    "HOOK post_event | type=status_changed task=<ID-1> event=<ID-10> actor=human:parity root=<ROOT> dir=<ROOT>/.lattice from= to= res=/",
+    {
+      "stdin": {
+        "actor": "human:parity",
+        "data": {
+          "from": "backlog",
+          "to": "in_planning"
+        },
+        "id": "<ID-10>",
+        "schema_version": 1,
+        "task_id": "<ID-1>",
+        "ts": "<TS>",
+        "type": "status_changed"
+      }
+    },
+    "HOOK on status_changed | type=status_changed task=<ID-1> event=<ID-10> actor=human:parity root=<ROOT> dir=<ROOT>/.lattice from= to= res=/",
+    {
+      "stdin": {
+        "actor": "human:parity",
+        "data": {
+          "from": "backlog",
+          "to": "in_planning"
+        },
+        "id": "<ID-10>",
+        "schema_version": 1,
+        "task_id": "<ID-1>",
+        "ts": "<TS>",
+        "type": "status_changed"
+      }
+    },
+    "HOOK transition exact | type=status_changed task=<ID-1> event=<ID-10> actor=human:parity root=<ROOT> dir=<ROOT>/.lattice from=backlog to=in_planning res=/",
+    {
+      "stdin": {
+        "actor": "human:parity",
+        "data": {
+          "from": "backlog",
+          "to": "in_planning"
+        },
+        "id": "<ID-10>",
+        "schema_version": 1,
+        "task_id": "<ID-1>",
+        "ts": "<TS>",
+        "type": "status_changed"
+      }
+    },
+    "HOOK transition any | type=status_changed task=<ID-1> event=<ID-10> actor=human:parity root=<ROOT> dir=<ROOT>/.lattice from=backlog to=in_planning res=/",
+    {
+      "stdin": {
+        "actor": "human:parity",
+        "data": {
+          "from": "backlog",
+          "to": "in_planning"
+        },
+        "id": "<ID-10>",
+        "schema_version": 1,
+        "task_id": "<ID-1>",
+        "ts": "<TS>",
+        "type": "status_changed"
+      }
+    },
+    "HOOK post_event | type=status_changed task=<ID-1> event=<ID-11> actor=agent:worker root=<ROOT> dir=<ROOT>/.lattice from= to= res=/",
+    {
+      "stdin": {
+        "actor": "agent:worker",
+        "data": {
+          "from": "in_planning",
+          "to": "planned"
+        },
+        "id": "<ID-11>",
+        "schema_version": 1,
+        "task_id": "<ID-1>",
+        "ts": "<TS>",
+        "type": "status_changed"
+      }
+    },
+    "HOOK on status_changed | type=status_changed task=<ID-1> event=<ID-11> actor=agent:worker root=<ROOT> dir=<ROOT>/.lattice from= to= res=/",
+    {
+      "stdin": {
+        "actor": "agent:worker",
+        "data": {
+          "from": "in_planning",
+          "to": "planned"
+        },
+        "id": "<ID-11>",
+        "schema_version": 1,
+        "task_id": "<ID-1>",
+        "ts": "<TS>",
+        "type": "status_changed"
+      }
+    },
+    "HOOK transition any-to-planned | type=status_changed task=<ID-1> event=<ID-11> actor=agent:worker root=<ROOT> dir=<ROOT>/.lattice from=in_planning to=planned res=/",
+    {
+      "stdin": {
+        "actor": "agent:worker",
+        "data": {
+          "from": "in_planning",
+          "to": "planned"
+        },
+        "id": "<ID-11>",
+        "schema_version": 1,
+        "task_id": "<ID-1>",
+        "ts": "<TS>",
+        "type": "status_changed"
+      }
+    },
+    "HOOK transition any | type=status_changed task=<ID-1> event=<ID-11> actor=agent:worker root=<ROOT> dir=<ROOT>/.lattice from=in_planning to=planned res=/",
+    {
+      "stdin": {
+        "actor": "agent:worker",
+        "data": {
+          "from": "in_planning",
+          "to": "planned"
+        },
+        "id": "<ID-11>",
+        "schema_version": 1,
+        "task_id": "<ID-1>",
+        "ts": "<TS>",
+        "type": "status_changed"
+      }
+    },
+    "HOOK post_event | type=comment_added task=<ID-1> event=<ID-12> actor=agent:worker root=<ROOT> dir=<ROOT>/.lattice from= to= res=/",
+    {
+      "stdin": {
+        "actor": "agent:worker",
+        "data": {
+          "body": "Hooked comment"
+        },
+        "id": "<ID-12>",
+        "schema_version": 1,
+        "task_id": "<ID-1>",
+        "ts": "<TS>",
+        "type": "comment_added"
+      }
+    },
+    "HOOK on comment_added | type=comment_added task=<ID-1> event=<ID-12> actor=agent:worker root=<ROOT> dir=<ROOT>/.lattice from= to= res=/",
+    {
+      "stdin": {
+        "actor": "agent:worker",
+        "data": {
+          "body": "Hooked comment"
+        },
+        "id": "<ID-12>",
+        "schema_version": 1,
+        "task_id": "<ID-1>",
+        "ts": "<TS>",
+        "type": "comment_added"
+      }
+    },
+    "HOOK post_event | type=needs_human_flagged task=<ID-1> event=<ID-13> actor=agent:worker root=<ROOT> dir=<ROOT>/.lattice from= to= res=/",
+    {
+      "stdin": {
+        "actor": "agent:worker",
+        "data": {
+          "reason": "Hooked flag"
+        },
+        "id": "<ID-13>",
+        "schema_version": 1,
+        "task_id": "<ID-1>",
+        "ts": "<TS>",
+        "type": "needs_human_flagged"
+      }
+    },
+    "HOOK post_event | type=status_changed task=<ID-1> event=<ID-14> actor=human:parity root=<ROOT> dir=<ROOT>/.lattice from= to= res=/",
+    {
+      "stdin": {
+        "actor": "human:parity",
+        "data": {
+          "force": true,
+          "from": "planned",
+          "reason": "hooked force",
+          "to": "in_progress"
+        },
+        "id": "<ID-14>",
+        "provenance": {
+          "reason": "hooked force"
+        },
+        "schema_version": 1,
+        "task_id": "<ID-1>",
+        "ts": "<TS>",
+        "type": "status_changed"
+      }
+    },
+    "HOOK on status_changed | type=status_changed task=<ID-1> event=<ID-14> actor=human:parity root=<ROOT> dir=<ROOT>/.lattice from= to= res=/",
+    {
+      "stdin": {
+        "actor": "human:parity",
+        "data": {
+          "force": true,
+          "from": "planned",
+          "reason": "hooked force",
+          "to": "in_progress"
+        },
+        "id": "<ID-14>",
+        "provenance": {
+          "reason": "hooked force"
+        },
+        "schema_version": 1,
+        "task_id": "<ID-1>",
+        "ts": "<TS>",
+        "type": "status_changed"
+      }
+    },
+    "HOOK transition planned-to-any | type=status_changed task=<ID-1> event=<ID-14> actor=human:parity root=<ROOT> dir=<ROOT>/.lattice from=planned to=in_progress res=/",
+    {
+      "stdin": {
+        "actor": "human:parity",
+        "data": {
+          "force": true,
+          "from": "planned",
+          "reason": "hooked force",
+          "to": "in_progress"
+        },
+        "id": "<ID-14>",
+        "provenance": {
+          "reason": "hooked force"
+        },
+        "schema_version": 1,
+        "task_id": "<ID-1>",
+        "ts": "<TS>",
+        "type": "status_changed"
+      }
+    },
+    "HOOK transition any | type=status_changed task=<ID-1> event=<ID-14> actor=human:parity root=<ROOT> dir=<ROOT>/.lattice from=planned to=in_progress res=/",
+    {
+      "stdin": {
+        "actor": "human:parity",
+        "data": {
+          "force": true,
+          "from": "planned",
+          "reason": "hooked force",
+          "to": "in_progress"
+        },
+        "id": "<ID-14>",
+        "provenance": {
+          "reason": "hooked force"
+        },
+        "schema_version": 1,
+        "task_id": "<ID-1>",
+        "ts": "<TS>",
+        "type": "status_changed"
+      }
+    },
+    "HOOK post_event | type=comment_added task=<ID-1> event=<ID-15> actor=agent:worker root=<ROOT> dir=<ROOT>/.lattice from= to= res=/",
+    {
+      "stdin": {
+        "actor": "agent:worker",
+        "data": {
+          "body": "Hooked review.",
+          "role": "review"
+        },
+        "id": "<ID-15>",
+        "schema_version": 1,
+        "task_id": "<ID-1>",
+        "ts": "<TS>",
+        "type": "comment_added"
+      }
+    },
+    "HOOK on comment_added | type=comment_added task=<ID-1> event=<ID-15> actor=agent:worker root=<ROOT> dir=<ROOT>/.lattice from= to= res=/",
+    {
+      "stdin": {
+        "actor": "agent:worker",
+        "data": {
+          "body": "Hooked review.",
+          "role": "review"
+        },
+        "id": "<ID-15>",
+        "schema_version": 1,
+        "task_id": "<ID-1>",
+        "ts": "<TS>",
+        "type": "comment_added"
+      }
+    },
+    "HOOK post_event | type=status_changed task=<ID-1> event=<ID-16> actor=agent:worker root=<ROOT> dir=<ROOT>/.lattice from= to= res=/",
+    {
+      "stdin": {
+        "actor": "agent:worker",
+        "data": {
+          "from": "in_progress",
+          "to": "review"
+        },
+        "id": "<ID-16>",
+        "schema_version": 1,
+        "task_id": "<ID-1>",
+        "ts": "<TS>",
+        "type": "status_changed"
+      }
+    },
+    "HOOK on status_changed | type=status_changed task=<ID-1> event=<ID-16> actor=agent:worker root=<ROOT> dir=<ROOT>/.lattice from= to= res=/",
+    {
+      "stdin": {
+        "actor": "agent:worker",
+        "data": {
+          "from": "in_progress",
+          "to": "review"
+        },
+        "id": "<ID-16>",
+        "schema_version": 1,
+        "task_id": "<ID-1>",
+        "ts": "<TS>",
+        "type": "status_changed"
+      }
+    },
+    "HOOK transition any | type=status_changed task=<ID-1> event=<ID-16> actor=agent:worker root=<ROOT> dir=<ROOT>/.lattice from=in_progress to=review res=/",
+    {
+      "stdin": {
+        "actor": "agent:worker",
+        "data": {
+          "from": "in_progress",
+          "to": "review"
+        },
+        "id": "<ID-16>",
+        "schema_version": 1,
+        "task_id": "<ID-1>",
+        "ts": "<TS>",
+        "type": "status_changed"
+      }
+    },
+    "HOOK post_event | type=artifact_attached task=<ID-1> event=<ID-17> actor=agent:worker root=<ROOT> dir=<ROOT>/.lattice from= to= res=/",
+    {
+      "stdin": {
+        "actor": "agent:worker",
+        "data": {
+          "artifact_id": "<ID-3>",
+          "role": "review"
+        },
+        "id": "<ID-17>",
+        "schema_version": 1,
+        "task_id": "<ID-1>",
+        "ts": "<TS>",
+        "type": "artifact_attached"
+      }
+    },
+    "HOOK post_event | type=status_changed task=<ID-1> event=<ID-18> actor=agent:worker root=<ROOT> dir=<ROOT>/.lattice from= to= res=/",
+    {
+      "stdin": {
+        "actor": "agent:worker",
+        "data": {
+          "from": "review",
+          "to": "done"
+        },
+        "id": "<ID-18>",
+        "schema_version": 1,
+        "task_id": "<ID-1>",
+        "ts": "<TS>",
+        "type": "status_changed"
+      }
+    },
+    "HOOK on status_changed | type=status_changed task=<ID-1> event=<ID-18> actor=agent:worker root=<ROOT> dir=<ROOT>/.lattice from= to= res=/",
+    {
+      "stdin": {
+        "actor": "agent:worker",
+        "data": {
+          "from": "review",
+          "to": "done"
+        },
+        "id": "<ID-18>",
+        "schema_version": 1,
+        "task_id": "<ID-1>",
+        "ts": "<TS>",
+        "type": "status_changed"
+      }
+    },
+    "HOOK transition any | type=status_changed task=<ID-1> event=<ID-18> actor=agent:worker root=<ROOT> dir=<ROOT>/.lattice from=review to=done res=/",
+    {
+      "stdin": {
+        "actor": "agent:worker",
+        "data": {
+          "from": "review",
+          "to": "done"
+        },
+        "id": "<ID-18>",
+        "schema_version": 1,
+        "task_id": "<ID-1>",
+        "ts": "<TS>",
+        "type": "status_changed"
+      }
+    },
+    "HOOK post_event | type=resource_created task= event=<ID-6> actor=human:parity root=<ROOT> dir=<ROOT>/.lattice from= to= res=<ID-2>/hooked-lock",
+    {
+      "stdin": {
+        "actor": "human:parity",
+        "data": {
+          "max_holders": 1,
+          "name": "hooked-lock",
+          "ttl_seconds": 300
+        },
+        "id": "<ID-6>",
+        "resource_id": "<ID-2>",
+        "schema_version": 1,
+        "ts": "<TS>",
+        "type": "resource_created"
+      }
+    },
+    "HOOK post_event | type=resource_acquired task= event=<ID-7> actor=agent:worker root=<ROOT> dir=<ROOT>/.lattice from= to= res=<ID-2>/hooked-lock",
+    {
+      "stdin": {
+        "actor": "agent:worker",
+        "data": {
+          "expires_at": "<TS>",
+          "holder": "agent:worker"
+        },
+        "id": "<ID-7>",
+        "resource_id": "<ID-2>",
+        "schema_version": 1,
+        "ts": "<TS>",
+        "type": "resource_acquired"
+      }
+    },
+    "HOOK on resource_acquired | type=resource_acquired task= event=<ID-7> actor=agent:worker root=<ROOT> dir=<ROOT>/.lattice from= to= res=<ID-2>/hooked-lock",
+    {
+      "stdin": {
+        "actor": "agent:worker",
+        "data": {
+          "expires_at": "<TS>",
+          "holder": "agent:worker"
+        },
+        "id": "<ID-7>",
+        "resource_id": "<ID-2>",
+        "schema_version": 1,
+        "ts": "<TS>",
+        "type": "resource_acquired"
+      }
+    },
+    "HOOK post_event | type=resource_released task= event=<ID-8> actor=agent:worker root=<ROOT> dir=<ROOT>/.lattice from= to= res=<ID-2>/hooked-lock",
+    {
+      "stdin": {
+        "actor": "agent:worker",
+        "data": {
+          "holder": "agent:worker"
+        },
+        "id": "<ID-8>",
+        "resource_id": "<ID-2>",
+        "schema_version": 1,
+        "ts": "<TS>",
+        "type": "resource_released"
+      }
+    }
+  ],
+  "steps": [
+    {
+      "args": [
+        "init",
+        "--path",
+        "<ROOT>",
+        "--actor",
+        "human:parity",
+        "--project-code",
+        "PAR",
+        "--no-setup-claude",
+        "--no-setup-agents",
+        "--no-seed"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "",
+          ".lattice/ created — a mind now has a place to remember.",
+          "Default actor: human:parity",
+          "Project code: PAR",
+          "Workflow statuses: stage11 (10 statuses)"
+        ]
+      }
+    },
+    {
+      "write_file": "hook.sh"
+    },
+    {
+      "args": [
+        "create",
+        "Hooked task",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Created task PAR-1 (<ID-1>) \"Hooked task\"",
+          "  status: backlog  priority: medium  type: task"
+        ]
+      }
+    },
+    {
+      "args": [
+        "status",
+        "PAR-1",
+        "in_planning",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Status: backlog -> in_planning (PAR-1)  (auto-assigned to human:parity)",
+          "  Next: write the plan in plans/<ID-1>.md, then move to planned."
+        ]
+      }
+    },
+    {
+      "args": [
+        "status",
+        "PAR-1",
+        "planned",
+        "--no-auto-review",
+        "--actor",
+        "agent:worker"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Status: in_planning -> planned (PAR-1)",
+          "  Next: run 'lattice plan-review PAR-1' (plan_review_mode: single) before moving to in_progress. (auto-review skipped (--no-auto-review))"
+        ]
+      }
+    },
+    {
+      "args": [
+        "comment",
+        "PAR-1",
+        "Hooked comment",
+        "--actor",
+        "agent:worker"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Comment added to <ID-1>"
+        ]
+      }
+    },
+    {
+      "args": [
+        "needs-human",
+        "PAR-1",
+        "Hooked flag",
+        "--actor",
+        "agent:worker"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "needs_human set (PAR-1, status stays planned)",
+          "  Need: Hooked flag"
+        ]
+      }
+    },
+    {
+      "args": [
+        "status",
+        "PAR-1",
+        "in_progress",
+        "--force",
+        "--reason",
+        "hooked force",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Status: planned -> in_progress (PAR-1)",
+          "  Next: implement the plan, then move to review."
+        ]
+      }
+    },
+    {
+      "args": [
+        "complete",
+        "PAR-1",
+        "--review",
+        "Hooked review.",
+        "--actor",
+        "agent:worker"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Completed PAR-1: 4 events (in_progress -> review -> done)"
+        ]
+      }
+    },
+    {
+      "args": [
+        "resource",
+        "create",
+        "hooked-lock",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Created resource 'hooked-lock' (<ID-2>)"
+        ]
+      }
+    },
+    {
+      "args": [
+        "resource",
+        "acquire",
+        "hooked-lock",
+        "--actor",
+        "agent:worker"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Acquired 'hooked-lock' (expires 5m)"
+        ]
+      }
+    },
+    {
+      "args": [
+        "resource",
+        "release",
+        "hooked-lock",
+        "--actor",
+        "agent:worker"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Released 'hooked-lock'"
+        ]
+      }
+    },
+    {
+      "args": [
+        "status",
+        "PAR-1",
+        "blocked",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Invalid transition from done to blocked. Valid transitions from done: cancelled. Use --force --reason to override."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    }
+  ]
+}

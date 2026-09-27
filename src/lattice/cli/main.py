@@ -1622,26 +1622,33 @@ def plugins_cmd(as_json: bool) -> None:
 # ---------------------------------------------------------------------------
 # Register command modules (must be after cli group is defined)
 # ---------------------------------------------------------------------------
-from lattice.cli import migration_cmds as _migration_cmds  # noqa: E402, F401
-from lattice.cli import task_cmds as _task_cmds  # noqa: E402, F401
-from lattice.cli import flag_cmds as _flag_cmds  # noqa: E402, F401
-from lattice.cli import link_cmds as _link_cmds  # noqa: E402, F401
-from lattice.cli import artifact_cmds as _artifact_cmds  # noqa: E402, F401
-from lattice.cli import query_cmds as _query_cmds  # noqa: E402, F401
-from lattice.cli import integrity_cmds as _integrity_cmds  # noqa: E402, F401
-from lattice.cli import archive_cmds as _archive_cmds  # noqa: E402, F401
-from lattice.cli import dashboard_cmd as _dashboard_cmd  # noqa: E402, F401
-from lattice.cli import stats_cmds as _stats_cmds  # noqa: E402, F401
-from lattice.cli import weather_cmds as _weather_cmds  # noqa: E402, F401
-from lattice.cli import resource_cmds as _resource_cmds  # noqa: E402, F401
-from lattice.cli import demo_cmd as _demo_cmd  # noqa: E402, F401
-from lattice.cli import session_cmds as _session_cmds  # noqa: E402, F401
-from lattice.cli import review_cmds as _review_cmds  # noqa: E402, F401
-from lattice.cli import file_cmds as _file_cmds  # noqa: E402, F401
-from lattice.cli import wait_cmd as _wait_cmd  # noqa: E402, F401
-from lattice.cli import watch_cmd as _watch_cmd  # noqa: E402, F401
-from lattice.cli import claim_cmd as _claim_cmd  # noqa: E402, F401
-from lattice.cli import criterion_cmds as _criterion_cmds  # noqa: E402, F401
+
+
+def command_module_names() -> list[str]:
+    """Every ``*_cmds`` / ``*_cmd`` module in ``lattice.cli``, sorted by name.
+
+    Adding a command module edits no shared file. Sorted import order keeps
+    registration deterministic; ``tests/test_cli/test_discovery.py`` freezes the set.
+    """
+    import pkgutil
+
+    import lattice.cli as cli_pkg
+
+    return sorted(
+        info.name
+        for info in pkgutil.iter_modules(cli_pkg.__path__)
+        if info.name.endswith(("_cmds", "_cmd"))
+    )
+
+
+def _register_command_modules() -> None:
+    import importlib
+
+    for name in command_module_names():
+        importlib.import_module(f"lattice.cli.{name}")
+
+
+_register_command_modules()
 
 # ---------------------------------------------------------------------------
 # Load CLI plugins (must be after all built-in commands are registered)

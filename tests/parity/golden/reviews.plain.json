@@ -1,0 +1,524 @@
+{
+  "board": {
+    ".gitignore": {
+      "lines": [
+        "# Ephemeral Lattice runtime state — not part of the durable board.",
+        "# The board (tasks/ events/ plans/ artifacts/ ids.json config.json)",
+        "# stays tracked: it is the audit log and cross-machine coordination",
+        "# state. The paths below are mutated constantly and must never",
+        "# diverge per-worktree or collide on merge.",
+        "review_state/",
+        "tmp-prompts/",
+        ".daemon/",
+        "locks/"
+      ]
+    },
+    "config.json": {
+      "json": {
+        "auto_code_review_on_transition": false,
+        "auto_plan_review_on_transition": false,
+        "default_actor": "human:parity",
+        "default_priority": "medium",
+        "default_status": "backlog",
+        "done_display": "grouped",
+        "instance_id": "<ID-2>",
+        "plan_approval": "auto",
+        "plan_review_mode": "single",
+        "project_code": "PAR",
+        "review_max_diff_chars": 120000,
+        "review_max_diff_lines": 5000,
+        "review_mode": "single",
+        "review_timeout_seconds": 600,
+        "schema_version": 1,
+        "status_preset": "stage11",
+        "task_types": [
+          "task",
+          "bug",
+          "spike",
+          "chore"
+        ],
+        "workflow": {
+          "completion_policies": {
+            "done": {
+              "require_roles": [
+                "review"
+              ]
+            },
+            "pr_open": {
+              "require_roles": [
+                "validation"
+              ]
+            }
+          },
+          "descriptions": {
+            "backlog": "Task is captured but no work has started. No planning, no implementation.",
+            "blocked": "Work cannot proceed due to an external dependency or unresolved issue.",
+            "cancelled": "Work has been abandoned. No further action will be taken.",
+            "done": "Work is reviewed, merged, and shipped. No further action needed.",
+            "in_planning": "Design, dialogue, and scoping underway. No implementation code should be written yet.",
+            "in_progress": "Implementation is actively underway. Code is being written, tested, or integrated.",
+            "in_validation": "End-to-end validation is underway. The change is being exercised against a running system — browser automation, simulator flows, curl — before the PR opens. The bar: 'I saw it work,' not 'I think it should work.'",
+            "planned": "Plan is written and approved. Ready for implementation but work has not started.",
+            "pr_open": "PR is open and awaiting human review, CI, or merge. Local review and validation artifacts are recorded.",
+            "review": "Local review is underway. A review sub-agent is examining the diff before validation begins."
+          },
+          "roles": [
+            "review",
+            "plan-review",
+            "review-individual",
+            "validation"
+          ],
+          "statuses": [
+            "backlog",
+            "in_planning",
+            "planned",
+            "in_progress",
+            "review",
+            "in_validation",
+            "pr_open",
+            "done",
+            "blocked",
+            "cancelled"
+          ],
+          "transitions": {
+            "backlog": [
+              "in_planning",
+              "planned",
+              "cancelled"
+            ],
+            "blocked": [
+              "in_planning",
+              "planned",
+              "in_progress",
+              "in_validation",
+              "pr_open",
+              "cancelled"
+            ],
+            "cancelled": [],
+            "done": [],
+            "in_planning": [
+              "planned",
+              "cancelled"
+            ],
+            "in_progress": [
+              "review",
+              "blocked",
+              "cancelled"
+            ],
+            "in_validation": [
+              "pr_open",
+              "in_progress",
+              "in_planning",
+              "blocked",
+              "cancelled"
+            ],
+            "planned": [
+              "in_progress",
+              "review",
+              "blocked",
+              "cancelled"
+            ],
+            "pr_open": [
+              "done",
+              "in_progress",
+              "review",
+              "blocked",
+              "cancelled"
+            ],
+            "review": [
+              "in_validation",
+              "pr_open",
+              "done",
+              "in_progress",
+              "in_planning",
+              "cancelled"
+            ]
+          },
+          "universal_targets": [
+            "cancelled"
+          ],
+          "wip_limits": {
+            "in_progress": 10,
+            "in_validation": 5,
+            "pr_open": 10,
+            "review": 5
+          }
+        },
+        "workflow_preset": "classic"
+      }
+    },
+    "context.md": {
+      "lines": [
+        "# Instance Context",
+        "",
+        "<!-- Every lattice instance exists for a reason — a convergence of intention",
+        "     and infrastructure. This file declares that reason. Agents and humans",
+        "     read it to understand the purpose, conventions, and relationships",
+        "     of this particular node in the lattice. -->",
+        "",
+        "## Purpose",
+        "",
+        "<!-- What does this instance observe? What project, team, or domain",
+        "     does it serve? Declare the scope of attention. -->",
+        "",
+        "## Related Instances",
+        "",
+        "<!-- If this node coordinates with other lattice instances, name them here.",
+        "     Include instance_id, instance_name, and the nature of the relationship.",
+        "     The lattice is stronger when its nodes are aware of each other. -->",
+        "",
+        "## Conventions",
+        "",
+        "<!-- Every instance develops its own rhythms — workflow conventions,",
+        "     naming patterns, status meanings that diverge from defaults.",
+        "     Record them here so that new minds arriving in this context",
+        "     can orient immediately. -->"
+      ]
+    },
+    "events/<ID-1>.jsonl": {
+      "jsonl": [
+        {
+          "actor": "human:parity",
+          "data": {
+            "priority": "medium",
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "title": "Reviewed task",
+            "type": "task"
+          },
+          "id": "<ID-3>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "task_created"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "body": "Automated review failed: plan-review — Agent 'claude': exited with code 1. fake_agent: simulated failure\n\nNo review artifact was produced, so this task has NOT been reviewed.\nRe-run with: lattice plan-review <ID-1>"
+          },
+          "id": "<ID-4>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "comment_added"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "body": "Automated review failed: code-review — Diff for 'main...main' is empty — no changes on this range. The head is most likely already merged into the base (or identical to it); pass --base <merge-base> to review it anyway. If the code under review lives elsewhere, pass --base/--head to name the range, or --worktree <path> to diff from that checkout. Refusing to review an empty diff.\n\nNo review artifact was produced, so this task has NOT been reviewed.\nRe-run with: lattice code-review <ID-1>"
+          },
+          "id": "<ID-5>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "comment_added"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "body": "Automated review failed: code-review — Head ref 'no-such-branch' does not resolve in <ROOT>. Check the ref name.\n\nNo review artifact was produced, so this task has NOT been reviewed.\nRe-run with: lattice code-review <ID-1>"
+          },
+          "id": "<ID-6>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "comment_added"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "body": "Automated review failed: code-review — Base ref 'no-such-base' does not resolve in <ROOT>. Check the ref name.\n\nNo review artifact was produced, so this task has NOT been reviewed.\nRe-run with: lattice code-review <ID-1>"
+          },
+          "id": "<ID-7>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "comment_added"
+        }
+      ]
+    },
+    "events/_lifecycle.jsonl": {
+      "jsonl": [
+        {
+          "actor": "human:parity",
+          "data": {
+            "priority": "medium",
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "title": "Reviewed task",
+            "type": "task"
+          },
+          "id": "<ID-3>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "task_created"
+        }
+      ]
+    },
+    "ids.json": {
+      "json": {
+        "map": {
+          "PAR-1": "<ID-1>"
+        },
+        "next_seqs": {
+          "PAR": 2
+        },
+        "schema_version": 2
+      }
+    },
+    "plans/<ID-1>.md": {
+      "lines": [
+        "# Plan",
+        "",
+        "## Approach",
+        "",
+        "- Do the work in one careful pass."
+      ]
+    },
+    "tasks/<ID-1>.json": {
+      "json": {
+        "acceptance_criteria": [],
+        "assigned_to": null,
+        "branch_links": [],
+        "comment_count": 4,
+        "complexity": null,
+        "created_at": "<TS>",
+        "created_by": "human:parity",
+        "custom_fields": {},
+        "description": null,
+        "done_at": null,
+        "evidence_refs": [],
+        "id": "<ID-1>",
+        "last_event_id": "<ID-7>",
+        "last_status_changed_at": "<TS>",
+        "linked_files": [],
+        "priority": "medium",
+        "relationships_out": [],
+        "reopened_count": 0,
+        "schema_version": 1,
+        "short_id": "PAR-1",
+        "status": "backlog",
+        "tags": null,
+        "title": "Reviewed task",
+        "type": "task",
+        "updated_at": "<TS>",
+        "urgency": null
+      }
+    }
+  },
+  "description": "code-review / plan-review rejections: in-flight, failed agent, empty diff",
+  "mode": "plain",
+  "scenario": "reviews",
+  "steps": [
+    {
+      "args": [
+        "init",
+        "--path",
+        "<ROOT>",
+        "--actor",
+        "human:parity",
+        "--project-code",
+        "PAR",
+        "--no-setup-claude",
+        "--no-setup-agents",
+        "--no-seed"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "",
+          ".lattice/ created — a mind now has a place to remember.",
+          "Default actor: human:parity",
+          "Project code: PAR",
+          "Workflow statuses: stage11 (10 statuses)"
+        ]
+      }
+    },
+    {
+      "args": [
+        "create",
+        "Reviewed task",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Created task PAR-1 (<ID-1>) \"Reviewed task\"",
+          "  status: backlog  priority: medium  type: task"
+        ]
+      }
+    },
+    {
+      "write_file": ".lattice/plans/<ID-1>.md"
+    },
+    {
+      "write_file": ".lattice/review_state/<ID-1>.json"
+    },
+    {
+      "args": [
+        "plan-review",
+        "PAR-1",
+        "--mode",
+        "single",
+        "--actor",
+        "agent:worker"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: A review is already in flight for this task (pid 1, started <TS>, auto_fired=False).  Use 'lattice review-status <ID-1>' to monitor, or wait for it to complete."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "plan-review",
+        "PAR-1",
+        "--mode",
+        "inline",
+        "--actor",
+        "agent:worker"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: A review is already in flight for this task (pid 1, started <TS>, auto_fired=False)."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "code-review",
+        "PAR-1",
+        "--mode",
+        "inline",
+        "--actor",
+        "agent:worker"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: A review is already in flight for this task (pid 1, started <TS>, auto_fired=False)."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "delete_file": ".lattice/review_state/<ID-1>.json"
+    },
+    {
+      "write_file": "bin/claude"
+    },
+    {
+      "args": [
+        "plan-review",
+        "PAR-1",
+        "--mode",
+        "single",
+        "--actor",
+        "agent:worker"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Review failed: Agent 'claude': exited with code 1. fake_agent: simulated failure"
+        ]
+      },
+      "stdout": {
+        "lines": [
+          "Running plan-review (single mode)..."
+        ]
+      }
+    },
+    {
+      "git": "init -q -b main"
+    },
+    {
+      "write_file": "src.txt"
+    },
+    {
+      "git": "add src.txt"
+    },
+    {
+      "git": "commit -q -m base"
+    },
+    {
+      "args": [
+        "code-review",
+        "PAR-1",
+        "--base",
+        "main",
+        "--head",
+        "main",
+        "--actor",
+        "agent:worker"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Diff for 'main...main' is empty — no changes on this range. The head is most likely already merged into the base (or identical to it); pass --base <merge-base> to review it anyway. If the code under review lives elsewhere, pass --base/--head to name the range, or --worktree <path> to diff from that checkout. Refusing to review an empty diff."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "code-review",
+        "PAR-1",
+        "--head",
+        "no-such-branch",
+        "--actor",
+        "agent:worker"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Head ref 'no-such-branch' does not resolve in <ROOT>. Check the ref name."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "code-review",
+        "PAR-1",
+        "--base",
+        "no-such-base",
+        "--head",
+        "main",
+        "--actor",
+        "agent:worker"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Base ref 'no-such-base' does not resolve in <ROOT>. Check the ref name."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    }
+  ]
+}

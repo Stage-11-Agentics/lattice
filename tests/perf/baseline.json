@@ -1,0 +1,67 @@
+{
+  "board": "tests/perf/make_board.py: 1000 active tasks (~45 events each), 300 archived",
+  "commands": {
+    "create": {
+      "median_ms": 70.6,
+      "samples_ms": [
+        71.6,
+        70.3,
+        70.6,
+        70.3,
+        71.8
+      ]
+    },
+    "list": {
+      "median_ms": 1119.6,
+      "samples_ms": [
+        1118.8,
+        1121.9,
+        1127.5,
+        1118.3,
+        1119.6
+      ]
+    },
+    "show": {
+      "median_ms": 1124.9,
+      "samples_ms": [
+        1150.9,
+        1127.1,
+        1123.5,
+        1124.9,
+        1120.2
+      ]
+    },
+    "status": {
+      "median_ms": 70.2,
+      "samples_ms": [
+        69.6,
+        70.2,
+        70.4,
+        69.4,
+        70.7
+      ]
+    }
+  },
+  "git_sha": "c41eb003d0a7f45b5661eab581983dd581518f7b",
+  "machine": {
+    "cores": 16,
+    "cpu": "Apple M4 Max",
+    "loadavg": [
+      5.05,
+      4.92,
+      5.16
+    ],
+    "loadavg_after": [
+      6.34,
+      5.19,
+      5.25
+    ],
+    "memory_bytes": 137438953472,
+    "platform": "macOS-26.6.2-arm64-arm-64bit",
+    "python": "3.12.12",
+    "uptime": "19:53  up 3 days,  3:18, 35 users, load averages: 5.05 4.92 5.16",
+    "uptime_after": "19:54  up 3 days,  3:18, 35 users, load averages: 6.34 5.19 5.25"
+  },
+  "method": "lattice subprocess, 1 warm-up then median of 5 runs",
+  "recorded_at": "2026-09-27T02:54:06Z"
+}
