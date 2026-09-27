@@ -2234,11 +2234,11 @@ var activeTagFilter = null;
 // ACTOR_UNASSIGNED (assignee only), or null. Mirrors activeTagFilter.
 var activeAssigneeFilter = null;
 var activeCreatorFilter = null;
-// Origin filters ({machine, user, worktree}, see origin-filter.js), from the
-// page URL. Every GET of /api/tasks carries them, so the server filters.
-var activeOriginFilters = originFiltersFromSearch(location.search);
-var _originFilterRequest = 0;  // latest setOriginFilters() request
-var _originFilterCommit = 0;   // bumped whenever activeOriginFilters changes
+// Origin filters ({machine, user, worktree}), read from the page URL. The
+// server filters: every task list fetch goes through loadTasks() or
+// setOriginFilters(), which send an explicit filter snapshot and install only
+// the response the gate accepts (origin-filter.js).
+var taskListGate = createTaskListGate(originFiltersFromSearch(location.search));
 
 // --- Cube (3D view) state ---
 // Cube 3D state is managed internally by cube3d.js
@@ -2290,19 +2290,22 @@ var WEB_COLLISION_RADIUS = { hub: 30, task: 10 };
 // API path resolves against the page's own base path (static/escape.js).
 var BASE_PATH = basePath(location.pathname);
 
-async function api(requested, opts) {
-  var isGet = !opts || !opts.method || opts.method === "GET";
-  for (;;) {
-    // A task list fetched under origin filters that changed meanwhile is
-    // stale; fetch again so the caller never installs it (setOriginFilters).
-    var commit = _originFilterCommit;
-    var path = isGet ? withOriginFilters(requested, activeOriginFilters) : requested;
-    var r = await fetch(apiUrl(BASE_PATH, path), opts);
-    var body = await r.json();
-    if (!body.ok) throw new Error(body.error ? body.error.message : "API error");
-    if (path !== requested && commit !== _originFilterCommit) continue;
-    return body.data;
-  }
+async function api(path, opts) {
+  var r = await fetch(apiUrl(BASE_PATH, path), opts);
+  var body = await r.json();
+  if (!body.ok) throw new Error(body.error ? body.error.message : "API error");
+  return body.data;
+}
+
+// Refresh the task list under the shown origin filters. Installs the rows
+// into `tasks` only when the gate accepts them (a newer result or a filter
+// change wins); resolves to whether it did.
+async function loadTasks() {
+  var req = taskListGate.request();
+  var data = await api(req.path);
+  if (!taskListGate.accept(req)) return false;
+  tasks = data;
+  return true;
 }
 
 async function apiPost(path, data) {
@@ -2400,9 +2403,8 @@ async function init() {
   updateTabs();
 
   try {
-    var results = await Promise.all([api("/api/config"), api("/api/tasks"), api("/api/graph").catch(function() { return { links: [] }; })]);
+    var results = await Promise.all([api("/api/config"), loadTasks(), api("/api/graph").catch(function() { return { links: [] }; })]);
     config = results[0];
-    tasks = results[1];
     boardGraphLinks = (results[2] && results[2].links) || [];
     var initSp = new URLSearchParams(location.search);
     activeTagFilter = initSp.get("tag") || null;
@@ -3594,16 +3596,17 @@ function activeFilterCount() {
   if (activeTagFilter) n++;
   if (activeAssigneeFilter) n++;
   if (activeCreatorFilter) n++;
-  return n + originFilterCount(activeOriginFilters);
+  return n + originFilterCount(taskListGate.active());
 }
 
 // Shared predicate — the three filters AND together. Applied by both
 // renderBoard() and applyListFilters() so board and list stay consistent.
 function taskMatchesActiveFilters(task) {
-  if (activeTagFilter && (!task.tags || task.tags.indexOf(activeTagFilter) === -1)) return false;
-  if (!actorMatchesFilter(task.assigned_to, activeAssigneeFilter)) return false;
-  if (!actorMatchesFilter(task.created_by, activeCreatorFilter)) return false;
-  return true;
+  return taskMatchesSelections(
+    task,
+    {tag: activeTagFilter, assignee: activeAssigneeFilter, creator: activeCreatorFilter},
+    actorMatchesFilter
+  );
 }
 
 function updateFiltersBtnAffordance() {
@@ -3620,6 +3623,7 @@ function updateFiltersBtnAffordance() {
   if (cnt) {
     cnt.textContent = "· " + count;
     cnt.classList.toggle("is-idle", count === 0);
+    if (count === 0) cnt.setAttribute("aria-hidden", "true"); else cnt.removeAttribute("aria-hidden");
   }
   // ✕ attached beside the filters button — a real sibling <button> (tabbable,
   // Enter/Space native), so clicking it never touches the drawer toggle.
@@ -3673,27 +3677,26 @@ function setActorFilter(field, keyOrNull) {
   if (sel) sel.value = value || "";
 }
 
-// Origin filters narrow the task list on the server, so a change refetches it.
-// The request uses the candidate filters; state, URL and tasks change together
-// only when the latest request succeeds (an older or failed one changes nothing).
+// Origin filters narrow the task list on the server, so a change refetches it
+// with the candidate filters (empty clears). The shown filters, URL, inputs
+// and tasks change together, and only when the gate accepts the response: an
+// older or failed request changes nothing (origin-filter.js).
 async function setOriginFilters(filters) {
-  var request = ++_originFilterRequest;
+  var req = taskListGate.request(filters);
   var data;
   try {
-    data = await api(withOriginFilters("/api/tasks", filters));
+    data = await api(req.path);
   } catch (e) {
-    if (request !== _originFilterRequest) return;
+    if (!taskListGate.fail(req)) return;
     _syncOriginFilterInputs();  // back to the filters the board shows
     showToast(e.message, "error");
     return;
   }
-  if (request !== _originFilterRequest) return;
-  activeOriginFilters = filters;
-  _originFilterCommit++;
+  if (!taskListGate.accept(req)) return;
   tasks = data;
   var sp = new URLSearchParams(location.search);
   ORIGIN_FILTER_KEYS.forEach(function(key) {
-    if (filters[key]) sp.set(key, filters[key]); else sp.delete(key);
+    if (req.filters[key]) sp.set(key, req.filters[key]); else sp.delete(key);
   });
   var qs = sp.toString();
   history.replaceState(null, "", location.pathname + (qs ? "?" + qs : "") + location.hash);
@@ -3707,7 +3710,7 @@ async function setOriginFilters(filters) {
 function _syncOriginFilterInputs() {
   ORIGIN_FILTER_KEYS.forEach(function(key) {
     var input = document.getElementById("filter-origin-" + key);
-    if (input) input.value = activeOriginFilters[key] || "";
+    if (input) input.value = taskListGate.active()[key] || "";
   });
 }
 
@@ -3733,7 +3736,7 @@ function clearAllFilters() {
   updateFiltersBtnAffordance();
   _rerenderFilteredViews();
   renderFilterPanel(); // resync drawer selects (cheap; safe when closed)
-  if (originFilterCount(activeOriginFilters) > 0) setOriginFilters(originFiltersFromSearch(""));
+  if (originFilterCount(taskListGate.active()) > 0) setOriginFilters(originFiltersFromSearch(""));
 }
 
 function renderFilterPanel() {
@@ -3749,20 +3752,17 @@ function _renderTagFilterSection() {
   (tasks || []).forEach(function(task) {
     if (task.tags) task.tags.forEach(function(tag) { tagSet[tag] = true; });
   });
-  var allTags = Object.keys(tagSet).sort();
   // Under an origin filter the loaded tasks are a subset, so an absent tag is
-  // not stale: it stays selected and ANDs (origin-filter.js).
-  if (activeTagFilter && !tagSet[activeTagFilter] && keepsAbsentSelection(activeOriginFilters)) {
-    allTags.push(activeTagFilter);
-    allTags.sort();
-  }
+  // not stale: it stays selected and ANDs (resolveSelection, origin-filter.js).
+  var tagSel = resolveSelection(Object.keys(tagSet), activeTagFilter, taskListGate.active());
+  var allTags = tagSel.options.sort();
   if (allTags.length === 0) {
     if (activeTagFilter) setTagFilter(null);
     section.style.display = "none";
     section.innerHTML = "";
     return;
   }
-  if (activeTagFilter && allTags.indexOf(activeTagFilter) === -1) {
+  if (activeTagFilter && tagSel.selected === null) {
     setTagFilter(null);
   }
   section.style.display = "";
@@ -3804,22 +3804,23 @@ function _renderActorFilterSection(field) {
     }
   });
 
-  // An absent selection is kept under an origin filter, as for tags.
-  if (active && active !== ACTOR_UNASSIGNED && names[active] === undefined &&
-      keepsAbsentSelection(activeOriginFilters)) {
-    names[active] = active;
-    keys.push(active);
+  // The unassigned sentinel is always a live option while the assignee
+  // section renders; anything else must match a present actor, except that
+  // under an origin filter an absent one stays selected, as for tags
+  // (resolveSelection, origin-filter.js).
+  var sentinelOk = isAssignee && active === ACTOR_UNASSIGNED;
+  var actorSel = sentinelOk ? null : resolveSelection(keys, active, taskListGate.active());
+  if (actorSel && actorSel.selected !== null && names[actorSel.selected] === undefined) {
+    names[actorSel.selected] = actorSel.selected;
+    keys = actorSel.options;
   }
-  if (keys.length === 0 && !(active === ACTOR_UNASSIGNED && keepsAbsentSelection(activeOriginFilters))) {
+  if (keys.length === 0 && !(sentinelOk && keepsAbsentSelection(taskListGate.active()))) {
     if (active) setActorFilter(field, null);
     section.style.display = "none";
     section.innerHTML = "";
     return;
   }
-  // The unassigned sentinel is always a live option while the assignee
-  // section renders; anything else must match a present actor.
-  var sentinelOk = isAssignee && active === ACTOR_UNASSIGNED;
-  if (active && !sentinelOk && keys.indexOf(active) === -1) {
+  if (active && actorSel && actorSel.selected === null) {
     setActorFilter(field, null);
     active = null;
   }
@@ -4260,7 +4261,7 @@ function _wirePanelActions(taskId, task) {
         await apiPost("/api/tasks/" + taskId + "/archive", {});
         showToast(t("toast.task_archived"), "success");
         closeDetailPanel();
-        tasks = await api("/api/tasks");
+        await loadTasks();
         updateAllBadges();
         if (currentView === "board") renderBoard();
         else if (currentView === "list") { renderList(); }
@@ -4273,7 +4274,7 @@ function _wirePanelActions(taskId, task) {
 
 async function _refreshAfterPanelEdit(taskId) {
   // Re-fetch tasks to update board/list behind the panel
-  tasks = await api("/api/tasks");
+  await loadTasks();
   updateAllBadges();
 
   // Re-render the underlying view
@@ -5399,7 +5400,7 @@ window._boardDrop = async function(e) {
     await apiPost("/api/tasks/" + draggedTaskId + "/status", { status: targetStatus });
     showToast(tf("toast.moved_to", {status: targetStatus}), "success");
     // Refresh tasks and re-render
-    tasks = await api("/api/tasks");
+    await loadTasks();
     updateAllBadges();
     renderBoard();
   } catch(err) {
@@ -5748,7 +5749,7 @@ function _wireDetailActions(taskId, task) {
       try {
         await apiPost("/api/tasks/" + taskId + "/status", { status: newStatus });
         showToast(tf("toast.status_changed", {status: getStatusDisplayName(newStatus)}), "success");
-        tasks = await api("/api/tasks");
+        await loadTasks();
         updateAllBadges();
         renderDetail(taskId);
       } catch(e) {
@@ -5767,7 +5768,7 @@ function _wireDetailActions(taskId, task) {
       try {
         await apiPost("/api/tasks/" + taskId + "/update", { fields: { priority: newPri } });
         showToast(tf("toast.priority_changed", {value: newPri}), "success");
-        tasks = await api("/api/tasks");
+        await loadTasks();
         updateAllBadges();
         renderDetail(taskId);
       } catch(e) {
@@ -5786,7 +5787,7 @@ function _wireDetailActions(taskId, task) {
       try {
         await apiPost("/api/tasks/" + taskId + "/update", { fields: { type: newType } });
         showToast(tf("toast.type_changed", {value: newType}), "success");
-        tasks = await api("/api/tasks");
+        await loadTasks();
         updateAllBadges();
         renderDetail(taskId);
       } catch(e) {
@@ -5805,7 +5806,7 @@ function _wireDetailActions(taskId, task) {
         return apiPost("/api/tasks/" + taskId + "/update", { fields: { title: newVal.trim() } })
           .then(function() {
             showToast(t("toast.title_updated"), "success");
-            api("/api/tasks").then(function(t) { tasks = t; updateAllBadges(); });
+            loadTasks().then(function() { updateAllBadges(); });
             renderDetail(taskId);
           });
       });
@@ -5874,7 +5875,7 @@ function _wireDetailActions(taskId, task) {
         apiPost("/api/tasks/" + taskId + "/assign", { assigned_to: assignedTo })
           .then(function() {
             showToast(assignedTo ? tf("toast.assigned", {value: assignedTo}) : t("toast.unassigned"), "success");
-            api("/api/tasks").then(function(t) { tasks = t; updateAllBadges(); });
+            loadTasks().then(function() { updateAllBadges(); });
             renderDetail(taskId);
           })
           .catch(function(e) {
@@ -5895,7 +5896,7 @@ function _wireDetailActions(taskId, task) {
         return apiPost("/api/tasks/" + taskId + "/update", { fields: { tags: newTags } })
           .then(function() {
             showToast(t("toast.tags_updated"), "success");
-            api("/api/tasks").then(function(t) { tasks = t; updateAllBadges(); });
+            loadTasks().then(function() { updateAllBadges(); });
             renderDetail(taskId);
           });
       });
@@ -5939,7 +5940,7 @@ function _wireDetailActions(taskId, task) {
       try {
         await apiPost("/api/tasks/" + taskId + "/archive", {});
         showToast(t("toast.task_archived"), "success");
-        tasks = await api("/api/tasks");
+        await loadTasks();
         updateAllBadges();
         location.hash = "#/" + currentView;
       } catch(e) {
@@ -7098,7 +7099,7 @@ document.getElementById("create-task-submit").addEventListener("click", async fu
     var created = await apiPost("/api/tasks", payload);
     hideCreateTaskModal();
     showToast(tf("toast.task_created", {title: title}), "success");
-    tasks = await api("/api/tasks");
+    await loadTasks();
     updateAllBadges();
     // Navigate to the new task's detail
     location.hash = "#/task/" + created.id;
@@ -7393,9 +7394,8 @@ document.getElementById("help-btn").addEventListener("click", function() {
 
 document.getElementById("refresh-btn").addEventListener("click", async function() {
   try {
-    var results = await Promise.all([api("/api/config"), api("/api/tasks"), api("/api/graph").catch(function() { return { links: [] }; })]);
+    var results = await Promise.all([api("/api/config"), loadTasks(), api("/api/graph").catch(function() { return { links: [] }; })]);
     config = results[0];
-    tasks = results[1];
     boardGraphLinks = (results[2] && results[2].links) || [];
     archivedTasks = null;
     var dc = (config && config.dashboard) || {};
@@ -7484,17 +7484,16 @@ function startAutoRefresh() {
     }
 
     try {
-      var fetchPromises = [api("/api/tasks"), api("/api/config")];
+      var tasksBefore = tasks;
+      var fetchPromises = [loadTasks(), api("/api/config")];
       if (currentView === "board") fetchPromises.push(api("/api/graph").catch(function() { return { links: [] }; }));
       var fetchResults = await Promise.all(fetchPromises);
-      var newTasks = fetchResults[0];
       var newConfig = fetchResults[1];
       if (fetchResults[2]) boardGraphLinks = (fetchResults[2] && fetchResults[2].links) || [];
       // Only re-render if data actually changed
-      var tasksChanged = JSON.stringify(newTasks) !== JSON.stringify(tasks);
+      var tasksChanged = JSON.stringify(tasks) !== JSON.stringify(tasksBefore);
       var configChanged = JSON.stringify(newConfig) !== JSON.stringify(config);
       if (tasksChanged || configChanged) {
-        tasks = newTasks;
         config = newConfig;
         updateAllBadges();
         if (configChanged) {

@@ -25,7 +25,11 @@ IDENTIFIERS = [
     "originFiltersFromSearch",
     "originFilterCount",
     "keepsAbsentSelection",
-    "withOriginFilters",
+    "taskListPath",
+    "sameOriginFilters",
+    "createTaskListGate",
+    "resolveSelection",
+    "taskMatchesSelections",
 ]
 
 
@@ -63,3 +67,16 @@ def test_origin_filter_js_defines_identifiers() -> None:
     js = (STATIC / "origin-filter.js").read_text()
     for name in IDENTIFIERS:
         assert re.search(_definition_pattern(name), js), f"'{name}' missing from origin-filter.js"
+
+
+def test_page_routes_task_lists_and_selections_through_the_tested_logic() -> None:
+    """The inline page uses the tested helpers: every task list goes through
+    the gate, and the tag/assignee/creator sections resolve their selection
+    and match tasks with origin-filter.js."""
+    html = (STATIC / "index.html").read_text()
+    assert 'api("/api/tasks")' not in html, "a task list fetch bypasses loadTasks()"
+    assert "taskListGate.request()" in html and "taskListGate.request(filters)" in html
+    assert html.count("taskListGate.accept(req)") == 2
+    assert "resolveSelection(Object.keys(tagSet), activeTagFilter" in html
+    assert "resolveSelection(keys, active, taskListGate.active())" in html
+    assert "return taskMatchesSelections(" in html
