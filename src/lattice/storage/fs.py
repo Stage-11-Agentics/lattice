@@ -167,7 +167,7 @@ def find_root(start: Path | None = None) -> Path | None:
             raise LatticeRootError(
                 f"LATTICE_ROOT points to a path that does not exist: {env_root}"
             )
-        refuse_bound(env_path)
+        refuse_bound_target(env_path)
         if not (env_path / LATTICE_DIR).is_dir():
             raise LatticeRootError(
                 f"LATTICE_ROOT points to a directory with no {LATTICE_DIR}/ inside: {env_root}"
@@ -218,6 +218,10 @@ def _git_primary_worktree(start: Path) -> Path | None:
             if not content.startswith(prefix):
                 return None
             gitdir = Path(content[len(prefix) :].strip())
+            if not gitdir.is_absolute():
+                # A relative gitdir is relative to the directory holding the
+                # .git file, never to the process cwd.
+                gitdir = (current / gitdir).resolve()
             # gitdir points at <primary>/.git/worktrees/<name>; primary root
             # is two levels up from there.
             primary_git = gitdir.parent.parent
@@ -266,6 +270,17 @@ def refuse_bound(root: Path) -> None:
     reason = bound_reason(Path(root))
     if reason is not None:
         raise BoundCheckoutError(reason)
+
+
+def refuse_bound_target(target: Path) -> None:
+    """Refuse an explicit target (``LATTICE_ROOT``, ``--path``, an MCP
+    ``lattice_root``) as root discovery would: when it, or the primary checkout
+    of the linked worktree holding it, is a Lattice v2 checkout."""
+    target = Path(target).resolve()
+    refuse_bound(target)
+    primary = _git_primary_worktree(target)
+    if primary is not None:
+        refuse_bound(primary)
 
 
 def jsonl_append(

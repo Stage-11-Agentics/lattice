@@ -66,6 +66,17 @@ def require_root(is_json: bool = False) -> Path:
     return root / LATTICE_DIR
 
 
+def refuse_bound_target_or_exit(target: Path, is_json: bool = False) -> None:
+    """Exit with ``BOUND_CHECKOUT`` before a command with an explicit target
+    (``--path``) reads or creates anything in a Lattice v2 checkout."""
+    from lattice.storage.fs import refuse_bound_target
+
+    try:
+        refuse_bound_target(target)
+    except BoundCheckoutError as e:
+        output_error(str(e), e.code, is_json)
+
+
 def load_project_config(lattice_dir: Path) -> dict:
     """Load and return config.json from the lattice directory."""
     return json.loads((lattice_dir / "config.json").read_text())

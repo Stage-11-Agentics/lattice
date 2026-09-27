@@ -59,7 +59,7 @@ from lattice.storage.fs import (
     atomic_write,
     ensure_artifact_dirs,
     find_root,
-    refuse_bound,
+    refuse_bound_target,
 )
 from lattice.storage.operations import (
     AuthoritativeLogError,
@@ -84,7 +84,7 @@ def _find_root(lattice_root: str | None = None) -> Path:
     """Resolve the lattice root directory, returning the .lattice/ path."""
     if lattice_root:
         root = Path(lattice_root)
-        refuse_bound(root)
+        refuse_bound_target(root)
         lattice_dir = root / ".lattice"
         if not lattice_dir.is_dir():
             raise ValueError(f"No .lattice/ directory found at {root}")

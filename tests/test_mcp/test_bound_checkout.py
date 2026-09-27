@@ -50,3 +50,15 @@ def test_resource_refuses(bound_env: Path) -> None:
 def test_unbound_unaffected(lattice_env: Path) -> None:
     lattice_create(title="Local", actor="human:test")
     assert [t["title"] for t in lattice_list()] == ["Local"]
+
+
+def test_explicit_root_in_worktree_of_bound_primary_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.test_cli.test_bound_checkout import bound_primary_with_worktree
+
+    monkeypatch.delenv("LATTICE_ROOT", raising=False)
+    monkeypatch.chdir(tmp_path)
+    _primary, worktree = bound_primary_with_worktree(tmp_path)
+    with pytest.raises(BoundCheckoutError):
+        lattice_list(lattice_root=str(worktree))

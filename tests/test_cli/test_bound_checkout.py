@@ -8,6 +8,7 @@ must refuse such a checkout before it reads or writes anything.
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import click
@@ -94,6 +95,11 @@ class TestEveryCommandRefuses:
         result = _run([], {"LATTICE_ROOT": str(bound_root)})
         assert result.exit_code != 0
         assert BOUND_MESSAGE in result.output
+
+    def test_version_still_works(self, bound_root: Path) -> None:
+        result = _run(["--version"], {"LATTICE_ROOT": str(bound_root)})
+        assert result.exit_code == 0
+        assert "version" in result.output
 
     def test_help_still_works(self, bound_root: Path) -> None:
         result = _run(["list", "--help"], {"LATTICE_ROOT": str(bound_root)})
@@ -205,3 +211,128 @@ class TestFindRoot:
     def test_unbound_root_returned(self, initialized_root: Path, monkeypatch) -> None:
         monkeypatch.delenv("LATTICE_ROOT", raising=False)
         assert find_root(start=initialized_root) == initialized_root
+
+
+def _git(cwd: Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+
+def bound_primary_with_worktree(tmp_path: Path) -> tuple[Path, Path]:
+    """A bound primary checkout and a linked worktree of it whose ``.git`` file
+    holds a *relative* ``gitdir:`` and which still holds an old v1 board."""
+    from lattice.storage.fs import ensure_lattice_dirs
+
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    _git(primary, "init", "-q")
+    _git(
+        primary,
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "i",
+    )
+    worktree = tmp_path / "worktrees" / "wt"
+    _git(primary, "worktree", "add", "-q", "-b", "wt", str(worktree))
+    dotgit = worktree / ".git"
+    gitdir = Path(dotgit.read_text().split(":", 1)[1].strip())
+    import os
+
+    dotgit.write_text(f"gitdir: {os.path.relpath(gitdir, worktree)}\n")
+    _bind(primary)
+    ensure_lattice_dirs(worktree)  # the stale, once-tracked v1 board
+    return primary, worktree
+
+
+class TestLinkedWorktrees:
+    def test_nested_dir_of_relative_worktree_refuses(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _primary, worktree = bound_primary_with_worktree(tmp_path)
+        nested = worktree / "src" / "pkg"
+        nested.mkdir(parents=True)
+        monkeypatch.chdir(nested)
+        before = _tree(worktree)
+        result = _run(["list", "--json"], {"LATTICE_ROOT": None})
+        assert result.exit_code != 0
+        assert json.loads(result.output)["error"]["code"] == "BOUND_CHECKOUT"
+        assert _tree(worktree) == before
+
+    def test_relative_pointer_resolves_independent_of_cwd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _primary, worktree = bound_primary_with_worktree(tmp_path)
+        nested = worktree / "src"
+        nested.mkdir()
+        elsewhere = tmp_path / "elsewhere"  # a different depth than the worktree
+        elsewhere.mkdir(parents=True)
+        monkeypatch.chdir(elsewhere)
+        monkeypatch.delenv("LATTICE_ROOT", raising=False)
+        with pytest.raises(BoundCheckoutError):
+            find_root(start=nested)
+
+    def test_lattice_root_at_such_a_worktree_refuses(self, tmp_path: Path) -> None:
+        _primary, worktree = bound_primary_with_worktree(tmp_path)
+        result = _run(["list"], {"LATTICE_ROOT": str(worktree)})
+        assert result.exit_code != 0
+        assert BOUND_MESSAGE in result.output
+
+
+class TestExplicitTargets:
+    """Commands taking ``--path`` check the target, started from an unbound cwd."""
+
+    @pytest.fixture()
+    def outside(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        cwd = tmp_path / "unbound-cwd"
+        cwd.mkdir()
+        monkeypatch.chdir(cwd)
+        return cwd
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ["init", "--actor", "human:test", "--project-code", "TST"],
+            ["demo", "init", "--quiet", "--no-dashboard"],
+            ["setup-claude"],
+            ["setup-claude", "--force"],
+            ["setup-openclaw"],
+        ],
+        ids=lambda a: " ".join(a[:2]),
+    )
+    @pytest.mark.parametrize("with_cache", [False, True], ids=["binding-only", "with-cache"])
+    def test_bound_target_refused(
+        self, tmp_path: Path, outside: Path, args: list[str], with_cache: bool
+    ) -> None:
+        clone = tmp_path / "clone"
+        clone.mkdir()
+        _bind(clone)
+        if with_cache:
+            from lattice.storage.fs import ensure_lattice_dirs
+
+            ensure_lattice_dirs(clone)
+        before = _tree(clone)
+        result = _run([*args, "--path", str(clone)], {"LATTICE_ROOT": None})
+        assert result.exit_code != 0
+        assert BOUND_MESSAGE in result.output
+        assert _tree(clone) == before
+        assert list(outside.iterdir()) == []
+
+    def test_worktree_of_bound_primary_refused(self, tmp_path: Path, outside: Path) -> None:
+        _primary, worktree = bound_primary_with_worktree(tmp_path)
+        before = _tree(worktree)
+        result = _run(["setup-claude", "--path", str(worktree)], {"LATTICE_ROOT": None})
+        assert result.exit_code != 0
+        assert BOUND_MESSAGE in result.output
+        assert _tree(worktree) == before
+
+    def test_unbound_target_unaffected(self, tmp_path: Path, outside: Path) -> None:
+        target = tmp_path / "plain"
+        target.mkdir()
+        result = _run(["setup-claude", "--path", str(target)], {"LATTICE_ROOT": None})
+        assert result.exit_code == 0, result.output
+        assert (target / "CLAUDE.md").exists()

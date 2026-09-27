@@ -506,12 +506,9 @@ def init(
     root = Path(target_path)
     lattice_dir = root / LATTICE_DIR
 
-    from lattice.cli.helpers import output_error
-    from lattice.storage.fs import BoundCheckoutError, bound_reason
+    from lattice.cli.helpers import refuse_bound_target_or_exit
 
-    reason = bound_reason(root)
-    if reason is not None:
-        output_error(reason, BoundCheckoutError.code, False)
+    refuse_bound_target_or_exit(root)
 
     # Idempotency: if .lattice/ already exists as a directory, skip
     if lattice_dir.is_dir():
@@ -1366,7 +1363,10 @@ def set_subproject_code(code: str, force: bool) -> None:
 @click.option("--force", is_flag=True, help="Replace existing Lattice block if present.")
 def setup_claude(target_path: str, force: bool) -> None:
     """Add or update Lattice agent integration in CLAUDE.md."""
+    from lattice.cli.helpers import refuse_bound_target_or_exit
+
     root = Path(target_path)
+    refuse_bound_target_or_exit(root)
     marker, composed_block = _compose_claude_md_blocks(_load_instance_config(root))
     claude_md = root / "CLAUDE.md"
 
@@ -1436,6 +1436,10 @@ def setup_openclaw(target_path: str, install_global: bool, force: bool) -> None:
     # --global and --path are mutually exclusive
     if install_global and target_path != str(Path(".").resolve()):
         raise click.ClickException("Cannot use --global and --path together.")
+    if not install_global:
+        from lattice.cli.helpers import refuse_bound_target_or_exit
+
+        refuse_bound_target_or_exit(Path(target_path))
 
     # Locate bundled skill files
     skill_src = Path(__file__).resolve().parent.parent / "skills" / "lattice"
