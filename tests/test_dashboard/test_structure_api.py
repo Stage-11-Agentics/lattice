@@ -56,7 +56,7 @@ def structure_server(tmp_path: Path):
     port = _free_port()
     server = create_server(ld, "127.0.0.1", port)
     thread = threading.Thread(
-        target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
+        target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
     )
     thread.start()
     try:
@@ -72,7 +72,7 @@ def standard_server(tmp_path: Path):
     port = _free_port()
     server = create_server(ld, "127.0.0.1", port)
     thread = threading.Thread(
-        target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
+        target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
     )
     thread.start()
     try:
@@ -122,7 +122,7 @@ class TestStructureApi:
         port = _free_port()
         server = create_server(ld, "127.0.0.1", port)
         thread = threading.Thread(
-            target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
+            target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
         )
         thread.start()
         try:
@@ -150,7 +150,7 @@ class TestStructureApi:
         port = _free_port()
         server = create_server(ld, "127.0.0.1", port)
         thread = threading.Thread(
-            target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
+            target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
         )
         thread.start()
         try:
