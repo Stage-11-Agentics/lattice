@@ -70,6 +70,7 @@ class ProjectRegistry:
         self._projects: dict[str, Project] = {}
         self._tasks: list[asyncio.Task] = []
         self.prewarm_done = asyncio.Event()
+        self.control_poll_seconds = CONTROL_POLL_SECONDS
 
     # -- lookup --------------------------------------------------------------
 
@@ -178,7 +179,7 @@ class ProjectRegistry:
 
     async def _poll_control(self) -> None:
         while True:
-            await asyncio.sleep(CONTROL_POLL_SECONDS)
+            await asyncio.sleep(self.control_poll_seconds)
             await self.run_pending_control()
 
     async def run_pending_control(self) -> None:

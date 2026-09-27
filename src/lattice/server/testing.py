@@ -160,12 +160,14 @@ def running_server(
     log_level: str = "debug",
     startup_timeout: float = 10.0,
     wait_prewarm: bool = True,
+    control_poll_seconds: float = 0.05,
 ) -> Iterator[ServerHandle]:
     """Serve *root* on ``127.0.0.1`` in a background thread until the block exits.
 
     By default it returns once the startup prewarm has loaded every project, so
     a test's first request never races a project load; pass
-    ``wait_prewarm=False`` to observe the prewarm itself.
+    ``wait_prewarm=False`` to observe the prewarm itself. Control requests are
+    polled every *control_poll_seconds* (the server's own period is 2 s).
     """
     import uvicorn
 
@@ -180,6 +182,7 @@ def running_server(
     log = ServerLog(log_level, stream)
     fd = acquire_server_lock(root)
     app = create_app(root, config=server_config, log=log)
+    app.state.registry.control_poll_seconds = control_poll_seconds
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind(("127.0.0.1", 0))
