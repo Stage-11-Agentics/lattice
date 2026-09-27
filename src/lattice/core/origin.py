@@ -36,3 +36,36 @@ def stamp_origin(event: dict) -> dict:
     if origin is not None and "origin" not in event:
         event["origin"] = copy.deepcopy(origin)
     return event
+
+
+def format_origin_line(event: dict) -> str | None:
+    """``actor · user@machine · worktree (branch)`` for an event that has an origin.
+
+    ``user@machine`` comes from ``authenticated`` when a server stamped it,
+    else from ``reported``; a browser write shows ``browser`` in place of the
+    worktree. Missing parts are left out. ``None`` for an event written
+    before origins existed.
+    """
+    origin = event.get("origin")
+    if not isinstance(origin, dict):
+        return None
+    reported = origin.get("reported") if isinstance(origin.get("reported"), dict) else {}
+    authenticated = (
+        origin.get("authenticated") if isinstance(origin.get("authenticated"), dict) else {}
+    )
+    actor = event.get("actor", "?")
+    parts = [actor.get("name", str(actor)) if isinstance(actor, dict) else str(actor)]
+    if authenticated:
+        user, machine = authenticated.get("user"), authenticated.get("machine")
+    else:
+        user, machine = reported.get("os_user"), reported.get("host")
+    if user and machine:
+        parts.append(f"{user}@{machine}")
+    elif user or machine:
+        parts.append(str(user or machine))
+    if reported.get("source") == "browser":
+        parts.append("browser")
+    elif reported.get("worktree"):
+        branch = reported.get("branch")
+        parts.append(f"{reported['worktree']} ({branch})" if branch else reported["worktree"])
+    return " · ".join(parts)

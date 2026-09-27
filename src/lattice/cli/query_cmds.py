@@ -45,6 +45,7 @@ from lattice.storage.operations import (
     read_task_authority,
     resolve_task_prose_path,
 )
+from lattice.core.origin import format_origin_line
 from lattice.storage.readers import read_task_events
 
 read_snapshot = helpers.read_snapshot
@@ -1231,6 +1232,9 @@ def _print_human_show(
             ev_actor = get_actor_display(ev.get("actor", "?"))
             summary = _event_summary(ev, full)
             click.echo(f"  {ts}  {etype}  {summary}  by {ev_actor}")
+            origin_line = format_origin_line(ev)
+            if origin_line is not None:
+                click.echo(f"    {origin_line}")
             # Provenance line
             prov = ev.get("provenance")
             if prov:
