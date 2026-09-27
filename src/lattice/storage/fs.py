@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Literal
 
 from lattice.core.errors import BoardIsCache, BoardIsHosted, BoardPathError, BoardWriteError
-from lattice.storage.ownership import check_write, locate
+from lattice.storage.ownership import PathClass, check_write, locate
 
 __all__ = [
     "LATTICE_DIR",
@@ -59,6 +59,9 @@ __all__ = [
     "find_root",
     "jsonl_append",
     "recording",
+    "remove_dir",
+    "strict_durability",
+    "truncate_file",
     "unlink_path",
 ]
 
@@ -122,28 +125,56 @@ def recording(
         _RECORDER.reset(token)
 
 
-def _guard(path: Path, kind: MutationKind | None) -> None:
+def _guard(path: Path, kind: MutationKind | None) -> bool:
     """Confine, check markers, and record one mutation of *path* before it happens.
 
     ``kind`` ``None`` means a whole-file write: ``replace`` if the path exists,
-    else ``create``.
+    else ``create``. Returns whether the mutation must be strictly durable
+    (see :func:`strict_durability`).
     """
     target = locate(path)
     if target is None:
-        return
+        return _STRICT_DURABILITY.get()
     check_write(target)
     recorder = _RECORDER.get()
     if recorder is not None and target.recorded:
         if kind is None:
             kind = "replace" if os.path.lexists(target.path) else "create"
         recorder._before(target.path, kind)
+    return _STRICT_DURABILITY.get() or target.path_class is PathClass.SERVER_CONTROL
 
 
-def _fsync_directory(path: Path) -> None:
+_STRICT_DURABILITY: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "lattice_strict_durability", default=False
+)
+
+
+@contextlib.contextmanager
+def strict_durability() -> Iterator[None]:
+    """Make every write in the block strictly durable (SPEC §8.6).
+
+    A strict write fsyncs the directory entry of every file it creates,
+    replaces, or removes and of every directory it creates or removes, and a
+    failed fsync raises, so a server transaction's recovery can react to a
+    write whose durability is unknown. A write to a server-control path
+    (``hosted/``) is always strict. Local board writes outside a block keep
+    today's behavior exactly: the same fsyncs, and a failed directory fsync is
+    ignored.
+    """
+    token = _STRICT_DURABILITY.set(True)
+    try:
+        yield
+    finally:
+        _STRICT_DURABILITY.reset(token)
+
+
+def _fsync_directory(path: Path, *, strict: bool = False) -> None:
     """Fsync a directory to ensure metadata (e.g. renames) is durable.
 
     Some platforms (notably macOS HFS+) may not support fsync on directory
-    file descriptors, so ``OSError`` is silently ignored.
+    file descriptors, so ``OSError`` is silently ignored, unless *strict*
+    (a strictly durable write, see :func:`strict_durability`), where it
+    propagates.
     """
     try:
         fd = os.open(str(path), os.O_RDONLY)
@@ -152,7 +183,8 @@ def _fsync_directory(path: Path) -> None:
         finally:
             os.close(fd)
     except OSError:
-        pass
+        if strict or _STRICT_DURABILITY.get():
+            raise
 
 
 def atomic_write(path: Path, content: str | bytes) -> None:
@@ -166,7 +198,7 @@ def atomic_write(path: Path, content: str | bytes) -> None:
             cache or server-owned and this context is not its writer.
         FileNotFoundError: If the parent directory does not exist.
     """
-    _guard(path, None)
+    strict = _guard(path, None)
     parent = path.parent
     if not parent.is_dir():
         raise FileNotFoundError(f"Parent directory does not exist: {parent}")
@@ -185,7 +217,7 @@ def atomic_write(path: Path, content: str | bytes) -> None:
         os.close(fd)
         closed = True
         os.replace(tmp_path, path)
-        _fsync_directory(parent)
+        _fsync_directory(parent, strict=strict)
     except BaseException:
         if not closed:
             os.close(fd)
@@ -211,16 +243,38 @@ def ensure_dir(path: Path) -> None:
         missing.append(current)
         current = current.parent
     for directory in reversed(missing):
-        _guard(directory, "create")
+        strict = _guard(directory, "create")
         directory.mkdir(exist_ok=True)
+        if strict:
+            _fsync_directory(directory.parent, strict=True)
 
 
 def unlink_path(path: Path, *, missing_ok: bool = False) -> None:
     """Remove a file, confined to its board, marker-checked, and recorded."""
     if missing_ok and not os.path.lexists(path):
         return
-    _guard(path, "unlink")
+    strict = _guard(path, "unlink")
     path.unlink(missing_ok=missing_ok)
+    if strict:
+        _fsync_directory(path.parent, strict=True)
+
+
+def truncate_file(path: Path, length: int) -> None:
+    """Cut a file back to *length* bytes and fsync it, confined, marker-checked, and
+    recorded as a ``replace``. Used to roll back appends (SPEC §8.6)."""
+    _guard(path, "replace")
+    with open(path, "r+b") as fh:
+        fh.truncate(length)
+        fh.flush()
+        os.fsync(fh.fileno())
+
+
+def remove_dir(path: Path) -> None:
+    """Remove an empty directory, confined, marker-checked, and recorded as an
+    ``unlink``. Used to roll back a directory an operation created (SPEC §8.6)."""
+    _guard(path, "unlink")
+    path.rmdir()
+    _fsync_directory(path.parent, strict=True)
 
 
 def ensure_artifact_dirs(lattice_dir: Path) -> None:
@@ -402,7 +456,7 @@ def jsonl_append(
         path: Path to the JSONL file (created if it does not exist).
         line: A single JSONL record ending with a newline character.
     """
-    _guard(path, "append")
+    strict = _guard(path, "append")
     # Defensive: ensure file ends with newline before appending
     needs_separator = False
     if path.exists() and path.stat().st_size > 0:
@@ -420,4 +474,4 @@ def jsonl_append(
         os.fsync(fh.fileno())
         if after_fsync is not None:
             after_fsync()
-    _fsync_directory(path.parent)
+    _fsync_directory(path.parent, strict=strict)

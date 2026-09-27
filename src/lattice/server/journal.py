@@ -209,22 +209,35 @@ class Journal:
 
     # -- appending -----------------------------------------------------------
 
-    def append(self, entry: dict[str, Any]) -> tuple[int, dict]:
-        """Append one committed operation; assigns ``seq`` and ``ts``. Returns ``(seq, line)``."""
+    def prepare(self, entry: dict[str, Any]) -> tuple[int, dict, bytes]:
+        """The next line for *entry*: assigns ``seq`` and ``ts``. Returns ``(seq, line,
+        raw)``, where *raw* is the line's bytes without the newline. Nothing changes
+        until the line is on disk and :meth:`accept` is called."""
         seq = self.head_seq + 1
         line = {"seq": seq, "ts": now_ms(), **entry}
         raw = json.dumps(line, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        return seq, line, raw.encode("utf-8")
+
+    def accept(self, line: dict, raw: bytes) -> None:
+        """Account for a line written and fsynced (the in-memory head, hash, lengths)."""
+        if line["seq"] == self.head_seq + 1:
+            self._account(line, raw)
+
+    def append(self, entry: dict[str, Any]) -> tuple[int, dict]:
+        """Append one line outside a transaction (``external`` entries); returns
+        ``(seq, line)``. Operations commit through :mod:`lattice.server.transactions`."""
+        seq, line, raw = self.prepare(entry)
         try:
             before = self.path.stat().st_size
         except FileNotFoundError:
             before = 0
         try:
-            jsonl_append(self.path, raw + "\n")
+            jsonl_append(self.path, raw.decode("utf-8") + "\n")
         except BaseException:
             # Never leave a partial line for the next append to bury mid-file.
             self._truncate(before)
             raise
-        self._account(line, raw.encode("utf-8"))
+        self.accept(line, raw)
         return seq, line
 
     def _truncate(self, length: int) -> None:

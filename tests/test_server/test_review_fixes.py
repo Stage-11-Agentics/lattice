@@ -66,32 +66,45 @@ def test_a_crashing_control_request_is_answered_and_the_project_keeps_serving(
         create_task(server, token)
 
 
-def test_a_failed_commit_point_quarantines_the_project(
+def test_a_torn_journal_write_rolls_back_and_the_project_keeps_serving(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import lattice.server.journal as journal_module
+    """SPEC §8.6: a journal write that fails is uncommitted: rolled back in process."""
+    from tests.test_server.faults import Injector, install
 
     token = mint(root)
     with running_server(root) as server:
         create_task(server, token)
-        real = journal_module.jsonl_append
-
-        def torn(path, line):  # noqa: ANN001, ANN202
-            with open(path, "a") as fh:
-                fh.write(line[:10])
-            raise OSError(28, "No space left on device")
-
-        monkeypatch.setattr(journal_module, "jsonl_append", torn)
+        before = board_hash(root, "alpha")
+        install(monkeypatch, Injector("journal.write", short=True))
         status, _, body = server.op("alpha", "task.create", {"title": "x"}, token=token)
-        assert status == 503 and body["error"]["code"] == "BOARD_UNAVAILABLE"
-        monkeypatch.setattr(journal_module, "jsonl_append", real)
+        assert status == 500 and body["error"]["code"] == "INTERNAL_ERROR"
         lines = _journal_lines(root)
         assert len(lines) == 1 and all(json.loads(x) for x in lines)  # no torn tail
+        assert board_hash(root, "alpha") == before
+        assert server.project("alpha").state == "loaded"
+        assert any(x["event"] == "transaction_rollback" for x in server.log_lines)
+        create_task(server, token)
+        assert len(_journal_lines(root)) == 2
+
+
+def test_a_failed_journal_fsync_quarantines_the_project(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SPEC §8.6: a failed journal fsync leaves durability unknown: quarantine."""
+    from tests.test_server.faults import Injector, install
+
+    token = mint(root)
+    with running_server(root) as server:
+        create_task(server, token)
+        injector = install(monkeypatch, Injector("journal.fsync"))
+        status, _, body = server.op("alpha", "task.create", {"title": "x"}, token=token)
+        assert status == 503 and body["error"]["code"] == "BOARD_UNAVAILABLE"
+        injector.disarm()
         assert server.project("alpha").state == "unavailable"
         status, _, body = server.op("alpha", "task.create", {"title": "y"}, token=token)
         assert status == 503
         create_task(server, token, "beta")
-        assert any(x["event"] == "uncommitted_writes" for x in server.log_lines)
         # B4: the quarantine is published at once, so the admin CLI sees it
         from click.testing import CliRunner
 

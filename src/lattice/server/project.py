@@ -10,8 +10,9 @@ Everything that runs under ``work`` goes through :meth:`Project.locked`,
 which also sets the owner flag (the board primitives refuse a server-owned
 board to anyone else) and the project the unknown-event-type reporter logs.
 
-:meth:`Project.run_write` is the single write path. H-22a wraps it in a
-transaction (undo log, receipt, commit point); keep it one function.
+:meth:`Project.run_write` is the single write path: each call is one
+transaction (undo log, receipt, journal commit point, recovery;
+:mod:`lattice.server.transactions`), after the idempotency check.
 """
 
 from __future__ import annotations
@@ -45,7 +46,21 @@ from lattice.server.journal import (
     rotate_epoch,
 )
 from lattice.server.log import ServerLog, describe_error
-from lattice.storage.fs import MutationKind, atomic_write, ensure_dir, recording, unlink_path
+from lattice.server.transactions import (
+    IndexEntry,
+    Quarantine,
+    Transaction,
+    read_receipt,
+    result_json,
+)
+from lattice.storage.fs import (
+    MutationKind,
+    atomic_write,
+    ensure_dir,
+    recording,
+    strict_durability,
+    unlink_path,
+)
 from lattice.storage.locks import LockTimeout
 from lattice.storage.operations import AuthoritativeLogError, discover_task_authorities
 from lattice.storage.ownership import (
@@ -90,13 +105,22 @@ class WriteRequest:
     #: session touch included): authorizes the permission identity (a session
     #: actor's is ``agent:<base_name>``) against the token.
     authorize: Authorizer | None = None
+    #: The server minted the ``op_id`` (the request sent none): never deduplicated.
+    minted: bool = False
 
 
 @dataclass
 class WriteOutcome:
-    result: OpResult
+    #: The result as the response sends it (``OpResult`` JSON, ``paths`` dropped).
+    result_data: dict
     seq: int
+    #: The operation's result; ``None`` for a replay, which comes from its receipt.
+    result: OpResult | None = None
     journal_line: dict = field(default_factory=dict)
+
+    @property
+    def replayed(self) -> bool:
+        return bool(self.result_data.get("replayed"))
 
 
 def _stat_key(path: Path) -> tuple[int, int, int] | None:
@@ -176,6 +200,17 @@ class Project:
         self._lease_fd: int | None = None
         self._watched: dict[str, tuple[int, int, int] | None] = {}
         self._reported_types: set[str] = set()
+        #: The idempotency index, ``(token_id, op_id) -> IndexEntry``, and the
+        #: current epoch's op-status map, ``(token_id, op_id) -> seq`` (SPEC §8.6).
+        #: Filled as operations commit; rebuilt from disk at load by H-22.
+        self.index: dict[tuple[str | None, str], IndexEntry] = {}
+        self.op_seqs: dict[tuple[str | None, str], int] = {}
+        #: Called with each committed journal line, in ``seq`` order, under the locks
+        #: (the stream broadcaster connects here, H-10a).
+        self.publish: Callable[[dict], None] | None = None
+        #: Called when publication failed for a committed operation: close the
+        #: project's open streams so followers reconnect and replay (H-10a).
+        self.close_streams: Callable[[], None] | None = None
 
     # -- locking -----------------------------------------------------------
 
@@ -271,7 +306,13 @@ class Project:
                 command=record.get("command"),
                 epoch=journal.epoch,
             )
+        if self.journal is None or self.journal.epoch != journal.epoch:
+            self.op_seqs = {}  # the op-status map covers the current epoch only
         self.journal = journal
+        # TODO(H-22): undo logs a crash or a quarantine left in hosted/undo/ are
+        # recovered here, in SPEC §8.7's order (torn tails, the missing-journal
+        # quarantine, then each transaction), with the idempotency index and the
+        # op-status map rebuilt from disk. H-22a recovers only in process.
         try:
             discover_task_authorities(board)
         except AuthoritativeLogError as exc:
@@ -279,7 +320,7 @@ class Project:
             return
         self.floors = ShortIdFloors.from_board(board)
         ensure_dir(board / HOSTED_DIR / control.CONTROL_DIR)
-        self._remember_watched()
+        self.remember_watched()
         self._set_state(LOADED, None)
         self.log.info(
             "project_load", project=self.slug, epoch=journal.epoch, head_seq=journal.head_seq
@@ -322,7 +363,7 @@ class Project:
 
     # -- admission-time checks (call under the work lock) -------------------
 
-    def _remember_watched(self, names: list[str] | tuple[str, ...] = WATCHED_FILES) -> None:
+    def remember_watched(self, names: list[str] | tuple[str, ...] = WATCHED_FILES) -> None:
         """Take a new baseline for *names*. Called only for files just journaled (or at
         load), so a hand edit made meanwhile to another watched file is still detected."""
         for name in names:
@@ -356,7 +397,7 @@ class Project:
         except BaseException as exc:
             self._mark_unavailable(f"journal append failed: {describe_error(exc)}")
             raise OpError("BOARD_UNAVAILABLE", f"project {self.slug} is unavailable") from exc
-        self._remember_watched(changed)
+        self.remember_watched(changed)
         self.log.warning("external_change", project=self.slug, paths=changed, seq=seq)
 
     def run_control_requests(self) -> int:
@@ -405,111 +446,164 @@ class Project:
     # -- the write path ------------------------------------------------------
 
     def run_write(self, request: WriteRequest) -> WriteOutcome:
-        """Execute one operation and journal it. Call under :meth:`locked`, after :meth:`admit`.
-
-        This is the one function H-22a wraps in a transaction.
-        """
+        """Execute one operation as a transaction. Call under :meth:`locked`, after
+        :meth:`admit`, so the idempotency check sees every earlier attempt."""
+        op_id = request.caller.origin.get("op_id")
+        if not request.minted:
+            known = self.index.get((request.token_id, op_id))
+            if known is not None:
+                return self._replay(known, request, op_id)
         tracker = MutationTracker(self.board, request.op)
-        caller = request.caller
         # One configuration governs the whole write: read once, under the lock.
         config = self.read_config()
-        try:
-            result = execute(
+
+        def work(txn: Transaction) -> OpResult:
+            return execute(
                 self.board,
                 request.op,
                 request.params,
-                caller,
+                request.caller,
                 run_hooks=False,
                 config=config,
-                on_mutation=tracker,
+                on_mutation=txn.before_mutation,
                 authorize=request.authorize,
                 short_id_floor=self.floors.max_observed,
             )
-        except BaseException:
-            self._log_uncommitted(tracker, request.op, caller.origin.get("op_id"))
-            raise
-        task_id = (result.task or {}).get("id")
-        if task_id is None and result.events:
-            task_id = result.events[0].get("task_id")
-        seq, line = self._commit(
-            op=request.op,
-            op_id=caller.origin.get("op_id"),
-            fp=request.fp,
-            token_id=request.token_id,
-            task_id=task_id,
-            event_ids=[e.get("id") for e in result.events],
-            paths=list(result.paths),
-            tracker=tracker,
-        )
-        self.floors.observe_events(result.events)
-        return WriteOutcome(result=result, seq=seq, journal_line=line)
 
-    def _commit(
+        return self._transact(
+            op=request.op,
+            op_id=op_id,
+            token_id=request.token_id,
+            fp=request.fp,
+            tracker=tracker,
+            work=work,
+        )
+
+    def _replay(self, known: IndexEntry, request: WriteRequest, op_id: str) -> WriteOutcome:
+        """A retried ``(token_id, op_id)``: the stored result, or ``OP_ID_REUSED``."""
+        if known.fp != request.fp:
+            raise OpError(
+                "CONFLICT",
+                f"operation id {op_id} was already used with different arguments",
+                {"reason": "OP_ID_REUSED", "seq": known.seq},
+            )
+        receipt = read_receipt(self.board, known)
+        data = {**receipt["result"], "replayed": True}
+        return WriteOutcome(result_data=data, seq=known.seq)
+
+    def _transact(
         self,
         *,
         op: str,
-        op_id: str | None,
-        fp: str | None,
+        op_id: str,
         token_id: str | None,
-        task_id: str | None,
-        event_ids: list,
-        paths: list[str],
+        fp: str | None,
         tracker: MutationTracker,
-    ) -> tuple[int, dict]:
-        """Append the journal line: the operation's commit point (SPEC §8.6 step 5)."""
+        work: Callable[[Transaction], OpResult],
+    ) -> WriteOutcome:
+        """Run *work* as one transaction (SPEC §8.6), recovering in process on failure."""
         if self.journal is None:
             raise OpError("BOARD_UNAVAILABLE", f"project {self.slug} is not loaded")
-        try:
-            seq, line = self._append_journal(
-                op, op_id, fp, token_id, task_id, event_ids, paths, tracker
-            )
-        except BaseException as exc:
-            # The commit point failed: durability unknown, so quarantine (SPEC §8.6).
-            self._log_uncommitted(tracker, op, op_id)
-            self._mark_unavailable(f"journal append failed: {describe_error(exc)}")
+        txn = Transaction(self, op=op, op_id=op_id, token_id=token_id, fp=fp, tracker=tracker)
+        quarantine: Quarantine | None = None
+        with board_scope(self.board), strict_durability():
+            try:
+                txn.begin()
+                result = work(txn)
+                task_id = (result.task or {}).get("id")
+                if task_id is None and result.events:
+                    task_id = result.events[0].get("task_id")
+                entry = {
+                    "op": op,
+                    "op_id": op_id,
+                    "fp": fp,
+                    "token_id": token_id,
+                    "task_id": task_id,
+                    "event_ids": [e.get("id") for e in result.events],
+                    "paths": list(result.paths),
+                    "lengths": tracker.lengths(),
+                }
+                result_data = result_json(result)
+                txn.commit(entry, result_data, list(result.events))
+                txn.finish()
+            except BaseException as exc:
+                failure = exc
+                quarantine = self._recover(txn, exc)
+                if quarantine is None:
+                    raise
+        if quarantine is not None:
+            # Outside the board scope: quarantining publishes the server's status file.
+            self._mark_unavailable(str(quarantine))
             raise OpError(
                 "BOARD_UNAVAILABLE",
-                f"project {self.slug} could not record operation {op_id}; it is "
+                f"project {self.slug} could not complete operation {op_id}; it is "
                 "unavailable until it is reloaded",
-            ) from exc
-        self._remember_watched(paths)
-        return seq, line
-
-    def _append_journal(
-        self,
-        op: str,
-        op_id: str | None,
-        fp: str | None,
-        token_id: str | None,
-        task_id: str | None,
-        event_ids: list,
-        paths: list[str],
-        tracker: MutationTracker,
-    ) -> tuple[int, dict]:
-        assert self.journal is not None
-        return self.journal.append(
-            {
-                "op": op,
-                "op_id": op_id,
-                "fp": fp,
-                "token_id": token_id,
-                "task_id": task_id,
-                "event_ids": event_ids,
-                "paths": paths,
-                "lengths": tracker.lengths(),
-            }
+            ) from failure
+        return WriteOutcome(
+            result_data=result_data, seq=txn.seq, result=result, journal_line=txn.line
         )
 
-    def _log_uncommitted(self, tracker: MutationTracker, op: str, op_id: str | None) -> None:
-        # H-22a replaces this with rollback from the undo log.
-        if tracker.kinds:
-            self.log.warning(
-                "uncommitted_writes",
+    def _recover(self, txn: Transaction, exc: BaseException) -> Quarantine | None:
+        """Transaction recovery before the project admits another request (SPEC §8.6).
+        Returns ``None`` when the caller should get *exc*, or the reason to quarantine."""
+        try:
+            txn.recover()
+        except Quarantine as problem:
+            self.log.error(
+                "transaction_quarantine",
                 project=self.slug,
-                op=op,
-                op_id=op_id,
-                paths=tracker.relative_paths(),
+                op=txn.op,
+                op_id=txn.op_id,
+                reason=str(problem),
+                error=describe_error(exc),
             )
+            return problem
+        if txn.committed:
+            self.log.error(
+                "transaction_finish_failed",
+                project=self.slug,
+                op=txn.op,
+                op_id=txn.op_id,
+                seq=txn.seq,
+                error=describe_error(exc),
+            )
+        else:
+            self.log.info(
+                "transaction_rollback",
+                project=self.slug,
+                op=txn.op,
+                op_id=txn.op_id,
+                paths=txn.tracker.relative_paths(),
+                error=describe_error(exc),
+            )
+        return None
+
+    def publication_failed(self, seq: int) -> None:
+        """Publication failed for committed *seq*: streams reconnect and replay."""
+        self.log.warning("publication_failed", project=self.slug, seq=seq)
+        if self.close_streams is not None:
+            self.close_streams()
+
+    # -- op status (SPEC §8.6) ---------------------------------------------
+
+    def op_status(self, token_id: str | None, op_id: str) -> dict:
+        """The outcome of one of *token_id*'s operations. Reads only memory, the
+        committed receipt line, and retained epoch journals (which never change),
+        so it needs no lock."""
+        key = (token_id, op_id)
+        known = self.index.get(key)
+        if known is not None:
+            data: dict[str, Any] = {"state": "committed", "epoch": known.epoch, "seq": known.seq}
+            try:
+                data["result"] = read_receipt(self.board, known)["result"]
+            except (OSError, ValueError, KeyError):
+                pass  # the receipt is no longer retained
+            return data
+        journal = self.journal
+        seq = self.op_seqs.get(key)
+        if seq is not None and journal is not None:
+            return {"state": "committed", "epoch": journal.epoch, "seq": seq}
+        return _scan_retained_journals(self.board, token_id, op_id) or {"state": "not_found"}
 
     def read_config(self) -> dict:
         """The board's ``config.json`` as it is now (call under the work lock)."""
@@ -527,34 +621,33 @@ class Project:
     # -- server-started transactions -----------------------------------------
 
     def set_config(self, changes: dict[str, Any]) -> dict:
-        """Apply an allowlisted review-workflow change (SPEC §8.2) and journal it.
+        """Apply an allowlisted review-workflow change (SPEC §8.2) as a transaction.
 
-        The same owner, recorder, and journal seam as an operation, as
-        ``server.set_config`` with a server-minted ``op_id`` and ``token_id: null``.
+        ``server.set_config`` with a server-minted ``op_id`` and ``token_id: null``;
+        its undo log is ``hosted/undo/server--<op_id>.jsonl``.
         """
         op = "server.set_config"
-        op_id = generate_op_id()
         tracker = MutationTracker(self.board, op)
         config = self.read_config()
         config.update(changes)
-        try:
-            with board_scope(self.board), recording(tracker) as recorder:
+
+        def work(txn: Transaction) -> OpResult:
+            with recording(txn.before_mutation) as recorder:
                 atomic_write(self.board / "config.json", serialize_config(config))
-        except BaseException:
-            self._log_uncommitted(tracker, op, op_id)
-            raise
-        paths = recorder.relative_paths(self.board)
-        seq, _ = self._commit(
+            paths = recorder.relative_paths(self.board)
+            return OpResult(
+                value={"project": self.slug, "set": changes, "paths": paths}, paths=tuple(paths)
+            )
+
+        outcome = self._transact(
             op=op,
-            op_id=op_id,
-            fp=fingerprint(op, {"set": changes}, None, None, {}, None),
+            op_id=generate_op_id(),
             token_id=None,
-            task_id=None,
-            event_ids=[],
-            paths=paths,
+            fp=fingerprint(op, {"set": changes}, None, None, {}, None),
             tracker=tracker,
+            work=work,
         )
-        return {"project": self.slug, "set": changes, "seq": seq, "paths": paths}
+        return {**outcome.result_data["value"], "seq": outcome.seq}
 
     # -- reads -------------------------------------------------------------
 
@@ -571,6 +664,34 @@ def _relative(board: Path, path: Path) -> str:
         return path.relative_to(board.resolve()).as_posix()
     except ValueError:
         return str(path)
+
+
+def _scan_retained_journals(board: Path, token_id: str | None, op_id: str) -> dict | None:
+    """Find *token_id*'s *op_id* in a retained ``hosted/journal.<epoch>.jsonl``."""
+    hosted = board / HOSTED_DIR
+    try:
+        names = sorted(os.listdir(hosted))
+    except OSError:
+        return None
+    needle = op_id.encode("ascii")
+    for name in names:
+        if not (name.startswith("journal.ep_") and name.endswith(".jsonl")):
+            continue
+        epoch = name[len("journal.") : -len(".jsonl")]
+        try:
+            data = (hosted / name).read_bytes()
+        except OSError:
+            continue
+        for raw in data.splitlines():
+            if needle not in raw:
+                continue
+            try:
+                line = json.loads(raw)
+            except ValueError:
+                continue
+            if line.get("op_id") == op_id and line.get("token_id") == token_id:
+                return {"state": "committed", "epoch": epoch, "seq": line.get("seq")}
+    return None
 
 
 def _read_json(path: Path) -> dict:

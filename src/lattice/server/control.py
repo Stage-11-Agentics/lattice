@@ -10,10 +10,12 @@ Whether a server is running is decided by the server's own lease: a running
 server holds an exclusive flock on ``<server_root>/server.lock`` for its
 lifetime.
 
-The admin is not the board's owner, so it writes its request with this
-module's own fsync-and-rename writer rather than the board primitives (which
-refuse ``hosted/`` to anyone but the owner). It writes nothing else under the
-board.
+The admin is not the board's owner, so it creates ``hosted/control/``, writes
+its request, and removes the answer with this module's own writers rather
+than the board primitives (which refuse ``hosted/`` to anyone but the owner).
+Like every server-control write, each fsyncs the file and the directory entry
+it changes, and a failed fsync raises (SPEC §8.6). It writes nothing else
+under the board.
 """
 
 from __future__ import annotations
@@ -91,11 +93,7 @@ def _write_private(path: Path, data: bytes) -> None:
     finally:
         os.close(fd)
     os.replace(tmp, path)
-    dir_fd = os.open(path.parent, os.O_RDONLY)
-    try:
-        os.fsync(dir_fd)
-    finally:
-        os.close(dir_fd)
+    _fsync_dir(path.parent)
 
 
 def send_request(
@@ -112,7 +110,7 @@ def send_request(
     request stays in place, so the server still runs it later.
     """
     control = Path(board) / "hosted" / CONTROL_DIR
-    control.mkdir(parents=True, exist_ok=True)
+    _ensure_dir(control)
     request_id = generate_instance_id().removeprefix("inst_")
     request = {"action": action, **(payload or {})}
     _write_private(control / f"{request_id}.json", (json.dumps(request) + "\n").encode())
@@ -125,7 +123,7 @@ def send_request(
             except ValueError:
                 time.sleep(poll_seconds)  # written atomically; a parse error is a race
                 continue
-            done.unlink(missing_ok=True)
+            _remove(done)
             return answer
         time.sleep(poll_seconds)
     raise OpError(
@@ -173,7 +171,39 @@ def answer_unowned(path: Path, answer: dict) -> None:
     """Answer a request for a project this server does not hold, touching nothing
     else: the ``.done`` goes through the same private writer the admin uses."""
     _write_private(path.with_suffix(".done"), (json.dumps(answer, sort_keys=True) + "\n").encode())
-    path.unlink(missing_ok=True)
+    _remove(path)
+
+
+def _ensure_dir(directory: Path) -> None:
+    """``mkdir -p`` that fsyncs the parent of each directory it creates."""
+    missing = []
+    current = Path(directory)
+    while not current.is_dir():
+        missing.append(current)
+        current = current.parent
+    for path in reversed(missing):
+        try:
+            path.mkdir()
+        except FileExistsError:
+            continue
+        _fsync_dir(path.parent)
+
+
+def _remove(path: Path) -> None:
+    """Unlink a control file and fsync its directory entry's removal."""
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
+    _fsync_dir(path.parent)
+
+
+def _fsync_dir(directory: Path) -> None:
+    fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def run_request(project: Any, path: Path, log: Any = None) -> dict:

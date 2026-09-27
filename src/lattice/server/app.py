@@ -31,7 +31,6 @@ import json
 import re
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -46,7 +45,6 @@ from lattice.core.events import BUILTIN_EVENT_TYPES
 from lattice.core.ids import generate_op_id, validate_actor
 from lattice.ops.base import (
     Caller,
-    OpResult,
     check_op_id,
     check_path_component,
     get_operation,
@@ -58,7 +56,7 @@ from lattice.server.config import ServerConfig
 from lattice.server.journal import fingerprint
 from lattice.server.limits import DiskFloor, TokenLimits, check_event_data_cap
 from lattice.server.log import ServerLog, exception_fields
-from lattice.server.project import LOADED, Project, WriteRequest
+from lattice.server.project import LOADED, LOADING, UNLOADED, Project, WriteRequest
 from lattice.server.protocol import (
     HEADER_CLIENT_VERSION,
     HEADER_MIN_CLIENT_VERSION,
@@ -187,6 +185,7 @@ class HeadersMiddleware:
                     token_id=fields.get("token_id"),
                     actor=fields.get("actor"),
                     seq=fields.get("seq"),
+                    replayed=fields.get("replayed"),
                     error_code=fields.get("error_code"),
                 )
 
@@ -344,7 +343,8 @@ def _parse_envelope(
     log_fields = request.scope["state"]["log"]
 
     op_id = body.get("op_id")
-    if op_id is None:
+    minted = op_id is None
+    if minted:
         op_id = generate_op_id()  # never deduplicated (SPEC §8.4)
     else:
         check_op_id(op_id)
@@ -445,6 +445,7 @@ def _parse_envelope(
         token_id=token.id,
         fp=fp,
         authorize=lambda identity, _caller: token.authorize_actor(identity),
+        minted=minted,
     )
     return write, body
 
@@ -476,12 +477,6 @@ def _resolve_request_actor(body: dict, token: TokenRecord) -> tuple[str | None, 
             "Expected prefix:identifier (e.g., human:atin, agent:claude).",
         )
     return actor, None
-
-
-def result_json(result: OpResult) -> dict:
-    data = asdict(result)
-    data.pop("paths", None)
-    return data
 
 
 # ---------------------------------------------------------------------------
@@ -627,15 +622,39 @@ async def op_request(request: Request, state: ServerState) -> Response:
         async with state.registry.admitted(project):
             outcome = await in_worker(work)
         log_fields["seq"] = outcome.seq
+        if outcome.replayed:
+            log_fields["replayed"] = True
         return envelope_ok(
             {
-                "result": result_json(outcome.result),
+                "result": outcome.result_data,
                 "seq": outcome.seq,
                 "op_id": write.caller.origin["op_id"],
             }
         )
     finally:
         state.limits.leave(token.id)
+
+
+async def op_status(request: Request, state: ServerState) -> Response:
+    """``GET /v1/projects/{slug}/ops/{op_id}``: the outcome of one of the caller's
+    own operations (SPEC §8.6). A loaded project answers from memory without
+    admission; one that has never loaded is admitted (and loads) first."""
+    slug = request.path_params["slug"]
+    op_id = request.path_params["op"]
+    log_fields = request.scope["state"]["log"]
+    log_fields.update(project=slug, op_id=op_id)
+
+    async def run(token: TokenRecord) -> Response:
+        project = resolve_project(state, token, slug)
+        check_op_id(op_id)
+        if project.state in (UNLOADED, LOADING):
+            async with state.registry.admitted(project):
+                pass
+        project.require_loaded()
+        data = await in_worker(lambda: project.op_status(token.id, op_id))
+        return envelope_ok(data)
+
+    return await _with_token(request, state, run)
 
 
 def _task_payload(board: Path, raw_id: str, *, include_plan: bool = True) -> dict:
@@ -770,6 +789,7 @@ def create_app(root: Path, *, config: ServerConfig, log: ServerLog | None = None
         Route("/v1/info", endpoint(info), methods=["GET"]),
         Route("/v1/projects", endpoint(projects), methods=["GET"]),
         Route("/v1/projects/{slug}/ops/{op}", endpoint(op_request), methods=["POST"]),
+        Route("/v1/projects/{slug}/ops/{op}", endpoint(op_status), methods=["GET"]),
         Route("/v1/projects/{slug}/tasks", endpoint(task_list), methods=["GET"]),
         Route("/v1/projects/{slug}/tasks/{task_id}", endpoint(task_read), methods=["GET"]),
         Route(
