@@ -31,7 +31,7 @@ from typing import Any
 from lattice.core.errors import OpError
 from lattice.remote.http import Remote
 
-DEFAULT_RETRY_SECONDS = 30.0
+DEFAULT_RETRY_SECONDS = 15.0
 #: The longest one operation may retry (SPEC §8.6: retries are bounded).
 MAX_RETRY_SECONDS = 3600.0
 

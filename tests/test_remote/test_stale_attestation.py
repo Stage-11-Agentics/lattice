@@ -36,7 +36,7 @@ def test_stale_attestation_resyncs_before_the_retry(
         trail.append("sync")
         return real_catch_up(root, bulk=bulk)
 
-    def post(remote, project, op_name, body):  # noqa: ANN001, ANN202
+    def post(remote, project, op_name, body, **kwargs):  # noqa: ANN001, ANN003, ANN202
         trail.append("post")
         op_ids.append(body["op_id"])
         if len(op_ids) == 1:
@@ -45,7 +45,7 @@ def test_stale_attestation_resyncs_before_the_retry(
                 "attestation is stale",
                 {"reason": STALE_ATTESTATION},
             )
-        return real_post(remote, project, op_name, body)
+        return real_post(remote, project, op_name, body, **kwargs)
 
     def attest() -> dict:
         trail.append("attest")

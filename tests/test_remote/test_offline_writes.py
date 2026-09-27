@@ -1,6 +1,6 @@
 """G-8 for write commands that read first (review round 1): a refused offline
-write leaves the checkout byte for byte as it was, including the offline
-window its own read phase would otherwise open (SPEC §9.5)."""
+write leaves the checkout byte for byte as it was, except the offline window,
+which it opens so the next write does not wait again (SPEC §8.6, §9.5)."""
 
 from __future__ import annotations
 
@@ -33,18 +33,21 @@ def repo(hosted_env: HostedEnv, tmp_path: Path) -> Path:
 def test_a_write_that_reads_first_changes_nothing_offline(
     hosted_env: HostedEnv, repo: Path, args: tuple[str, ...]
 ) -> None:
-    """G-8 for write commands with a read phase: its failed catch-up must not
-    leave the offline window behind when the write itself is refused."""
+    """G-8 for write commands with a read phase: nothing but the offline
+    window changes when the write itself is refused."""
     hosted_env.write_remote(retry_seconds=0.2)
     with hosted_env.stopped():
         assert not (repo / WINDOW).exists()
-        before = tree_hash(repo)
+        before = _without_window(tree_hash(repo))
         result = run_cli(repo, *args, "--json")
         assert result.exit_code == 1, result.output
         assert json.loads(result.stdout)["error"]["code"] == "SERVER_UNREACHABLE"
-        assert tree_hash(repo) == before
-        # An existing window is left exactly as it was, too.
-        assert run_cli(repo, "list").exit_code == 0
-        before = tree_hash(repo)
+        assert _without_window(tree_hash(repo)) == before
+        assert (repo / WINDOW).exists()
+        # Inside the window, the same: refused at once, nothing else changed.
         assert run_cli(repo, *args).exit_code == 1
-        assert tree_hash(repo) == before
+        assert _without_window(tree_hash(repo)) == before
+
+
+def _without_window(tree: dict[str, str]) -> dict[str, str]:
+    return {k: v for k, v in tree.items() if k != WINDOW.as_posix()}

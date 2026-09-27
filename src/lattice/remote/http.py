@@ -65,7 +65,7 @@ class Remote:
     run_board_hooks: bool = False
     run_auto_reviews: bool = True
     allow_plaintext: bool = False
-    retry_seconds: float = 30.0
+    retry_seconds: float = 15.0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "url", self.url.rstrip("/"))

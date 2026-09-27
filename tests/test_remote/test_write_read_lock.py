@@ -45,9 +45,9 @@ def test_attestation_reads_hold_the_lock_until_the_post(
     seen: list[tuple[str, bool]] = []
     real_post = client.post_operation
 
-    def post(remote, project, op_name, body):  # noqa: ANN001, ANN202
+    def post(remote, project, op_name, body, **kwargs):  # noqa: ANN001, ANN003, ANN202
         seen.append(("post", _sync_could_apply(repo)))
-        return real_post(remote, project, op_name, body)
+        return real_post(remote, project, op_name, body, **kwargs)
 
     monkeypatch.setattr(client, "post_operation", post)
 

@@ -2,8 +2,9 @@
 
 Reads serve the cache with exactly one stderr notice; after a failed catch-up
 the next 15 seconds of reads make no network attempt; a write while the server
-is down fails with ``SERVER_UNREACHABLE`` and changes nothing on disk (no
-offline write queue).
+is down fails with ``SERVER_UNREACHABLE`` and changes nothing on disk but the
+offline window (no offline write queue). Offline writes say so in plain words,
+show progress, and wait once per outage (SPEC §8.6).
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import json
 import os
 import socket
 import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -19,7 +21,7 @@ from pathlib import Path
 import pytest
 
 from lattice.core.errors import OpError
-from lattice.remote import cache
+from lattice.remote import cache, client, http
 from tests.test_remote.hosted import HostedEnv, make_repo, run_cli, tree_hash
 
 WINDOW = Path(".lattice/cache/unreachable_until")
@@ -70,13 +72,18 @@ def silent_listener() -> Iterator[dict]:
         sock.close()
 
 
+def _without_window(tree: dict[str, str]) -> dict[str, str]:
+    return {k: v for k, v in tree.items() if k != WINDOW.as_posix()}
+
+
 def test_write_while_stopped_is_refused_and_changes_nothing(
     hosted_env: HostedEnv, repo: Path
 ) -> None:
-    """G-8: no offline write queue."""
+    """G-8: no offline write queue. The one file a refused write leaves is the
+    offline window, so the next write does not wait again (SPEC §8.6)."""
     hosted_env.write_remote(retry_seconds=0.2)
     with hosted_env.stopped():
-        before = tree_hash(repo)
+        before = _without_window(tree_hash(repo))
         for args in (
             ("create", "Queued?", "--actor", "human:alice"),
             ("comment", "DEM-1", "queued?", "--actor", "human:alice"),
@@ -89,7 +96,134 @@ def test_write_while_stopped_is_refused_and_changes_nothing(
                 assert error["code"] == "SERVER_UNREACHABLE"
             else:
                 assert "Nothing was written" in result.stderr
-        assert tree_hash(repo) == before
+            assert (repo / WINDOW).exists()
+        assert _without_window(tree_hash(repo)) == before
+
+
+@pytest.fixture()
+def progress_times(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """When each retry progress line was written (``time.monotonic``)."""
+    times: list[float] = []
+    write = client._progress
+
+    def timed(line: str) -> None:
+        times.append(time.monotonic())
+        write(line)
+
+    monkeypatch.setattr(client, "_progress", timed)
+    return times
+
+
+def test_offline_write_says_so_plainly_with_progress(
+    hosted_env: HostedEnv, repo: Path, progress_times: list[float]
+) -> None:
+    """G-8 (SPEC §8.6): the not-available line at once, naming alias and URL;
+    no raw OS error and no operation ID on stderr or in the plain error; the
+    raw OS error only in ``--json`` details."""
+    hosted_env.write_remote(retry_seconds=3)
+    with hosted_env.stopped():
+        url = hosted_env.url
+        started = time.monotonic()
+        plain = run_cli(repo, "create", "Offline write", "--actor", "human:alice")
+        ended = time.monotonic()
+    assert plain.exit_code == 1
+    assert plain.stdout == ""
+    assert _notices(plain.stderr) == [
+        f"lattice: server team ({url}) is not available; retrying for up to 3 s"
+    ]
+    assert plain.stderr.splitlines()[-1] == (
+        f"Error: server team ({url}) is not available. Nothing was written; "
+        "run the command again when it is back."
+    )
+    text = plain.stderr.lower()
+    assert "errno" not in text and "refused" not in text and "op_" not in text
+    # At once, then one line within each 5 s until it gives up.
+    assert progress_times[0] - started < 1.0
+    marks = [*progress_times, ended]
+    assert all(b - a <= 5.5 for a, b in zip(marks, marks[1:], strict=False))
+
+    assert (repo / WINDOW).exists()  # the next write will not wait again
+
+    # Past the window, a --json write waits again and says so on stderr alone
+    # (a 1 s budget keeps the test short).
+    (repo / WINDOW).unlink()
+    hosted_env.write_remote(retry_seconds=1)
+    with hosted_env.stopped():
+        url = hosted_env.url
+        as_json = run_cli(repo, "create", "Offline write", "--actor", "human:alice", "--json")
+    assert as_json.exit_code == 1
+    assert _notices(as_json.stderr) == [
+        f"lattice: server team ({url}) is not available; retrying for up to 1 s"
+    ]
+    assert "op_" not in as_json.stderr and "errno" not in as_json.stderr.lower()
+    error = json.loads(as_json.stdout)["error"]
+    assert error["code"] == "SERVER_UNREACHABLE"
+    assert "errno" not in error["message"].lower()
+    details = error["details"]
+    assert set(details) == {"remote", "url", "os_error", "waited_seconds"}
+    assert (details["remote"], details["url"]) == ("team", url)
+    assert "refused" in details["os_error"].lower()
+    assert 0 < details["waited_seconds"] <= 1
+
+
+def test_a_second_write_in_the_window_does_not_wait_again(
+    hosted_env: HostedEnv, repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """G-8 (SPEC §8.6 "No repeated wait"): a write started inside the offline
+    window (opened by an earlier write or read) fails at once, after one
+    attempt. The test above shows a refused write opening the window."""
+    hosted_env.write_remote(retry_seconds=3)
+    attempts: list[str] = []
+    send = http.request
+
+    def counting(remote: http.Remote, method: str, path: str, **kwargs: object) -> object:
+        attempts.append(f"{method} {path}")
+        return send(remote, method, path, **kwargs)
+
+    with hosted_env.stopped():
+        (repo / WINDOW).write_text(f"{time.time() + 15:.3f}\n")
+        monkeypatch.setattr(http, "request", counting)
+        for args in (
+            ("comment", "DEM-1", "second", "--actor", "human:alice"),
+            ("comment", "DEM-1", "second", "--actor", "human:alice", "--json"),
+        ):
+            attempts.clear()
+            started = time.monotonic()
+            second = run_cli(repo, *args)
+            assert time.monotonic() - started < 3
+            assert second.exit_code == 1
+            assert len(attempts) == 1 and "/ops/" in attempts[0]
+            assert "retrying" not in second.stderr
+            if "--json" in args:
+                error = json.loads(second.stdout)["error"]
+                assert error["code"] == "SERVER_UNREACHABLE"
+                assert error["details"]["waited_seconds"] == 0
+            else:
+                assert "is not available. Nothing was written" in second.stderr
+
+
+def test_a_lost_response_still_retries_fully_in_the_window(
+    hosted_env: HostedEnv, repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """G-8 (SPEC §8.6): a write whose request was sent may have committed, so
+    it retries for the full window even inside the offline window, and ends in
+    ``OUTCOME_UNKNOWN`` naming its operation."""
+    monkeypatch.setattr(client, "OP_POLICY", http.Policy(1.0, 0.3))
+    with silent_listener() as listener:
+        hosted_env.write_remote(url=listener["url"], retry_seconds=1)
+        (repo / WINDOW).write_text(f"{time.time() + 60:.3f}\n")
+        started = time.monotonic()
+        result = run_cli(repo, "create", "Lost", "--actor", "human:alice", "--json")
+        elapsed = time.monotonic() - started
+        accepts = listener["accepts"]
+    assert result.exit_code == 1
+    error = json.loads(result.stdout)["error"]
+    assert error["code"] == "OUTCOME_UNKNOWN"
+    op_id = error["message"].split("(operation ", 1)[1].split(")", 1)[0]
+    assert op_id.startswith("op_")
+    assert f"lattice remote op-status {op_id}" in error["message"]
+    assert accepts >= 2  # retried, not given up at once
+    assert elapsed >= 0.9
 
 
 def test_reads_serve_the_cache_with_one_notice(hosted_env: HostedEnv, repo: Path) -> None:

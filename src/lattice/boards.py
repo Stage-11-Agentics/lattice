@@ -285,14 +285,15 @@ class HostedBoard:
             body["expect"] = {"last_event_id": caller.expect_last_event_id}
         # The read phase ends here: never hold the read lock across the network
         # call or the post-write sync (which takes it exclusively).
+        offline = session.window_open_at_start(self.hosted)
         session.release_read_lock(self.root)
         session.check_protocol(self.hosted)
         try:
-            data = post_operation(self.remote, self.hosted.project, op_name, body)
+            data = post_operation(self.remote, self.hosted.project, op_name, body, offline=offline)
         except OpError as exc:
             if exc.code == "SERVER_UNREACHABLE":
-                # Nothing was sent: leave the checkout exactly as it was (G-8).
-                session.restore_unreachable_window(self.hosted)
+                # Nothing was sent; the next write should not wait again (SPEC §8.6).
+                session.open_unreachable_window(self.hosted)
             raise
         session.close_unreachable_window(self.hosted)
         # Acknowledged: into the ledger before anything else can fail or die
