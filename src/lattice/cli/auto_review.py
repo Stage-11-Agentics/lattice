@@ -29,7 +29,7 @@ from lattice.core.auto_review import (
     review_type_for_status,
     should_auto_fire,
 )
-from lattice.core.review import claim_review_state, clear_review_state
+from lattice.core.review import claim_review_state, clear_owned_review_state
 
 logger = logging.getLogger(__name__)
 
@@ -169,6 +169,7 @@ def auto_fire_review(
         started_by_pid=os.getpid(),
         auto_fired=True,
     )
+    parent_claim = (existing or {}).get("claim") if claimed else None
     if not claimed:
         result: dict = {
             "fired": False,
@@ -189,7 +190,7 @@ def auto_fire_review(
         # phantom record.  Best effort — failures here are silently
         # ignored because we're already on the failure path.
         try:
-            clear_review_state(lattice_dir, task_id)
+            clear_owned_review_state(lattice_dir, task_id, parent_claim)
         except Exception:  # noqa: BLE001 — best effort cleanup
             logger.debug("clear_review_state failed during executable lookup miss", exc_info=True)
         return {"fired": False, "reason": "executable_not_found"}
@@ -199,7 +200,7 @@ def auto_fire_review(
         log_path.parent.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         try:
-            clear_review_state(lattice_dir, task_id)
+            clear_owned_review_state(lattice_dir, task_id, parent_claim)
         except Exception:  # noqa: BLE001
             logger.debug("clear_review_state failed during mkdir failure", exc_info=True)
         return {"fired": False, "reason": f"spawn_failed:{exc}"}
@@ -234,7 +235,7 @@ def auto_fire_review(
         )
     except Exception as exc:  # noqa: BLE001 — return the failure cleanly
         try:
-            clear_review_state(lattice_dir, task_id)
+            clear_owned_review_state(lattice_dir, task_id, parent_claim)
         except Exception:  # noqa: BLE001
             logger.debug("clear_review_state failed during Popen failure", exc_info=True)
         # An empty header file may have been written before Popen raised;

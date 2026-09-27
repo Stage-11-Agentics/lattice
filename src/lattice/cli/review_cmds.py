@@ -32,14 +32,15 @@ from lattice.core.review import (
     cap_diff_chars,
     claim_review_state,
     cleanup_temp_files,
-    clear_review_state,
+    clear_owned_review_state,
     is_review_abandoned,
     last_failure_for_task,
     read_review_state,
     run_single_review,
     run_triple_review,
     resolve_diff,
-    write_review_state,
+    take_over_review_state,
+    write_owned_review_state,
 )
 from lattice.templates import load_review_template
 
@@ -152,8 +153,10 @@ def _claim_or_refuse(
     triggered_by: str | None,
     is_json: bool,
     override: bool = False,
-) -> None:
+) -> str | None:
     """Claim ``review_state`` for this review subprocess, or exit with a clear error.
+    Returns the claim's token: every later write of the record, and its final
+    clear, is conditional on still holding it (``write_owned_review_state``).
 
     *override* (``--force`` on a hosted checkout, SPEC §3.4) takes the record over
     whatever it holds, so no refusal applies.
@@ -180,7 +183,7 @@ def _claim_or_refuse(
     """
     existing = read_review_state(lattice_dir, task_id)
     if override:
-        write_review_state(
+        return take_over_review_state(
             lattice_dir,
             {
                 "task_id": task_id,
@@ -192,7 +195,6 @@ def _claim_or_refuse(
                 "agents": [],
             },
         )
-        return
     if (
         triggered_by is not None
         and isinstance(existing, dict)
@@ -209,8 +211,7 @@ def _claim_or_refuse(
             "auto_fired": True,
             "agents": [],
         }
-        write_review_state(lattice_dir, adopted)
-        return
+        return take_over_review_state(lattice_dir, adopted)
 
     claimed, holder = claim_review_state(
         lattice_dir,
@@ -221,7 +222,7 @@ def _claim_or_refuse(
         auto_fired=triggered_by is not None,
     )
     if claimed:
-        return
+        return (holder or {}).get("claim")
 
     holder = holder or {}
     holder_pid = holder.get("started_by_pid")
@@ -457,12 +458,13 @@ def code_review(
     assert reviewed_worktree is not None
 
     actor: str | dict | None = None
+    claim: str | None = None
     if not dry_run:
         actor = require_actor(is_json)
         # Claim the in-flight slot (or adopt the parent's claim when this is
         # an auto-fired child invoked with --triggered-by). A dry run claims
         # nothing, so it never contends with a real review.
-        _claim_or_refuse(
+        claim = _claim_or_refuse(
             lattice_dir,
             task_id,
             mode=mode,
@@ -488,6 +490,7 @@ def code_review(
                 actor=actor,
                 config=config,
                 auto_fired=triggered_by is not None,
+                claim=claim,
             )
         output_error(resolution.error, resolution.error_code or "DIFF_RESOLUTION_FAILED", is_json)
 
@@ -554,6 +557,7 @@ def code_review(
                 actor=actor,
                 config=config,
                 auto_fired=triggered_by is not None,
+                claim=claim,
             )
         output_error(str(exc), "HEAD_SHA_UNKNOWN", is_json)
 
@@ -606,6 +610,7 @@ def code_review(
             worktree=reviewed_worktree,
             reviewed_header=evidence_header,
             auto_fired=triggered_by is not None,
+            claim=claim,
         )
 
     elif mode == "triple":
@@ -621,6 +626,7 @@ def code_review(
             head=resolution.head_ref,
             head_sha=resolution.head_sha,
             worktree=reviewed_worktree,
+            claim=claim,
         )
 
 
@@ -722,7 +728,7 @@ def plan_review(
 
     actor = require_actor(is_json)
 
-    _claim_or_refuse(
+    claim = _claim_or_refuse(
         lattice_dir,
         task_id,
         mode=mode,
@@ -762,6 +768,7 @@ def plan_review(
             config=config,
             timeout=timeout,
             auto_fired=triggered_by is not None,
+            claim=claim,
         )
         if art_id and plan_approval == "human":
             _flag_needs_human(lattice_dir, task_id, actor, is_json)
@@ -780,6 +787,7 @@ def plan_review(
             is_json=is_json,
             quiet=quiet,
             base=None,
+            claim=claim,
         )
 
 
@@ -830,6 +838,8 @@ def review_status(task_id: str, output_json: bool) -> None:
         return
 
     state = read_review_state(lattice_dir, task_id)
+    if state is not None:
+        state.pop("claim", None)  # the slot's ownership token, not status
     if state is None:
         # No in-flight record. Distinguish: a completed review (artifact exists),
         # a *failed* review whose state was cleared by an older path (surface it
@@ -1090,6 +1100,7 @@ def _record_resolution_failure(
     actor: str | dict,
     config: dict,
     auto_fired: bool,
+    claim: str | None = None,
 ) -> None:
     """Make a failed diff resolution as visible as a failed review agent.
 
@@ -1120,7 +1131,8 @@ def _record_resolution_failure(
     state.setdefault("started_by_pid", os.getpid())
     state.setdefault("auto_fired", auto_fired)
     try:
-        write_review_state(lattice_dir, state)
+        # Only while this review still holds the slot (a --force takeover owns it now).
+        write_owned_review_state(lattice_dir, state, claim)
     except Exception:  # noqa: BLE001 — never mask the resolution failure
         click.echo("Warning: could not record the failed review state.", err=True)
 
@@ -1153,6 +1165,7 @@ def _run_single_and_store(
     worktree: Path | None = None,
     reviewed_header: str | None = None,
     auto_fired: bool = False,
+    claim: str | None = None,
 ) -> str | None:
     """Run single-agent review, store artifact, print result. Returns artifact ID or None."""
     click.echo(f"Running {review_type} (single mode)...")
@@ -1165,6 +1178,7 @@ def _run_single_and_store(
         actor=actor,
         timeout=timeout,
         worktree=worktree,
+        claim=claim,
     )
 
     if not success:
@@ -1221,6 +1235,7 @@ def _spawn_triple_pane(
     head: str | None = None,
     head_sha: str | None = None,
     worktree: Path | None = None,
+    claim: str | None = None,
 ) -> None:
     """Spawn a c11 pane that runs the trident review. Fire-and-forget.
 
@@ -1244,11 +1259,12 @@ def _spawn_triple_pane(
         head_sha=head_sha,
         short_id=short_id,
         worktree=worktree,
+        claim=claim,
     )
 
     if not success:
         # Release the parent claim so retries aren't blocked by a phantom record.
-        clear_review_state(lattice_dir, task_id)
+        clear_owned_review_state(lattice_dir, task_id, claim)
         if is_json:
             click.echo(
                 json.dumps(

@@ -239,7 +239,8 @@ def events_of(env: HostedEnv, short_id: str) -> list[dict]:
 
 def fake_agent_on_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A stand-in ``claude`` first on ``PATH``: the fixture agent, which prints a
-    fixed review, after recording the environment it was started with."""
+    fixed review, after recording the environment it was started with and
+    sleeping ``$FAKE_AGENT_DELAY`` seconds (default 0)."""
     bin_dir = tmp_path / "agent-bin"
     bin_dir.mkdir()
     env_dump = tmp_path / "agent-env.json"
@@ -248,6 +249,7 @@ def fake_agent_on_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         "#!/bin/sh\n"
         f'"{sys.executable}" -c "import json, os; '
         f"json.dump(dict(os.environ), open('{env_dump}', 'w'))\"\n"
+        'sleep "${FAKE_AGENT_DELAY:-0}"\n'
         "LATTICE_FAKE_BEHAVIOR=stdout LATTICE_AGENT_OUTPUT=/dev/null "
         f'exec "{sys.executable}" "{REPO_ROOT / "tests" / "fixtures" / "fake_agent.py"}"\n'
     )
