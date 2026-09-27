@@ -305,7 +305,7 @@ def rebuild_index(
             )
             kept.append(raw + b"\n")
             offset += len(raw) + 1
-        if changed:
+        if changed or not data:  # an empty file: a crash right after creating it
             if kept:
                 atomic_write(path, b"".join(kept))
             else:
