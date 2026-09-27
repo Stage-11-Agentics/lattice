@@ -465,3 +465,83 @@ class TestBrowserActor:
         with pytest.raises(OpError) as exc:
             api.browser_actor(_identity("human:alice", "agent:*"))
         assert exc.value.code == "MISSING_ACTOR"
+
+
+# ---------------------------------------------------------------------------
+# A bound checkout's dashboard writes as the browser actor (SPEC §8.3, §10)
+# ---------------------------------------------------------------------------
+
+
+class _RecordingBoard:
+    """Stands in for a ``HostedBoard``: records each call, then runs it locally."""
+
+    def __init__(self, lattice_dir: Path) -> None:
+        self.local = LocalBoard(root=lattice_dir.parent, start=lattice_dir.parent)
+        self.lattice_dir = lattice_dir
+        self.calls: list[tuple[str, dict, Caller]] = []
+
+    def execute(self, op_name: str, params: dict, caller: Caller, **kwargs: object):
+        self.calls.append((op_name, params, caller))
+        return self.local.execute(op_name, params, caller, **kwargs)
+
+
+@pytest.fixture()
+def bound_dash(populated_lattice_dir, request):
+    from lattice.dashboard.server import DashboardBoard
+
+    ld, ids = populated_lattice_dir
+    board = _RecordingBoard(ld)
+    identity = _identity("human:alice", *request.param)
+    target = DashboardBoard(board, browser_actor=lambda: api.browser_actor(identity), hosted=True)
+    server = create_server(ld, "127.0.0.1", 0, board=target)
+    thread = threading.Thread(
+        target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
+    )
+    thread.start()
+    try:
+        yield server.server_address[1], ld, ids, board
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+class TestBoundCheckoutSeam:
+    @pytest.mark.parametrize(
+        "bound_dash", [("human:alice",), ("human:alice", "agent:*")], indirect=True
+    )
+    def test_drag_writes_as_the_user_whatever_the_body_says(self, bound_dash):
+        port, ld, ids, board = bound_dash
+        task = ids["backlog"]
+        status, _ = post(
+            port,
+            f"/api/tasks/{task}/status",
+            {"status": "in_planning", "actor": "human:mallory"},
+        )
+        assert status == 200
+        ((op, params, caller),) = board.calls
+        assert (op, params["new_status"], caller.actor) == (
+            "task.status",
+            "in_planning",
+            "human:alice",
+        )
+        assert caller.origin["reported"]["source"] == "browser"
+        assert events_of(ld, task)[-1]["actor"] == "human:alice"
+
+    @pytest.mark.parametrize("bound_dash", [("human:alice",)], indirect=True)
+    def test_open_plans_is_local_only(self, bound_dash):
+        port, _ld, ids, board = bound_dash
+        status, body = post(port, f"/api/tasks/{ids['backlog']}/open-plans", {})
+        assert status == 400
+        assert body["error"]["code"] == "LOCAL_ONLY"
+        assert "lattice plan write" in body["error"]["message"]
+        assert board.calls == []
+
+    @pytest.mark.parametrize("bound_dash", [("agent:*",)], indirect=True)
+    def test_no_browser_actor_refuses_the_write(self, bound_dash):
+        port, ld, ids, board = bound_dash
+        before = board_bytes(ld)
+        status, body = post(port, f"/api/tasks/{ids['backlog']}/comment", {"body": "x"})
+        assert status == 400
+        assert body["error"]["code"] == "MISSING_ACTOR"
+        assert board.calls == [] and board_bytes(ld) == before
