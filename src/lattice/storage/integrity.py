@@ -640,17 +640,38 @@ def check_board(lattice_dir: Path, *, fix: bool = False) -> DoctorReport:
     # -----------------------------------------------------------------
     json_files: list[Path] = list(task_files) + list(artifact_meta_files)
     config_path = lattice_dir / "config.json"
-    if config_path.exists():
-        json_files.append(config_path)
-
     json_ok = True
     config: object = None  # config.json as parsed here; a parse failure is a finding
+    if config_path.exists():
+        json_files.append(config_path)
+    else:
+        json_ok = False
+        findings.append(
+            {
+                "level": "error",
+                "check": "config",
+                "message": "config.json is missing; this board has no configuration",
+                "task_id": None,
+            }
+        )
     for jf in json_files:
         try:
             data = json.loads(jf.read_text())
             # Store snapshot data for later checks
             if jf == config_path:
                 config = data
+                if not isinstance(data, dict):
+                    json_ok = False
+                    findings.append(
+                        {
+                            "level": "error",
+                            "check": "config",
+                            "message": (
+                                f"config.json must hold a JSON object, not {type(data).__name__}"
+                            ),
+                            "task_id": None,
+                        }
+                    )
             elif jf.parent.name in ("tasks",) and jf.suffix == ".json":
                 snapshots[jf.stem] = data
                 known_task_ids.add(jf.stem)

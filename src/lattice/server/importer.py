@@ -377,13 +377,6 @@ def import_project(root: Path, slug: str, source: Path) -> dict:
     board = staging / LATTICE_DIR
     try:
         scan = _scan(lattice_fd)
-        if scan.identity("config.json") is None:
-            raise OpError(
-                "VALIDATION_ERROR",
-                "Import refused: .lattice/config.json is missing, so this is not a whole "
-                "board; nothing was created.",
-                {"path": "config.json"},
-            )
         with owning_board(board):
             ensure_dir(board / HOSTED_DIR)
             fd = try_owner_flock(board)

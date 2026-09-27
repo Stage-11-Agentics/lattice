@@ -181,15 +181,35 @@ def test_import_repair_touches_only_task_derived_files(tmp_path: Path) -> None:
     assert resource.read_bytes() != after[str(resource.relative_to(board))]
 
 
+def _break_config(board: Path, case: str) -> None:
+    config = board / "config.json"
+    if case == "absent":
+        config.unlink()
+    else:
+        config.write_text({"malformed": "{broken\n", "not-an-object": "[]\n"}[case])
+
+
+CONFIG_CASES = {
+    "malformed": ("json_parse", "Invalid JSON in config.json"),
+    "absent": ("config", "config.json is missing; this board has no configuration"),
+    "not-an-object": ("config", "config.json must hold a JSON object, not list"),
+}
+
+
 @pytest.mark.parametrize("mode", ["plain", "json"])
-def test_doctor_reports_a_malformed_config_instead_of_crashing(tmp_path: Path, mode: str) -> None:
-    """The scan parses config.json once: a parse failure is its json_parse finding (exit 1),
-    and the short-ID checks run without a project code. Before the scan moved, the second
-    parse raised, so doctor exited 1 with a traceback and no report."""
+@pytest.mark.parametrize("case", CONFIG_CASES)
+def test_doctor_reports_a_broken_config_instead_of_crashing(
+    tmp_path: Path, case: str, mode: str
+) -> None:
+    """The scan reads config.json once: a missing, malformed, or non-object config is
+    one error finding (exit 1), and the short-ID checks run without a project code.
+    Before the scan moved, all three crashed later with a traceback (exit 1, no report)."""
     src, _ids = _board(tmp_path)
-    (src / ".lattice" / "config.json").write_text("{broken\n")
+    _break_config(src / ".lattice", case)
+    check, message = CONFIG_CASES[case]
     report = check_board(src / ".lattice")
-    assert [(f["check"], f["level"]) for f in report.findings] == [("json_parse", "error")]
+    assert [(f["check"], f["level"]) for f in report.findings] == [(check, "error")]
+    assert report.findings[0]["message"].startswith(message)
     args = ["doctor"] + (["--json"] if mode == "json" else [])
     result = CliRunner().invoke(cli, args, env={"LATTICE_ROOT": str(src)})
     assert result.exit_code == 1
@@ -197,6 +217,8 @@ def test_doctor_reports_a_malformed_config_instead_of_crashing(tmp_path: Path, m
     if mode == "json":
         payload = json.loads(result.output)
         assert payload["data"]["summary"]["errors"] == 1
+        assert payload["data"]["findings"][0]["check"] == check
     else:
-        assert "⚠ Invalid JSON in config.json" in result.output
+        assert f"⚠ {message}" in result.output
+        assert "All JSON files valid" not in result.output
         assert result.output.rstrip().endswith("1 error found.")

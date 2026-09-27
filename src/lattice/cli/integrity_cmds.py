@@ -164,7 +164,7 @@ def _doctor_report(
             click.echo("\u2713 All JSON files valid")
         else:
             for f in findings:
-                if f["check"] == "json_parse":
+                if f["check"] in ("json_parse", "config"):
                     click.echo(f"\u26a0 {f['message']}")
 
         if jsonl_ok:

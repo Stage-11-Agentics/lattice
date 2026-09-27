@@ -398,35 +398,38 @@ def test_a_board_that_fails_doctor_is_refused_with_its_findings(
     assert _tree(source) == before
 
 
+BROKEN_CONFIGS = {
+    "malformed": ("{broken\n", "json_parse", "Invalid JSON in config.json"),
+    "absent": (None, "config", "config.json is missing"),
+    "not-an-object": ("[]\n", "config", "config.json must hold a JSON object, not list"),
+}
+
+
 @pytest.mark.parametrize("as_json", [True, False], ids=["json", "plain"])
-def test_a_malformed_config_is_refused_with_the_doctor_finding(
-    root: Path, source: Path, as_json: bool
+@pytest.mark.parametrize("case", BROKEN_CONFIGS)
+def test_a_broken_config_is_refused_with_the_doctor_finding(
+    root: Path, source: Path, case: str, as_json: bool
 ) -> None:
-    (source / ".lattice" / "config.json").write_text("{broken\n")
+    content, check, message = BROKEN_CONFIGS[case]
+    config = source / ".lattice" / "config.json"
+    if content is None:
+        config.unlink()
+    else:
+        config.write_text(content)
     before = _tree(source)
     result = _import(root, source, as_json=as_json)
     assert result.exit_code == 1
     if as_json:
         error = json.loads(result.output)["error"]
         assert error["code"] == "INTEGRITY_ERROR"
-        assert [f["check"] for f in error["details"]["findings"] if f["level"] == "error"] == [
-            "json_parse"
-        ]
-        assert "Invalid JSON in config.json" in error["details"]["findings"][0]["message"]
+        errors = [f for f in error["details"]["findings"] if f["level"] == "error"]
+        assert [f["check"] for f in errors] == [check]
+        assert errors[0]["message"].startswith(message)
     else:
         assert "fails lattice doctor (1 error)" in result.output
-        assert "error: Invalid JSON in config.json" in result.output
+        assert f"error: {message}" in result.output
     _assert_nothing_created(root)
     assert _tree(source) == before
-
-
-def test_a_board_without_config_json_is_refused(root: Path, source: Path) -> None:
-    (source / ".lattice" / "config.json").unlink()
-    result = _import(root, source)
-    assert result.exit_code == 1
-    error = json.loads(result.output)["error"]
-    assert error["code"] == "VALIDATION_ERROR" and error["details"]["path"] == "config.json"
-    _assert_nothing_created(root)
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root reads any directory")
