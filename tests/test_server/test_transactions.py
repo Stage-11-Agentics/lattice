@@ -177,11 +177,62 @@ def _setup_archive(root: Path, project: Project) -> Callable[[], object]:
     return lambda: request("task.archive", {"task": task})
 
 
+def _task_in(project: Project, status: str) -> str:
+    """A task walked to *status* (with a real plan, so the plan gate passes)."""
+    task = create(project)["task"]["id"]
+    path = ["in_planning", "planned", "in_progress", "review", "done"]
+    for step in path[: path.index(status) + 1]:
+        if step == "planned":
+            run(project, request("task.plan_write", {"task": task, "stdin": "# Plan\n\nDo it.\n"}))
+        run(project, request("task.status", {"task": task, "new_status": step}))
+    return task
+
+
+def _setup_complete(root: Path, project: Project) -> Callable[[], object]:
+    task = _task_in(project, "in_progress")
+    return lambda: request("task.complete", {"task": task, "review": "Verified; LGTM."})
+
+
+def _setup_plan_write(root: Path, project: Project) -> Callable[[], object]:
+    task = create(project)["task"]["id"]
+    return lambda: request("task.plan_write", {"task": task, "stdin": "# Plan\n\nSteps.\n"})
+
+
+def _setup_unarchive(root: Path, project: Project) -> Callable[[], object]:
+    task = create(project)["task"]["id"]
+    (board_of(root) / "notes" / f"{task}.md").write_text("working notes\n")
+    run(project, request("task.archive", {"task": task}))
+    return lambda: request("task.unarchive", {"task": task})
+
+
+def _setup_acquire(root: Path, project: Project) -> Callable[[], object]:
+    run(project, request("resource.create", {"name": "db"}))
+    return lambda: request("resource.acquire", {"name": "db"})
+
+
+def _setup_session_start(root: Path, project: Project) -> Callable[[], object]:
+    params = {"model": "opus", "framework": "claude-code", "name": "Worker"}
+    return lambda: request("session.start", params, actor=None)
+
+
+def _setup_set_project_code(root: Path, project: Project) -> Callable[[], object]:
+    # No tasks: doctor rightly flags existing short IDs outside a changed code.
+    return lambda: request("board.set_project_code", {"code": "ALQ", "force": True}, actor=None)
+
+
 SCENARIOS = [
     Scenario("task.create", _setup_create),
     Scenario("task.status", _setup_status),
     Scenario("task.archive", _setup_archive),
+    # H-22: the remaining operation families (EVALUATION AC-4, second row).
+    Scenario("task.complete", _setup_complete),
+    Scenario("task.plan_write", _setup_plan_write),
+    Scenario("task.unarchive", _setup_unarchive),
+    Scenario("resource.acquire", _setup_acquire),
+    Scenario("session.start", _setup_session_start),
+    Scenario("board.set_project_code", _setup_set_project_code),
 ]
+SCENARIO = {s.name: s for s in SCENARIOS}
 
 
 def _prepared(fresh: Fresh, projects: list[Project], scenario: Scenario):  # noqa: ANN202
@@ -246,7 +297,7 @@ def test_every_boundary_leaves_the_operation_wholly_present_or_absent(
         "publication",
     ):
         assert required in points, (scenario.name, required)
-    if scenario.name == "task.archive":
+    if scenario.name in ("task.archive", "task.unarchive"):
         assert "placement.source_event_removed" in points
     commit_at = boundaries.index(("journal.fsync", 1))
 
