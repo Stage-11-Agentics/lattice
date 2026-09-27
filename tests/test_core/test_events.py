@@ -56,6 +56,8 @@ class TestBuiltinEventTypes:
             "acceptance_criterion_added",
             "acceptance_criterion_edited",
             "acceptance_criterion_retired",
+            "task_tombstoned",
+            "task_untombstoned",
         }
     )
 
@@ -66,7 +68,7 @@ class TestBuiltinEventTypes:
         assert isinstance(BUILTIN_EVENT_TYPES, frozenset)
 
     def test_count(self) -> None:
-        assert len(BUILTIN_EVENT_TYPES) == 32
+        assert len(BUILTIN_EVENT_TYPES) == 34
 
     def test_auto_review_spawned_is_not_lifecycle(self) -> None:
         # ``auto_review_spawned`` is a per-task event, not a lifecycle one.
