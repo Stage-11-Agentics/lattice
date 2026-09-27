@@ -13,6 +13,7 @@ import getpass
 import re
 import socket
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -202,3 +203,63 @@ def resolve_board(start: Path | None = None) -> LocalBoard:
             "Not a Lattice project (no .lattice/ found). Run 'lattice init' first.",
         )
     return LocalBoard(root=root, start=start_dir)
+
+
+# ---------------------------------------------------------------------------
+# Local-only maintenance commands (SPEC §3.5)
+# ---------------------------------------------------------------------------
+
+LOCAL_ONLY_COMMANDS: tuple[str, ...] = (
+    "init",
+    "demo init",
+    "rebuild",
+    "doctor --fix",
+    "backfill-ids",
+    "migrate needs-human",
+)
+"""Commands that operate directly on a data directory, refused on a hosted checkout."""
+
+
+def hosted_binding(start: Path) -> str | None:
+    """The ``<alias>/<project>`` a checkout at *start* is bound to, or ``None``.
+
+    No checkout is hosted until H-11 adds binding and routing; until then
+    every checkout is local.
+    """
+    return None
+
+
+def local_only_error(command: str, binding: str) -> OpError:
+    """The ``LOCAL_ONLY`` refusal of *command* on a checkout bound to *binding*."""
+    if command == "init":
+        return OpError(
+            "LOCAL_ONLY",
+            f"This checkout is bound to '{binding}'; its board lives on the server. "
+            "For a separate local board, work in a checkout without .lattice-remote.json.",
+            {"command": command},
+        )
+    return OpError(
+        "LOCAL_ONLY",
+        f"'lattice {command}' is a local-only maintenance command, and this checkout's "
+        f"board lives on the server ('{binding}'). Unload the project "
+        "('lattice server project unload <slug>') or stop the server, then run it on the "
+        "server host against <server_root>/projects/<slug> with --offline-maintenance.",
+        {"command": command},
+    )
+
+
+def check_local_only(
+    command: str,
+    start: Path | None = None,
+    *,
+    binding_of: Callable[[Path], str | None] = hosted_binding,
+) -> None:
+    """Refuse a ``LOCAL_ONLY_COMMANDS`` entry on a hosted checkout (``LOCAL_ONLY``).
+
+    *binding_of* is the hosted-checkout predicate (default :func:`hosted_binding`).
+    """
+    if command not in LOCAL_ONLY_COMMANDS:
+        raise ValueError(f"{command!r} is not a local-only command")
+    binding = binding_of(Path.cwd() if start is None else Path(start))
+    if binding is not None:
+        raise local_only_error(command, binding)
