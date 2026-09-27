@@ -26,6 +26,7 @@ import threading
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, TypeVar
@@ -55,7 +56,6 @@ from lattice.server.transactions import (
     Quarantine,
     Transaction,
     read_receipt,
-    receipt_file_name,
     result_json,
 )
 from lattice.storage.fs import (
@@ -231,8 +231,10 @@ class Project:
         #: Set by ``project unload``: the project stays unloaded (503) until
         #: ``project load``, and neither a request nor the prewarm loads it.
         self.held_unloaded = False
-        #: The receipt file (UTC day) the last retention check saw.
-        self._receipt_day: str | None = None
+        #: The UTC day receipt files and index entries were last checked for
+        #: retention (SPEC §8.6); the index check runs before every replay.
+        self._receipt_day: date | None = None
+        self._index_day: date | None = None
         #: The idempotency index, ``(token_id, op_id) -> IndexEntry``, and the
         #: current epoch's op-status map, ``(token_id, op_id) -> seq`` (SPEC §8.6).
         #: Filled as operations commit, and rebuilt from disk at every load.
@@ -383,7 +385,7 @@ class Project:
             return None
         index, op_seqs, orphans = recovery.rebuild_index(board, journal)
         self.index = index
-        self._receipt_day = receipt_file_name()
+        self._receipt_day = self._index_day = recovery.utc_today()
         if settled.committed or settled.rolled_back or orphans:
             self.log.info(
                 "recovery",
@@ -637,6 +639,7 @@ class Project:
         :meth:`admit`, so the idempotency check sees every earlier attempt."""
         op_id = request.caller.origin.get("op_id")
         if not request.minted:
+            self.expire_index()  # past retention, a retry runs again (SPEC §8.6)
             known = self.index.get((request.token_id, op_id))
             if known is not None:
                 return self._replay(known, request, op_id)
@@ -731,22 +734,42 @@ class Project:
             result_data=result_data, seq=txn.seq, result=result, journal_line=txn.line
         )
 
+    def expire_index(self) -> None:
+        """Forget index entries whose receipt is past retention (SPEC §8.6). Runs
+        before every replay lookup and op-status read, decided by date alone,
+        so neither the order of requests nor a receipt file that could not be
+        deleted ever lets an expired operation replay."""
+        today = recovery.utc_today()
+        if today == self._index_day:
+            return
+        pruned = recovery.unexpired_index(self.index, today)
+        if len(pruned) != len(self.index):
+            self.log.info(
+                "receipts_expired_from_index",
+                project=self.slug,
+                entries=len(self.index) - len(pruned),
+            )
+        self.index = pruned  # one assignment: op status reads it without the lock
+        self._index_day = today
+
     def _retain_receipts(self) -> None:
         """Receipt retention (SPEC §8.6): on the first write of each UTC day, delete
-        receipt files past the window and forget their index entries. A failure
-        is logged and retried on the next write; it never fails this one."""
-        day = receipt_file_name()
-        if day == self._receipt_day:
+        receipt files past the window. A failure is logged and retried on the
+        next write; it never fails this one, and the index has already
+        forgotten those receipts (:meth:`expire_index`)."""
+        self.expire_index()
+        today = recovery.utc_today()
+        if today == self._receipt_day:
             return
         try:
-            expired = recovery.expired_receipt_files(self.board)
+            expired = recovery.expired_receipt_files(self.board, today)
             for path in expired:
                 unlink_path(path)
-            names = {p.name for p in expired}
-            if names:
-                self.index = {k: v for k, v in self.index.items() if v.receipt not in names}
-                self.log.info("receipts_expired", project=self.slug, files=sorted(names))
-            self._receipt_day = day
+            if expired:
+                self.log.info(
+                    "receipts_expired", project=self.slug, files=sorted(p.name for p in expired)
+                )
+            self._receipt_day = today
         except Exception as exc:  # noqa: BLE001 - retention never blocks a write
             self.log.warning("receipt_retention_failed", project=self.slug, error=repr(exc))
 
@@ -880,6 +903,7 @@ class Project:
         committed receipt line, and retained epoch journals (which never change),
         so it needs no lock."""
         key = (token_id, op_id)
+        self.expire_index()
         known = self.index.get(key)
         if known is not None:
             data: dict[str, Any] = {"state": "committed", "epoch": known.epoch, "seq": known.seq}

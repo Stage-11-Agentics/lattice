@@ -27,6 +27,7 @@ from lattice.server import admin
 from lattice.server.log import ServerLog
 from lattice.server.project import Project
 from lattice.server.testing import make_root
+from lattice.server.transactions import receipt_file_name
 from lattice.storage.ownership import offline_maintenance
 from lattice.storage.operations import discover_task_authorities
 from tests.test_server.conftest import board_hash
@@ -658,8 +659,39 @@ def test_a_quarantined_project_recovers_on_its_next_load(
     run(loaded, build())
 
 
+def _eight_days_later(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Move the retention clock past the seven-day window (the server keeps running)."""
+    from datetime import timedelta
+
+    from lattice.server import recovery
+
+    later = recovery.utc_today() + timedelta(days=8)
+    monkeypatch.setattr(recovery, "utc_today", lambda: later)
+
+
+def test_an_expired_retry_that_is_the_first_request_after_rollover_runs_again(
+    fresh: Fresh, projects: list[Project], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review round 1: the replay lookup must not see an expired receipt, even
+    when no other write has run retention since the day rolled over."""
+    root, project = _loaded(fresh, projects)
+    old = request("task.create", {"title": "old"})
+    first = run(project, old)
+    assert run(project, old).replayed  # within retention: a replay
+    _eight_days_later(monkeypatch)
+    retried = run(project, old)  # the first request after rollover
+    assert not retried.replayed and retried.seq == first.seq + 1
+    receipts = board_of(root) / "hosted" / "receipts"
+    key = (old.token_id, old.caller.origin["op_id"])
+    status = project.op_status(*key)
+    assert status["seq"] == retried.seq  # the new run's receipt, not the expired one
+    # Retention deleted the expired file; the retry's receipt starts a new one
+    # (receipt files are named by the real clock).
+    assert [p.name for p in receipts.glob("*.jsonl")] == [receipt_file_name()]
+
+
 def test_receipts_past_retention_are_deleted_on_the_first_write_of_a_day(
-    fresh: Fresh, projects: list[Project]
+    fresh: Fresh, projects: list[Project], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root, project = _loaded(fresh, projects)
     old = request("task.create", {"title": "old"})
@@ -669,9 +701,43 @@ def test_receipts_past_retention_are_deleted_on_the_first_write_of_a_day(
     today.rename(receipts / "2000-01-01.jsonl")
     key = (old.token_id, old.caller.origin["op_id"])
     project.index[key] = replace(project.index[key], receipt="2000-01-01.jsonl")
-    project._receipt_day = "1999-12-31.jsonl"  # noqa: SLF001 - as if yesterday
+    _eight_days_later(monkeypatch)
     run(project, request("task.create", {"title": "today"}))
     assert not (receipts / "2000-01-01.jsonl").exists()
     assert key not in project.index
     retried = run(project, old)  # past retention: it runs again (SPEC §8.6)
     assert not retried.replayed
+
+
+def test_a_failed_receipt_deletion_never_lets_the_expired_operation_replay(
+    fresh: Fresh, projects: list[Project], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import lattice.server.project as project_module
+
+    root, project = _loaded(fresh, projects)
+    project.log = ServerLog("debug", StringIO())
+    old = request("task.create", {"title": "old"})
+    run(project, old)
+    receipts = board_of(root) / "hosted" / "receipts"
+    (today,) = receipts.glob("*.jsonl")
+    expired = receipts / "2000-01-01.jsonl"
+    today.rename(expired)
+    key = (old.token_id, old.caller.origin["op_id"])
+    project.index[key] = replace(project.index[key], receipt=expired.name)
+    real_unlink = project_module.unlink_path
+
+    def failing_unlink(path: Path, **kw: object) -> None:
+        if Path(path).parent == receipts:
+            raise OSError(5, "injected unlink failure")
+        real_unlink(path, **kw)  # type: ignore[arg-type]
+
+    _eight_days_later(monkeypatch)
+    with monkeypatch.context() as m:
+        m.setattr(project_module, "unlink_path", failing_unlink)
+        retried = run(project, old)  # retention fails; the write does not
+    assert not retried.replayed
+    assert expired.exists()  # deletion failed, but the index forgot it anyway
+    assert all(v.receipt != expired.name for v in project.index.values())
+    assert "receipt_retention_failed" in [e["event"] for e in _log_events(project)]
+    run(project, request("task.create", {"title": "next"}))  # retention retried
+    assert not expired.exists()

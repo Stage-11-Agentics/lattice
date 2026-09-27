@@ -243,21 +243,35 @@ def receipt_date(name: str) -> date | None:
         return None
 
 
+def utc_today() -> date:
+    """Today's UTC date: the one clock receipt retention reads (tests move it)."""
+    return datetime.now(timezone.utc).date()
+
+
+def receipt_expired(name: str, today: date | None = None) -> bool:
+    """Whether the receipt file *name* (``YYYY-MM-DD.jsonl``) is past retention."""
+    day = receipt_date(name) if name.endswith(".jsonl") else None
+    cutoff = (today or utc_today()) - timedelta(days=RECEIPT_RETENTION_DAYS)
+    return day is not None and day < cutoff
+
+
 def expired_receipt_files(board: Path, today: date | None = None) -> list[Path]:
     """Receipt files older than the retention window."""
-    today = today or datetime.now(timezone.utc).date()
-    cutoff = today - timedelta(days=RECEIPT_RETENTION_DAYS)
     directory = Path(board) / HOSTED_DIR / RECEIPTS_DIR
     try:
         names = sorted(os.listdir(directory))
     except OSError:
         return []
-    out = []
-    for name in names:
-        day = receipt_date(name) if name.endswith(".jsonl") else None
-        if day is not None and day < cutoff:
-            out.append(directory / name)
-    return out
+    return [directory / name for name in names if receipt_expired(name, today)]
+
+
+def unexpired_index(
+    index: dict[tuple[str | None, str], IndexEntry], today: date | None = None
+) -> dict[tuple[str | None, str], IndexEntry]:
+    """*index* without the entries whose receipt file is past retention, decided by
+    date alone, so a receipt file that could not be deleted never replays."""
+    today = today or utc_today()
+    return {k: v for k, v in index.items() if not receipt_expired(v.receipt, today)}
 
 
 def rebuild_index(
