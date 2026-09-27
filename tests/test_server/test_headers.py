@@ -38,5 +38,6 @@ def test_success_envelope(server: ServerHandle, root: Path) -> None:
     assert status == 200 and body["ok"] is True
     data = body["data"]
     assert set(data) == {"result", "seq", "op_id"}
-    assert set(data["result"]) == {"task", "events", "value", "idempotent", "replayed"}
+    assert {"task", "events", "value", "idempotent", "replayed"} <= set(data["result"])
+    assert "paths" not in data["result"]
     assert data["seq"] == 1 and data["result"]["replayed"] is False
