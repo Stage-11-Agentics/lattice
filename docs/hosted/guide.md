@@ -585,7 +585,7 @@ Read the two lists it prints:
 - **paths not copied**: anything that is not board data (for example `reviews/`, `logs/`, `exports/`). They stay in the old board, which step 3 keeps.
 - **non-canonical plan and notes files**: loose files under `plans/` or `notes/`. They are copied, and on a hosted checkout they are read-only; write them with `lattice board write`, and put new working files under `orchestration/`.
 
-The import also repairs short-ID bookkeeping from the logs and prints these same steps with your slug filled in.
+The import also repairs short-ID bookkeeping from the logs, starts the project's journal and its audit history (section 16), and prints these same steps with your slug filled in.
 
 **3. Move the old board aside in the checkout. Never delete it.** If board files are tracked in git, stage their removal:
 
@@ -600,6 +600,7 @@ git rm -r --cached -q --ignore-unmatch .lattice
 ```bash
 lattice remote attach team legacy
 lattice list
+lattice comment LEG-1 "Moved to the server." --actor human:alice
 ```
 
 **5. Commit and push** the binding, `.gitignore`, and the staged removal, so teammates and other branches pick up the move. Then check for branches that still track board files:
@@ -720,7 +721,7 @@ cd "$TRIAL/legacy"
 lattice remote verify
 ```
 
-`lattice remote verify` checks every write this checkout was told succeeded against the server. It prints each one the server does not hold and exits 1 if there is any: that is a lost write. `lattice doctor` on each local board stays as it was.
+`lattice remote verify` checks every write this checkout was told succeeded (recorded in `.lattice/cache/acked.jsonl`) against the server, and prints how many it checked. It prints each one the server does not hold and exits 1 if there is any: that is a lost write. Confirmed writes stay on the list for 90 days, so a later restore that loses one is still caught. `lattice doctor` on each local board stays as it was.
 
 ## 18. Unknown write outcomes
 
@@ -734,7 +735,11 @@ A write retries on its own for up to `retry_seconds` (30 by default) on connecti
   lattice remote op-status op_01J9ZEXAMPLE0000000000000
   ```
 
-  `committed` means it was applied: do not run the command again. `not_found` means it was not: run it again. An agent that reruns an `OUTCOME_UNKNOWN` command without checking may apply it twice.
+  - `committed` (with its epoch and seq): it was applied. Do not run the command again.
+  - `in flight`: the server is still applying it. Check again in a moment; do not rerun it yet.
+  - `not found`: it did not apply. Running the command again applies it once, as a new operation.
+
+  `op-status` exits 0 in all three cases; `--json` carries `state` (`committed`, `in_flight`, `not_found`). An agent that reruns an `OUTCOME_UNKNOWN` command without checking may apply it twice.
 
 ## 19. Upgrading
 

@@ -41,6 +41,9 @@ agents, and never calls c11.
 | `limits.py` | Per-token in-flight, operation, and byte-rate limits, checked before admission |
 | `control.py` | Control requests: admin commands that act on a project a running server owns |
 | `admin.py` | `lattice server init/project/token`; edits under `admin.lock` |
+| `recovery.py` | Startup recovery (§8.7), `project recover`, recoverable epoch rotation |
+| `importer.py` | `lattice server project import`: doctor gate, path refusal, copy, short-ID repair, new epoch |
+| `audit.py` | The per-project audit history: allowlist `.gitignore`, debounced commits, push, `git gc --auto` |
 | `floors.py` | Per-project short-ID floors, computed at load |
 | `log.py` | JSON-lines log with token scrubbing |
 
@@ -90,9 +93,11 @@ Standard library only.
 |---|---|
 | `config.py` | `remotes.json` (0600) and `LATTICE_REMOTE_<ALIAS>_*` overrides; env-only header values |
 | `http.py` | One transport policy: no redirects (`PROXY_REJECTED`), a response counts only if it carries `Lattice-Protocol`, plaintext only to loopback unless allowed |
-| `binding.py` | `.lattice-remote.json`, `remote attach`, `.gitignore` and `info/exclude` |
+| `binding.py` | Which checkouts are hosted: the binding, the cache marker, `BINDING_CONFLICT`, `remote attach` (`.gitignore` and `info/exclude`) |
 | `cache.py` | Sync: fetch, verify (paths, hashes, append deltas), apply under `locks/cache_sync.lock` and the exclusive `cache_rw` lock; modes 0400/0500; the tamper fingerprint and `cache/rescued/`; `cache clear` |
-| `client.py`, `session.py` | `HostedBoard.execute`: `op_id` per call, omitted defaults, retries, `OUTCOME_UNKNOWN`, post-write sync, `acked.jsonl`; catch-up before reads |
+| `client.py` | Operation requests: local param checks, omitted defaults, `op_id` per call, retries, `OUTCOME_UNKNOWN`, op status |
+| `session.py` | The hosted read path of one CLI process: catch-up before reads, the offline and busy notices, version-skew lines |
+| `acked.py` | `cache/acked.jsonl` (each acknowledged write) and `lattice remote verify` |
 | `follower.py`, `stream.py`, `sse.py`, `hosted_watch.py` | `lattice sync --follow`, the stream reader with polling fallback, hosted `watch` / `wait` |
 
 ### Routing

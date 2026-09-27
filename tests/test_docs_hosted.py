@@ -34,18 +34,8 @@ TEMPLATES = (
 
 # Commands the docs name whose implementation is in an open ticket, not yet on
 # this branch. H-17 drafts ahead of them; each entry is removed when its ticket
-# merges, and the list is empty when H-17 lands.
-AWAITING_MERGE = {
-    "remote": "H-11",
-    "sync": "H-10c",
-    "server project import": "H-14",
-    "server project unload": "H-22",
-    "server project load": "H-22",
-    "server project reload": "H-22",
-    "server project doctor": "H-22",
-    "server project recover": "H-22",
-    "server project audit": "H-16",
-}
+# merges, and the list is empty when H-17 lands (it is).
+AWAITING_MERGE: dict[str, str] = {}
 
 FENCE = re.compile(r"^[ \t]*```([\w-]*)[ \t]*\n(.*?)^[ \t]*```", re.M | re.S)
 INLINE = re.compile(r"`(lattice [^`]+)`")

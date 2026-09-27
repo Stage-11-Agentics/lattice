@@ -29,7 +29,7 @@ export LATTICE_TOKEN="$(cat "$HOME/lattice-trial/token")"
 | `GET /v1/info` | token | Server version and protocol, your identity, your projects, registered operations and event types, audit state |
 | `GET /v1/projects` | token | Projects your token can see |
 | `POST /v1/projects/{slug}/ops/{op}` | token | Run an operation (a write) |
-| `GET /v1/projects/{slug}/ops/{op_id}` | token | The outcome of one of your own operations |
+| `GET /v1/projects/{slug}/ops/{op_id}` | token | The outcome of one of your own operations: `committed`, `in_flight`, or `not_found` |
 | `GET /v1/projects/{slug}/sync?since=N&epoch=E&hash=H` | token | What changed since your last sync |
 | `GET /v1/projects/{slug}/files/{path}` | token | One board file |
 | `GET /v1/projects/{slug}/stream` | token or session | Server-Sent Events: every committed change, live |
@@ -186,10 +186,11 @@ curl -s -H "Authorization: Bearer $LATTICE_TOKEN" "$LATTICE_URL/v1/projects/demo
 
 ```json
 {"ok": true, "data": {"state": "committed", "epoch": "ep_01...", "seq": 8, "result": {"...": "..."}}}
+{"ok": true, "data": {"state": "in_flight"}}
 {"ok": true, "data": {"state": "not_found"}}
 ```
 
-`committed` means the operation was applied (`result` is included while its receipt is kept, 7 days). `not_found` means it never committed, or belongs to another token. Retrying a committed operation with the same `op_id` and arguments returns its original result; with a new `op_id`, it applies again.
+`committed` means the operation was applied (`result` is included while its receipt is kept, 7 days). `in_flight` means the server has accepted the request and has not finished it: it may still commit, so ask again rather than resending. `not_found` means it never committed (or was rolled back), or belongs to another token. Retrying a committed operation with the same `op_id` and arguments returns its original result; with a new `op_id`, it applies again.
 
 ## GET /v1/projects/{slug}/sync
 
