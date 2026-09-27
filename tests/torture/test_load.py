@@ -25,8 +25,8 @@ def test_readers_writers(load_rig: LoadRig) -> None:
     reads = load_rig.stop_readers(readers)
 
     assert all(proc.poll() is None for proc in followers), "a follower died under load"
-    errors = [r for r in reads if "error" in r]
-    assert not errors, errors[:3]
+    errors = [r for r in reads if "error" in r or "notice" in r]
+    assert not errors, errors[:3]  # every read was a real catch-up, never "busy"
     read_times = [r["t"] - r["t0"] for r in reads]
     assert len({r["cwd"] for r in reads}) == READERS, "a reader never completed a read"
     assert min(r["count"] for r in reads) >= LOAD_TASKS

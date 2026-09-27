@@ -79,6 +79,9 @@ class LoadRig:
     tasks: list[str]
     checkouts: int = 0
     procs: list[subprocess.Popen] = field(default_factory=list)
+    #: Each checkout's own client (and token): every reader, follower, and writer
+    #: is its own machine, as far as the server's per-token limits go.
+    clients: dict[Path, Client] = field(default_factory=dict)
     #: Where client checkouts live: under *work*, or under ``TORTURE_CLIENT_DIR``
     #: (for example a tmpfs), so client cache writes stop sharing the server's disk.
     client_dir: Path = field(default_factory=lambda: Path())
@@ -98,12 +101,13 @@ class LoadRig:
         server.start()
         client = server.client(work / "home", user="human:alice", machine="load-box")
         token = server.mint(user="human:loader", machine="load-box")
+        loaders = [server.mint(user="human:loader", machine=f"loader-{n}") for n in range(8)]
 
         def create(n: int) -> str:
             status, body = server.op(
                 "task.create",
                 {"title": f"Load task {n}", "description": "x" * 200},
-                token=token,
+                token=loaders[n % len(loaders)],
                 actor="agent:loader",
                 op_id=generate_op_id(),
             )
@@ -115,14 +119,18 @@ class LoadRig:
         return cls(work=work, server=server, client=client, token=token, tasks=short_ids)
 
     def checkout(self, label: str) -> Path:
-        """A bound directory with its initial sync done."""
+        """A bound directory with its initial sync done, for a client of its own
+        (``self.clients[path]``)."""
         self.checkouts += 1
-        path = self.client_dir / f"{label}-{self.checkouts}"
+        name = f"{label}-{self.checkouts}"
+        path = self.client_dir / name
         path.mkdir(parents=True)
         (path / ".lattice-remote.json").write_text(
             json.dumps({"project": PROJECT, "remote": REMOTE}) + "\n"
         )
-        lattice(self.client, path, "sync", timeout=300)
+        client = self.server.client(self.client_dir / f"home-{name}", machine=name)
+        self.clients[path] = client
+        lattice(client, path, "sync", timeout=300)
         return path
 
     def checkouts_for(self, label: str, n: int) -> list[Path]:
@@ -133,13 +141,14 @@ class LoadRig:
         """*n* followers, each on its own checkout, returned once each reads as live."""
         followers = []
         for path in self.checkouts_for("follower", n):
+            client = self.clients[path]
             proc = spawn_lattice(
-                self.client, path, "sync", "--follow", log=path.parent / f"{path.name}.log"
+                client, path, "sync", "--follow", log=path.parent / f"{path.name}.log"
             )
             self.procs.append(proc)
             followers.append(proc)
             deadline = time.monotonic() + 30
-            while not lattice_json(self.client, path, "remote", "status")["follower"]["live"]:
+            while not lattice_json(client, path, "remote", "status")["follower"]["live"]:
                 assert proc.poll() is None, (path.parent / f"{path.name}.log").read_text()
                 assert time.monotonic() < deadline, "follower never went live"
                 time.sleep(0.2)
@@ -152,7 +161,7 @@ class LoadRig:
         for k, path in enumerate(self.checkouts_for("reader", n)):
             out = self.work / f"reader-{k}.jsonl"
             proc = start_scripted(
-                self.client,
+                self.clients[path],
                 {
                     "mode": "poll",
                     "cwds": [str(path)],
@@ -172,6 +181,7 @@ class LoadRig:
         latencies: list[float] = []
         errors: list[str] = []
         lock = threading.Lock()
+        tokens = [self.server.mint(user="human:writer", machine=f"writer-{w}") for w in range(n)]
         deadline = time.monotonic() + seconds
 
         def writer(w: int) -> None:
@@ -192,7 +202,7 @@ class LoadRig:
                     op, params = "task.update", {"task": task, "pairs": [f"priority={priority}"]}
                 started = time.monotonic()
                 status, body = self.server.op(
-                    op, params, token=self.token, actor=f"agent:w{w}", op_id=generate_op_id()
+                    op, params, token=tokens[w], actor=f"agent:w{w}", op_id=generate_op_id()
                 )
                 elapsed = time.monotonic() - started
                 with lock:

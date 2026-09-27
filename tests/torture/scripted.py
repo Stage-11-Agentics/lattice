@@ -13,7 +13,8 @@ one directory, and writes one JSON line per step to ``spec["out"]``.
 - ``{"mode": "poll", "cwds": [...], "out", "stop": path, "summary"?: bool}``: until *stop* exists,
   run ``list --json`` from each directory in turn and record when it started
   (``t0``) and returned (``t``) and every task's ``last_event_id`` (with
-  ``summary``, only how many tasks it listed).
+  ``summary``, only how many tasks it listed), plus any stderr notice (a
+  catch-up that could not reach the server, or found it busy, says so there).
 
 ``TORTURE_HOST`` replaces ``socket.gethostname()`` (the reported host, SPEC §4).
 """
@@ -107,6 +108,8 @@ def poll(spec: dict) -> None:
                     for row in json.loads(out)["data"]
                 }
                 row: dict = {"cwd": cwd, "t0": started, "t": t}
+                if err.strip():
+                    row["notice"] = err.strip()[-500:]  # e.g. "cannot reach", "busy"
                 if spec.get("summary"):
                     row["count"] = len(tasks)
                 else:
