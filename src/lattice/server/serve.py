@@ -41,6 +41,41 @@ def acquire_server_lock(root: Path) -> int:
     return fd
 
 
+# The soft descriptor limit the server asks for at startup. A launchd service
+# on macOS starts at 256, which a server holding streams, task locks, and
+# worker files outgrows; macOS refuses a soft limit above its per-process
+# maximum, so a refused request retries at OPEN_MAX.
+FD_LIMIT_TARGET = 65536
+_FD_LIMIT_FALLBACK = 10240
+
+
+def raise_fd_limit(target: int = FD_LIMIT_TARGET) -> dict[str, int | None]:
+    """Raise the soft ``RLIMIT_NOFILE`` toward the hard limit, capped at *target*.
+
+    Never lowers it. Returns ``{"before", "soft", "hard"}`` (``hard`` is
+    ``None`` when unlimited), which the startup log line carries.
+    """
+    import resource
+
+    before, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    ceiling = target if hard == resource.RLIM_INFINITY else min(hard, target)
+    soft = before
+    for candidate in (ceiling, min(ceiling, _FD_LIMIT_FALLBACK)):
+        if candidate <= soft:
+            break
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (candidate, hard))
+        except (ValueError, OSError):
+            continue
+        soft = candidate
+        break
+    return {
+        "before": before,
+        "soft": soft,
+        "hard": None if hard == resource.RLIM_INFINITY else hard,
+    }
+
+
 def load_server_config(root: Path) -> ServerConfig:
     try:
         return load_config(root)
@@ -59,7 +94,9 @@ def serve(root: Path, *, host: str | None = None, port: int | None = None) -> No
     config = load_server_config(root)
     fd = acquire_server_lock(root)
     try:
+        fd_limit = raise_fd_limit()
         app = create_app(root, config=config)
+        app.state.fd_limit = fd_limit
         uv_config = uvicorn.Config(
             app,
             host=host or config.bind,

@@ -19,7 +19,7 @@ from lattice.core.comments import validate_comment_for_edit, validate_comment_fo
 from lattice.core.tasks import FromMismatchError, apply_event_to_snapshot, serialize_snapshot
 from lattice.storage.fs import atomic_write, ensure_dir, jsonl_append, unlink_path
 from lattice.storage.hooks import execute_hooks
-from lattice.storage.locks import lattice_lock, multi_lock
+from lattice.storage.locks import lattice_lock, multi_lock, task_locks
 from lattice.storage.short_ids import (
     load_id_index,
     max_observed_short_ids,
@@ -317,10 +317,7 @@ def read_task_authority(
     active or archived.  It never selects placement from snapshot presence and
     returns the replayed snapshot, so a stale cache cannot resurrect a task.
     """
-    with multi_lock(
-        lattice_dir / "locks",
-        [f"events_{task_id}", f"tasks_{task_id}"],
-    ):
+    with task_locks(lattice_dir / "locks", [task_id]):
         return resolve_task_authority(lattice_dir, task_id, allow_missing=allow_missing)
 
 
@@ -335,10 +332,7 @@ def resolve_task_prose_path(
     temporarily remain on the wrong side.  A byte-identical duplicate is safe;
     divergent copies fail closed.
     """
-    with multi_lock(
-        lattice_dir / "locks",
-        [f"events_{task_id}", f"tasks_{task_id}"],
-    ):
+    with task_locks(lattice_dir / "locks", [task_id]):
         authority = resolve_task_authority(lattice_dir, task_id)
         assert authority is not None
         target = _location_paths(lattice_dir, task_id, authority.location)[name]
@@ -700,11 +694,11 @@ def mutate_task(
     appends nothing); even then, any event but ``task_untombstoned`` raises it.
     """
     locks_dir = lattice_dir / "locks"
-    lock_keys = [f"events_{task_id}", f"tasks_{task_id}"]
+    extra_lock_keys = []
     if may_emit_lifecycle:
-        lock_keys.append("events__lifecycle")
+        extra_lock_keys.append("events__lifecycle")
     if project_prefix is not None:
-        lock_keys.append("ids_json")
+        extra_lock_keys.append("ids_json")
 
     appended_events: list[dict] = []
     callback_value: Any = None
@@ -715,7 +709,7 @@ def mutate_task(
     final_snapshot: dict | None = None
     final_location: TaskLocation | None = None
 
-    with multi_lock(locks_dir, lock_keys):
+    with task_locks(locks_dir, [task_id], extra_lock_keys):
         authority = resolve_task_authority(
             lattice_dir, task_id, allow_missing=(source == "absent")
         )

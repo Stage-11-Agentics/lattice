@@ -17,7 +17,7 @@ from lattice.core.events import LIFECYCLE_EVENT_TYPES, serialize_event
 from lattice.core.ids import parse_short_id, validate_id, validate_short_id
 from lattice.core.tasks import serialize_snapshot
 from lattice.storage.fs import atomic_write, ensure_dir, unlink_path
-from lattice.storage.locks import multi_lock
+from lattice.storage.locks import all_task_locks
 from lattice.storage.operations import (
     AuthoritativeLogError,
     ResolvedTaskAuthority,
@@ -552,9 +552,7 @@ def inspect_task_authority(
     skip_task_ids: set[str] | None = None,
 ) -> tuple[dict[str, ResolvedTaskAuthority], list[dict]]:
     """Inspect all candidate bytes under one stable, deterministic lock set."""
-    task_ids = sorted(_collect_task_ids(lattice_dir))
-    lock_keys = [key for task_id in task_ids for key in (f"events_{task_id}", f"tasks_{task_id}")]
-    with multi_lock(lattice_dir / "locks", lock_keys):
+    with all_task_locks(lattice_dir / "locks"):
         return _inspect_task_authority_unlocked(lattice_dir, skip_task_ids=skip_task_ids)
 
 
@@ -1239,13 +1237,8 @@ def repair_task_derived_files(lattice_dir: Path, *, reconcile_placement: bool) -
     snapshot left at the other location, and touches no other file (SPEC §11).
     Resource snapshots are not task-derived and are never touched here.
     """
-    task_ids = sorted(_collect_task_ids(lattice_dir))
-    lock_keys = [
-        "events__lifecycle",
-        "ids_json",
-        *(key for task_id in task_ids for key in (f"events_{task_id}", f"tasks_{task_id}")),
-    ]
-    with multi_lock(lattice_dir / "locks", lock_keys):
+    with all_task_locks(lattice_dir / "locks", ["events__lifecycle", "ids_json"]):
+        task_ids = sorted(_collect_task_ids(lattice_dir))
         authorities, findings = _inspect_task_authority_unlocked(lattice_dir)
         failures = [finding["message"] for finding in findings if finding["level"] == "error"]
         missing = sorted(set(task_ids) - set(authorities))

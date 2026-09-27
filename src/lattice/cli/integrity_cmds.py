@@ -33,7 +33,7 @@ from lattice.storage.integrity import (
     inspect_task_authority,
     repair_task_derived_files,
 )
-from lattice.storage.locks import multi_lock
+from lattice.storage.locks import all_task_locks, multi_lock
 from lattice.storage.operations import (
     AuthoritativeLogError,
     ResolvedTaskAuthority,
@@ -340,13 +340,8 @@ def _rebuild_lifecycle_log(lattice_dir: Path) -> list[str]:
 def _rebuild_id_index(lattice_dir: Path) -> None:
     """Rebuild ``ids.json`` from strict authoritative task creation replay."""
     event_prefix = configured_event_prefix(load_project_config(lattice_dir))
-    task_ids = sorted(_collect_task_ids(lattice_dir))
-    lock_keys = [
-        "ids_json",
-        *(key for task_id in task_ids for key in (f"events_{task_id}", f"tasks_{task_id}")),
-    ]
-
-    with multi_lock(lattice_dir / "locks", lock_keys):
+    with all_task_locks(lattice_dir / "locks", ["ids_json"]):
+        task_ids = sorted(_collect_task_ids(lattice_dir))
         current = _load_strict_id_index(lattice_dir)
         authorities: dict[str, ResolvedTaskAuthority] = {}
         for task_id in task_ids:
