@@ -114,7 +114,7 @@ def test_task_event_data_cap_through_a_bound_checkout(hosted_env, tmp_path: Path
         repo, "event", "DEM-1", "x_big", "--data", _event_data(limit), "--actor", "agent:dev"
     )
     assert at_limit.exit_code == 0, at_limit.output
-    assert events_of(hosted_env, "DEM-1")[-1]["type"] == "x_big"
+    assert [e["type"] for e in events_of(hosted_env, "DEM-1")].count("x_big") == 1
 
 
 def test_task_event_data_with_non_ascii_and_a_lone_surrogate_through_a_bound_checkout(
@@ -144,7 +144,8 @@ def test_task_event_data_with_non_ascii_and_a_lone_surrogate_through_a_bound_che
 
     code, body = event('{"k": "\\ud800"}')
     assert code == 0, body
-    assert events_of(hosted_env, "DEM-1")[-1]["data"] == {"k": "\ud800"}
+    texts = [e["data"] for e in events_of(hosted_env, "DEM-1") if e["type"] == "x_text"]
+    assert texts[-1] == {"k": "\ud800"}
     lone_at_limit = '{"k": "' + "\\ud800" + "v" * (limit - overhead - 6) + '"}'
     assert event(lone_at_limit)[0] == 0
     code, body = event('{"k": "' + "\\ud800" + "v" * (limit - overhead - 5) + '"}')

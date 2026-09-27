@@ -57,7 +57,9 @@ def agent_loop(env: HostedEnv, checkout: Path, home: Path) -> None:
         "status_changed",
     ):
         assert expected in types
-    assert events_of(env, short)[-1]["data"]["to"] == "done"
+    # The final status change, whatever else (a client-side record) lands after it.
+    changes = [e for e in events_of(env, short) if e["type"] == "status_changed"]
+    assert changes[-1]["data"]["to"] == "done"
     # The cache caught up with every write, the plan included.
     shown = json.loads(run_cli(checkout, "show", short, "--json").stdout)["data"]
     assert shown["status"] == "done"

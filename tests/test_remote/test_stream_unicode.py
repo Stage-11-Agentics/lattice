@@ -91,7 +91,7 @@ def test_unicode_and_lone_surrogate_events_round_trip_through_the_stream(
         .read_text()
         .splitlines()
     ]
-    assert [e["data"] for e in cached[-2:]] == [{"k": t} for t in TEXTS]
+    assert [e["data"] for e in cached if e["type"] == "x_text"] == [{"k": t} for t in TEXTS]
     shown = run_cli(follower_repo, "show", "DEM-1", "--json")
     assert shown.exit_code == 0, shown.output
 
