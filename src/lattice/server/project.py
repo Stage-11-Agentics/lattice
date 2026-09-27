@@ -22,7 +22,7 @@ import json
 import os
 import socket
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -153,7 +153,14 @@ class MutationTracker:
 class Project:
     """A project directory ``<server_root>/projects/<slug>/`` and its board."""
 
-    def __init__(self, slug: str, directory: Path, log: ServerLog, server_id: str) -> None:
+    def __init__(
+        self,
+        slug: str,
+        directory: Path,
+        log: ServerLog,
+        server_id: str,
+        on_state_change: Callable[[], None] | None = None,
+    ) -> None:
         self.slug = slug
         self.directory = directory
         self.board = directory / ".lattice"
@@ -161,6 +168,7 @@ class Project:
         self.server_id = server_id
         self.state = UNLOADED
         self.reason: str | None = None
+        self._on_state_change = on_state_change
         self.admission = asyncio.Lock()
         self.work = threading.Lock()
         self.journal: Journal | None = None
@@ -199,7 +207,7 @@ class Project:
 
         Call from a worker thread while holding admission, never on the loop.
         """
-        self.state, self.reason = LOADING, None
+        self._set_state(LOADING, None)
         try:
             with self.locked():
                 self._load()
@@ -272,13 +280,23 @@ class Project:
         self.floors = ShortIdFloors.from_board(board)
         ensure_dir(board / HOSTED_DIR / control.CONTROL_DIR)
         self._remember_watched()
-        self.state = LOADED
+        self._set_state(LOADED, None)
         self.log.info(
             "project_load", project=self.slug, epoch=journal.epoch, head_seq=journal.head_seq
         )
 
+    def _set_state(self, state: str, reason: str | None) -> None:
+        """Change state and publish it (``server_status.json``, read by
+        ``lattice server project list``)."""
+        self.state, self.reason = state, reason
+        if self._on_state_change is not None:
+            try:
+                self._on_state_change()
+            except Exception as exc:  # noqa: BLE001 - publishing never breaks a request
+                self.log.warning("status_publish_failed", error=describe_error(exc))
+
     def _mark_unavailable(self, reason: str) -> None:
-        self.state, self.reason = UNAVAILABLE, reason
+        self._set_state(UNAVAILABLE, reason)
         self.journal = None
         if self._lease_fd is not None:
             release_owner_flock(self._lease_fd)
@@ -290,7 +308,7 @@ class Project:
         if self._lease_fd is not None:
             release_owner_flock(self._lease_fd)
             self._lease_fd = None
-        self.state = UNLOADED
+        self._set_state(UNLOADED, None)
 
     def require_loaded(self) -> None:
         if self.state == UNAVAILABLE:
@@ -304,8 +322,12 @@ class Project:
 
     # -- admission-time checks (call under the work lock) -------------------
 
-    def _remember_watched(self) -> None:
-        self._watched = {name: _stat_key(self.board / name) for name in WATCHED_FILES}
+    def _remember_watched(self, names: list[str] | tuple[str, ...] = WATCHED_FILES) -> None:
+        """Take a new baseline for *names*. Called only for files just journaled (or at
+        load), so a hand edit made meanwhile to another watched file is still detected."""
+        for name in names:
+            if name in WATCHED_FILES:
+                self._watched[name] = _stat_key(self.board / name)
 
     def check_external_changes(self) -> None:
         """Journal hand edits of ``config.json`` / ``context.md`` as ``external``."""
@@ -334,13 +356,20 @@ class Project:
         except BaseException as exc:
             self._mark_unavailable(f"journal append failed: {describe_error(exc)}")
             raise OpError("BOARD_UNAVAILABLE", f"project {self.slug} is unavailable") from exc
-        self._remember_watched()
+        self._remember_watched(changed)
         self.log.warning("external_change", project=self.slug, paths=changed, seq=seq)
 
     def run_control_requests(self) -> int:
-        """Run every pending control request; returns how many ran."""
+        """Run every pending control request; returns how many ran.
+
+        Pending hand edits are journaled first, on every path that gets here
+        (admission and the background poller alike).
+        """
         ran = 0
-        for path in control.pending_requests(self.board):
+        pending = control.pending_requests(self.board)
+        if pending and self.state == LOADED and self.journal is not None:
+            self.check_external_changes()
+        for path in pending:
             if self.state != LOADED or self._lease_fd is None or self.journal is None:
                 # Never act on a board this server does not hold: answer, write nothing.
                 answer = {
@@ -368,8 +397,10 @@ class Project:
     def admit(self) -> None:
         """The checks every admitted request runs first (under the work lock)."""
         self.require_loaded()
-        self.run_control_requests()
+        # Hand edits are journaled before any control request can rewrite the same
+        # file, so none is ever adopted silently (SPEC §8.7).
         self.check_external_changes()
+        self.run_control_requests()
 
     # -- the write path ------------------------------------------------------
 
@@ -380,6 +411,8 @@ class Project:
         """
         tracker = MutationTracker(self.board, request.op)
         caller = request.caller
+        # One configuration governs the whole write: read once, under the lock.
+        config = self.read_config()
         try:
             result = execute(
                 self.board,
@@ -387,6 +420,7 @@ class Project:
                 request.params,
                 caller,
                 run_hooks=False,
+                config=config,
                 on_mutation=tracker,
                 authorize=request.authorize,
                 short_id_floor=self.floors.max_observed,
@@ -438,7 +472,7 @@ class Project:
                 f"project {self.slug} could not record operation {op_id}; it is "
                 "unavailable until it is reloaded",
             ) from exc
-        self._remember_watched()
+        self._remember_watched(paths)
         return seq, line
 
     def _append_journal(
@@ -477,6 +511,19 @@ class Project:
                 paths=tracker.relative_paths(),
             )
 
+    def read_config(self) -> dict:
+        """The board's ``config.json`` as it is now (call under the work lock)."""
+        try:
+            config = json.loads((self.board / "config.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise OpError(
+                "INTEGRITY_ERROR",
+                f"project {self.slug}: config.json is unreadable ({describe_error(exc)})",
+            ) from exc
+        if not isinstance(config, dict):
+            raise OpError("INTEGRITY_ERROR", f"project {self.slug}: config.json is not an object")
+        return config
+
     # -- server-started transactions -----------------------------------------
 
     def set_config(self, changes: dict[str, Any]) -> dict:
@@ -488,7 +535,7 @@ class Project:
         op = "server.set_config"
         op_id = generate_op_id()
         tracker = MutationTracker(self.board, op)
-        config = json.loads((self.board / "config.json").read_text(encoding="utf-8"))
+        config = self.read_config()
         config.update(changes)
         try:
             with board_scope(self.board), recording(tracker) as recorder:

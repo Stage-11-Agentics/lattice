@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import threading
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -71,6 +72,7 @@ class ProjectRegistry:
         self._tasks: list[asyncio.Task] = []
         self.prewarm_done = asyncio.Event()
         self.control_poll_seconds = CONTROL_POLL_SECONDS
+        self._status_lock = threading.Lock()
 
     # -- lookup --------------------------------------------------------------
 
@@ -85,7 +87,13 @@ class ProjectRegistry:
             return None
         if not (self.root / "projects" / slug / ".lattice" / "config.json").is_file():
             return None
-        project = Project(slug, self.root / "projects" / slug, self.log, self.server_id)
+        project = Project(
+            slug,
+            self.root / "projects" / slug,
+            self.log,
+            self.server_id,
+            on_state_change=self.write_status,
+        )
         self._projects[slug] = project
         return project
 
@@ -115,7 +123,6 @@ class ProjectRegistry:
         try:
             if project.state in (UNLOADED, LOADING):
                 await in_worker(project.load)
-                self.write_status()
             yield project
         finally:
             project.admission.release()
@@ -201,15 +208,22 @@ class ProjectRegistry:
                 self.log.error("control_failed", project=slug, error=repr(exc))
 
     def write_status(self, *, stopped: bool = False) -> None:
-        """Publish project states for ``lattice server project list``."""
+        """Publish project states for ``lattice server project list``.
+
+        Called on every project state change (from worker threads) and at start
+        and stop; serialized so the newest state is the one left on disk.
+        """
+        with self._status_lock:
+            self._write_status(stopped)
+
+    def _write_status(self, stopped: bool) -> None:
+        projects = list(self._projects.items())
         status = {
             "pid": os.getpid(),
             "server_id": self.server_id,
             "updated_at": now_ms(),
             "stopped": stopped,
-            "projects": {
-                slug: {"state": p.state, "reason": p.reason} for slug, p in self._projects.items()
-            },
+            "projects": {slug: {"state": p.state, "reason": p.reason} for slug, p in projects},
         }
         try:
             atomic_write(self.root / STATUS_JSON, json.dumps(status, sort_keys=True) + "\n")

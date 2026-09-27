@@ -110,3 +110,26 @@ def test_a_regressed_ids_json_never_reissues_a_logged_id(root: Path) -> None:
         assert server.project("alpha").floors.max_observed == {"ALP": 3}
         fresh = create_task(server, token)["short_id"]
     assert fresh not in issued and fresh == "ALP-4"
+
+
+def test_the_write_seam_passes_one_fresh_config(
+    server: ServerHandle, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B3: run_write reads config.json once under the work lock and hands that object
+    to execute(), so rules and policy see exactly one configuration."""
+    import lattice.server.project as project_module
+
+    seen: list[dict] = []
+    real = project_module.execute
+
+    def spy(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        seen.append(kwargs.get("config"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(project_module, "execute", spy)
+    token = mint(root)
+    create_task(server, token)
+    board = root / "projects" / "alpha" / ".lattice"
+    assert seen and isinstance(seen[0], dict)
+    assert seen[0] == json.loads((board / "config.json").read_text())
+    assert seen[0]["project_code"] == "ALP"

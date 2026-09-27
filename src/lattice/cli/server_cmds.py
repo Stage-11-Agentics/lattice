@@ -7,7 +7,6 @@ Admin is shell access to the server host. Every command takes ``--root``
 
 from __future__ import annotations
 
-import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -90,23 +89,24 @@ def server_init(root: str | None, is_json: bool) -> None:
 @_root_option
 @click.option("--host", default=None, help="Bind address (default: server.json bind).")
 @click.option("--port", type=int, default=None, help="Port (default: server.json port).")
-def server_serve(root: str | None, host: str | None, port: int | None) -> None:
-    """Run the server in the foreground until SIGTERM."""
+@_json_option
+def server_serve(root: str | None, host: str | None, port: int | None, is_json: bool) -> None:
+    """Run the server in the foreground until SIGTERM.
+
+    While it runs, stdout carries the server's JSON-line log. A failure to start
+    exits 1 with the usual error, as a JSON envelope under --json.
+    """
     from lattice.server.serve import INSTALL_HINT, server_extra_available
 
     try:
         _hosted_platform()
-    except OpError as exc:
-        output_error(exc.message, exc.code, False)
-    if not server_extra_available():
-        click.echo(f"Error: {INSTALL_HINT}", err=True)
-        sys.exit(1)
-    from lattice.server.serve import serve
+        if not server_extra_available():
+            raise OpError("SERVER_EXTRA_MISSING", INSTALL_HINT)
+        from lattice.server.serve import serve
 
-    try:
         serve(_root(root), host=host, port=port)
     except OpError as exc:
-        output_error(exc.message, exc.code, False)
+        output_error(exc.message, exc.code, is_json)
 
 
 # ---------------------------------------------------------------------------

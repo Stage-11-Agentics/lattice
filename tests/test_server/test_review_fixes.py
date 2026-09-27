@@ -92,6 +92,16 @@ def test_a_failed_commit_point_quarantines_the_project(
         assert status == 503
         create_task(server, token, "beta")
         assert any(x["event"] == "uncommitted_writes" for x in server.log_lines)
+        # B4: the quarantine is published at once, so the admin CLI sees it
+        from click.testing import CliRunner
+
+        from lattice.cli.main import cli
+
+        listed = CliRunner().invoke(
+            cli, ["server", "project", "list", "--root", str(root), "--json"]
+        )
+        rows = {r["slug"]: r["state"] for r in json.loads(listed.output)["data"]}
+        assert rows == {"alpha": "unavailable", "beta": "loaded"}
 
 
 def test_no_actor_operations_run_as_the_tokens_default_actor(root: Path) -> None:

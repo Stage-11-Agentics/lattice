@@ -556,26 +556,36 @@ async def info(request: Request, state: ServerState) -> Response:
 
 
 async def projects(request: Request, state: ServerState) -> Response:
-    def rows_for(token: TokenRecord) -> list[dict]:
+    """Visible projects: slug, project code, head seq, state. Each row is read under
+    that project's admission and work lock, loading it first if it never loaded, as
+    any request does (SPEC §8.5)."""
+
+    def row_for(project: Project) -> dict:
+        code = None
+        try:
+            config = json.loads((project.board / "config.json").read_text(encoding="utf-8"))
+            code = config.get("project_code")
+        except (OSError, ValueError):
+            pass
+        head = project.journal.head_seq if project.journal is not None else None
+        return {
+            "slug": project.slug,
+            "project_code": code,
+            "head_seq": head,
+            "state": project.state,
+        }
+
+    async def run(token: TokenRecord) -> Response:
+        slugs = await in_worker(lambda: _visible_slugs(state, token))
         rows = []
-        for slug in _visible_slugs(state, token):
+        for slug in slugs:
             project = state.registry.get(slug)
             if project is None:
                 continue
-            code = None
-            try:
-                config = json.loads((project.board / "config.json").read_text(encoding="utf-8"))
-                code = config.get("project_code")
-            except (OSError, ValueError):
-                pass
-            head = project.journal.head_seq if project.journal is not None else None
             rows.append(
-                {"slug": slug, "project_code": code, "head_seq": head, "state": project.state}
+                await state.registry.run_locked(project, lambda p=project: row_for(p), admit=False)
             )
-        return rows
-
-    async def run(token: TokenRecord) -> Response:
-        return envelope_ok({"projects": await in_worker(lambda: rows_for(token))})
+        return envelope_ok({"projects": rows})
 
     return await _with_token(request, state, run)
 

@@ -26,6 +26,12 @@ def test_a_second_server_on_the_root_fails_to_start(root: Path) -> None:
         assert "already running" in exc.value.message
         result = CliRunner().invoke(cli, ["server", "serve", "--root", str(root), "--port", "0"])
         assert result.exit_code == 1 and "already running" in result.output
+        result = CliRunner().invoke(
+            cli, ["server", "serve", "--root", str(root), "--port", "0", "--json"]
+        )
+        assert result.exit_code == 1
+        envelope = json.loads(result.output)
+        assert envelope["ok"] is False and "already running" in envelope["error"]["message"]
 
 
 def test_a_second_owner_of_a_held_board_is_refused(root: Path) -> None:
@@ -80,3 +86,11 @@ def test_a_stale_owner_marker_is_taken_over(root: Path) -> None:
             t["project"] == "alpha" and t["previous"]["server_id"] == "srv_dead" for t in takeovers
         )
         assert json.loads(owner.read_text())["server_id"] == server.state.server_id
+
+
+def test_serve_errors_render_as_json(tmp_path: Path) -> None:
+    result = CliRunner().invoke(
+        cli, ["server", "serve", "--root", str(tmp_path / "missing"), "--json"]
+    )
+    assert result.exit_code == 1
+    assert json.loads(result.output)["error"]["code"] == "NOT_INITIALIZED"

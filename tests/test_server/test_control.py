@@ -173,3 +173,46 @@ def test_unknown_event_types_are_logged_once(root: Path) -> None:
         warnings = [x for x in server.log_lines if x["event"] == "unknown_event_type"]
         assert len(warnings) == 1 and warnings[0]["type"] == "future_type"
         assert warnings[0]["project"] == "alpha"
+
+
+def test_a_hand_edit_before_a_queued_control_request_is_journaled(root: Path) -> None:
+    """B1: the edit gets its own ``external`` entry before set-config rewrites the file."""
+    with running_server(root) as server:
+        board = root / "projects" / "alpha" / ".lattice"
+        config = json.loads((board / "config.json").read_text())
+        config["project_name"] = "Edited by hand"
+        (board / "config.json").write_text(json.dumps(config, sort_keys=True, indent=2) + "\n")
+        (board / "context.md").write_text("# Also edited\n")
+        answer = control.send_request(
+            board, "set-config", {"set": {"review_mode": "triple"}}, wait_seconds=5
+        )
+        assert answer["ok"] is True
+        entries = [(x["op"], x["paths"]) for x in _journal(root)]
+        assert entries == [
+            ("external", ["config.json", "context.md"]),
+            ("server.set_config", ["config.json"]),
+        ]
+        final = json.loads((board / "config.json").read_text())
+        assert final["project_name"] == "Edited by hand" and final["review_mode"] == "triple"
+        assert server.project("alpha").state == "loaded"
+
+
+def test_a_hand_edit_during_an_operation_is_not_adopted(root: Path) -> None:
+    """B1: a commit re-baselines only the watched files it journaled."""
+    import threading
+
+    token = mint(root)
+    with running_server(root) as server:
+        board = root / "projects" / "alpha" / ".lattice"
+        slow = threading.Thread(
+            target=server.op, args=("alpha", "xtest.sleep", {"ms": 400}), kwargs={"token": token}
+        )
+        slow.start()
+        assert wait_for(lambda: server.project("alpha").work.locked())
+        (board / "context.md").write_text("# Edited while the op ran\n")
+        slow.join()
+        create_task(server, token)
+        entries = [(x["op"], x["paths"]) for x in _journal(root)]
+        assert entries[0][0] == "xtest.sleep"
+        assert ("external", ["context.md"]) in entries
+        assert entries.index(("external", ["context.md"])) == 1

@@ -3,6 +3,7 @@ no server library; without the extra, ``lattice server serve`` exits 1 with a hi
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import tomllib
@@ -70,3 +71,20 @@ def test_serve_without_the_extra_exits_1_with_a_hint(tmp_path: Path) -> None:
     exit_code, output = proc.stdout.split("\n", 1)
     assert exit_code == "1"
     assert "lattice-tracker[server]" in output
+
+
+def test_serve_without_the_extra_under_json(tmp_path: Path) -> None:
+    proc = _run(
+        "import json\n"
+        "from click.testing import CliRunner\n"
+        "from lattice.cli.main import cli\n"
+        f"r = CliRunner().invoke(cli, ['server', 'serve', '--root', {str(tmp_path)!r}, '--json'])\n"
+        "print(r.exit_code)\n"
+        "print(json.dumps(json.loads(r.output)))\n"
+    )
+    assert proc.returncode == 0, proc.stderr
+    exit_code, output = proc.stdout.strip().split("\n", 1)
+    assert exit_code == "1"
+    envelope = json.loads(output)
+    assert envelope["ok"] is False and envelope["error"]["code"] == "SERVER_EXTRA_MISSING"
+    assert "lattice-tracker[server]" in envelope["error"]["message"]
