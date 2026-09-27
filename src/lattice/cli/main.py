@@ -273,15 +273,23 @@ class _LatticeGroup(click.Group):
             mapped = cache_access_error(exc)
             if mapped is None:
                 raise
-            _render(ctx, mapped)
+            _render(ctx, mapped, hosted=True)
 
 
-def _render(ctx: click.Context, exc: OpError) -> NoReturn:
+def _render(ctx: click.Context, exc: OpError, *, hosted: bool = False) -> NoReturn:
+    """Print *exc* as the command's error. A hosted message can quote the
+    binding (SPEC §4), so output is scrubbed first: always for a *hosted* error
+    (a cache error can come before anything imported the session, during
+    classification), else whenever a hosted session is loaded; a local board's
+    error imports nothing hosted."""
     from lattice.cli.helpers import output_error
 
-    session = sys.modules.get("lattice.remote.session")
-    if session is not None:
-        session.scrub_output()  # a hosted message can quote the binding (SPEC §4)
+    if hosted:
+        from lattice.remote import session as loaded
+    else:
+        loaded = sys.modules.get("lattice.remote.session")
+    if loaded is not None:
+        loaded.scrub_output()
     output_error(exc.message, exc.code, "--json" in ctx.meta.get("lattice.argv", ()))
 
 

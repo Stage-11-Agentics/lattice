@@ -426,3 +426,79 @@ def test_mcp_config_read_after_a_successful_freshness_step(
     assert fresh
     assert raised.value.code == "BOARD_IS_CACHE"
     assert raised.value.details["path"] == ".lattice/config.json"
+
+
+def _run_on_a_terminal(args: list[str], cwd: Path, env: dict[str, str]) -> tuple[int, str]:
+    """Run *args* with stderr on a pseudo-terminal (click strips ANSI sequences
+    only off a terminal); returns the exit code and what the terminal got."""
+    import pty
+    import subprocess
+
+    master, slave = pty.openpty()
+    try:
+        proc = subprocess.Popen(
+            args,
+            cwd=cwd,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=slave,
+        )
+        os.close(slave)
+        chunks: list[bytes] = []
+        while True:
+            try:
+                chunk = os.read(master, 4096)
+            except OSError:  # EIO once the child closed its end (Linux)
+                break
+            if not chunk:
+                break
+            chunks.append(chunk)
+        returncode = proc.wait(timeout=60)
+    finally:
+        os.close(master)
+    return returncode, b"".join(chunks).decode("utf-8", "replace")
+
+
+def test_an_early_cache_error_is_scrubbed_in_a_fresh_process(tmp_path: Path) -> None:
+    """Classification meets the cache before anything imports the hosted
+    session: a ``.lattice/`` another user owns and this one cannot enter. The
+    message quotes the binding's alias, so a terminal gets it scrubbed (SPEC
+    §4); ``--json`` carries the same values, escaped by JSON itself."""
+    import subprocess
+    import sys
+
+    alias = "te\x1b[31mam\x07"
+    repo = tmp_path / "repo"
+    (repo / ".lattice").mkdir(parents=True)
+    (repo / ".lattice-remote.json").write_text(json.dumps({"remote": alias, "project": PROJECT}))
+    (repo / ".lattice").chmod(0)
+    script = (
+        "import os, sys\n"
+        "os.getuid = lambda: -1  # the .lattice/ belongs to someone else\n"
+        "from lattice.cli.main import cli\n"
+        "assert 'lattice.remote.session' not in sys.modules\n"
+        "cli(sys.argv[1:], prog_name='lattice')\n"
+    )
+    env = {k: v for k, v in os.environ.items() if k not in ("LATTICE_ROOT", "LATTICE_DIR")}
+    try:
+        code, terminal = _run_on_a_terminal([sys.executable, "-c", script, "list"], repo, env)
+        as_json = subprocess.run(
+            [sys.executable, "-c", script, "list", "--json"],
+            cwd=repo,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    finally:
+        (repo / ".lattice").chmod(0o700)
+    assert code == 1, terminal
+    assert "Traceback" not in terminal
+    assert "\x1b" not in terminal and "\x07" not in terminal
+    assert "read-only mirror of te\ufffd[31mam\ufffd/demo" in terminal
+    assert "cannot use .lattice/cache (Permission denied)" in terminal
+    assert as_json.returncode == 1
+    error = json.loads(as_json.stdout)["error"]
+    assert error["code"] == "BOARD_IS_CACHE"
+    assert error["message"].startswith(f"this is a read-only mirror of {alias}/demo")
