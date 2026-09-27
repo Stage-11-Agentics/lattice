@@ -39,7 +39,11 @@ from tests.test_server.audit_helpers import (
 from tests.test_server.conftest import create_task, mint
 from tests.test_server.faults import request, run
 
-pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+pytestmark = [
+    pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed"),
+    # Servers, git subprocesses, and waits: generous for slow CI runners.
+    pytest.mark.timeout(60),
+]
 
 SLOW = AuditConfig(debounce_seconds=30, max_interval_seconds=30)
 QUICK = AuditConfig(debounce_seconds=0.05, max_interval_seconds=1)
@@ -81,31 +85,92 @@ def test_drain_never_needs_the_work_lock_and_commit_follows_stage(tmp_path: Path
     assert head_tree(directory) == durable_files(directory / ".lattice")
 
 
-def test_server_shutdown_stages_under_the_lock_and_commits_outside_it(
+def _instrument_phases(
+    monkeypatch: pytest.MonkeyPatch, project, seen: list[tuple[str, bool]]
+) -> None:  # noqa: ANN001
+    """Record each shutdown/unload step with whether the work lock was held."""
+    real_stage, real_commit = audit.Stager.stage, audit.commit_tree
+    real_clean, real_release = project.write_clean_shutdown, project.release
+
+    def stage(self):  # noqa: ANN001, ANN202
+        seen.append(("stage", project.work.locked()))
+        return real_stage(self)
+
+    def commit(*args):  # noqa: ANN002, ANN202
+        seen.append(("commit", project.work.locked()))
+        return real_commit(*args)
+
+    def clean() -> None:
+        seen.append(("clean_shutdown", project.work.locked()))
+        real_clean()
+
+    def release() -> None:
+        seen.append(("release_lease", project.work.locked()))
+        real_release()
+
+    monkeypatch.setattr(audit.Stager, "stage", stage)
+    monkeypatch.setattr(audit, "commit_tree", commit)
+    monkeypatch.setattr(project, "write_clean_shutdown", clean)
+    monkeypatch.setattr(project, "release", release)
+
+
+def test_server_shutdown_runs_the_audit_in_h22_phase_order(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """SIGTERM path (``ProjectRegistry.stop`` → ``SHUTDOWN_PHASES``): drain, stage
+    under the work lock, commit outside it, clean_shutdown, release the lease."""
     config = {"audit": {"debounce_seconds": 60, "max_interval_seconds": 60}}
     root = make_root(tmp_path, projects={"alpha": {"code": "ALP"}}, config=config)
     directory = root / "projects" / "alpha"
     seen: list[tuple[str, bool]] = []
-    real_stage, real_commit = audit.Stager.stage, audit.commit_tree
-
     with running_server(root) as server:
         project = server.project("alpha")
-
-        def stage(self):  # noqa: ANN001, ANN202
-            seen.append(("stage", project.work.locked()))
-            return real_stage(self)
-
-        def commit(*args):  # noqa: ANN002, ANN202
-            seen.append(("commit", project.work.locked()))
-            return real_commit(*args)
-
-        monkeypatch.setattr(audit.Stager, "stage", stage)
-        monkeypatch.setattr(audit, "commit_tree", commit)
         create_task(server, mint(root))
-    assert seen == [("stage", True), ("commit", False)]
+        epoch = project.journal.epoch
+        _instrument_phases(monkeypatch, project, seen)
+    assert seen == [
+        ("stage", True),
+        ("commit", False),
+        ("clean_shutdown", True),
+        ("release_lease", True),
+    ], seen
     assert commits(directory)[-1] == "audit: seq 1-1 (1 ops)"
+    assert project.committer is None
+    # The audit writes nothing under .lattice/: the next load's clean_shutdown
+    # fingerprint still matches, so the epoch does not rotate.
+    monkeypatch.undo()
+    with running_server(root) as server:
+        assert server.project("alpha").journal.epoch == epoch
+        assert server.project("alpha").committer is not None
+
+
+def test_unload_and_load_control_requests_run_the_audit_phases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``lattice server project unload`` / ``load`` (H-22) through the running server."""
+    config = {"audit": {"debounce_seconds": 60, "max_interval_seconds": 60}}
+    root = make_root(tmp_path, projects={"alpha": {"code": "ALP"}}, config=config)
+    directory = root / "projects" / "alpha"
+    token = mint(root)
+    seen: list[tuple[str, bool]] = []
+    with running_server(root) as server:
+        project = server.project("alpha")
+        create_task(server, token)
+        _instrument_phases(monkeypatch, project, seen)
+        admin.project_lifecycle(root, "alpha", "unload")
+        assert seen[:3] == [("stage", True), ("commit", False), ("clean_shutdown", True)], seen
+        assert commits(directory)[-1] == "audit: seq 1-1 (1 ops)"
+        assert project.committer is None
+        monkeypatch.undo()
+        admin.project_lifecycle(root, "alpha", "load")
+        assert project.committer is not None
+        project.committer.config = AuditConfig(debounce_seconds=0.05, max_interval_seconds=1)
+        create_task(server, token)
+        assert wait_for(lambda: commits(directory)[-1] == "audit: seq 2-2 (1 ops)", timeout=10)
+        admin.project_lifecycle(root, "alpha", "reload")
+        create_task(server, token)
+    assert commits(directory)[-1] == "audit: seq 3-3 (1 ops)"
+    assert head_tree(directory) == durable_files(directory / ".lattice")
 
 
 def test_unload_then_reload(tmp_path: Path) -> None:

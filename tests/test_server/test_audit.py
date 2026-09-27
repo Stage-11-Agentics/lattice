@@ -40,7 +40,11 @@ from tests.test_server.audit_helpers import (
 from tests.test_server.conftest import create_task, mint
 from tests.test_server.faults import request, run
 
-pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+pytestmark = [
+    pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed"),
+    # Servers, git subprocesses, and waits: generous for slow CI runners.
+    pytest.mark.timeout(60),
+]
 
 
 # ---------------------------------------------------------------------------
