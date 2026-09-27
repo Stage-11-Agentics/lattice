@@ -84,11 +84,25 @@ def _reads(lattice_dir: Path) -> list[list[str]]:
 def _assert_reads_match(
     checkout: Path, server_project: Path, cache: Path, env: dict[str, str]
 ) -> None:
-    """Read commands print the same through the cache as on the server's own board."""
-    for args in _reads(cache):
-        on_cache = _read(checkout, args, env)
-        on_server = _read(server_project, args, {})
-        assert on_cache == on_server, f"lattice {' '.join(args)} differs on cache and server"
+    """Read commands print the same through the cache as on the server's own board.
+
+    The cache has just caught up, so the reads run as they do beside a live
+    follower (SPEC §9.5): straight from the cache, with no catch-up request each.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from lattice.remote.follower import follower_path
+
+    marker = follower_path(checkout)
+    until = (datetime.now(UTC) + timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    marker.write_text(json.dumps({"pid": os.getpid(), "stream_live_until": until}))
+    try:
+        for args in _reads(cache):
+            on_cache = _read(checkout, args, env)
+            on_server = _read(server_project, args, {})
+            assert on_cache == on_server, f"lattice {' '.join(args)} differs on cache and server"
+    finally:
+        marker.unlink()
 
 
 @pytest.mark.parametrize(("scenario", "mode"), CASES, ids=[f"{s.name}.{m}" for s, m in CASES])
