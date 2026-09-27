@@ -330,7 +330,7 @@ Two markers make "one writer" structural (G-1, AC-3):
 
 ### 8.1 Install and process
 
-- Install: `uv tool install 'lattice-tracker[server]'` (or pip). The `server` extra adds `starlette`, `uvicorn`, `sse-starlette`, pinned to the ranges the `mcp` extra already resolves. The base install gains nothing (AC-30, G-4).
+- Install: `uv tool install 'lattice-tracker[server]'` (or pip). The `server` extra adds `starlette` and `uvicorn`, pinned to the ranges the `mcp` extra already resolves. The stream (§8.9) is written directly on Starlette, with no SSE library. The base install gains nothing (AC-30, G-4).
 - Run: `lattice server serve [--root PATH] [--host H] [--port P]`. Foreground. uvicorn, one process, `--workers 1`. Without the extra, it exits 1 with an install hint. Other `lattice server` admin commands need no extra.
 - Server root: `--root`, else `$LATTICE_SERVER_ROOT`, else `$XDG_DATA_HOME/lattice-server` (default `~/.local/share/lattice-server`).
 - Projects load lazily: a project runs its load (§8.7) on its first request, and a background prewarm thread loads every project in slug order once the server starts listening. A request that arrives while its project loads waits in admission (§8.5). The server answers `/healthz` from its first second.
@@ -549,7 +549,7 @@ Unknown-event-type warnings go through a module-level reporter in `core/tasks.py
 
 ### 8.9 Stream
 
-`GET /v1/projects/{slug}/stream` (SSE, `sse-starlette`):
+`GET /v1/projects/{slug}/stream` (Server-Sent Events):
 
 - A new stream subscribes to the project's broadcaster first, then replays journal entries after its resume point, then delivers live entries, dropping any `seq` it has already sent. Entries arrive in `seq` order with no gap and no duplicate (AC-22).
 - Resume point: `Last-Event-ID: <epoch>:<seq>:<line hash>` header or `?since=<seq>&epoch=<epoch>&hash=<line hash>`. If the hash differs from the server's line at that seq (§8.8), or more than `limits.replay_reset_entries` (1,000) entries separate it from head, the server sends `reset` instead of replaying.
@@ -557,6 +557,7 @@ Unknown-event-type warnings go through a module-level reporter in `core/tasks.py
 - Epoch mismatch, history mismatch, or rotation: one `event: reset` with the new epoch, then live entries (AC-23).
 - **Heartbeat:** `event: heartbeat` with `data: {"epoch", "head_seq"}` and no `id`, sent immediately on connect and then every `stream.heartbeat_seconds` (default 2). It tells a follower the head even when a proxy drops or holds entries (§9.6).
 - The credential is rechecked at each heartbeat; a revoked token or expired session closes the stream (AC-13).
+- **Framing and lifecycle.** The response is `text/event-stream` with `Cache-Control: no-store` and `X-Accel-Buffering: no`. Each event is its field lines (`id:` when it has one, `event:`, and one `data:` line of compact JSON) followed by a blank line. A client that disconnects releases its subscriber slot and queue within one heartbeat interval. On SIGTERM the server ends every open stream at once, so open followers never hold up graceful shutdown (AC-31); followers resume from their `Last-Event-ID`.
 - **Bounds.** A project accepts at most `limits.max_stream_subscribers_per_project` open streams; one more gets 429 `RATE_LIMITED`. Publication never blocks: each subscriber has a queue of at most `limits.stream_queue_entries` entries, and a subscriber whose queue is full is disconnected, to resume later from its `Last-Event-ID`. A slow reader therefore never delays the project's writes.
 
 ### 8.10 Audit history

@@ -11,7 +11,7 @@ Settled with the operator in the intake interview and the contract read (`sequen
 | Decision | Choice | Why |
 |---|---|---|
 | Write seam | Named operations run by whichever process owns the board (`SPEC.md` §3) | The rules are Python callbacks that must run where the writer is; three disagreeing copies of the rules collapse into one |
-| Server stack | Starlette + uvicorn + sse-starlette in an optional `server` extra; client is standard library | Same libraries the `mcp` extra already resolves; hardened HTTP and streaming where it matters; base install unchanged |
+| Server stack | Starlette + uvicorn in an optional `server` extra, with the stream written directly on Starlette; client is standard library | Same libraries the `mcp` extra already resolves; hardened HTTP and streaming where it matters; base install unchanged |
 | Identity | Token issued to one person for one machine or seat, listing permitted actors (by default the person and that person's agents; a seat token lists exactly one); origin on every event, authenticated fields stamped by the server | Unforgeable attribution without a token per agent session; machine, worktree, and user first-class |
 | Plans and notes | Written through `lattice plan write` / `notes write` in both modes; hosted cache files read-only | A read-only mirror cannot carry direct file edits to the server |
 | Cache | The checkout's gitignored, owner-only `.lattice/`, shared by every worktree through the existing worktree jump; a committed binding names an alias and a project and bootstraps a clone, and the cache's own marker routes it after that | `cat .lattice/...` still works; no hostname in any repo; branch switches cannot drop routing |
@@ -117,6 +117,7 @@ Criteria: AC-4 (H-22a part), AC-46 (server level). Deps: H-2 (`task.archive`), H
 
 ### H-10a Server sync and stream · H · Risk-reviewed (cross-system consistency)
 Server `sync` (line hashes and the history check, append deltas from the per-log length history, the in-memory manifest, `since == head` answered before admission, one reset per project at a time, the reset inline cap, the `manifest=1` form), `files` (hash-pinned `href`, `STALE_VERSION`), and `stream` (broadcast under the locks through bounded, non-blocking subscriber queues, the subscriber cap, subscribe-then-replay, the replay reset threshold, heartbeat events carrying `head_seq`, credential recheck) endpoints; the finish-step updates of the sync path's in-memory state (`SPEC.md` §8.6 step 6); `project rotate-epoch`, offline (refused while undo logs exist) and through a control request, with `reset` broadcast. **Interface for H-10b and H-10c:** the wire format of `SPEC.md` §8.8 and §8.9, nothing else, plus a test helper that starts an in-process server on a fixture board.
+The stream uses no SSE library (`SPEC.md` §8.9, framing and lifecycle): remove `sse-starlette` from the `server` and `dev` extras, from `server/serve.py`'s import check, and from `tests/test_packaging.py`.
 Criteria: AC-15 (stream bounds), AC-22, AC-23 (rotation and reset broadcast), G-11 (sync and stream part). Deps: H-22a.
 
 ### H-10b Client cache · H · Risk-reviewed (cross-system consistency)
