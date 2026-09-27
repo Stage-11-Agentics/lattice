@@ -166,8 +166,38 @@ def action(name: str) -> Callable[[Callable[[Any, dict], Any]], Callable[[Any, d
     return register
 
 
+#: A request file that does not yet parse as a JSON object is taken to be still
+#: being written for this long after its last change, and left alone; after
+#: it, the server answers it as malformed (so it never wedges the queue).
+INCOMPLETE_GRACE_SECONDS = 5.0
+
+
+def request_complete(path: Path, now: float | None = None) -> bool:
+    """Whether the server may act on *path*: it parses as a JSON object, or it has
+    not changed for :data:`INCOMPLETE_GRACE_SECONDS` (then it is malformed, and
+    answered so). The admin writes requests atomically (a dot-named temp file,
+    then a rename), so this matters only for a writer that does not: a
+    half-written file is never answered as malformed while it is being written."""
+    try:
+        request = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        request = None
+    if isinstance(request, dict):
+        return True
+    try:
+        changed = Path(path).stat().st_mtime
+    except OSError:
+        return False  # gone meanwhile
+    return (time.time() if now is None else now) - changed >= INCOMPLETE_GRACE_SECONDS
+
+
 def pending_requests(board: Path) -> list[Path]:
-    """Request files not yet answered, oldest first (ULIDs sort by time)."""
+    """Complete request files not yet answered, oldest first (ULIDs sort by time).
+
+    Only ``<name>.json`` counts: the admin's temp files (``.tmp.<name>.<pid>``)
+    are dot-named and never match, and a request still being written by a
+    non-atomic writer waits (:func:`request_complete`).
+    """
     control = Path(board) / "hosted" / CONTROL_DIR
     try:
         names = os.listdir(control)
@@ -179,6 +209,7 @@ def pending_requests(board: Path) -> list[Path]:
         if name.endswith(".json")
         and not name.startswith(".")
         and not (control / (name[: -len(".json")] + ".done")).exists()
+        and request_complete(control / name)
     ]
 
 

@@ -67,8 +67,11 @@ def test_control_requests_run_at_admission(root: Path) -> None:
     with running_server(root) as server:
         board = root / "projects" / "alpha" / ".lattice"
         request_path = board / "hosted" / "control" / "01J9Z0000000000000000000AA.json"
-        request_path.write_text(
-            json.dumps({"action": "set-config", "set": {"plan_approval": "human"}})
+        # Written atomically, as the admin writes every request (temp file, then
+        # rename): a plain write_text could be scanned half-written (CI flake).
+        control._write_private(
+            request_path,
+            json.dumps({"action": "set-config", "set": {"plan_approval": "human"}}).encode(),
         )
         create_task(server, token)  # the admission check runs it before the write
         done = request_path.with_suffix(".done")
@@ -461,3 +464,31 @@ def test_unload_runs_the_same_phases_before_releasing_the_lease(
         assert _meta(root)["clean_shutdown"]["head_seq"] == 1
         code, out = _admin(root, "load", "alpha")
         assert code == 0 and out["data"]["head_seq"] == 1  # unchanged tree: same epoch
+
+
+def test_a_half_written_request_waits_until_it_is_complete(root: Path) -> None:
+    """A non-atomic writer's partial request is never answered as malformed while
+    it is being written; a request left malformed past the grace period is."""
+    import os
+
+    with running_server(root) as server:
+        board = root / "projects" / "alpha" / ".lattice"
+        folder = board / "hosted" / "control"
+        request = json.dumps({"action": "set-config", "set": {"review_mode": "triple"}})
+        partial = folder / "01J9Z0000000000000000000AB.json"
+        partial.write_text(request[:20])  # half written
+        time.sleep(0.3)  # several poll periods (0.05 s in tests)
+        assert not partial.with_suffix(".done").exists()
+        assert control.pending_requests(board) == []
+        partial.write_text(request)  # the writer finishes
+        assert wait_for(lambda: partial.with_suffix(".done").exists(), timeout=5)
+        assert json.loads(partial.with_suffix(".done").read_text())["ok"] is True
+
+        stale = folder / "01J9Z0000000000000000000AC.json"
+        stale.write_text("{not json")
+        old = time.time() - control.INCOMPLETE_GRACE_SECONDS - 1
+        os.utime(stale, (old, old))  # abandoned long ago: malformed, answered
+        assert wait_for(lambda: stale.with_suffix(".done").exists(), timeout=5)
+        answer = json.loads(stale.with_suffix(".done").read_text())
+        assert answer["ok"] is False and answer["error"]["code"] == "VALIDATION_ERROR"
+        assert server.project("alpha").state == "loaded"
