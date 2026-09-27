@@ -46,6 +46,16 @@ FORCEABLE_CODES = frozenset(
 )
 
 
+#: A bound checkout's client-side codes (SPEC §3.1 "CLI only"), as the
+#: dashboard answers them.
+CLIENT_ERROR_STATUS = {
+    "SERVER_UNREACHABLE": 503,
+    "OUTCOME_UNKNOWN": 503,
+    "PROXY_REJECTED": 502,
+    "CACHE_INCOMPLETE": 503,
+}
+
+
 # ---------------------------------------------------------------------------
 # Envelopes and responses
 # ---------------------------------------------------------------------------
@@ -63,8 +73,11 @@ class ApiError(Exception):
 
     @classmethod
     def from_op_error(cls, exc: OpError) -> ApiError:
-        """An operation's rejection, at the HTTP status SPEC §3.1 maps its code to."""
-        return cls(HTTP_STATUS.get(exc.code, 500), exc.code, exc.message, exc.details)
+        """An operation's rejection, at the HTTP status SPEC §3.1 maps its code to;
+        a bound checkout's client-side failures (the server unreachable, a
+        write's outcome unknown, the cache unreadable) are 503."""
+        status = HTTP_STATUS.get(exc.code) or CLIENT_ERROR_STATUS.get(exc.code, 500)
+        return cls(status, exc.code, exc.message, exc.details)
 
     def envelope(self) -> dict:
         error: dict[str, Any] = {"code": self.code, "message": self.message}

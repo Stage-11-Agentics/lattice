@@ -15,6 +15,7 @@ import platform
 import subprocess
 import sys
 from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -96,15 +97,23 @@ class DashboardBoard:
     browser write acts as (SPEC §8.3), overriding any actor the request names;
     ``None`` locally, where a request's own actor, else ``dashboard:web``, is
     used. ``hosted``: a bound checkout, whose cache the dashboard only reads.
+    ``read_dir``: the ``.lattice/`` reads use (default: the board's).
+    ``reading``: a context manager held around each read, yielding that
+    directory (a bound checkout takes the cache's shared read lock).
     """
 
     board: Any
     browser_actor: Callable[[], str] | None = None
     hosted: bool = False
+    read_dir: Path | None = None
+    reading: Callable[[], AbstractContextManager[Path]] | None = None
 
     @property
     def lattice_dir(self) -> Path:
-        return self.board.lattice_dir
+        return self.read_dir if self.read_dir is not None else self.board.lattice_dir
+
+    def read(self) -> AbstractContextManager[Path]:
+        return self.reading() if self.reading is not None else nullcontext(self.lattice_dir)
 
     def actor_for(self, requested: Any) -> Any:
         if self.browser_actor is not None:
@@ -139,14 +148,15 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
             elif path == "/stats-demo":
                 self._serve_notes_file("stats-demo/demo.html", "text/html")
             elif path.startswith("/api/"):
-                self._send(
-                    api.route_get(
-                        self._target.lattice_dir,
-                        path,
-                        parsed.query,
-                        self.headers.get("If-None-Match"),
-                    )
-                )
+                try:
+                    with self._target.read() as ld:
+                        response = api.route_get(
+                            ld, path, parsed.query, self.headers.get("If-None-Match")
+                        )
+                except OpError as exc:  # a bound checkout's cache cannot be read
+                    refused = ApiError.from_op_error(exc)
+                    response = ApiResponse(refused.status, refused.envelope())
+                self._send(response)
             elif path.startswith("/static/"):
                 rel_path = path[len("/static/") :]
                 if ".." in rel_path or rel_path.startswith("/"):

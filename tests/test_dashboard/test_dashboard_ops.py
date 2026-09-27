@@ -562,10 +562,9 @@ def local_recording_dash(populated_lattice_dir, monkeypatch):
     monkeypatch.setattr(server_module.subprocess, "Popen", lambda cmd, **kw: opened.append(cmd))
     monkeypatch.setattr(server_module.platform, "system", lambda: "Darwin")
 
-    def no_direct_scaffold(*args: object, **kwargs: object) -> None:
-        raise AssertionError("open-plans wrote the plan outside an operation")
-
-    monkeypatch.setattr("lattice.storage.operations.scaffold_plan", no_direct_scaffold)
+    # The dashboard has no direct path to the plan writer; its only write path
+    # is board.execute, which the recording board observes.
+    assert not hasattr(server_module, "scaffold_plan")
 
     ld, ids = populated_lattice_dir
     board = _RecordingBoard(ld)

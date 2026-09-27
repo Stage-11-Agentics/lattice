@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import os
 import signal
@@ -11,7 +12,14 @@ import sys
 
 import click
 
-from lattice.cli.helpers import json_envelope, json_error_obj, load_project_config, require_root
+from lattice.cli.helpers import (
+    json_envelope,
+    json_error_obj,
+    load_project_config,
+    output_error,
+    require_root,
+)
+from lattice.core.errors import OpError
 from lattice.cli.main import cli
 
 _DEFAULT_PORT = 8799
@@ -61,9 +69,10 @@ def dashboard_cmd(host: str, port: int | None, output_json: bool) -> None:
     Supports graceful restart via SIGHUP — the server shuts down and
     relaunches on the same port without losing the terminal session.
     Use ``lattice restart`` to send the signal from another terminal.
-    """
-    global _active_server, _restart_requested
 
+    On a checkout bound to a server, it reads the checkout's cache, kept caught
+    up by an embedded follower, and writes to the server as the browser actor.
+    """
     lattice_dir = require_root(output_json)
 
     # Resolve port: CLI flag > config.dashboard_port > 8799
@@ -84,6 +93,42 @@ def dashboard_cmd(host: str, port: int | None, output_json: bool) -> None:
     if hasattr(signal, "SIGHUP"):
         signal.signal(signal.SIGHUP, _handle_sighup)
 
+    with contextlib.ExitStack() as stack:
+        target = _dashboard_target(lattice_dir, stack, output_json)
+        _serve(lattice_dir, host, port, readonly, output_json, target)
+
+
+def _dashboard_target(lattice_dir, stack, is_json):  # noqa: ANN001, ANN202
+    """The board to serve: ``None`` for a local board (the server builds its own),
+    or, on a bound checkout, the server's board with an embedded follower that
+    runs until *stack* closes (SPEC §9.6). SIGTERM then stops the dashboard
+    cleanly, so the follower clears its freshness record on the way out."""
+    from lattice.cli.helpers import hosted_or_exit
+
+    root = lattice_dir.parent
+    hosted = hosted_or_exit(root, is_json)
+    if hosted is None:
+        return None
+    from lattice.boards import resolve_board
+    from lattice.dashboard.bound import bound_dashboard
+
+    try:
+        target = stack.enter_context(bound_dashboard(resolve_board(root)))
+    except OpError as exc:
+        output_error(exc.message, exc.code, is_json)
+
+    def _terminate(signum, frame):  # noqa: ANN001, ANN202, ARG001
+        raise KeyboardInterrupt
+
+    previous = signal.signal(signal.SIGTERM, _terminate)
+    stack.callback(signal.signal, signal.SIGTERM, previous)
+    return target
+
+
+def _serve(lattice_dir, host, port, readonly, output_json, target):  # noqa: ANN001, ANN202, PLR0913
+    """Serve until stopped, restarting in place on SIGHUP."""
+    global _active_server, _restart_requested
+
     from lattice.dashboard.server import create_server
 
     first_start = True
@@ -92,7 +137,7 @@ def dashboard_cmd(host: str, port: int | None, output_json: bool) -> None:
         _restart_requested = False
 
         try:
-            server = create_server(lattice_dir, host, port, readonly=readonly)
+            server = create_server(lattice_dir, host, port, readonly=readonly, board=target)
         except OSError as exc:
             if exc.errno == errno.EADDRINUSE:
                 alt = _find_free_port(host, port)

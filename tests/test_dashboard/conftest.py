@@ -15,6 +15,7 @@ from lattice.core.ids import generate_artifact_id, generate_task_id
 from lattice.core.tasks import apply_event_to_snapshot, serialize_snapshot
 from lattice.dashboard.server import create_server
 from lattice.storage.fs import atomic_write, ensure_lattice_dirs
+from tests.test_remote.hosted import hosted_env  # noqa: F401 - bound-checkout dashboard tests
 
 
 def _write_task(lattice_dir: Path, events: list[dict]) -> dict:
