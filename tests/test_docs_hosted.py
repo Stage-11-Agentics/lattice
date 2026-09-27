@@ -183,9 +183,11 @@ def test_awaiting_merge_entries_are_still_missing() -> None:
     assert not landed, f"these commands have landed; drop them from AWAITING_MERGE: {landed}"
 
 
-# Hosts the docs may name: placeholders, loopback, and public project links.
+# Hosts the docs may name: placeholders, loopback, the documentation address
+# ranges (RFC 5737), and public project links.
 _ALLOWED_HOSTS = re.compile(
     r"^(localhost|127\.0\.0\.1|\[?::1\]?|0\.0\.0\.0"
+    r"|(192\.0\.2|198\.51\.100|203\.0\.113)\.\d{1,3}"
     r"|([a-z0-9-]+\.)*example(\.(internal|com|org|net|invalid))?"
     r"|([a-z0-9-]+\.)*(invalid|test)"
     r"|github\.com|www\.apple\.com|claude\.com|docs\.anthropic\.com)$"
@@ -211,10 +213,14 @@ def test_no_real_hostnames(path: Path) -> None:
 
 
 def test_hostname_check_catches_a_real_host() -> None:
-    sample = "curl https://lattice.acme-corp.io/healthz and server_name board.acme.dev;"
+    sample = (
+        "curl https://lattice.acme-corp.io/healthz and server_name board.acme.dev;"
+        " proxy_pass http://192.0.2.20:8740; proxy_pass http://10.1.2.3:8740;"
+    )
     hosts = {m.group(1).lower() for m in _URL_HOST.finditer(sample)}
     hosts |= {m.group(1).lower() for m in _BARE_HOST.finditer(sample)}
     assert sorted(h for h in hosts if not _ALLOWED_HOSTS.match(h)) == [
+        "10.1.2.3",
         "board.acme.dev",
         "lattice.acme-corp.io",
     ]
