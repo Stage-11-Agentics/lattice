@@ -54,6 +54,24 @@ dashboard:
 
 Task write path is event-first, then snapshot write, then hook execution.
 
+## Board Ownership and the Write Recorder (v2)
+
+The write primitives in `storage/fs.py` (`atomic_write`, `jsonl_append`,
+placement copy and unlink, `ensure_dir`) are the only way `src/` writes a
+durable board path. Each one:
+
+- refuses a board a server owns (`hosted/owner.json` plus its `flock`) unless
+  it runs inside that server (`BOARD_IS_HOSTED`), and a client cache
+  (`cache/state.json`) unless it runs inside the syncer (`BOARD_IS_CACHE`);
+- refuses a path whose resolved form is outside the board's `.lattice/`
+  (`BoardPathError`);
+- calls the write recorder before the change, with the path and the kind
+  (`append`, `create`, `replace`, `unlink`). A server's transaction uses that
+  callback to write its undo log.
+
+Runtime paths (`locks/`, `review_state/`, `tmp-prompts/`, `.daemon/`) stay
+writable everywhere, so reads work on a cache. See `hosted.md`.
+
 ## Hooks
 
 `src/lattice/storage/hooks.py` runs shell hooks after writes are durable:
@@ -72,7 +90,10 @@ Plans and notes are intentionally outside event sourcing:
 - `.lattice/notes/<task_id>.md`
 
 They are supplementary docs, not authoritative state. Corruption there does not
-break rebuild invariants.
+break rebuild invariants. Since v2 they are written with `lattice plan write`
+and `lattice notes write`, which replace the file atomically and record a
+`plan_written` / `notes_written` event (the SHA-256 and size, not the text);
+direct edits still work on a local board.
 
 ## Recovery Model
 

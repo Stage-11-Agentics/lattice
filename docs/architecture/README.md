@@ -12,5 +12,7 @@ Use this index to jump directly to the subsystem you need:
 - `cli-command-structure.md` — CLI entrypoint, command modules, helpers, and extension pattern
 - `storage-layer.md` — atomic writes, locks, fs layout, hooks, and durability model
 - `dashboard.md` — HTTP server architecture, API routes, write endpoints, and safety constraints
+- `operations.md`: the write seam: named operations, `execute`, front ends, and the `lattice.operations` entry-point group
+- `hosted.md`: the optional server, the client cache, routing, board ownership, and transactions
 
 When behavior and docs disagree, code and `ProjectRequirements_v1.md` win.
