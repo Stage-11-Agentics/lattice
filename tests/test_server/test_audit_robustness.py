@@ -381,6 +381,10 @@ def test_git_ignores_system_user_and_injected_configuration(
     scratch = tmp_path / "scratch"
     subprocess.run(["git", "init", "-q", str(scratch)], check=True, timeout=30)
     assert list((scratch / ".git").glob("marker-*"))
+    # Newer git (2.50 on macOS, verified) fires the reference-transaction hook
+    # during a plain `git init`, so the proof above may itself leave the hook
+    # marker. Clear it: the assertion below is about the audit's own git calls.
+    hook_marker.unlink(missing_ok=True)
 
     root = make_root(tmp_path, projects={"alpha": {"code": "ALP"}})
     directory = root / "projects" / "alpha"
