@@ -41,3 +41,11 @@ def test_success_envelope(server: ServerHandle, root: Path) -> None:
     assert {"task", "events", "value", "idempotent", "replayed"} <= set(data["result"])
     assert "paths" not in data["result"]
     assert data["seq"] == 1 and data["result"]["replayed"] is False
+
+
+def test_uvicorn_never_trusts_forwarded_headers_itself() -> None:
+    """uvicorn rewrites the scheme and client from ``X-Forwarded-*`` sent from
+    127.0.0.1 by default; only ``trusted_proxy`` may (SPEC §8.1)."""
+    from lattice.server.serve import UVICORN_OPTIONS
+
+    assert UVICORN_OPTIONS["proxy_headers"] is False

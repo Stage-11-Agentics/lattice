@@ -83,6 +83,13 @@ def load_server_config(root: Path) -> ServerConfig:
         raise OpError("VALIDATION_ERROR", str(exc)) from exc
 
 
+#: uvicorn options shared by ``serve`` and the in-process test server. uvicorn
+#: honors ``X-Forwarded-Proto`` and ``X-Forwarded-For`` from 127.0.0.1 by
+#: default; the server honors them only under ``trusted_proxy`` (SPEC §8.1), so
+#: uvicorn's own proxy handling is off.
+UVICORN_OPTIONS = {"proxy_headers": False, "server_header": False}
+
+
 def serve(root: Path, *, host: str | None = None, port: int | None = None) -> None:
     """Run until SIGTERM or SIGINT. Raises ``OpError`` if the server cannot start."""
     import uvicorn
@@ -106,7 +113,7 @@ def serve(root: Path, *, host: str | None = None, port: int | None = None) -> No
             access_log=False,
             lifespan="on",
             timeout_graceful_shutdown=30,
-            server_header=False,
+            **UVICORN_OPTIONS,
         )
         _server_class(app.state)(uv_config).run()
     finally:
