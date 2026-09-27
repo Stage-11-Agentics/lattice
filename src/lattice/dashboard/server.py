@@ -158,6 +158,14 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
                 except OpError as exc:  # a bound checkout's cache cannot be read
                     refused = ApiError.from_op_error(exc)
                     response = ApiResponse(refused.status, refused.envelope())
+                except OSError as exc:  # nor can a path in it
+                    from lattice.remote.cache_paths import cache_access_error
+
+                    mapped = cache_access_error(exc)
+                    if mapped is None:
+                        raise
+                    refused = ApiError.from_op_error(mapped)
+                    response = ApiResponse(refused.status, refused.envelope())
                 self._send(response)
             elif path.startswith("/static/"):
                 rel_path = path[len("/static/") :]

@@ -61,11 +61,19 @@ class LatticeToolError(ValueError):
 
 @contextmanager
 def _tool_errors() -> Iterator[None]:
-    """Report an ``OpError`` as a ``LatticeToolError``."""
+    """Report an ``OpError``, or an ``OSError`` on a hosted checkout's cache, as a
+    ``LatticeToolError``."""
     try:
         yield
     except OpError as exc:
         raise LatticeToolError(exc.code, exc.message, exc.details) from exc
+    except OSError as exc:
+        from lattice.remote.cache_paths import cache_access_error
+
+        mapped = cache_access_error(exc)
+        if mapped is None:
+            raise
+        raise LatticeToolError(mapped.code, mapped.message, mapped.details) from exc
 
 
 def _tool(fn: Callable[..., Any]) -> Callable[..., Any]:

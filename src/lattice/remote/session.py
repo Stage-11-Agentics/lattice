@@ -272,8 +272,9 @@ def catch_up_and_report(
 
     release_read_lock(hosted.root)
     try:
-        outcome = catch_up(hosted.root)
-    except OpError:
+        with cache_access():
+            outcome = catch_up(hosted.root)
+    except (OpError, OSError):
         if after_write:
             (notify or _notice)(
                 f"{hosted.remote} took the write, but the cache could not sync; "
@@ -419,8 +420,23 @@ def hold_read_lock(hosted: Hosted) -> None:
     if key in _locks:
         return
     stack = contextlib.ExitStack()
-    stack.enter_context(read_lock(hosted.root))
+    with cache_access():
+        stack.enter_context(read_lock(hosted.root))
     _locks[key] = stack
+
+
+@contextlib.contextmanager
+def cache_access() -> Iterator[None]:
+    """Raise an ``OSError`` on a path in a hosted checkout's cache as the
+    ``BOARD_IS_CACHE`` of :func:`lattice.remote.cache_paths.cache_access_error`,
+    so every surface reports it as it reports any ``OpError``."""
+    try:
+        yield
+    except OSError as exc:
+        mapped = cache_paths.cache_access_error(exc)
+        if mapped is None:
+            raise
+        raise mapped from exc
 
 
 def release_read_lock(root: Path) -> None:

@@ -137,7 +137,9 @@ class BoardWriteError(OpError):
 
 
 class BoardIsCache(BoardWriteError):
-    """``BOARD_IS_CACHE``: a durable write into a client cache from outside its syncer."""
+    """``BOARD_IS_CACHE``: a durable write into a client cache from outside its
+    syncer, or (``details.reason`` ``CACHE_ACCESS``) a path in the cache this
+    process cannot use."""
 
     def __init__(self, message: str, details: dict[str, Any] | None = None):
         super().__init__("BOARD_IS_CACHE", message, details)
