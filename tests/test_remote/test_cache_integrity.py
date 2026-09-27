@@ -638,3 +638,44 @@ def test_a_file_name_containing_two_dots_is_a_legal_board_path(
     assert cache.catch_up(client_root).kind == "applied"
     assert (_lattice(client_root) / "notes" / "a..b.md").read_bytes() == b"two dots, one segment\n"
     assert_mirror(client_root, stub)
+
+
+# ---------------------------------------------------------------------------
+# The rescued copy goes back through plan write (H-12)
+# ---------------------------------------------------------------------------
+
+
+def test_a_rescued_plan_goes_back_through_plan_write(hosted_env, tmp_path: Path) -> None:
+    """AC-47 (H-12 part): a plan edited in the cache is moved to ``cache/rescued/``
+    at the next catch-up with one stderr line, and ``lattice plan write --file``
+    of that rescued copy puts it on the server, where every cache then reads it."""
+    from tests.test_remote.hosted import events_of, make_repo, run_cli
+
+    repo = make_repo(tmp_path / "repo")
+    assert run_cli(repo, "remote", "attach", "team", PROJECT).exit_code == 0
+    assert run_cli(repo, "create", "Planned", "--actor", "agent:dev").exit_code == 0
+    written = run_cli(
+        repo, "plan", "write", "DEM-1", "--stdin", "--actor", "agent:dev", input="v1\n"
+    )
+    assert written.exit_code == 0, written.output
+    task_id = json.loads(run_cli(repo, "show", "DEM-1", "--json").stdout)["data"]["id"]
+    plan = _lattice(repo) / "plans" / f"{task_id}.md"
+    edited = b"# Plan\n\nWritten straight into the cache.\n"
+    _edit(plan, edited)
+
+    shown = run_cli(repo, "show", "DEM-1", "--json")
+    assert shown.exit_code == 0, shown.output
+    assert shown.stderr.count(RESCUE_LINE) == 1
+    assert plan.read_bytes() == b"v1\n"  # reset to the server's copy
+    rescued = _rescued(repo)
+    assert list(rescued.values()) == [edited]
+    rescued_path = _lattice(repo) / "cache" / "rescued" / next(iter(rescued))
+
+    again = run_cli(
+        repo, "plan", "write", "DEM-1", "--file", str(rescued_path), "--actor", "agent:dev"
+    )
+    assert again.exit_code == 0, again.output
+    assert (hosted_env.board / "plans" / f"{task_id}.md").read_bytes() == edited
+    assert plan.read_bytes() == edited
+    assert [e["type"] for e in events_of(hosted_env, "DEM-1")].count("plan_written") == 2
+    assert "Written straight into the cache." in run_cli(repo, "plan", "DEM-1").stdout
