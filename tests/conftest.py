@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -11,27 +12,13 @@ from click.testing import CliRunner
 
 
 # Ambient variables the code under test reads. A developer running the suite
-# inside a c11 pane, a Lattice hook, or a review agent has some of these set;
-# left alone they change backend selection, board discovery, and agent
-# behaviour, so every test starts without them. Tests that need one set it.
-_AMBIENT_ENV = (
-    "CI",
-    "C11_SOCKET_PATH",
-    "C11_SURFACE_ID",
-    "C11_WORKSPACE_ID",
-    "LATTICE_AGENT_LABEL",
-    "LATTICE_AGENT_OUTPUT",
-    "LATTICE_AGENT_PROMPT",
-    "LATTICE_AGENT_TIMEOUT",
-    "LATTICE_AGENT_TYPE",
-    "LATTICE_DEBUG",
-    "LATTICE_DIR",
-    "LATTICE_MERGE_AGENT",
-    "LATTICE_MERGE_PROMPT",
-    "LATTICE_MERGE_UPSTREAM_DIRS",
-    "LATTICE_ROOT",
-    "LATTICE_SPAWN_BACKEND",
-)
+# inside a c11 or cmux pane, a Lattice hook, or a review agent has some of
+# these set; left alone they change backend selection, board discovery, and
+# agent behaviour (``LATTICE_FAKE_BEHAVIOR`` flips the fake agent). Every test
+# starts with the whole families removed by prefix, so a variable added later
+# is covered too. Tests that need one set it.
+_AMBIENT_ENV_PREFIXES = ("LATTICE_", "C11_", "CMUX_")
+_AMBIENT_ENV = ("CI",)
 
 
 @pytest.fixture(scope="session")
@@ -44,15 +31,33 @@ def _worker_home(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 
 @pytest.fixture(autouse=True)
-def _hermetic_env(monkeypatch: pytest.MonkeyPatch, _worker_home: Path) -> None:
-    """Keep every test off the developer's real home and ambient environment.
+def _hermetic_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path_factory: pytest.TempPathFactory,
+    _worker_home: Path,
+) -> None:
+    """Keep every test off the developer's real home, temp dir and environment.
 
     The suite runs in parallel (pytest-xdist), so anything a test reads from or
-    writes to ``~``, ``~/.config``, ``~/.cache`` or ``~/.gitconfig`` is shared
-    between workers and with the developer's own machine. ``HOME`` and the XDG
-    base directories point at a per-worker temp dir; git ignores global and
-    system config; the PyPI update check is off.
+    writes to ``~``, ``~/.config``, ``~/.cache``, ``~/.gitconfig`` or the system
+    temp dir is shared between workers and with the developer's own machine.
+
+    * ``HOME`` and the XDG base directories point at a per-worker temp dir.
+    * The system temp dir (``TMPDIR``/``TMP``/``TEMP`` and the value
+      ``tempfile`` caches) is a fresh, empty dir per test, so
+      ``cleanup_temp_files()`` in one test cannot delete another test's
+      ``lattice-review-*`` file and leak checks see only their own files.
+    * Git ignores global and system config; the PyPI update check is off.
+    * Every ``LATTICE_*``, ``C11_*`` and ``CMUX_*`` variable is removed before
+      the intentional values are set.
     """
+    for name in list(os.environ):
+        if name.startswith(_AMBIENT_ENV_PREFIXES) or name in _AMBIENT_ENV:
+            monkeypatch.delenv(name)
+    sys_tmp = str(tmp_path_factory.mktemp("systmp"))
+    for name in ("TMPDIR", "TMP", "TEMP"):
+        monkeypatch.setenv(name, sys_tmp)
+    monkeypatch.setattr(tempfile, "tempdir", sys_tmp)
     monkeypatch.setenv("HOME", str(_worker_home))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(_worker_home / ".config"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(_worker_home / ".cache"))
@@ -61,8 +66,6 @@ def _hermetic_env(monkeypatch: pytest.MonkeyPatch, _worker_home: Path) -> None:
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     monkeypatch.setenv("LATTICE_NO_UPDATE_CHECK", "1")
-    for name in _AMBIENT_ENV:
-        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture()
