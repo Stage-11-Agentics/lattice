@@ -31,7 +31,11 @@ from lattice.storage.operations import (
     parse_project_short_id,
     resolve_task_authority,
 )
-from lattice.storage.short_ids import max_observed_short_ids, save_id_index
+from lattice.storage.short_ids import (
+    SHORT_ID_EVENT_TYPES,
+    max_observed_short_ids,
+    save_id_index,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +265,46 @@ def _validate_authoritative_short_ids(
         seen[short_id] = (task_id, path, line)
         validated.append((short_id, task_id, suffix, path, line))
     return validated, problems
+
+
+def _historical_short_id_duplicates(
+    authorities: dict[str, ResolvedTaskAuthority],
+) -> list[str]:
+    """Report every short ID an issuing event gave to two tasks at any point.
+
+    An assignment overwrites the effective alias, so a duplicate can vanish
+    from the replayed snapshots while the history still issued it twice. IDs
+    that are also effective duplicates are left to the effective check.
+    """
+    effective: dict[object, set[str]] = {}
+    issued: dict[str, dict[str, tuple[Path, int]]] = {}
+    for task_id, authority in authorities.items():
+        effective.setdefault(authority.snapshot.get("short_id"), set()).add(task_id)
+        path = (
+            authority.active_event_path
+            if authority.active_event_path.exists()
+            else authority.archived_event_path
+        )
+        for line, event in enumerate(authority.events, 1):
+            data = event.get("data")
+            if event.get("type") not in SHORT_ID_EVENT_TYPES or not isinstance(data, dict):
+                continue
+            short_id = data.get("short_id")
+            if isinstance(short_id, str):
+                issued.setdefault(short_id, {}).setdefault(task_id, (path, line))
+    messages = []
+    for short_id in sorted(issued):
+        holders = issued[short_id]
+        if len(holders) < 2 or len(effective.get(short_id, ())) > 1:
+            continue
+        where = " and ".join(
+            f"{task_id} at {path}:{line}" for task_id, (path, line) in sorted(holders.items())
+        )
+        messages.append(
+            f"short ID {short_id} was issued to more than one task: {where}; "
+            "manual immutable-log recovery required"
+        )
+    return messages
 
 
 def _require_valid_short_ids(
@@ -848,6 +892,16 @@ def doctor(fix: bool, output_json: bool, offline_maintenance: bool) -> None:
                     "task_id": None,
                 }
             )
+        for message in _historical_short_id_duplicates(authorities):
+            alias_ok = False
+            findings.append(
+                {
+                    "level": "error",
+                    "check": "alias_integrity",
+                    "message": message,
+                    "task_id": None,
+                }
+            )
         for short_id, task_id_key, _suffix, log_path, short_id_line in validated_short_ids:
             authoritative_short_ids[short_id] = (task_id_key, log_path, short_id_line)
 
@@ -915,11 +969,13 @@ def doctor(fix: bool, output_json: bool, offline_maintenance: bool) -> None:
         # Check: per-prefix next_seqs > max short-ID sequence in any task log
         # (the allocation floor), then > max assigned in the map.
         log_max = max_observed_short_ids(lattice_dir)
-        log_checked = set(next_seqs) | ({event_prefix} if event_prefix else set())
+        # Every prefix seen in the logs is checked: one missing from next_seqs
+        # has the implicit counter 1.
         counter_behind_logs: set[str] = set()
-        for prefix in sorted(log_checked):
+        for prefix in sorted(log_max):
             prefix_next = next_seqs.get(prefix, 1)
-            if prefix in log_max and log_max[prefix] >= prefix_next:
+            if log_max[prefix] >= prefix_next:
+                shown = prefix_next if prefix in next_seqs else "unset, implicitly 1"
                 counter_behind_logs.add(prefix)
                 alias_ok = False
                 findings.append(
@@ -927,7 +983,7 @@ def doctor(fix: bool, output_json: bool, offline_maintenance: bool) -> None:
                         "level": "warning",
                         "check": "alias_integrity",
                         "message": (
-                            f"next_seqs['{prefix}'] ({prefix_next}) is at or below the max "
+                            f"next_seqs['{prefix}'] ({shown}) is at or below the max "
                             f"short-ID seq in the event logs ({log_max[prefix]}); "
                             "run lattice rebuild --all"
                         ),

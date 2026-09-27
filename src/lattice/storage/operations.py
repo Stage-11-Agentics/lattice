@@ -637,11 +637,17 @@ def _reserve_or_reconcile_short_id(
             valid_reservations.append((parse_project_short_id(sid, prefix), sid))
         except AuthoritativeLogError:
             continue
-    if len(valid_reservations) == 1 and valid_reservations[0][1] not in observed_short_ids(
-        lattice_dir
-    ):
-        # A reservation left by an interrupted create, not yet in any log.
-        return valid_reservations[0][1], False
+    if len(valid_reservations) == 1:
+        # A reservation left by an interrupted create is reused unless the
+        # event history has since burned it. A caller-supplied floor decides
+        # from its maximum without reading any log.
+        seq, sid = valid_reservations[0]
+        if max_observed is not None:
+            burned = seq <= max_observed.get(prefix, 0)
+        else:
+            burned = sid in observed_short_ids(lattice_dir)
+        if not burned:
+            return sid, False
 
     seq = next_seqs.get(prefix, 1)
     if not isinstance(seq, int) or seq < 1:

@@ -7,6 +7,7 @@ import os
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 
+from lattice.core.ids import SHORT_ID_RE
 from lattice.storage.fs import atomic_write
 from lattice.storage.locks import lattice_lock
 
@@ -62,30 +63,30 @@ def _migrate_v1_to_v2(index: dict, project_code: str | None = None) -> dict:
     }
 
 
-# Event types whose ``data.short_id`` issues a short ID to the log's task.
+# Event types that issue ``data.short_id`` to the log's own task.
 SHORT_ID_EVENT_TYPES = frozenset({"task_created", "task_short_id_assigned"})
 _SHORT_ID_KEY = b'"short_id"'
 
 
 def split_short_id(short_id: object) -> tuple[str, int] | None:
-    """Return ``(prefix, seq)`` for a well-formed short ID, else ``None``."""
-    if not isinstance(short_id, str):
+    """Return ``(prefix, seq)`` for a short ID matching the grammar, else ``None``."""
+    if not isinstance(short_id, str) or not SHORT_ID_RE.match(short_id):
         return None
-    prefix, separator, suffix = short_id.rpartition("-")
-    if not separator or not prefix or not suffix.isdigit() or int(suffix) < 1:
+    prefix, suffix = short_id.rsplit("-", 1)
+    if int(suffix) < 1:
         return None
     return prefix, int(suffix)
 
 
-def short_ids_in_log(raw: bytes) -> list[str]:
-    """Return every short ID a task log's creation or assignment events carry.
+def short_id_events_in_log(raw: bytes) -> list[tuple[int, dict]]:
+    """Return ``(line, event)`` for every event in a log carrying ``data.short_id``.
 
     Only lines containing the ``"short_id"`` key are parsed, so a long log
     costs one byte search. Unparseable lines are skipped: every writer that
     issues a short ID holds the allocation lock, so a torn line seen here is
     never an issued ID.
     """
-    found: list[str] = []
+    found: list[tuple[int, dict]] = []
     start = raw.find(_SHORT_ID_KEY)
     while start != -1:
         line_start = raw.rfind(b"\n", 0, start) + 1
@@ -96,12 +97,25 @@ def short_ids_in_log(raw: bytes) -> list[str]:
             event = json.loads(raw[line_start:line_end])
         except (json.JSONDecodeError, UnicodeDecodeError):
             event = None
-        if isinstance(event, dict) and event.get("type") in SHORT_ID_EVENT_TYPES:
+        if isinstance(event, dict):
             data = event.get("data")
             if isinstance(data, dict) and isinstance(data.get("short_id"), str):
-                found.append(data["short_id"])
+                found.append((raw.count(b"\n", 0, line_start) + 1, event))
         start = raw.find(_SHORT_ID_KEY, line_end)
     return found
+
+
+def short_ids_in_log(raw: bytes) -> list[str]:
+    """Return every well-formed ``data.short_id`` in a log, whatever the event type.
+
+    Any short ID present anywhere in the event history is part of the floor
+    (AC-2), so custom events count too; counting more can only raise it.
+    """
+    return [
+        event["data"]["short_id"]
+        for _line, event in short_id_events_in_log(raw)
+        if split_short_id(event["data"]["short_id"]) is not None
+    ]
 
 
 def task_log_paths(lattice_dir: Path) -> Iterable[Path]:

@@ -920,8 +920,10 @@ Additionally, `lattice advance N` processed multiple tasks in a single context w
 - **Decision:** Local allocation computes `next = max(next_seqs[prefix], 1 +
   max sequence observed in every active and archived task log)`, then skips IDs
   in the map, and it rescans the logs on every create under the `ids_json` lock.
-  Only lines containing `"short_id"` are JSON-parsed, and only `task_created`
-  and `task_short_id_assigned` events count.
+  Only lines containing `"short_id"` are JSON-parsed. Every event's direct
+  `data.short_id` that matches the short-ID grammar counts, whatever its type:
+  AC-2 covers any ID present in the history, and counting more only raises
+  the floor.
 - **Why no cache:** SPEC §5 allows a per-log cache keyed on `(st_size,
   st_mtime_ns)`. On the 1,300-log perf board the full scan measured about 15 ms;
   statting every log for the cache keys alone costs about 2 ms, and the cache
@@ -930,8 +932,13 @@ Additionally, `lattice advance N` processed multiple tasks in a single context w
 - **Server hook:** `mutate_task(..., short_id_floor=...)` and the pure
   `next_short_id(index, prefix, task_id, max_observed)` take a caller-supplied
   floor, so a server computes `max_observed_short_ids()` at load and never
-  rescans.
-- **Doctor:** `_validate_authoritative_short_ids` returns every problem.
+  rescans. With a supplied floor, a retry's reservation counts as burned when
+  its sequence is at or below the supplied maximum, without reading any log.
+- **Doctor:** `_validate_authoritative_short_ids` returns every problem. A
+  separate check walks every issuing event (`task_created`,
+  `task_short_id_assigned`), because an assignment overwrites the effective
+  alias and can hide an ID issued to two tasks. The counter check covers every
+  prefix seen in the logs; one absent from `next_seqs` has the implicit 1.
   Doctor reports each, and compares `next_seqs` with the log maximum; when that
   fires, the older map-based counter warning for the same prefix is not
   repeated. `rebuild --all` still fails closed, naming every problem.

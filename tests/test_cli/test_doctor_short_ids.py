@@ -160,3 +160,57 @@ def test_healthy_board_has_no_short_id_findings(tmp_path: Path) -> None:
     for n in range(1, 4):
         _invoke(tmp_path, "create", f"Task {n}", "--actor", "human:test")
     assert _alias_findings(tmp_path) == []
+
+
+def _append(lattice_dir: Path, task_id: str, type_: str, data: dict) -> None:
+    from lattice.core.events import create_event
+
+    log = lattice_dir / "events" / f"{task_id}.jsonl"
+    with log.open("a", encoding="utf-8") as handle:
+        handle.write(serialize_event(create_event(type_, task_id, "human:test", data)))
+
+
+def test_historical_duplicate_is_reported_when_final_aliases_differ(tmp_path: Path) -> None:
+    """Task A: created LAT-1, then assigned LAT-2. Task B: created LAT-1.
+
+    The final aliases (LAT-2, LAT-1) are distinct and the map and counter are
+    consistent with them, but LAT-1 was issued twice.
+    """
+    lattice_dir = _board(tmp_path)
+    ids = []
+    for n in range(1, 3):
+        result = _invoke(tmp_path, "create", f"Task {n}", "--actor", "human:test", "--json")
+        ids.append(json.loads(result.output)["data"]["id"])
+    task_a, task_b = ids
+    _set_short_id(lattice_dir, task_b, "LAT-1")
+    _append(lattice_dir, task_a, "task_short_id_assigned", {"short_id": "LAT-2"})
+    assert _invoke(tmp_path, "rebuild", task_a).exit_code == 0
+    save_id_index(
+        lattice_dir,
+        {
+            "schema_version": 2,
+            "next_seqs": {"LAT": 3},
+            "map": {"LAT-1": task_b, "LAT-2": task_a},
+        },
+    )
+
+    findings = _alias_findings(tmp_path)
+    assert len(findings) == 1
+    assert findings[0]["level"] == "error"
+    message = findings[0]["message"]
+    assert message.startswith("short ID LAT-1 was issued to more than one task:")
+    assert task_a in message and task_b in message
+    assert _invoke(tmp_path, "doctor").exit_code != 0
+
+
+def test_counter_for_a_prefix_only_in_the_logs_is_checked(tmp_path: Path) -> None:
+    """A historical prefix missing from next_seqs has the implicit counter 1."""
+    lattice_dir = _board(tmp_path)
+    result = _invoke(tmp_path, "create", "Task 1", "--actor", "human:test", "--json")
+    task_id = json.loads(result.output)["data"]["id"]
+    _append(lattice_dir, task_id, "x_import", {"short_id": "OLD-4"})
+
+    assert [f["message"] for f in _alias_findings(tmp_path)] == [
+        "next_seqs['OLD'] (unset, implicitly 1) is at or below the max short-ID seq in "
+        "the event logs (4); run lattice rebuild --all"
+    ]

@@ -168,7 +168,7 @@ class TestLocalFloor:
 
 
 class TestFloorPrimitives:
-    def test_max_observed_reads_created_and_assigned_events_only(self, board: Path) -> None:
+    def test_max_observed_counts_every_direct_data_short_id(self, board: Path) -> None:
         task = _create(board, "Task 1")
         log = board / LATTICE_DIR / "events" / f"{task['id']}.jsonl"
         noise = [
@@ -176,6 +176,8 @@ class TestFloorPrimitives:
                 "comment_added", task["id"], "human:test", {"body": '"short_id":"LAT-90"'}
             ),
             create_event("x_custom", task["id"], "human:test", {"short_id": "LAT-91"}),
+            create_event("x_custom", task["id"], "human:test", {"short_id": "not-an-id"}),
+            create_event("x_custom", task["id"], "human:test", {"ref": {"short_id": "LAT-99"}}),
             create_event(
                 "task_short_id_assigned", task["id"], "human:test", {"short_id": "OTH-7"}
             ),
@@ -185,7 +187,19 @@ class TestFloorPrimitives:
                 handle.write(serialize_event(event))
             handle.write('{"torn": "short_id"')  # an incomplete final line is skipped
 
-        assert max_observed_short_ids(board / LATTICE_DIR) == {"LAT": 1, "OTH": 7}
+        # A custom event's direct data.short_id is event history and counts; an
+        # escaped comment body, a nested key, and a malformed ID do not.
+        assert max_observed_short_ids(board / LATTICE_DIR) == {"LAT": 91, "OTH": 7}
+
+    def test_custom_event_short_id_is_never_reissued(self, board: Path) -> None:
+        task = _create(board, "Task 1")
+        log = board / LATTICE_DIR / "events" / f"{task['id']}.jsonl"
+        event = create_event("x_reservation", task["id"], "human:test", {"short_id": "LAT-50"})
+        with log.open("a", encoding="utf-8") as handle:
+            handle.write(serialize_event(event))
+        _regress_ids(board, {"schema_version": 2, "next_seqs": {"LAT": 50}, "map": {}})
+
+        assert _create(board, "After reservation")["short_id"] == "LAT-51"
 
     def test_short_ids_in_log_on_empty_and_plain_logs(self) -> None:
         assert short_ids_in_log(b"") == []
@@ -212,6 +226,33 @@ class TestFloorPrimitives:
             board / LATTICE_DIR, "task_01KYYYYYYYYYYYYYYYYYYYYYYY", short_id_floor={"LAT": 41}
         )
         assert reserved == "LAT-42"
+
+    @pytest.mark.parametrize(("reserved", "expected"), [("LAT-3", "LAT-6"), ("LAT-7", "LAT-7")])
+    def test_supplied_floor_decides_a_retry_reservation_without_reading_logs(
+        self, board: Path, monkeypatch: pytest.MonkeyPatch, reserved: str, expected: str
+    ) -> None:
+        from lattice.storage import short_ids
+
+        _create(board, "Task 1")
+        task_id = "task_01KXXXXXXXXXXXXXXXXXXXXXXX"
+        _regress_ids(
+            board, {"schema_version": 2, "next_seqs": {"LAT": 1}, "map": {reserved: task_id}}
+        )
+
+        def no_log_listing(_lattice_dir: Path):  # noqa: ANN202
+            raise AssertionError("a supplied floor must not list the logs")
+
+        real_read_bytes = Path.read_bytes
+
+        def no_log_read(path: Path) -> bytes:
+            if path.suffix == ".jsonl":
+                raise AssertionError(f"a supplied floor must not read {path}")
+            return real_read_bytes(path)
+
+        monkeypatch.setattr(short_ids, "task_log_paths", no_log_listing)
+        monkeypatch.setattr(Path, "read_bytes", no_log_read)
+        # The supplied maximum (5) burns LAT-3 and leaves LAT-7 reusable.
+        assert _reserve(board / LATTICE_DIR, task_id, short_id_floor={"LAT": 5}) == expected
 
     def test_allocate_short_id_respects_the_log_floor(self, board: Path) -> None:
         for n in range(1, 3):
