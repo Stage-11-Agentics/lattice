@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -230,10 +231,17 @@ def test_ensure_dir_on_existing_durable_dir_is_allowed(board: Path, marker: str)
     ensure_dir(board / "sessions" / "archive")
 
 
-@pytest.mark.parametrize("marker", ["state", "applying"])
-def test_reads_succeed_on_a_cache(board: Path, invoke, marker: str) -> None:  # noqa: ANN001
+def _live_follower(board: Path) -> None:
+    """A follower record this process keeps alive, so reads skip the catch-up."""
+    (board / "cache" / "follower.json").write_text(
+        json.dumps({"pid": os.getpid(), "stream_live_until": "2999-01-01T00:00:00Z"})
+    )
+
+
+def test_reads_succeed_on_a_cache(board: Path, invoke) -> None:  # noqa: ANN001
     task_id = _task_id(board)
-    _plant(board, marker)
+    _plant(board, "state")
+    _live_follower(board)
     before = _durable_tree(board)
     assert read_task_authority(board, task_id).snapshot["title"] == "Seed"
     for args in (("list",), ("show", task_id), ("list", "--json")):
@@ -244,6 +252,19 @@ def test_reads_succeed_on_a_cache(board: Path, invoke, marker: str) -> None:  # 
     result = invoke("doctor", "--json")
     assert result.exit_code == 1
     assert json.loads(result.output)["error"]["code"] == "REMOTE_NOT_CONFIGURED"
+    assert _durable_tree(board) == before
+
+
+def test_reads_refuse_an_interrupted_cache(board: Path, invoke) -> None:  # noqa: ANN001
+    """``cache/applying`` left behind means a mixed tree (SPEC §9.4)."""
+    task_id = _task_id(board)
+    _plant(board, "applying")
+    _live_follower(board)
+    before = _durable_tree(board)
+    for args in (("list", "--json"), ("show", task_id, "--json")):
+        result = invoke(*args)
+        assert result.exit_code == 1, (args, result.output)
+        assert json.loads(result.output)["error"]["code"] == "CACHE_INCOMPLETE"
     assert _durable_tree(board) == before
 
 
@@ -351,13 +372,17 @@ def test_execute_runs_for_the_owner(board: Path) -> None:
     assert result.events[0]["type"] == "comment_added"
 
 
-def test_cli_operation_refused_with_envelope(board: Path, invoke) -> None:  # noqa: ANN001
+def test_cli_write_on_a_cache_routes_to_its_server(board: Path, invoke) -> None:  # noqa: ANN001
+    """A cache marker makes the checkout hosted (SPEC §9.3): a CLI write goes to
+    the server, never to the cache; with no remote configured it stops there."""
     _plant(board, "state")
+    before = _durable_tree(board)
     result = invoke("create", "Nope", "--actor", "human:t", "--json")
     assert result.exit_code == 1
     error = json.loads(result.output)["error"]
-    assert error["code"] == "BOARD_IS_CACHE"
-    assert "read-only mirror of studio/apollo" in error["message"]
+    assert error["code"] == "REMOTE_NOT_CONFIGURED"
+    assert "lattice remote add studio <url>" in error["message"]
+    assert _durable_tree(board) == before
 
 
 @pytest.mark.parametrize("as_json", [False, True])
@@ -669,7 +694,8 @@ def test_board_maintenance_command_refused_on_a_cache(
     _plant(board, marker)
     before = _durable_tree(board)
     result = invoke(*BOARD_MAINTENANCE[name][0])
-    assert result.exit_code == 1 and _error_code(result) == "BOARD_IS_CACHE", result.output
+    # A cache is a hosted checkout: maintenance belongs on the server (SPEC §3.5).
+    assert result.exit_code == 1 and _error_code(result) == "LOCAL_ONLY", result.output
     assert _durable_tree(board) == before
 
 
@@ -770,7 +796,9 @@ def test_cli_attach_leaves_no_payload_on_a_marked_board(
     before = _durable_tree(board)
     result = invoke("attach", _task_id(board), str(source), "--actor", "human:t", "--json")
     assert result.exit_code == 1
-    assert json.loads(result.output)["error"]["code"] == MARKERS[marker][1]
+    # A cache routes the write to its (here unconfigured) server (SPEC §9.3).
+    expected = "REMOTE_NOT_CONFIGURED" if marker == "state" else MARKERS[marker][1]
+    assert json.loads(result.output)["error"]["code"] == expected
     assert _durable_tree(board) == before
 
 
