@@ -159,6 +159,8 @@ def compact_snapshot(snapshot: dict) -> dict:
     short_id = snapshot.get("short_id")
     if short_id is not None:
         result["short_id"] = short_id
+    if snapshot.get("tombstoned"):
+        result["tombstoned"] = True
     return result
 
 
@@ -584,6 +586,23 @@ def _mut_surface_bound(snap: dict, event: dict) -> None:
 def _mut_surface_unbound(snap: dict, event: dict) -> None:
     snap["c11_surface"] = None
     snap["c11_workspace"] = None
+
+
+# Tombstone fields are present only while the task is erased (SPEC §7).
+TOMBSTONE_FIELDS = ("tombstoned", "tombstoned_at", "tombstone_reason")
+
+
+@_register_mutation("task_tombstoned")
+def _mut_task_tombstoned(snap: dict, event: dict) -> None:
+    snap["tombstoned"] = True
+    snap["tombstoned_at"] = event["ts"]
+    snap["tombstone_reason"] = event["data"].get("reason")
+
+
+@_register_mutation("task_untombstoned")
+def _mut_task_untombstoned(snap: dict, event: dict) -> None:
+    for key in TOMBSTONE_FIELDS:
+        snap.pop(key, None)
 
 
 def get_artifact_evidence_refs(snapshot: dict) -> list[dict]:

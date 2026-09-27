@@ -240,12 +240,20 @@ def _compute_agent_activity(events: list[dict]) -> list[dict]:
 
 def build_stats(lattice_dir: Path, config: dict) -> dict:
     """Build the full stats data structure."""
+    from lattice.core.visibility import is_tombstoned, visible
+
     now = datetime.now(timezone.utc)
     active, archived = load_all_snapshots(lattice_dir)
+    # Erased tasks are left out of every figure (SPEC §7).
+    erased = {snap["id"] for snap in active + archived if is_tombstoned(snap)}
+    active, archived = visible(active), visible(archived)
 
     # Event counts
     active_events, active_per_task = count_events(lattice_dir, archived=False)
-    archived_events, _ = count_events(lattice_dir, archived=True)
+    archived_events, archived_per_task = count_events(lattice_dir, archived=True)
+    for task_id in erased:
+        active_events -= active_per_task.pop(task_id, 0)
+        archived_events -= archived_per_task.pop(task_id, 0)
 
     # --- Distributions (active tasks only) ---
     status_counts: Counter = Counter()
@@ -356,7 +364,7 @@ def build_stats(lattice_dir: Path, config: dict) -> dict:
             ordered_status.append((s, c))
 
     # --- Quality Metrics (event-derived) ---
-    all_events = load_all_events(lattice_dir)
+    all_events = [e for e in load_all_events(lattice_dir) if e.get("task_id") not in erased]
     velocity = _compute_velocity(all_events, now)
     time_in_status = _compute_time_in_status(all_events, now)
     blocked = _compute_blocked_counts(all_events, active)

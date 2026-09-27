@@ -106,6 +106,23 @@ class StateConflict(OpError, ValueError):
         super().__init__("CONFLICT", message, {"snapshot": task_state_snapshot(snapshot)})
 
 
+class TaskErased(OpError):
+    """``TASK_ERASED``: a write to a tombstoned task (SPEC §7).
+
+    Raised by the write path itself, so a command that is not yet an operation
+    meets it too; the CLI's root group renders it like any command error.
+    """
+
+    def __init__(self, snapshot: dict):
+        display = snapshot.get("short_id") or snapshot.get("id")
+        reason = snapshot.get("tombstone_reason")
+        message = f"Task {display} is erased"
+        if reason:
+            message += f" ({reason})"
+        message += f". Restore it with 'lattice unerase {display} --reason TEXT'."
+        super().__init__("TASK_ERASED", message, {"snapshot": task_state_snapshot(snapshot)})
+
+
 class BoardWriteError(OpError):
     """A storage write primitive refused a path before touching disk (SPEC §6.2).
 

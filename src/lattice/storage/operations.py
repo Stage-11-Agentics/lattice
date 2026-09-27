@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal
 
 from lattice.core.errors import StateConflict
+from lattice.core.visibility import require_not_tombstoned
 from lattice.core.events import LIFECYCLE_EVENT_TYPES, serialize_event
 from lattice.core.origin import stamp_origin
 from lattice.core.comments import materialize_comments, validate_comment_for_delete
@@ -126,6 +127,16 @@ def _validate_semantic_event(events: list[dict], event: dict, location: TaskLoca
     if event_type == "task_unarchived":
         if location != "archived":
             raise ValueError("task_unarchived must alternate from archived authority")
+        return
+    if event_type in {"task_tombstoned", "task_untombstoned"}:
+        erased = False
+        for prior in events:
+            if prior.get("type") in {"task_tombstoned", "task_untombstoned"}:
+                erased = prior["type"] == "task_tombstoned"
+        if event_type == "task_tombstoned" and (erased or location != "active"):
+            raise ValueError("task_tombstoned must alternate from an active, unerased task")
+        if event_type == "task_untombstoned" and not erased:
+            raise ValueError("task_untombstoned must follow task_tombstoned")
         return
     if event_type == "comment_edited":
         previous_body, _previous_role = validate_comment_for_edit(events, data.get("comment_id"))
@@ -673,6 +684,7 @@ def mutate_task(
     project_prefix: str | None = None,
     allow_short_id_backfill: bool = False,
     short_id_floor: Mapping[str, int] | None = None,
+    allow_tombstoned: bool = False,
 ) -> TaskMutationResult:
     """Replay, validate, mutate, and materialize one task under stable locks.
 
@@ -683,6 +695,8 @@ def mutate_task(
     ``short_id_floor``: the highest short-ID sequence per prefix already in
     the event history, when the caller keeps it (a server); ``None`` rescans
     every task log under the allocation lock.
+    ``allow_tombstoned``: an erased task raises ``TASK_ERASED`` before the
+    callback runs unless this is set (``unerase`` and maintenance only).
     """
     locks_dir = lattice_dir / "locks"
     lock_keys = [f"events_{task_id}", f"tasks_{task_id}"]
@@ -711,6 +725,8 @@ def mutate_task(
                 raise TaskPlacementError(f"Task {task_id} is active.")
         elif source not in {"absent", "either"}:
             raise TaskPlacementError(f"Task {task_id} does not exist.")
+        if authority is not None and not allow_tombstoned:
+            require_not_tombstoned(authority.snapshot)
 
         if expect_last_event_id is not None:
             found = authority.snapshot.get("last_event_id") if authority is not None else None
