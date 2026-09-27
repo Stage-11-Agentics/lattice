@@ -19,7 +19,20 @@ Commands refuse such a checkout (or one whose ``locks/``, ``review_state/``,
 classification checks :func:`unsafe_component` for every bound or marked root.
 Best-effort side effects (the offline window, the server info, the follower's
 record, the acknowledged-write ledger) catch the ``OSError`` and skip, as they
-do for any other failure.
+do for any other failure. Each operation validates its base directories once,
+at its start: ``catch_up`` and a sync's apply (reset and rescue included),
+``cache clear``, the read lock, and the runtime writers shared with local
+boards (review state, review prompts, spawn scratch, auto-review logs), which
+call :func:`require_safe_board`, a no-op on a local board.
+
+Threat model (orchestrator ruling, LAT-337): this closes the **static** case,
+a ``.lattice``, ``cache/``, or runtime directory that is already a symlink or a
+non-directory when an operation starts (committed into a malicious or broken
+clone). A swap in the middle of an operation needs a concurrent local attacker
+with write access to the checkout, who already controls the user's files; that
+window is an accepted residual. Operations do not keep directory descriptors
+across their board-file writes (the syncer applies board files by path, under
+the directories it validated).
 
 No ``fcntl`` here: local Lattice imports this through root classification (G-6).
 """
@@ -35,7 +48,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from lattice.core.errors import OpError
-from lattice.storage.fs import LATTICE_DIR
+from lattice.storage.fs import BINDING_FILE, LATTICE_DIR
 
 PRIVATE_DIR_MODE = 0o700
 FILE_MODE = 0o600
@@ -94,6 +107,26 @@ def require_safe_layout(root: Path) -> None:
     bad = unsafe_component(root)
     if bad is not None:
         raise layout_error(Path(root), bad)
+
+
+def routes_to_server(root: Path) -> bool:
+    """Whether *root* is bound (``.lattice-remote.json``) or carries a cache marker,
+    so its ``.lattice/`` is (or will be) a hosted board's cache."""
+    cache_dir = Path(root) / LATTICE_DIR / "cache"
+    return (
+        (Path(root) / BINDING_FILE).is_file()
+        or (cache_dir / "state.json").exists()
+        or (cache_dir / "applying").exists()
+    )
+
+
+def require_safe_board(lattice_dir: Path) -> None:
+    """Before a runtime writer shared with local boards writes under *lattice_dir*:
+    when it is a hosted checkout's ``.lattice/``, require :func:`require_safe_layout`.
+    A local board (nothing routes it to a server) is left as it is."""
+    lattice_dir = Path(lattice_dir)
+    if lattice_dir.name == LATTICE_DIR and routes_to_server(lattice_dir.parent):
+        require_safe_layout(lattice_dir.parent)
 
 
 def open_child(parent_fd: int, name: str, path: Path, *, create: bool = True) -> int:

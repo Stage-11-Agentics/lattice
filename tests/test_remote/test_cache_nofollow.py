@@ -143,6 +143,67 @@ def _clear(repo: Path, _env: HostedEnv, _capsys: Any) -> None:
     _refused(lambda: cache.clear_cache(repo, forget=True))
 
 
+def _apply(*, reset: bool) -> Callable[[Path, HostedEnv, Any], None]:
+    """The syncer's apply called directly (a reset rescues every local file first)."""
+
+    def run(repo: Path, _env: HostedEnv, _capsys: Any) -> None:
+        syncer = cache._Syncer(repo, resolve_remote(REMOTE), PROJECT, True, None)
+        delta = cache._Delta(
+            epoch="ep_x",
+            head_seq=99,
+            head_hash=None,
+            reset=reset,
+            files=[],
+            removed=[],
+            server_version=None,
+        )
+        _refused(lambda: syncer._apply(delta, {}))
+
+    return run
+
+
+def _review_state(repo: Path, _env: HostedEnv, _capsys: Any) -> None:
+    from lattice.core import review
+
+    lattice_dir = repo / ".lattice"
+    _refused(lambda: review.write_review_state(lattice_dir, {"task_id": "task_x"}))
+    _refused(lambda: review.clear_review_state(lattice_dir, "task_x"))
+    _refused(
+        lambda: review.claim_review_state(
+            lattice_dir,
+            "task_x",
+            mode="single",
+            review_type="code-review",
+            started_by_pid=1,
+            auto_fired=False,
+        )
+    )
+    _refused(lambda: review.record_agent_failure(lattice_dir, "claude", "task_x"))
+
+
+def _review_prompts(repo: Path, _env: HostedEnv, _capsys: Any) -> None:
+    from lattice.core import agent_spawn, review
+
+    lattice_dir = repo / ".lattice"
+    _refused(lambda: review._make_prompt_dir(lattice_dir, "review-"))
+    _refused(lambda: review.cleanup_prompt_dirs(lattice_dir))
+    _refused(lambda: agent_spawn.make_scratch_dir(lattice_dir, "workspace"))
+
+
+def _auto_review(repo: Path, _env: HostedEnv, _capsys: Any) -> None:
+    from lattice.cli.auto_review import auto_fire_review
+
+    result = auto_fire_review(
+        repo / ".lattice",
+        "task_x",
+        "planned",
+        status_event_id="ev_x",
+        config={"plan_review_mode": "single"},
+        no_auto_review_flag=False,
+    )
+    assert result == {"fired": False, "reason": "unsafe_cache_path"}
+
+
 def _cli(*args: str) -> Callable[[Path, HostedEnv, Any], None]:
     def run(repo: Path, env: HostedEnv, _capsys: Any) -> None:
         before = _journal(env)
@@ -164,6 +225,11 @@ WRITERS = [
     pytest.param(_catch_up, id="catch_up"),
     pytest.param(_read_lock, id="read_lock"),
     pytest.param(_clear, id="clear_cache"),
+    pytest.param(_apply(reset=False), id="apply-delta"),
+    pytest.param(_apply(reset=True), id="apply-reset-rescue"),
+    pytest.param(_review_state, id="review_state"),
+    pytest.param(_review_prompts, id="tmp-prompts"),
+    pytest.param(_auto_review, id="auto-review-record"),
     pytest.param(_cli("create", "Never sent", "--actor", "agent:dev"), id="cli-create"),
     pytest.param(_cli("list"), id="cli-list"),
     pytest.param(_cli("sync"), id="cli-sync"),

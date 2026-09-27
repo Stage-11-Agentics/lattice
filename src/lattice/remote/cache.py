@@ -821,6 +821,9 @@ class _Syncer:
 
     def _apply(self, delta: _Delta, contents: dict[str, bytes | Path]) -> None:
         lattice_dir = self.lattice_dir
+        # Once, at the start of the apply (reset and rescue included): its base
+        # directories are real directories, never a symlink (cache_paths).
+        cache_paths.require_safe_layout(self.root)
         fd = _lock(lattice_dir / "locks" / "cache_rw.lock", exclusive=True, deadline=None)
         try:
             with syncing_board(lattice_dir):

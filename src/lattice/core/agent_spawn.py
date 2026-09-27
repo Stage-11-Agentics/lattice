@@ -476,6 +476,9 @@ def make_scratch_dir(lattice_dir: Path, workspace_label: str) -> Path:
     Layout: ``.lattice/tmp-prompts/<workspace_label>-<uuid>/``. Backends and
     callers create per-agent subdirectories beneath this root.
     """
+    from lattice.remote.cache_paths import require_safe_board
+
+    require_safe_board(lattice_dir)  # a hosted checkout's runtime dirs: never a symlink
     base = lattice_dir / "tmp-prompts"
     base.mkdir(exist_ok=True)
     safe_label = "".join(c if c.isalnum() or c in "-_." else "_" for c in workspace_label)
