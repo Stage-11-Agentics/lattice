@@ -14,6 +14,7 @@ from lattice.cli.main import cli, command_module_names
 EXPECTED_MODULES = [
     "archive_cmds",
     "artifact_cmds",
+    "cache_cmds",
     "claim_cmd",
     "criterion_cmds",
     "dashboard_cmd",
@@ -56,6 +57,7 @@ def test_representative_commands_are_registered() -> None:
     for command in (
         "archive",
         "attach",
+        "cache",
         "claim",
         "criterion",
         "dashboard",

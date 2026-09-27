@@ -16,8 +16,9 @@ from lattice.cli.helpers import (
 from lattice.cli.main import cli
 from lattice.cli.maintenance import maintenance_gate, offline_maintenance_option
 from lattice.core.config import configured_event_prefix
+from lattice.core.errors import OpError
 from lattice.core.events import LIFECYCLE_EVENT_TYPES, serialize_event
-from lattice.core.ids import validate_id, validate_short_id, parse_short_id
+from lattice.core.ids import parse_short_id, validate_id, validate_short_id
 from lattice.core.tasks import serialize_snapshot
 from lattice.storage.fs import atomic_write, ensure_dir
 from lattice.storage.locks import multi_lock
@@ -31,13 +32,13 @@ from lattice.storage.operations import (
     parse_project_short_id,
     resolve_task_authority,
 )
+from lattice.storage.ownership import board_state
 from lattice.storage.short_ids import (
     SHORT_ID_EVENT_TYPES,
     max_observed_short_ids,
     save_id_index,
     split_short_id,
 )
-
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -577,7 +578,38 @@ def doctor(fix: bool, output_json: bool, offline_maintenance: bool) -> None:
         maintenance_gate(
             lattice_dir, "doctor --fix" if fix else "doctor", is_json, offline_maintenance
         )
+    if board_state(lattice_dir) == "cache":
+        _doctor_cache(lattice_dir, is_json)
+        return
+    _doctor_report(lattice_dir, fix, is_json)
 
+
+def _doctor_cache(lattice_dir: Path, is_json: bool) -> None:
+    """Doctor on a hosted cache (SPEC §9.6).
+
+    Catches up and fetches the server's manifest outside the cache's read
+    lock, then runs every check, the manifest comparison included, under it,
+    so no sync can change the tree between an enumeration and its reads. Only
+    an unreachable or busy server becomes a warning; every other remote
+    failure is an error with its own code.
+    """
+    from lattice.remote.cache import cache_check
+
+    try:
+        with cache_check(lattice_dir.parent) as cache_findings:
+            _doctor_report(lattice_dir, False, is_json, cache_findings=cache_findings)
+    except OpError as exc:
+        output_error(exc.message, exc.code, is_json)
+
+
+def _doctor_report(
+    lattice_dir: Path, fix: bool, is_json: bool, *, cache_findings: list[dict] | None = None
+) -> None:
+    """Run every check on *lattice_dir*, print the report, and exit 1 on errors.
+
+    ``cache_findings``: on a hosted cache, the comparison with the server's
+    manifest, reported as one more check.
+    """
     findings: list[dict] = []
 
     # Gather files
@@ -1138,6 +1170,13 @@ def doctor(fix: bool, output_json: bool, offline_maintenance: bool) -> None:
     findings.extend(_missing_task_file_findings(lattice_dir, global_events, event_files))
 
     # -----------------------------------------------------------------
+    # Check 12: a hosted cache against the server's manifest (SPEC §9.6)
+    # -----------------------------------------------------------------
+    cache_checked = cache_findings is not None
+    if cache_findings:
+        findings.extend(cache_findings)
+
+    # -----------------------------------------------------------------
     # Output
     # -----------------------------------------------------------------
     warnings = sum(1 for f in findings if f["level"] == "warning")
@@ -1253,6 +1292,13 @@ def doctor(fix: bool, output_json: bool, offline_maintenance: bool) -> None:
 
         for f in findings:
             if f["check"] == "missing_task_file":
+                click.echo(f"\u26a0 {f['message']}")
+
+        if cache_checked:
+            cache_findings = [f for f in findings if f["check"].startswith("cache_")]
+            if not cache_findings:
+                click.echo("\u2713 Cache matches the server")
+            for f in cache_findings:
                 click.echo(f"\u26a0 {f['message']}")
 
         if resource_count > 0:
