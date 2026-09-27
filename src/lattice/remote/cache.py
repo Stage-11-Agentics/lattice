@@ -60,10 +60,11 @@ import secrets
 import shutil
 import stat
 import sys
+import threading
 import time
 import urllib.parse
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
@@ -457,6 +458,18 @@ def _remove_cache_file(lattice_dir: Path, name: str) -> None:
         os.close(fd)
 
 
+def _exclusive_rw(locks: Path) -> int:
+    """``cache_rw.lock`` exclusively, through the turnstile (new readers wait
+    behind this writer instead of overtaking it); returns its descriptor."""
+    turnstile = _lock(locks / TURNSTILE_LOCK, exclusive=True, deadline=None)
+    try:
+        fd = _lock(locks / "cache_rw.lock", exclusive=True, deadline=None)
+    finally:
+        os.close(turnstile)
+    assert fd is not None
+    return fd
+
+
 def _lock(path: Path, exclusive: bool, deadline: float | None) -> int | None:
     """``flock`` *path*; returns the descriptor, or ``None`` if *deadline* passed.
 
@@ -506,10 +519,34 @@ def _lock(path: Path, exclusive: bool, deadline: float | None) -> int | None:
         os.close(fd)
 
 
+#: Writer preference for ``cache_rw.lock`` (``flock`` grants a new shared lock
+#: while an exclusive one waits, so overlapping readers could starve an apply).
+#: Lock order everywhere: ``cache_sync.lock``, then this, then ``cache_rw.lock``.
+#: A reader holds it only while it takes ``cache_rw.lock`` shared; an apply (and
+#: ``cache clear``) holds it until it has ``cache_rw.lock`` exclusively.
+TURNSTILE_LOCK = "cache_turnstile.lock"
+
+_held = threading.local()
+
+
+def _held_read_locks() -> dict[tuple[int, str], int]:
+    """This thread's shared ``cache_rw.lock`` holds, by (pid, ``.lattice/``): a
+    nested read skips the turnstile. Keyed by pid, so a forked child (which
+    copies the forking thread's state) starts from none."""
+    counts = getattr(_held, "counts", None)
+    if counts is None:
+        counts = _held.counts = {}
+    return counts
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=lambda: _held.__dict__.clear())
+
+
 @contextlib.contextmanager
 def read_lock(hosted_root: Path) -> Iterator[Path]:
-    """Hold the cache's read lock (``LOCK_SH`` on ``locks/cache_rw.lock``); yields
-    the cache's ``.lattice/``.
+    """Hold the cache's read lock (``LOCK_SH`` on ``locks/cache_rw.lock``, taken
+    through the turnstile); yields the cache's ``.lattice/``.
 
     Raises ``CACHE_INCOMPLETE`` when ``cache/applying`` is present once the
     lock is held: no live syncer can be mid-apply then, so a syncer died
@@ -520,7 +557,20 @@ def read_lock(hosted_root: Path) -> Iterator[Path]:
     if not lattice_dir.is_dir():
         yield lattice_dir
         return
-    fd = _lock(lattice_dir / "locks" / "cache_rw.lock", exclusive=False, deadline=None)
+    locks = lattice_dir / "locks"
+    counts = _held_read_locks()
+    key = (os.getpid(), os.path.abspath(lattice_dir))
+    if counts.get(key, 0):
+        # This thread already holds the lock shared: a waiting apply waits for
+        # it, so passing the turnstile again would deadlock.
+        fd = _lock(locks / "cache_rw.lock", exclusive=False, deadline=None)
+    else:
+        turnstile = _lock(locks / TURNSTILE_LOCK, exclusive=True, deadline=None)
+        try:
+            fd = _lock(locks / "cache_rw.lock", exclusive=False, deadline=None)
+        finally:
+            os.close(turnstile)
+    counts[key] = counts.get(key, 0) + 1
     try:
         if (lattice_dir / "cache" / "applying").exists():
             identity = cache_identity(Path(hosted_root))
@@ -533,7 +583,115 @@ def read_lock(hosted_root: Path) -> Iterator[Path]:
             )
         yield lattice_dir
     finally:
+        counts[key] -= 1
         os.close(fd)
+
+
+# ---------------------------------------------------------------------------
+# The sync ticket: one sync serves every caller that waited for it (SPEC §9.4)
+# ---------------------------------------------------------------------------
+
+#: ``locks/cache_sync.json``: coordination between live processes, written only
+#: by the holder of ``cache_sync.lock`` (atomic replace, never fsynced).
+TICKET_FILE = "cache_sync.json"
+SUCCESS_KINDS: frozenset[str] = frozenset({"applied", "unchanged"})
+ANY_KIND: frozenset[str] = frozenset({"applied", "unchanged", "unreachable", "busy", "incomplete"})
+#: How often a caller waiting for another process's sync looks again.
+POLL_SECONDS = 0.01
+
+
+@dataclass(frozen=True)
+class _Ticket:
+    """The ticket record. ``started`` counts sync requests: a syncer takes the
+    next number just before it sends each sync request. ``finished`` is the
+    number of the last sync that ended with an outcome (``kind``, ``detail``).
+    ``generation`` changes whenever the counter could go back (a missing or
+    unreadable record, another binding, ``cache clear``), so a caller never
+    compares numbers across two counters."""
+
+    generation: str
+    remote: str
+    project: str
+    started: int
+    finished: int
+    kind: str | None
+    detail: str | None
+
+
+def _count(value: object) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return None
+
+
+def _read_ticket(lattice_dir: Path) -> _Ticket | None:
+    """The current record, or ``None`` when it is missing or not a valid one."""
+    try:
+        fd = _dir_fd(lattice_dir, "locks", create=False)
+    except (OSError, OpError):
+        return None
+    try:
+        raw = cache_paths.read_file(fd, TICKET_FILE)
+        data = json.loads(raw) if raw is not None else None
+    except (OSError, ValueError):
+        return None
+    finally:
+        os.close(fd)
+    if not isinstance(data, dict):
+        return None
+    started, finished = _count(data.get("started")), _count(data.get("finished"))
+    kind, detail = data.get("kind"), data.get("detail")
+    texts = [data.get(k) for k in ("generation", "remote", "project")]
+    if (
+        not all(isinstance(t, str) and t for t in texts)
+        or started is None
+        or finished is None
+        or finished > started
+        or not (kind is None or kind in ANY_KIND)
+        or not (detail is None or isinstance(detail, str))
+    ):
+        return None
+    return _Ticket(*texts, started, finished, kind, detail)  # type: ignore[arg-type]
+
+
+def _write_ticket(lattice_dir: Path, ticket: _Ticket) -> None:
+    fd = _dir_fd(lattice_dir, "locks")
+    try:
+        text = json.dumps(ticket.__dict__, sort_keys=True, indent=2) + "\n"
+        cache_paths.write_file(fd, TICKET_FILE, text.encode("utf-8"), fsync=False)
+    finally:
+        os.close(fd)
+
+
+def _rotate_ticket(lattice_dir: Path, remote: str, project: str) -> _Ticket | None:
+    """Start a new generation (the caller holds ``cache_sync.lock``); ``None``
+    if it could not be written."""
+    ticket = _Ticket(secrets.token_hex(8), remote, project, 0, 0, None, None)
+    try:
+        _write_ticket(lattice_dir, ticket)
+    except (OSError, OpError):
+        return None
+    return ticket
+
+
+def _adoptable(lattice_dir: Path, sample: _Ticket | None, kinds: frozenset[str]) -> _Ticket | None:
+    """The record, if a sync that sent its request after *sample* was read has
+    finished with an outcome in *kinds*; else ``None``. A caller that sampled
+    no valid record, or finds another generation, identity, or a counter that
+    went back, never adopts: it syncs itself."""
+    if sample is None:
+        return None
+    now = _read_ticket(lattice_dir)
+    if (
+        now is None
+        or now.generation != sample.generation
+        or (now.remote, now.project) != (sample.remote, sample.project)
+        or now.started < sample.started
+    ):
+        return None
+    if now.finished > sample.started and now.kind in kinds:
+        return now
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -613,6 +771,8 @@ class _Syncer:
     bulk: bool
     deadline: float | None  # the probe's monotonic budget; None in bulk
     staged: dict[str, Path] = field(default_factory=dict)
+    #: The ticket this syncer published last (``None``: none, or not published).
+    ticket: _Ticket | None = None
 
     @property
     def lattice_dir(self) -> Path:
@@ -687,6 +847,7 @@ class _Syncer:
         path = f"/v1/projects/{urllib.parse.quote(self.project, safe='')}/sync?" + (
             urllib.parse.urlencode(query)
         )
+        self._take_ticket()
         response = self._get(path, what="sync")
         delta = _parse_delta(self.remote, _data(response), lattice_dir, response.server_version)
         if forced and not delta.reset:
@@ -706,6 +867,36 @@ class _Syncer:
         contents = self._resolve(delta)
         self._apply(delta, contents)
         return self.outcome("applied")
+
+    def _take_ticket(self) -> None:
+        """Publish the next ticket number, just before the sync request is sent:
+        every caller that read the record before now may adopt this sync."""
+        _step("sync_ticket")
+        current = _read_ticket(self.lattice_dir)
+        if current is None or (current.remote, current.project) != (
+            self.remote.alias,
+            self.project,
+        ):
+            current = _Ticket(
+                secrets.token_hex(8), self.remote.alias, self.project, 0, 0, None, None
+            )
+        ticket = replace(current, started=current.started + 1)
+        try:
+            _write_ticket(self.lattice_dir, ticket)
+        except (OSError, OpError):
+            self.ticket = None  # unpublished: nobody may adopt this sync
+            return
+        self.ticket = ticket
+
+    def finish_ticket(self, outcome: SyncOutcome) -> None:
+        """Record this sync's outcome under its own ticket, unless the record
+        is no longer the one it published (deleted or replaced meanwhile)."""
+        mine = self.ticket
+        if mine is None or _read_ticket(self.lattice_dir) != mine:
+            return
+        done = replace(mine, finished=mine.started, kind=outcome.kind, detail=outcome.detail)
+        with contextlib.suppress(OSError, OpError):
+            _write_ticket(self.lattice_dir, done)
 
     def _get(
         self, path: str, *, what: str, expect: str = "json", sink: Callable | None = None
@@ -830,7 +1021,7 @@ class _Syncer:
         # Once, at the start of the apply (reset and rescue included): its base
         # directories are real directories, never a symlink (cache_paths).
         cache_paths.require_safe_layout(self.root)
-        fd = _lock(lattice_dir / "locks" / "cache_rw.lock", exclusive=True, deadline=None)
+        fd = _exclusive_rw(lattice_dir / "locks")
         try:
             with syncing_board(lattice_dir):
                 self._apply_locked(delta, contents)
@@ -1033,7 +1224,13 @@ def _fsync_dir(path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def catch_up(hosted_root: Path, *, bulk: bool = False) -> SyncOutcome:
+def catch_up(
+    hosted_root: Path,
+    *,
+    bulk: bool = False,
+    adopt: frozenset[str] = SUCCESS_KINDS,
+    on_unreachable: Callable[[], None] | None = None,
+) -> SyncOutcome:
     """Bring the cache at *hosted_root* (the checkout holding ``.lattice/``) up to
     the server's head; see the module docstring for the cycle.
 
@@ -1041,7 +1238,18 @@ def catch_up(hosted_root: Path, *, bulk: bool = False) -> SyncOutcome:
     lock and waiting for the server's answer to start share one 5-second
     budget (``busy`` / ``unreachable`` when it runs out); once the answer
     starts, the transfer runs under the bulk budget. ``bulk=True`` (``lattice
-    sync``, ``remote attach``) waits for the lock and uses the bulk policy.
+    sync``, ``remote attach``, the follower) waits for the lock as long as it
+    takes and uses the bulk policy.
+
+    **Coalescing.** A caller is served by any sync whose request was sent after
+    the caller read the ticket record, whoever ran it: while another process
+    holds ``cache_sync.lock``, the caller polls the record and returns that
+    sync's outcome when its ``kind`` is in *adopt* (default: ``applied`` or
+    ``unchanged``; an ordinary read passes :data:`ANY_KIND`). Otherwise it
+    takes the lock and syncs itself. So it waits for at most the sync in
+    flight when it arrived and the next one. *on_unreachable* runs under
+    ``cache_sync.lock`` when this caller's own sync ends ``unreachable`` (the
+    offline window is opened in ticket order, never after a newer success).
     """
     _fcntl()
     root = Path(hosted_root)
@@ -1062,9 +1270,20 @@ def catch_up(hosted_root: Path, *, bulk: bool = False) -> SyncOutcome:
     deadline = None if bulk else time.monotonic() + PROBE_SECONDS
     _private_dir(lattice_dir)
     syncer = _Syncer(root, remote, project, bulk, deadline)
-    fd = _lock(lattice_dir / "locks" / "cache_sync.lock", exclusive=True, deadline=deadline)
-    if fd is None:
-        return syncer.outcome("busy", "another sync of this cache is in progress")
+    sample = _read_ticket(lattice_dir)
+    sync_lock = lattice_dir / "locks" / "cache_sync.lock"
+    while True:
+        fd = _lock(sync_lock, exclusive=True, deadline=time.monotonic())
+        adopted = _adoptable(lattice_dir, sample, adopt)
+        if adopted is not None:
+            if fd is not None:
+                os.close(fd)
+            return syncer.outcome(adopted.kind, adopted.detail)  # type: ignore[arg-type]
+        if fd is not None:
+            break
+        if deadline is not None and time.monotonic() >= deadline:
+            return syncer.outcome("busy", "another sync of this cache is in progress")
+        time.sleep(POLL_SECONDS)
     try:
         # A `cache clear --forget` may have run while this waited for the lock:
         # route by what is on disk now, never by what was read before it.
@@ -1074,7 +1293,11 @@ def catch_up(hosted_root: Path, *, bulk: bool = False) -> SyncOutcome:
         if now != identity:
             syncer = _Syncer(root, resolve_remote(now[0]), now[1], bulk, deadline)
         _private_dir(lattice_dir, "cache")
-        return syncer.run()
+        outcome = syncer.run()
+        if outcome.kind == "unreachable" and on_unreachable is not None:
+            on_unreachable()
+        syncer.finish_ticket(outcome)
+        return outcome
     finally:
         os.close(fd)
 
@@ -1121,7 +1344,10 @@ def clear_cache(hosted_root: Path, *, forget: bool = False) -> ClearResult:
     locks = lattice_dir / "locks"
     sync_fd = _lock(locks / "cache_sync.lock", exclusive=True, deadline=None)
     try:
-        rw_fd = _lock(locks / "cache_rw.lock", exclusive=True, deadline=None)
+        # A new generation: no caller waiting from before the clear adopts a
+        # sync that ran before it (the ticket file itself stays under locks/).
+        _rotate_ticket(lattice_dir, remote, project)
+        rw_fd = _exclusive_rw(locks)
         try:
             # Both locks are held for the whole clear, and ``locks/`` (runtime
             # state) is never deleted, so every sync and reader waits on the

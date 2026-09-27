@@ -305,10 +305,13 @@ def opened_dir(base: Path, *parts: str, create: bool = True) -> Iterator[int]:
         os.close(fd)
 
 
-def write_file(dir_fd: int, name: str, data: bytes, *, mode: int = FILE_MODE) -> None:
+def write_file(
+    dir_fd: int, name: str, data: bytes, *, mode: int = FILE_MODE, fsync: bool = True
+) -> None:
     """Replace *name* in *dir_fd* with *data*: a fresh temporary file (``O_EXCL``,
     never followed), written and fsynced, then renamed over *name* (which
-    replaces a symlink there rather than writing through it)."""
+    replaces a symlink there rather than writing through it). ``fsync=False``
+    is for coordination state that only live processes read (the sync ticket)."""
     tmp = f".{name}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | NOFOLLOW, mode, dir_fd=dir_fd)
     try:
@@ -316,7 +319,8 @@ def write_file(dir_fd: int, name: str, data: bytes, *, mode: int = FILE_MODE) ->
             view = memoryview(data)
             while view:
                 view = view[os.write(fd, view) :]
-            os.fsync(fd)
+            if fsync:
+                os.fsync(fd)
         finally:
             os.close(fd)
         os.replace(tmp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)

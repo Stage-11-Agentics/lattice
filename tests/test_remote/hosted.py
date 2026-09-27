@@ -81,14 +81,19 @@ def run_cli(cwd: Path, *args: str, input: str | None = None, color: bool = False
 
 
 def tree_hash(root: Path) -> dict[str, str]:
-    """Every file under *root* (names, modes, bytes), for "nothing changed" checks."""
+    """Every file under *root* (names, modes, bytes), for "nothing changed" checks.
+
+    Except the sync ticket (``.lattice/locks/cache_sync.json``): like the lock
+    files beside it, it coordinates live processes and holds no board or
+    checkout state; a sync that could not reach the server still took a
+    ticket (SPEC §9.4)."""
     found: dict[str, str] = {}
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames.sort()
         for name in sorted(filenames):
             path = Path(dirpath) / name
             rel = path.relative_to(root).as_posix()
-            if rel.startswith(".git/"):
+            if rel.startswith(".git/") or rel == ".lattice/locks/cache_sync.json":
                 continue
             found[rel] = hashlib.sha256(path.read_bytes()).hexdigest()
     return found

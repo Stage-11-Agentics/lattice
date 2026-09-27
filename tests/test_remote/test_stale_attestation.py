@@ -5,6 +5,7 @@ retry, which is a new operation call with a new ``op_id``."""
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import click
 import pytest
@@ -32,9 +33,9 @@ def test_stale_attestation_resyncs_before_the_retry(
     real_post = client.post_operation
     op_ids: list[str] = []
 
-    def catch_up(root: Path, *, bulk: bool = False) -> cache.SyncOutcome:
+    def catch_up(root: Path, *, bulk: bool = False, **kwargs: Any) -> cache.SyncOutcome:
         trail.append("sync")
-        return real_catch_up(root, bulk=bulk)
+        return real_catch_up(root, bulk=bulk, **kwargs)
 
     def post(remote, project, op_name, body, **kwargs):  # noqa: ANN001, ANN003, ANN202
         trail.append("post")

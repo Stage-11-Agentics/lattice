@@ -263,12 +263,19 @@ def catch_up_and_report(
     cache is now at the server's head. After a write, a failure is only a
     notice (the write succeeded, §3.4 item 4). *notify* receives the notice
     lines (default: stderr)."""
-    from lattice.remote.cache import catch_up
+    from lattice.remote.cache import ANY_KIND, SUCCESS_KINDS, catch_up
 
     release_read_lock(hosted.root)
     try:
+        # A read may be served by another process's sync of any outcome; a
+        # post-write sync only by a successful one (SPEC §9.5). The offline
+        # window opens under the sync lock, in ticket order.
         with cache_access():
-            outcome = catch_up(hosted.root)
+            outcome = catch_up(
+                hosted.root,
+                adopt=SUCCESS_KINDS if after_write else ANY_KIND,
+                on_unreachable=None if after_write else lambda: open_unreachable_window(hosted),
+            )
     except (OpError, OSError):
         if after_write:
             (notify or _notice)(
@@ -287,10 +294,6 @@ def catch_up_and_report(
             f"run `lattice sync` when {hosted.remote} is back.",
             {"root": str(hosted.root)},
         )
-    if outcome.kind == "unreachable" and not after_write:
-        # Not after a write: the server has just answered, so the next command
-        # should try again rather than skip the network.
-        open_unreachable_window(hosted)
     if outcome.synced_at is None and not after_write:
         raise _never_synced(hosted, outcome.detail)
     if outcome.kind == "busy":
