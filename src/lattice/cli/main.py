@@ -15,8 +15,11 @@ from lattice.core.config import (
     validate_project_code,
     validate_subproject_code,
 )
+from lattice.cli.maintenance import maintenance_gate, offline_maintenance_option
+from lattice.core.errors import BoardWriteError
 from lattice.core.ids import generate_instance_id, generate_task_id, validate_actor
 from lattice.storage.fs import LATTICE_DIR, atomic_write, ensure_lattice_dirs
+from lattice.storage.ownership import is_hosted_scaffold
 from lattice.storage.short_ids import _default_index, save_id_index
 
 
@@ -275,7 +278,26 @@ def _seed_example_tasks(lattice_dir: Path, config: dict) -> None:
         mutate_task(lattice_dir, source_id, relationship_decision, config, run_hooks=True)
 
 
-@click.group(invoke_without_command=True)
+class _LatticeGroup(click.Group):
+    """The root group. A storage primitive's refusal (a cache, a server-owned
+    board, a path outside the board) reaches a command that is not yet an
+    operation as an exception; render it as that command's error, not a
+    traceback."""
+
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        ctx.meta["lattice.argv"] = tuple(args)
+        return super().parse_args(ctx, args)
+
+    def invoke(self, ctx: click.Context):  # noqa: ANN201
+        try:
+            return super().invoke(ctx)
+        except BoardWriteError as exc:
+            from lattice.cli.helpers import output_error
+
+            output_error(exc.message, exc.code, "--json" in ctx.meta.get("lattice.argv", ()))
+
+
+@click.group(cls=_LatticeGroup, invoke_without_command=True)
 @click.version_option(package_name="lattice-tracker")
 @click.pass_context
 def cli(ctx: click.Context) -> None:
@@ -452,6 +474,7 @@ def _stdin_is_tty() -> bool:
     help="Project type. 'standard' is a normal Lattice project. 'structure' enables "
     "the Structure Overview tab for Cell 05 mission-control views.",
 )
+@offline_maintenance_option
 def init(
     target_path: str,
     actor: str | None,
@@ -472,18 +495,21 @@ def init(
     plan_approval: str | None,
     done_display: str | None,
     project_type: str | None,
+    offline_maintenance: bool,
 ) -> None:
     """Initialize a new Lattice project."""
     root = Path(target_path)
     lattice_dir = root / LATTICE_DIR
+    maintenance_gate(lattice_dir, "init", False, offline_maintenance)
 
-    # Idempotency: if .lattice/ already exists as a directory, skip
-    if lattice_dir.is_dir():
+    # Idempotency: if .lattice/ already exists as a directory, skip (a server
+    # project's hosted scaffold is not a board yet: initialize it)
+    if lattice_dir.is_dir() and not is_hosted_scaffold(lattice_dir):
         click.echo(f"Lattice already initialized in {LATTICE_DIR}/")
         return
 
     # Fail clearly if .lattice exists as a file (not a directory)
-    if lattice_dir.exists():
+    if lattice_dir.exists() and not lattice_dir.is_dir():
         raise click.ClickException(
             f"Cannot initialize: '{LATTICE_DIR}' exists but is not a directory. "
             "Remove it and try again."

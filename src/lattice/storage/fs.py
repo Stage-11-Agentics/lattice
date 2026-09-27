@@ -1,14 +1,142 @@
-"""Atomic file writes, directory management, and root discovery."""
+"""Atomic file writes, directory management, and root discovery.
+
+Every write to a board goes through the primitives here: :func:`atomic_write`,
+:func:`jsonl_append`, :func:`unlink_path`, and :func:`ensure_dir`. Before it
+touches the disk, each one confines its path to its board (``BoardPathError``)
+and checks the board's ownership markers (``BoardIsCache`` / ``BoardIsHosted``),
+see :mod:`lattice.storage.ownership`; then it tells the active write recorder.
+
+The write recorder (SPEC §8.5)::
+
+    def before(path: Path, kind: str) -> None:  # kind: append | create | replace | unlink
+        ...  # e.g. write an undo entry; raising here aborts the write
+
+    result = execute(board_dir, op_name, params, caller, run_hooks=False, on_mutation=before)
+    result.paths  # sorted, relative to .lattice/, directories included
+
+    with recording(before) as recorder:  # the same, around any other code
+        ...
+    recorder.relative_paths(board_dir)
+
+``lattice.ops.execute`` owns one per call: it takes the callback as
+``on_mutation`` and returns the paths as ``OpResult.paths``. The recorder sees
+durable and workspace paths only (SPEC §6.1), as resolved absolute paths, and
+calls the callback before every mutation of one: a file written (``create`` /
+``replace``), appended (``append``), or unlinked (``unlink``), and each
+directory ``ensure_dir`` creates (``create``). A recorder is a ``contextvars``
+value: create it in the thread that runs the operation; it never follows work
+into another thread.
+"""
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import os
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
+
+from lattice.core.errors import BoardIsCache, BoardIsHosted, BoardPathError, BoardWriteError
+from lattice.storage.ownership import check_write, locate
+
+__all__ = [
+    "LATTICE_DIR",
+    "LATTICE_ROOT_ENV",
+    "BoardIsCache",
+    "BoardIsHosted",
+    "BoardPathError",
+    "BoardWriteError",
+    "LatticeRootError",
+    "MutationKind",
+    "WriteRecorder",
+    "atomic_write",
+    "ensure_artifact_dirs",
+    "ensure_dir",
+    "ensure_lattice_dirs",
+    "find_root",
+    "jsonl_append",
+    "recording",
+    "unlink_path",
+]
 
 LATTICE_DIR = ".lattice"
 LATTICE_ROOT_ENV = "LATTICE_ROOT"
+
+MutationKind = Literal["append", "create", "replace", "unlink"]
+
+
+# ---------------------------------------------------------------------------
+# Write recorder
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class WriteRecorder:
+    """The durable paths one operation changed, and a hook before each change.
+
+    ``callback(path, kind)`` runs before every durable mutation, with the
+    resolved path and one of ``append``, ``create``, ``replace``, ``unlink``.
+    If it raises, the primitive writes nothing and the exception propagates.
+    """
+
+    callback: Callable[[Path, MutationKind], None] | None = None
+    _paths: dict[Path, None] = field(default_factory=dict, repr=False)
+
+    @property
+    def paths(self) -> list[Path]:
+        """Resolved durable paths written, appended, unlinked, or created as
+        directories, in first-touch order."""
+        return list(self._paths)
+
+    def relative_paths(self, lattice_dir: Path) -> list[str]:
+        """The recorded paths under *lattice_dir*, relative to it, sorted (POSIX form)."""
+        board = Path(lattice_dir).resolve()
+        return sorted(
+            p.relative_to(board).as_posix() for p in self._paths if p.is_relative_to(board)
+        )
+
+    def _before(self, path: Path, kind: MutationKind) -> None:
+        if self.callback is not None:
+            self.callback(path, kind)
+        self._paths.setdefault(path, None)
+
+
+_RECORDER: contextvars.ContextVar[WriteRecorder | None] = contextvars.ContextVar(
+    "lattice_write_recorder", default=None
+)
+
+
+@contextlib.contextmanager
+def recording(
+    callback: Callable[[Path, MutationKind], None] | None = None,
+) -> Iterator[WriteRecorder]:
+    """Record every durable write made in this context until the block exits."""
+    recorder = WriteRecorder(callback)
+    token = _RECORDER.set(recorder)
+    try:
+        yield recorder
+    finally:
+        _RECORDER.reset(token)
+
+
+def _guard(path: Path, kind: MutationKind | None) -> None:
+    """Confine, check markers, and record one mutation of *path* before it happens.
+
+    ``kind`` ``None`` means a whole-file write: ``replace`` if the path exists,
+    else ``create``.
+    """
+    target = locate(path)
+    if target is None:
+        return
+    check_write(target)
+    recorder = _RECORDER.get()
+    if recorder is not None and target.recorded:
+        if kind is None:
+            kind = "replace" if os.path.lexists(target.path) else "create"
+        recorder._before(target.path, kind)
 
 
 def _fsync_directory(path: Path) -> None:
@@ -34,8 +162,11 @@ def atomic_write(path: Path, content: str | bytes) -> None:
     os.rename() is an atomic operation (same filesystem).
 
     Raises:
+        BoardWriteError: If the path escapes its board, or the board is a
+            cache or server-owned and this context is not its writer.
         FileNotFoundError: If the parent directory does not exist.
     """
+    _guard(path, None)
     parent = path.parent
     if not parent.is_dir():
         raise FileNotFoundError(f"Parent directory does not exist: {parent}")
@@ -65,6 +196,33 @@ def atomic_write(path: Path, content: str | bytes) -> None:
         raise
 
 
+def ensure_dir(path: Path) -> None:
+    """``mkdir -p`` for a directory, confined to its board and marker-checked.
+
+    An existing directory is left alone without a marker check (so reads on a
+    cache that ensure a directory keep working). Each directory it creates,
+    missing parents first, is checked like any other write to its path class
+    and reported to the recorder as a ``create`` before its ``mkdir``.
+    """
+    locate(path)  # confinement, even when nothing needs creating
+    missing: list[Path] = []
+    current = Path(path)
+    while not current.is_dir() and current.parent != current:
+        missing.append(current)
+        current = current.parent
+    for directory in reversed(missing):
+        _guard(directory, "create")
+        directory.mkdir(exist_ok=True)
+
+
+def unlink_path(path: Path, *, missing_ok: bool = False) -> None:
+    """Remove a file, confined to its board, marker-checked, and recorded."""
+    if missing_ok and not os.path.lexists(path):
+        return
+    _guard(path, "unlink")
+    path.unlink(missing_ok=missing_ok)
+
+
 def ensure_artifact_dirs(lattice_dir: Path) -> None:
     """Create artifacts/meta and artifacts/payload under an existing .lattice/.
 
@@ -73,7 +231,7 @@ def ensure_artifact_dirs(lattice_dir: Path) -> None:
     Call before any artifact payload/metadata write.
     """
     for subdir in ("artifacts/meta", "artifacts/payload"):
-        (lattice_dir / subdir).mkdir(parents=True, exist_ok=True)
+        ensure_dir(lattice_dir / subdir)
 
 
 def ensure_lattice_dirs(root: Path) -> None:
@@ -100,12 +258,12 @@ def ensure_lattice_dirs(root: Path) -> None:
         "templates",
     ]
     for subdir in subdirs:
-        (lattice / subdir).mkdir(parents=True, exist_ok=True)
+        ensure_dir(lattice / subdir)
 
     # Create empty _lifecycle.jsonl ready for appends
     lifecycle_log = lattice / "events" / "_lifecycle.jsonl"
     if not lifecycle_log.exists():
-        lifecycle_log.touch()
+        atomic_write(lifecycle_log, b"")
 
     # Scaffold a self-contained .lattice/.gitignore. The board (tasks, events,
     # plans, artifacts, ids.json, config.json) is deliberately tracked — it is
@@ -244,6 +402,7 @@ def jsonl_append(
         path: Path to the JSONL file (created if it does not exist).
         line: A single JSONL record ending with a newline character.
     """
+    _guard(path, "append")
     # Defensive: ensure file ends with newline before appending
     needs_separator = False
     if path.exists() and path.stat().st_size > 0:

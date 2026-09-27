@@ -67,7 +67,7 @@ import json
 import re
 import types
 import typing
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -84,6 +84,9 @@ from lattice.storage.operations import (
     mutate_task,
     read_task_authority,
 )
+from lattice.storage.fs import MutationKind, recording
+from lattice.storage.ownership import board_scope
+from lattice.storage.ownership import check_board_writable as check_board_markers
 
 __all__ = [
     "HTTP_STATUS",
@@ -333,13 +336,17 @@ class Caller:
 @dataclass(frozen=True)
 class OpResult:
     """What an operation did. ``idempotent``: it had nothing to do.
-    ``replayed``: a server returned a stored result for a retried ``op_id``."""
+    ``replayed``: a server returned a stored result for a retried ``op_id``.
+    ``paths``: every durable path the call wrote, appended, unlinked, or
+    created as a directory, relative to ``.lattice/`` and sorted (SPEC §8.5);
+    set by :func:`execute`, empty on a result an operation builds itself."""
 
     task: dict | None = None
     events: list[dict] = field(default_factory=list)
     value: Any = None
     idempotent: bool = False
     replayed: bool = False
+    paths: tuple[str, ...] = ()
 
 
 @dataclass
@@ -449,7 +456,13 @@ def check_op_id(op_id: Any) -> None:
 
 
 def check_board_writable(board_dir: Path, caller: Caller) -> None:
-    """Refuse a write to a board this process does not own (SPEC §6, H-8)."""
+    """Refuse a write to a board this process does not own (SPEC §6, H-8).
+
+    ``BOARD_IS_CACHE`` on a client cache outside its syncer, ``BOARD_IS_HOSTED``
+    on a server-owned board outside the owning server (``owning_board``) and
+    offline maintenance.
+    """
+    check_board_markers(board_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -503,6 +516,7 @@ def execute(
     *,
     run_hooks: bool,
     config: dict | None = None,
+    on_mutation: Callable[[Path, MutationKind], None] | None = None,
 ) -> OpResult:
     """Run one operation against the board at *board_dir* (its ``.lattice/``).
 
@@ -513,8 +527,31 @@ def execute(
     it will use for them, so one pre-write config governs the rules, the hooks,
     and the effects even if a hook edits ``config.json``. Loaded from the board
     when omitted.
+
+    Every storage write the operation makes is confined to this board
+    (``BoardPathError``, ``VALIDATION_ERROR``).
+
+    Each call owns a write recorder (SPEC §8.5), created here in the calling
+    thread. ``on_mutation(path, kind)`` runs before every durable mutation
+    (``append``, ``create``, ``replace``, ``unlink``; the resolved path); if it
+    raises, that mutation is not made and the exception propagates. The paths
+    changed come back as ``OpResult.paths``.
     """
     board_dir = Path(board_dir)
+    with board_scope(board_dir), recording(on_mutation) as recorder:
+        result = _execute(board_dir, op_name, params, caller, run_hooks=run_hooks, config=config)
+    return dataclasses.replace(result, paths=tuple(recorder.relative_paths(board_dir)))
+
+
+def _execute(
+    board_dir: Path,
+    op_name: str,
+    params: Any,
+    caller: Caller,
+    *,
+    run_hooks: bool,
+    config: dict | None,
+) -> OpResult:
     # 1. Only the board's owner writes it.
     check_board_writable(board_dir, caller)
 

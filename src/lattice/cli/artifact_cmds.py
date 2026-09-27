@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import mimetypes
-import shutil
 from pathlib import Path
 
 import click
@@ -254,7 +253,7 @@ def attach(
             guessed_type, _ = mimetypes.guess_type(src_path.name)
             content_type = guessed_type
             size_bytes = src_path.stat().st_size
-            shutil.copy2(str(src_path), str(dest_path))
+            atomic_write(dest_path, src_path.read_bytes())
 
         # Build the event first so we can use its timestamp for the artifact
         event_data: dict = {"artifact_id": art_id}

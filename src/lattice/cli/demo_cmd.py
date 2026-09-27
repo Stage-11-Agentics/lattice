@@ -8,11 +8,13 @@ from pathlib import Path
 import click
 
 from lattice.cli.main import cli
+from lattice.cli.maintenance import maintenance_gate, offline_maintenance_option
+from lattice.storage.ownership import is_hosted_scaffold
 from lattice.core.config import default_config, serialize_config
 from lattice.core.events import create_event
 from lattice.core.ids import generate_instance_id, generate_task_id
 from lattice.core.tasks import apply_event_to_snapshot
-from lattice.storage.fs import LATTICE_DIR, atomic_write, ensure_lattice_dirs
+from lattice.storage.fs import LATTICE_DIR, atomic_write, ensure_dir, ensure_lattice_dirs
 from lattice.storage.operations import TaskMutationDecision, mutate_task, scaffold_plan
 from lattice.storage.short_ids import _default_index, save_id_index
 
@@ -1378,7 +1380,7 @@ def _seed_demo(target_dir: Path, quiet: bool = False) -> None:
         plan_content = tdef.get("plan_content")
         if plan_content:
             plan_path = lattice_dir / "plans" / f"{task_id}.md"
-            plan_path.parent.mkdir(parents=True, exist_ok=True)
+            ensure_dir(plan_path.parent)
             atomic_write(plan_path, plan_content)
         else:
             scaffold_plan(lattice_dir, task_id, tdef["title"], sid, tdef.get("description"))
@@ -1481,7 +1483,10 @@ def demo() -> None:
     is_flag=True,
     help="Don't launch the dashboard after seeding.",
 )
-def demo_init(target_path: str | None, quiet: bool, no_dashboard: bool) -> None:
+@offline_maintenance_option
+def demo_init(
+    target_path: str | None, quiet: bool, no_dashboard: bool, offline_maintenance: bool
+) -> None:
     """Seed a demo Lattice project: 'The Lighthouse'.
 
     Creates a fully populated Lattice instance with tasks,
@@ -1496,9 +1501,10 @@ def demo_init(target_path: str | None, quiet: bool, no_dashboard: bool) -> None:
         target_dir = Path.cwd() / "lattice-demo"
     else:
         target_dir = Path(target_path)
+    maintenance_gate(target_dir / LATTICE_DIR, "demo init", False, offline_maintenance)
 
-    # Check if already exists
-    if (target_dir / LATTICE_DIR).is_dir():
+    # Check if already exists (a server project's hosted scaffold is not a board yet)
+    if (target_dir / LATTICE_DIR).is_dir() and not is_hosted_scaffold(target_dir / LATTICE_DIR):
         raise click.ClickException(
             f"Demo already exists at {target_dir / LATTICE_DIR}. "
             "Remove it first or choose a different path."

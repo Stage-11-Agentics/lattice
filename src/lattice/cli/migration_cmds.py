@@ -13,6 +13,7 @@ from lattice.cli.helpers import (
     require_root,
 )
 from lattice.cli.main import cli
+from lattice.cli.maintenance import maintenance_gate, offline_maintenance_option
 from lattice.core.config import configured_event_prefix, serialize_config, validate_project_code
 from lattice.core.events import create_event
 from lattice.storage.fs import atomic_write
@@ -50,15 +51,18 @@ def _collect_tasks_missing_short_id(lattice_dir: Path) -> list[dict]:
 @click.option("--force", is_flag=True, help="Allow overriding an existing project code.")
 @click.option("--json", "output_json", is_flag=True, help="Output structured JSON.")
 @click.option("--actor", default="agent:lattice-migration", help="Actor for backfill events.")
+@offline_maintenance_option
 def backfill_ids(
     code: str | None,
     force: bool,
     output_json: bool,
     actor: str,
+    offline_maintenance: bool,
 ) -> None:
     """Assign short IDs to existing tasks that don't have one."""
     is_json = output_json
     lattice_dir = require_root(is_json)
+    maintenance_gate(lattice_dir, "backfill-ids", is_json, offline_maintenance)
     config = load_project_config(lattice_dir)
 
     # Resolve project code
@@ -183,10 +187,12 @@ def migrate_group() -> None:
 @click.option("--dry-run", is_flag=True, help="Report what would change without writing.")
 @click.option("--json", "output_json", is_flag=True, help="Output structured JSON.")
 @click.option("--actor", default="agent:lattice-migration", help="Actor for migration events.")
+@offline_maintenance_option
 def migrate_needs_human(
     dry_run: bool,
     output_json: bool,
     actor: str,
+    offline_maintenance: bool,
 ) -> None:
     """Convert the needs_human STATUS to the orthogonal flag.
 
@@ -202,6 +208,7 @@ def migrate_needs_human(
 
     is_json = output_json
     lattice_dir = require_root(is_json)
+    maintenance_gate(lattice_dir, "migrate needs-human", is_json, offline_maintenance)
     config = load_project_config(lattice_dir)
 
     # ---- Phase 1: tasks sitting in the needs_human status -----------------

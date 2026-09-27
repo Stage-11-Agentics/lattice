@@ -1305,7 +1305,6 @@ def complete_cmd(
     comment_added (role=review), status_changed -> review,
     artifact_attached (role=review), status_changed -> done.
     """
-    import shutil
     import tempfile
     from pathlib import Path
 
@@ -1315,7 +1314,7 @@ def complete_cmd(
         get_configured_roles,
     )
     from lattice.core.ids import generate_artifact_id
-    from lattice.storage.fs import atomic_write, ensure_artifact_dirs
+    from lattice.storage.fs import atomic_write, ensure_artifact_dirs, unlink_path
 
     is_json = output_json
 
@@ -1392,7 +1391,7 @@ def complete_cmd(
     try:
         payload_file = f"{art_id}.md"
         dest_path = lattice_dir / "artifacts" / "payload" / payload_file
-        shutil.copy2(str(tmp_path), str(dest_path))
+        atomic_write(dest_path, tmp_path.read_bytes())
     finally:
         tmp_path.unlink(missing_ok=True)
 
@@ -1509,8 +1508,8 @@ def complete_cmd(
     try:
         result = mutate_task(lattice_dir, task_id, decide, config, run_hooks=True)
     except BaseException:
-        dest_path.unlink(missing_ok=True)
-        meta_path.unlink(missing_ok=True)
+        unlink_path(dest_path, missing_ok=True)
+        unlink_path(meta_path, missing_ok=True)
         raise
     snapshot = result.snapshot
     current_status = result.callback_value
