@@ -523,30 +523,72 @@ def test_a_stream_silent_while_backing_off_polls_until_it_delivers_again(tmp_pat
     goes silent while a sync backoff is pending. The follower is alive and falls
     back to polling; the polled sync catches the cache up but never extends
     freshness (AC-45). The next heartbeat at the cache's head extends it at once,
-    with no extra sync."""
+    with no extra sync.
+
+    Each step waits on the follower's own ordered record of what it did (its
+    syncs, through ``on_sync``, and its freshness writes), never on catching a
+    short freshness window, so a slow runner only makes the test slower."""
     cache = RaisingCache(OpError("INTEGRITY_ERROR", "delta rejected"), head=0)
     stream = ScriptedStream([_hb(0)])
-    follower = _follower(tmp_path, cache, stream, heartbeat_seconds=0.1, max_backoff=0.4)
+    log: list[str] = []  # "sync:<kind>", "extend", "clear", in the order they happened
+    follower = _follower(
+        tmp_path,
+        cache,
+        stream,
+        heartbeat_seconds=0.1,
+        max_backoff=0.4,
+        on_sync=lambda outcome: log.append(f"sync:{outcome.kind}"),
+    )
+    write = follower._write
+
+    def recording_write(until):
+        log.append("clear" if until is None else "extend")
+        write(until)
+
+    follower._write = recording_write  # type: ignore[method-assign]
+
+    def syncs(since: int = 0, *, ok: bool = False) -> int:
+        kinds = [e for e in log[since:] if e.startswith("sync:")]
+        return len([e for e in kinds if e != "sync:unreachable"] if ok else kinds)
+
     thread = _run(follower)
     try:
-        assert wait_for(lambda: live_follower(tmp_path), 1)
+        assert wait_for(lambda: "extend" in log, 10)  # live at head 0
+        unextended = len(log)  # from here to the last heartbeat, nothing extends
         cache.raising = True
         for seq in range(1, 4):  # three failures: the backoff reaches its 0.4 s cap
-            stream.push(_entry(seq))
             n = len(cache.times)
-            assert wait_for(lambda: len(cache.times) > n, 2)
-        cache.raising = False
+            stream.push(_entry(seq))
+            assert wait_for(lambda: len(cache.times) > n, 10)
         cache.server_head = 3
-        stream.push(_hb(3))  # then the stream falls silent, with ~0.4 s of backoff ahead
-        assert wait_for(lambda: follower.polling and follower.cache_head == 3, 2)
-        assert wait_for(lambda: live_follower(tmp_path), 0.3) is None
+        stream.push(_hb(3))  # then the stream falls silent, with backoff ahead
+        # Silent past 2 x heartbeat, the follower polls, and only a delivery ends that.
+        assert wait_for(lambda: follower.polling, 10)
+        recovered = len(log)
+        cache.raising = False
+        # The polls catch the cache up, and keep polling after it, without extending.
+        assert wait_for(lambda: follower.cache_head == 3 and syncs(recovered, ok=True) >= 2, 10), (
+            log[recovered:]
+        )
+        assert "extend" not in log[unextended:], log[unextended:]
+        assert read_follower(tmp_path)["stream_live_until"] is None
+        assert not live_follower(tmp_path)
+        assert follower.polling
         thread.check()
         assert thread.is_alive()
-        calls = cache.calls
+        # Stretch the poll cadence: once the next poll re-arms at 60 s, only a
+        # delivery moves the follower, so the heartbeat below races no poll, and
+        # the freshness it grants (2 x heartbeat) outlasts the checks.
+        follower.heartbeat_seconds = 60.0
+        n = syncs()
+        assert wait_for(lambda: syncs() > n, 10)
+        calls, delivered = cache.calls, len(log)
         stream.push(_hb(3))  # the stream delivers again
-        assert wait_for(lambda: live_follower(tmp_path), 1)
+        assert wait_for(lambda: len(log) > delivered, 10)
+        assert log[delivered:] == ["extend"]  # a heartbeat at the cache's head needs no sync
+        assert cache.calls == calls
+        assert live_follower(tmp_path)
         assert not follower.polling
-        assert cache.calls == calls  # a heartbeat at the cache's head needs no sync
     finally:
         follower.stop()
         thread.join(2)
