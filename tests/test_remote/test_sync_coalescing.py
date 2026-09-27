@@ -357,3 +357,76 @@ def test_clear_rotates_the_generation(client_root: Path, stub: StubServer) -> No
     assert after.generation != before.generation and after.started == 0
     assert cache.catch_up(client_root).kind == "applied"
     assert_mirror(client_root, stub)
+
+
+# ---------------------------------------------------------------------------
+# A refused write's offline window, in ticket order (LAT-343's write path)
+# ---------------------------------------------------------------------------
+
+
+def _window(client: Path) -> Path:
+    return client / ".lattice" / "cache" / "unreachable_until"
+
+
+def _open(client: Path):  # noqa: ANN202
+    def write() -> None:
+        _window(client).write_text(f"{time.time() + 15:.3f}\n")
+
+    return write
+
+
+def test_a_refused_write_never_reopens_the_window_over_a_newer_success(
+    client_root: Path, stub: StubServer
+) -> None:
+    create_task(stub)
+    cache.catch_up(client_root)
+    since = cache.sample_ticket(client_root)  # the write begins
+    assert cache.catch_up(client_root).kind == "unchanged"  # a newer sync succeeds
+    assert cache.open_window_in_order(client_root, since, _open(client_root)) is False
+    assert not _window(client_root).exists()
+    # With no newer success since it began, the window opens.
+    since = cache.sample_ticket(client_root)
+    assert cache.open_window_in_order(client_root, since, _open(client_root)) is True
+    assert _window(client_root).exists()
+
+
+def test_a_newer_failure_does_not_block_the_window(
+    client_root: Path, stub: StubServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    create_task(stub)
+    cache.catch_up(client_root)
+    since = cache.sample_ticket(client_root)
+
+    def down(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise http.Unreachable("connection refused")
+
+    monkeypatch.setattr(http, "request", down)
+    assert cache.catch_up(client_root).kind == "unreachable"
+    assert cache.open_window_in_order(client_root, since, _open(client_root)) is True
+
+
+def test_a_refused_write_leaves_the_window_to_a_sync_in_flight(
+    client_root: Path, stub: StubServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    create_task(stub)
+    cache.catch_up(client_root)
+    since = cache.sample_ticket(client_root)
+    reached, release = _gate_at(monkeypatch, "sync_ticket")
+    sync = _Thread(lambda: cache.catch_up(client_root))
+    sync.start()
+    assert reached.wait(WAIT)
+    try:
+        assert cache.open_window_in_order(client_root, since, _open(client_root)) is False
+    finally:
+        release.set()
+        sync.join(WAIT)
+    assert not _window(client_root).exists()
+
+
+def test_a_fresh_checkout_opens_the_window(tmp_path: Path) -> None:
+    """No sync ever ran (no lock file), so no newer outcome can exist."""
+    root = tmp_path / "fresh"
+    (root / ".lattice" / "cache").mkdir(parents=True)
+    assert cache.open_window_in_order(root, None, _open(root)) is True
+    assert _window(root).exists()
+    assert not (root / ".lattice" / "locks").exists()  # nothing else created

@@ -699,6 +699,46 @@ def _adoptable(lattice_dir: Path, sample: _Ticket | None, kinds: frozenset[str])
     return None
 
 
+def sample_ticket(hosted_root: Path) -> _Ticket | None:
+    """The ticket record now, for :func:`open_window_in_order`."""
+    return _read_ticket(Path(hosted_root) / LATTICE_DIR)
+
+
+def open_window_in_order(
+    hosted_root: Path, since: _Ticket | None, open_window: Callable[[], None]
+) -> bool:
+    """Run *open_window* (open the offline window) for a request that failed to
+    reach the server and began when the record was *since*, unless that would
+    put an older outcome over a newer success: it runs under
+    ``cache_sync.lock`` (skipped while a sync is in flight, whose outcome
+    decides), and not at all when a sync that took its ticket after *since*
+    last finished ``applied`` or ``unchanged``. A checkout where no sync ever
+    ran (no lock file) has no newer outcome to protect. Returns whether it ran."""
+    lattice_dir = Path(hosted_root) / LATTICE_DIR
+    sync_lock = lattice_dir / "locks" / "cache_sync.lock"
+    try:
+        if not os.path.lexists(sync_lock):
+            open_window()
+            return True
+        fd = _lock(sync_lock, exclusive=True, deadline=time.monotonic())
+    except (OSError, OpError):
+        return False
+    if fd is None:
+        return False
+    try:
+        now = _read_ticket(lattice_dir)
+        if now is not None and now.kind in SUCCESS_KINDS:
+            newer = (
+                since is None or now.generation != since.generation or now.finished > since.started
+            )
+            if newer:
+                return False
+        open_window()
+        return True
+    finally:
+        os.close(fd)
+
+
 # ---------------------------------------------------------------------------
 # Modes
 # ---------------------------------------------------------------------------

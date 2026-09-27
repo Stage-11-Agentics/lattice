@@ -288,12 +288,14 @@ class HostedBoard:
         offline = session.window_open_at_start(self.hosted)
         session.release_read_lock(self.root)
         session.check_protocol(self.hosted)
+        since = session.sync_ticket(self.hosted)
         try:
             data = post_operation(self.remote, self.hosted.project, op_name, body, offline=offline)
         except OpError as exc:
             if exc.code == "SERVER_UNREACHABLE":
-                # Nothing was sent; the next write should not wait again (SPEC §8.6).
-                session.open_unreachable_window(self.hosted)
+                # Nothing was sent; the next write should not wait again (SPEC §8.6),
+                # unless a sync that began after this write has succeeded since.
+                session.open_unreachable_window_after(self.hosted, since)
             raise
         session.close_unreachable_window(self.hosted)
         # Acknowledged: into the ledger before anything else can fail or die

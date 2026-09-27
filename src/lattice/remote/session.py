@@ -144,6 +144,24 @@ def open_unreachable_window(hosted: Hosted) -> None:
             cache_paths.write_file(fd, UNREACHABLE_FILE, until.encode("utf-8"))
 
 
+def sync_ticket(hosted: Hosted) -> object:
+    """The cache's sync ticket record now (opaque), for
+    :func:`open_unreachable_window_after`."""
+    from lattice.remote.cache import sample_ticket
+
+    return sample_ticket(hosted.root)
+
+
+def open_unreachable_window_after(hosted: Hosted, since: object) -> None:
+    """Open the offline window for a request that began at ticket *since*, in
+    ticket order (SPEC §9.5): never when a sync that sent its request after
+    *since* has succeeded (it saw the server), nor while a sync is in flight
+    (its outcome decides)."""
+    from lattice.remote.cache import open_window_in_order
+
+    open_window_in_order(hosted.root, since, lambda: open_unreachable_window(hosted))
+
+
 def close_unreachable_window(hosted: Hosted) -> None:
     """Any successful request to the server ends the offline window."""
     with _existing_cache_dir(hosted) as fd, contextlib.suppress(OSError):
