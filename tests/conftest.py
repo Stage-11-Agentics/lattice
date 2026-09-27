@@ -3,10 +3,66 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
+
+
+# Ambient variables the code under test reads. A developer running the suite
+# inside a c11 pane, a Lattice hook, or a review agent has some of these set;
+# left alone they change backend selection, board discovery, and agent
+# behaviour, so every test starts without them. Tests that need one set it.
+_AMBIENT_ENV = (
+    "CI",
+    "C11_SOCKET_PATH",
+    "C11_SURFACE_ID",
+    "C11_WORKSPACE_ID",
+    "LATTICE_AGENT_LABEL",
+    "LATTICE_AGENT_OUTPUT",
+    "LATTICE_AGENT_PROMPT",
+    "LATTICE_AGENT_TIMEOUT",
+    "LATTICE_AGENT_TYPE",
+    "LATTICE_DEBUG",
+    "LATTICE_DIR",
+    "LATTICE_MERGE_AGENT",
+    "LATTICE_MERGE_PROMPT",
+    "LATTICE_MERGE_UPSTREAM_DIRS",
+    "LATTICE_ROOT",
+    "LATTICE_SPAWN_BACKEND",
+)
+
+
+@pytest.fixture(scope="session")
+def _worker_home(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A throwaway home directory, one per xdist worker (or per serial run)."""
+    home = tmp_path_factory.mktemp("home")
+    for sub in (".config", ".cache", ".local/share", ".local/state"):
+        (home / sub).mkdir(parents=True)
+    return home
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_env(monkeypatch: pytest.MonkeyPatch, _worker_home: Path) -> None:
+    """Keep every test off the developer's real home and ambient environment.
+
+    The suite runs in parallel (pytest-xdist), so anything a test reads from or
+    writes to ``~``, ``~/.config``, ``~/.cache`` or ``~/.gitconfig`` is shared
+    between workers and with the developer's own machine. ``HOME`` and the XDG
+    base directories point at a per-worker temp dir; git ignores global and
+    system config; the PyPI update check is off.
+    """
+    monkeypatch.setenv("HOME", str(_worker_home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(_worker_home / ".config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(_worker_home / ".cache"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(_worker_home / ".local/share"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(_worker_home / ".local/state"))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("LATTICE_NO_UPDATE_CHECK", "1")
+    for name in _AMBIENT_ENV:
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture()
