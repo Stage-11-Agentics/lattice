@@ -122,9 +122,21 @@ class Journal:
     head_seq: int = 0
     #: ``line_hashes[seq - 1]`` is line ``seq``'s hash.
     line_hashes: list[str] = field(default_factory=list)
+    #: ``line_offsets[seq - 1]`` is the byte offset where line ``seq`` starts;
+    #: ``end_offset`` is the journal's length after the last accepted line.
+    line_offsets: list[int] = field(default_factory=list)
+    end_offset: int = 0
     #: The last known length of every log: ``baseline`` updated by each line's ``lengths``.
     known_lengths: dict[str, int] = field(default_factory=dict)
+    #: Each log's length history in this epoch (SPEC §8.8 "Append deltas"):
+    #: ``(seq, length)`` for every ``lengths`` entry, and ``(seq, None)`` when a
+    #: known log was changed some other way (created whole, replaced, unlinked,
+    #: relocated), which leaves no append base at that seq.
+    length_history: dict[str, list[tuple[int, int | None]]] = field(default_factory=dict)
     clean_shutdown: Any = None
+    #: ``(epoch, head_seq, head_hash)``, replaced in one assignment after each
+    #: accepted line, so a reader without the work lock sees a consistent head.
+    head: tuple[str, int, str | None] = ("", 0, None)
 
     @property
     def hosted(self) -> Path:
@@ -165,6 +177,7 @@ class Journal:
             baseline=baseline,
             known_lengths=dict(baseline),
             clean_shutdown=meta.get("clean_shutdown"),
+            head=(meta["epoch"], 0, None),
         )
 
     @classmethod
@@ -202,10 +215,56 @@ class Journal:
         return journal
 
     def _account(self, entry: dict, raw: bytes) -> None:
-        self.head_seq = entry["seq"]
-        self.line_hashes.append(line_hash(raw))
-        for path, length in (entry.get("lengths") or {}).items():
+        seq = entry["seq"]
+        lengths = entry.get("lengths") or {}
+        for path in entry.get("paths") or ():
+            if path not in lengths and self.is_log(path):
+                self.length_history.setdefault(path, []).append((seq, None))
+        for path, length in lengths.items():
             self.known_lengths[path] = length
+            self.length_history.setdefault(path, []).append((seq, length))
+        digest = line_hash(raw)
+        self.line_offsets.append(self.end_offset)
+        self.end_offset += len(raw.rstrip(b"\n")) + 1
+        self.line_hashes.append(digest)
+        self.head_seq = seq
+        self.head = (self.epoch, seq, digest)
+
+    # -- the sync path's reads (call under the work lock) -------------------
+
+    def is_log(self, path: str) -> bool:
+        """Whether *path* is an append-only log this epoch knows (baseline or ``lengths``)."""
+        return path in self.baseline or path in self.length_history
+
+    def length_at(self, path: str, seq: int) -> int | None:
+        """The log's length as of *seq*: its latest history value at or before *seq*,
+        else its ``baseline`` length. ``None``: it did not exist then, or was last
+        changed by something other than an append (no append base)."""
+        length = self.baseline.get(path)
+        for at, value in self.length_history.get(path, ()):
+            if at > seq:
+                break
+            length = value
+        return length
+
+    def hash_at(self, seq: int) -> str | None:
+        """Line *seq*'s hash (``None`` for 0 or beyond the head)."""
+        if 0 < seq <= len(self.line_hashes):
+            return self.line_hashes[seq - 1]
+        return None
+
+    def read_lines(self, after: int, upto: int | None = None) -> list[tuple[int, bytes]]:
+        """``(seq, raw line without newline)`` for ``after < seq <= upto`` (default the
+        head), read by offset."""
+        upto = self.head_seq if upto is None else min(upto, self.head_seq)
+        if upto <= after:
+            return []
+        start = self.line_offsets[after]
+        with open(self.path, "rb") as fh:
+            fh.seek(start)
+            data = fh.read(self.end_offset - start)
+        lines = data.split(b"\n")
+        return [(after + i + 1, lines[i]) for i in range(upto - after)]
 
     # -- appending -----------------------------------------------------------
 
@@ -251,12 +310,7 @@ class Journal:
 
     def read_entries(self, after: int = 0) -> list[dict]:
         """Journal entries with ``seq > after`` (reads the file)."""
-        entries = []
-        for raw in self.path.read_bytes().splitlines():
-            entry = json.loads(raw)
-            if entry["seq"] > after:
-                entries.append(entry)
-        return entries
+        return [json.loads(raw) for _seq, raw in self.read_lines(after)]
 
     # -- epoch rotation (SPEC §8.2) -----------------------------------------
 

@@ -26,6 +26,7 @@ response also carries ``Cache-Control: no-store``.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import json
 import re
@@ -68,6 +69,15 @@ from lattice.server.protocol import (
     server_version,
 )
 from lattice.server.registry import ProjectRegistry, WorkerCrash, in_worker
+from lattice.server.syncstate import (
+    check_file_path,
+    delta_body,
+    fast_path_body,
+    manifest_body,
+    needs_reset,
+    read_board_file,
+    reset_body,
+)
 from lattice.server.tokens import TokenRecord, TokenStore
 from lattice.storage.locks import LockTimeout
 
@@ -97,6 +107,11 @@ class ServerState:
         self.tokens = TokenStore(self.root, on_reload=self._tokens_reloaded)
         self.limits = TokenLimits(config.limits)
         self.disk = DiskFloor(self.root, config.limits.min_free_disk_bytes)
+        #: The stream heartbeat period; ``server.json`` sets it, and in-process
+        #: test servers may lower it below a second (``/v1/info`` reports it).
+        self.heartbeat_seconds: float = config.stream.heartbeat_seconds
+        #: The event loop serving requests (set at startup); streams are woken on it.
+        self.loop: asyncio.AbstractEventLoop | None = None
 
     def _tokens_reloaded(self, **fields: Any) -> None:
         level = "info" if fields.get("ok") else "error"
@@ -527,7 +542,7 @@ async def info(request: Request, state: ServerState) -> Response:
                 "version": state.version,
                 "protocol": PROTOCOL,
                 "min_client_version": MIN_CLIENT_VERSION,
-                "stream_heartbeat_seconds": state.config.stream.heartbeat_seconds,
+                "stream_heartbeat_seconds": state.heartbeat_seconds,
                 "identity": {
                     "token_id": token.id,
                     "user": token.user,
@@ -738,6 +753,102 @@ async def task_list(request: Request, state: ServerState) -> Response:
     return await _with_token(request, state, run)
 
 
+# ---------------------------------------------------------------------------
+# Sync and files (SPEC §8.8)
+# ---------------------------------------------------------------------------
+
+
+def _query_int(request: Request, name: str) -> int:
+    raw = request.query_params.get(name)
+    if raw is None or raw == "":
+        return 0
+    if not raw.isdigit():
+        raise OpError("VALIDATION_ERROR", f"{name} must be a non-negative integer.")
+    return int(raw)
+
+
+def _json_bytes(data: Any) -> Response:
+    """An ``ok`` envelope serialized off the event loop (a reset can be large)."""
+    body = json.dumps({"ok": True, "data": data}, separators=(",", ":")).encode("utf-8")
+    return Response(body, media_type="application/json")
+
+
+async def sync(request: Request, state: ServerState) -> Response:
+    """``GET /v1/projects/{slug}/sync?since=N&epoch=E&hash=H[&manifest=1]``."""
+    slug = request.path_params["slug"]
+    log_fields = request.scope["state"]["log"]
+    log_fields["project"] = slug
+
+    async def run(token: TokenRecord) -> Response:
+        project = resolve_project(state, token, slug)
+        since = _query_int(request, "since")
+        epoch = request.query_params.get("epoch") or None
+        client_hash = request.query_params.get("hash") or None
+        manifest = request.query_params.get("manifest") == "1"
+        journal = project.journal
+        if not manifest and project.state == LOADED and journal is not None:
+            # SPEC §8.5: a sync at the head reads only memory, so it skips admission.
+            body = fast_path_body(journal.head, since, epoch, client_hash)
+            if body is not None:
+                log_fields["_level"] = "debug"
+                return envelope_ok(body)
+        limits = state.config.limits
+
+        def assemble(may_reset: bool) -> Response | None:
+            current = project.journal
+            if current is None or project.manifest is None:
+                project.require_loaded()
+                raise OpError("BOARD_UNAVAILABLE", f"project {slug} is not loaded")
+            if manifest:
+                return _json_bytes(manifest_body(current, project.manifest))
+            if needs_reset(current, since, epoch, client_hash):
+                if not may_reset:
+                    return None  # take the reset gate first, then come back
+                data = reset_body(
+                    project.board, current, project.manifest, slug, limits.inline_file_bytes
+                )
+                return _json_bytes(data)
+            data = delta_body(
+                project.board, current, project.manifest, slug, since, limits.inline_file_bytes
+            )
+            if not data["files"] and not data["removed"]:
+                log_fields["_level"] = "debug"
+            return _json_bytes(data)
+
+        predicted_reset = not manifest and (
+            journal is None or needs_reset(journal, since, epoch, client_hash)
+        )
+        if not predicted_reset:
+            response = await state.registry.run_locked(project, lambda: assemble(False))
+            if response is not None:
+                return response
+        # SPEC §8.8: a project assembles one reset at a time; a second waits here,
+        # before it seeks admission.
+        async with project.reset_gate:
+            response = await state.registry.run_locked(project, lambda: assemble(True))
+        assert response is not None
+        return response
+
+    return await _with_token(request, state, run)
+
+
+async def board_file(request: Request, state: ServerState) -> Response:
+    """``GET /v1/projects/{slug}/files/{path}?sha256=H``: one board file's raw bytes."""
+    slug = request.path_params["slug"]
+    request.scope["state"]["log"]["project"] = slug
+
+    async def run(token: TokenRecord) -> Response:
+        project = resolve_project(state, token, slug)
+        rel = check_file_path(request.path_params["path"])
+        pinned = request.query_params.get("sha256") or None
+        data = await state.registry.run_locked(
+            project, lambda: read_board_file(project.board, rel, pinned)
+        )
+        return Response(data, media_type="application/octet-stream")
+
+    return await _with_token(request, state, run)
+
+
 async def not_found(request: Request, state: ServerState) -> Response:
     """No such route. Under ``/v1`` the caller is authenticated first (protocol,
     credential, in-flight limit), so an unauthenticated request learns nothing
@@ -770,6 +881,7 @@ def create_app(root: Path, *, config: ServerConfig, log: ServerLog | None = None
 
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette):  # noqa: ANN202
+        state.loop = asyncio.get_running_loop()
         state.log.info(
             "startup",
             version=state.version,
@@ -790,6 +902,8 @@ def create_app(root: Path, *, config: ServerConfig, log: ServerLog | None = None
         Route("/v1/projects", endpoint(projects), methods=["GET"]),
         Route("/v1/projects/{slug}/ops/{op}", endpoint(op_request), methods=["POST"]),
         Route("/v1/projects/{slug}/ops/{op}", endpoint(op_status), methods=["GET"]),
+        Route("/v1/projects/{slug}/sync", endpoint(sync), methods=["GET"]),
+        Route("/v1/projects/{slug}/files/{path:path}", endpoint(board_file), methods=["GET"]),
         Route("/v1/projects/{slug}/tasks", endpoint(task_list), methods=["GET"]),
         Route("/v1/projects/{slug}/tasks/{task_id}", endpoint(task_read), methods=["GET"]),
         Route(

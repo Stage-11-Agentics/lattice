@@ -1,0 +1,305 @@
+"""The change stream's moving parts: broadcaster, subscribers, and the SSE response (SPEC §8.9).
+
+Publication happens in a worker thread, under the project's work lock, in
+``seq`` order (the finish step of each transaction, and ``external`` lines).
+It must never wait on a reader, so each :class:`Subscriber` holds a bounded
+queue: :meth:`Subscriber.offer` appends in O(1) and wakes the subscriber's
+pump on the event loop with ``call_soon_threadsafe``. A subscriber whose
+queue is full is removed and its pump cancelled, even mid-``send`` on a
+connection that has stopped reading; uvicorn then closes the transport of the
+unfinished response. The reader resumes later from its ``Last-Event-ID``.
+
+The SSE framing is a small ASGI response rather than
+``sse_starlette.EventSourceResponse``, because the overflow rule needs to
+cancel a ``send`` blocked on back-pressure, which that class does not expose.
+
+Wire format (one frame per event, ``\\n`` line endings, compact sorted JSON)::
+
+    id: <epoch>:<seq>:<line hash>
+    event: journal
+    data: {<journal entry>, "events": [...]}
+
+    event: reset
+    data: {"epoch": <new epoch>}
+
+    event: heartbeat
+    data: {"epoch": ..., "head_seq": ...}
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import threading
+import time
+from collections import deque
+from collections.abc import Callable
+from typing import Any
+
+import anyio
+from starlette.types import Receive, Scope, Send
+
+JOURNAL, RESET, CLOSE = "journal", "reset", "close"
+
+
+def frame(event: str, data: Any, event_id: str | None = None) -> bytes:
+    """One SSE event. JSON escapes every line break, so ``data`` is one line."""
+    text = json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    head = f"id: {event_id}\n" if event_id is not None else ""
+    return f"{head}event: {event}\ndata: {text}\n\n".encode()
+
+
+def entry_id(epoch: str, seq: int, digest: str) -> str:
+    return f"{epoch}:{seq}:{digest}"
+
+
+def journal_frame(epoch: str, line: dict, digest: str, events: list[dict]) -> bytes:
+    return frame(JOURNAL, {**line, "events": events}, entry_id(epoch, line["seq"], digest))
+
+
+def reset_frame(epoch: str) -> bytes:
+    return frame(RESET, {"epoch": epoch})
+
+
+def heartbeat_frame(epoch: str, head_seq: int) -> bytes:
+    return frame("heartbeat", {"epoch": epoch, "head_seq": head_seq})
+
+
+def parse_entry_id(value: str | None) -> tuple[str, int, str] | None:
+    """``<epoch>:<seq>:<line hash>`` → its parts, or ``None`` when malformed."""
+    if not value:
+        return None
+    parts = value.strip().split(":")
+    if len(parts) != 3 or not parts[1].isdigit() or not parts[0] or not parts[2]:
+        return None
+    return parts[0], int(parts[1]), parts[2]
+
+
+# ---------------------------------------------------------------------------
+# Subscribers and the broadcaster
+# ---------------------------------------------------------------------------
+
+
+class Subscriber:
+    """One open stream: a bounded queue filled by publication, drained by its pump."""
+
+    def __init__(self, loop: asyncio.AbstractEventLoop, max_entries: int) -> None:
+        self.loop = loop
+        self.max_entries = max(1, max_entries)
+        self.wake = asyncio.Event()
+        self.overflowed = False
+        self.closed = False
+        self._lock = threading.Lock()
+        self._items: deque[tuple[str, int, bytes]] = deque()
+        self._abort: Callable[[], None] | None = None
+
+    def _call(self, fn: Callable[[], Any]) -> None:
+        try:
+            self.loop.call_soon_threadsafe(fn)
+        except RuntimeError:
+            pass  # the loop is closed: the server is gone, and so is this stream
+
+    def offer(self, item: tuple[str, int, bytes]) -> bool:
+        """Queue *item* without blocking; ``False`` when this subscriber is gone
+        (a full queue disconnects it)."""
+        with self._lock:
+            if self.closed:
+                return False
+            if len(self._items) >= self.max_entries:
+                self.overflowed = self.closed = True
+                self._items.clear()
+                full = True
+            else:
+                self._items.append(item)
+                full = False
+        self._call(self._do_abort if full else self.wake.set)
+        return not full
+
+    def close(self) -> None:
+        """End the stream gracefully once what is queued has been sent."""
+        with self._lock:
+            if self.closed:
+                return
+            self._items.append((CLOSE, 0, b""))
+        self._call(self.wake.set)
+
+    def take(self) -> list[tuple[str, int, bytes]]:
+        with self._lock:
+            items = list(self._items)
+            self._items.clear()
+        return items
+
+    def attach_abort(self, abort: Callable[[], None]) -> None:
+        """Called on the loop by the response once its pump runs."""
+        self._abort = abort
+        if self.overflowed:
+            abort()
+
+    def _do_abort(self) -> None:
+        self.wake.set()
+        if self._abort is not None:
+            self._abort()
+
+
+class Broadcaster:
+    """A project's open streams. Every method is thread-safe and non-blocking."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._subscribers: list[Subscriber] = []
+        #: Streams disconnected because their queue filled (tests and logs).
+        self.overflows = 0
+
+    def count(self) -> int:
+        with self._lock:
+            return len(self._subscribers)
+
+    def subscribe(self, subscriber: Subscriber, cap: int) -> bool:
+        """Register *subscriber* unless *cap* streams are already open."""
+        with self._lock:
+            if len(self._subscribers) >= cap:
+                return False
+            self._subscribers.append(subscriber)
+            return True
+
+    def unsubscribe(self, subscriber: Subscriber) -> None:
+        with self._lock:
+            if subscriber in self._subscribers:
+                self._subscribers.remove(subscriber)
+
+    def has_subscribers(self) -> bool:
+        with self._lock:
+            return bool(self._subscribers)
+
+    def publish(self, item: tuple[str, int, bytes]) -> None:
+        with self._lock:
+            subscribers = list(self._subscribers)
+        for subscriber in subscribers:
+            if not subscriber.offer(item):
+                self.unsubscribe(subscriber)
+                if subscriber.overflowed:
+                    with self._lock:
+                        self.overflows += 1
+
+    def close_all(self) -> None:
+        with self._lock:
+            subscribers, self._subscribers = self._subscribers, []
+        for subscriber in subscribers:
+            subscriber.close()
+
+
+# ---------------------------------------------------------------------------
+# The SSE response
+# ---------------------------------------------------------------------------
+
+
+class EventStream:
+    """An ASGI response that sends *initial* frames, then a heartbeat, then live
+    entries from *subscriber*, with a heartbeat every *heartbeat_seconds*.
+
+    *heartbeat* returns the next heartbeat frame, or ``None`` to end the stream
+    (the credential no longer holds, or the project is gone). *sent_seq* is the
+    last ``seq`` the initial frames delivered; live entries at or below it are
+    dropped. *on_close* runs once, however the stream ends.
+    """
+
+    media_type = "text/event-stream"
+
+    def __init__(
+        self,
+        subscriber: Subscriber,
+        *,
+        initial: list[bytes],
+        sent_seq: int,
+        heartbeat: Callable[[], bytes | None],
+        heartbeat_seconds: float,
+        on_close: Callable[[Subscriber], None],
+    ) -> None:
+        self.subscriber = subscriber
+        self.initial = initial
+        self.sent_seq = sent_seq
+        self.heartbeat = heartbeat
+        self.heartbeat_seconds = max(0.01, float(heartbeat_seconds))
+        self.on_close = on_close
+        self.outcome = "open"
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        sub = self.subscriber
+        try:
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [
+                        (b"content-type", b"text/event-stream; charset=utf-8"),
+                        (b"cache-control", b"no-store"),
+                        (b"x-accel-buffering", b"no"),
+                    ],
+                }
+            )
+            async with anyio.create_task_group() as group:
+                sub.attach_abort(group.cancel_scope.cancel)
+                group.start_soon(self._watch_disconnect, receive, group.cancel_scope)
+                await self._pump(send)
+                group.cancel_scope.cancel()
+            if sub.overflowed:
+                self.outcome = "overflow"
+            if self.outcome in ("closed", "ended"):
+                await send({"type": "http.response.body", "body": b"", "more_body": False})
+            # Otherwise (overflow, client gone) return with the response unfinished:
+            # uvicorn closes the transport.
+        except OSError:
+            self.outcome = "disconnected"
+        finally:
+            self.on_close(sub)
+
+    async def _watch_disconnect(self, receive: Receive, scope: anyio.CancelScope) -> None:
+        while True:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                self.outcome = "disconnected"
+                scope.cancel()
+                return
+
+    async def _body(self, send: Send, data: bytes) -> None:
+        await send({"type": "http.response.body", "body": data, "more_body": True})
+
+    async def _pump(self, send: Send) -> None:
+        sub = self.subscriber
+        for data in self.initial:
+            await self._body(send, data)
+        beat = self.heartbeat()
+        if beat is None:
+            self.outcome = "ended"
+            return
+        await self._body(send, beat)
+        next_beat = time.monotonic() + self.heartbeat_seconds
+        sent = self.sent_seq
+        while True:
+            if time.monotonic() >= next_beat:
+                # Due even on a busy stream: the heartbeat carries the credential recheck.
+                beat = self.heartbeat()
+                if beat is None:
+                    self.outcome = "ended"
+                    return
+                await self._body(send, beat)
+                next_beat = time.monotonic() + self.heartbeat_seconds
+            sub.wake.clear()
+            items = sub.take()
+            if not items:
+                if sub.overflowed:
+                    return
+                with anyio.move_on_after(max(0.0, next_beat - time.monotonic())):
+                    await sub.wake.wait()
+                continue
+            for kind, seq, data in items:
+                if kind == CLOSE:
+                    self.outcome = "closed"
+                    return
+                if kind == JOURNAL:
+                    if seq <= sent:
+                        continue  # already delivered by the replay
+                    sent = seq
+                elif kind == RESET:
+                    sent = 0  # the new epoch starts at seq 1
+                await self._body(send, data)

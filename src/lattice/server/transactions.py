@@ -353,6 +353,7 @@ class Transaction:
         if "memory" not in self.done:
             project.floors.observe_events(self.events)
             project.remember_watched(self.line.get("paths") or [])
+            project.observe_committed(self.line)  # the sync path's manifest (H-10a)
             self.done.add("memory")
         if "undo_delete" not in self.done:
             self._delete_undo_log()

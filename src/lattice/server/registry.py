@@ -149,6 +149,12 @@ class ProjectRegistry:
         self._tasks.append(asyncio.create_task(self._poll_control()))
         self.write_status()
 
+    def close_all_streams(self) -> None:
+        """End every open stream (thread-safe). Called as shutdown begins, so an open
+        follower never holds a graceful shutdown for its whole timeout."""
+        for project in list(self._projects.values()):
+            project.broadcaster.close_all()
+
     async def stop(self) -> None:
         for task in self._tasks:
             task.cancel()

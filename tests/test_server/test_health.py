@@ -44,3 +44,42 @@ def test_disk_floor(root: Path) -> None:
         assert board_hash(root, "alpha") == before
         assert server.request("GET", "/v1/projects/alpha/tasks", token=token)[0] == 200
         assert server.request("GET", "/v1/info", token=token)[0] == 200
+
+
+def test_sync_works_under_the_disk_floor_and_an_empty_sync_logs_below_info(
+    tmp_path: Path,
+) -> None:
+    """AC-31 (H-10a row): below the disk floor a sync still succeeds (delta, reset, and
+    at the head); a sync with no change writes no log line at ``info``."""
+    from lattice.server.testing import serve_board
+
+    with serve_board(tmp_path, log_level="info") as board:
+        task = board.op("task.create", {"title": "t"})["task"]["id"]
+        board.op("task.comment", {"task": task, "text": "c"})
+        board.handle.state.disk.minimum = 2**62
+        status, _, body = board.handle.op(
+            "demo",
+            "task.comment",
+            {"task": task, "text": "x"},
+            token=board.token,
+            actor=board.user,
+        )
+        assert status == 507 and body["error"]["code"] == "STORAGE_LOW"
+
+        reset = board.sync()
+        assert reset["reset"] is True and reset["head_seq"] == 2
+        delta = board.sync(since=1, epoch=reset["epoch"], hash=board.project.journal.hash_at(1))
+        assert delta["reset"] is False and delta["files"]
+        before = len(board.handle.log_lines)
+        head = board.sync(since=2, epoch=reset["epoch"], hash=reset["head_hash"])
+        assert head["files"] == {} and head["removed"] == []
+        # An empty delta assembled under the locks logs below info too.
+        board.project.journal.head = ("forces-the-locked-path", 0, None)
+        try:
+            locked = board.sync(since=2, epoch=reset["epoch"], hash=reset["head_hash"])
+        finally:
+            journal = board.project.journal
+            journal.head = (journal.epoch, journal.head_seq, journal.head_hash)
+        assert locked["files"] == {} and locked["reset"] is False
+        new_lines = board.handle.log_lines[before:]
+        assert not [line for line in new_lines if line.get("event") == "request"]

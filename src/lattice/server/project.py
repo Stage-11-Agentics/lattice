@@ -46,6 +46,8 @@ from lattice.server.journal import (
     rotate_epoch,
 )
 from lattice.server.log import ServerLog, describe_error
+from lattice.server.stream import JOURNAL, RESET, Broadcaster, journal_frame, reset_frame
+from lattice.server.syncstate import Manifest, entry_events
 from lattice.server.transactions import (
     IndexEntry,
     Quarantine,
@@ -205,12 +207,17 @@ class Project:
         #: Filled as operations commit; rebuilt from disk at load by H-22.
         self.index: dict[tuple[str | None, str], IndexEntry] = {}
         self.op_seqs: dict[tuple[str | None, str], int] = {}
-        #: Called with each committed journal line, in ``seq`` order, under the locks
-        #: (the stream broadcaster connects here, H-10a).
-        self.publish: Callable[[dict], None] | None = None
+        #: Every synced file's hash and size (SPEC §8.8), built at load.
+        self.manifest: Manifest | None = None
+        #: The project's open streams (SPEC §8.9).
+        self.broadcaster = Broadcaster()
+        #: One reset assembly at a time: held before admission (SPEC §8.8).
+        self.reset_gate = asyncio.Lock()
+        #: Called with each committed journal line, in ``seq`` order, under the locks.
+        self.publish: Callable[[dict], None] | None = self._publish
         #: Called when publication failed for a committed operation: close the
-        #: project's open streams so followers reconnect and replay (H-10a).
-        self.close_streams: Callable[[], None] | None = None
+        #: project's open streams so followers reconnect and replay.
+        self.close_streams: Callable[[], None] | None = self.broadcaster.close_all
 
     # -- locking -----------------------------------------------------------
 
@@ -319,6 +326,9 @@ class Project:
             self._mark_unavailable(f"integrity check failed: {exc}")
             return
         self.floors = ShortIdFloors.from_board(board)
+        # SPEC §8.7 step 8: the sync path's state (line hashes and length history
+        # live in the journal; the manifest is hashed here, once).
+        self.manifest = Manifest.build(board)
         ensure_dir(board / HOSTED_DIR / control.CONTROL_DIR)
         self.remember_watched()
         self._set_state(LOADED, None)
@@ -339,6 +349,8 @@ class Project:
     def _mark_unavailable(self, reason: str) -> None:
         self._set_state(UNAVAILABLE, reason)
         self.journal = None
+        self.manifest = None
+        self.broadcaster.close_all()
         if self._lease_fd is not None:
             release_owner_flock(self._lease_fd)
             self._lease_fd = None
@@ -346,6 +358,7 @@ class Project:
 
     def release(self) -> None:
         """Release the owner lease (server shutdown)."""
+        self.broadcaster.close_all()
         if self._lease_fd is not None:
             release_owner_flock(self._lease_fd)
             self._lease_fd = None
@@ -382,7 +395,7 @@ class Project:
         if self.journal is None:
             raise OpError("BOARD_UNAVAILABLE", f"project {self.slug} is not loaded")
         try:
-            seq, _ = self.journal.append(
+            seq, line = self.journal.append(
                 {
                     "op": "external",
                     "op_id": None,
@@ -394,11 +407,16 @@ class Project:
                     "lengths": {},
                 }
             )
+            self.observe_committed(line)
         except BaseException as exc:
             self._mark_unavailable(f"journal append failed: {describe_error(exc)}")
             raise OpError("BOARD_UNAVAILABLE", f"project {self.slug} is unavailable") from exc
         self.remember_watched(changed)
         self.log.warning("external_change", project=self.slug, paths=changed, seq=seq)
+        try:
+            self._publish(line)
+        except Exception:  # noqa: BLE001 - committed; followers reconnect and replay
+            self.publication_failed(seq)
 
     def run_control_requests(self) -> int:
         """Run every pending control request; returns how many ran.
@@ -578,6 +596,55 @@ class Project:
             )
         return None
 
+    # -- the sync path's memory and the stream (SPEC §8.6 step 6, §8.9) -----
+
+    def observe_committed(self, line: dict) -> None:
+        """Bring the manifest up to date with a committed line's ``paths`` (the line
+        hash and length history were accounted when the journal accepted it)."""
+        if self.manifest is not None:
+            self.manifest.update(
+                self.board, list(line.get("paths") or ()), frozenset(line.get("lengths") or ())
+            )
+
+    def _publish(self, line: dict) -> None:
+        """Hand a committed line to every open stream (under the locks, in ``seq``
+        order). Its events are read back only when someone is listening."""
+        journal = self.journal
+        if journal is None or not self.broadcaster.has_subscribers():
+            return
+        seq = line["seq"]
+        digest = journal.hash_at(seq)
+        if digest is None:
+            raise RuntimeError(f"journal line {seq} has no hash; was it accepted?")
+        events = entry_events(self.board, journal, line)
+        self.broadcaster.publish(
+            (JOURNAL, seq, journal_frame(journal.epoch, line, digest, events))
+        )
+
+    def rotate_epoch(self) -> dict:
+        """Start a new epoch under the locks (the ``rotate-epoch`` control request,
+        SPEC §8.2) and broadcast ``reset``. A failure part-way quarantines the
+        project; its next load finishes the rotation from ``rotation.json``."""
+        journal = self.journal
+        if journal is None:
+            raise OpError("BOARD_UNAVAILABLE", f"project {self.slug} is not loaded")
+        old_epoch = journal.epoch
+        try:
+            with board_scope(self.board), strict_durability():
+                rotated = journal.rotate()
+            self.journal = rotated
+            self.op_seqs = {}  # the op-status map covers the current epoch only
+            self.manifest = Manifest.build(self.board)
+        except BaseException as exc:
+            self._mark_unavailable(f"epoch rotation failed: {describe_error(exc)}")
+            raise OpError(
+                "BOARD_UNAVAILABLE",
+                f"project {self.slug}: epoch rotation failed; it finishes at the next load",
+            ) from exc
+        self.broadcaster.publish((RESET, 0, reset_frame(rotated.epoch)))
+        self.log.info("epoch_rotated", project=self.slug, old_epoch=old_epoch, epoch=rotated.epoch)
+        return {"project": self.slug, "old_epoch": old_epoch, "epoch": rotated.epoch}
+
     def publication_failed(self, seq: int) -> None:
         """Publication failed for committed *seq*: streams reconnect and replay."""
         self.log.warning("publication_failed", project=self.slug, seq=seq)
@@ -700,6 +767,11 @@ def _read_json(path: Path) -> dict:
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
+
+
+@control.action("rotate-epoch")
+def _rotate_epoch_action(project: Project, request: dict) -> dict:
+    return project.rotate_epoch()
 
 
 @control.action("set-config")
