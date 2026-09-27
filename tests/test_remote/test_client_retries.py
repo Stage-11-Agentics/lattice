@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import socket
 import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -295,3 +296,56 @@ def test_retry_seconds_within_bounds_is_accepted(
     path.write_text('{"remotes": {"team": {"url": "https://h.example.com", "retry_seconds": 0}}}')
     path.chmod(0o600)
     assert resolve_remote("team").retry_seconds == 0.0
+
+
+def test_progress_keeps_coming_while_a_retry_blocks(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    """SPEC §8.6 "No silent wait": a retry the server took and never answers
+    still gets a progress line per interval (real clock, a 0.2 s interval)."""
+    monkeypatch.setattr(client, "PROGRESS_SECONDS", 0.2)
+    monkeypatch.setattr(client, "OP_POLICY", http.Policy(1.0, 1.0))
+    times: list[float] = []
+    write = client._progress
+    monkeypatch.setattr(
+        client, "_progress", lambda line: (times.append(time.monotonic()), write(line))
+    )
+    with scripted([_error(503, "BOARD_BUSY"), "hang"]) as server, pytest.raises(OpError) as exc:
+        started = time.monotonic()
+        _post(server["url"], retry_seconds=1.5)
+    ended = time.monotonic()
+    assert exc.value.code == "OUTCOME_UNKNOWN"
+    assert len(server["bodies"]) == 2  # the second attempt blocked until the deadline
+    lines = capsys.readouterr().err.splitlines()
+    assert lines[0].endswith("is busy; retrying for up to 1.5 s")
+    assert len(lines) >= 5 and all("still busy" in line for line in lines[1:])
+    marks = [started, *times, ended]
+    assert max(b - a for a, b in zip(marks, marks[1:], strict=False)) < 0.5
+
+
+def test_a_slow_first_attempt_does_not_print_two_lines_at_once(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    """The next line is scheduled from the previous one, not from the start: a
+    first attempt that took 5 s (a connect timeout) prints one line, not two."""
+    now = [1000.0]
+
+    def slow_refusal(*args: Any, **kwargs: Any) -> Any:
+        now[0] += 5.0
+        raise http.Unreachable("timed out")
+
+    def sleep(seconds: float) -> None:
+        now[0] += seconds
+
+    monkeypatch.setattr(client, "_now", lambda: now[0])
+    monkeypatch.setattr(client, "_sleep", sleep)
+    monkeypatch.setattr(http, "request", slow_refusal)
+    with pytest.raises(OpError):
+        _post("http://127.0.0.1:9", retry_seconds=12)
+    lines = capsys.readouterr().err.splitlines()
+    # The first line at 5 s (after the slow attempt), the next one 5 s later at
+    # 10.5 s; never a "5 s" line right after the first.
+    assert lines == [
+        "lattice: server team (http://127.0.0.1:9) is not available; retrying for up to 12 s",
+        "lattice: team still not available (10 s of 12 s)",
+    ]

@@ -17,11 +17,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import sys
+import threading
 import time
 import urllib.parse
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any
 
 from lattice.core.errors import OpError
@@ -126,6 +128,76 @@ def _progress(line: str) -> None:
     print(f"lattice: {line}", file=sys.stderr)
 
 
+class _Progress:
+    """The progress lines of one retrying write (SPEC §8.6 "No silent wait").
+
+    The first line comes after the first failed attempt; then one line every
+    ``PROGRESS_SECONDS`` until the deadline, each scheduled from the previous
+    one. The retry loop ticks while it sleeps; while a retry's request blocks
+    (a connect, or a server that took the request and has not answered), a
+    ticker thread does, so the cadence holds for the whole window.
+    """
+
+    def __init__(self, remote: http.Remote, started: float, deadline: float):
+        self.remote = remote
+        self.started = started
+        self.deadline = deadline
+        self.state = "not available"
+        self.next: float | None = None
+        self._lock = threading.Lock()
+
+    def begin(self, now: float) -> None:
+        if self.next is not None:
+            return
+        _progress(
+            f"server {self.remote.alias} ({self.remote.url}) is {self.state}; retrying "
+            f"for up to {self.remote.retry_seconds:g} s"
+        )
+        self.next = now + PROGRESS_SECONDS
+
+    def tick(self) -> None:
+        with self._lock:
+            now = _now()
+            if self.next is None or now < self.next:
+                return
+            if now < self.deadline:  # at the deadline the error line follows at once
+                _progress(
+                    f"{self.remote.alias} still {self.state} ({now - self.started:.0f} s of "
+                    f"{self.remote.retry_seconds:g} s)"
+                )
+            self.next = now + PROGRESS_SECONDS
+
+    def sleep(self, seconds: float) -> None:
+        """Sleep *seconds*, in slices so each progress line lands on time."""
+        until = _now() + seconds
+        while True:
+            self.tick()
+            now = _now()
+            if now >= until:
+                return
+            _sleep(min(until, self.next or until) - now)
+
+    @contextlib.contextmanager
+    def blocking(self) -> Iterator[None]:
+        """Keep the lines coming while one request blocks (none before the first)."""
+        if self.next is None:
+            yield
+            return
+        stop = threading.Event()
+
+        def run() -> None:
+            while not stop.wait(max(0.01, (self.next or 0.0) - _now())):
+                self.tick()
+
+        ticker = threading.Thread(target=run, name="lattice-write-progress", daemon=True)
+        ticker.start()
+        try:
+            yield
+        finally:
+            stop.set()
+            ticker.join()
+
+
 def post_operation(
     remote: http.Remote,
     project: str,
@@ -140,7 +212,8 @@ def post_operation(
     *offline*: the offline window was already open when the command started, so
     a first attempt that cannot connect gives up at once (no repeated wait).
     While it retries it writes progress lines to stderr (SPEC §8.6): at once,
-    then every 5 seconds; they name no operation ID and no raw OS error.
+    then every 5 seconds, also while a retry's request blocks; they name no
+    operation ID and no raw OS error.
     """
     op_id = body["op_id"]
     path = (
@@ -149,26 +222,27 @@ def post_operation(
     )
     started = _now()
     deadline = started + remote.retry_seconds
+    progress = _Progress(remote, started, deadline)
     backoff = FIRST_BACKOFF_SECONDS
     reached = False
-    next_progress: float | None = None
     first = True
     while True:
         wait: float | None = None
         try:
-            response = http.request(
-                remote,
-                "POST",
-                path,
-                json_body=body,
-                policy=OP_POLICY,
-                what=f"operation {op_name}",
-            )
+            with progress.blocking():
+                response = http.request(
+                    remote,
+                    "POST",
+                    path,
+                    json_body=body,
+                    policy=OP_POLICY,
+                    what=f"operation {op_name}",
+                )
             return response.data()
         except http.Unreachable as exc:
             reached = reached or exc.sent
             detail = exc.reason
-            state = "not available"
+            progress.state = "not available"
             if first and offline and not exc.sent:
                 raise write_unreachable(remote, detail, _now() - started) from None
         except http.ServerError as exc:
@@ -176,7 +250,7 @@ def post_operation(
                 raise OpError(exc.code, exc.message, exc.details) from None
             reached = True
             detail = f"HTTP {exc.status} {exc.code}"
-            state = "busy"
+            progress.state = "busy"
             wait = exc.retry_after
         first = False
         now = _now()
@@ -189,28 +263,8 @@ def post_operation(
             if reached:
                 raise outcome_unknown(remote, op_id, detail)
             raise write_unreachable(remote, detail, now - started)
-        if next_progress is None:
-            # No silent wait: say so at once, in plain words.
-            _progress(
-                f"server {remote.alias} ({remote.url}) is {state}; retrying for up to "
-                f"{remote.retry_seconds:g} s"
-            )
-            next_progress = started + PROGRESS_SECONDS
-        # Sleep in slices so a progress line lands every PROGRESS_SECONDS.
-        until = now + wait
-        while True:
-            now = _now()
-            if now >= next_progress:
-                if now < deadline:  # at the deadline the error line follows at once
-                    _progress(
-                        f"{remote.alias} still {state} ({now - started:.0f} s of "
-                        f"{remote.retry_seconds:g} s)"
-                    )
-                while next_progress <= now:
-                    next_progress += PROGRESS_SECONDS
-            if now >= until:
-                break
-            _sleep(min(until, next_progress) - now)
+        progress.begin(now)  # no silent wait: say so at once, in plain words
+        progress.sleep(wait)
 
 
 def op_status(remote: http.Remote, project: str, op_id: str) -> dict:

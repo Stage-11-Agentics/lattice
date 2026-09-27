@@ -109,13 +109,21 @@ def window_open_at_start(hosted: Hosted) -> bool:
     return _window_at_start[key]
 
 
+def forget_window_at_start(root: Path) -> None:
+    """Let the next write on *root* look at the offline window afresh: a process
+    that writes again and again (``lattice dashboard``) calls this before each
+    write, so each one waits once per outage like a CLI command."""
+    _window_at_start.pop(Path(root).resolve(), None)
+
+
 @contextlib.contextmanager
-def _existing_cache_dir(hosted: Hosted) -> Iterator[int | None]:
+def _existing_cache_dir(hosted: Hosted, *, create: bool = False) -> Iterator[int | None]:
     """A descriptor of an existing ``cache/`` (never followed, SPEC §9.4), or
     ``None`` when there is none or it is not a real directory: the offline window
-    and the server info are best effort."""
+    and the server info are best effort. *create* makes a missing ``.lattice/``
+    and ``cache/`` first (never through a symlink)."""
     try:
-        fd = cache_paths.open_dir(hosted.root, LATTICE_DIR, "cache", create=False)
+        fd = cache_paths.open_dir(hosted.root, LATTICE_DIR, "cache", create=create)
     except OSError:
         yield None
         return
@@ -126,7 +134,9 @@ def _existing_cache_dir(hosted: Hosted) -> Iterator[int | None]:
 
 
 def open_unreachable_window(hosted: Hosted) -> None:
-    with _existing_cache_dir(hosted) as fd:
+    """Record the offline window (now plus 15 s), in a binding-only checkout too:
+    its missing cache directories are made first (SPEC §8.6, §9.5)."""
+    with _existing_cache_dir(hosted, create=True) as fd:
         if fd is None:
             return
         with contextlib.suppress(OSError):

@@ -340,3 +340,40 @@ def test_long_running_commands_read_without_holding_the_lock(
             session.reset_process_state()
     finally:
         os.chdir(previous)
+
+
+def test_a_binding_only_checkout_waits_once_per_outage(
+    hosted_env: HostedEnv, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SPEC §8.6: a refused write records the offline window even in a checkout
+    with no ``.lattice/`` yet, so the next write gives up at once; the checkout
+    stays hosted and syncs normally once the server is back."""
+    clone = make_repo(tmp_path / "fresh")
+    hosted_env.bind(clone)
+    assert not (clone / ".lattice").exists()
+    hosted_env.write_remote(retry_seconds=1)
+    attempts: list[str] = []
+    send = http.request
+
+    def counting(remote: http.Remote, method: str, path: str, **kwargs: object) -> object:
+        attempts.append(f"{method} {path}")
+        return send(remote, method, path, **kwargs)
+
+    with hosted_env.stopped():
+        first = run_cli(clone, "create", "First", "--actor", "human:alice", "--json")
+        assert first.exit_code == 1, first.output
+        assert json.loads(first.stdout)["error"]["code"] == "SERVER_UNREACHABLE"
+        assert "retrying for up to 1 s" in first.stderr
+        assert (clone / WINDOW).exists()
+        monkeypatch.setattr(http, "request", counting)
+        started = time.monotonic()
+        second = run_cli(clone, "create", "Second", "--actor", "human:alice")
+        assert time.monotonic() - started < 1
+        assert second.exit_code == 1
+        assert "is not available. Nothing was written" in second.stderr
+        assert "retrying" not in second.stderr
+        assert len([a for a in attempts if "/ops/" in a]) == 1
+        monkeypatch.setattr(http, "request", send)
+    listed = run_cli(clone, "list", "--json")
+    assert listed.exit_code == 0, listed.output
+    assert json.loads(listed.stdout)["ok"] is True

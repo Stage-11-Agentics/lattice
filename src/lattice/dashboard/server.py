@@ -320,14 +320,22 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
             response and returns ``None``. With *exists_ok*, an ``if_absent``
             write that found the file already there returns ``True`` instead.
             """
+            from lattice.boards import HostedBoard
             from lattice.ops import Caller
 
+            board = self._target.board
+            if isinstance(board, HostedBoard):
+                from lattice.remote.session import forget_window_at_start
+
+                # Each browser write waits once per outage, as a CLI command does
+                # (SPEC §8.6), not by the window as it was when the dashboard started.
+                forget_window_at_start(board.root)
             try:
                 caller = Caller(
                     actor=self._target.actor_for(request.actor),
                     origin={"reported": browser_reported_origin()},
                 )
-                return self._target.board.execute(request.op_name, request.params, caller)
+                return board.execute(request.op_name, request.params, caller)
             except OpError as exc:
                 if exists_ok and exc.details.get("reason") == "ALREADY_EXISTS":
                     return True
