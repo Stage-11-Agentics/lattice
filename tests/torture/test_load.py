@@ -81,12 +81,15 @@ class FakeMount:
 
 @pytest.fixture()
 def no_allocator(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The per-PR guard tests never allocate: no ``hdiutil``, no ``/dev/shm``."""
+    """The per-PR guard tests never allocate: no ``hdiutil`` or ``diskutil`` (every
+    allocation command goes through ``load._allocator_command``) and no
+    ``/dev/shm`` (``load.platform_mount``). Other subprocesses, such as the
+    ``git init`` of ``project create``'s audit repo, run normally."""
 
     def refuse(*args: object, **kwargs: object) -> None:
         raise AssertionError(f"the per-PR guard test tried to allocate: {args}")
 
-    monkeypatch.setattr(load.subprocess, "run", refuse)
+    monkeypatch.setattr(load, "_allocator_command", refuse)
     monkeypatch.setattr(load, "platform_mount", refuse)
 
 

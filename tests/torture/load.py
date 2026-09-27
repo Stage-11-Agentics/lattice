@@ -122,13 +122,18 @@ def separate_client_filesystem(mount: MountProvider | None = None) -> Iterator[P
             shutil.rmtree(path, ignore_errors=True)
 
 
+def _allocator_command(cmd: list[str], *, timeout: float) -> subprocess.CompletedProcess:
+    """Run one RAM-disk command (``hdiutil`` / ``diskutil``). Every allocation goes
+    through here, so the per-PR guard tests can refuse allocation without
+    touching any other subprocess (``project create`` runs ``git``)."""
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+
+
 @contextmanager
 def _mac_ram_disk() -> Iterator[Path]:
     sectors = RAM_DISK_BYTES // 512
-    attach = subprocess.run(
+    attach = _allocator_command(
         ["hdiutil", "attach", "-nomount", f"ram://{sectors}"],
-        capture_output=True,
-        text=True,
         timeout=60,
     )
     if attach.returncode != 0:
@@ -136,17 +141,15 @@ def _mac_ram_disk() -> Iterator[Path]:
     device = attach.stdout.strip().split()[0]
     try:
         name = f"LatticeLoad{os.getpid()}"
-        erase = subprocess.run(
+        erase = _allocator_command(
             ["diskutil", "erasevolume", "APFS", name, device],
-            capture_output=True,
-            text=True,
             timeout=120,
         )
         if erase.returncode != 0:
             raise AssertionError(f"AC-42 could not format the RAM disk {device}: {erase.stderr}")
         yield Path("/Volumes") / name
     finally:
-        subprocess.run(["hdiutil", "detach", device, "-force"], capture_output=True, timeout=60)
+        _allocator_command(["hdiutil", "detach", device, "-force"], timeout=60)
 
 
 def assert_separate_filesystems(
