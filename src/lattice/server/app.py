@@ -213,10 +213,11 @@ def endpoint(
         except Exception as exc:  # noqa: BLE001 - a bug must answer 500, never drop the loop
             log_fields["error_code"] = "INTERNAL_ERROR"
             state.log.error(
-                "request_crashed",
+                "op_crashed" if log_fields.get("op") else "request_crashed",
                 exception=type(exc).__name__,
                 message=str(exc)[:500],
                 traceback="".join(traceback.format_exception(exc))[-4000:],
+                **{k: log_fields.get(k) for k in ("project", "op", "op_id", "token_id")},
             )
             return internal_error()
 
@@ -381,15 +382,18 @@ def parse_envelope(
         ) from None
     check_event_data_cap(op_name, params_json, state.config.limits.max_event_data_bytes)
 
-    origin = body.get("origin") or {}
+    origin = body.get("origin")
+    origin = {} if origin is None else origin
     if not isinstance(origin, dict):
         raise OpError("VALIDATION_ERROR", "origin must be an object.")
     reported = check_reported(origin.get("reported"))  # any client "authenticated" is dropped
 
-    attestations = body.get("attestations") or {}
+    attestations = body.get("attestations")
+    attestations = {} if attestations is None else attestations
     if not isinstance(attestations, dict):
         raise OpError("VALIDATION_ERROR", "attestations must be an object.")
-    expect = body.get("expect") or {}
+    expect = body.get("expect")
+    expect = {} if expect is None else expect
     if not isinstance(expect, dict) or set(expect) - {"last_event_id"}:
         raise OpError("VALIDATION_ERROR", "expect may hold only last_event_id.")
     expect_last = expect.get("last_event_id")
