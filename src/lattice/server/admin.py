@@ -35,9 +35,18 @@ from lattice.server.config import (
     ServerConfigError,
     load_config,
 )
-from lattice.server.journal import HOSTED_DIR, JOURNAL, Journal, now_ms
+from lattice.server.journal import (
+    HOSTED_DIR,
+    JOURNAL,
+    JOURNAL_META,
+    ROTATION,
+    Journal,
+    finish_rotation,
+    now_ms,
+    rotate_epoch,
+)
 from lattice.storage.board_init import create_board
-from lattice.storage.fs import atomic_write, ensure_dir, unlink_path
+from lattice.storage.fs import atomic_write, ensure_dir, strict_durability, unlink_path
 from lattice.storage.ownership import (
     offline_maintenance,
     owning_board,
@@ -367,6 +376,76 @@ def unlock_project(root: Path, slug: str) -> dict:
         finally:
             release_owner_flock(fd)
     return {"slug": slug, "removed": existed}
+
+
+# ---------------------------------------------------------------------------
+# Epoch rotation (SPEC §8.2 "project rotate-epoch")
+# ---------------------------------------------------------------------------
+
+
+def rotate_project_epoch(root: Path, slug: str, *, wait_seconds: float = 30.0) -> dict:
+    """Start a new journal epoch so every cache resyncs.
+
+    With a server running: a control request; the server rotates under the
+    project's locks and broadcasts ``reset`` to its streams. With no server:
+    take the owner flock and rotate directly, refused while any undo log exists
+    (only a load's recovery, or ``project recover``, may settle those).
+    """
+    root = Path(root)
+    board = existing_project(root, slug) / ".lattice"
+    if control.server_running(root):
+        answer = control.send_request(board, "rotate-epoch", {}, wait_seconds=wait_seconds)
+        if not answer.get("ok"):
+            error = answer.get("error") or {}
+            raise OpError(
+                error.get("code", "INTERNAL_ERROR"),
+                error.get("message", "rejected"),
+                error.get("details"),
+            )
+        return {"via": "server", **(answer.get("result") or {})}
+    with admin_lock(root):
+        fd = try_owner_flock(board)
+        if fd is None:
+            raise OpError(
+                "BOARD_BUSY",
+                f"a running process holds project '{slug}'; stop it first.",
+            )
+        try:
+            with owning_board(board), strict_durability():
+                undo_logs = _undo_logs(board)
+                if undo_logs:
+                    raise OpError(
+                        "CONFLICT",
+                        f"project '{slug}' has {len(undo_logs)} undo log(s) from an unfinished "
+                        "operation; load the project once so recovery settles them, or run "
+                        f"'lattice server project recover {slug} --rollback | --keep', "
+                        "then rotate.",
+                        {"reason": "UNDO_LOGS_PRESENT", "undo_logs": len(undo_logs)},
+                    )
+                if (board / HOSTED_DIR / ROTATION).exists():
+                    finish_rotation(board)
+                old_epoch = _current_epoch(board)
+                journal = rotate_epoch(board, old_epoch=old_epoch)
+        finally:
+            release_owner_flock(fd)
+    return {"via": "offline", "project": slug, "old_epoch": old_epoch, "epoch": journal.epoch}
+
+
+def _undo_logs(board: Path) -> list[str]:
+    try:
+        names = os.listdir(board / HOSTED_DIR / "undo")
+    except OSError:
+        return []
+    return sorted(n for n in names if not n.startswith("."))
+
+
+def _current_epoch(board: Path) -> str | None:
+    try:
+        meta = json.loads((board / HOSTED_DIR / JOURNAL_META).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    epoch = meta.get("epoch") if isinstance(meta, dict) else None
+    return epoch if isinstance(epoch, str) and epoch.startswith("ep_") else None
 
 
 # ---------------------------------------------------------------------------

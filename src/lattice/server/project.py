@@ -23,29 +23,33 @@ import json
 import os
 import socket
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, TypeVar
 
 from lattice.core.config import serialize_config
 from lattice.core.errors import OpError
 from lattice.core.ids import generate_op_id
 from lattice.ops.base import Authorizer, Caller, OpResult, execute
-from lattice.server import control
+from lattice.server import control, transactions
 from lattice.server.floors import ShortIdFloors
 from lattice.server.journal import (
     HOSTED_DIR,
     ROTATION,
     Journal,
     JournalError,
+    JournalIndex,
     finish_rotation,
     fingerprint,
     now_ms,
     rotate_epoch,
 )
 from lattice.server.log import ServerLog, describe_error
+from lattice.server.stream import Broadcaster, journal_frame
+from lattice.server.syncstate import Manifest, entry_events
 from lattice.server.transactions import (
     IndexEntry,
     Quarantine,
@@ -123,6 +127,30 @@ class WriteOutcome:
         return bool(self.result_data.get("replayed"))
 
 
+@dataclass(frozen=True)
+class FinalizedState:
+    """Everything the committed-line finalizer maintains, as one immutable value
+    (SPEC §8.6 step 6): the journal index (line hashes, offsets, length
+    history, head), the manifest, the short-ID floors, and the watched-file
+    baselines. The project publishes a new value with one assignment."""
+
+    journal: JournalIndex
+    manifest: Manifest
+    floors: ShortIdFloors
+    watched: Mapping[str, tuple[int, int, int] | None]
+
+
+def _watched_after(
+    board: Path, watched: Mapping[str, tuple[int, int, int] | None], names: Iterable[str]
+) -> Mapping[str, tuple[int, int, int] | None]:
+    """New baselines for the watched files among *names*; *watched* is unchanged."""
+    updated = dict(watched)
+    for name in names:
+        if name in WATCHED_FILES:
+            updated[name] = _stat_key(board / name)
+    return MappingProxyType(updated)
+
+
 def _stat_key(path: Path) -> tuple[int, int, int] | None:
     try:
         st = path.stat()
@@ -196,21 +224,25 @@ class Project:
         self.admission = asyncio.Lock()
         self.work = threading.Lock()
         self.journal: Journal | None = None
-        self.floors = ShortIdFloors()
         self._lease_fd: int | None = None
-        self._watched: dict[str, tuple[int, int, int] | None] = {}
         self._reported_types: set[str] = set()
         #: The idempotency index, ``(token_id, op_id) -> IndexEntry``, and the
         #: current epoch's op-status map, ``(token_id, op_id) -> seq`` (SPEC §8.6).
         #: Filled as operations commit; rebuilt from disk at load by H-22.
         self.index: dict[tuple[str | None, str], IndexEntry] = {}
         self.op_seqs: dict[tuple[str | None, str], int] = {}
-        #: Called with each committed journal line, in ``seq`` order, under the locks
-        #: (the stream broadcaster connects here, H-10a).
-        self.publish: Callable[[dict], None] | None = None
+        #: The finalized memory (journal index, manifest, floors, watched baselines),
+        #: published by one assignment per committed line; ``None`` until loaded.
+        self._state: FinalizedState | None = None
+        #: The project's open streams (SPEC §8.9).
+        self.broadcaster = Broadcaster()
+        #: One reset assembly at a time: held before admission (SPEC §8.8).
+        self.reset_gate = asyncio.Lock()
+        #: Called with each committed journal line, in ``seq`` order, under the locks.
+        self.publish: Callable[[dict], None] | None = self._publish
         #: Called when publication failed for a committed operation: close the
-        #: project's open streams so followers reconnect and replay (H-10a).
-        self.close_streams: Callable[[], None] | None = None
+        #: project's open streams so followers reconnect and replay.
+        self.close_streams: Callable[[], None] | None = self.broadcaster.close_all
 
     # -- locking -----------------------------------------------------------
 
@@ -308,7 +340,6 @@ class Project:
             )
         if self.journal is None or self.journal.epoch != journal.epoch:
             self.op_seqs = {}  # the op-status map covers the current epoch only
-        self.journal = journal
         # TODO(H-22): undo logs a crash or a quarantine left in hosted/undo/ are
         # recovered here, in SPEC §8.7's order (torn tails, the missing-journal
         # quarantine, then each transaction), with the idempotency index and the
@@ -318,9 +349,19 @@ class Project:
         except AuthoritativeLogError as exc:
             self._mark_unavailable(f"integrity check failed: {exc}")
             return
-        self.floors = ShortIdFloors.from_board(board)
+        # SPEC §8.7 step 8: the sync path's state, the floors, and the watched
+        # baselines, built once and published together.
+        self._adopt(
+            journal,
+            FinalizedState(
+                journal=journal.index,
+                manifest=Manifest.build(board, journal.head_seq),
+                floors=ShortIdFloors.from_board(board),
+                watched=_watched_after(board, {}, WATCHED_FILES),
+            ),
+        )
+        self.broadcaster.announce(journal.epoch, journal.head_seq)
         ensure_dir(board / HOSTED_DIR / control.CONTROL_DIR)
-        self.remember_watched()
         self._set_state(LOADED, None)
         self.log.info(
             "project_load", project=self.slug, epoch=journal.epoch, head_seq=journal.head_seq
@@ -336,9 +377,40 @@ class Project:
             except Exception as exc:  # noqa: BLE001 - publishing never breaks a request
                 self.log.warning("status_publish_failed", error=describe_error(exc))
 
+    # -- the finalized memory ------------------------------------------------
+
+    @property
+    def manifest(self) -> Manifest | None:
+        state = self._state
+        return state.manifest if state is not None else None
+
+    @property
+    def floors(self) -> ShortIdFloors:
+        state = self._state
+        return state.floors if state is not None else ShortIdFloors()
+
+    def _published_index(self) -> JournalIndex:
+        state = self._state
+        if state is None:
+            raise OpError("BOARD_UNAVAILABLE", f"project {self.slug} is not loaded")
+        return state.journal
+
+    def _adopt(self, journal: Journal, state: FinalizedState) -> None:
+        """Publish *state* for *journal*, which reads its index from it from now on. A
+        journal this replaces keeps the last index it had."""
+        previous = self.journal
+        if previous is not None and previous is not journal:
+            frozen = previous.index
+            previous.bind(lambda: frozen)
+        self._state = state
+        journal.bind(self._published_index)
+        self.journal = journal
+
     def _mark_unavailable(self, reason: str) -> None:
         self._set_state(UNAVAILABLE, reason)
         self.journal = None
+        self._state = None
+        self.broadcaster.close_all()
         if self._lease_fd is not None:
             release_owner_flock(self._lease_fd)
             self._lease_fd = None
@@ -346,6 +418,7 @@ class Project:
 
     def release(self) -> None:
         """Release the owner lease (server shutdown)."""
+        self.broadcaster.close_all()
         if self._lease_fd is not None:
             release_owner_flock(self._lease_fd)
             self._lease_fd = None
@@ -363,26 +436,20 @@ class Project:
 
     # -- admission-time checks (call under the work lock) -------------------
 
-    def remember_watched(self, names: list[str] | tuple[str, ...] = WATCHED_FILES) -> None:
-        """Take a new baseline for *names*. Called only for files just journaled (or at
-        load), so a hand edit made meanwhile to another watched file is still detected."""
-        for name in names:
-            if name in WATCHED_FILES:
-                self._watched[name] = _stat_key(self.board / name)
-
     def check_external_changes(self) -> None:
         """Journal hand edits of ``config.json`` / ``context.md`` as ``external``."""
         changed = [
             name
             for name in WATCHED_FILES
-            if _stat_key(self.board / name) != self._watched.get(name)
+            if self._state is None or _stat_key(self.board / name) != self._state.watched.get(name)
         ]
         if not changed:
             return
         if self.journal is None:
             raise OpError("BOARD_UNAVAILABLE", f"project {self.slug} is not loaded")
+        journal = self.journal
         try:
-            seq, _ = self.journal.append(
+            seq, line, raw = journal.write(
                 {
                     "op": "external",
                     "op_id": None,
@@ -397,8 +464,18 @@ class Project:
         except BaseException as exc:
             self._mark_unavailable(f"journal append failed: {describe_error(exc)}")
             raise OpError("BOARD_UNAVAILABLE", f"project {self.slug} is unavailable") from exc
-        self.remember_watched(changed)
+        try:
+            self.finalize_committed(line, raw)
+        except BaseException as exc:
+            self._mark_unavailable(
+                f"finalizing external seq {seq} in memory failed: {describe_error(exc)}"
+            )
+            raise OpError("BOARD_UNAVAILABLE", f"project {self.slug} is unavailable") from exc
         self.log.warning("external_change", project=self.slug, paths=changed, seq=seq)
+        try:
+            self._publish(line)
+        except Exception:  # noqa: BLE001 - committed; followers reconnect and replay
+            self.publication_failed(seq)
 
     def run_control_requests(self) -> int:
         """Run every pending control request; returns how many ran.
@@ -578,6 +655,88 @@ class Project:
             )
         return None
 
+    # -- the sync path's memory and the stream (SPEC §8.6 step 6, §8.9) -----
+
+    def finalize_committed(self, line: dict, raw: bytes, events: list | tuple = ()) -> None:
+        """Bring memory up to date with one committed journal line (SPEC §8.6 step 6):
+        the journal index, the manifest entries of its ``paths``, the short-ID
+        floors, and the watched-file baselines.
+
+        The one finalizer for transactions and ``external`` entries. It computes
+        the complete next :class:`FinalizedState` from the current one, off to the
+        side, with every fallible step (manifest hashing among them) in that
+        computation, then publishes it with one assignment. A failure anywhere
+        before that assignment leaves the live state unchanged, and running this
+        again completes it; a line the state already includes is a no-op.
+        Callers quarantine the project on failure (plan-review resolution 2).
+        """
+        state = self._state
+        if state is None:
+            raise RuntimeError(f"project {self.slug} is not loaded")
+        seq = line["seq"]
+        if seq <= state.journal.head_seq:
+            return
+        paths = [p for p in line.get("paths") or () if isinstance(p, str)]
+        journal = state.journal.advance(line, raw)
+        transactions._fault("finish.memory", seq=seq)
+        manifest = state.manifest.advanced(
+            self.board, paths, frozenset(line.get("lengths") or ()), seq
+        )
+        transactions._fault("finish.memory.manifest", seq=seq)
+        floors = state.floors.with_events(events)
+        transactions._fault("finish.memory.floors", seq=seq)
+        watched = _watched_after(self.board, state.watched, paths)
+        transactions._fault("finish.memory.watched", seq=seq)
+        self._state = FinalizedState(journal, manifest, floors, watched)
+
+    def _publish(self, line: dict) -> None:
+        """Hand a committed line to every open stream (under the locks, in ``seq``
+        order). Its events are read back only when someone is listening."""
+        journal = self.journal
+        if journal is None:
+            raise RuntimeError(f"project {self.slug} is not loaded")
+        seq = line["seq"]
+        data = None
+        if self.broadcaster.has_subscribers():
+            digest = journal.hash_at(seq)
+            if digest is None:
+                raise RuntimeError(f"journal line {seq} has no hash; was it accepted?")
+            events = entry_events(self.board, journal, line)
+            data = journal_frame(journal.epoch, line, digest, events)
+        self.broadcaster.publish(journal.epoch, seq, data)
+
+    def rotate_epoch(self) -> dict:
+        """Start a new epoch under the locks (the ``rotate-epoch`` control request,
+        SPEC §8.2) and broadcast ``reset``. A failure part-way quarantines the
+        project; its next load finishes the rotation from ``rotation.json``."""
+        journal = self.journal
+        if journal is None:
+            raise OpError("BOARD_UNAVAILABLE", f"project {self.slug} is not loaded")
+        old_epoch = journal.epoch
+        state = self._state
+        assert state is not None
+        try:
+            with board_scope(self.board), strict_durability():
+                rotated = journal.rotate()
+            renewed = FinalizedState(
+                journal=rotated.index,
+                manifest=Manifest.build(self.board),
+                floors=state.floors,
+                watched=state.watched,
+            )
+            self.op_seqs = {}  # the op-status map covers the current epoch only
+            self._adopt(rotated, renewed)
+        except BaseException as exc:
+            self._mark_unavailable(f"epoch rotation failed: {describe_error(exc)}")
+            raise OpError(
+                "BOARD_UNAVAILABLE",
+                f"project {self.slug}: epoch rotation failed; it finishes at the next load",
+            ) from exc
+        # Queued to every stream before heartbeats may name the new epoch (SPEC §8.9).
+        self.broadcaster.reset(rotated.epoch)
+        self.log.info("epoch_rotated", project=self.slug, old_epoch=old_epoch, epoch=rotated.epoch)
+        return {"project": self.slug, "old_epoch": old_epoch, "epoch": rotated.epoch}
+
     def publication_failed(self, seq: int) -> None:
         """Publication failed for committed *seq*: streams reconnect and replay."""
         self.log.warning("publication_failed", project=self.slug, seq=seq)
@@ -700,6 +859,11 @@ def _read_json(path: Path) -> dict:
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
+
+
+@control.action("rotate-epoch")
+def _rotate_epoch_action(project: Project, request: dict) -> dict:
+    return project.rotate_epoch()
 
 
 @control.action("set-config")

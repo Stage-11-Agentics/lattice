@@ -248,6 +248,21 @@ def project_config(
     _run(is_json, action, render)
 
 
+@project_group.command("rotate-epoch")
+@click.argument("slug")
+@_root_option
+@_json_option
+def project_rotate_epoch(slug: str, root: str | None, is_json: bool) -> None:
+    """Start a new journal epoch so every cache resyncs (run after restoring a backup)."""
+    from lattice.server import admin
+
+    def render(data: dict) -> str:
+        how = "" if data["via"] == "server" else " (offline)"
+        return f"Rotated {slug} to epoch {data['epoch']}{how}; every cache resyncs."
+
+    _run(is_json, lambda: admin.rotate_project_epoch(_root(root), slug), render)
+
+
 # ---------------------------------------------------------------------------
 # Tokens
 # ---------------------------------------------------------------------------

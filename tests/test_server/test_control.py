@@ -80,7 +80,7 @@ def test_control_requests_run_at_admission(root: Path) -> None:
 def test_bad_control_requests_are_answered_not_run(root: Path) -> None:
     with running_server(root):
         board = root / "projects" / "alpha" / ".lattice"
-        for action, payload in (("set-config", {"set": {"hooks": "x"}}), ("rotate-epoch", {})):
+        for action, payload in (("set-config", {"set": {"hooks": "x"}}), ("no-such-action", {})):
             answer = control.send_request(board, action, payload, wait_seconds=5)
             assert answer["ok"] is False and answer["error"]["code"] == "VALIDATION_ERROR"
         assert _journal(root) == []
@@ -209,6 +209,9 @@ def test_a_hand_edit_during_an_operation_is_not_adopted(root: Path) -> None:
         )
         slow.start()
         assert wait_for(lambda: server.project("alpha").work.locked())
+        # The lock is taken just before the op's own admission check runs; let that
+        # check pass (the op sleeps 400 ms) so the edit lands during the operation.
+        time.sleep(0.1)
         (board / "context.md").write_text("# Edited while the op ran\n")
         slow.join()
         create_task(server, token)

@@ -11,7 +11,8 @@ lock::
     txn.commit(entry, result_data)
                          # 4. the receipt (the full result), fsynced
                          # 5. the journal line, fsynced: the single commit point
-    txn.finish()         # 6. memory state, index, undo-log deletion, publication
+    txn.finish()         # 6. memory state (Project.finalize_committed), index,
+                         #    undo-log deletion, publication
 
 Any failure after ``begin`` goes to :meth:`Transaction.recover` before the
 project admits another request: a committed operation is finished and never
@@ -229,6 +230,7 @@ class Transaction:
 
     # finish
     done: set[str] = field(default_factory=set)
+    memory_failed: bool = False
     publish_failed: bool = False
 
     @property
@@ -331,11 +333,17 @@ class Transaction:
     def finish(self) -> None:
         """The steps after the commit point; each runs once, so recovery can resume."""
         project = self.project
-        if "accept" not in self.done:
-            _fault("finish.accept")
-            assert project.journal is not None
-            project.journal.accept(self.line, self.raw)
-            self.done.add("accept")
+        if "memory" not in self.done:
+            _fault("finish.accept")  # before anything changes: recovery may retry
+            try:
+                # The next finalized state (journal index, manifest, floors, watched
+                # baselines), computed off to the side and published by one
+                # assignment (H-10a). A failure here quarantines (see recover()).
+                project.finalize_committed(self.line, self.raw, self.events)
+            except BaseException:
+                self.memory_failed = True
+                raise
+            self.done.add("memory")
         if "index" not in self.done:
             _fault("finish.index")
             assert self.receipt_path is not None
@@ -350,10 +358,6 @@ class Transaction:
             )
             project.op_seqs[key] = self.seq
             self.done.add("index")
-        if "memory" not in self.done:
-            project.floors.observe_events(self.events)
-            project.remember_watched(self.line.get("paths") or [])
-            self.done.add("memory")
         if "undo_delete" not in self.done:
             self._delete_undo_log()
             self.done.add("undo_delete")
@@ -384,6 +388,10 @@ class Transaction:
         """Transaction recovery for this operation (SPEC §8.6); raises :class:`Quarantine`
         when the project cannot be left in a known state."""
         if self.committed:
+            if self.memory_failed:
+                raise Quarantine(
+                    f"finalizing the in-memory state of committed seq {self.seq} failed"
+                )
             try:
                 self.finish()
                 if self.publish_failed:

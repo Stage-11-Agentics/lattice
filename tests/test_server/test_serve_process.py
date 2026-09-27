@@ -81,3 +81,94 @@ def test_serve_process_lifecycle(root: Path) -> None:
     assert events[0] == "startup" and events[-1] == "shutdown"
     assert "project_load" in events
     assert not control.server_running(root)
+
+
+def test_sigterm_ends_open_streams_at_once(root: Path) -> None:
+    """SPEC §8.9 framing and lifecycle: on SIGTERM every open stream ends at once, so
+    a follower never holds up the graceful shutdown (H-22 proves the full AC-31 row)."""
+    import time
+
+    from lattice.server import tokens
+    from lattice.server.testing import open_stream
+
+    token = tokens.create_token(root, user="human:alice", machine="m", all_projects=True)["token"]
+    proc, port = _start(root)
+    try:
+        reader = open_stream(f"http://127.0.0.1:{port}", "alpha", token)
+        assert reader.status == 200 and reader.next().event == "heartbeat"
+        started = time.monotonic()
+        proc.send_signal(signal.SIGTERM)
+        while reader.next(timeout=5) is not None:
+            pass  # heartbeats until the server ends the stream
+        ended = time.monotonic() - started
+        proc.communicate(timeout=10)
+        exited = time.monotonic() - started
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    assert proc.returncode == 0
+    assert ended < 2.0 and exited < 5.0
+
+
+def _stalled(port: int, path: str, token: str) -> socket.socket:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+    sock.connect(("127.0.0.1", port))
+    sock.sendall(
+        f"GET {path} HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {token}\r\n\r\n".encode()
+    )
+    head = b""
+    while b"\r\n\r\n" not in head:
+        head += sock.recv(1)
+    assert head.startswith(b"HTTP/1.1 200"), head
+    return sock
+
+
+@pytest.mark.parametrize("blocked_in", ["live", "replay"])
+def test_sigterm_ends_a_stream_blocked_on_a_client_that_never_reads(
+    root: Path, blocked_in: str
+) -> None:
+    """Review round 1, finding 2: a stream whose client stopped reading, blocked in a
+    live send or in its initial replay, does not hold up SIGTERM."""
+    import time
+
+    from lattice.server import tokens
+
+    token = tokens.create_token(root, user="human:alice", machine="m", all_projects=True)["token"]
+    proc, port = _start(root)
+    url = f"http://127.0.0.1:{port}"
+    payload = json.dumps({"blob": "x" * 60_000})
+
+    def write(op: str, params: dict) -> dict:
+        status, _, body = http_request(
+            "POST",
+            f"{url}/v1/projects/alpha/ops/{op}",
+            token=token,
+            body={"params": params, "actor": "human:alice"},
+        )
+        assert status == 200, body
+        return body["data"]
+
+    stalled = None
+    try:
+        task = write("task.create", {"title": "t"})["result"]["task"]["id"]
+        if blocked_in == "live":
+            stalled = _stalled(port, "/v1/projects/alpha/stream", token)
+        for _ in range(80):  # about 5 MB of entries
+            write("task.event", {"task": task, "event_type": "x_blob", "data": payload})
+        if blocked_in == "replay":
+            _, _, sync = http_request("GET", f"{url}/v1/projects/alpha/sync", token=token)
+            epoch = sync["data"]["epoch"]
+            stalled = _stalled(port, f"/v1/projects/alpha/stream?since=0&epoch={epoch}", token)
+        time.sleep(0.3)
+        started = time.monotonic()
+        proc.send_signal(signal.SIGTERM)
+        proc.communicate(timeout=15)
+        elapsed = time.monotonic() - started
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        if stalled is not None:
+            stalled.close()
+    assert proc.returncode == 0
+    assert elapsed < 5.0, elapsed

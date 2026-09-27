@@ -23,7 +23,6 @@ INSTALL_HINT = (
 
 def server_extra_available() -> bool:
     try:
-        import sse_starlette  # noqa: F401
         import starlette  # noqa: F401
         import uvicorn  # noqa: F401
     except ImportError:
@@ -72,13 +71,14 @@ def serve(root: Path, *, host: str | None = None, port: int | None = None) -> No
             timeout_graceful_shutdown=30,
             server_header=False,
         )
-        _server_class()(uv_config).run()
+        _server_class(app.state)(uv_config).run()
     finally:
         os.close(fd)
 
 
-def _server_class() -> type:
-    """uvicorn's server, except that a graceful SIGTERM exits 0 (SPEC §8.11).
+def _server_class(state: object) -> type:
+    """uvicorn's server, except that a graceful SIGTERM exits 0 (SPEC §8.11), and
+    open streams end as shutdown begins (uvicorn otherwise waits for them).
 
     uvicorn re-raises a captured signal after its graceful shutdown, so the
     process would end with 143. SIGINT keeps that behavior.
@@ -89,6 +89,7 @@ def _server_class() -> type:
 
     class Server(uvicorn.Server):
         def handle_exit(self, sig: int, frame: object) -> None:
+            state.registry.close_all_streams()  # type: ignore[attr-defined]
             super().handle_exit(sig, frame)
             captured = getattr(self, "_captured_signals", None)
             if sig == signal.SIGTERM and captured and captured[-1] == sig:

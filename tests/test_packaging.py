@@ -16,7 +16,7 @@ PINNED = [
     "filelock>=3.13",
     "typing_extensions>=4.0; python_version<'3.14'",
 ]
-SERVER_LIBS = ("starlette", "uvicorn", "sse_starlette")
+SERVER_LIBS = ("starlette", "uvicorn")
 
 # A meta-path finder that makes the server extra's libraries unimportable, so the
 # subprocess behaves like an install without the extra.
@@ -44,7 +44,7 @@ def test_base_dependencies_are_pinned() -> None:
     project = tomllib.loads((REPO / "pyproject.toml").read_text())["project"]
     assert project["dependencies"] == PINNED
     server = project["optional-dependencies"]["server"]
-    assert sorted(d.split(">")[0] for d in server) == ["sse-starlette", "starlette", "uvicorn"]
+    assert sorted(d.split(">")[0] for d in server) == ["starlette", "uvicorn"]
 
 
 def test_cli_imports_without_the_extra_and_loads_no_server_library() -> None:
