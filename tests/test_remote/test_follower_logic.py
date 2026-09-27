@@ -542,8 +542,8 @@ def test_a_stream_silent_while_backing_off_polls_until_it_delivers_again(tmp_pat
     write = follower._write
 
     def recording_write(until):
+        write(until)  # the file first, so a logged write is already on disk
         log.append("clear" if until is None else "extend")
-        write(until)
 
     follower._write = recording_write  # type: ignore[method-assign]
 
@@ -578,10 +578,11 @@ def test_a_stream_silent_while_backing_off_polls_until_it_delivers_again(tmp_pat
         assert thread.is_alive()
         # Stretch the poll cadence: once the next poll re-arms at 60 s, only a
         # delivery moves the follower, so the heartbeat below races no poll, and
-        # the freshness it grants (2 x heartbeat) outlasts the checks.
+        # the freshness it grants (2 x heartbeat) outlasts the checks. Wait on the
+        # re-arm itself, not on a sync count: on_sync runs before the poll re-arms,
+        # and a poll already in flight may be the one that re-arms at 60 s.
         follower.heartbeat_seconds = 60.0
-        n = syncs()
-        assert wait_for(lambda: syncs() > n, 10)
+        assert wait_for(lambda: follower._next_poll - time.monotonic() > 30, 10), log[-3:]
         calls, delivered = cache.calls, len(log)
         stream.push(_hb(3))  # the stream delivers again
         assert wait_for(lambda: len(log) > delivered, 10)
