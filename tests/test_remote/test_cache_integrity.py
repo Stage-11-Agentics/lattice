@@ -614,6 +614,17 @@ def test_a_head_hash_at_head_zero_is_rejected(client_root: Path, stub: StubServe
     assert cache.catch_up(client_root).kind == "applied"  # absent at head 0 is fine
 
 
+def test_an_explicit_null_head_hash_at_head_zero_is_rejected(
+    client_root: Path, stub: StubServer
+) -> None:
+    assert stub.head == 0
+    stub.fault.mutate_sync = lambda body: body.update(head_hash=None)
+    with pytest.raises(OpError) as err:
+        cache.catch_up(client_root)
+    assert err.value.details["reason"] == "MALFORMED_SYNC"
+    assert not (_lattice(client_root) / "cache" / "state.json").exists()
+
+
 def test_a_file_name_containing_two_dots_is_a_legal_board_path(
     client_root: Path, stub: StubServer
 ) -> None:

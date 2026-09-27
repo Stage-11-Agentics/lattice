@@ -335,7 +335,7 @@ def _parse_delta(
         raise malformed("no head_seq")
     if head > 0 and not (isinstance(head_hash, str) and _LINE_HASH_RE.fullmatch(head_hash)):
         raise malformed("head_hash must be 32 lowercase hex characters at a nonzero head")
-    if head == 0 and head_hash is not None:
+    if head == 0 and "head_hash" in body:  # absent, not even null (SPEC §8.8)
         raise malformed("head_hash must be absent at head 0")
     if not isinstance(reset, bool) or not isinstance(files, dict) or not isinstance(removed, list):
         raise malformed("reset, files, or removed has the wrong type")
