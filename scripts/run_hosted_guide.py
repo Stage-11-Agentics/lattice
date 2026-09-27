@@ -126,7 +126,11 @@ def build_fixture(home: Path, env: dict[str, str]) -> Path:
 
 
 def scratch_env(home: Path, bindir: Path) -> dict[str, str]:
-    env = {k: v for k, v in os.environ.items() if not k.startswith(("LATTICE_", "XDG_", "C11_", "GIT_"))}
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if not k.startswith(("LATTICE_", "XDG_", "C11_", "GIT_"))
+    }
     env.update(
         HOME=str(home),
         XDG_CONFIG_HOME=str(home / ".config"),
@@ -180,13 +184,19 @@ def run_block(block: Block, state: Path, cwd_file: Path, work: Path) -> None:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--guide", default=str(REPO / "docs" / "hosted" / "guide.md"))
-    ap.add_argument("--bin", default=str(REPO / ".venv" / "bin"), help="directory holding the lattice to test")
+    ap.add_argument(
+        "--bin", default=str(REPO / ".venv" / "bin"), help="directory holding the lattice to test"
+    )
     ap.add_argument("--keep-going", action="store_true", help="run later blocks after a failure")
     ap.add_argument("--keep", action="store_true", help="keep the scratch directory")
     ap.add_argument("--report", help="write a JSON report here")
-    ap.add_argument("--setup", help="a bash script run first, in the same shell state (for api.md)")
+    ap.add_argument(
+        "--setup", help="a bash script run first, in the same shell state (for api.md)"
+    )
     args = ap.parse_args()
 
     blocks = parse(Path(args.guide).read_text())
@@ -233,7 +243,9 @@ def main() -> int:
     for block in blocks:
         first = block.code.strip().splitlines()[0] if block.code.strip() else ""
         reason = f": {block.skip}" if block.status == "skipped" else ""
-        print(f"[{block.index:02d}] line {block.line:4d}  {block.status}{reason}  ({block.section}) {first[:60]}")
+        print(
+            f"[{block.index:02d}] line {block.line:4d}  {block.status}{reason}  ({block.section}) {first[:60]}"
+        )
         if block.status.startswith("failed"):
             print("      " + "\n      ".join(block.output.rstrip().splitlines()[-25:]))
     ran = [b for b in blocks if b.status == "ok"]
@@ -247,7 +259,19 @@ def main() -> int:
         Path(args.report).write_text(
             json.dumps(
                 [
-                    {k: getattr(b, k) for k in ("index", "line", "lang", "section", "status", "skip", "seconds", "output")}
+                    {
+                        k: getattr(b, k)
+                        for k in (
+                            "index",
+                            "line",
+                            "lang",
+                            "section",
+                            "status",
+                            "skip",
+                            "seconds",
+                            "output",
+                        )
+                    }
                     for b in blocks
                 ],
                 indent=2,
