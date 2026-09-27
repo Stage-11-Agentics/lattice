@@ -304,11 +304,15 @@ def test_a_status_that_records_an_auto_review_uses_two_op_ids(
     rendered = [json.loads(r.stdout)["data"] for r in (replayed, original)]
     for data in rendered:
         # Fields each run's own client effect sets: the review it spawned (its
-        # pid, from the spawn stub) and the auto-review record it then wrote
-        # (the task's last event). Everything from the status result matches.
+        # pid, from the spawn stub, and its spawned_at) and the auto-review
+        # record it then wrote (the task's last event and its updated_at). The
+        # timestamps differ when the two runs straddle a second. Everything
+        # from the status result matches.
         data["auto_review"].pop("pid")
+        data["auto_review"].pop("spawned_at")
         data["next_steps"].pop("pid")
         data.pop("last_event_id")
+        data.pop("updated_at")
     assert rendered[0] == rendered[1]
     assert spawns.review_types.count("code-review") == before + 2  # once per run
     tail = after_replay[-2:]
