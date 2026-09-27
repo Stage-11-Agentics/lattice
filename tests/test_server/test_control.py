@@ -219,3 +219,187 @@ def test_a_hand_edit_during_an_operation_is_not_adopted(root: Path) -> None:
         assert entries[0][0] == "xtest.sleep"
         assert ("external", ["context.md"]) in entries
         assert entries.index(("external", ["context.md"])) == 1
+
+
+# ---------------------------------------------------------------------------
+# H-22: unload, load, reload, doctor (SPEC §8.2), at the registry layer
+# ---------------------------------------------------------------------------
+
+
+def _admin(root: Path, *args: str, env: dict | None = None) -> tuple[int, dict]:
+    result = CliRunner().invoke(
+        cli, ["server", "project", *args, "--root", str(root), "--json"], env=env
+    )
+    return result.exit_code, json.loads(result.output)
+
+
+def _lease_free(root: Path, slug: str) -> bool:
+    return admin.try_owner_flock_free(root / "projects" / slug / ".lattice")
+
+
+def _steady_writer(server, token: str, slug: str, stop):  # noqa: ANN001, ANN202
+    """Write to *slug* until *stop* is set; returns (statuses, slowest seconds)."""
+    statuses: list[int] = []
+    slowest = [0.0]
+
+    def loop() -> None:
+        while not stop.is_set():
+            started = time.monotonic()
+            status, _, _ = server.op(slug, "task.create", {"title": "steady"}, token=token)
+            slowest[0] = max(slowest[0], time.monotonic() - started)
+            statuses.append(status)
+
+    return loop, statuses, slowest
+
+
+def test_unload_offline_maintenance_then_load_while_others_serve(root: Path) -> None:
+    """AC-15: 'project unload', offline maintenance on that project, then 'project
+    load', all while the server keeps serving the others; 'load' reaches the
+    running server although the project's own flock is free."""
+    import threading
+
+    token = mint(root)
+    with running_server(root) as server:
+        create_task(server, token, "alpha")
+        stop = threading.Event()
+        loop, statuses, slowest = _steady_writer(server, token, "beta", stop)
+        writer = threading.Thread(target=loop)
+        writer.start()
+        try:
+            code, out = _admin(root, "unload", "alpha")
+            assert code == 0 and out["data"]["lease"] == "released", out
+            assert _lease_free(root, "alpha")  # free the moment unload returns
+            status, _, body = server.op("alpha", "task.create", {"title": "x"}, token=token)
+            assert status == 503 and body["error"]["code"] == "BOARD_UNAVAILABLE"
+            assert "unloaded" in body["error"]["message"]
+            _, _, health = server.request("GET", "/healthz")
+            assert health["projects"]["unloaded"] == 1
+            listed = CliRunner().invoke(
+                cli, ["server", "project", "list", "--root", str(root), "--json"]
+            )
+            states = {r["slug"]: r["state"] for r in json.loads(listed.output)["data"]}
+            assert states["alpha"] == "unloaded" and states["beta"] == "loaded"
+
+            fixed = CliRunner().invoke(
+                cli,
+                ["doctor", "--fix", "--offline-maintenance", "--json"],
+                env={"LATTICE_ROOT": str(root / "projects" / "alpha")},
+            )
+            assert fixed.exit_code == 0, fixed.output
+            epoch = _meta(root)["epoch"]
+
+            code, out = _admin(root, "load", "alpha")
+            assert code == 0 and out["data"]["state"] == "loaded", out
+            assert out["data"]["epoch"] != epoch  # the maintenance record rotated it
+            assert not _lease_free(root, "alpha")
+            create_task(server, token, "alpha")
+        finally:
+            stop.set()
+            writer.join()
+    assert statuses and set(statuses) == {200}
+    assert slowest[0] < 1.0
+
+
+def test_an_unloaded_project_stays_unloaded_until_load(root: Path) -> None:
+    token = mint(root)
+    with running_server(root) as server:
+        assert _admin(root, "unload", "alpha")[0] == 0
+        for _ in range(3):  # neither requests nor the poller load it again
+            status, _, _ = server.op("alpha", "task.create", {"title": "x"}, token=token)
+            assert status == 503
+            time.sleep(0.06)
+        assert server.project("alpha").state == "unloaded"
+        assert _lease_free(root, "alpha")
+        code, out = _admin(root, "reload", "alpha")
+        assert code == 0 and out["data"]["state"] == "loaded"
+        create_task(server, token, "alpha")
+
+
+def test_reload_releases_and_retakes_the_lease(root: Path) -> None:
+    token = mint(root)
+    with running_server(root) as server:
+        create_task(server, token)
+        head = server.project("alpha").journal.head_seq
+        code, out = _admin(root, "reload", "alpha")
+        assert code == 0 and out["data"]["head_seq"] == head
+        assert server.project("alpha").state == "loaded"
+        events = [x["event"] for x in server.log_lines]
+        assert "project_unload" in events and events.count("project_load") >= 3
+
+
+def test_lifecycle_commands_need_a_running_server(root: Path) -> None:
+    for action in ("unload", "load", "reload"):
+        code, out = _admin(root, action, "alpha")
+        assert code == 1 and out["error"]["code"] == "CONFLICT"
+        assert "no Lattice server is running" in out["error"]["message"]
+    plain = CliRunner().invoke(cli, ["server", "project", "load", "alpha", "--root", str(root)])
+    assert plain.exit_code == 1 and "no Lattice server is running" in plain.output
+
+
+def test_project_doctor_through_the_server_and_directly(root: Path) -> None:
+    token = mint(root)
+    with running_server(root) as server:
+        create_task(server, token)
+        code, out = _admin(root, "doctor", "alpha")
+        assert code == 0, out
+        data = out["data"]
+        assert data["via"] == "server" and data["summary"]["errors"] == 0
+        assert data["summary"]["tasks"] == 1
+        # An unloaded project: the server takes its owner flock for the check.
+        assert _admin(root, "unload", "alpha")[0] == 0
+        code, out = _admin(root, "doctor", "alpha")
+        assert code == 0 and out["data"]["summary"]["errors"] == 0
+        assert _lease_free(root, "alpha")
+        plain = CliRunner().invoke(
+            cli, ["server", "project", "doctor", "alpha", "--root", str(root)]
+        )
+        assert plain.exit_code == 0 and "no issues found" in plain.output
+    code, out = _admin(root, "doctor", "alpha")  # no server: direct, under the flock
+    assert code == 0 and out["data"]["via"] == "offline"
+
+
+def test_project_doctor_reports_errors_and_exits_1(root: Path) -> None:
+    token = mint(root)
+    with running_server(root) as server:
+        task = create_task(server, token)
+    log = root / "projects" / "alpha" / ".lattice" / "events" / f"{task['id']}.jsonl"
+    log.write_bytes(b"{not json}\n" + log.read_bytes())  # corrupt mid-log, not a torn tail
+    code, out = _admin(root, "doctor", "alpha")
+    assert code == 1 and out["data"]["summary"]["errors"] >= 1, out
+
+
+def test_direct_doctor_refuses_while_another_process_holds_the_project(root: Path) -> None:
+    from lattice.storage.ownership import release_owner_flock, try_owner_flock
+
+    fd = try_owner_flock(root / "projects" / "alpha" / ".lattice")
+    assert fd is not None
+    try:
+        code, out = _admin(root, "doctor", "alpha")
+        assert code == 1 and out["error"]["code"] == "BOARD_BUSY"
+    finally:
+        release_owner_flock(fd)
+
+
+def test_recover_refuses_while_the_server_holds_the_project(root: Path) -> None:
+    with running_server(root):
+        code, out = _admin(root, "recover", "alpha", "--rollback")
+        assert code == 1 and out["error"]["code"] == "BOARD_BUSY"
+    code, out = _admin(root, "recover", "alpha", "--keep")
+    assert code == 0 and out["data"]["undo_logs"] == 0
+
+
+def test_graceful_shutdown_records_clean_shutdown(root: Path) -> None:
+    token = mint(root)
+    with running_server(root) as server:
+        create_task(server, token)
+        epoch = server.project("alpha").journal.epoch
+    meta = _meta(root)
+    assert meta["clean_shutdown"]["head_seq"] == 1
+    with running_server(root) as server:
+        assert server.project("alpha").journal.epoch == epoch
+        assert _meta(root)["clean_shutdown"] is None
+
+
+def _meta(root: Path, slug: str = "alpha") -> dict:
+    path = root / "projects" / slug / ".lattice" / "hosted" / "journal_meta.json"
+    return json.loads(path.read_text())
