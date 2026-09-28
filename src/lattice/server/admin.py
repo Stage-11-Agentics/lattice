@@ -71,7 +71,7 @@ _BOOL_KEYS = ("auto_code_review_on_transition", "auto_plan_review_on_transition"
 DEFAULT_SERVER_JSON: dict[str, Any] = {
     "bind": "127.0.0.1",
     "port": 8740,
-    "trusted_proxy": False,
+    "trusted_proxies": [],
     "public_origins": [],
     "log_level": "info",
     "audit": {"enabled": True, "debounce_seconds": 5, "max_interval_seconds": 60, "push": None},

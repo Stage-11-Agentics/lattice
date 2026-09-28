@@ -134,12 +134,8 @@ def page_headers(path: str, csp: str) -> list[tuple[bytes, bytes]]:
 
 
 def request_scheme(request: Request, state: ServerState) -> str:
-    """``https`` or ``http``; ``X-Forwarded-Proto`` counts only under ``trusted_proxy``."""
-    if state.config.trusted_proxy:
-        forwarded = request.headers.get("x-forwarded-proto", "")
-        first = forwarded.split(",")[0].strip().lower()
-        if first in ("http", "https"):
-            return first
+    """``https`` or ``http``. uvicorn has already applied ``X-Forwarded-Proto``
+    when, and only when, the peer is in ``trusted_proxies`` (SPEC §8.1)."""
     return "https" if request.url.scheme == "https" else "http"
 
 

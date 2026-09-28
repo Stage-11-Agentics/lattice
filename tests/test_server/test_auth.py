@@ -137,7 +137,7 @@ def test_secure_cookie_behind_a_trusted_proxy(root: Path) -> None:
     from lattice.server.testing import running_server
 
     token = mint(root, projects=["alpha"])
-    with running_server(root, config={"trusted_proxy": True}) as server:
+    with running_server(root, config={"trusted_proxies": ["127.0.0.1"]}) as server:
         web = WebClient(server)
         response = web.request(
             "POST",

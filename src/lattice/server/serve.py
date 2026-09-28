@@ -83,11 +83,29 @@ def load_server_config(root: Path) -> ServerConfig:
         raise OpError("VALIDATION_ERROR", str(exc)) from exc
 
 
-#: uvicorn options shared by ``serve`` and the in-process test server. uvicorn
-#: honors ``X-Forwarded-Proto`` and ``X-Forwarded-For`` from 127.0.0.1 by
-#: default; the server honors them only under ``trusted_proxy`` (SPEC §8.1), so
-#: uvicorn's own proxy handling is off.
-UVICORN_OPTIONS = {"proxy_headers": False, "server_header": False}
+def uvicorn_options(config: ServerConfig) -> dict[str, object]:
+    """The uvicorn options ``serve`` and the in-process test server share.
+
+    Proxy-header trust comes only from ``trusted_proxies`` (SPEC §8.1): uvicorn
+    rewrites the scheme and client address from ``X-Forwarded-Proto`` and
+    ``X-Forwarded-For`` only on a connection from a listed peer, taking the
+    rightmost ``X-Forwarded-For`` entry that is not itself listed. Both options
+    are always passed, because uvicorn otherwise trusts 127.0.0.1, or whatever
+    ``FORWARDED_ALLOW_IPS`` names, by default.
+
+    Two uvicorn behaviors operators should know. When every ``X-Forwarded-For``
+    entry is listed, uvicorn falls back to the leftmost entry, which the client
+    supplied, so list proxies narrowly: a range that also covers clients lets
+    them choose their logged address. And matching is by address family: a
+    server bound to ``::`` sees an IPv4 proxy as ``::ffff:192.0.2.1``, which
+    does not match ``192.0.2.1``, so list the mapped form too.
+    """
+    proxies = list(config.trusted_proxies)
+    return {
+        "proxy_headers": bool(proxies),
+        "forwarded_allow_ips": proxies,
+        "server_header": False,
+    }
 
 
 def serve(root: Path, *, host: str | None = None, port: int | None = None) -> None:
@@ -113,7 +131,7 @@ def serve(root: Path, *, host: str | None = None, port: int | None = None) -> No
             access_log=False,
             lifespan="on",
             timeout_graceful_shutdown=30,
-            **UVICORN_OPTIONS,
+            **uvicorn_options(config),
         )
         _server_class(app.state)(uv_config).run()
     finally:
