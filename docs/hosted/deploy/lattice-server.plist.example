@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd job for the Lattice server (Lattice Hosted) on macOS. A template:
+  every path, user, and label below is a placeholder. Replace them, then install
+  as /Library/LaunchDaemons/com.example.lattice-server.plist (see
+  docs/hosted/guide.md, section 9). For a server that runs only while you are
+  logged in, install it in ~/Library/LaunchAgents instead and drop UserName.
+
+  Assumes:
+    - a service user `_lattice` that owns the server root and the log and run
+      directories below;
+    - Lattice installed with the server extra at /usr/local/bin/lattice, and
+      git on PATH for the audit history;
+    - the server root already created:
+      lattice server init, run as _lattice, with LATTICE_SERVER_ROOT set to
+      /usr/local/var/lattice-server
+
+  The shell wrapper records the server's PID (exec keeps it the same process),
+  so newsyslog.conf.example can signal it after rotating the log. SIGTERM is a
+  graceful shutdown, and KeepAlive starts the server again on a fresh log.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.example.lattice-server</string>
+
+    <key>UserName</key>
+    <string>_lattice</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/sh</string>
+        <string>-c</string>
+        <string>echo $$ &gt; /usr/local/var/lattice-server-run/server.pid; exec /usr/local/bin/lattice server serve</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>LATTICE_SERVER_ROOT</key>
+        <string>/usr/local/var/lattice-server</string>
+        <key>HOME</key>
+        <string>/usr/local/var/lattice-server</string>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>WorkingDirectory</key>
+    <string>/usr/local/var/lattice-server</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <!-- Give a graceful shutdown time to finish in-flight writes (up to 30 s). -->
+    <key>ExitTimeOut</key>
+    <integer>60</integer>
+    <key>Umask</key>
+    <integer>63</integer>
+
+    <!-- Open files: launchd starts a job at 256, which a busy server outgrows.
+         The server raises its own soft limit up to the hard limit. macOS
+         refuses a limit above its per-process maximum; 10240 (OPEN_MAX) is
+         always accepted. -->
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>10240</integer>
+    </dict>
+    <key>HardResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>10240</integer>
+    </dict>
+
+    <!-- The server logs one JSON object per line to stdout. -->
+    <key>StandardOutPath</key>
+    <string>/usr/local/var/log/lattice-server/server.log</string>
+    <key>StandardErrorPath</key>
+    <string>/usr/local/var/log/lattice-server/server.log</string>
+</dict>
+</plist>

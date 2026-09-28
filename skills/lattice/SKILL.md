@@ -45,16 +45,14 @@ lattice create "Fix the login bug" --actor agent:openclaw --priority high
 
 Options: `--priority` (critical/high/medium/low/none), `--type` (task/bug/chore), `--description "details"`, `--assign agent:openclaw`
 
-**No `epic` or `spike` types — just items of work with a dependency
-graph.** Lattice intentionally rejects umbrella/exploratory ticket
-types. Multi-phase or umbrella work is expressed by creating a plain
-`task` and linking children via `lattice link <child> subtask_of
-<parent>`. Exploratory or investigation work is expressed as a plain
-`task` whose deliverable is a concrete artifact (plan doc, prototype,
-decision). The subtask + dependency graph (`subtask_of`, `blocks`,
-`depends_on`) gives you epic-shape and spike-shape without dedicated
-types. Every ticket is a chunk of work with a real output, not a
-bucket or an open question.
+**No epics, and never a fake one.** Lattice has no `epic` or `spike`
+type by design, and you must not create an umbrella task to stand in for
+one. Group related tasks with a shared tag (`lattice create "..." --tags
+auth,v2`, then `lattice list --tag auth`), and order them with
+dependencies (`lattice link <later> depends_on <earlier>`). Exploratory
+work is a plain `task` whose deliverable is a concrete artifact (plan
+doc, prototype, decision). Every ticket is a chunk of work with a real
+output, not a bucket or an open question.
 
 ### List tasks
 
@@ -212,6 +210,20 @@ lattice plan write LAT-42 --file plan.md --expect-sha256 <hex> --actor agent:cla
 ```
 
 Each write records a `plan_written` / `notes_written` event with the content's SHA-256 and size. Orchestrator working files go through `lattice board write orchestration/<path> --file <path>`, and the board's `context.md` through `lattice context write --file <path>`.
+
+## Hosted Boards
+
+A checkout with a committed `.lattice-remote.json` is bound to a Lattice server (Lattice v2, optional). Its board lives on the server; `.lattice/` is a read-only mirror, refreshed before every read.
+
+- Every command works the same, with the same output and error codes. Writes go to the server; reading `.lattice/` files still works. A linked worktree has only `.lattice-remote.json`; the read-only mirror is the primary checkout's `.lattice/`.
+- `lattice remote status` shows the token's person; you still pass `--actor agent:<your-id>`. Every event records both your actor and the token's user and machine (`lattice show <task> --full`).
+- Whether a status change fires an automatic review depends on the board's config; the `lattice status` output says what happened. `plan-review` and `code-review` run by hand need `--actor`.
+- Work not merged through a PR goes `review -> done` with `lattice complete`; say in the review how it was integrated (commit SHA and branch).
+- **Never edit files under `.lattice/`.** Write plans and notes with `lattice plan write` / `lattice notes write`, the board's context with `lattice context write`, and orchestration files with `lattice board write orchestration/<path>`.
+- **`OUTCOME_UNKNOWN`** means the server may have applied the write. Run `lattice remote op-status <op_id>` (the message names it) before retrying: `committed` means do not run it again.
+- `SERVER_UNREACHABLE` ("server ... is not available. Nothing was written") means nothing was written; there is no offline queue. The write shows its retries on stderr for up to 15 s; after that, further writes in the same outage fail at once, so do not loop on them: tell the human the server is down and continue with other work. Reads keep working from the cache with a one-line notice.
+- `LOCAL_ONLY` (from `rebuild`, `doctor --fix`, and similar) means the command runs on the server host, not here.
+- Setting up a server, binding a checkout, or moving a board to a server and back: follow `docs/hosted/guide.md` in the Lattice repository step by step. It is written for you, the agent: run its command blocks in order and check each result. Ask the human only for what the guide says only they have (the server URL, a token, which project).
 
 ## Multi-Agent Coordination
 

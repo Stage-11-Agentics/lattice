@@ -24,7 +24,7 @@ previous solutions like linear, trello, jira etc were build for the humans. latt
 
 ## files. not a database.
 
-the `.lattice/` directory sits in your project like `.git/` does. plain files that any mind can read. any tool can write. and git can merge. no database. no server. no authentication ceremony. just. files.
+the `.lattice/` directory sits in your project like `.git/` does. plain files that any mind can read. any tool can write. and git can merge. no database. no server (unless you want one, for several machines: see [Lattice Hosted](#lattice-hosted-optional)). no authentication ceremony. just. files.
 
 all state lives as JSON and JSONL files. right next to your source code. commit it to your repo. versioned. diffable. visible to every collaborator and CI system. no server. no account. no vendor.  no cruft. 
 
@@ -53,6 +53,25 @@ that's it. your agents now track their own work. you watch. steer. decide.
 you don't run prompts or write code in Lattice. Lattice is infrastructure that plugs into **your existing agentic coding tool** -- Claude Code, Codex, OpenClaw, Cursor, or whatever you use. step 3 above teaches your agent the Lattice protocol. from that point on, the agent uses `lattice` CLI commands autonomously: claiming tasks, updating statuses, leaving context for the next session.
 
 you use Lattice by talking to your existing agents, and humans view the system state on the dashboard. your agents use the CLI to get state and edit the raw filesystem directly. one source of truth. two interfaces.
+
+---
+
+## Lattice Hosted (optional)
+
+everything above is local Lattice. it is the default and it stays the default: one machine, as many agents and worktrees as you like, no server.
+
+when one board has to be shared **across machines** (several people, agents on remote boxes, a board you watch from anywhere), run a Lattice server. one server process owns each board and is its only writer. your checkouts send writes to it and keep a read-only copy in `.lattice/`, so the CLI, the dashboard, and `cat .lattice/...` work as before. every event records who made it and from which machine, worktree, and branch.
+
+```bash
+uv tool install 'lattice-tracker[server]'
+lattice server init && lattice server project create my-app --code APP
+lattice server token create --user human:you --machine laptop --project my-app
+lattice server serve
+```
+
+then, in your checkout: `lattice remote add` and `lattice remote attach`. the [hosted guide](docs/hosted/guide.md) walks through it end to end, including moving an existing board onto a server and back, tokens, reverse proxies, backups, and daily checks. the [HTTP API](docs/hosted/api.md) serves agents without a Lattice install.
+
+only problem is several worktrees on one machine? you do not need a server: [stop tracking the board in git](docs/hosted/guide.md#1-before-any-server-several-worktrees-on-one-machine).
 
 ---
 
@@ -88,7 +107,7 @@ most of the human work in Lattice is **reviewing agent output** and **making dec
 
 ### files are the coordination surface
 
-the filesystem is the one substrate every agent already has access to. Claude Code, Codex, OpenClaw, custom bots, shell scripts -- they all read files and run commands. Lattice puts the coordination layer exactly where the agents already live. no API to integrate. no server to run. no protocol to implement. if your agent can `cat` a file and run a command, it can participate.
+the filesystem is the one substrate every agent already has access to. Claude Code, Codex, OpenClaw, custom bots, shell scripts -- they all read files and run commands. Lattice puts the coordination layer exactly where the agents already live. no API to integrate. no server to run (until you choose to share a board across machines). no protocol to implement. if your agent can `cat` a file and run a command, it can participate.
 
 this is why Lattice works where other tools don't. it meets agents where they are. on disk. in the project. next to the code.
 
@@ -96,13 +115,23 @@ this is why Lattice works where other tools don't. it meets agents where they ar
 
 ## status
 
-Lattice is **v0.2.1-alpha. actively developed.** the on-disk format and event schema are stabilizing but not yet frozen. expect breaking changes before v1.
+Lattice is **v2.0.0. actively developed.** v2 adds [Lattice Hosted](#lattice-hosted-optional), an optional server. local Lattice works as it did.
 
-### coming soon: Lattice Remote
+### upgrading to v2
 
-Lattice today coordinates agents and humans on a single machine. **Lattice Remote** (part of the in progress v0.5 release) adds a lightweight coordination server so distributed teams -- multiple developers on multiple machines, each running their own agents -- can share the same task state in real time.
+local boards keep their layout and need no migration. what a local user sees change:
 
-the experience is **identical** to users and agents alike. same CLI. same dashboard. same `.lattice/` filesystem structure. "remote" is an infrastructure detail, abstracted away from concern of your modern working centaur. 
+- **origin on every event.** each new event records where it came from: host, OS user, worktree, branch, Lattice version. `lattice show` prints it per event as `actor · user@machine · worktree (branch)`, and `--json` includes it. `lattice list --machine/--user/--worktree` filter by it.
+- **new commands.** `lattice plan write` and `lattice notes write` write a task's plan and notes (direct edits of plan files still work on a local board; the commands work everywhere, including hosted checkouts). `lattice context write` and `lattice board write` write `context.md` and orchestration files. `lattice erase` hides a task from every view and `lattice unerase` brings it back (`list --include-tombstoned` shows erased tasks). `lattice server`, `lattice remote`, `lattice sync`, and `lattice cache` are for hosted mode. `lattice doctor --offline-maintenance` is for server hosts.
+- **one set of rules everywhere.** the MCP tools and the dashboard now apply the CLI's rules: the plan gate, the review-cycle limit, and completion policies. a status change the CLI refuses is refused there too, and the dashboard names the CLI command that overrides it (`lattice status <task> <status> --force --reason "..."`). the dashboard's status API keeps its `force` and `reason` parameters, which now work exactly like the CLI's: a non-empty reason is required. dashboard errors carry the CLI's error codes instead of a generic 400.
+- **dashboard: origin filters, no CDN.** the filter drawer gains an Origin section (machine, user, worktree), kept in the page URL, matching like `lattice list --machine/--user/--worktree`; `/api/tasks` takes the same parameters. the graph libraries now ship inside Lattice: the dashboard loads nothing from unpkg or any other site, so it works offline and behind a strict firewall.
+- **dashboard safety.** dashboard POSTs require `Content-Type: application/json` and an `Origin` matching the page, which closes a cross-origin write. the page escapes quotes in board text and builds no inline event handlers.
+- **stricter input.** every actor-valued option, `--on-behalf-of` included, is validated like `--actor`, so a malformed value some commands (`claim`, `unclaim`) accepted now fails with `INVALID_ACTOR`. resource and session names must be one safe path component (no `/`, `\`, control characters, `.` or `..`).
+- **storage errors, reported the same way in every command.** a write to an archived task that `update`, `edit-description`, or `assign` let crash with a traceback now reports `NOT_FOUND` with the usual "is archived" message; a task log that fails strict replay reports `INTEGRITY_ERROR` where some commands said `NOT_FOUND`.
+- **`lattice doctor --fix --actor <you>` repairs old history damage by appending.** boards written by several v1 agents at once can hold events whose recorded `from` disagrees with the task's state (the task then refuses writes), or duplicate and out-of-prefix short IDs. `doctor --fix` with an actor appends a `task_history_reconciled` event naming the stale events, restores each task's visible fields, and gives a duplicate or out-of-prefix ID the next free one (the old ID stays in history). replay accepts exactly the stale events a reconciliation names. it never rewrites or removes an event. without an actor, `--fix` lists what it would append. such a repaired log still fails v1's replay at the stale event, as it did before.
+- **`lattice doctor` on a malformed or missing `config.json`** prints the `json_parse` finding and exits 1, instead of crashing with a traceback.
+- **refresh your agents' instructions.** the CLAUDE.md block and the skill now teach `lattice plan write` / `lattice notes write`. run `lattice setup-claude --force` and `lattice setup-claude-skill --force` (and `setup-codex` / `setup-openclaw` if you use them).
+- **no way back to v1 for a board v2 has written.** v1 reads v2's events but skips the new types, so for example erased tasks reappear. rolling back the code is possible; trusting a v2-written board to v1 is not.
 
 ## license
 

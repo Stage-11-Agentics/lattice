@@ -1,0 +1,12 @@
+# newsyslog rule for the Lattice server's log (macOS). A template: replace the
+# paths and user with yours, then install as /etc/newsyslog.d/lattice-server.conf.
+#
+# newsyslog cannot truncate a file in place, and launchd holds the log open.
+# So after rotating, newsyslog sends signal 15 (SIGTERM) to the PID that
+# lattice-server.plist.example records: the server shuts down gracefully and
+# launchd (KeepAlive) starts it again, writing to a fresh log. Clients retry
+# through the restart. Rotation happens at 10 MiB or daily, keeping 7 files,
+# compressed with bzip2 (J) after the server has let go of them.
+#
+# logfilename                                   [owner:group]      mode count size  when flags pid_file                                    sig
+/usr/local/var/log/lattice-server/server.log    _lattice:_lattice  640  7     10240 @T00 J     /usr/local/var/lattice-server-run/server.pid  15

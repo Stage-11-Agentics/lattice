@@ -1,0 +1,55 @@
+# systemd unit for the Lattice server (Lattice Hosted). A template: every path,
+# user, and address below is a placeholder. Replace them, then install as
+# /etc/systemd/system/lattice-server.service (see docs/hosted/guide.md, section 9).
+#
+# Assumes:
+#   - a system user `lattice` whose home is the server root;
+#   - Lattice installed with the server extra at /usr/local/bin/lattice
+#     (for example: uv tool install 'lattice-tracker[server]' with
+#     UV_TOOL_BIN_DIR=/usr/local/bin), and git on PATH for the audit history;
+#   - the server root already created: sudo -u lattice lattice server init --root /var/lib/lattice-server
+#   - /var/log/lattice-server owned by `lattice`, rotated by logrotate.example.
+
+[Unit]
+Description=Lattice server (hosted boards)
+Documentation=https://github.com/Stage-11-Agentics/lattice/blob/main/docs/hosted/guide.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=lattice
+Group=lattice
+Environment=LATTICE_SERVER_ROOT=/var/lib/lattice-server
+Environment=HOME=/var/lib/lattice-server
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=/var/lib/lattice-server
+ExecStart=/usr/local/bin/lattice server serve
+
+# The server logs one JSON object per line to stdout. Append it to a file that
+# logrotate.example rotates with copytruncate. To use the journal instead,
+# delete these two lines and read it with: journalctl -u lattice-server
+StandardOutput=append:/var/log/lattice-server/server.log
+StandardError=append:/var/log/lattice-server/server.log
+
+# SIGTERM is a graceful shutdown: in-flight writes finish (up to 30 s), streams
+# end, final audit commits run, then exit 0.
+# Open files: the server holds one descriptor per stream, lock, log, and audit
+# helper, and raises its own soft limit up to this hard limit (at most 65536).
+LimitNOFILE=65536
+
+KillSignal=SIGTERM
+TimeoutStopSec=60
+Restart=on-failure
+RestartSec=2
+
+# Hardening. The server writes only its root and its log.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/lattice-server /var/log/lattice-server
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

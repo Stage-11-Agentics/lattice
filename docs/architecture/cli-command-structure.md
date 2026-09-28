@@ -33,14 +33,25 @@ This keeps command files modular while exposing a single `lattice` binary.
 
 ## Common Command Flow
 
-Write commands generally follow:
+Since v2, every board-writing command is a thin wrapper over an operation
+(`operations.md`):
 
-1. Resolve root (`require_root`) and actor (`require_actor`)
-2. Resolve task identifier (`resolve_task_id`) if needed
-3. Put state-dependent validation and event construction in a callback
-4. Persist through `mutate_task()`, which locks, strictly replays authority,
-   appends events, and materializes the snapshot
-7. Render output (`human`, `--json`, or `--quiet`)
+1. Parse arguments and run today's argument checks, in today's order, before
+   looking up the board. Read a `--file` only when it will be used, so a
+   directory or unreadable path keeps its `VALIDATION_ERROR`.
+2. Build the operation's `Params` and a `Caller` (`cli/ops_bridge.py`).
+3. `resolve_board(cwd).execute(...)`: a `LocalBoard` runs the operation in
+   process; a hosted checkout posts it to the server. The operation resolves
+   the task and actor, runs the rules, and persists through `mutate_task()`
+   (lock, strict replay, append, snapshot) or the resource, prose, session,
+   and config writers.
+4. Render the `OpResult` exactly as before (`human`, `--json`, or `--quiet`),
+   or the `OpError` as the usual envelope with exit 1; then run client-local
+   effects (auto-review spawn, c11 side effects).
+
+`init`, `demo init`, `rebuild`, `doctor --fix`, `backfill-ids`, and
+`migrate` write a data directory directly; on a hosted checkout they refuse
+with `LOCAL_ONLY` (`boards.check_local_only`).
 
 Read commands traverse snapshots/events with no mutation.
 
@@ -77,16 +88,18 @@ traceability only and do not affect workflow or completion policies.
 
 When adding a write command:
 
-1. Keep business rules in `core/` when reusable
+1. Add an operation module under `src/lattice/ops/` holding the rules
+   (`ops/base.py`'s docstring is the template); keep reusable rules in `core/`
 2. Keep fs/locking in `storage/`
-3. Use CLI layer for validation + argument handling + output formatting
-4. Add tests in `tests/test_cli/` plus core/storage tests as needed
+3. Keep the Click command thin: argument checks, `Params`, `execute`, output
+4. Add tests in `tests/test_ops/` and `tests/test_cli/`, and a parity
+   scenario when the command writes the board
 5. Ensure idempotency and deterministic output where applicable
 
 ## Dashboard Parity
 
-Dashboard write endpoints in `dashboard/server.py` intentionally mirror CLI
-write behavior but use HTTP JSON requests/responses.
+Dashboard write endpoints and MCP tools call the same operations as the CLI,
+so they apply the same rules and return the same error codes.
 
 If you change CLI write semantics, check whether dashboard write paths need the
 same update.
