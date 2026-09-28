@@ -167,6 +167,9 @@ def agent_listener() -> Iterator[tuple[str, list[list[str]]]]:
 
         def do_GET(self) -> None:
             seen.append(self.headers.get_all("User-Agent") or [])
+            length = int(self.headers.get("Content-Length") or 0)
+            if length:
+                self.rfile.read(length)
             stream = self.path.endswith("/stream")
             body = b"" if stream else b'{"ok": true, "data": {}}'
             self.send_response(200)
@@ -175,6 +178,8 @@ def agent_listener() -> Iterator[tuple[str, list[list[str]]]]:
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+
+        do_POST = do_GET
 
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     httpd.daemon_threads = True
@@ -188,8 +193,16 @@ def agent_listener() -> Iterator[tuple[str, list[list[str]]]]:
         thread.join(timeout=5)
 
 
-def _send_both(remote: http.Remote) -> None:
+#: The six kinds of request AC-20 names, as the client transport sends them.
+SIX = ("info", "op", "op status", "sync", "files", "stream")
+
+
+def _send_all(remote: http.Remote) -> None:
     http.request(remote, "GET", "/v1/info")
+    http.request(remote, "POST", "/v1/projects/demo/ops/task.create", json_body={"op_id": OP_ID})
+    http.request(remote, "GET", f"/v1/projects/demo/ops/{OP_ID}")
+    http.request(remote, "GET", "/v1/projects/demo/sync?since=0")
+    http.request(remote, "GET", "/v1/projects/demo/files/tasks/x.json", expect="bytes")
     http.open_stream(remote, "/v1/projects/demo/stream", read_timeout=1).close()
 
 
@@ -201,12 +214,12 @@ def _send_both(remote: http.Remote) -> None:
 def test_the_wire_carries_one_user_agent_header(
     headers: dict[str, str], expected: str | None
 ) -> None:
-    """On the wire: exactly one User-Agent per request, on a JSON request and on
-    the stream, defaulted or configured."""
+    """AC-20 on the wire: a stub records exactly one User-Agent on each of info,
+    op, op status, sync, files, and stream, defaulted or configured."""
     expected = expected or http.user_agent()
     with agent_listener() as (url, seen):
-        _send_both(http.Remote(alias="t", url=url, token="tok", headers=headers))
-    assert seen == [[expected], [expected]]
+        _send_all(http.Remote(alias="t", url=url, token="tok", headers=headers))
+    assert seen == [[expected]] * len(SIX)
 
 
 @pytest.mark.parametrize(
@@ -233,8 +246,8 @@ def test_the_user_agent_is_one_clean_token_whatever_the_version(
     req = http.build_request(remote, "GET", remote.url + "/v1/info")
     assert req.get_header("User-agent") == agent
     with agent_listener() as (url, seen):
-        _send_both(http.Remote(alias="t", url=url, token="tok"))
-    assert seen == [[agent], [agent]]
+        _send_all(http.Remote(alias="t", url=url, token="tok"))
+    assert seen == [[agent]] * len(SIX)
 
 
 def test_the_version_is_the_one_the_cli_prints(tmp_path: Path) -> None:
@@ -251,7 +264,6 @@ def test_local_mode_sends_no_request(tmp_path: Path, monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(http, "request", refuse)
     monkeypatch.setattr(http, "open_stream", refuse)
     monkeypatch.setattr(http, "build_request", refuse)
-    monkeypatch.setenv("LATTICE_NO_UPDATE_CHECK", "1")
     board = tmp_path / "local"
     board.mkdir()
     _ok(
