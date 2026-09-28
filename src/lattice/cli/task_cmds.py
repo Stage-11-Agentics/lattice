@@ -965,6 +965,7 @@ def complete_cmd(
     if policy.get("require_reachable_review_commit"):
         worktree = caller_worktree()
         if worktree is not None:
+            board.end_read_phase()  # before git (SPEC §9.4)
             review_head = subprocess.check_output(
                 ["git", "-C", str(worktree), "rev-parse", "HEAD"], text=True
             ).strip()

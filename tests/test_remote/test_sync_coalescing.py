@@ -423,13 +423,91 @@ def test_a_refused_write_leaves_the_window_to_a_sync_in_flight(
     assert not _window(client_root).exists()
 
 
-def test_a_fresh_checkout_opens_the_window(tmp_path: Path) -> None:
-    """No sync ever ran (no lock file), so no newer outcome can exist."""
+def test_a_fresh_checkout_opens_the_window_under_the_sync_lock(tmp_path: Path) -> None:
+    """No sync ever ran; the window still opens under ``cache_sync.lock`` (a
+    first sync may be starting), which is the only other file it creates."""
     root = tmp_path / "fresh"
     (root / ".lattice" / "cache").mkdir(parents=True)
-    assert cache.open_window_in_order(root, None, _open(root)) is True
-    assert _window(root).exists()
-    assert not (root / ".lattice" / "locks").exists()  # nothing else created
+    held: list[bool] = []
+
+    def write() -> None:
+        probe = cache._lock(
+            root / ".lattice" / "locks" / "cache_sync.lock", True, deadline=time.monotonic()
+        )
+        held.append(probe is None)
+        if probe is not None:
+            cache._unlock(probe)
+        _open(root)()
+
+    assert cache.open_window_in_order(root, None, write) is True
+    assert held == [True] and _window(root).exists()
+    assert sorted(p.name for p in (root / ".lattice" / "locks").iterdir()) == ["cache_sync.lock"]
+
+
+def test_a_first_sync_that_succeeds_wins_over_an_older_refused_write(tmp_path: Path) -> None:
+    """Round 1, Astra 2: in a fresh checkout a refused write that began before
+    the first sync must not reopen the window that sync's success closed. The
+    write's window is published under the lock, so it waits its turn (here:
+    the sync is in flight, so the write leaves the window to it), and once the
+    sync has finished ``applied`` it does not open at all."""
+    root = tmp_path / "fresh"
+    lattice_dir = root / ".lattice"
+    (lattice_dir / "cache").mkdir(parents=True)
+    since = cache.sample_ticket(root)  # the write begins: no record yet
+    sync_fd = cache._lock(lattice_dir / "locks" / "cache_sync.lock", True, None)
+    try:  # the first sync, in another process's place
+        assert cache.open_window_in_order(root, since, _open(root)) is False
+        cache._write_ticket(lattice_dir, cache._Ticket("g", "team", "demo", 1, 1, "applied", None))
+    finally:
+        cache._unlock(sync_fd)
+    assert cache.open_window_in_order(root, since, _open(root)) is False
+    assert not _window(root).exists()
+
+
+def test_a_successful_request_closes_the_window_in_ticket_order(
+    client_root: Path, stub: StubServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fable 4: a success that began before a newer ``unreachable`` sync does
+    not remove the window that sync opened; with no newer failure it closes."""
+    create_task(stub)
+    cache.catch_up(client_root)
+    closed: list[bool] = []
+
+    def close() -> None:
+        closed.append(True)
+        _window(client_root).unlink(missing_ok=True)
+
+    since = cache.sample_ticket(client_root)  # a write begins
+
+    def down(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise http.Unreachable("connection refused")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(http, "request", down)
+        outcome = cache.catch_up(client_root, on_unreachable=_open(client_root))
+    assert outcome.kind == "unreachable" and _window(client_root).exists()
+    assert cache.close_window_in_order(client_root, since, close) is False
+    assert _window(client_root).exists() and closed == []
+    since = cache.sample_ticket(client_root)
+    assert cache.close_window_in_order(client_root, since, close) is True
+    assert not _window(client_root).exists()
+
+
+def test_a_close_leaves_the_window_to_a_sync_in_flight(
+    client_root: Path, stub: StubServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    create_task(stub)
+    cache.catch_up(client_root)
+    since = cache.sample_ticket(client_root)
+    reached, release = _gate_at(monkeypatch, "sync_ticket")
+    sync = _Thread(lambda: cache.catch_up(client_root))
+    sync.start()
+    assert reached.wait(WAIT)
+    try:
+        assert cache.close_window_in_order(client_root, since, lambda: None) is False
+    finally:
+        release.set()
+        sync.join(WAIT)
 
 
 # ---------------------------------------------------------------------------
@@ -473,8 +551,35 @@ def test_a_valid_record_reads_back_field_for_field(tmp_path: Path) -> None:
         {"finished": 4},  # finished beyond started
         {"kind": "exploded"},
         {"detail": 7},
+        {"kind": []},  # round 1, Astra 3: unhashable
+        {"kind": {}},
+        {"generation": ["g"]},
+        {"started": 1.5},
+        {"finished": "2"},
+        {"detail": {}},
     ],
 )
 def test_an_invalid_record_reads_as_none(tmp_path: Path, change: dict) -> None:
     assert cache._read_ticket(_record(tmp_path, {**_VALID, **change})) is None
     assert cache._read_ticket(_record(tmp_path, ["not", "an", "object"])) is None
+
+
+@pytest.mark.parametrize("raw", [b"[" * 100_000, b"\xff\xfe", b""])
+def test_an_unparseable_record_reads_as_none(tmp_path: Path, raw: bytes) -> None:
+    locks = tmp_path / ".lattice" / "locks"
+    locks.mkdir(parents=True)
+    (locks / cache.TICKET_FILE).write_bytes(raw)
+    assert cache._read_ticket(tmp_path / ".lattice") is None
+
+
+def test_clear_removes_the_record_when_it_cannot_rotate_it(
+    client_root: Path, stub: StubServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fable 5: a clear that cannot write a new generation removes the old
+    record, so every caller syncs itself rather than adopt across the clear."""
+    create_task(stub)
+    cache.catch_up(client_root)
+    assert cache._read_ticket(client_root / ".lattice") is not None
+    monkeypatch.setattr(cache, "_rotate_ticket", lambda *args: None)
+    cache.clear_cache(client_root)
+    assert not (client_root / ".lattice" / "locks" / cache.TICKET_FILE).exists()

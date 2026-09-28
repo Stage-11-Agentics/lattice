@@ -268,6 +268,7 @@ def remote_attach(alias: str, project: str, output_json: bool) -> None:
         _append_ignore(common / "info" / "exclude")
 
     hosted = Hosted(primary, alias, project)
+    since = session.sync_ticket(hosted)
     try:
         outcome = catch_up(primary, bulk=True)
     except OpError as exc:
@@ -279,7 +280,7 @@ def remote_attach(alias: str, project: str, output_json: bool) -> None:
             "SERVER_UNREACHABLE",
             is_json,
         )
-    session.close_unreachable_window(hosted)
+    session.close_unreachable_window_after(hosted, since)
     session.refresh_server_info(hosted, force=True)
 
     to_commit = [BINDING_FILE] + ([".gitignore"] if changed_gitignore else [])

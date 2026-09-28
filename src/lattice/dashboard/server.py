@@ -149,6 +149,13 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
                 self._serve_notes_file("stats-demo/demo.html", "text/html")
             elif path == "/api/head":
                 self._send_head()
+            elif path == "/api/git" or path.startswith("/api/git/"):
+                # git only (SPEC §9.4): it reads no board file, so it runs
+                # without the cache's read lock and never under it.
+                response = api.route_get(
+                    self._target.lattice_dir, path, parsed.query, self.headers.get("If-None-Match")
+                )
+                self._send(response)
             elif path.startswith("/api/"):
                 try:
                     with self._target.read() as ld:

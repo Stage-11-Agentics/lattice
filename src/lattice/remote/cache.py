@@ -460,6 +460,53 @@ def _remove_cache_file(lattice_dir: Path, name: str) -> None:
         os.close(fd)
 
 
+#: Every cache-lock descriptor this process holds: fd -> (pid, st_dev, st_ino).
+_lock_fds: dict[int, tuple[int, int, int]] = {}
+_lock_fds_guard = threading.Lock()
+
+
+def _register(fd: int) -> None:
+    info = os.fstat(fd)
+    with _lock_fds_guard:
+        _lock_fds[fd] = (os.getpid(), info.st_dev, info.st_ino)
+
+
+def _unlock(fd: int) -> None:
+    """Close a descriptor :func:`_lock` returned, releasing its lock. In a
+    forked child it does nothing: the child closed its inherited copies at fork
+    (and the number may since name another file)."""
+    with _lock_fds_guard:
+        entry = _lock_fds.pop(fd, None)
+    if entry is not None and entry[0] == os.getpid():
+        os.close(fd)
+
+
+def _close_inherited_lock_fds() -> None:
+    """In a forked child: close every inherited cache-lock descriptor. ``flock``
+    belongs to the open file description, shared with the parent, so closing
+    the child's copy (never ``LOCK_UN``) leaves the parent's lock as it is, and
+    the child stops holding it once the parent lets go: a writer waiting for
+    the parent's shared lock is never held off by a child that inherited it."""
+    with _lock_fds_guard:
+        entries = list(_lock_fds.items())
+        _lock_fds.clear()
+    for fd, (_pid, dev, ino) in entries:
+        try:
+            info = os.fstat(fd)
+        except OSError:
+            continue
+        if (info.st_dev, info.st_ino) == (dev, ino):
+            with contextlib.suppress(OSError):
+                os.close(fd)
+
+
+def _after_fork_in_child() -> None:
+    global _lock_fds_guard
+    _lock_fds_guard = threading.Lock()  # a thread may have held it at fork
+    _close_inherited_lock_fds()
+    _held.__dict__.clear()
+
+
 def _exclusive_rw(locks: Path) -> int:
     """``cache_rw.lock`` exclusively, through the turnstile (new readers wait
     behind this writer instead of overtaking it); returns its descriptor."""
@@ -467,7 +514,7 @@ def _exclusive_rw(locks: Path) -> int:
     try:
         fd = _lock(locks / "cache_rw.lock", exclusive=True, deadline=None)
     finally:
-        os.close(turnstile)
+        _unlock(turnstile)
     assert fd is not None
     return fd
 
@@ -517,6 +564,7 @@ def _lock(path: Path, exclusive: bool, deadline: float | None) -> int | None:
         finally:
             os.close(dir_fd)
         if same:
+            _register(fd)
             return fd
         os.close(fd)
 
@@ -542,7 +590,7 @@ def _held_read_locks() -> dict[tuple[int, str], int]:
 
 
 if hasattr(os, "register_at_fork"):
-    os.register_at_fork(after_in_child=lambda: _held.__dict__.clear())
+    os.register_at_fork(after_in_child=_after_fork_in_child)
 
 
 @contextlib.contextmanager
@@ -571,7 +619,7 @@ def read_lock(hosted_root: Path) -> Iterator[Path]:
         try:
             fd = _lock(locks / "cache_rw.lock", exclusive=False, deadline=None)
         finally:
-            os.close(turnstile)
+            _unlock(turnstile)
     counts[key] = counts.get(key, 0) + 1
     try:
         if (lattice_dir / "cache" / "applying").exists():
@@ -589,7 +637,7 @@ def read_lock(hosted_root: Path) -> Iterator[Path]:
             yield lattice_dir
     finally:
         counts[key] -= 1
-        os.close(fd)
+        _unlock(fd)
 
 
 # ---------------------------------------------------------------------------
@@ -638,7 +686,7 @@ def _read_ticket(lattice_dir: Path) -> _Ticket | None:
     try:
         raw = cache_paths.read_file(fd, TICKET_FILE)
         data = json.loads(raw) if raw is not None else None
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return None
     finally:
         os.close(fd)
@@ -654,7 +702,7 @@ def _read_ticket(lattice_dir: Path) -> _Ticket | None:
         or started is None
         or finished is None
         or finished > started
-        or not (kind is None or kind in ANY_KIND)
+        or not (kind is None or (isinstance(kind, str) and kind in ANY_KIND))
         or not (detail is None or isinstance(detail, str))
     ):
         return None
@@ -679,6 +727,18 @@ def _rotate_ticket(lattice_dir: Path, remote: str, project: str) -> _Ticket | No
     except (OSError, OpError):
         return None
     return ticket
+
+
+def _remove_ticket(lattice_dir: Path) -> None:
+    try:
+        fd = _dir_fd(lattice_dir, "locks", create=False)
+    except (OSError, OpError):
+        return
+    try:
+        with contextlib.suppress(OSError):
+            cache_paths.remove_file(fd, TICKET_FILE)
+    finally:
+        os.close(fd)
 
 
 def _adoptable(lattice_dir: Path, sample: _Ticket | None, kinds: frozenset[str]) -> _Ticket | None:
@@ -711,17 +771,49 @@ def open_window_in_order(
 ) -> bool:
     """Run *open_window* (open the offline window) for a request that failed to
     reach the server and began when the record was *since*, unless that would
-    put an older outcome over a newer success: it runs under
-    ``cache_sync.lock`` (skipped while a sync is in flight, whose outcome
-    decides), and not at all when a sync that took its ticket after *since*
-    last finished ``applied`` or ``unchanged``. A checkout where no sync ever
-    ran (no lock file) has no newer outcome to protect. Returns whether it ran."""
+    put an older outcome over a newer success. It runs under ``cache_sync.lock``
+    (created if missing: a first sync may be starting in another process), and
+    not at all while a sync is in flight (whose outcome decides) or when a sync
+    that took its ticket after *since* last finished ``applied`` or
+    ``unchanged``. Returns whether it ran."""
+    return _in_ticket_order(hosted_root, since, open_window, skip_if=SUCCESS_KINDS)
+
+
+def close_window_in_order(
+    hosted_root: Path, since: _Ticket | None, close_window: Callable[[], None]
+) -> bool:
+    """Run *close_window* (end the offline window) for a request that reached the
+    server and began when the record was *since*, in the same order as
+    :func:`open_window_in_order`: not while a sync is in flight, and not when a
+    sync that took its ticket after *since* last finished ``unreachable`` (it
+    may have opened the window after this request's success; the server was
+    unreachable then anyway). A successful sync ends the window itself, under
+    the lock. Where no sync ever ran (no lock file) it closes without one:
+    closing is the safe direction, and a bound checkout's first write leaves
+    no runtime files. Returns whether it ran."""
+    return _in_ticket_order(
+        hosted_root,
+        since,
+        close_window,
+        skip_if=frozenset({"unreachable"}),
+        first_use_unlocked=True,
+    )
+
+
+def _in_ticket_order(
+    hosted_root: Path,
+    since: _Ticket | None,
+    action: Callable[[], None],
+    *,
+    skip_if: frozenset[str],
+    first_use_unlocked: bool = False,
+) -> bool:
     lattice_dir = Path(hosted_root) / LATTICE_DIR
     sync_lock = lattice_dir / "locks" / "cache_sync.lock"
+    if first_use_unlocked and not os.path.lexists(sync_lock):
+        action()
+        return True
     try:
-        if not os.path.lexists(sync_lock):
-            open_window()
-            return True
         fd = _lock(sync_lock, exclusive=True, deadline=time.monotonic())
     except (OSError, OpError):
         return False
@@ -729,16 +821,16 @@ def open_window_in_order(
         return False
     try:
         now = _read_ticket(lattice_dir)
-        if now is not None and now.kind in SUCCESS_KINDS:
+        if now is not None and now.kind in skip_if:
             newer = (
                 since is None or now.generation != since.generation or now.finished > since.started
             )
             if newer:
                 return False
-        open_window()
+        action()
         return True
     finally:
-        os.close(fd)
+        _unlock(fd)
 
 
 # ---------------------------------------------------------------------------
@@ -1078,7 +1170,7 @@ class _Syncer:
             # so reads refuse the mixed tree and the next sync resets it.
             raise _Transient("incomplete", f"the cache update failed: {exc}") from None
         finally:
-            os.close(fd)
+            _unlock(fd)
 
     def _apply_locked(self, delta: _Delta, contents: dict[str, bytes | Path]) -> None:
         lattice_dir = self.lattice_dir
@@ -1325,7 +1417,7 @@ def catch_up(
         adopted = _adoptable(lattice_dir, sample, adopt)
         if adopted is not None:
             if fd is not None:
-                os.close(fd)
+                _unlock(fd)
             return syncer.outcome(adopted.kind, adopted.detail)  # type: ignore[arg-type]
         if fd is not None:
             break
@@ -1347,7 +1439,7 @@ def catch_up(
         syncer.finish_ticket(outcome)
         return outcome
     finally:
-        os.close(fd)
+        _unlock(fd)
 
 
 # ---------------------------------------------------------------------------
@@ -1394,7 +1486,10 @@ def clear_cache(hosted_root: Path, *, forget: bool = False) -> ClearResult:
     try:
         # A new generation: no caller waiting from before the clear adopts a
         # sync that ran before it (the ticket file itself stays under locks/).
-        _rotate_ticket(lattice_dir, remote, project)
+        # If the new record cannot be written, remove the old one: a missing
+        # record makes every caller sync itself too.
+        if _rotate_ticket(lattice_dir, remote, project) is None:
+            _remove_ticket(lattice_dir)
         rw_fd = _exclusive_rw(locks)
         try:
             # Both locks are held for the whole clear, and ``locks/`` (runtime
@@ -1428,9 +1523,9 @@ def clear_cache(hosted_root: Path, *, forget: bool = False) -> ClearResult:
                     (lattice_dir / "cache").rmdir()
             _step("clear_finished")
         finally:
-            os.close(rw_fd)
+            _unlock(rw_fd)
     finally:
-        os.close(sync_fd)
+        _unlock(sync_fd)
     return ClearResult(root, remote, project, forget, kept)
 
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from lattice.boards import LocalBoard, git_worktree
-from lattice.core.attestations import compute_reachable_review_commits
+from lattice.core.attestations import compute_reachable_review_commits, review_marker_shas
 from lattice.core.ids import is_short_id, validate_id
 from lattice.storage.operations import AuthoritativeLogError, read_task_authority
 
@@ -60,11 +60,14 @@ def completion_attestations(
     worktree = worktree if worktree is not None else caller_worktree()
     if worktree is None:
         return {}
-    snapshot = _read_snapshot(board.lattice_dir, raw_task)
+    lattice_dir = board.lattice_dir
+    snapshot = _read_snapshot(lattice_dir, raw_task)
     if snapshot is None:
         return {}
+    shas = review_marker_shas(snapshot, lattice_dir, prospective)  # the cache reads
+    board.end_read_phase()  # before git runs (SPEC §9.4)
     return {
         "reachable_review_commits": compute_reachable_review_commits(
-            snapshot, board.lattice_dir, worktree, prospective
+            snapshot, lattice_dir, worktree, prospective, shas=shas
         )
     }

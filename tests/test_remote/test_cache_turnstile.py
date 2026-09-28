@@ -9,6 +9,7 @@ queue behind it, while a thread that already holds the read lock may nest.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -179,8 +180,7 @@ with cache.read_lock(root):
         status = 1
         try:
             signal.alarm(20)
-            os.close(read_r)
-            os.close(blocker)  # the parent's copy keeps the turnstile held
+            os.close(read_r)  # the inherited turnstile copy was closed at fork
             with cache.read_lock(root):
                 os.write(read_w, b"entered")
             status = 0
@@ -195,7 +195,7 @@ with cache.read_lock(root):
     except BlockingIOError:
         pass
     os.set_blocking(read_r, True)
-    os.close(blocker)
+    cache._unlock(blocker)
     assert os.read(read_r, 16) == b"entered"
     _, status = os.waitpid(pid, 0)
     sys.exit(os.waitstatus_to_exitcode(status))
@@ -263,3 +263,85 @@ def test_a_read_under_the_cache_read_lock_takes_no_task_locks(
     assert thread.error is None and len(taken) == 2
     discover_task_authorities(client_root / ".lattice")
     assert len(taken) == 4
+
+
+#: The review's interleaving (round 1, Astra 1), in a fresh single-threaded
+#: process: the parent holds the read lock and forks; a writer process takes
+#: the turnstile and waits for ``cache_rw`` exclusively; the parent releases its
+#: read lock; the child then reads. The child must not keep the parent's
+#: inherited shared lock (the writer would wait for it while the child waits at
+#: the writer's turnstile).
+FORK_WRITER = """
+import json, os, select, signal, subprocess, sys
+from pathlib import Path
+from lattice.remote import cache
+root = Path(sys.argv[1])
+start_r, start_w = os.pipe()
+done_r, done_w = os.pipe()
+writer_code = '''
+import os, sys
+from pathlib import Path
+from lattice.remote import cache
+locks = Path(sys.argv[1]) / ".lattice" / "locks"
+t = cache._lock(locks / cache.TURNSTILE_LOCK, True, None)
+print("waiting", flush=True)
+r = cache._lock(locks / "cache_rw.lock", True, None)
+print("applied", flush=True)
+cache._unlock(r)
+cache._unlock(t)
+'''
+with cache.read_lock(root):
+    child = os.fork()
+    if child == 0:
+        status = 1
+        try:
+            signal.alarm(20)
+            os.close(start_w)
+            os.close(done_r)
+            os.read(start_r, 1)
+            with cache.read_lock(root):
+                os.write(done_w, b"entered")
+            status = 0
+        finally:
+            os._exit(status)
+    os.close(start_r)
+    os.close(done_w)
+    writer = subprocess.Popen(
+        [sys.executable, "-u", "-c", writer_code, str(root)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    assert writer.stdout.readline().strip() == "waiting"
+os.write(start_w, b"x")
+child_entered = bool(select.select([done_r], [], [], 10)[0])
+try:
+    out, err = writer.communicate(timeout=10)
+    writer_finished = True
+except subprocess.TimeoutExpired:
+    writer_finished, out, err = False, "", ""
+if not child_entered:
+    os.kill(child, signal.SIGKILL)
+_, status = os.waitpid(child, 0)
+writer.kill()
+print(json.dumps({"child_entered": child_entered, "writer_finished": writer_finished,
+                  "writer": out.strip(), "child_status": status}))
+"""
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="needs fork")
+@pytest.mark.timeout(60)
+def test_a_forked_child_never_holds_its_parents_read_lock_against_a_writer(
+    client_root: Path, stub: StubServer
+) -> None:
+    create_task(stub)
+    cache.catch_up(client_root)
+    proc = subprocess.run(
+        [sys.executable, "-c", FORK_WRITER, str(client_root)],
+        capture_output=True,
+        text=True,
+        timeout=50,
+    )
+    assert proc.returncode == 0, proc.stderr
+    seen = json.loads(proc.stdout)
+    assert seen["child_entered"] and seen["writer_finished"], seen
+    assert seen["writer"].splitlines()[-1] == "applied"
+    assert os.waitstatus_to_exitcode(seen["child_status"]) == 0

@@ -162,6 +162,15 @@ def open_unreachable_window_after(hosted: Hosted, since: object) -> None:
     open_window_in_order(hosted.root, since, lambda: open_unreachable_window(hosted))
 
 
+def close_unreachable_window_after(hosted: Hosted, since: object) -> None:
+    """End the offline window for a request that reached the server and began
+    at ticket *since*, in ticket order (SPEC §9.5): never while a sync is in
+    flight, nor over a window a newer ``unreachable`` sync may have opened."""
+    from lattice.remote.cache import close_window_in_order
+
+    close_window_in_order(hosted.root, since, lambda: close_unreachable_window(hosted))
+
+
 def close_unreachable_window(hosted: Hosted) -> None:
     """Any successful request to the server ends the offline window."""
     with _existing_cache_dir(hosted) as fd, contextlib.suppress(OSError):
@@ -284,6 +293,7 @@ def catch_up_and_report(
     from lattice.remote.cache import ANY_KIND, SUCCESS_KINDS, catch_up
 
     release_read_lock(hosted.root)
+    since = sync_ticket(hosted)
     try:
         # A read may be served by another process's sync of any outcome; a
         # post-write sync only by a successful one (SPEC §9.5). The offline
@@ -303,7 +313,7 @@ def catch_up_and_report(
             return False
         raise
     if outcome.kind in ("applied", "unchanged"):
-        close_unreachable_window(hosted)
+        close_unreachable_window_after(hosted, since)
         return True
     if outcome.kind == "incomplete" and not after_write:
         raise OpError(
