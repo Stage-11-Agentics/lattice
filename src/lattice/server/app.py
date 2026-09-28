@@ -257,6 +257,7 @@ class HeadersMiddleware:
                     seq=fields.get("seq"),
                     replayed=fields.get("replayed"),
                     error_code=fields.get("error_code"),
+                    user_agent=_user_agent(scope),
                 )
 
 
@@ -265,6 +266,14 @@ def _client_host(scope: Scope) -> str | None:
     forwarded (uvicorn has already applied ``trusted_proxies``, SPEC §8.1)."""
     client = scope.get("client")
     return client[0] if client else None
+
+
+def _user_agent(scope: Scope) -> str | None:
+    """The request's ``User-Agent``, bounded (SPEC §9.1 names what clients send)."""
+    for name, value in scope.get("headers") or ():
+        if name.lower() == b"user-agent":
+            return value.decode("latin-1")[:200]
+    return None
 
 
 def endpoint(

@@ -1,5 +1,8 @@
 """The client transport: one policy for every request to a Lattice server (SPEC §9.1).
 
+- **A Lattice User-Agent.** Every request says ``User-Agent: lattice/<version>``
+  (bot protection such as Cloudflare's Browser Integrity Check refuses urllib's
+  ``Python-urllib/*``), unless the remote's ``headers`` set one, which wins.
 - **No redirects.** A 3xx response fails with ``PROXY_REJECTED``, naming the
   status and the ``Location`` host; it is never followed. ``Authorization`` and
   every remote header are attached with ``add_unredirected_header``, so no
@@ -27,6 +30,7 @@ import functools
 import http.client
 import json
 import math
+import re
 import socket
 import sys
 import threading
@@ -315,13 +319,32 @@ def _client_version() -> str:
     return __version__
 
 
+#: Characters RFC 9110 allows in a product version (``token``).
+_NOT_TOKEN = re.compile(r"[^A-Za-z0-9!#$%&'*+.^_`|~-]")
+
+
+def _version_token() -> str:
+    """The version ``lattice --version`` prints, less any character a header
+    token may not hold: no version string can inject a header or make
+    ``http.client`` refuse the request."""
+    return _NOT_TOKEN.sub("", _client_version()) or "0"
+
+
+def user_agent() -> str:
+    """``lattice/<version>`` (SPEC §9.1)."""
+    return f"lattice/{_version_token()}"
+
+
 def build_request(
     remote: Remote, method: str, url: str, body: bytes | None = None
 ) -> urllib.request.Request:
     req = urllib.request.Request(url, data=body, method=method)
     req.add_header(HEADER_PROTOCOL, str(PROTOCOL))
-    req.add_header(HEADER_CLIENT_VERSION, _client_version())
+    req.add_header(HEADER_CLIENT_VERSION, _version_token())
     req.add_header("Accept", "application/json")
+    # urllib adds ``Python-urllib/*`` only when no User-Agent is set; a remote
+    # header of that name (any case) replaces this one below.
+    req.add_unredirected_header("User-Agent", user_agent())
     if body is not None:
         req.add_header("Content-Type", "application/json")
     # Credentials never ride a redirect (SPEC §9.1).
