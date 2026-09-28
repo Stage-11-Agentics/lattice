@@ -60,7 +60,6 @@ import secrets
 import shutil
 import stat
 import sys
-import threading
 import time
 import urllib.parse
 from collections.abc import Callable, Iterator
@@ -460,65 +459,6 @@ def _remove_cache_file(lattice_dir: Path, name: str) -> None:
         os.close(fd)
 
 
-#: Every cache-lock descriptor this process holds: fd -> (pid, st_dev, st_ino).
-_lock_fds: dict[int, tuple[int, int, int]] = {}
-_lock_fds_guard = threading.Lock()
-
-
-def _register(fd: int) -> None:
-    info = os.fstat(fd)
-    with _lock_fds_guard:
-        _lock_fds[fd] = (os.getpid(), info.st_dev, info.st_ino)
-
-
-def _unlock(fd: int) -> None:
-    """Close a descriptor :func:`_lock` returned, releasing its lock. In a
-    forked child it does nothing: the child closed its inherited copies at fork
-    (and the number may since name another file)."""
-    with _lock_fds_guard:
-        entry = _lock_fds.pop(fd, None)
-    if entry is not None and entry[0] == os.getpid():
-        os.close(fd)
-
-
-def _close_inherited_lock_fds() -> None:
-    """In a forked child: close every inherited cache-lock descriptor. ``flock``
-    belongs to the open file description, shared with the parent, so closing
-    the child's copy (never ``LOCK_UN``) leaves the parent's lock as it is, and
-    the child stops holding it once the parent lets go: a writer waiting for
-    the parent's shared lock is never held off by a child that inherited it."""
-    with _lock_fds_guard:
-        entries = list(_lock_fds.items())
-        _lock_fds.clear()
-    for fd, (_pid, dev, ino) in entries:
-        try:
-            info = os.fstat(fd)
-        except OSError:
-            continue
-        if (info.st_dev, info.st_ino) == (dev, ino):
-            with contextlib.suppress(OSError):
-                os.close(fd)
-
-
-def _after_fork_in_child() -> None:
-    global _lock_fds_guard
-    _lock_fds_guard = threading.Lock()  # a thread may have held it at fork
-    _close_inherited_lock_fds()
-    _held.__dict__.clear()
-
-
-def _exclusive_rw(locks: Path) -> int:
-    """``cache_rw.lock`` exclusively, through the turnstile (new readers wait
-    behind this writer instead of overtaking it); returns its descriptor."""
-    turnstile = _lock(locks / TURNSTILE_LOCK, exclusive=True, deadline=None)
-    try:
-        fd = _lock(locks / "cache_rw.lock", exclusive=True, deadline=None)
-    finally:
-        _unlock(turnstile)
-    assert fd is not None
-    return fd
-
-
 def _lock(path: Path, exclusive: bool, deadline: float | None) -> int | None:
     """``flock`` *path*; returns the descriptor, or ``None`` if *deadline* passed.
 
@@ -564,39 +504,14 @@ def _lock(path: Path, exclusive: bool, deadline: float | None) -> int | None:
         finally:
             os.close(dir_fd)
         if same:
-            _register(fd)
             return fd
         os.close(fd)
 
 
-#: Writer preference for ``cache_rw.lock`` (``flock`` grants a new shared lock
-#: while an exclusive one waits, so overlapping readers could starve an apply).
-#: Lock order everywhere: ``cache_sync.lock``, then this, then ``cache_rw.lock``.
-#: A reader holds it only while it takes ``cache_rw.lock`` shared; an apply (and
-#: ``cache clear``) holds it until it has ``cache_rw.lock`` exclusively.
-TURNSTILE_LOCK = "cache_turnstile.lock"
-
-_held = threading.local()
-
-
-def _held_read_locks() -> dict[tuple[int, str], int]:
-    """This thread's shared ``cache_rw.lock`` holds, by (pid, ``.lattice/``): a
-    nested read skips the turnstile. Keyed by pid, so a forked child (which
-    copies the forking thread's state) starts from none."""
-    counts = getattr(_held, "counts", None)
-    if counts is None:
-        counts = _held.counts = {}
-    return counts
-
-
-if hasattr(os, "register_at_fork"):
-    os.register_at_fork(after_in_child=_after_fork_in_child)
-
-
 @contextlib.contextmanager
 def read_lock(hosted_root: Path) -> Iterator[Path]:
-    """Hold the cache's read lock (``LOCK_SH`` on ``locks/cache_rw.lock``, taken
-    through the turnstile); yields the cache's ``.lattice/``.
+    """Hold the cache's read lock (``LOCK_SH`` on ``locks/cache_rw.lock``); yields
+    the cache's ``.lattice/``.
 
     Raises ``CACHE_INCOMPLETE`` when ``cache/applying`` is present once the
     lock is held: no live syncer can be mid-apply then, so a syncer died
@@ -608,19 +523,7 @@ def read_lock(hosted_root: Path) -> Iterator[Path]:
         yield lattice_dir
         return
     locks = lattice_dir / "locks"
-    counts = _held_read_locks()
-    key = (os.getpid(), os.path.abspath(lattice_dir))
-    if counts.get(key, 0):
-        # This thread already holds the lock shared: a waiting apply waits for
-        # it, so passing the turnstile again would deadlock.
-        fd = _lock(locks / "cache_rw.lock", exclusive=False, deadline=None)
-    else:
-        turnstile = _lock(locks / TURNSTILE_LOCK, exclusive=True, deadline=None)
-        try:
-            fd = _lock(locks / "cache_rw.lock", exclusive=False, deadline=None)
-        finally:
-            _unlock(turnstile)
-    counts[key] = counts.get(key, 0) + 1
+    fd = _lock(locks / "cache_rw.lock", exclusive=False, deadline=None)
     try:
         if (lattice_dir / "cache" / "applying").exists():
             identity = cache_identity(Path(hosted_root))
@@ -631,13 +534,13 @@ def read_lock(hosted_root: Path) -> Iterator[Path]:
                 f"run `lattice sync` when {name} is back.",
                 {"root": str(hosted_root)},
             )
-        # Only the syncer's exclusive apply changes a cache, so while this
-        # lock is held the per-task storage locks have no writer to exclude.
+        # Only the syncer's exclusive apply (and ``cache clear``) changes a
+        # cache, so while this lock is held the per-task storage locks have no
+        # writer to exclude.
         with frozen_board(locks):
             yield lattice_dir
     finally:
-        counts[key] -= 1
-        _unlock(fd)
+        os.close(fd)
 
 
 # ---------------------------------------------------------------------------
@@ -788,16 +691,9 @@ def close_window_in_order(
     sync that took its ticket after *since* last finished ``unreachable`` (it
     may have opened the window after this request's success; the server was
     unreachable then anyway). A successful sync ends the window itself, under
-    the lock. Where no sync ever ran (no lock file) it closes without one:
-    closing is the safe direction, and a bound checkout's first write leaves
-    no runtime files. Returns whether it ran."""
-    return _in_ticket_order(
-        hosted_root,
-        since,
-        close_window,
-        skip_if=frozenset({"unreachable"}),
-        first_use_unlocked=True,
-    )
+    the lock. Always under ``cache_sync.lock``, created if missing, as for
+    opening. Returns whether it ran."""
+    return _in_ticket_order(hosted_root, since, close_window, skip_if=frozenset({"unreachable"}))
 
 
 def _in_ticket_order(
@@ -806,13 +702,9 @@ def _in_ticket_order(
     action: Callable[[], None],
     *,
     skip_if: frozenset[str],
-    first_use_unlocked: bool = False,
 ) -> bool:
     lattice_dir = Path(hosted_root) / LATTICE_DIR
     sync_lock = lattice_dir / "locks" / "cache_sync.lock"
-    if first_use_unlocked and not os.path.lexists(sync_lock):
-        action()
-        return True
     try:
         fd = _lock(sync_lock, exclusive=True, deadline=time.monotonic())
     except (OSError, OpError):
@@ -830,7 +722,7 @@ def _in_ticket_order(
         action()
         return True
     finally:
-        _unlock(fd)
+        os.close(fd)
 
 
 # ---------------------------------------------------------------------------
@@ -1161,7 +1053,7 @@ class _Syncer:
         # Once, at the start of the apply (reset and rescue included): its base
         # directories are real directories, never a symlink (cache_paths).
         cache_paths.require_safe_layout(self.root)
-        fd = _exclusive_rw(lattice_dir / "locks")
+        fd = _lock(lattice_dir / "locks" / "cache_rw.lock", exclusive=True, deadline=None)
         try:
             with syncing_board(lattice_dir):
                 self._apply_locked(delta, contents)
@@ -1170,7 +1062,7 @@ class _Syncer:
             # so reads refuse the mixed tree and the next sync resets it.
             raise _Transient("incomplete", f"the cache update failed: {exc}") from None
         finally:
-            _unlock(fd)
+            os.close(fd)
 
     def _apply_locked(self, delta: _Delta, contents: dict[str, bytes | Path]) -> None:
         lattice_dir = self.lattice_dir
@@ -1417,7 +1309,7 @@ def catch_up(
         adopted = _adoptable(lattice_dir, sample, adopt)
         if adopted is not None:
             if fd is not None:
-                _unlock(fd)
+                os.close(fd)
             return syncer.outcome(adopted.kind, adopted.detail)  # type: ignore[arg-type]
         if fd is not None:
             break
@@ -1439,7 +1331,7 @@ def catch_up(
         syncer.finish_ticket(outcome)
         return outcome
     finally:
-        _unlock(fd)
+        os.close(fd)
 
 
 # ---------------------------------------------------------------------------
@@ -1490,7 +1382,7 @@ def clear_cache(hosted_root: Path, *, forget: bool = False) -> ClearResult:
         # record makes every caller sync itself too.
         if _rotate_ticket(lattice_dir, remote, project) is None:
             _remove_ticket(lattice_dir)
-        rw_fd = _exclusive_rw(locks)
+        rw_fd = _lock(locks / "cache_rw.lock", exclusive=True, deadline=None)
         try:
             # Both locks are held for the whole clear, and ``locks/`` (runtime
             # state) is never deleted, so every sync and reader waits on the
@@ -1523,9 +1415,9 @@ def clear_cache(hosted_root: Path, *, forget: bool = False) -> ClearResult:
                     (lattice_dir / "cache").rmdir()
             _step("clear_finished")
         finally:
-            _unlock(rw_fd)
+            os.close(rw_fd)
     finally:
-        _unlock(sync_fd)
+        os.close(sync_fd)
     return ClearResult(root, remote, project, forget, kept)
 
 

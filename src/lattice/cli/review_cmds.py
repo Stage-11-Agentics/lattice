@@ -485,6 +485,9 @@ def code_review(
             is_json=is_json,
             override=override,
         )
+        # --name resolves the session from the cache (require_root takes the
+        # read lock again): release it before git runs (SPEC §9.4).
+        _end_read_phase(lattice_dir)
 
     resolution = resolve_diff(
         lattice_dir, task_id, snapshot, base=base, head=head, worktree=reviewed_worktree

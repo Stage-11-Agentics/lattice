@@ -1,10 +1,8 @@
-"""LAT-330, the Architect's condition on the turnstile (SPEC §9.4, "Writer
-preference"): a thread holds the cache read lock only for the reads
-themselves. It releases it before starting or waiting on another process and
-before any open-ended wait, so a child reading the same cache while an apply
-waits, and a ``lattice wait`` whose condition only an apply can deliver, both
-finish.
-"""
+"""LAT-330, the Architect's condition (SPEC §9.4): a thread holds the cache
+read lock only for the reads themselves. It releases it before starting or
+waiting on another process and before any open-ended wait, so an apply gets
+in while a command waits on a hook, a ``lattice wait`` whose condition only an
+apply can deliver finishes, and git runs without the lock."""
 
 from __future__ import annotations
 
@@ -78,10 +76,9 @@ def _attached(env: HostedEnv, tmp_path: Path) -> Path:
 def test_a_hook_child_reading_the_cache_while_an_apply_waits_finishes(
     hosted_env: HostedEnv, tmp_path: Path
 ) -> None:
-    """The write's parent waits on its hook; the hook's child runs ``lattice
-    show`` on the same cache while an apply is waiting at the turnstile. Had
-    the parent kept its read lock, the apply would wait for the parent, the
-    child for the apply, and the parent for the child."""
+    """The write's parent waits on its hook: an apply gets the cache while the
+    hook runs (the parent holds no read lock), and the hook's child then runs
+    ``lattice show`` on the same cache."""
     signals = tmp_path / "signals"
     signals.mkdir()
     (signals / "token").write_text(hosted_env.token)
@@ -102,31 +99,23 @@ def test_a_hook_child_reading_the_cache_while_an_apply_waits_finishes(
 
     applied = threading.Event()
 
-    def apply() -> None:  # an apply's lock sequence, from another "process"
-        fd = cache._exclusive_rw(locks)
+    def apply() -> None:  # an apply's lock, from another "process"
+        fd = cache._lock(locks / "cache_rw.lock", True, None)
         applied.set()
         time.sleep(0.2)
-        cache._unlock(fd)
+        os.close(fd)
 
     writer = _Thread(apply)
     writer.start()
-
-    def turnstile_taken() -> bool:
-        if applied.is_set():
-            return True
-        probe = cache._lock(locks / cache.TURNSTILE_LOCK, True, deadline=time.monotonic())
-        if probe is None:
-            return True
-        cache._unlock(probe)
-        return False
-
-    _wait_for(turnstile_taken, "the apply at the turnstile")
+    # The parent waits on its hook: it must not hold the read lock meanwhile,
+    # so the apply gets in while the hook is still running.
+    applied_during_hook = applied.wait(10)
     (signals / "go").touch()
     write.join(60)
     writer.join(60)
     assert write.error is None and writer.error is None, (write.error, writer.error)
     assert write.result.exit_code == 0, write.result.output
-    assert applied.is_set()
+    assert applied_during_hook, "the apply waited for the parent while it waited on its hook"
     result = signals / "result"
     assert result.exists() and result.read_text() == "0", "the hook's child never finished"
 
@@ -169,7 +158,7 @@ def _read_lock_free(repo: Path) -> bool:
     fd = cache._lock(repo / ".lattice" / "locks" / "cache_rw.lock", True, time.monotonic())
     if fd is None:
         return False
-    cache._unlock(fd)
+    os.close(fd)
     return True
 
 
@@ -215,4 +204,42 @@ def test_completion_attestations_run_git_without_the_read_lock(
         attestations.completion_attestations(board, policy, "DEM-1", "done", worktree=repo)
     finally:
         session.reset_process_state()
+    assert seen == [True]
+
+
+@pytest.mark.parametrize("identity", ["--actor", "--name"])
+def test_code_review_runs_git_without_the_read_lock(
+    hosted_env: HostedEnv, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, identity: str
+) -> None:
+    """Round 2, Astra 4: ``--name`` resolves the session from the cache, which
+    takes the read lock again; it is released again before the diff's git."""
+    from lattice.cli import review_cmds
+    from lattice.core.review import DiffResolution
+
+    repo = _attached(hosted_env, tmp_path)
+    started = run_cli(
+        repo, "session", "start", "--name", "Reviewer", "--model", "human", "--quiet"
+    )
+    assert started.exit_code == 0, started.output
+    who = ["--name", started.stdout.strip()] if identity == "--name" else ["--actor", "agent:rev"]
+    seen: list[bool] = []
+
+    def diff(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        seen.append(_read_lock_free(repo))
+        return DiffResolution(
+            success=True,
+            diff="diff --git a/a b/a\n+hello",
+            base_ref="base",
+            head_ref="head",
+            base_sha="a" * 40,
+            head_sha="b" * 40,
+            worktree=repo,
+            source="explicit",
+        )
+
+    monkeypatch.setattr(review_cmds, "_normalize_worktree", lambda path: (repo, None))
+    monkeypatch.setattr(review_cmds, "resolve_diff", diff)
+    monkeypatch.setattr(review_cmds, "_run_single_and_store", lambda **kwargs: None)
+    result = run_cli(repo, "code-review", "DEM-1", "--mode", "single", *who, "--force", "--json")
+    assert result.exit_code == 0, result.output
     assert seen == [True]

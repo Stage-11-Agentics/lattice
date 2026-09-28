@@ -168,6 +168,8 @@ def close_unreachable_window_after(hosted: Hosted, since: object) -> None:
     flight, nor over a window a newer ``unreachable`` sync may have opened."""
     from lattice.remote.cache import close_window_in_order
 
+    if not _window_path(hosted).exists():
+        return  # nothing to close (a window opened after this check is newer)
     close_window_in_order(hosted.root, since, lambda: close_unreachable_window(hosted))
 
 

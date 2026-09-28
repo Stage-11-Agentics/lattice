@@ -436,7 +436,7 @@ def test_a_fresh_checkout_opens_the_window_under_the_sync_lock(tmp_path: Path) -
         )
         held.append(probe is None)
         if probe is not None:
-            cache._unlock(probe)
+            os.close(probe)
         _open(root)()
 
     assert cache.open_window_in_order(root, None, write) is True
@@ -459,7 +459,7 @@ def test_a_first_sync_that_succeeds_wins_over_an_older_refused_write(tmp_path: P
         assert cache.open_window_in_order(root, since, _open(root)) is False
         cache._write_ticket(lattice_dir, cache._Ticket("g", "team", "demo", 1, 1, "applied", None))
     finally:
-        cache._unlock(sync_fd)
+        os.close(sync_fd)
     assert cache.open_window_in_order(root, since, _open(root)) is False
     assert not _window(root).exists()
 
@@ -583,3 +583,37 @@ def test_clear_removes_the_record_when_it_cannot_rotate_it(
     monkeypatch.setattr(cache, "_rotate_ticket", lambda *args: None)
     cache.clear_cache(client_root)
     assert not (client_root / ".lattice" / "locks" / cache.TICKET_FILE).exists()
+
+
+def test_an_older_success_never_removes_a_window_a_newer_unreachable_opened(
+    tmp_path: Path,
+) -> None:
+    """Round 2, Astra 5: in a checkout where no sync ever ran, closing the
+    window is ordered too. The close runs under ``cache_sync.lock`` (so a
+    newer sync cannot interleave with it), and once a newer sync finished
+    ``unreachable`` the older success leaves that sync's window alone."""
+    root = tmp_path / "fresh"
+    lattice_dir = root / ".lattice"
+    (lattice_dir / "cache").mkdir(parents=True)
+    _open(root)()
+    since = cache.sample_ticket(root)  # the older request begins: no record, no lock file
+    held: list[bool] = []
+
+    def close() -> None:
+        probe = cache._lock(lattice_dir / "locks" / "cache_sync.lock", True, time.monotonic())
+        held.append(probe is None)
+        if probe is not None:
+            os.close(probe)
+
+    assert cache.close_window_in_order(root, since, close) is True
+    assert held == [True]  # serialized with syncs, even on first use
+    sync_fd = cache._lock(lattice_dir / "locks" / "cache_sync.lock", True, None)
+    try:  # a newer sync ends unreachable and opens the window
+        cache._write_ticket(
+            lattice_dir, cache._Ticket("g", "team", "demo", 1, 1, "unreachable", None)
+        )
+        _open(root)()
+    finally:
+        os.close(sync_fd)
+    assert cache.close_window_in_order(root, since, lambda: _window(root).unlink()) is False
+    assert _window(root).exists()
