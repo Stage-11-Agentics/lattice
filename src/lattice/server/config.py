@@ -135,10 +135,10 @@ def check_trusted_proxies(value: Any) -> tuple[str, ...]:
     """``trusted_proxies``: IPv4 or IPv6 addresses or CIDR ranges (SPEC §8.1).
 
     Every entry must parse, so a typo is refused rather than silently trusting
-    nothing (uvicorn would keep an unparseable entry as a literal host name),
-    and ``*`` is refused because the list names proxies, never "everyone". A
-    range with host bits set is refused too: uvicorn would read it as a
-    literal and match nothing.
+    nothing (uvicorn would keep an unparseable entry as a literal host name).
+    ``*`` and a ``/0`` range are refused because the list names proxies, never
+    "everyone". A range with host bits set is refused too: uvicorn would read
+    it as a literal and match nothing.
     """
     if not isinstance(value, list):
         raise ServerConfigError("trusted_proxies must be a list of addresses or CIDR ranges")
@@ -149,9 +149,16 @@ def check_trusted_proxies(value: Any) -> tuple[str, ...]:
                 f"trusted_proxies entries must be strings (an address or CIDR), got {entry!r}"
             )
         entry = entry.strip()
+        everyone = ServerConfigError(
+            f"trusted_proxies entry {entry!r} matches every address; the list names the "
+            "proxies themselves (an address, or the narrowest range that holds them)"
+        )
+        if entry == "*":
+            raise everyone
         try:
             if "/" in entry:
-                ipaddress.ip_network(entry)
+                if ipaddress.ip_network(entry).prefixlen == 0:
+                    raise everyone
             else:
                 ipaddress.ip_address(entry)
         except ValueError as exc:

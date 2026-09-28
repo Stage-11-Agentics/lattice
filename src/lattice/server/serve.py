@@ -92,6 +92,13 @@ def uvicorn_options(config: ServerConfig) -> dict[str, object]:
     rightmost ``X-Forwarded-For`` entry that is not itself listed. Both options
     are always passed, because uvicorn otherwise trusts 127.0.0.1, or whatever
     ``FORWARDED_ALLOW_IPS`` names, by default.
+
+    Two uvicorn behaviors operators should know. When every ``X-Forwarded-For``
+    entry is listed, uvicorn falls back to the leftmost entry, which the client
+    supplied, so list proxies narrowly: a range that also covers clients lets
+    them choose their logged address. And matching is by address family: a
+    server bound to ``::`` sees an IPv4 proxy as ``::ffff:192.0.2.1``, which
+    does not match ``192.0.2.1``, so list the mapped form too.
     """
     proxies = list(config.trusted_proxies)
     return {

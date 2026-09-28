@@ -7,6 +7,7 @@ The in-process server listens on 127.0.0.1, so the test client's address is
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -169,6 +170,72 @@ def test_uvicorn_options_always_decide_trust_explicitly() -> None:
     assert uvicorn_options(listed)["forwarded_allow_ips"] == ["192.0.2.1", "2001:db8::/32"]
 
 
+def _resolved(proxies: list[str], peer: str, forwarded_for: str) -> tuple[str, str]:
+    """Run one request scope through uvicorn's proxy middleware, configured as
+    ``serve`` configures it, and return the ``(scheme, client)`` the app sees."""
+    from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+
+    options = uvicorn_options(parse_config({"trusted_proxies": proxies}))
+    assert options["proxy_headers"] is True
+    seen: dict = {}
+
+    async def app(scope, receive, send):  # noqa: ANN001, ANN202
+        seen.update(scope)
+
+    middleware = ProxyHeadersMiddleware(app, trusted_hosts=options["forwarded_allow_ips"])
+    scope = {
+        "type": "http",
+        "scheme": "http",
+        "client": (peer, 50000),
+        "headers": [
+            (b"x-forwarded-proto", b"https"),
+            (b"x-forwarded-for", forwarded_for.encode()),
+        ],
+    }
+    asyncio.run(middleware(scope, None, None))
+    return seen["scheme"], seen["client"][0]
+
+
+@pytest.mark.parametrize(
+    ("proxies", "peer"),
+    [
+        (["2001:db8::1"], "2001:db8::1"),
+        (["2001:db8::1"], "2001:db8:0:0::1"),  # another spelling of the same address
+        (["2001:db8::/32"], "2001:db8:ffff::5"),
+        (["::1"], "::1"),
+    ],
+)
+def test_listed_ipv6_peer_forwards(proxies: list[str], peer: str) -> None:
+    assert _resolved(proxies, peer, "2001:db8:aaaa::9") == ("https", "2001:db8:aaaa::9")
+
+
+@pytest.mark.parametrize(
+    ("proxies", "peer"),
+    [
+        (["2001:db8::1"], "2001:db8::2"),
+        (["2001:db8::/32"], "2001:db9::1"),
+        (["127.0.0.1"], "::1"),
+    ],
+)
+def test_unlisted_ipv6_peer_is_ignored(proxies: list[str], peer: str) -> None:
+    assert _resolved(proxies, peer, "2001:db8:aaaa::9") == ("http", peer)
+
+
+def test_ipv4_mapped_peer_needs_the_mapped_entry() -> None:
+    """A server bound to ``::`` sees an IPv4 proxy as its mapped address, which
+    an IPv4 entry does not match (fail-closed); the mapped entry does."""
+    peer = "::ffff:192.0.2.1"
+    assert _resolved(["192.0.2.1"], peer, "203.0.113.9") == ("http", peer)
+    assert _resolved(["::ffff:192.0.2.1"], peer, "203.0.113.9") == ("https", "203.0.113.9")
+
+
+def test_all_listed_chain_falls_back_to_the_leftmost_entry() -> None:
+    """uvicorn's documented fallback, pinned so a change in it is noticed: with
+    every hop listed, the leftmost (client-supplied) entry is the client."""
+    chain = "198.51.100.7, 198.51.100.3"
+    assert _resolved(["198.51.100.0/24"], "198.51.100.2", chain) == ("https", "198.51.100.7")
+
+
 # ---------------------------------------------------------------------------
 # server.json
 # ---------------------------------------------------------------------------
@@ -187,7 +254,10 @@ def test_valid_entries_parse() -> None:
         (True, "must be a list"),
         ("127.0.0.1", "must be a list"),
         ([1], "must be strings"),
-        (["*"], "'*' is not an IPv4 or IPv6"),
+        (["*"], "'*' matches every address"),
+        (["0.0.0.0/0"], "'0.0.0.0/0' matches every address"),
+        (["::/0"], "'::/0' matches every address"),
+        (["192.0.2.1", "0.0.0.0/0"], "'0.0.0.0/0' matches every address"),
         (["proxy.example"], "'proxy.example' is not"),
         (["192.0.2.1/24"], "host bits set"),
         (["192.0.2.0/33"], "'192.0.2.0/33' is not"),
