@@ -256,7 +256,9 @@ def fake_agent_on_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A stand-in ``claude`` first on ``PATH``: the fixture agent, which prints a
     fixed review, after recording the environment it was started with,
     sleeping ``$FAKE_AGENT_DELAY`` seconds (default 0), and, when
-    ``$FAKE_AGENT_GATE`` names a file, waiting until it exists (30 s at most)."""
+    ``$FAKE_AGENT_GATE`` names a file, waiting until it exists: at most
+    ``$FAKE_AGENT_GATE_POLLS`` polls of 20 ms (default 1500, 30 s), after which it
+    fails (stderr, exit 1) without printing a review."""
     bin_dir = tmp_path / "agent-bin"
     bin_dir.mkdir()
     env_dump = tmp_path / "agent-env.json"
@@ -266,8 +268,11 @@ def fake_agent_on_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         f'"{sys.executable}" -c "import json, os; '
         f"json.dump(dict(os.environ), open('{env_dump}', 'w'))\"\n"
         'sleep "${FAKE_AGENT_DELAY:-0}"\n'
-        'i=0; while [ -n "$FAKE_AGENT_GATE" ] && [ ! -e "$FAKE_AGENT_GATE" ] && [ $i -lt 1500 ]; '
-        "do sleep 0.02; i=$((i+1)); done\n"
+        'i=0; while [ -n "$FAKE_AGENT_GATE" ] && [ ! -e "$FAKE_AGENT_GATE" ] '
+        '&& [ $i -lt "${FAKE_AGENT_GATE_POLLS:-1500}" ]; do sleep 0.02; i=$((i+1)); done\n'
+        'if [ -n "$FAKE_AGENT_GATE" ] && [ ! -e "$FAKE_AGENT_GATE" ]; then\n'
+        '  echo "fake agent: gate $FAKE_AGENT_GATE never appeared" >&2; exit 1\n'
+        "fi\n"
         "LATTICE_FAKE_BEHAVIOR=stdout LATTICE_AGENT_OUTPUT=/dev/null "
         f'exec "{sys.executable}" "{REPO_ROOT / "tests" / "fixtures" / "fake_agent.py"}"\n'
     )

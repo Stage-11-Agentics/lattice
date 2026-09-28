@@ -194,3 +194,32 @@ def test_adoption_never_displaces_a_force_that_landed_after_the_childs_read(
     held = read_review_state(lattice, "task_1")
     assert held is not None
     assert (held["started_by_pid"], held["claim"]) == (1, forced["claim"])
+
+
+def test_the_fake_agents_gate_fails_loudly_when_it_never_opens(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A gate that never appears is a failure (stderr, exit 1, no review), not
+    a silent run of the agent once the wait runs out."""
+    fake_agent_on_path(tmp_path, monkeypatch)
+    gate = tmp_path / "never"
+    done = subprocess.run(
+        ["claude"],
+        env={**os.environ, "FAKE_AGENT_GATE": str(gate), "FAKE_AGENT_GATE_POLLS": "2"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert done.returncode == 1
+    assert f"gate {gate} never appeared" in done.stderr
+    assert done.stdout == ""
+    gate.touch()  # an open gate runs the agent as before
+    opened = subprocess.run(
+        ["claude"],
+        env={**os.environ, "FAKE_AGENT_GATE": str(gate), "FAKE_AGENT_GATE_POLLS": "2"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert opened.returncode == 0, opened.stderr
+    assert opened.stdout
