@@ -14,7 +14,7 @@ PINNED = [
     "click>=8.1",
     "python-ulid>=2.0",
     "filelock>=3.13",
-    "typing_extensions>=4.0; python_version<'3.14'",
+    "typing_extensions>=4.0",
 ]
 SERVER_LIBS = ("starlette", "uvicorn")
 
@@ -45,6 +45,35 @@ def test_base_dependencies_are_pinned() -> None:
     assert project["dependencies"] == PINNED
     server = project["optional-dependencies"]["server"]
     assert sorted(d.split(">")[0] for d in server) == ["starlette", "uvicorn"]
+
+
+def test_lock_installs_every_base_dependency_on_every_python() -> None:
+    """LAT-352: a marker such as ``python_version<'3.14'`` on a base dependency leaves
+    that Python without it; python-ulid imports typing_extensions everywhere."""
+    lock = tomllib.loads((REPO / "uv.lock").read_text())
+    (pkg,) = [p for p in lock["package"] if p["name"] == "lattice-tracker"]
+    assert {d["name"]: d.get("marker") for d in pkg["dependencies"]} == {
+        "click": None,
+        "filelock": None,
+        "python-ulid": None,
+        "typing-extensions": None,
+    }
+
+
+def test_ulid_needs_typing_extensions_at_import() -> None:
+    """Why typing_extensions is a base dependency: without it the CLI cannot import."""
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            _BLOCK.format(libs=("typing_extensions",)) + "import lattice.cli.main\n",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode != 0
+    assert "typing_extensions" in proc.stderr
 
 
 def test_cli_imports_without_the_extra_and_loads_no_server_library() -> None:

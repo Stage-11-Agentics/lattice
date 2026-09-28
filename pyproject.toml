@@ -23,6 +23,8 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Libraries",
     "Topic :: Software Development :: Build Tools",
 ]
@@ -30,7 +32,9 @@ dependencies = [
     "click>=8.1",
     "python-ulid>=2.0",
     "filelock>=3.13",
-    "typing_extensions>=4.0; python_version<'3.14'",
+    # python-ulid imports typing_extensions on every Python without declaring it, so no
+    # version marker here: a marker leaves a 3.14 install unable to import lattice.
+    "typing_extensions>=4.0",
 ]
 
 [project.optional-dependencies]
