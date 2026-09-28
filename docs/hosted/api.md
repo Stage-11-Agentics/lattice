@@ -18,7 +18,8 @@ export LATTICE_TOKEN="$(cat "$HOME/lattice-trial/token")"
   - `Content-Type: application/json` on every POST.
   - `Lattice-Protocol: 1` (optional). If sent and different, the request fails with `PROTOCOL_MISMATCH` before anything runs.
   - `Lattice-Client-Version: <version>` (optional; the Lattice client always sends it). If it is below the server's minimum, an operation fails with `CLIENT_TOO_OLD` before anything runs.
-- **Task IDs** may be a ULID (`task_01...`) or a short ID (`DEMO-1`) wherever a task is named.
+- **Task IDs.** The `/v1` routes and operation parameters take a ULID (`task_01...`) or a short ID (`DEMO-1`) wherever a task is named. The dashboard routes (`/p/<slug>/api/tasks/<id>...`) take the full ULID only; a short ID there answers 400 `INVALID_ID`.
+- **User-Agent.** The server does not check it, but a proxy's bot protection may. The Lattice client sends `lattice/<version>`; a script behind such a proxy sends a User-Agent the proxy admits.
 - **Redirects.** The server never redirects an API path. If you see a 3xx, a proxy is in the way (guide section 10).
 
 ## Routes
@@ -39,6 +40,7 @@ export LATTICE_TOKEN="$(cat "$HOME/lattice-trial/token")"
 | `GET /login`, `POST /login` | none (`POST` authenticates with the token it submits) | Dashboard login |
 | `POST /logout` | session | End the dashboard session |
 | `GET /p/{slug}/`, `/p/{slug}/static/*`, `/p/{slug}/api/*` | session or token | The project's dashboard |
+| `GET /web/dashboard.css`, `GET /web/logout.js` | none | The login and index pages' stylesheet and logout script |
 
 A dashboard session cookie authenticates only `/`, `/logout`, `/p/<slug>/...`, and the stream. It never authenticates operations, sync, or files.
 
@@ -95,7 +97,7 @@ Request body (every key but `params` is optional):
 }
 ```
 
-- `op_id`: `op_` followed by a ULID, **fresh for every new request**. Retrying the *same* request with the same `op_id` is safe: the server applies it at most once and returns the original result with `replayed: true`. The same `op_id` with different arguments fails with `CONFLICT` (`details.reason: "OP_ID_REUSED"`). **A request without `op_id` is never deduplicated**: the server mints an ID, and a repeated request applies again.
+- `op_id`: `op_` followed by a ULID, **fresh for every new request**. Retrying the *same* request with the same `op_id` within the receipt retention window (7 days) is safe: the server applies it at most once and returns the original result with `replayed: true`. After 7 days the server no longer remembers the `op_id`, and the same request **runs again**; before retrying anything older, check `GET .../ops/<op_id>` (below) and do not resend if it is `committed`. The same `op_id` with different arguments fails with `CONFLICT` (`details.reason: "OP_ID_REUSED"`). **A request without `op_id` is never deduplicated**: the server mints an ID, and a repeated request applies again.
 - `params`: the operation's parameters. Omit any parameter to take its default.
 - `actor`: who is acting. Must match one of the token's actor patterns (`ACTOR_NOT_PERMITTED` otherwise). Omitted, the server uses the token's default actor: its one pattern without a wildcard, if it has exactly one; otherwise the request fails with `MISSING_ACTOR`.
 - `actor_name`: act as a registered session (`lattice session start`) instead of `actor`.
@@ -190,7 +192,7 @@ curl -s -H "Authorization: Bearer $LATTICE_TOKEN" "$LATTICE_URL/v1/projects/demo
 {"ok": true, "data": {"state": "not_found"}}
 ```
 
-`committed` means the operation was applied (`result` is included while its receipt is kept, 7 days). `in_flight` means the server has accepted the request and has not finished it: it may still commit, so ask again rather than resending. `not_found` means it never committed (or was rolled back), or belongs to another token. Retrying a committed operation with the same `op_id` and arguments returns its original result; with a new `op_id`, it applies again.
+`committed` means the operation was applied (`result` is included while its receipt is kept, 7 days). `in_flight` means the server has accepted the request and has not finished it: it may still commit, so ask again rather than resending. `not_found` means it never committed (or was rolled back), or belongs to another token. Retrying a committed operation with the same `op_id` and arguments returns its original result while its receipt is kept (7 days); after that, or with a new `op_id`, it applies again. So check op status before retrying any request older than a few days.
 
 ## GET /v1/projects/{slug}/sync
 
@@ -257,7 +259,7 @@ These serve the hosted dashboard (guide section 11, Dashboards). A script can us
 **A project's dashboard.**
 
 - `GET /p/<slug>/` serves the page (without a session: 303 to `/login?next=/p/<slug>/`); `GET /p/<slug>` redirects (308) to it. `/p/<slug>/static/*` serves its assets; nothing is loaded from another site.
-- `GET /p/<slug>/api/<path>` answers the local dashboard's read API on the server's board: `config`, `tasks`, `stats`, `activity`, `archived`, `graph`, `structure`, `tasks/<id>`, and the rest. Responses carry an `ETag`; send `If-None-Match` to get 304 when nothing changed. `api/git` reports `{"available": false, "reason": "hosted"}`.
+- `GET /p/<slug>/api/<path>` answers the local dashboard's read API on the server's board: `config`, `tasks`, `stats`, `activity`, `archived`, `graph`, `structure`, `tasks/<id>`, and the rest. `api/graph` carries an `ETag` (its revision); send it back in `If-None-Match` to get 304 when the graph has not changed. The other read routes answer 200 with no `ETag` every time. `api/git` reports `{"available": false, "reason": "hosted"}`.
 - `GET /p/<slug>/api/tasks` takes the origin filters `machine`, `user`, and `worktree`, as `lattice list --machine/--user/--worktree` (a task matches when one of its events carries every filter given; tasks written before v2 match nothing). On a hosted board, machine and user are the token's. An empty value is no filter. `worktree` must be an absolute path and is normalized lexically (repeated and trailing slashes, `.` and `..`); the server never resolves it against a filesystem, so a symlinked path matches nothing. Refusals, 400 `VALIDATION_ERROR`: a relative `worktree` ("worktree filter must be an absolute path"), and a value longer than 256 characters (`machine`, `user`) or 1024 (`worktree`).
 
 ```bash

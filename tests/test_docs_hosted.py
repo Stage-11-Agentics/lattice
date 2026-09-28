@@ -9,8 +9,10 @@ exits 0.
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
+import subprocess
 from pathlib import Path
 
 import click
@@ -190,7 +192,9 @@ _ALLOWED_HOSTS = re.compile(
     r"|(192\.0\.2|198\.51\.100|203\.0\.113)\.\d{1,3}"
     r"|([a-z0-9-]+\.)*example(\.(internal|com|org|net|invalid))?"
     r"|([a-z0-9-]+\.)*(invalid|test)"
-    r"|github\.com|www\.apple\.com|claude\.com|docs\.anthropic\.com)$"
+    r"|github\.com|www\.apple\.com|claude\.com|docs\.anthropic\.com"
+    # The README's public links: the project site (never a subdomain) and papers.
+    r"|(www\.)?stage11\.ai|arxiv\.org)$"
 )
 _URL_HOST = re.compile(r"\b[a-z][a-z0-9+.-]*://(?:[^@/\s]+@)?([^/:\s\"'<>)`]+)", re.I)
 _BARE_HOST = re.compile(
@@ -199,17 +203,29 @@ _BARE_HOST = re.compile(
 )
 
 
+HOST_SCANNED = [
+    GUIDE,
+    API,
+    *(DEPLOY / t for t in TEMPLATES),
+    REPO / "README.md",
+    REPO / "skills/lattice/SKILL.md",
+    REPO / "src/lattice/skills/lattice/SKILL.md",
+    *sorted((REPO / "docs/architecture").glob("*.md")),
+]
+
+
 @pytest.mark.parametrize(
     "path",
-    [GUIDE, API, *(DEPLOY / t for t in TEMPLATES)],
-    ids=lambda p: p.name,
+    [*HOST_SCANNED, None],
+    ids=lambda p: str(p.relative_to(REPO)) if p else "claude_md_block",
 )
-def test_no_real_hostnames(path: Path) -> None:
-    text = path.read_text()
+def test_no_real_hostnames(path: Path | None) -> None:
+    text = path.read_text() if path else CLAUDE_MD_BLOCK
+    name = str(path.relative_to(REPO)) if path else "claude_md_block"
     hosts = {m.group(1).lower() for m in _URL_HOST.finditer(text)}
     hosts |= {m.group(1).lower() for m in _BARE_HOST.finditer(text)}
     real = sorted(h for h in hosts if not _ALLOWED_HOSTS.match(h))
-    assert not real, f"{path.name} names non-placeholder hosts: {real}"
+    assert not real, f"{name} names non-placeholder hosts: {real}"
 
 
 def test_hostname_check_catches_a_real_host() -> None:
@@ -224,3 +240,64 @@ def test_hostname_check_catches_a_real_host() -> None:
         "board.acme.dev",
         "lattice.acme-corp.io",
     ]
+
+
+def _section(text: str, number: int) -> str:
+    start = text.index(f"\n## {number}. ")
+    return text[start : text.index(f"\n## {number + 1}. ", start)]
+
+
+@pytest.mark.parametrize("track", ["yes", "no"])
+def test_move_back_tracks_the_board_only_when_asked(tmp_path: Path, track: str) -> None:
+    """Guide section 15, steps 4 and 5, as written, on a checkout in the state
+    step 3 leaves: board copied in, untracked, and ignored. With
+    ``TRACK_BOARD=yes`` the commit must carry the board; with ``no`` it must
+    not (a ``git commit -a`` alone skips untracked files)."""
+    blocks = _shell_blocks(_section(GUIDE.read_text(), 15))
+    step4 = next(b for b in blocks if "TRACK_BOARD=no" in b)
+    step5 = next(b for b in blocks if "Move the Lattice board back to local" in b)
+    step4 = step4.replace("TRACK_BOARD=no", f"TRACK_BOARD={track}", 1)
+    step5 = "\n".join(line for line in step5.splitlines() if not line.startswith("lattice "))
+
+    repo = tmp_path / "app"
+    env = {
+        **os.environ,
+        "HOME": str(tmp_path),
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@example.invalid",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@example.invalid",
+    }
+
+    def sh(script: str) -> str:
+        done = subprocess.run(
+            ["bash", "-e", "-c", script],
+            cwd=repo,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert done.returncode == 0, done.stderr
+        return done.stdout
+
+    repo.mkdir()
+    sh(
+        "git init -q && echo '/.lattice/' > .gitignore"
+        " && echo '/.lattice/' >> \"$(git rev-parse --git-common-dir)/info/exclude\""
+        " && echo '{}' > .lattice-remote.json && git add .gitignore .lattice-remote.json"
+        " && git commit -q -m bound && git rm -q .lattice-remote.json"
+        " && mkdir -p .lattice/tasks && echo '{}' > .lattice/config.json"
+        " && echo '{}' > .lattice/tasks/task_01.json"
+    )
+    sh(step4)
+    sh(step5)
+    tracked = sh("git ls-files .lattice").split()
+    if track == "yes":
+        assert tracked == [".lattice/config.json", ".lattice/tasks/task_01.json"]
+        assert "/.lattice/" not in (repo / ".gitignore").read_text()
+    else:
+        assert tracked == []
+        assert "/.lattice/" in (repo / ".gitignore").read_text()
+    assert sh("git status --porcelain") == ""

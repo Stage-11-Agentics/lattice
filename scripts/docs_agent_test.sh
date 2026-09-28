@@ -73,10 +73,14 @@ Do three things, in order:
    hosted project you set up in part 1 back to a local board in its checkout,
    and run \`lattice doctor\` there.
 
-Leave the server running at the end. When done, write $T/work/REPORT.md with:
-the checkout path from part 1, the project slug, the server root, and, for
-every place the guide was unclear, wrong, or missing a step, the section, what
-happened, and what you did instead.
+Leave the server running at the end. When done, write two files:
+- $T/work/RESULT.env, exactly four lines of shell assignments, absolute paths:
+    CHECKOUT=<the checkout path from part 1>
+    SLUG=<the project slug>
+    SERVER_ROOT=<the server root>
+    SERVER_URL=<the server's URL, for example http://127.0.0.1:8740>
+- $T/work/REPORT.md: for every place the guide was unclear, wrong, or missing
+  a step, the section, what happened, and what you did instead.
 EOF
 
 cd "$T/work"
@@ -87,6 +91,28 @@ timeout "$AGENT_TIMEOUT" "$AGENT_CMD" -p "$(cat PROMPT.md)" \
 echo "agent exit: $?" > "$OUT/agent.exit"
 set -e
 cp "$T/work/REPORT.md" "$OUT/REPORT.md" 2> /dev/null || echo "no REPORT.md" > "$OUT/REPORT.md"
+cp "$T/work/RESULT.env" "$OUT/RESULT.env" 2> /dev/null || : > "$OUT/RESULT.env"
+CHECKOUT="" SLUG="" SERVER_ROOT="" SERVER_URL=""
+while IFS='=' read -r key value; do
+  case "$key" in CHECKOUT|SLUG|SERVER_ROOT|SERVER_URL) printf -v "$key" '%s' "$value" ;; esac
+done < "$OUT/RESULT.env"
+
+# Part 1's write, read from the moved-back board: an event the server stamped
+# (origin.authenticated) that changed a status.
+authenticated_status_change() {
+  python3 - "$1/.lattice" <<'PY'
+import json, pathlib, sys
+for log in pathlib.Path(sys.argv[1]).glob("events/*.jsonl"):
+    for line in log.read_text().splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if event.get("type") == "status_changed" and (event.get("origin") or {}).get("authenticated"):
+            sys.exit(0)
+sys.exit(1)
+PY
+}
 
 # Independent checks.
 check() { if eval "$2" > /dev/null 2>&1; then echo "PASS  $1"; else echo "FAIL  $1"; fi; }
@@ -98,8 +124,17 @@ check() { if eval "$2" > /dev/null 2>&1; then echo "PASS  $1"; else echo "FAIL  
   done
   check "no tracked board files on main" "[ -z \"\$(git -C $FIX/main ls-files .lattice)\" ]"
   check "board still present in the primary" "[ -f $FIX/main/.lattice/config.json ]"
-  echo "== parts 1 and 3: from the agent's report"
-  sed -n '1,40p' "$OUT/REPORT.md"
+  echo "== part 1: a server, a project, a hosted write (checked, not taken from the report)"
+  check "RESULT.env names all four values" "[ -n \"$CHECKOUT\" ] && [ -n \"$SLUG\" ] && [ -n \"$SERVER_ROOT\" ] && [ -n \"$SERVER_URL\" ]"
+  check "the server answers /healthz" "curl -sf \"$SERVER_URL/healthz\" | grep -q '\"ok\": *true'"
+  check "the server root holds the project" "[ -d \"$SERVER_ROOT/projects/$SLUG/.lattice\" ]"
+  check "a status change the server stamped with the token" "authenticated_status_change \"$CHECKOUT\""
+  echo "== part 3: moved back to local"
+  check "the checkout has no binding" "[ ! -e \"$CHECKOUT/.lattice-remote.json\" ]"
+  check "the checkout's board is local (no cache marker, no hosted/)" "[ -f \"$CHECKOUT/.lattice/config.json\" ] && [ ! -e \"$CHECKOUT/.lattice/cache/state.json\" ] && [ ! -e \"$CHECKOUT/.lattice/hosted\" ]"
+  check "lattice doctor passes in the checkout" "(cd \"$CHECKOUT\" && lattice doctor)"
+  echo "== the agent's report"
+  sed -n '1,60p' "$OUT/REPORT.md"
 } > "$OUT/checks.txt" 2>&1
 cat "$OUT/checks.txt"
 echo "transcript: $OUT/transcript.jsonl"

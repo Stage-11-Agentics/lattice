@@ -153,12 +153,19 @@ and the torture suite (`-m torture`).
 
 The guide is checked by running it, not by reading it.
 
-- `tests/test_docs_hosted.py` (AC-32, default suite): the docs exist, every
-  `lattice ...` command the guide, API page, README, skills, and CLAUDE.md block
-  name resolves and its `--help` exits 0, and no document names a real host.
+- `tests/test_docs_hosted.py` (AC-32, default suite): the docs and service
+  templates exist; every `lattice ...` command path the guide, API page,
+  README, skills, and CLAUDE.md block name resolves and its `--help` exits 0
+  (command names only: options and arguments are not checked); no real host
+  in the guide, API page, templates, README, both skills, the CLAUDE.md block,
+  or `docs/architecture/` (placeholders, loopback, RFC 5737 addresses, and a
+  few public project links only); and the guide's move-back steps 4 and 5,
+  run as written, commit the board only when `TRACK_BOARD=yes`. Everything
+  else in the guide is proven by the runner below.
 - `scripts/run_hosted_guide.py`: runs every `bash` block of the guide in order,
   as one shell session, under a scratch `HOME` with the repository's
-  `lattice` first on `PATH`. A block preceded by `<!-- guide: skip: <reason> -->`
+  `lattice` first on `PATH` (the one-shell assumption the guide states for
+  people; agent runners are told to re-export). A block preceded by `<!-- guide: skip: <reason> -->`
   is reported as skipped with that reason; other languages are shown files.
   `uv run python scripts/run_hosted_guide.py --keep-going` for the guide;
   add `--guide docs/hosted/api.md --setup scripts/hosted_api_setup.sh` for the
@@ -168,6 +175,10 @@ The guide is checked by running it, not by reading it.
   `api.md` in an empty directory, and checks what it did: a server, project,
   token, bound checkout and write; the section 1 worktree recipe on a fixture
   with two linked worktrees; and the move back to local with a clean doctor.
+  The agent writes `RESULT.env` (checkout, slug, server root, URL); the script
+  then checks every part itself (`/healthz`, the project on disk, a status
+  change stamped with the token in the moved-back board, no binding, no
+  cache marker or `hosted/`, `lattice doctor`), so a wrong report cannot pass.
   The agent is a parameter: `AGENT_CMD` (default `claude`, given the prompt
   with `-p`), `AGENT_ARGS`, `AGENT_TIMEOUT` (default 2700 s). Run it with an
   agent from a different model family than the one that wrote the guide; the

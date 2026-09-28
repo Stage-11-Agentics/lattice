@@ -7,6 +7,19 @@ lattice server init > /dev/null
 lattice server project create demo --code DEMO > /dev/null
 umask 077
 lattice server token create --user human:alice --machine laptop --project demo | head -n 1 > "$TRIAL/token"
-nohup lattice server serve > "$TRIAL/server.log" 2>&1 &
-echo $! > "$TRIAL/server.pid"
-sleep 2
+python3 - "$LATTICE_SERVER_ROOT" "$TRIAL" <<'PY'
+import subprocess, sys
+root, trial = sys.argv[1], sys.argv[2]
+with open(f"{trial}/server.log", "ab") as log:
+    server = subprocess.Popen(
+        ["lattice", "server", "serve", "--root", root],
+        stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+with open(f"{trial}/server.pid", "w") as pid:
+    pid.write(f"{server.pid}\n")
+PY
+for i in $(seq 1 50); do
+  curl -sf http://127.0.0.1:8740/healthz > /dev/null && break
+  sleep 0.2
+done

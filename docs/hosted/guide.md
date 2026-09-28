@@ -6,7 +6,7 @@ Lattice v2 adds an optional server. One server process per host owns every board
 
 **This guide is written for agents first.** A person using Lattice usually asks their agent: "set up a Lattice server", "bind this repository to our server", "move this board to the server". The agent follows this guide. If you are that agent:
 
-- Run the command blocks in order, as written, unless the text says a block is for a different machine or shows a file to create. Blocks share one shell: a variable exported in one block is used by later ones.
+- Run the command blocks in order, as written, unless the text says a block is for a different machine or shows a file to create. The blocks assume one shell session: a variable exported in one block (`TRIAL`, `LATTICE_SERVER_ROOT`, `SEAT_TOKEN_ID`) and the working directory carry into later ones. **Agent runners usually start a fresh shell for each command**, so none of that carries over: begin each command with the `cd` and `export` lines it depends on, and start the server detached, as section 4 does, so it outlives the command that started it.
 - Check each result against what the text says you should see before going on. Stop and report when something differs; do not improvise around a failure.
 - Ask your human only for what only they have: the server URL, a token (or shell access to the server host to mint one), which project, and approval before anything that touches a teammate's machine or a shared branch.
 - Never delete a board. Every step that retires one moves it aside.
@@ -58,30 +58,46 @@ git commit -m "Stop tracking the Lattice board in git"
 
 `git rm --cached` removes the files from git, not from disk: the primary checkout keeps its board. The line in `info/exclude` covers every branch and worktree of this clone, including branches whose `.gitignore` does not have the line yet.
 
-Each linked worktree still has its own copy of `.lattice/`, tracked on its own branch, and `lattice` ignores it (it uses the primary's). Remove those copies, **never the primary's**, and commit their removal on each linked worktree's branch. The commit touches only `.lattice`, so other staged work in that worktree is left alone. From the primary checkout:
+Each linked worktree still has its own copy of `.lattice/`, tracked on its own branch, and `lattice` ignores it (it uses the primary's). Move those copies aside into a dated backup directory inside the clone's git directory, where git never shows them, **never the primary's board**, and commit their removal on each linked worktree's branch. The commit touches only `.lattice`, so other staged work in that worktree is left alone. From the primary checkout:
 
 ```bash
 primary="$(git rev-parse --show-toplevel)"
+backup="$(cd "$(git rev-parse --git-common-dir)" && pwd)/lattice-board-copies/$(date -u +%Y%m%d-%H%M%S)"
+n=0
 git worktree list --porcelain | sed -n 's/^worktree //p' | while read -r wt; do
   [ "$wt" = "$primary" ] && continue
-  rm -rf "$wt/.lattice"
+  n=$((n + 1))
+  if [ -e "$wt/.lattice" ]; then
+    mkdir -p "$backup/$n"
+    echo "$wt" > "$backup/$n/worktree"
+    mv "$wt/.lattice" "$backup/$n/.lattice"
+  fi
   if git -C "$wt" ls-files --error-unmatch .lattice > /dev/null 2>&1; then
     git -C "$wt" commit -q -m "Stop tracking the Lattice board in git" -- .lattice
   fi
 done
+echo "worktree copies kept in $backup"
 ```
+
+The copies are stale duplicates of the board; keep the backup directory until you are sure, then delete it yourself.
 
 If you would rather not commit on those branches now, skip the `git commit` line: `git status` in each linked worktree then shows the board files as deleted until the branch is merged with the commit that untracked the board.
 
-Check it: a write in one worktree is visible in every other, and `git status` shows no board file anywhere. `lattice list` in any linked worktree shows the primary's board.
+Check it: a write in one worktree is visible in every other, and `git status` shows no board file anywhere. The block writes a check task from a linked worktree, reads it from the primary, then erases it (hidden from every view; `lattice unerase` restores it). Pass your own actor:
 
 ```bash
-lattice list
+primary="$(git rev-parse --show-toplevel)"
+other="$(git worktree list --porcelain | sed -n 's/^worktree //p' | grep -vxF "$primary" | head -n 1)"
+check="$(cd "${other:-$primary}" && lattice create "Worktree check: delete me" --actor agent:worktree-check --quiet)"
+lattice list | grep "Worktree check"
+lattice erase "$check" --reason "worktree check" --actor agent:worktree-check
 git status --short
 git worktree list --porcelain | sed -n 's/^worktree //p' | while read -r wt; do
   git -C "$wt" status --short
 done
 ```
+
+`lattice list` in the primary shows the task written in the linked worktree, and every `git status` prints nothing about `.lattice`.
 
 **What it costs.** The board no longer travels with the repository. A clone on another machine, a teammate, or a CI job no longer sees it. If you need that, that is what a server is for: read on.
 
@@ -137,16 +153,29 @@ lattice server token list
 
 `human:alice` is the person the token is issued to and `laptop` names the machine it is for. With no `--actor`, the token may act as `human:alice` and as any `agent:*`. A token reads `lat_<token id>_<secret>`; the token ID (`tok_...`) is what admin commands take, and `token list` shows it.
 
-**Start the server.** In a real deployment it runs as a service (section 9). Here it runs in the background and logs to a file:
+**Start the server.** In a real deployment it runs as a service (section 9). Here it runs detached: in its own session, with no terminal, stdin from `/dev/null`, and its log in a file, so it keeps running after the command that started it ends (a plain `nohup ... &` dies with an agent runner's shell). This works on Linux and macOS:
 
 ```bash
-nohup lattice server serve > "$TRIAL/server.log" 2>&1 &
-echo $! > "$TRIAL/server.pid"
-sleep 2
+python3 - "$LATTICE_SERVER_ROOT" "$TRIAL" <<'PY'
+import subprocess, sys
+root, trial = sys.argv[1], sys.argv[2]
+with open(f"{trial}/server.log", "ab") as log:
+    server = subprocess.Popen(
+        ["lattice", "server", "serve", "--root", root],
+        stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+with open(f"{trial}/server.pid", "w") as pid:
+    pid.write(f"{server.pid}\n")
+PY
+for i in $(seq 1 50); do
+  curl -sf http://127.0.0.1:8740/healthz > /dev/null && break
+  sleep 0.2
+done
 curl -s http://127.0.0.1:8740/healthz
 ```
 
-`/healthz` answers `{"ok": true, ...}`. The server listens on `127.0.0.1:8740` by default.
+The loop waits up to 10 seconds for the server to answer. `/healthz` answers `{"ok": true, ...}`. The server listens on `127.0.0.1:8740` by default. If nothing answers, read `$TRIAL/server.log`.
 
 **Add the remote.** `team` is your local name for this server. `--token-stdin` stores the token in `~/.config/lattice/remotes.json`, which Lattice keeps at mode 0600:
 
@@ -390,8 +419,9 @@ Log rotation: [`deploy/newsyslog.conf.example`](deploy/newsyslog.conf.example), 
 The server speaks plain HTTP. For anything beyond loopback or a private encrypted network, put a reverse proxy in front of it to terminate TLS. The proxy must:
 
 - **terminate TLS** and forward to the server's `bind:port`;
-- **not buffer responses**, so the change stream (`/v1/projects/<slug>/stream`, Server-Sent Events) flows as it is written. The server sends `X-Accel-Buffering: no`, which nginx honors; other proxies need their own setting;
-- **allow long reads**: a read timeout well above the stream's heartbeat (2 seconds by default). Minutes are fine; the client reconnects when a stream ends;
+- **not buffer responses**, so the change stream (`/v1/projects/<slug>/stream`, Server-Sent Events) flows as it is written. The server sends `X-Accel-Buffering: no`, which nginx honors; other proxies need their own setting. A proxy that strips that header but does not buffer is fine. One that does buffer does not break anything: followers and hosted dashboards fall back to polling, and you lose only liveness;
+- **allow long reads**: an idle or read timeout well above `stream.heartbeat_seconds` (2 seconds by default). Minutes are fine. A fronting proxy such as Cloudflare closes idle connections after about 100 seconds, far above the default heartbeat; if you raise the heartbeat, keep it well below the proxy's idle timeout. The client reconnects when a stream ends;
+- **admit Lattice's User-Agent**: every request sends `User-Agent: lattice/<version>` (for example `lattice/2.0.0`), unless the remote's `headers` set a `User-Agent`, which then wins. Bot protection in front of the server (Cloudflare's Browser Integrity Check, for example) must let it through; otherwise requests fail with `PROXY_REJECTED` even with valid service credentials;
 - **allow bodies** up to `limits.max_body_bytes` (16 MiB by default; attachments travel in the body);
 - **never redirect an API path** (`/v1/...`, `/healthz`) to a login page. The client refuses any redirect with `PROXY_REJECTED` and never sends its token to another location. If your proxy puts a login in front of the site, exempt `/v1/` from it, or give clients service credentials as headers (below).
 
@@ -561,7 +591,7 @@ Writes from the hosted page are ordinary operations with the session's token, as
 
 Behind a proxy that rewrites `Host`, list the public origin in `public_origins` (section 6); without it, logins and writes are refused by the `Origin` check. Under the hosted page's content policy, a dashboard background image from another site does not load. Moving a task in either dashboard starts no automatic review (section 13).
 
-**Filtering by machine, user, and worktree.** Every dashboard, local or hosted, filters the board by where the work was done, as `lattice list --machine/--user/--worktree` does: a task matches when one of its events came from that machine, user, or worktree. On a hosted board, machine and user are the token's (`laptop`, `human:alice`); on a local board, the host name and OS user. Open the filter drawer's Origin section, or put the filters in the URL, which you can bookmark and share: `/p/demo/?machine=laptop&user=human:alice` hosted, `/?user=alice` locally. The origin filters combine with the drawer's other filters (all must match). A worktree filter is an absolute path, matched as recorded (`/home/alice/src/app`, trailing slashes and `.` or `..` segments folded). A relative path is refused; a path through a symlink matches nothing, because the server never looks at your filesystem.
+**Filtering by machine, user, and worktree.** Every dashboard, local or hosted, filters the board by where the work was done, as `lattice list --machine/--user/--worktree` does: a task matches when one of its events came from that machine, user, or worktree. On a hosted board, machine and user are the token's (`laptop`, `human:alice`); on a local board, the host name and OS user. Open the filter drawer's Origin section, or put the filters in the URL, which you can bookmark and share: `/p/demo/?machine=laptop&user=human:alice` hosted, `/?user=alice` locally. The origin filters combine with the drawer's other filters (all must match). A worktree filter is an absolute path, matched as recorded (`/home/alice/src/app`, trailing slashes and `.` or `..` segments folded). In the dashboard a relative path is refused and a path through a symlink matches nothing, because the server never looks at your filesystem. (`lattice list --worktree` in a terminal does resolve a relative path from the current directory.)
 
 The API behind the page takes the same filters, with the token as a bearer, from any machine:
 
@@ -611,7 +641,7 @@ Everything you and your agents do locally works the same: `create`, `status`, `c
   printf 'run state\n' | lattice board write orchestration/run-state.md --stdin
   ```
 
-  `context write` and `board write` take no `--actor`; on a server they are attributed to your token's user. `lattice board write` writes files under `orchestration/` (an orchestrator's run-state and working files) and loose files directly under `plans/` or `notes/`. There is no remove; overwrite instead. If an edit gets into the cache anyway (after a `chmod`, or as root), the next command moves it to `.lattice/cache/rescued/<time>/` and says so. It is never silently discarded; write it back with `lattice plan write`.
+  `context write` and `board write` take no `--actor`; on a server they are attributed to your token's default actor (the person for a person token, the seat's actor for a seat token), with the token's user and machine in `origin.authenticated`. `lattice board write` writes files under `orchestration/` (an orchestrator's run-state and working files) and loose files directly under `plans/` or `notes/`. There is no remove; overwrite instead. If an edit gets into the cache anyway (after a `chmod`, or as root), the next command moves it to `.lattice/cache/rescued/<time>/` and says so. It is never silently discarded; write it back with `lattice plan write`.
 - **Who acted, and whose token.** `lattice remote status` shows the token's person and machine (for example `human:alice on laptop`). Agents still pass `--actor agent:<id>`. Every event records both: the actor, and the token's user and machine in `origin.authenticated`. `lattice show <task>` prints `actor · user@machine · worktree (branch)` per event; `lattice show <task> --full` and `--json` include the whole origin.
 - **Linked worktrees** of a bound clone hold only `.lattice-remote.json`; the read-only mirror is the primary checkout's `.lattice/`, and every worktree uses it.
 - **Finishing without a PR.** For work not merged through a pull request, go `review -> done` with `lattice complete`, not through `pr_open`, and say in the completion review how the work was integrated (commit SHA and branch, or where the change lives).
@@ -673,14 +703,13 @@ From another machine, copy it with `rsync -a` or `scp -r`, preserving the tree. 
 
 **If the import refuses the board.** It prints doctor's findings and the next step. Boards written by several v1 agents at once often carry history damage: a status or assignment event whose recorded `from` disagrees with the task's state, or two tasks holding one short ID. Repair it on the **local** board, in the checkout (its writers are already stopped), with Lattice 2:
 
-<!-- guide: skip: only when the import refuses; the example board has no damage -->
 ```bash
 cd "$TRIAL/legacy"
 lattice doctor --fix --actor human:alice
 lattice doctor
 ```
 
-`doctor --fix --actor` only appends events: it never rewrites or removes one. Each task keeps the status, assignment, and fields the board showed before the repair; a task holding a duplicate or out-of-prefix short ID gets the next free one, and the old ID stays in its history. It prints each appended event, each reassignment as `old -> new` with the task's title, and each restored field. Without `--actor` it lists what it would append and changes nothing. Damage of any other kind it names and leaves alone. When `lattice doctor` is clean, commit nothing yet: copy the board to the server host again and repeat this step.
+`doctor --fix --actor` only appends events: it never rewrites or removes one. Each task keeps the status, assignment, and fields the board showed before the repair; a task holding a duplicate or out-of-prefix short ID gets the next free one, and the old ID stays in its history. It prints each appended event, each reassignment as `old -> new` with the task's title, and each restored field. Without `--actor` it lists what it would append and changes nothing. On a board with no damage it appends nothing, so the example board runs it harmlessly. Damage of any other kind it names and leaves alone. When `lattice doctor` is clean, commit nothing yet: copy the board to the server host again and repeat this step.
  It never modifies its source and never changes the board's configuration, so the project keeps its review workflow and prompt overrides.
 
 Read the two lists it prints:
@@ -751,12 +780,29 @@ git rm -q .lattice-remote.json
 ```bash
 mkdir -p .lattice
 cp -R "$LATTICE_SERVER_ROOT/projects/demo/.lattice/." .lattice/
-rm -rf .lattice/hosted
+backup="$(cd "$(git rev-parse --git-common-dir)" && pwd)/lattice-hosted-copy-$(date -u +%Y%m%d-%H%M%S)"
+mv .lattice/hosted "$backup"
+echo "server control files kept in $backup"
 ```
+
+`hosted/` holds the server's journal and receipts, which a local board does not use. It is moved into the clone's git directory, where git never shows it; delete it yourself once the board works.
 
 From another host: `rsync -a --exclude hosted/ server-host:/var/lib/lattice-server/projects/demo/.lattice/ .lattice/`. `cache clear --forget` keeps `.lattice/cache/rescued/` if it held any rescued edits; review and delete it afterwards.
 
-**4. Decide whether git tracks the board again.** If it should, remove the `/.lattice/` line from `.gitignore` and from `$(git rev-parse --git-common-dir)/info/exclude`. If it should not (the section 1 setup), leave both.
+**4. Decide whether git tracks the board again.** If it should not (the section 1 setup, and the default here), leave `TRACK_BOARD=no`. If it should, set `TRACK_BOARD=yes`: the block removes the `/.lattice/` line from `.gitignore` and from the clone's `info/exclude`, and stages the board, which is untracked after the copy (a `git commit -a` alone would leave it out).
+
+```bash
+TRACK_BOARD=no
+if [ "$TRACK_BOARD" = yes ]; then
+  exclude="$(git rev-parse --git-common-dir)/info/exclude"
+  for f in .gitignore "$exclude"; do
+    [ -f "$f" ] || continue
+    grep -vxF '/.lattice/' "$f" > "$f.tmp" || true
+    mv "$f.tmp" "$f"
+  done
+  git add .gitignore .lattice
+fi
+```
 
 **5. Check and commit:**
 
@@ -766,7 +812,7 @@ lattice list
 git commit -q -am "Move the Lattice board back to local"
 ```
 
-`lattice doctor` must report no errors. The server keeps the project, unloaded until its next start. To retire it, stop the server and move `projects/demo/` out of `$LATTICE_SERVER_ROOT/projects/` (keep it until you are sure).
+`lattice doctor` must report no errors. With `TRACK_BOARD=yes`, `git ls-files .lattice` now lists the board's files; with `no`, it prints nothing. The server keeps the project, unloaded until its next start. To retire it, stop the server and move `projects/demo/` out of `$LATTICE_SERVER_ROOT/projects/` (keep it until you are sure).
 
 ## 16. Backup, restore, and the audit history
 
@@ -878,7 +924,7 @@ Upgrade the server with the same install command (section 5, add `--force` for `
 | `TOKEN_ENV_UNSET` | The token or a header comes from an environment variable that is unset or empty | Export the named variable in the shell (and in your agents' environment) |
 | `SERVER_UNREACHABLE` | The server is not available: no request reached it, and nothing was written. `--json` details name the remote, URL, and OS error | Check the server (`curl <url>/healthz`) and the network; retry |
 | `OUTCOME_UNKNOWN` | A write reached the server but no answer came back | `lattice remote op-status <op_id>` before retrying (section 18) |
-| `PROXY_REJECTED` | Something other than a Lattice server answered: a redirect, a login page, an error page | Fix the proxy: no redirects or login on `/v1/`; add service headers (section 10) |
+| `PROXY_REJECTED` | Something other than a Lattice server answered: a redirect, a login page, an error page | Fix the proxy: no redirects or login on `/v1/`; add service headers; let bot protection admit the `lattice/<version>` User-Agent (section 10) |
 | `INSECURE_URL` | `http://` to a host that is not loopback | Use `https://`, or `--allow-plaintext` on an encrypted private network |
 | `BINDING_CONFLICT` | The checkout's binding meets a local board (a `.lattice/` with board files and no cache), or a cache of a different remote or project. With `details.reason` `UNSAFE_CACHE_PATH`: `.lattice`, its `cache/`, or a runtime directory is a symbolic link or a file, which Lattice never writes through | A local board: follow section 14 to move it. Another project's cache: `lattice cache clear --forget`, then run the command again. An unsafe path: remove it (the message names it), then run any command |
 | `BOARD_IS_CACHE` | Something tried to write the read-only cache directly. With `details.reason` `CACHE_ACCESS`: Lattice cannot read or write a path in the cache (its permissions were changed, or another user owns it, after a `sudo lattice` say) | Write through the command (`plan write`, `notes write`, `board write`); the cache is written only by sync. For `CACHE_ACCESS`: Lattice already gives its own directories back their 0700 when you own them; for anything else, restore the path's permissions, or `lattice cache clear` and then any command to rebuild the cache |
