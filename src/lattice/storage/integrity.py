@@ -239,19 +239,26 @@ def _validate_authoritative_short_ids(
     validated: list[tuple[str, str, int, Path, int]] = []
     problems: list[AuthoritativeLogError] = []
     seen: dict[str, tuple[str, Path, int]] = {}
+
+    def problem(kind: str, message: str, path: Path, line: int) -> None:
+        # ``kind`` tells doctor --fix's history repair what it may reassign
+        # (SPEC §11): "prefix" and "duplicate"; never "malformed".
+        error = AuthoritativeLogError(message, path=path, line=line)
+        error.kind = kind  # type: ignore[attr-defined]
+        problems.append(error)
+
     for task_id, authority in authorities.items():
         short_id = authority.snapshot.get("short_id")
         path, line = _authority_log_context(authority, short_id)
         if short_id is None and prefix is None:
             continue
         if not isinstance(short_id, str):
-            problems.append(
-                AuthoritativeLogError(
-                    f"task {task_id} has malformed authoritative short ID {short_id!r}; "
-                    "manual immutable-log recovery required",
-                    path=path,
-                    line=line,
-                )
+            problem(
+                "malformed",
+                f"task {task_id} has malformed authoritative short ID {short_id!r}; "
+                "manual immutable-log recovery required",
+                path,
+                line,
             )
             continue
         try:
@@ -268,24 +275,22 @@ def _validate_authoritative_short_ids(
                 if prefix is not None
                 else f"task {task_id} has malformed authoritative short ID {short_id!r}"
             )
-            problems.append(
-                AuthoritativeLogError(
-                    f"{detail}; manual immutable-log recovery required",
-                    path=path,
-                    line=line,
-                )
+            problem(
+                "prefix" if prefix is not None else "malformed",
+                f"{detail}; manual immutable-log recovery required",
+                path,
+                line,
             )
             continue
         previous = seen.get(short_id)
         if previous is not None and previous[0] != task_id:
-            problems.append(
-                AuthoritativeLogError(
-                    f"duplicate authoritative short ID {short_id}: "
-                    f"{previous[0]} at {previous[1]}:{previous[2]} and {task_id}; "
-                    "manual immutable-log recovery required",
-                    path=path,
-                    line=line,
-                )
+            problem(
+                "duplicate",
+                f"duplicate authoritative short ID {short_id}: "
+                f"{previous[0]} at {previous[1]}:{previous[2]} and {task_id}; "
+                "manual immutable-log recovery required",
+                path,
+                line,
             )
             continue
         seen[short_id] = (task_id, path, line)
@@ -293,14 +298,33 @@ def _validate_authoritative_short_ids(
     return validated, problems
 
 
+def _moved_off_by_supersedes(authority: ResolvedTaskAuthority, short_id: str) -> bool:
+    """Did this task leave *short_id* through a ``task_short_id_assigned`` that
+    ``supersedes`` it, after the last event that issued it to the task?"""
+    moved = False
+    for event in authority.events:
+        data = event.get("data")
+        if event.get("type") not in SHORT_ID_EVENT_TYPES or not isinstance(data, dict):
+            continue
+        if data.get("short_id") == short_id:
+            moved = False
+        elif event.get("type") == "task_short_id_assigned" and data.get("supersedes") == short_id:
+            moved = True
+    return moved
+
+
 def _historical_short_id_duplicates(
     authorities: dict[str, ResolvedTaskAuthority],
-) -> list[str]:
+) -> list[tuple[str, str]]:
     """Report every short ID an issuing event gave to two tasks at any point.
 
     An assignment overwrites the effective alias, so a duplicate can vanish
     from the replayed snapshots while the history still issued it twice. IDs
     that are also effective duplicates are left to the effective check.
+
+    Returns ``(level, message)``: ``info`` for a duplicate history repair
+    resolved (at most one task still holds it, and every other holder moved
+    off it through a ``supersedes`` assignment, SPEC §11), else ``error``.
     """
     effective: dict[str, set[str]] = {}
     issued: dict[str, dict[str, tuple[Path, int]]] = {}
@@ -322,19 +346,37 @@ def _historical_short_id_duplicates(
             short_id = data.get("short_id")
             if split_short_id(short_id) is not None:
                 issued.setdefault(short_id, {}).setdefault(task_id, (path, line))
-    messages = []
+    results: list[tuple[str, str]] = []
     for short_id in sorted(issued):
         holders = issued[short_id]
-        if len(holders) < 2 or len(effective.get(short_id, ())) > 1:
+        current = effective.get(short_id, set())
+        if len(holders) < 2 or len(current) > 1:
             continue
         where = " and ".join(
             f"{task_id} at {path}:{line}" for task_id, (path, line) in sorted(holders.items())
         )
-        messages.append(
-            f"short ID {short_id} was issued to more than one task: {where}; "
-            "manual immutable-log recovery required"
+        if all(
+            _moved_off_by_supersedes(authorities[task_id], short_id)
+            for task_id in holders
+            if task_id not in current
+        ):
+            keeper = f"; {next(iter(current))} keeps it" if current else ""
+            results.append(
+                (
+                    "info",
+                    f"short ID {short_id} was issued to more than one task: {where}; "
+                    f"repaired by supersedes reassignment{keeper}",
+                )
+            )
+            continue
+        results.append(
+            (
+                "error",
+                f"short ID {short_id} was issued to more than one task: {where}; "
+                "manual immutable-log recovery required",
+            )
         )
-    return messages
+    return results
 
 
 def _require_valid_short_ids(
@@ -411,139 +453,158 @@ def _inspect_task_authority_unlocked(
         try:
             authority = resolve_task_authority(lattice_dir, task_id)
         except AuthoritativeLogError as exc:
-            findings.append(
-                {
-                    "level": "error",
-                    "check": "authoritative_log",
-                    "message": (
-                        f"Authoritative log error for {task_id}: {exc}. "
-                        "Rebuild will refuse to overwrite data; manual recovery is required."
-                    ),
-                    "task_id": task_id,
-                }
-            )
+            finding = {
+                "level": "error",
+                "check": "authoritative_log",
+                "message": (
+                    f"Authoritative log error for {task_id}: {exc}. "
+                    "Rebuild will refuse to overwrite data; manual recovery is required."
+                ),
+                "task_id": task_id,
+            }
+            if _stale_only(lattice_dir, task_id):
+                # Only stale ``from`` values: doctor --fix --actor repairs it (SPEC §11).
+                finding["repair"] = "stale_from"
+            findings.append(finding)
             continue
 
         assert authority is not None
         authorities[task_id] = authority
-        expected_archived = authority.location == "archived"
-        target = archived if expected_archived else active
-        other = active if expected_archived else archived
-        repair = "Run lattice rebuild to restore authoritative placement."
+        findings.extend(_task_file_findings(lattice_dir, task_id, authority))
 
-        if len(event_candidates) == 2:
-            left = active["event"].read_bytes()
-            right = archived["event"].read_bytes()
-            relation = "byte-identical" if left == right else "exact-prefix"
-            findings.append(
-                {
-                    "level": "warning",
-                    "check": "placement_drift",
-                    "message": (f"Task {task_id} has {relation} duplicate event logs. {repair}"),
-                    "task_id": task_id,
-                }
-            )
-        elif not target["event"].exists():
-            findings.append(
-                {
-                    "level": "warning",
-                    "check": "placement_drift",
-                    "message": (
-                        f"Task {task_id} event log is in the wrong location for "
-                        f"{authority.location} state. {repair}"
-                    ),
-                    "task_id": task_id,
-                }
-            )
+    return authorities, findings
 
-        expected_snapshot = serialize_snapshot(authority.snapshot)
-        snapshot_matches = False
-        if target["snapshot"].exists():
-            try:
-                snapshot_matches = (
-                    target["snapshot"].read_text(encoding="utf-8") == expected_snapshot
-                )
-            except OSError:
-                snapshot_matches = False
-        if not snapshot_matches:
-            findings.append(
-                {
-                    "level": "warning",
-                    "check": "snapshot_drift",
-                    "message": (
-                        f"Snapshot drift: {task_id} differs from full authoritative replay "
-                        "(even if last_event_id matches). Run lattice rebuild."
-                    ),
-                    "task_id": task_id,
-                }
-            )
-        if other["snapshot"].exists():
-            findings.append(
-                {
-                    "level": "warning",
-                    "check": "placement_drift",
-                    "message": (
-                        f"Task {task_id} has a duplicate or wrong-location snapshot. {repair}"
-                    ),
-                    "task_id": task_id,
-                }
-            )
 
-        for name in ("plan", "notes"):
-            target_file = target[name]
-            other_file = other[name]
-            if not target_file.exists() and not other_file.exists():
-                if name == "plan":
-                    findings.append(
-                        {
-                            "level": "warning",
-                            "check": "placement_drift",
-                            "message": (
-                                f"Task {task_id} has no plan file; this legacy file cannot "
-                                "be reconstructed automatically."
-                            ),
-                            "task_id": task_id,
-                        }
-                    )
-                continue
-            if target_file.exists() and other_file.exists():
-                if target_file.read_bytes() != other_file.read_bytes():
-                    findings.append(
-                        {
-                            "level": "error",
-                            "check": "placement_drift",
-                            "message": (
-                                f"Task {task_id} has divergent active/archive {name} files; "
-                                "manual recovery is required."
-                            ),
-                            "task_id": task_id,
-                        }
-                    )
-                else:
-                    findings.append(
-                        {
-                            "level": "warning",
-                            "check": "placement_drift",
-                            "message": (
-                                f"Task {task_id} has duplicate byte-identical {name} files. "
-                                f"{repair}"
-                            ),
-                            "task_id": task_id,
-                        }
-                    )
-            elif other_file.exists():
+def _stale_only(lattice_dir: Path, task_id: str) -> bool:
+    """Does the task replay once its unnamed stale ``from`` values are accepted?"""
+    try:
+        lenient = resolve_task_authority(lattice_dir, task_id, lenient=True)
+    except AuthoritativeLogError:
+        return False
+    return lenient is not None and bool(lenient.stale)
+
+
+def _task_file_findings(
+    lattice_dir: Path, task_id: str, authority: ResolvedTaskAuthority
+) -> list[dict]:
+    """Placement, snapshot, and plan/notes findings for one resolved task."""
+    findings: list[dict] = []
+    active = _task_paths(lattice_dir, task_id, False)
+    archived = _task_paths(lattice_dir, task_id, True)
+    event_candidates = [path for path in (active["event"], archived["event"]) if path.exists()]
+    expected_archived = authority.location == "archived"
+    target = archived if expected_archived else active
+    other = active if expected_archived else archived
+    repair = "Run lattice rebuild to restore authoritative placement."
+
+    if len(event_candidates) == 2:
+        left = active["event"].read_bytes()
+        right = archived["event"].read_bytes()
+        relation = "byte-identical" if left == right else "exact-prefix"
+        findings.append(
+            {
+                "level": "warning",
+                "check": "placement_drift",
+                "message": (f"Task {task_id} has {relation} duplicate event logs. {repair}"),
+                "task_id": task_id,
+            }
+        )
+    elif not target["event"].exists():
+        findings.append(
+            {
+                "level": "warning",
+                "check": "placement_drift",
+                "message": (
+                    f"Task {task_id} event log is in the wrong location for "
+                    f"{authority.location} state. {repair}"
+                ),
+                "task_id": task_id,
+            }
+        )
+
+    expected_snapshot = serialize_snapshot(authority.snapshot)
+    snapshot_matches = False
+    if target["snapshot"].exists():
+        try:
+            snapshot_matches = target["snapshot"].read_text(encoding="utf-8") == expected_snapshot
+        except (OSError, UnicodeDecodeError):
+            snapshot_matches = False
+    if not snapshot_matches:
+        findings.append(
+            {
+                "level": "warning",
+                "check": "snapshot_drift",
+                "message": (
+                    f"Snapshot drift: {task_id} differs from full authoritative replay "
+                    "(even if last_event_id matches). Run lattice rebuild."
+                ),
+                "task_id": task_id,
+            }
+        )
+    if other["snapshot"].exists():
+        findings.append(
+            {
+                "level": "warning",
+                "check": "placement_drift",
+                "message": (
+                    f"Task {task_id} has a duplicate or wrong-location snapshot. {repair}"
+                ),
+                "task_id": task_id,
+            }
+        )
+
+    for name in ("plan", "notes"):
+        target_file = target[name]
+        other_file = other[name]
+        if not target_file.exists() and not other_file.exists():
+            if name == "plan":
                 findings.append(
                     {
                         "level": "warning",
                         "check": "placement_drift",
                         "message": (
-                            f"Task {task_id} {name} file is in the wrong location. {repair}"
+                            f"Task {task_id} has no plan file; this legacy file cannot "
+                            "be reconstructed automatically."
                         ),
                         "task_id": task_id,
                     }
                 )
+            continue
+        if target_file.exists() and other_file.exists():
+            if target_file.read_bytes() != other_file.read_bytes():
+                findings.append(
+                    {
+                        "level": "error",
+                        "check": "placement_drift",
+                        "message": (
+                            f"Task {task_id} has divergent active/archive {name} files; "
+                            "manual recovery is required."
+                        ),
+                        "task_id": task_id,
+                    }
+                )
+            else:
+                findings.append(
+                    {
+                        "level": "warning",
+                        "check": "placement_drift",
+                        "message": (
+                            f"Task {task_id} has duplicate byte-identical {name} files. {repair}"
+                        ),
+                        "task_id": task_id,
+                    }
+                )
+        elif other_file.exists():
+            findings.append(
+                {
+                    "level": "warning",
+                    "check": "placement_drift",
+                    "message": (f"Task {task_id} {name} file is in the wrong location. {repair}"),
+                    "task_id": task_id,
+                }
+            )
 
-    return authorities, findings
+    return findings
 
 
 def inspect_task_authority(
@@ -565,7 +626,7 @@ def _write_snapshot_in_place(
     expected = serialize_snapshot(authority.snapshot)
     try:
         current = target.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         current = None
     if current != expected:
         ensure_dir(target.parent)
@@ -671,14 +732,18 @@ def check_board(lattice_dir: Path, *, fix: bool = False) -> DoctorReport:
                         }
                     )
             elif jf.parent.name in ("tasks",) and jf.suffix == ".json":
-                snapshots[jf.stem] = data
+                # A snapshot that is not an object is an unusable cache: the
+                # snapshot checks skip it, and authority replaces it below.
+                if isinstance(data, dict):
+                    snapshots[jf.stem] = data
                 known_task_ids.add(jf.stem)
             elif jf.parent.parent.name == "archive" and jf.parent.name == "tasks":
-                snapshots[jf.stem] = data
+                if isinstance(data, dict):
+                    snapshots[jf.stem] = data
                 known_task_ids.add(jf.stem)
             elif jf.parent.name == "meta":
                 known_artifact_ids.add(jf.stem)
-        except json.JSONDecodeError as e:
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
             json_ok = False
             findings.append(
                 {
@@ -742,11 +807,35 @@ def check_board(lattice_dir: Path, *, fix: bool = False) -> DoctorReport:
         snapshots[task_id] = authority.snapshot
         per_task_events[task_id] = list(authority.events)
 
-    # A corrupt cache is replay-repairable when strict authority succeeds.
+    # A corrupt cache is replay-repairable when strict authority succeeds, and
+    # so is a task that history repair can make replay (SPEC §11).
+    stale_only = {
+        finding["task_id"]
+        for finding in authority_findings
+        if finding.get("repair") == "stale_from"
+    }
     for finding in findings:
         if finding["check"] == "json_parse" and finding.get("task_id") in authorities:
             finding["level"] = "warning"
             finding["message"] += " (snapshot cache is rebuildable from valid authority)"
+        elif finding["check"] == "json_parse" and finding.get("task_id") in stale_only:
+            finding["level"] = "warning"
+            finding["message"] += " (snapshot cache is rebuilt by lattice doctor --fix --actor)"
+
+    # Stale ``from`` values a reconciliation names: information, not errors.
+    for task_id, authority in authorities.items():
+        for event_id in authority.reconciled:
+            findings.append(
+                {
+                    "level": "info",
+                    "check": "history_repair",
+                    "message": (
+                        f"Task {task_id}: event {event_id} has a stale from value, "
+                        "reconciled by task_history_reconciled"
+                    ),
+                    "task_id": task_id,
+                }
+            )
 
     drift_ok = not any(
         finding["check"] in {"snapshot_drift", "placement_drift"} for finding in findings
@@ -990,9 +1079,20 @@ def check_board(lattice_dir: Path, *, fix: bool = False) -> DoctorReport:
                     "check": "alias_integrity",
                     "message": str(problem),
                     "task_id": None,
+                    "repair": getattr(problem, "kind", None),
                 }
             )
-        for message in _historical_short_id_duplicates(authorities):
+        for level, message in _historical_short_id_duplicates(authorities):
+            if level == "info":
+                findings.append(
+                    {
+                        "level": "info",
+                        "check": "history_repair",
+                        "message": message,
+                        "task_id": None,
+                    }
+                )
+                continue
             alias_ok = False
             findings.append(
                 {
@@ -1000,6 +1100,7 @@ def check_board(lattice_dir: Path, *, fix: bool = False) -> DoctorReport:
                     "check": "alias_integrity",
                     "message": message,
                     "task_id": None,
+                    "repair": "historical_duplicate",
                 }
             )
         for short_id, task_id_key, _suffix, log_path, short_id_line in validated_short_ids:
@@ -1238,62 +1339,72 @@ def repair_task_derived_files(lattice_dir: Path, *, reconcile_placement: bool) -
     Resource snapshots are not task-derived and are never touched here.
     """
     with all_task_locks(lattice_dir / "locks", ["events__lifecycle", "ids_json"]):
-        task_ids = sorted(_collect_task_ids(lattice_dir))
-        authorities, findings = _inspect_task_authority_unlocked(lattice_dir)
-        failures = [finding["message"] for finding in findings if finding["level"] == "error"]
-        missing = sorted(set(task_ids) - set(authorities))
-        failures.extend(f"{task_id}: no valid authoritative event log" for task_id in missing)
-        if failures:
-            raise AuthoritativeLogError("; ".join(failures))
-
-        # Complete index and configured-prefix validation happens before the
-        # first snapshot, placement, lifecycle, or ids.json write.
-        current_index = _load_strict_id_index(lattice_dir)
-        event_prefix = configured_event_prefix(
-            json.loads((lattice_dir / "config.json").read_text())
-        )
-        validated_short_ids = _require_valid_short_ids(authorities, event_prefix)
-        rebuilt_index = _build_rebuilt_id_index(
-            current_index, validated_short_ids, max_observed_short_ids(lattice_dir)
+        return _repair_task_derived_files_unlocked(
+            lattice_dir, reconcile_placement=reconcile_placement
         )
 
-        lifecycle_by_id: dict[str, dict] = {}
-        for task_id, authority in authorities.items():
-            for event in authority.events:
-                if event.get("type") not in LIFECYCLE_EVENT_TYPES:
-                    continue
-                event_id = event["id"]
-                existing = lifecycle_by_id.get(event_id)
-                if existing is not None and existing != event:
-                    path, line = _authority_log_context(
-                        authority, event.get("data", {}).get("short_id")
-                    )
-                    raise AuthoritativeLogError(
-                        f"conflicting lifecycle event {event_id} for {task_id}",
-                        path=path,
-                        line=line,
-                    )
-                lifecycle_by_id[event_id] = event
-        lifecycle_events = sorted(
-            lifecycle_by_id.values(), key=lambda event: (event.get("ts", ""), event["id"])
-        )
-        lifecycle_content = "".join(serialize_event(event) for event in lifecycle_events)
 
-        # All failure-prone authority/prose/index parsing is complete. Durable
-        # repair writes begin only here, while the complete stable lock set is
-        # still held.
-        for task_id, authority in authorities.items():
-            if reconcile_placement:
-                _reconcile_placement(
-                    lattice_dir,
-                    task_id,
-                    authority.location,
-                    authority.event_bytes,
-                    authority.snapshot,
-                    inject_faults=False,
+def _lifecycle_events(authorities: dict[str, ResolvedTaskAuthority]) -> list[dict]:
+    """Every lifecycle event in the task logs, by ``(ts, id)``; a conflict raises."""
+    lifecycle_by_id: dict[str, dict] = {}
+    for task_id, authority in authorities.items():
+        for event in authority.events:
+            if event.get("type") not in LIFECYCLE_EVENT_TYPES:
+                continue
+            event_id = event["id"]
+            existing = lifecycle_by_id.get(event_id)
+            if existing is not None and existing != event:
+                path, line = _authority_log_context(
+                    authority, event.get("data", {}).get("short_id")
                 )
-            else:
-                _write_snapshot_in_place(lattice_dir, task_id, authority)
-        atomic_write(lattice_dir / "events" / "_lifecycle.jsonl", lifecycle_content)
-        save_id_index(lattice_dir, rebuilt_index)
+                raise AuthoritativeLogError(
+                    f"conflicting lifecycle event {event_id} for {task_id}",
+                    path=path,
+                    line=line,
+                )
+            lifecycle_by_id[event_id] = event
+    return sorted(lifecycle_by_id.values(), key=lambda event: (event.get("ts", ""), event["id"]))
+
+
+def _repair_task_derived_files_unlocked(
+    lattice_dir: Path, *, reconcile_placement: bool
+) -> list[str]:
+    """:func:`repair_task_derived_files` for a caller that holds its locks."""
+    task_ids = sorted(_collect_task_ids(lattice_dir))
+    authorities, findings = _inspect_task_authority_unlocked(lattice_dir)
+    failures = [finding["message"] for finding in findings if finding["level"] == "error"]
+    missing = sorted(set(task_ids) - set(authorities))
+    failures.extend(f"{task_id}: no valid authoritative event log" for task_id in missing)
+    if failures:
+        raise AuthoritativeLogError("; ".join(failures))
+
+    # Complete index and configured-prefix validation happens before the
+    # first snapshot, placement, lifecycle, or ids.json write.
+    current_index = _load_strict_id_index(lattice_dir)
+    event_prefix = configured_event_prefix(json.loads((lattice_dir / "config.json").read_text()))
+    validated_short_ids = _require_valid_short_ids(authorities, event_prefix)
+    rebuilt_index = _build_rebuilt_id_index(
+        current_index, validated_short_ids, max_observed_short_ids(lattice_dir)
+    )
+
+    lifecycle_events = _lifecycle_events(authorities)
+    lifecycle_content = "".join(serialize_event(event) for event in lifecycle_events)
+
+    # All failure-prone authority/prose/index parsing is complete. Durable
+    # repair writes begin only here, while the complete stable lock set is
+    # still held.
+    for task_id, authority in authorities.items():
+        if reconcile_placement:
+            _reconcile_placement(
+                lattice_dir,
+                task_id,
+                authority.location,
+                authority.event_bytes,
+                authority.snapshot,
+                inject_faults=False,
+            )
+        else:
+            _write_snapshot_in_place(lattice_dir, task_id, authority)
+    atomic_write(lattice_dir / "events" / "_lifecycle.jsonl", lifecycle_content)
+    save_id_index(lattice_dir, rebuilt_index)
     return sorted(authorities)

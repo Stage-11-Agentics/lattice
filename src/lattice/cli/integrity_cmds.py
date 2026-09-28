@@ -8,9 +8,12 @@ from pathlib import Path
 import click
 
 from lattice.cli.helpers import (
+    _store_actor,
+    _store_session_name,
     json_envelope,
     load_project_config,
     output_error,
+    require_actor,
     require_root,
 )
 from lattice.cli.main import cli
@@ -61,10 +64,35 @@ __all__ = ["inspect_task_authority"]  # re-exported for lattice.mcp.tools
 @cli.command()
 @click.option("--fix", is_flag=True, help="Attempt to fix detected issues.")
 @click.option("--json", "output_json", is_flag=True, help="Output structured JSON.")
+@click.option(
+    "--actor",
+    default=None,
+    expose_value=False,
+    callback=_store_actor,
+    help="With --fix: repair history by appending events attributed to this actor.",
+)
+@click.option(
+    "--name",
+    "session_name",
+    default=None,
+    expose_value=False,
+    callback=_store_session_name,
+    is_eager=True,
+    help="With --fix: the session name to attribute history repair to.",
+)
 @offline_maintenance_option
 def doctor(fix: bool, output_json: bool, offline_maintenance: bool) -> None:
-    """Check project integrity and report issues."""
+    """Check project integrity and report issues.
+
+    With --fix and an actor (--actor or --name), also repairs v1 history damage
+    (stale from values, out-of-prefix and duplicate short IDs) by appending
+    events; without an actor it lists them.
+    """
     is_json = output_json
+    ctx = click.get_current_context()
+    identity_given = ctx.obj.get("_actor") is not None or ctx.obj.get("_session_name") is not None
+    if identity_given and not fix:
+        output_error("--actor and --name apply only with --fix.", "VALIDATION_ERROR", is_json)
     if fix:
         refuse_on_hosted_checkout("doctor --fix", is_json)
     lattice_dir = require_root(is_json)
@@ -75,7 +103,80 @@ def doctor(fix: bool, output_json: bool, offline_maintenance: bool) -> None:
     if board_state(lattice_dir) == "cache":
         _doctor_cache(lattice_dir, is_json)
         return
-    _doctor_report(lattice_dir, fix, is_json)
+    actor = None
+    if fix and identity_given:
+        ctx.obj["_lattice_dir"] = lattice_dir
+        actor = require_actor(is_json)
+    _doctor_report(lattice_dir, fix, is_json, actor=actor)
+
+
+def _history_repair(lattice_dir: Path, report, actor, is_json: bool):  # noqa: ANN001, ANN202
+    """Run doctor --fix's history repair (SPEC §11); ``None`` when nothing to repair."""
+    from lattice.boards import reported_origin
+    from lattice.core.ids import generate_op_id
+    from lattice.storage.history_repair import repair_history
+
+    origin = {
+        "op": "doctor.fix",
+        "op_id": generate_op_id(),
+        "reported": reported_origin(lattice_dir.parent),
+    }
+    try:
+        return repair_history(lattice_dir, report, actor=actor, origin=origin)
+    except (AuthoritativeLogError, ValueError) as exc:
+        output_error(f"History repair failed: {exc}", "INTEGRITY_ERROR", is_json)
+
+
+def _value(value: object) -> str:
+    return json.dumps(value, sort_keys=True)
+
+
+def _render_history_repair(repair) -> list[str]:  # noqa: ANN001
+    """The plain-text lines for one history repair run."""
+    counts = repair.counts
+    lines = [
+        f"History repair {'appended' if repair.applied else 'would append'} "
+        f"{counts['events']} event{'s' if counts['events'] != 1 else ''}:"
+    ]
+    for task in repair.repairs:
+        label = f'{task.short_id or task.task_id} "{task.title}"'
+        for event in task.events:
+            data = event["data"]
+            if event["type"] == "task_short_id_assigned":
+                lines.append(f'  {data["supersedes"]} -> {data["short_id"]}  "{task.title}"')
+            elif event["type"] == "task_history_reconciled":
+                lines.append(
+                    f"  {label}: task_history_reconciled names {len(data['event_ids'])} "
+                    f"stale event{'s' if len(data['event_ids']) != 1 else ''}: "
+                    + ", ".join(data["event_ids"])
+                )
+            else:
+                name = data.get("field") or (
+                    "status" if event["type"] == "status_changed" else "assigned_to"
+                )
+                lines.append(
+                    f"  {label}: restore {name}: {_value(data['from'])} -> {_value(data['to'])}"
+                )
+    lines.append(
+        f"{counts['events']} events: {counts['reconciliations']} reconciliations, "
+        f"{counts['reassignments']} reassignments, {counts['restores']} restores."
+    )
+    if repair.refused:
+        lines.append(
+            "History repair appends nothing: these errors are not history damage it repairs:"
+        )
+        lines += [f"  - {message}" for message in repair.refused]
+        lines.append("Resolve them first, then run lattice doctor --fix --actor <you> again.")
+    elif repair.applied:
+        lines.append(
+            "Rebuilt the derived files. If a run stops before this rebuild, "
+            "lattice rebuild --all clears the drift it leaves."
+        )
+    else:
+        lines.append(
+            "Nothing was appended. Run lattice doctor --fix --actor <you> to append these events."
+        )
+    return lines
 
 
 def _doctor_cache(lattice_dir: Path, is_json: bool) -> None:
@@ -97,14 +198,30 @@ def _doctor_cache(lattice_dir: Path, is_json: bool) -> None:
 
 
 def _doctor_report(
-    lattice_dir: Path, fix: bool, is_json: bool, *, cache_findings: list[dict] | None = None
+    lattice_dir: Path,
+    fix: bool,
+    is_json: bool,
+    *,
+    cache_findings: list[dict] | None = None,
+    actor: str | dict | None = None,
 ) -> None:
     """Run every check on *lattice_dir*, print the report, and exit 1 on errors.
 
     ``cache_findings``: on a hosted cache, the comparison with the server's
-    manifest, reported as one more check.
+    manifest, reported as one more check. With *fix*, history repair runs
+    after the existing repairs; it appends only with an *actor*.
     """
     report = check_board(lattice_dir, fix=fix)
+    repair = _history_repair(lattice_dir, report, actor, is_json) if fix else None
+    if repair is not None and repair.applied:
+        trimmed = [f for f in report.findings if f.get("is_truncated_final")]
+        report = check_board(lattice_dir)
+        report.findings[:0] = trimmed
+        report.jsonl_ok = report.jsonl_ok and not trimmed
+    if repair is not None and not is_json:
+        for line in _render_history_repair(repair):
+            click.echo(line)
+        click.echo("")
     findings = report.findings
     task_count, event_count = report.task_count, report.event_count
     artifact_count, resource_count = report.artifact_count, report.resource_count
@@ -138,22 +255,20 @@ def _doctor_report(
             }
             clean_findings.append(clean)
 
-        click.echo(
-            json_envelope(
-                True,
-                data={
-                    "findings": clean_findings,
-                    "summary": {
-                        "tasks": task_count,
-                        "events": event_count,
-                        "artifacts": artifact_count,
-                        "resources": resource_count,
-                        "warnings": warnings,
-                        "errors": errors,
-                    },
-                },
-            )
-        )
+        data = {
+            "findings": clean_findings,
+            "summary": {
+                "tasks": task_count,
+                "events": event_count,
+                "artifacts": artifact_count,
+                "resources": resource_count,
+                "warnings": warnings,
+                "errors": errors,
+            },
+        }
+        if repair is not None:
+            data["history_repair"] = repair.to_json()
+        click.echo(json_envelope(True, data=data))
     else:
         click.echo(
             f"Checking {task_count} tasks, {event_count} events, {artifact_count} artifacts..."
@@ -233,6 +348,10 @@ def _doctor_report(
             for f in findings:
                 if f["check"] == "alias_integrity":
                     click.echo(f"\u26a0 {f['message']}")
+
+        for f in findings:
+            if f["check"] == "history_repair":
+                click.echo(f"\u2139 {f['message']}")
 
         for f in findings:
             if f["check"] == "missing_task_file":

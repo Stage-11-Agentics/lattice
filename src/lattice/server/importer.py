@@ -333,7 +333,9 @@ def _move_steps(slug: str) -> list[dict]:
         {
             "step": 2,
             "text": "Import a copy of the board on the server host (done). Read both lists: "
-            "paths not copied stay only in the old board.",
+            "paths not copied stay only in the old board. If import refuses, run its next "
+            "step on the local board (its writers are already stopped), commit nothing yet, "
+            "copy the board again, and repeat this step.",
             "commands": [],
         },
         {
@@ -474,12 +476,19 @@ def _summary(report: DoctorReport) -> dict:
     }
 
 
+#: The step an import refusal ends with (SPEC §11, AC-17).
+NEXT_STEP = (
+    "Next step: on the board, run 'lattice doctor --fix --actor <you>' with Lattice 2 "
+    "(it only appends events), confirm that 'lattice doctor' is clean, and import again."
+)
+
+
 def _doctor_refusal(report: DoctorReport, findings: list[dict]) -> OpError:
     lines = [f"  {f['level']}: {f['message']}" for f in findings]
     noun = "error" if report.errors == 1 else "errors"
     return OpError(
         "INTEGRITY_ERROR",
         f"Import refused: the board fails lattice doctor ({report.errors} {noun}); "
-        "nothing was created. Findings:\n" + "\n".join(lines),
+        "nothing was created. Findings:\n" + "\n".join(lines) + "\n" + NEXT_STEP,
         {"findings": findings, "summary": _summary(report)},
     )

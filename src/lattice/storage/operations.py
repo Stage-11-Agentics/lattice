@@ -18,7 +18,14 @@ from lattice.core.events import LIFECYCLE_EVENT_TYPES, serialize_event
 from lattice.core.origin import stamp_origin
 from lattice.core.comments import materialize_comments, validate_comment_for_delete
 from lattice.core.comments import validate_comment_for_edit, validate_comment_for_react
-from lattice.core.tasks import FromMismatchError, apply_event_to_snapshot, serialize_snapshot
+from lattice.core.tasks import (
+    HISTORY_RECONCILED,
+    FromMismatchError,
+    apply_event_to_snapshot,
+    is_stale_from,
+    reconciled_event_ids,
+    serialize_snapshot,
+)
 from lattice.storage.fs import atomic_write, ensure_dir, jsonl_append, unlink_path
 from lattice.storage.hooks import execute_hooks
 from lattice.storage.locks import lattice_lock, multi_lock, task_locks
@@ -105,6 +112,13 @@ class ResolvedTaskAuthority:
     event_bytes: bytes
     active_event_path: Path
     archived_event_path: Path
+    #: The log whose bytes were replayed (with two equal copies, the one at
+    #: ``location``). History repair appends here and nowhere else.
+    event_path: Path | None = None
+    #: Named events replay applied as recorded, their ``from`` stale (SPEC §11).
+    reconciled: tuple[str, ...] = ()
+    #: Lenient replay only: unnamed events whose ``from`` is stale.
+    stale: tuple[str, ...] = ()
 
 
 MutationCallback = Callable[[TaskMutationContext], TaskMutationDecision]
@@ -175,20 +189,95 @@ def _location_paths(lattice_dir: Path, task_id: str, location: TaskLocation) -> 
     }
 
 
-def _parse_authoritative_log(path: Path, task_id: str) -> tuple[tuple[dict, ...], dict, bytes]:
-    try:
-        raw = path.read_bytes()
-    except OSError as exc:
-        raise AuthoritativeLogError(str(exc), path=path) from exc
+_RECONCILED_MARKERS = (b"task_history_reconciled", b"\\u")
+
+
+def reconciliations_in_log(raw: bytes) -> list[tuple[int, dict]]:
+    """``(line, event)`` for every decoded ``task_history_reconciled`` in *raw*.
+
+    Only lines that contain the type's literal name or a ``\\u`` escape are
+    parsed: a letter or ``_`` in a JSON string is written either literally or
+    as ``\\uXXXX``, so no other line can decode to that type. Undecodable
+    lines are skipped here; strict replay reports them.
+    """
+    if not any(marker in raw for marker in _RECONCILED_MARKERS):
+        return []
+    found: list[tuple[int, dict]] = []
+    for line_number, raw_line in enumerate(raw.splitlines(), 1):
+        if not any(marker in raw_line for marker in _RECONCILED_MARKERS):
+            continue
+        try:
+            event = json.loads(raw_line)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        if isinstance(event, dict) and event.get("type") == HISTORY_RECONCILED:
+            found.append((line_number, event))
+    return found
+
+
+def _named_event_ids(raw: bytes, path: Path) -> set[str]:
+    """Every event ID the log's reconciliations name; a malformed one raises."""
+    named: set[str] = set()
+    for line_number, event in reconciliations_in_log(raw):
+        try:
+            named.update(reconciled_event_ids(event))
+        except ValueError as exc:
+            raise AuthoritativeLogError(
+                f"event {event.get('id')!r} cannot be materialized: {exc}",
+                path=path,
+                line=line_number,
+            ) from exc
+    return named
+
+
+@dataclass(frozen=True)
+class _ParsedLog:
+    events: tuple[dict, ...]
+    snapshot: dict
+    raw: bytes
+    #: Named events that replay applied as recorded (their ``from`` was stale).
+    reconciled: tuple[str, ...]
+    #: Lenient replay only: unnamed events with a stale ``from``, in log order.
+    stale: tuple[str, ...]
+
+
+def _parse_authoritative_log(
+    path: Path,
+    task_id: str,
+    *,
+    raw: bytes | None = None,
+    sibling_named: frozenset[str] = frozenset(),
+    lenient: bool = False,
+) -> _ParsedLog:
+    """Strictly replay one task log (SPEC §11's reconciliation rule included).
+
+    Replay first collects the event IDs the log's ``task_history_reconciled``
+    events name, plus *sibling_named* (those a compatible active/archive copy
+    names). A named event must have a stale ``from`` and is applied as
+    recorded; any other ``from`` mismatch fails. A name of the log's own that
+    matches no event in it fails after the full pass. *raw*: replay these
+    bytes instead of reading *path*. *lenient* (doctor's repair planning
+    only): an unnamed stale ``from`` is applied as recorded and collected in
+    ``stale`` instead of failing; nothing else is relaxed.
+    """
+    if raw is None:
+        try:
+            raw = path.read_bytes()
+        except OSError as exc:
+            raise AuthoritativeLogError(str(exc), path=path) from exc
     if raw and not raw.endswith(b"\n"):
         raise AuthoritativeLogError(
             "truncated final JSONL record; run lattice doctor --fix first", path=path
         )
+    own_named = _named_event_ids(raw, path)
+    named = own_named | sibling_named
 
     events: list[dict] = []
     seen_ids: set[str] = set()
     snapshot: dict | None = None
     location: TaskLocation = "active"
+    reconciled: list[str] = []
+    stale: list[str] = []
     for line_number, raw_line in enumerate(raw.splitlines(), 1):
         if not raw_line.strip():
             continue
@@ -224,7 +313,18 @@ def _parse_authoritative_log(path: Path, task_id: str) -> tuple[tuple[dict, ...]
             )
         try:
             _validate_semantic_event(events, event, location)
-            snapshot = apply_event_to_snapshot(snapshot, event)
+            accept = False
+            if event_id in named:
+                if not is_stale_from(snapshot, event):
+                    raise ValueError(
+                        f"{HISTORY_RECONCILED} names it, but its from value is not stale"
+                    )
+                accept = True
+                reconciled.append(event_id)
+            elif lenient and is_stale_from(snapshot, event):
+                accept = True
+                stale.append(event_id)
+            snapshot = apply_event_to_snapshot(snapshot, event, accept_stale_from=accept)
         except (KeyError, TypeError, ValueError) as exc:
             raise AuthoritativeLogError(
                 f"event {event_id!r} cannot be materialized: {exc}",
@@ -239,8 +339,18 @@ def _parse_authoritative_log(path: Path, task_id: str) -> tuple[tuple[dict, ...]
 
     if not events or snapshot is None:
         raise AuthoritativeLogError("authoritative log is empty", path=path)
+    absent = sorted(own_named - seen_ids)
+    if absent:
+        raise AuthoritativeLogError(
+            f"{HISTORY_RECONCILED} names event(s) absent from the log: {', '.join(absent)}",
+            path=path,
+        )
 
-    return tuple(events), snapshot, raw
+    return _ParsedLog(tuple(events), snapshot, raw, tuple(reconciled), tuple(stale))
+
+
+def _compatible(left: bytes, right: bytes) -> bool:
+    return left.startswith(right) or right.startswith(left)
 
 
 def resolve_task_authority(
@@ -248,18 +358,46 @@ def resolve_task_authority(
     task_id: str,
     *,
     allow_missing: bool = False,
+    lenient: bool = False,
+    override: Mapping[Path, bytes] | None = None,
 ) -> ResolvedTaskAuthority | None:
     """Resolve and strictly replay active/archive event-log candidates.
 
     Callers that mutate or repair state must hold the stable task locks.
+    *lenient* and *override* serve doctor's history repair only: replay
+    relaxed to collect unnamed stale ``from`` values (``stale``), and log
+    bytes to replay in place of a path's on-disk bytes.
     """
     active_path = _location_paths(lattice_dir, task_id, "active")["event"]
     archived_path = _location_paths(lattice_dir, task_id, "archived")["event"]
-    candidates: list[tuple[Path, tuple[dict, ...], dict, bytes]] = []
+    raws: dict[Path, bytes] = {}
     for path in (active_path, archived_path):
-        if path.exists():
-            events, snapshot, raw = _parse_authoritative_log(path, task_id)
-            candidates.append((path, events, snapshot, raw))
+        if override is not None and path in override:
+            raws[path] = override[path]
+        elif path.exists():
+            try:
+                raws[path] = path.read_bytes()
+            except OSError as exc:
+                raise AuthoritativeLogError(str(exc), path=path) from exc
+
+    # A compatible copy (equal, or an exact prefix) replays with the names the
+    # other copy's reconciliations carry, so an untouched copy that still holds
+    # a stale event does not block the repaired one (SPEC §11).
+    sibling: dict[Path, frozenset[str]] = {path: frozenset() for path in raws}
+    if len(raws) == 2 and _compatible(raws[active_path], raws[archived_path]):
+        for path, other in ((active_path, archived_path), (archived_path, active_path)):
+            if raws[other].endswith(b"\n"):
+                try:
+                    sibling[path] = frozenset(_named_event_ids(raws[other], other))
+                except AuthoritativeLogError:
+                    pass  # reported when the other copy is replayed
+
+    candidates: list[tuple[Path, _ParsedLog]] = []
+    for path, raw in raws.items():
+        parsed = _parse_authoritative_log(
+            path, task_id, raw=raw, sibling_named=sibling[path], lenient=lenient
+        )
+        candidates.append((path, parsed))
 
     if not candidates:
         snapshot_exists = any(
@@ -277,11 +415,11 @@ def resolve_task_authority(
     chosen = candidates[0]
     if len(candidates) == 2:
         left, right = candidates
-        if left[3] == right[3]:
+        if left[1].raw == right[1].raw:
             chosen = left
-        elif right[3].startswith(left[3]):
+        elif right[1].raw.startswith(left[1].raw):
             chosen = right
-        elif left[3].startswith(right[3]):
+        elif left[1].raw.startswith(right[1].raw):
             chosen = left
         else:
             raise AuthoritativeLogError(
@@ -289,21 +427,26 @@ def resolve_task_authority(
                 path=active_path,
             )
 
-    _, events, snapshot, raw = chosen
+    event_path, parsed = chosen
     location: TaskLocation = "active"
-    for event in events:
+    for event in parsed.events:
         if event["type"] == "task_archived":
             location = "archived"
         elif event["type"] == "task_unarchived":
             location = "active"
+    if len(candidates) == 2 and candidates[0][1].raw == candidates[1][1].raw:
+        event_path = archived_path if location == "archived" else active_path
     return ResolvedTaskAuthority(
         task_id=task_id,
-        events=events,
-        snapshot=snapshot,
+        events=parsed.events,
+        snapshot=parsed.snapshot,
         location=location,
-        event_bytes=raw,
+        event_bytes=parsed.raw,
         active_event_path=active_path,
         archived_event_path=archived_path,
+        event_path=event_path,
+        reconciled=parsed.reconciled,
+        stale=parsed.stale,
     )
 
 
@@ -1052,6 +1195,19 @@ def mutate_task_events(
         destination=destination,
         may_emit_lifecycle=may_emit_lifecycle,
     )
+
+
+def append_repair_events(event_path: Path, events: list[dict]) -> None:
+    """Append doctor's history-repair events to one task log (SPEC §11).
+
+    The only per-task append outside :func:`mutate_task`, which strictly
+    replays the log first and so cannot take a task whose history needs the
+    repair. The caller holds every task lock and has already replayed the
+    resulting bytes strictly; one write and one fsync, no hooks.
+    """
+    for event in events:
+        stamp_origin(event)
+    jsonl_append(event_path, "".join(serialize_event(event) for event in events))
 
 
 def scaffold_plan(

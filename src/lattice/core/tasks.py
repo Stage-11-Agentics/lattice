@@ -67,6 +67,71 @@ class FromMismatchError(ValueError):
     """A proposed event's ``from`` does not match the task's replayed state."""
 
 
+# ---------------------------------------------------------------------------
+# History reconciliation (SPEC §11, "A board doctor refuses")
+# ---------------------------------------------------------------------------
+
+#: Appended only by ``lattice doctor --fix --actor``: names events whose
+#: recorded ``from`` is stale, so replay applies them as recorded.
+HISTORY_RECONCILED = "task_history_reconciled"
+
+#: The event types whose ``from`` strict replay checks.
+FROM_CHECKED_TYPES: frozenset[str] = frozenset(
+    {"status_changed", "assignment_changed", "field_updated"}
+)
+
+
+def reconciled_event_ids(event: dict) -> list[str]:
+    """The event IDs a ``task_history_reconciled`` event names.
+
+    Raises ``ValueError`` unless ``data.event_ids`` is a non-empty list of strings.
+    """
+    data = event.get("data")
+    ids = data.get("event_ids") if isinstance(data, dict) else None
+    if (
+        not isinstance(ids, list)
+        or not ids
+        or not all(isinstance(event_id, str) and event_id for event_id in ids)
+    ):
+        raise ValueError(f"{HISTORY_RECONCILED} must name a non-empty list of event IDs")
+    return ids
+
+
+def _from_field(snapshot: dict, event: dict) -> tuple[bool, object]:
+    """``(checked, current)``: whether *event* carries a checked ``from``, and
+    the replayed value it is compared with."""
+    etype = event.get("type")
+    data = event.get("data")
+    if etype not in FROM_CHECKED_TYPES or not isinstance(data, dict) or "from" not in data:
+        return False, None
+    if etype == "status_changed":
+        return True, snapshot.get("status")
+    if etype == "assignment_changed":
+        return True, snapshot.get("assigned_to")
+    field = data.get("field")
+    if not isinstance(field, str):
+        return False, None
+    if field.startswith("custom_fields."):
+        return True, (snapshot.get("custom_fields") or {}).get(field[len("custom_fields.") :])
+    if field in PROTECTED_FIELDS:
+        return False, None
+    return True, snapshot.get(field)
+
+
+def is_stale_from(snapshot: dict | None, event: dict) -> bool:
+    """Does *event*'s recorded ``from`` disagree with *snapshot* (the replayed
+    state before it)? The same comparison the reducers make."""
+    if snapshot is None:
+        return False
+    checked, current = _from_field(snapshot, event)
+    if not checked:
+        return False
+    recorded = event["data"]["from"]
+    if event.get("type") == "field_updated":
+        return not _from_matches(recorded, current)
+    return recorded != current
+
+
 def is_backward_status_transition(
     from_status: str | None,
     to_status: str | None,
@@ -88,8 +153,14 @@ def is_backward_status_transition(
 # ---------------------------------------------------------------------------
 
 
-def apply_event_to_snapshot(snapshot: dict | None, event: dict) -> dict:
+def apply_event_to_snapshot(
+    snapshot: dict | None, event: dict, *, accept_stale_from: bool = False
+) -> dict:
     """Apply a single *event* to an existing *snapshot* (or ``None``).
+
+    ``accept_stale_from``: apply a ``from``-checked event as recorded even when
+    its ``from`` disagrees with *snapshot*. Strict replay sets it only for the
+    events a ``task_history_reconciled`` event names (SPEC §11).
 
     This is the **single materialization path** used by both incremental
     writes and full rebuild.  All timestamps are sourced from ``event["ts"]``
@@ -111,7 +182,10 @@ def apply_event_to_snapshot(snapshot: dict | None, event: dict) -> dict:
         # Deep copy so callers keep the original intact (including nested
         # dicts like custom_fields and lists like relationships_out).
         snap = copy.deepcopy(snapshot)
-        _apply_mutation(snap, etype, event)
+        if accept_stale_from and etype in FROM_CHECKED_TYPES:
+            _MUTATION_HANDLERS[etype](snap, event, stale_ok=True)
+        else:
+            _apply_mutation(snap, etype, event)
 
     # Every event updates bookkeeping fields.
     snap["last_event_id"] = event["id"]
@@ -246,15 +320,18 @@ _NOOP_EVENT_TYPES: frozenset[str] = frozenset(
         # itself carries the content; the event records its hash and size.
         "plan_written",
         "notes_written",
+        # Doctor's history repair (SPEC §11): replay reads the event IDs it
+        # names before applying any event; the snapshot changes no field.
+        HISTORY_RECONCILED,
     }
 )
 
 
 @_register_mutation("status_changed")
-def _mut_status_changed(snap: dict, event: dict) -> None:
+def _mut_status_changed(snap: dict, event: dict, *, stale_ok: bool = False) -> None:
     data = event["data"]
     from_status = data.get("from")
-    if "from" in data and from_status != snap.get("status"):
+    if not stale_ok and "from" in data and from_status != snap.get("status"):
         raise FromMismatchError(
             "status_changed from value does not match authoritative state: "
             f"expected {snap.get('status')!r}, got {from_status!r}"
@@ -288,9 +365,9 @@ def _mut_needs_human_cleared(snap: dict, event: dict) -> None:
 
 
 @_register_mutation("assignment_changed")
-def _mut_assignment_changed(snap: dict, event: dict) -> None:
+def _mut_assignment_changed(snap: dict, event: dict, *, stale_ok: bool = False) -> None:
     data = event["data"]
-    if "from" in data and data["from"] != snap.get("assigned_to"):
+    if not stale_ok and "from" in data and data["from"] != snap.get("assigned_to"):
         raise FromMismatchError(
             "assignment_changed from value does not match authoritative state: "
             f"expected {snap.get('assigned_to')!r}, got {data['from']!r}"
@@ -313,14 +390,14 @@ def _from_matches(recorded, current) -> bool:
 
 
 @_register_mutation("field_updated")
-def _mut_field_updated(snap: dict, event: dict) -> None:
+def _mut_field_updated(snap: dict, event: dict, *, stale_ok: bool = False) -> None:
     data = event["data"]
     field = data["field"]
     value = data["to"]
     if field.startswith("custom_fields."):
         key = field[len("custom_fields.") :]
         current = (snap.get("custom_fields") or {}).get(key)
-        if "from" in data and not _from_matches(data["from"], current):
+        if not stale_ok and "from" in data and not _from_matches(data["from"], current):
             raise FromMismatchError(
                 "field_updated from value does not match authoritative state: "
                 f"expected {current!r}, got {data['from']!r}"
@@ -334,7 +411,7 @@ def _mut_field_updated(snap: dict, event: dict) -> None:
             "Use the dedicated command (e.g., status, assign) instead."
         )
     else:
-        if "from" in data and not _from_matches(data["from"], snap.get(field)):
+        if not stale_ok and "from" in data and not _from_matches(data["from"], snap.get(field)):
             raise FromMismatchError(
                 "field_updated from value does not match authoritative state: "
                 f"expected {snap.get(field)!r}, got {data['from']!r}"
