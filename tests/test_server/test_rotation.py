@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -182,5 +183,10 @@ def test_a_live_project_is_quarantined_if_rotation_fails(
             board.rotate_epoch()
         assert caught.value.code == "BOARD_UNAVAILABLE"
         assert board.project.state == "unavailable"
-        assert reader.next(timeout=5) is None  # its streams are closed
+        # Its streams are closed: the stream ends, with nothing but heartbeats
+        # (queued before the close) ahead of the end.
+        deadline = time.monotonic() + 10  # a safety bound only
+        while (message := reader.next(timeout=10)) is not None:
+            assert message.event == "heartbeat", message
+            assert time.monotonic() < deadline, "the stream stayed open"
     assert (board.board / "hosted" / "rotation.json").exists()  # finished at next load
