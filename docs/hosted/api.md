@@ -57,7 +57,7 @@ curl -s "$LATTICE_URL/healthz"
  "projects": {"loaded": 3, "loading": 0, "unloaded": 0, "unavailable": 0}}
 ```
 
-Status 503 with `"ok": false` when free disk is below `limits.min_free_disk_bytes`. Project counts only; never slugs.
+`version` reads `2.0.0` from the release on; until the release sets it (SPEC §15), the package reports its pre-release number (`0.2.x`), as `client_version` below does. Status 503 with `"ok": false` when free disk is below `limits.min_free_disk_bytes`. Project counts only; never slugs.
 
 ## GET /v1/info
 

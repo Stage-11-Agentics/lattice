@@ -90,6 +90,9 @@ primary="$(git rev-parse --show-toplevel)"
 other="$(git worktree list --porcelain | sed -n 's/^worktree //p' | grep -vxF "$primary" | head -n 1)"
 check="$(cd "${other:-$primary}" && lattice create "Worktree check: delete me" --actor agent:worktree-check --quiet)"
 lattice list | grep "Worktree check"
+git worktree list --porcelain | sed -n 's/^worktree //p' | grep -vxF "$primary" | while read -r wt; do
+  (cd "$wt" && lattice list | grep "Worktree check")
+done
 lattice erase "$check" --reason "worktree check" --actor agent:worktree-check
 git status --short
 git worktree list --porcelain | sed -n 's/^worktree //p' | while read -r wt; do
@@ -97,7 +100,7 @@ git worktree list --porcelain | sed -n 's/^worktree //p' | while read -r wt; do
 done
 ```
 
-`lattice list` in the primary shows the task written in the linked worktree, and every `git status` prints nothing about `.lattice`.
+`lattice list` in the primary and in every linked worktree shows the task written in the first linked worktree, and every `git status` prints nothing about `.lattice`.
 
 **What it costs.** The board no longer travels with the repository. A clone on another machine, a teammate, or a CI job no longer sees it. If you need that, that is what a server is for: read on.
 
@@ -175,7 +178,7 @@ done
 curl -s http://127.0.0.1:8740/healthz
 ```
 
-The loop waits up to 10 seconds for the server to answer. `/healthz` answers `{"ok": true, ...}`. The server listens on `127.0.0.1:8740` by default. If nothing answers, read `$TRIAL/server.log`.
+The loop waits up to 10 seconds for the server to answer. `/healthz` answers `{"ok": true, "version": ..., ...}`. Until the 2.0 release sets the version (SPEC §15), the package reports its pre-release number (`0.2.x`) wherever a version appears; that is the same v2 code. The server listens on `127.0.0.1:8740` by default. If nothing answers, read `$TRIAL/server.log`.
 
 **Add the remote.** `team` is your local name for this server. `--token-stdin` stores the token in `~/.config/lattice/remotes.json`, which Lattice keeps at mode 0600:
 
@@ -421,7 +424,7 @@ The server speaks plain HTTP. For anything beyond loopback or a private encrypte
 - **terminate TLS** and forward to the server's `bind:port`;
 - **not buffer responses**, so the change stream (`/v1/projects/<slug>/stream`, Server-Sent Events) flows as it is written. The server sends `X-Accel-Buffering: no`, which nginx honors; other proxies need their own setting. A proxy that strips that header but does not buffer is fine. One that does buffer does not break anything: followers and hosted dashboards fall back to polling, and you lose only liveness;
 - **allow long reads**: an idle or read timeout well above `stream.heartbeat_seconds` (2 seconds by default). Minutes are fine. A fronting proxy such as Cloudflare closes idle connections after about 100 seconds, far above the default heartbeat; if you raise the heartbeat, keep it well below the proxy's idle timeout. The client reconnects when a stream ends;
-- **admit Lattice's User-Agent**: every request sends `User-Agent: lattice/<version>` (for example `lattice/2.0.0`), unless the remote's `headers` set a `User-Agent`, which then wins. Bot protection in front of the server (Cloudflare's Browser Integrity Check, for example) must let it through; otherwise requests fail with `PROXY_REJECTED` even with valid service credentials;
+- **admit Lattice's User-Agent**: every request sends `User-Agent: lattice/<version>` (for example `lattice/2.0.0`; before the release, `lattice/0.2.x`), unless the remote's `headers` set a `User-Agent`, which then wins. Bot protection in front of the server (Cloudflare's Browser Integrity Check, for example) must let it through; otherwise requests fail with `PROXY_REJECTED` even with valid service credentials;
 - **allow bodies** up to `limits.max_body_bytes` (16 MiB by default; attachments travel in the body);
 - **never redirect an API path** (`/v1/...`, `/healthz`) to a login page. The client refuses any redirect with `PROXY_REJECTED` and never sends its token to another location. If your proxy puts a login in front of the site, exempt `/v1/` from it, or give clients service credentials as headers (below).
 
