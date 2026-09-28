@@ -358,7 +358,11 @@ def test_mcp_tools_work_on_a_bound_checkout(
     from lattice.server import tokens
     from lattice.server.testing import make_root, running_server
 
-    root = make_root(tmp_path / "server", projects={"alpha": {"code": "ALP"}})
+    root = make_root(
+        tmp_path / "server",
+        projects={"alpha": {"code": "ALP"}},
+        config={"audit": {"enabled": False}},
+    )
     token = tokens.create_token(root, user="human:alice", machine="laptop", all_projects=True)[
         "token"
     ]

@@ -55,7 +55,7 @@ def test_sync_works_under_the_disk_floor_and_an_empty_sync_logs_below_info(
     at the head); a sync with no change writes no log line at ``info``."""
     from lattice.server.testing import serve_board
 
-    with serve_board(tmp_path, log_level="info") as board:
+    with serve_board(tmp_path, audit=False, log_level="info") as board:
         task = board.op("task.create", {"title": "t"})["task"]["id"]
         board.op("task.comment", {"task": task, "text": "c"})
         board.handle.state.disk.minimum = 2**62

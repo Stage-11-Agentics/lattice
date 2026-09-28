@@ -32,13 +32,14 @@ from tests.test_remote.hosted import (
 _LATTICE = [sys.executable, "-c", "from lattice.cli.main import cli; cli()"]
 
 
-def _review(checkout: Path, actor: str, delay: float, *extra: str) -> subprocess.Popen:
-    """A real ``lattice code-review`` process whose stub agent takes *delay* seconds."""
+def _review(checkout: Path, actor: str, gate: Path, *extra: str) -> subprocess.Popen:
+    """A real ``lattice code-review`` process whose stub agent finishes once *gate*
+    exists (the test decides the order, not the clock)."""
     return subprocess.Popen(
         [*_LATTICE, "code-review", "DEM-1", "--base", "main", "--head", "feat"]
         + ["--mode", "single", "--actor", actor, *extra],
         cwd=checkout,
-        env={**os.environ, "FAKE_AGENT_DELAY": str(delay)},
+        env={**os.environ, "FAKE_AGENT_GATE": str(gate)},
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -62,19 +63,21 @@ def test_the_displaced_review_leaves_the_forced_reviews_record_alone(
     def record() -> dict:
         return read_review_state(cache, task_id) or {}
 
-    older = _review(repo, "agent:older", 1.0)
+    older_gate, forced_gate = tmp_path / "older-done", tmp_path / "forced-done"
+    older = _review(repo, "agent:older", older_gate)
     forced = None
     try:
         assert wait_for(lambda: record().get("started_by_pid") == older.pid, 20), record()
         assert wait_for(lambda: record().get("agents"), 20)
         older_claim = record()["claim"]
 
-        forced = _review(repo, "agent:forced", 2.5, "--force")
+        forced = _review(repo, "agent:forced", forced_gate, "--force")
         assert wait_for(lambda: record().get("started_by_pid") == forced.pid, 20), record()
         forced_claim = record()["claim"]
         assert forced_claim != older_claim
 
         # The displaced review finishes while the forced one is still running.
+        older_gate.touch()
         out, err = older.communicate(timeout=30)
         assert older.returncode == 0, err
         assert forced.poll() is None, "the forced review must still be running"
@@ -94,9 +97,12 @@ def test_the_displaced_review_leaves_the_forced_reviews_record_alone(
         assert refused.exit_code == 1
         assert json.loads(refused.stdout)["error"]["code"] == "REVIEW_IN_FLIGHT"
 
+        forced_gate.touch()
         out, err = forced.communicate(timeout=30)
         assert forced.returncode == 0, err
     finally:
+        older_gate.touch()
+        forced_gate.touch()
         for proc in (older, forced):
             if proc is not None and proc.poll() is None:
                 proc.kill()
@@ -188,3 +194,32 @@ def test_adoption_never_displaces_a_force_that_landed_after_the_childs_read(
     held = read_review_state(lattice, "task_1")
     assert held is not None
     assert (held["started_by_pid"], held["claim"]) == (1, forced["claim"])
+
+
+def test_the_fake_agents_gate_fails_loudly_when_it_never_opens(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A gate that never appears is a failure (stderr, exit 1, no review), not
+    a silent run of the agent once the wait runs out."""
+    fake_agent_on_path(tmp_path, monkeypatch)
+    gate = tmp_path / "never"
+    done = subprocess.run(
+        ["claude"],
+        env={**os.environ, "FAKE_AGENT_GATE": str(gate), "FAKE_AGENT_GATE_POLLS": "2"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert done.returncode == 1
+    assert f"gate {gate} never appeared" in done.stderr
+    assert done.stdout == ""
+    gate.touch()  # an open gate runs the agent as before
+    opened = subprocess.run(
+        ["claude"],
+        env={**os.environ, "FAKE_AGENT_GATE": str(gate), "FAKE_AGENT_GATE_POLLS": "2"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert opened.returncode == 0, opened.stderr
+    assert opened.stdout

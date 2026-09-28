@@ -33,7 +33,7 @@ def _epoch(root: Path) -> str | None:
 def test_reset_triggers_a_full_resync_and_ends_byte_identical(tmp_path, monkeypatch) -> None:
     """H-10a's real ``rotate-epoch`` broadcasts ``reset``; the follower resyncs in
     full with H-10b's real ``catch_up`` and ends byte-identical with the server."""
-    with serve_board(tmp_path / "server", heartbeat_seconds=0.2) as srv:
+    with serve_board(tmp_path / "server", audit=False, heartbeat_seconds=0.2) as srv:
         root = bind(tmp_path / "b", srv.url, srv.token, monkeypatch)
         remote = Remote(alias="team", url=srv.url, token=srv.token)
         follower = Follower(root, remote, srv.slug, catch_up=cache.catch_up)

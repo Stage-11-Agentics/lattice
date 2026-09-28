@@ -30,8 +30,23 @@ FD_LIMIT = 256
 BOARD_TASKS = 300  # two keys each: 600 descriptors under the old whole-board lock
 
 
-def _open_fds() -> int:
-    return len(os.listdir("/dev/fd"))
+def _lock_fds(locks_dir: Path) -> int:
+    """How many of this process's descriptors are open on a file under *locks_dir*.
+
+    Matched by device and inode, so descriptors other threads or the test runner
+    open meanwhile never count (a whole-process count moved on a loaded CI box)."""
+    ours = {
+        (info.st_dev, info.st_ino)
+        for info in (entry.stat() for entry in locks_dir.iterdir() if entry.is_file())
+    }
+    count = 0
+    for name in os.listdir("/dev/fd"):
+        try:
+            info = os.fstat(int(name))
+        except OSError:
+            continue  # closed meanwhile, or listdir's own descriptor
+        count += (info.st_dev, info.st_ino) in ours
+    return count
 
 
 def _holder(locks_dir: Path, body: str) -> subprocess.Popen:
@@ -65,9 +80,14 @@ def _release(proc: subprocess.Popen) -> None:
 
 class TestTaskGate:
     def test_all_task_locks_holds_fixed_descriptors(self, tmp_path: Path) -> None:
-        before = _open_fds()
-        with all_task_locks(tmp_path, ["events__lifecycle", "ids_json"]):
-            assert _open_fds() - before <= 3
+        """Exactly the gate plus one per extra key, counted on this board's lock
+        files only, and none once released. (Whatever the board's size: it takes
+        no task list; ``test_board_operations_under_stock_descriptor_limit`` runs
+        a 300-task board under a 256-descriptor limit.)"""
+        extra = ["events__lifecycle", "ids_json"]
+        with all_task_locks(tmp_path, extra):
+            assert _lock_fds(tmp_path) == 1 + len(extra)
+        assert _lock_fds(tmp_path) == 0
 
     def test_different_tasks_run_concurrently(self, tmp_path: Path) -> None:
         held = threading.Event()

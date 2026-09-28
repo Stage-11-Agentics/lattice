@@ -40,7 +40,7 @@ from tests.test_remote.stream_stub import StubSyncer, TestProxy, wait_for
 
 @pytest.fixture
 def server(tmp_path) -> Iterator[BoardServer]:
-    with serve_board(tmp_path / "server", heartbeat_seconds=0.2) as srv:
+    with serve_board(tmp_path / "server", audit=False, heartbeat_seconds=0.2) as srv:
         yield srv
 
 

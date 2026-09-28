@@ -14,8 +14,24 @@ from lattice.server import tokens
 from lattice.server.testing import ServerHandle, make_root, running_server
 
 
+#: A server root whose projects have no audit repository (SPEC §8.10 is not their subject).
+NO_AUDIT = {"audit": {"enabled": False}}
+
+
 @pytest.fixture()
 def root(tmp_path: Path) -> Path:
+    """Two projects, audit off: each server stop's final audit commit and ``git gc``
+    were most of a test's teardown. Tests of the audit, or of the default config's
+    audit state, use :func:`audited_root` (``root`` overridden where a whole module
+    needs it)."""
+    return make_root(
+        tmp_path, projects={"alpha": {"code": "ALP"}, "beta": {"code": "BET"}}, config=NO_AUDIT
+    )
+
+
+@pytest.fixture()
+def audited_root(tmp_path: Path) -> Path:
+    """``root`` with the default server config: audit on."""
     return make_root(tmp_path, projects={"alpha": {"code": "ALP"}, "beta": {"code": "BET"}})
 
 

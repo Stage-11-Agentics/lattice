@@ -490,16 +490,24 @@ def test_nonfatal_hard_error_clears_and_backs_off(tmp_path) -> None:
         with Heartbeats(stream, 0.1, lambda: cache.server_head):
             assert wait_for(lambda: live_follower(tmp_path), 1)
             cache.raising = True
-            for seq in range(1, 30):  # a steady stream of triggers
+
+            def gaps() -> list[float]:
+                return [b - a for a, b in zip(cache.times, cache.times[1:])]
+
+            # A steady stream of triggers until the syncs have backed off to the cap.
+            seq = 0
+            deadline = time.monotonic() + 10  # a safety bound only
+            while not (len(cache.times) >= 3 and gaps()[-1] >= 0.35):
+                assert time.monotonic() < deadline, gaps()
+                seq += 1
                 cache.server_head = seq
                 stream.push(_entry(seq))
                 time.sleep(0.05)
                 assert not live_follower(tmp_path)
             thread.check()
             assert thread.is_alive()
-            gaps = [b - a for a, b in zip(cache.times, cache.times[1:])]
-            assert len(cache.times) >= 3
-            assert gaps[-1] >= 0.35, gaps  # backed off to the cap, not once per entry
+            # Backed off to the cap, not once per entry: far fewer syncs than entries.
+            assert len(cache.times) < seq, (len(cache.times), seq)
             assert follower.last_sync_error.startswith("INTEGRITY_ERROR")
             cache.raising = False
             # Recovery: the next sync after the backoff succeeds, and the next
@@ -511,7 +519,7 @@ def test_nonfatal_hard_error_clears_and_backs_off(tmp_path) -> None:
                 follower.announced,
             )
             thread.check()
-            assert follower.cache_head == follower.announced == 29
+            assert follower.cache_head == follower.announced == seq
     finally:
         follower.stop()
         thread.join(2)

@@ -98,7 +98,7 @@ def _free_port() -> int:
 
 @contextmanager
 def serve_with_fake_c11(tmp_path: Path) -> Iterator[tuple[ParityServer, Path, SocketWatch]]:
-    root = make_root(tmp_path)
+    root = make_root(tmp_path, config={"audit": {"enabled": False}})
     person, strict = _mint(root)
     bin_dir = tmp_path / "c11-bin"
     bin_dir.mkdir()

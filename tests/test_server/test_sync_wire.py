@@ -20,7 +20,7 @@ from lattice.server.testing import BoardServer, serve_board
 
 @pytest.fixture()
 def board(tmp_path: Path) -> Iterator[BoardServer]:
-    with serve_board(tmp_path) as served:
+    with serve_board(tmp_path, audit=False) as served:
         yield served
 
 

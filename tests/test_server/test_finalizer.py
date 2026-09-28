@@ -24,7 +24,7 @@ from tests.test_server.faults import Injector, install
 
 @pytest.fixture()
 def board(tmp_path: Path) -> Iterator[BoardServer]:
-    with serve_board(tmp_path, heartbeat_seconds=0.2) as served:
+    with serve_board(tmp_path, audit=False, heartbeat_seconds=0.2) as served:
         yield served
 
 
@@ -167,7 +167,7 @@ def _committed_line(board: BoardServer, task: str) -> tuple[dict, bytes, list[di
 @pytest.fixture()
 def fault_free(tmp_path: Path) -> str:
     """The finalized state a fault-free run produces, on an identical board."""
-    with serve_board(tmp_path / "reference") as board:
+    with serve_board(tmp_path / "reference", audit=False) as board:
         return _reference_run(board)
 
 
@@ -203,7 +203,7 @@ def test_a_fault_anywhere_leaves_the_live_state_unchanged_and_a_retry_completes_
     """(a) the live state is byte-for-byte unchanged after a fault after each
     sub-step; (b) a retry completes to exactly the fault-free state; (c) a second
     retry is a no-op."""
-    with serve_board(tmp_path / "board") as board:
+    with serve_board(tmp_path / "board", audit=False) as board:
         task = board.op("task.create", {"title": "t"})["task"]["id"]
         line, raw, events = _committed_line(board, task)
         project = board.project
