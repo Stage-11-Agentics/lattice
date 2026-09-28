@@ -430,3 +430,51 @@ def test_a_fresh_checkout_opens_the_window(tmp_path: Path) -> None:
     assert cache.open_window_in_order(root, None, _open(root)) is True
     assert _window(root).exists()
     assert not (root / ".lattice" / "locks").exists()  # nothing else created
+
+
+# ---------------------------------------------------------------------------
+# The record itself
+# ---------------------------------------------------------------------------
+
+_VALID = {
+    "generation": "g1",
+    "remote": "team",
+    "project": "demo",
+    "started": 3,
+    "finished": 2,
+    "kind": "applied",
+    "detail": None,
+}
+
+
+def _record(tmp_path: Path, data: object) -> Path:
+    locks = tmp_path / ".lattice" / "locks"
+    locks.mkdir(parents=True, exist_ok=True)
+    (locks / cache.TICKET_FILE).write_text(json.dumps(data))
+    return tmp_path / ".lattice"
+
+
+def test_a_valid_record_reads_back_field_for_field(tmp_path: Path) -> None:
+    lattice_dir = _record(tmp_path, _VALID)
+    ticket = cache._read_ticket(lattice_dir)
+    assert ticket == cache._Ticket("g1", "team", "demo", 3, 2, "applied", None)
+    cache._write_ticket(lattice_dir, ticket)  # and survives its own round trip
+    assert cache._read_ticket(lattice_dir) == ticket
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"generation": ""},
+        {"remote": 5},
+        {"project": None},
+        {"started": -1},
+        {"started": True},
+        {"finished": 4},  # finished beyond started
+        {"kind": "exploded"},
+        {"detail": 7},
+    ],
+)
+def test_an_invalid_record_reads_as_none(tmp_path: Path, change: dict) -> None:
+    assert cache._read_ticket(_record(tmp_path, {**_VALID, **change})) is None
+    assert cache._read_ticket(_record(tmp_path, ["not", "an", "object"])) is None

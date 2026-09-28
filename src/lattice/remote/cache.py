@@ -646,9 +646,11 @@ def _read_ticket(lattice_dir: Path) -> _Ticket | None:
         return None
     started, finished = _count(data.get("started")), _count(data.get("finished"))
     kind, detail = data.get("kind"), data.get("detail")
-    texts = [data.get(k) for k in ("generation", "remote", "project")]
+    generation, remote, project = data.get("generation"), data.get("remote"), data.get("project")
     if (
-        not all(isinstance(t, str) and t for t in texts)
+        not (isinstance(generation, str) and generation)
+        or not (isinstance(remote, str) and remote)
+        or not (isinstance(project, str) and project)
         or started is None
         or finished is None
         or finished > started
@@ -656,7 +658,7 @@ def _read_ticket(lattice_dir: Path) -> _Ticket | None:
         or not (detail is None or isinstance(detail, str))
     ):
         return None
-    return _Ticket(*texts, started, finished, kind, detail)  # type: ignore[arg-type]
+    return _Ticket(generation, remote, project, started, finished, kind, detail)
 
 
 def _write_ticket(lattice_dir: Path, ticket: _Ticket) -> None:
