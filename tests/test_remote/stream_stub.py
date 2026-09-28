@@ -33,7 +33,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -404,7 +404,22 @@ class StubSyncer:
         except (OSError, ValueError):
             return {}
 
-    def __call__(self, hosted_root: Path, *, bulk: bool = False) -> SyncOutcome:
+    def __call__(
+        self,
+        hosted_root: Path,
+        *,
+        bulk: bool = False,
+        adopt: frozenset[str] | None = None,
+        on_unreachable: Callable[[], None] | None = None,
+    ) -> SyncOutcome:
+        """``cache.catch_up``'s signature: *on_unreachable* runs when the sync
+        ends ``unreachable`` (the real syncer runs it under its lock)."""
+        outcome = self._sync(hosted_root)
+        if outcome.kind == "unreachable" and on_unreachable is not None:
+            on_unreachable()
+        return outcome
+
+    def _sync(self, hosted_root: Path) -> SyncOutcome:
         with self.lock:
             self.calls += 1
             root = Path(hosted_root)

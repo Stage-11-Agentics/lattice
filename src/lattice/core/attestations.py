@@ -85,17 +85,26 @@ def _git_ok(repo_root: Path, *args: str) -> bool:
 
 
 def compute_reachable_review_commits(
-    snapshot: dict, lattice_dir: Path, repo_root: Path, prospective: list[str] | None = None
+    snapshot: dict,
+    lattice_dir: Path,
+    repo_root: Path,
+    prospective: list[str] | None = None,
+    *,
+    shas: list[str] | None = None,
 ) -> list[dict]:
     """The client's attestation: each marker SHA checked in *repo_root*.
 
     ``exists``: ``git cat-file -e <sha>^{commit}``; ``reachable``:
     ``git merge-base --is-ancestor <sha> <branch>`` against the task's latest
-    branch link (false when the task has none).
+    branch link (false when the task has none). *shas*: the marker SHAs, when
+    the caller has already read them (so it can release a hosted cache's read
+    lock before git runs, SPEC §9.4).
     """
     branch = latest_branch(snapshot)
     entries: list[dict] = []
-    for sha in review_marker_shas(snapshot, lattice_dir, prospective):
+    if shas is None:
+        shas = review_marker_shas(snapshot, lattice_dir, prospective)
+    for sha in shas:
         exists = _git_ok(repo_root, "cat-file", "-e", f"{sha}^{{commit}}")
         reachable = branch is not None and _git_ok(
             repo_root, "merge-base", "--is-ancestor", sha, branch

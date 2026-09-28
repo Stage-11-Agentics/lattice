@@ -10,6 +10,7 @@ import click
 
 from lattice.cli import helpers
 from lattice.cli.helpers import (
+    end_read_phase,
     common_options,
     json_envelope,
     load_project_config,
@@ -609,6 +610,7 @@ def show_cmd(
     # Auto-detect branch links from git branches matching the task's short code
     short_id = snapshot.get("short_id")
     explicit_branches = [bl["branch"] for bl in snapshot.get("branch_links", [])]
+    end_read_phase(lattice_dir)  # the cache reads are done; git runs next
     all_branches = _get_all_git_branches(lattice_dir)
     auto_branches = _auto_detect_branch_links(short_id, explicit_branches, all_branches)
     auto_commits = _auto_detect_commits(short_id, lattice_dir)

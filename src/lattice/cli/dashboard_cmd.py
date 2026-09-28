@@ -13,6 +13,7 @@ import sys
 import click
 
 from lattice.cli.helpers import (
+    end_read_phase,
     json_envelope,
     json_error_obj,
     load_project_config,
@@ -212,6 +213,7 @@ def restart_cmd(port: int | None) -> None:
     if port is None:
         lattice_dir = require_root(False)
         config = load_project_config(lattice_dir)
+        end_read_phase(lattice_dir)  # before lsof (SPEC §9.4)
         port = config.get("dashboard_port", _DEFAULT_PORT)
 
     if not hasattr(signal, "SIGHUP"):

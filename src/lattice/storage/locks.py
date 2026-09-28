@@ -100,6 +100,32 @@ def task_lock_keys(task_ids: Iterable[str]) -> list[str]:
     return [key for task_id in task_ids for key in (f"events_{task_id}", f"tasks_{task_id}")]
 
 
+_frozen = threading.local()
+
+
+@contextlib.contextmanager
+def frozen_board(locks_dir: Path) -> Generator[None, None, None]:
+    """Declare, for this thread, that the board of *locks_dir* cannot change
+    until the block ends: a hosted cache under its shared read lock, which only
+    the syncer's exclusive apply can change. :func:`task_locks` without extra
+    keys is then a no-op, since there is no writer for it to exclude. Keyed by
+    process id, so a forked child starts with nothing frozen."""
+    key = (os.getpid(), os.path.abspath(locks_dir))
+    counts = getattr(_frozen, "counts", None)
+    if counts is None:
+        counts = _frozen.counts = {}
+    counts[key] = counts.get(key, 0) + 1
+    try:
+        yield
+    finally:
+        counts[key] -= 1
+
+
+def _is_frozen(locks_dir: Path) -> bool:
+    counts = getattr(_frozen, "counts", None)
+    return bool(counts) and counts.get((os.getpid(), os.path.abspath(locks_dir)), 0) > 0
+
+
 @contextlib.contextmanager
 def task_locks(
     locks_dir: Path,
@@ -108,7 +134,12 @@ def task_locks(
     timeout: float = 10,
 ) -> Generator[None, None, None]:
     """Lock the named tasks: the task gate shared, then the tasks' keys and
-    *extra_keys* through :func:`multi_lock`."""
+    *extra_keys* through :func:`multi_lock`. Nothing to lock on a board this
+    thread holds frozen (:func:`frozen_board`)."""
+    extra_keys = list(extra_keys)
+    if not extra_keys and _is_frozen(locks_dir):
+        yield
+        return
     with _task_gate(locks_dir, exclusive=False, timeout=timeout):
         with multi_lock(locks_dir, [*task_lock_keys(task_ids), *extra_keys], timeout=timeout):
             yield

@@ -162,7 +162,7 @@ def test_a_write_whose_post_write_sync_fails_still_succeeds(
 
     repo = _attached(hosted_env, tmp_path)
 
-    def unreachable(root: Path, *, bulk: bool = False) -> cache_mod.SyncOutcome:
+    def unreachable(root: Path, *, bulk: bool = False, **_: object) -> cache_mod.SyncOutcome:
         return cache_mod.SyncOutcome("unreachable", 0, "2026-01-01T00:00:00Z", "down")
 
     with monkeypatch.context() as patched:

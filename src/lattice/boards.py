@@ -165,6 +165,9 @@ class LocalBoard:
     def lattice_dir(self) -> Path:
         return self.root / LATTICE_DIR
 
+    def end_read_phase(self) -> None:
+        """Nothing to release on a local board."""
+
     def load_config(self) -> dict:
         import json
 
@@ -235,6 +238,14 @@ class HostedBoard:
             raise HostedReadError(exc.code, exc.message, exc.details) from exc
         return self.cache_dir
 
+    def end_read_phase(self) -> None:
+        """Release the cache's shared read lock before this command starts or
+        waits on another process (SPEC §9.4, "Writer preference"); the next
+        read through :attr:`lattice_dir` takes it again."""
+        from lattice.remote import session
+
+        session.release_read_lock(self.root)
+
     @property
     def label(self) -> str:
         return self.hosted.label
@@ -288,14 +299,16 @@ class HostedBoard:
         offline = session.window_open_at_start(self.hosted)
         session.release_read_lock(self.root)
         session.check_protocol(self.hosted)
+        since = session.sync_ticket(self.hosted)
         try:
             data = post_operation(self.remote, self.hosted.project, op_name, body, offline=offline)
         except OpError as exc:
             if exc.code == "SERVER_UNREACHABLE":
-                # Nothing was sent; the next write should not wait again (SPEC §8.6).
-                session.open_unreachable_window(self.hosted)
+                # Nothing was sent; the next write should not wait again (SPEC §8.6),
+                # unless a sync that began after this write has succeeded since.
+                session.open_unreachable_window_after(self.hosted, since)
             raise
-        session.close_unreachable_window(self.hosted)
+        session.close_unreachable_window_after(self.hosted, since)
         # Acknowledged: into the ledger before anything else can fail or die
         # (the post-write sync included), so verify always knows of it (SPEC §9.5).
         self._record_ack(data.get("op_id") or body["op_id"], data.get("seq"))

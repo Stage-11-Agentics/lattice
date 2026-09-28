@@ -457,6 +457,13 @@ def code_review(
             click.echo(msg)
         return
 
+    # The last board reads: git runs next (worktree, diff), so the cache's read
+    # lock is released before it (SPEC §9.4); review state is runtime state.
+    template = load_review_template(lattice_dir, "code-review")
+    plan_content = _read_plan(lattice_dir, task_id)
+    project_context = _read_project_context(lattice_dir)
+    _end_read_phase(lattice_dir)
+
     reviewed_worktree, worktree_error = _normalize_worktree(worktree)
     if worktree_error:
         output_error(worktree_error, "DIFF_RESOLUTION_FAILED", is_json)
@@ -478,6 +485,9 @@ def code_review(
             is_json=is_json,
             override=override,
         )
+        # --name resolves the session from the cache (require_root takes the
+        # read lock again): release it before git runs (SPEC §9.4).
+        _end_read_phase(lattice_dir)
 
     resolution = resolve_diff(
         lattice_dir, task_id, snapshot, base=base, head=head, worktree=reviewed_worktree
@@ -566,10 +576,7 @@ def code_review(
             )
         output_error(str(exc), "HEAD_SHA_UNKNOWN", is_json)
 
-    # Load and fill review template
-    template = load_review_template(lattice_dir, "code-review")
-    plan_content = _read_plan(lattice_dir, task_id)
-    project_context = _read_project_context(lattice_dir)
+    # Fill the review template (read before the read phase ended)
     prompt = (
         evidence_header
         + "\n"

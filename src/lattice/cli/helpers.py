@@ -40,6 +40,20 @@ _build_actor_dict = build_actor_dict
 # ---------------------------------------------------------------------------
 
 
+def end_read_phase(lattice_dir: Path) -> None:
+    """Release a hosted cache's shared read lock before this command starts or
+    waits on another process (SPEC §9.4, "Writer preference"); a later read
+    through :func:`require_root` or a board takes it again. A no-op on a local
+    board, which never imports the hosted client for it."""
+    import sys
+
+    if "lattice.remote.session" not in sys.modules:
+        return
+    from lattice.remote.session import release_read_lock
+
+    release_read_lock(Path(lattice_dir).parent)
+
+
 def require_root(is_json: bool = False) -> Path:
     """Find .lattice/ directory or exit with error."""
     try:

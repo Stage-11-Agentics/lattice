@@ -80,15 +80,24 @@ def run_cli(cwd: Path, *args: str, input: str | None = None, color: bool = False
         os.chdir(previous)
 
 
+_COORDINATION = frozenset({".lattice/locks/cache_sync.json", ".lattice/locks/cache_sync.lock"})
+
+
 def tree_hash(root: Path) -> dict[str, str]:
-    """Every file under *root* (names, modes, bytes), for "nothing changed" checks."""
+    """Every file under *root* (names, modes, bytes), for "nothing changed" checks.
+
+    Except the sync coordination files (``.lattice/locks/cache_sync.json`` and
+    ``cache_sync.lock``): they coordinate live processes and hold no board or
+    checkout state; a sync that could not reach the server still took a
+    ticket, and a refused write opens the offline window under the lock
+    (SPEC §9.4, §9.5)."""
     found: dict[str, str] = {}
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames.sort()
         for name in sorted(filenames):
             path = Path(dirpath) / name
             rel = path.relative_to(root).as_posix()
-            if rel.startswith(".git/"):
+            if rel.startswith(".git/") or rel in _COORDINATION:
                 continue
             found[rel] = hashlib.sha256(path.read_bytes()).hexdigest()
     return found
