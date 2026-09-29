@@ -525,6 +525,8 @@ def _plan_written(plan_path: Path, snapshot: dict, events: list[dict]) -> bool:
     from lattice.core.plans import scaffold_plan_text
 
     try:
+        # Universal newlines: CRLF and CR read as LF, so each generated
+        # scaffold below is normalized the same way before comparing.
         content = plan_path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return False
@@ -537,7 +539,7 @@ def _plan_written(plan_path: Path, snapshot: dict, events: list[dict]) -> bool:
             source.get("short_id") or snapshot.get("short_id"),
             source.get("description"),
         )
-        if content == generated:
+        if content == generated.replace("\r\n", "\n").replace("\r", "\n"):
             return False
     return not helpers.is_scaffold_plan(content, description=snapshot.get("description"))
 

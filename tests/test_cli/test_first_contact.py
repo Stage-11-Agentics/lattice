@@ -301,6 +301,36 @@ def test_program_name(info_name: str | None, expected: str) -> None:
         assert program_name() == expected
 
 
+@pytest.mark.parametrize("in_project", [True, False])
+def test_welcome_names_the_alias(tmp_path: Path, in_project: bool) -> None:
+    root = tmp_path / "here"
+    root.mkdir()
+    if in_project:
+        create_board(root, project_code="LOC", actor="human:a")
+    outputs = {}
+    previous = Path.cwd()
+    os.chdir(root)
+    try:
+        for prog in ("lattice", "lattice-v2"):
+            result = CliRunner().invoke(cli, [], prog_name=prog, env={"LATTICE_ROOT": None})
+            assert result.exit_code == 0, result.output
+            outputs[prog] = result.output
+    finally:
+        os.chdir(previous)
+    first = (
+        "  lattice list          Show all tasks"
+        if in_project
+        else ("  lattice init          Set up Lattice in your project")
+    )
+    assert first in outputs["lattice"].splitlines()
+    assert "Run 'lattice --help' for all commands." in outputs["lattice"]
+    aliased = outputs["lattice-v2"]
+    assert "Run 'lattice-v2 --help' for all commands." in aliased
+    assert "  lattice " not in aliased and "'lattice " not in aliased
+    # Only the program name differs.
+    assert aliased == outputs["lattice"].replace("lattice ", "lattice-v2 ")
+
+
 def test_program_name_outside_a_command() -> None:
     from lattice.cli.helpers import program_name
 
@@ -441,6 +471,26 @@ def test_plan_written(tmp_path: Path) -> None:
         plan.write_text(scaffoldish)
         assert not _plan_written(plan, snapshot, [created])
     plan.write_text("# DEM-1: New\n\n- step one\n")
+    assert _plan_written(plan, snapshot, [created])
+
+
+def test_plan_written_crlf_description(tmp_path: Path) -> None:
+    """A description with CRLF line ends: the scaffold file holds them as
+    written, reads back as LF, and still matches the generated scaffold."""
+    from lattice.cli.query_cmds import _plan_written
+    from lattice.core.plans import scaffold_plan_text
+
+    description = "- Fix this behavior\r\n- Verify it"
+    created = {
+        "type": "task_created",
+        "data": {"title": "T", "short_id": "DEM-1", "description": description},
+    }
+    snapshot = {"title": "T", "short_id": "DEM-1", "description": description}
+    plan = tmp_path / "p.md"
+    plan.write_bytes(scaffold_plan_text("T", "DEM-1", description).encode("utf-8"))
+    assert b"\r\n" in plan.read_bytes()
+    assert not _plan_written(plan, snapshot, [created])
+    plan.write_bytes(b"# DEM-1: T\r\n\r\n- step one\r\n")
     assert _plan_written(plan, snapshot, [created])
 
 

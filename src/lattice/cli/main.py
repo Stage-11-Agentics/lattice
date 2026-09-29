@@ -341,6 +341,7 @@ def cli(ctx: click.Context) -> None:
         return
 
     # No subcommand — show context-aware welcome
+    from lattice.program import program_name
     from lattice.storage.fs import find_root
 
     root = find_root()
@@ -348,24 +349,26 @@ def cli(ctx: click.Context) -> None:
         # Inside a project — nudge toward useful commands
         click.echo("Lattice: file-based, agent-native task tracker.\n")
         click.echo("You're in a Lattice project. Common commands:\n")
-        click.echo("  lattice list          Show all tasks")
-        click.echo("  lattice dashboard     Open the web dashboard")
-        click.echo("  lattice next          Pick the next task to work on")
-        click.echo("  lattice create        Create a new task")
-        click.echo("  lattice show <task>   View task details")
-        click.echo("\nRun 'lattice --help' for all commands.")
+        prog = program_name()
+        click.echo(f"  {prog} list          Show all tasks")
+        click.echo(f"  {prog} dashboard     Open the web dashboard")
+        click.echo(f"  {prog} next          Pick the next task to work on")
+        click.echo(f"  {prog} create        Create a new task")
+        click.echo(f"  {prog} show <task>   View task details")
+        click.echo(f"\nRun '{prog} --help' for all commands.")
     else:
         # Not in a project — guide them to get started
         click.echo("Lattice: file-based, agent-native task tracker.\n")
         click.echo("Get started:\n")
-        click.echo("  lattice init          Set up Lattice in your project")
-        click.echo("  lattice demo init     See a fully populated example\n")
+        prog = program_name()
+        click.echo(f"  {prog} init          Set up Lattice in your project")
+        click.echo(f"  {prog} demo init     See a fully populated example\n")
         click.echo(
             "Run these from the directory where your project lives.\n"
             "Lattice creates a .lattice/ folder there to track tasks,\n"
             "events, and coordination state — alongside your code."
         )
-        click.echo("\nRun 'lattice --help' for all commands.")
+        click.echo(f"\nRun '{prog} --help' for all commands.")
 
 
 # ---------------------------------------------------------------------------
