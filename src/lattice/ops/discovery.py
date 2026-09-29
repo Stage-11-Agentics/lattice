@@ -1,8 +1,10 @@
 """Find every operation: Lattice's own modules, then installed plugins.
 
-Discovery runs once, on the first registry lookup, rather than at package
+Discovery runs once, on the first lookup that needs it, rather than at package
 import: the CLI imports ``lattice.ops`` on every start, and scanning entry
-points there would slow read commands that never write.
+points there would slow read commands that never write. A lookup of a built-in
+name imports only that operation's module (:func:`import_builtin`); listing the
+registry, or a name no built-in module registers, runs full discovery.
 """
 
 from __future__ import annotations
@@ -35,6 +37,20 @@ def discover() -> None:
             return
         _discover()
         _discovered = True
+
+
+def import_builtin(name: str) -> None:
+    """Import the built-in module for operation *name*, if Lattice has one.
+
+    ``task.status`` lives in ``lattice.ops.task_status``. A missing module is
+    not an error (the name may be a plugin's); any other import failure is.
+    """
+    module = f"lattice.ops.{name.replace('.', '_')}"
+    try:
+        importlib.import_module(module)
+    except ModuleNotFoundError as exc:
+        if exc.name != module:
+            raise
 
 
 def _discover() -> None:

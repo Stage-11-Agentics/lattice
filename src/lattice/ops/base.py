@@ -155,11 +155,22 @@ def operation(name: str):  # noqa: ANN201
 
 
 def get_operation(name: str) -> type:
-    """Return the operation class registered as *name* (``UNKNOWN_OP`` if none)."""
-    from lattice.ops.discovery import discover
+    """Return the operation class registered as *name* (``UNKNOWN_OP`` if none).
 
-    discover()
+    A built-in ``<group>.<verb>`` lives in ``lattice.ops.<group>_<verb>``, so
+    that one module is imported first; full discovery (every built-in plus the
+    plugin entry points) runs only when that does not register *name*. A CLI
+    write thus skips importing the other operations.
+    """
+    from lattice.ops.discovery import discover, import_builtin
+
     cls = _REGISTRY.get(name)
+    if cls is None and _OP_NAME_RE.fullmatch(name):
+        import_builtin(name)
+        cls = _REGISTRY.get(name)
+    if cls is None:
+        discover()
+        cls = _REGISTRY.get(name)
     if cls is None:
         raise OpError("UNKNOWN_OP", f"Unknown operation '{name}'.", {"op": name})
     return cls
