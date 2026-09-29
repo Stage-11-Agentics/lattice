@@ -33,8 +33,13 @@ pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git is not 
 
 BOARD_FILES = 3000
 #: With two spinning threads, one changed file of 3,000: the worker staged in
-#: 0.11 s and in-process staging took 5-9 s (laptop, LAT-340).
+#: 0.11 s and in-process staging took 5-9 s (laptop, LAT-340). An absolute
+#: bound, so it runs in the perf lane on a quiet host (LAT-363).
 CONTENDED_LIMIT_SECONDS = 2.0
+#: The default suite's bound, relative to an idle stage measured in the same
+#: run: the worker's contended stage is about 1x its idle stage, in-process
+#: staging about 50x (LAT-363).
+CONTENDED_LIMIT_RATIO = 10
 QUICK = AuditConfig(debounce_seconds=0.05, max_interval_seconds=1)
 
 
@@ -123,7 +128,34 @@ def test_a_worker_that_dies_mid_stage_is_a_git_error(
     assert stager._worker is None
 
 
+def _timed_stage(stager: Stager, changed: Path, content: str, busy: int) -> float:
+    changed.write_text(content)
+    with _busy_threads(busy):
+        started = time.monotonic()
+        stager.stage()
+        return time.monotonic() - started
+
+
 def test_busy_server_threads_do_not_slow_the_stage(tmp_path: Path) -> None:
+    """Load-independent: the contended stage against an idle one timed in the same
+    run, alternating, best of three each, so machine load slows both alike."""
+    directory = _repo(tmp_path, BOARD_FILES)
+    changed = directory / ".lattice" / "tasks" / "task_00000.json"
+    stager = Stager(directory)
+    idle: list[float] = []
+    contended: list[float] = []
+    try:
+        stager.stage()  # start the worker and fill its cache
+        for n in range(3):
+            idle.append(_timed_stage(stager, changed, f"idle {n}\n", busy=0))
+            contended.append(_timed_stage(stager, changed, f"busy {n}\n", busy=2))
+    finally:
+        stager.close()
+    assert min(contended) < CONTENDED_LIMIT_RATIO * min(idle), (idle, contended)
+
+
+@pytest.mark.perf
+def test_busy_server_threads_do_not_slow_the_stage_on_a_quiet_host(tmp_path: Path) -> None:
     directory = _repo(tmp_path, BOARD_FILES)
     stager = Stager(directory)
     try:
