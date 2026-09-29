@@ -11,8 +11,11 @@
   ``Lattice-Protocol`` (a different value is ``PROTOCOL_MISMATCH``); a JSON
   endpoint's response must also be ``application/json`` with a parseable
   envelope. Anything else (a proxy's login page, an error page) fails with
-  ``PROXY_REJECTED``, naming the status and content type, whatever the status
-  (a proxy's 502 page included): it is never read as success or as unreachable.
+  ``PROXY_REJECTED``, naming the status and content type: it is never read as
+  success or as unreachable. One carve-out: a 502, 503 or 504 without
+  ``Lattice-Protocol`` is a gateway failure, raised as :class:`GatewayUnavailable`
+  (an :class:`Unreachable`), so every caller treats it as the server being
+  unreachable. Every other status keeps ``PROXY_REJECTED``.
 - **Bounded time.** A :class:`Policy` bounds the connect and the wait for the
   response to start; once the server has started answering, the body has
   60 seconds plus 2 seconds per MiB announced (``Content-Length``), with a
@@ -116,10 +119,26 @@ class Unreachable(Exception):
     received (it matters for writes, SPEC §8.6).
     """
 
-    def __init__(self, reason: str, *, sent: bool = False):
+    def __init__(self, reason: str, *, sent: bool = False, retry_after: float | None = None):
         super().__init__(reason)
         self.reason = reason
         self.sent = sent
+        self.retry_after = retry_after
+
+
+#: The statuses a gateway in front of the server answers when it cannot reach
+#: it (SPEC §9.1): without ``Lattice-Protocol`` they mean "unreachable".
+GATEWAY_STATUSES = frozenset({502, 503, 504})
+
+
+class GatewayUnavailable(Unreachable):
+    """A gateway in front of the server answered 502, 503 or 504 itself (no
+    ``Lattice-Protocol``). ``sent`` is true for 502 and 504: the gateway may
+    have forwarded the request before it failed (SPEC §8.6)."""
+
+    def __init__(self, reason: str, *, status: int, retry_after: float | None = None):
+        super().__init__(reason, sent=status != 503, retry_after=retry_after)
+        self.status = status
 
 
 class ServerError(OpError):
@@ -374,8 +393,9 @@ def request(
     chunk instead of being kept in memory. ``what`` names the request in error
     messages (default: the method and path).
 
-    Raises ``Unreachable``, ``ServerError`` (a Lattice error envelope),
-    ``PROXY_REJECTED``, or ``PROTOCOL_MISMATCH``.
+    Raises ``Unreachable`` (``GatewayUnavailable`` for a gateway's 502, 503 or
+    504), ``ServerError`` (a Lattice error envelope), ``PROXY_REJECTED``, or
+    ``PROTOCOL_MISMATCH``.
     """
     url = remote.url + path
     what = what or f"{method} {path.split('?', 1)[0]}"
@@ -522,6 +542,13 @@ def _check(
     content_type = headers.get("content-type")
     protocol = headers.get(HEADER_PROTOCOL.lower())
     if protocol is None:
+        if status in GATEWAY_STATUSES:
+            kind = content_type or "no content type"
+            raise GatewayUnavailable(
+                f"a gateway in front of it answered HTTP {status} ({kind})",
+                status=status,
+                retry_after=parse_retry_after(headers.get("retry-after")),
+            )
         raise _not_lattice(remote, what, status, content_type)
     if protocol.strip() != str(PROTOCOL):
         raise OpError(
@@ -631,8 +658,9 @@ def open_stream(
 
     The response must be a Lattice server's ``text/event-stream``: a redirect,
     a missing ``Lattice-Protocol``, or any other content type is
-    ``PROXY_REJECTED`` (a different protocol is ``PROTOCOL_MISMATCH``), and a
-    Lattice error envelope raises :class:`ServerError`. *policy* bounds the
+    ``PROXY_REJECTED`` (a different protocol is ``PROTOCOL_MISMATCH``; a
+    gateway's 502, 503 or 504 is :class:`GatewayUnavailable`), and a Lattice
+    error envelope raises :class:`ServerError`. *policy* bounds the
     connect and the wait for the headers; after that each read waits at most
     *read_timeout* (the stream is endless, so it has no body deadline).
     """

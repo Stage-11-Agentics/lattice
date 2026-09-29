@@ -6,11 +6,13 @@
   until a new option is actually used.
 - :func:`post_operation` sends one operation call, retrying with the **same**
   ``op_id`` for up to the remote's ``retry_seconds`` on a connection error, a
-  read timeout, HTTP 429, 502, or 504, and HTTP 503 unless the envelope says
-  ``BOARD_UNAVAILABLE``. It waits ``Retry-After`` when given, else backs off
-  from 0.5 s doubling to 5 s, and says so on stderr (never silently). When it
-  gives up, ``SERVER_UNREACHABLE`` means no attempt ever reached the server
-  (nothing was written); ``OUTCOME_UNKNOWN`` means one may have been applied.
+  read timeout, a gateway's 502, 503, or 504 (no ``Lattice-Protocol``; it
+  counts as unreachable, SPEC §9.1), HTTP 429, 502, or 504, and HTTP 503
+  unless the envelope says ``BOARD_UNAVAILABLE``. It waits ``Retry-After``
+  when given, else backs off from 0.5 s doubling to 5 s, and says so on stderr
+  (never silently). When it gives up, ``SERVER_UNREACHABLE`` means no attempt
+  ever reached the server (nothing was written); ``OUTCOME_UNKNOWN`` means one
+  may have been applied (a gateway's 502 or 504 may have forwarded it).
   A write started inside the offline window gives up at once when its first
   attempt cannot connect, so a stopped server costs one wait per outage.
 """
@@ -255,6 +257,7 @@ def post_operation(
             reached = reached or exc.sent
             detail = exc.reason
             progress.state = "not available"
+            wait = exc.retry_after  # a gateway's 503 may name one (SPEC §8.6)
             if first and offline and not exc.sent:
                 raise write_unreachable(remote, detail, _now() - started) from None
         except http.ServerError as exc:

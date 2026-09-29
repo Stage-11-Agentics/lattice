@@ -41,7 +41,8 @@ Hard failures raise ``OpError`` (``PROXY_REJECTED``, ``PROTOCOL_MISMATCH``, a
 non-transient server error, ``NOT_HOSTED``, the remote's first-contact errors,
 and ``INTEGRITY_ERROR`` for a delta rejected whole, with ``details.reason``
 ``UNSAFE_PATH``, ``CROSS_ORIGIN_HREF``, ``MALFORMED_SYNC``, or
-``HASH_MISMATCH``). Everything transient is an outcome.
+``HASH_MISMATCH``). Everything transient is an outcome; a gateway's 502, 503
+or 504 (SPEC §9.1) is transient, retried once after about a second.
 
 ``fcntl`` is imported only inside the functions that take a cache lock, so
 local Lattice keeps importing without it (G-6).
@@ -109,6 +110,10 @@ SYNCED_DIR_MODE = 0o500
 PRIVATE_DIR_MODE = 0o700
 
 PROBE_SECONDS = 5.0
+#: A gateway's 502, 503 or 504 (SPEC §9.1) is retried once per sync, after at
+#: most this long (its ``Retry-After`` when given, and only when that fits),
+#: inside the probe budget; then the sync ends ``unreachable`` (SPEC §9.5).
+GATEWAY_RETRY_SECONDS = 1.0
 #: Whole cycles a sync may restart after a hash mismatch or a stale ``href``.
 MAX_CYCLES = 3
 _SHA256_CHARS = frozenset("0123456789abcdef")
@@ -123,6 +128,8 @@ OutcomeKind = Literal["applied", "unchanged", "unreachable", "busy", "incomplete
 #: ``rescue_dir_synced``, ``rescue_unlinked``, ``file_written``, ``removed``,
 #: ``modes_restored``, ``state_written``). ``None`` in production.
 _seam: Callable[[str], None] | None = None
+#: Test seam: the wait before a sync's one retry after a gateway failure.
+_sleep: Callable[[float], None] = time.sleep
 
 
 def _step(name: str) -> None:
@@ -805,6 +812,8 @@ class _Syncer:
     staged: dict[str, Path] = field(default_factory=dict)
     #: The ticket this syncer published last (``None``: none, or not published).
     ticket: _Ticket | None = None
+    #: Whether this sync has spent its one retry after a gateway failure.
+    gateway_retried: bool = False
 
     @property
     def lattice_dir(self) -> Path:
@@ -935,17 +944,15 @@ class _Syncer:
         self, path: str, *, what: str, expect: str = "json", sink: Callable | None = None
     ) -> http.Response:
         try:
-            return http.request(
-                self.remote,
-                "GET",
-                path,
-                expect=expect,
-                policy=self._policy()
-                if expect == "json"
-                else http.BULK.with_progress(f"syncing {self.label}"),
-                sink=sink,
-                what=what,
-            )
+            try:
+                return self._request(path, what=what, expect=expect, sink=sink)
+            except http.GatewayUnavailable as exc:
+                wait = self._gateway_wait(exc)
+                if wait is None:
+                    raise
+                self.gateway_retried = True
+                _sleep(wait)
+                return self._request(path, what=what, expect=expect, sink=sink)
         except http.Unreachable as exc:
             raise _Transient(
                 "unreachable", f"cannot reach {self.remote.alias}: {exc.reason}"
@@ -957,6 +964,35 @@ class _Syncer:
             if kind is not None:
                 raise _Transient(kind, f"{self.remote.alias} answered {exc.code}") from None
             raise
+
+    def _request(
+        self, path: str, *, what: str, expect: str, sink: Callable | None
+    ) -> http.Response:
+        return http.request(
+            self.remote,
+            "GET",
+            path,
+            expect=expect,
+            policy=self._policy()
+            if expect == "json"
+            else http.BULK.with_progress(f"syncing {self.label}"),
+            sink=sink,
+            what=what,
+        )
+
+    def _gateway_wait(self, exc: http.GatewayUnavailable) -> float | None:
+        """How long to wait before the one retry after a gateway failure, or
+        ``None`` when it is spent or would not fit: a ``Retry-After`` above
+        :data:`GATEWAY_RETRY_SECONDS`, or a wait that leaves the probe budget
+        under a second for the retry itself."""
+        if self.gateway_retried:
+            return None
+        wait = GATEWAY_RETRY_SECONDS if exc.retry_after is None else exc.retry_after
+        if wait > GATEWAY_RETRY_SECONDS:
+            return None
+        if self.deadline is not None and time.monotonic() + wait + 1.0 > self.deadline:
+            return None
+        return wait
 
     # -- fetch and verify -----------------------------------------------------
 
