@@ -6,10 +6,11 @@
 <title>Issues (Take A: Inbox)</title>
 <link rel="stylesheet" href="shared/shell.css">
 <style>
-/* Take A: Inbox. A queue on the left, the selected issue in full on the right.
-   Every fixed width and height below exists so that nothing moves while the viewer decides. */
+/* Take A: Inbox, round 2. A viewer, not a place to decide: a quiet queue on the left, the selected issue
+   on the right with its photos and video inline. Decisions are made by telling an agent, so the ID is
+   prominent and one click copies it. Fixed sizes below exist so nothing moves while reading. */
 :root{
-  --qw:clamp(28rem,26vw,38rem);
+  --qw:clamp(25rem,24vw,34rem);
   --row-h:4.5rem;
   --proto:#C084FC;--proto-bg:#3B0764;--proto-text:#F3E8FF;
 }
@@ -18,9 +19,9 @@ body{overflow:hidden}
 
 /* ---------- left: the queue ---------- */
 .q-pane{display:flex;flex-direction:column;min-height:0;border-right:1px solid var(--border);background:var(--surface-card)}
-.q-tabs{display:grid;grid-template-columns:1.35fr 1.2fr 1fr .9fr;gap:.375rem;padding:.75rem .75rem .5rem}
+.q-tabs{display:grid;grid-template-columns:1.45fr 1.3fr 1fr .85fr;gap:.375rem;padding:.75rem .75rem;border-bottom:1px solid var(--border-subtle)}
 .q-tab{position:relative;height:3.25rem;text-align:left;padding:.3rem .55rem;border:1px solid var(--border);border-radius:var(--radius-sm);
-  background:var(--surface);color:var(--text-secondary);cursor:pointer;font-size:.74rem;line-height:1.2;overflow:hidden}
+  background:var(--surface);color:var(--text-secondary);cursor:pointer;font-size:.7rem;line-height:1.2;overflow:hidden}
 .q-tab:hover{background:var(--surface-hover)}
 .q-tab .q-tab-label{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .q-tab .q-tab-count{display:block;font-size:1.2rem;font-weight:700;color:var(--text-primary);margin-top:.1rem}
@@ -28,155 +29,124 @@ body{overflow:hidden}
 .q-tab[aria-pressed=true]{border-color:var(--accent-primary);background:var(--surface-raised);color:var(--text-primary);box-shadow:inset 0 -2px 0 var(--accent-primary)}
 .q-tab[data-q=open] .q-tab-count{color:var(--st-open)}
 
-.progress{padding:.5rem .875rem .625rem;border-top:1px solid var(--border-subtle);border-bottom:1px solid var(--border-subtle)}
-.pg-top{display:flex;align-items:baseline;gap:.625rem}
-.pg-num{font-size:2.25rem;font-weight:700;line-height:1;width:3ch;text-align:right;color:var(--st-open)}
-.pg-num.zero{color:var(--st-resolved)}
-.pg-label{font-size:.9rem;color:var(--text-secondary);white-space:nowrap}
-.pg-bar{height:4px;background:var(--border);border-radius:2px;margin:.5rem 0 .5rem;overflow:hidden}
-.pg-bar span{display:block;height:100%;background:var(--st-resolved);width:0;transition:width .25s ease}
-.pg-tally{display:flex;align-items:center;gap:.25rem;font-size:.78rem;color:var(--text-muted);white-space:nowrap}
-.pg-tally .t{display:inline-flex;gap:.35rem;align-items:baseline;margin-left:.6rem}
-.pg-tally .t b{display:inline-block;width:2ch;text-align:right;color:var(--text-primary);font-weight:700}
-
-.selbar{height:2.25rem;display:flex;align-items:center;gap:.5rem;padding:0 .875rem;font-size:.78rem;color:var(--text-muted);border-bottom:1px solid var(--border-subtle);white-space:nowrap}
-.selbar .sel-text{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
-.selbar.has{background:var(--accent-glow);color:var(--text-primary)}
-.selbar .btn{width:4.5rem}
-
 .q-list{flex:1;overflow-y:auto;min-height:0}
-.q-row{display:flex;gap:.625rem;height:var(--row-h);padding:.5rem .875rem .5rem .625rem;border-bottom:1px solid var(--border-row);border-left:3px solid transparent;cursor:pointer}
+.q-row{display:flex;gap:.625rem;height:var(--row-h);padding:.5rem .75rem;border-bottom:1px solid var(--border-row);border-left:3px solid transparent;cursor:pointer}
 .q-row:hover{background:var(--surface-hover)}
 .q-row.cursor{background:var(--surface-raised);border-left-color:var(--accent-primary)}
-.q-check{flex:0 0 1.05rem;height:1.05rem;margin-top:.15rem;border:1px solid var(--border);border-radius:var(--radius-sm);display:flex;align-items:center;justify-content:center;font-size:.72rem;color:transparent;background:var(--bg-base)}
-.q-row.sel .q-check{background:var(--accent-primary);border-color:var(--accent-primary);color:#fff}
-.q-check.off{visibility:hidden}
 .q-main{flex:1;min-width:0}
 .q-top{display:flex;align-items:center;gap:.5rem;font-size:.78rem;height:1.3rem}
-.q-top .iid{font-size:.82rem;width:5.5rem;flex-shrink:0}
+.q-top .iid{font-size:.82rem;width:5.25rem;flex-shrink:0}
 .q-tag{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-muted)}
-.q-age{flex-shrink:0;width:4.5rem;text-align:right;color:var(--text-muted)}
+.q-age{flex-shrink:0;width:4.25rem;text-align:right;color:var(--text-muted)}
 .q-text{font-size:.9rem;line-height:1.35;color:var(--text-secondary);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-top:.1rem}
 .q-row.cursor .q-text{color:var(--text-primary)}
+/* The thumbnail slot is reserved on every row, at the right, so text always starts at the same x and a
+   row never reflows when media arrives. Empty, it is invisible: ragged-right text hides it. */
+.q-thumb{position:relative;flex:0 0 5rem;height:3.25rem;align-self:center;border-radius:var(--radius-sm);overflow:hidden;background:#0A0A0A;border:1px solid var(--border)}
+.q-thumb.none{background:transparent;border-color:transparent}
+.q-thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.q-badge{position:absolute;font-size:.64rem;line-height:1;padding:.15rem .25rem;border-radius:2px;background:rgba(0,0,0,.78);color:#fff;font-weight:700}
+.q-vid{left:.2rem;bottom:.2rem}
+.q-count{right:.2rem;top:.2rem;background:var(--accent-primary)}
 .q-empty{padding:2.5rem 1.25rem;color:var(--text-muted);font-size:.9rem;line-height:1.6}
-.q-foot{height:2rem;display:flex;align-items:center;gap:.5rem;padding:0 .875rem;border-top:1px solid var(--border-subtle);font-size:.74rem;color:var(--text-muted);white-space:nowrap;overflow:hidden}
+.q-foot{height:2rem;display:flex;align-items:center;gap:.4rem;padding:0 .875rem;border-top:1px solid var(--border-subtle);font-size:.74rem;color:var(--text-muted);white-space:nowrap;overflow:hidden}
+.q-foot .sep{width:.5rem}
 
 /* ---------- right: the issue ---------- */
 .d-pane{display:flex;flex-direction:column;min-width:0;min-height:0}
-.undo-strip{height:2.5rem;flex-shrink:0;display:flex;align-items:center;gap:.75rem;padding:0 1.5rem;border-bottom:1px solid var(--border-subtle);font-size:.85rem;color:var(--text-secondary)}
-.undo-strip .u-msg{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.undo-strip .btn{width:6.5rem;flex-shrink:0}
-.undo-strip.pulse{animation:pulse 1.1s ease-out}
-@keyframes pulse{0%{background:rgba(234,88,12,.22)}100%{background:transparent}}
+.d-head{height:3rem;flex-shrink:0;display:flex;align-items:center;gap:.75rem;padding:0 2rem;border-bottom:1px solid var(--border-subtle);font-size:.8rem;color:var(--text-muted);white-space:nowrap}
+.id-copy{font-family:var(--font-mono);font-size:1.15rem;font-weight:700;color:var(--text-primary);background:transparent;border:1px solid transparent;border-radius:var(--radius-sm);
+  padding:.05rem .35rem;margin-left:-.35rem;cursor:copy;width:6.75rem;height:2rem;text-align:left;flex-shrink:0}
+.id-copy:hover{border-color:var(--border);background:var(--surface-hover)}
+.copy-status{width:4.25rem;height:1.2rem;line-height:1.2rem;flex-shrink:0;font-size:.74rem;color:var(--text-muted)}
+.copy-status.done{color:var(--accent-primary);font-weight:700}
+.d-facts{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.d-facts .actor{font-size:.7rem}
 
-.d-head{height:3.25rem;flex-shrink:0;display:flex;align-items:center;gap:.75rem;padding:0 1.5rem}
-.d-head .iid{font-size:1.15rem;width:6.5rem}
-.d-head .d-filed{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.85rem;color:var(--text-secondary)}
-.d-head .d-pos{flex-shrink:0;width:8.5rem;text-align:right;font-size:.85rem;color:var(--text-muted)}
-.d-actions{flex-shrink:0;display:flex;align-items:center;gap:.375rem;padding:0 1.5rem .75rem;border-bottom:1px solid var(--border)}
-.d-actions .btn{height:2.1rem;font-size:.82rem;padding:0 .5rem;display:inline-flex;align-items:center;gap:.4rem;overflow:hidden}
-.d-actions .btn kbd{flex-shrink:0}
-.d-actions .btn[aria-pressed=true]{background:var(--surface-hover);border-color:var(--accent-primary)}
-.d-actions .spacer{flex:1}
-.a-s{width:11.5rem}.a-l{width:6rem}.a-d{width:6.75rem}.a-u{width:7.75rem}.a-x{width:7rem}.a-o{width:6.25rem}
+.d-body{position:relative;flex:1;overflow-y:auto;min-height:0;padding:1.5rem 2rem 3rem}
+.d-text{max-width:62rem;font-size:1.25rem;line-height:1.55;color:var(--text-primary);white-space:pre-wrap;word-break:break-word;margin:0 0 1.5rem}
 
-.d-body{flex:1;overflow-y:auto;min-height:0;padding:1.25rem 1.5rem 2.5rem}
-/* header, actions and undo strip line up with the reading column instead of stretching across a wide screen */
-.undo-strip,.d-head,.d-actions{padding-right:max(1.5rem,calc(100% - 63.5rem))}
-.d-grid{display:block;max-width:62rem}
-.d-text{font-size:1.2rem;line-height:1.55;color:var(--text-primary);white-space:pre-wrap;word-break:break-word;margin:0 0 1.25rem}
-.meta{display:grid;grid-template-columns:7.5rem 1fr;gap:.35rem .75rem;font-size:.85rem;margin-bottom:1.5rem}
-.meta dt{color:var(--text-muted)}
-.meta dd{margin:0;min-width:0;color:var(--text-secondary)}
-.meta .evidence{display:block}
-.sec{margin-bottom:1.5rem}
-.sec h3{font-size:.78rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);margin:0 0 .5rem;font-weight:600;display:flex;gap:.5rem;align-items:baseline}
-.sec h3 .h-note{text-transform:none;letter-spacing:0;font-weight:400}
-.sec .none{font-size:.85rem;color:var(--text-muted)}
-.closure{border:1px solid var(--st-closed-border);background:var(--st-closed-bg);border-radius:var(--radius-md);padding:.625rem .875rem;font-size:.9rem;margin-bottom:1.5rem}
-.closure .c-by{font-size:.78rem;color:var(--text-muted);margin-top:.25rem}
+/* media inline, in the reading flow; each item at its own size up to the pane width, never upscaled */
+.m-item{margin:0 0 1.75rem}
+.m-frame{display:block;background:#050505;border:1px solid var(--border);border-radius:var(--radius-md);overflow:hidden;max-width:100%}
+.m-frame img,.m-frame video{display:block;width:100%;height:100%;object-fit:contain}
+.m-frame.photo{cursor:zoom-in}
+.m-frame.video{position:relative;cursor:pointer}
+.m-play{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:4.5rem;height:4.5rem;border-radius:50%;border:2px solid rgba(255,255,255,.85);
+  background:rgba(0,0,0,.6);color:#fff;font-size:1.6rem;line-height:1;cursor:pointer;padding:0 0 0 .3rem}
+.m-play:hover{background:var(--accent-primary);border-color:var(--accent-primary)}
+.m-frame.playing .m-play{display:none}
+.af{margin-top:.5rem}
+.af-label{font-size:.74rem;color:var(--text-muted);margin-bottom:.3rem}
+.af-row{display:flex;gap:.375rem}
+.af-f{display:flex;flex-direction:column;width:7rem;padding:0;background:#050505;border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer;overflow:hidden;color:var(--text-muted)}
+.af-f img{width:100%;height:4.4rem;object-fit:contain;display:block;opacity:.85}
+.af-f span{font-size:.7rem;padding:.1rem 0;text-align:center}
+.af-f:hover img,.af-f.on img{opacity:1}
+.af-f.on{border-color:var(--accent-primary)}
+.af-f.on span{color:var(--text-primary)}
+.af-none{height:5.6rem;display:flex;align-items:center;padding:0 .875rem;border:1px dashed var(--border);border-radius:var(--radius-sm);color:var(--text-muted);font-size:.8rem;width:36.5rem;max-width:100%}
 
-.story{border:1px solid var(--border);border-radius:var(--radius-md);padding:.5rem .75rem;margin-bottom:.5rem;background:var(--surface)}
-.story.dead{opacity:.6}
-.story-top{display:flex;align-items:center;gap:.625rem}
-.story-top .tid{width:5.25rem}
-.story-top .s-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.9rem}
-.story-top .btn{width:5.25rem;flex-shrink:0}
-.story-sub{display:flex;align-items:center;gap:.75rem;margin-top:.4rem;font-size:.75rem;color:var(--text-muted);min-height:1.6rem}
-.story-sub .also{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.proto-ctl{display:inline-flex;align-items:center;gap:.4rem;flex-shrink:0;background:var(--proto-bg);border:1px dashed var(--proto);color:var(--proto-text);border-radius:var(--radius-sm);padding:.1rem .4rem;font-size:.72rem}
-.proto-ctl select{background:#1E0333;color:var(--proto-text);border:1px solid var(--proto);border-radius:var(--radius-sm);font-family:inherit;font-size:.72rem;width:8rem}
+.outcome{max-width:62rem;margin:0 0 1.25rem}
+.story{display:flex;align-items:center;gap:.75rem;padding:.45rem 0;border-top:1px solid var(--border-row);font-size:.9rem}
+.story:last-of-type{border-bottom:1px solid var(--border-row)}
+.story .tid{width:5.25rem}
+.story .s-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.story.dead .s-title{color:var(--text-muted)}
+.proto-ctl{display:inline-flex;align-items:center;gap:.4rem;flex-shrink:0;background:var(--proto-bg);border:1px dashed var(--proto);color:var(--proto-text);border-radius:var(--radius-sm);padding:.1rem .4rem;font-size:.7rem}
+.proto-ctl select{background:#1E0333;color:var(--proto-text);border:1px solid var(--proto);border-radius:var(--radius-sm);font-family:inherit;font-size:.7rem;width:7.5rem}
+.no-story{font-size:.88rem;color:var(--text-secondary);margin:.5rem 0 0}
+.no-story code{font-family:var(--font-mono);color:var(--text-primary);background:var(--surface-raised);border:1px solid var(--border);border-radius:var(--radius-sm);padding:0 .3rem}
+.closure{font-size:.9rem;color:var(--text-secondary)}
+.closure b{color:var(--text-primary)}
 
-.sim{display:flex;align-items:center;gap:.625rem;padding:.4rem .5rem;border-bottom:1px solid var(--border-row);font-size:.85rem}
-.sim:last-child{border-bottom:0}
-.sim-list{border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface)}
-.sim .iid{width:5.5rem}
-.sim .sim-text{flex:1;min-width:0}
-.sim .sim-line{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-secondary)}
-.sim .sim-shares{font-size:.72rem;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.sim .btn{width:4.5rem;flex-shrink:0}.sim .btn[data-dupof]{width:6.5rem}
+.meta{max-width:62rem;font-size:.8rem;color:var(--text-muted);line-height:1.7;margin:0 0 1rem}
+.meta .actor{font-size:.7rem}
+.meta .evidence{display:inline;margin-left:.25rem}
 
-.hist{font-size:.8rem;border-left:2px solid var(--border);padding-left:.875rem}
+.hist-toggle{background:transparent;border:0;padding:0;color:var(--text-muted);font-family:inherit;font-size:.8rem;cursor:pointer}
+.hist-toggle:hover{color:var(--text-primary)}
+.hist-toggle .caret{display:inline-block;width:1rem}
+.hist{max-width:62rem;font-size:.8rem;border-left:2px solid var(--border);padding-left:.875rem;margin:.5rem 0 0 .3rem}
 .hist div{display:flex;gap:.75rem;padding:.2rem 0}
 .hist .h-at{width:5.5rem;flex-shrink:0;color:var(--text-muted)}
 .hist .h-what{flex:1;min-width:0;color:var(--text-secondary);word-break:break-word}
 
-.done-state{max-width:40rem;margin:4rem auto 0;padding:0 1rem}
-.done-state h2{font-size:1.6rem;font-weight:700;margin:0 0 .5rem;color:var(--st-resolved)}
-.done-state p{color:var(--text-secondary);font-size:1rem;line-height:1.6;margin:.25rem 0 1rem}
-.done-tally{display:grid;grid-template-columns:4ch 1fr;gap:.35rem 1rem;font-size:1rem;margin:1.25rem 0 1.5rem;padding:1rem 1.25rem;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface)}
-.done-tally b{text-align:right;font-weight:700}
-.done-tally .head{grid-column:1 / -1;font-size:.78rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);margin-bottom:.25rem}
-.quiet{max-width:36rem;margin:4rem auto 0;color:var(--text-muted);font-size:1rem;line-height:1.6;text-align:center}
+.quiet{max-width:34rem;margin:5rem auto 0;color:var(--text-muted);font-size:1rem;line-height:1.6;text-align:center}
+.quiet h2{color:var(--st-resolved);font-size:1.4rem;margin:0 0 .5rem}
 
-/* my own small choosers (dismiss reasons, duplicate candidates) and the key list reuse the shell's dialog look */
-.choose-row{display:flex;align-items:center;gap:.75rem;padding:.5rem .625rem;border-bottom:1px solid var(--border-row);cursor:pointer;font-size:.88rem}
-.choose-row:last-child{border-bottom:0}
-.choose-row:hover,.choose-row.cursor{background:var(--surface-hover)}
-.choose-row .grow{flex:1;min-width:0}
-.choose-row .grow .line{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.choose-row .grow .sub{font-size:.72rem;color:var(--text-muted)}
-.choose-list{border:1px solid var(--border);border-radius:var(--radius-sm)}
-.keys{display:grid;grid-template-columns:9rem 1fr;gap:.45rem 1rem;font-size:.88rem;align-items:center}
-.keys span{color:var(--text-secondary)}
-
-@media (min-width:1800px){
-  .d-grid{display:grid;grid-template-columns:minmax(0,1fr) 36rem;gap:2.5rem;max-width:100rem}
-  .undo-strip,.d-head,.d-actions{padding-right:max(1.5rem,calc(100% - 101.5rem))}
-}
+/* look closer: the current item as large as the window allows; the purple bar stays */
+.closer{position:fixed;inset:0 0 var(--proto-bar-h) 0;z-index:35;background:#000;display:flex;flex-direction:column}
+.closer-bar{flex-shrink:0;height:3rem;display:flex;align-items:center;gap:1rem;padding:0 1.25rem;background:rgba(23,23,23,.92);border-bottom:1px solid var(--border);font-size:.9rem}
+.closer-bar .iid{font-size:1.05rem;width:6.5rem}
+.closer-bar .cb-text{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-secondary)}
+.closer-bar .cb-pos{width:5rem;text-align:right;color:var(--text-muted)}
+.closer-bar .cb-keys{color:var(--text-muted);font-size:.8rem;white-space:nowrap}
+.closer-media{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;cursor:zoom-out}
+.closer-media img,.closer-media video{max-width:100%;max-height:100%;width:100%;height:100%;object-fit:contain;display:block}
 #selftest{display:none}
 </style>
 </head>
 <body>
 <div class="inbox">
-  <section class="q-pane" aria-label="Issue queue">
+  <section class="q-pane" aria-label="Queue">
     <div class="q-tabs" id="q-tabs"></div>
-    <div class="progress" id="progress">
-      <div class="pg-top"><span class="pg-num" id="pg-num">0</span><span class="pg-label" id="pg-label">need a story</span></div>
-      <div class="pg-bar"><span id="pg-bar"></span></div>
-      <div class="pg-tally" id="pg-tally"></div>
-    </div>
-    <div class="selbar" id="selbar"><span class="sel-text" id="sel-text"></span><button class="btn btn-sm" id="sel-clear">Clear</button></div>
     <div class="q-list" id="q-list" role="listbox" aria-label="Issues"></div>
-    <div class="q-foot"><kbd>j</kbd><kbd>k</kbd> move <kbd>x</kbd> select <kbd>z</kbd> undo <kbd>?</kbd> all keys</div>
+    <div class="q-foot"><kbd>j</kbd><kbd>k</kbd> move<span class="sep"></span><kbd>c</kbd> copy ID<span class="sep"></span><kbd>f</kbd> look closer<span class="sep"></span><kbd>i</kbd> file</div>
   </section>
   <section class="d-pane" aria-label="Selected issue">
-    <div class="undo-strip" id="undo"><span class="u-msg" id="u-msg"></span><button class="btn btn-sm" id="u-btn"><kbd>z</kbd> Undo</button></div>
-    <div class="d-head" id="d-head"></div>
-    <div class="d-actions" id="d-actions">
-      <button class="btn btn-primary a-s" data-act="s"><kbd>s</kbd><span id="a-s-label">Make a story</span></button>
-      <button class="btn a-l" data-act="l" title="Link to a story that already exists"><kbd>l</kbd>Link</button>
-      <button class="btn a-d" data-act="d"><kbd>d</kbd>Dismiss</button>
-      <button class="btn a-u" data-act="u"><kbd>u</kbd>Duplicate</button>
-      <span class="spacer"></span>
-      <button class="btn a-x" data-act="x" aria-pressed="false"><kbd>x</kbd><span id="a-x-label">Select</span></button>
-      <button class="btn a-o" data-act="o"><kbd>o</kbd>Reopen</button>
+    <div class="d-head" id="d-head">
+      <button class="id-copy" id="id-copy" title="Copy the ID (c), to tell an agent what to do with it"></button>
+      <span class="copy-status" id="copy-status"></span>
+      <span id="d-state"></span>
+      <span class="d-facts" id="d-facts"></span>
     </div>
     <div class="d-body" id="d-body"></div>
   </section>
 </div>
 <pre id="selftest"></pre>
 
+<script src="shared/mock-media.js"></script>
 <script src="shared/mock-data.js"></script>
 <script src="shared/store.js"></script>
 <script src="shared/shell.js"></script>
@@ -185,238 +155,46 @@ body{overflow:hidden}
   "use strict";
   var S = window.IssueStore, F = Shell.fmt, esc = F.esc;
 
-  Shell.mount({ active: "issues", page: "a" });
+  Shell.mount({ active: "issues", page: "a", title: "Issues (Take A: Inbox)" });
 
   var QUEUES = [
-    { key: "open", label: "Needs a story", states: ["open"] },
-    { key: "linked", label: "Has a story", states: ["linked"] },
+    { key: "open", label: "No story", states: ["open"] },
+    { key: "linked", label: "Has story", states: ["linked"] },
     { key: "resolved", label: "Resolved", states: ["resolved"] },
     { key: "closed", label: "Closed", states: ["dismissed", "duplicate"] }
   ];
   var EMPTY = {
-    linked: "No issue has a story in progress. Issues land here when you make or link a story.",
-    resolved: "No issue is resolved yet. An issue is resolved when every story linked to it is done.",
+    linked: "No issue has a story in progress.",
+    resolved: "Nothing is resolved yet. An issue is resolved when every story linked to it is done.",
     closed: "Nothing has been dismissed or marked a duplicate."
   };
-  var DISMISS_REASONS = [
-    "Not reproducible on the current build.",
-    "Working as intended.",
-    "Too vague to act on. Refile with steps or a screenshot.",
-    "Already fixed. No story needed."
-  ];
 
   // ---- UI state ----
   var view = "open";
   var cursorBy = { open: null, linked: null, resolved: null, closed: null }; // cursor id per queue
   var cursorIdx = { open: 0, linked: 0, resolved: 0, closed: 0 };
-  var selection = [];      // issue ids, current queue only
-  var undoStack = [];      // decisions made in this sitting, newest last
-  var lastMsg = "";        // what the undo strip says
-  var shownId = null;      // issue currently in the right pane, to keep or reset its scroll
-  var chooser = null;      // my own small dialog, when open
+  var shownId = null;     // issue in the right pane, to keep or reset its scroll
+  var mediaKey = null;    // what the media section shows; rebuilt only when this changes, so video keeps playing
+  var focusIdx = 0;       // which item look closer opens: the last one clicked, else the first
+  var closer = null;      // { idx, issue } while look closer is open
+  var histOpen = false;   // history is collapsed until asked for; the choice holds while moving between issues
 
   function queueOf(issue) {
     var st = S.state(issue);
     for (var n = 0; n < QUEUES.length; n++) { if (QUEUES[n].states.indexOf(st) >= 0) { return QUEUES[n].key; } }
     return "open";
   }
-  function listFor(key) {
-    return S.issues().filter(function (i) { return queueOf(i) === key; }); // S.issues() is oldest first
-  }
-  function isClosed(i) { return !!i.closure; }
-  function current() {
-    var id = cursorBy[view];
-    return id ? S.get(id) : null;
-  }
+  function listFor(key) { return S.issues().filter(function (i) { return queueOf(i) === key; }); } // oldest first
+  function current() { var id = cursorBy[view]; return id ? S.get(id) : null; }
+  function itemsOf(i) { return (i && i.media) || []; }
 
-  // Keep the cursor on the same issue if it is still here; otherwise take whatever now sits at its old
-  // position, which after a decision is the next issue in line.
+  // Keep the cursor on the same issue if it is still in this queue; otherwise take whatever now sits at its old position.
   function settleCursor(list) {
     var id = cursorBy[view], idx = -1;
     for (var n = 0; n < list.length; n++) { if (list[n].id === id) { idx = n; } }
     if (idx < 0) { idx = Math.min(cursorIdx[view], list.length - 1); }
     cursorIdx[view] = Math.max(0, idx);
     cursorBy[view] = list.length ? list[Math.max(0, idx)].id : null;
-    selection = selection.filter(function (sid) { return list.some(function (i) { return i.id === sid; }); });
-  }
-
-  // ---- similar issues: plain word overlap, weighted so rare words count more ----
-  var STOP = ("the and for with when that this from have has had but not are was were its into then than there their they " +
-    "what which while will would can cannot does did doing done only also same each every any all some more most other about " +
-    "after before over under still just like very you your our out off too why how who where here been being because see seen " +
-    "get got use used using one two instead nothing something expected found may might should could say says itself first look " +
-    "need needs whose within tell work during lattice lat").split(" ");
-  function stem(w) {
-    if (w.length > 5 && /ing$/.test(w)) { return w.slice(0, -3); }
-    if (w.length > 4 && /ed$/.test(w)) { return w.slice(0, -2); }
-    if (w.length > 3 && /s$/.test(w) && !/ss$/.test(w)) { return w.slice(0, -1); }
-    return w;
-  }
-  function words(text) {
-    var out = {};
-    text.toLowerCase().replace(/[^a-z0-9]+/g, " ").split(" ").forEach(function (w) {
-      if (w.length < 3 || STOP.indexOf(w) >= 0 || /^\d+$/.test(w)) { return; }
-      var s = stem(w);
-      if (!out[s]) { out[s] = w; }
-    });
-    return out; // stem -> first spelling seen, for display
-  }
-  function similar(id, limit) {
-    var all = S.issues(), me = S.get(id), mine = words(me.text), df = {}, bag = {};
-    all.forEach(function (i) { bag[i.id] = words(i.text); Object.keys(bag[i.id]).forEach(function (w) { df[w] = (df[w] || 0) + 1; }); });
-    var res = [];
-    all.forEach(function (i) {
-      if (i.id === id || (i.closure && i.closure.kind === "duplicate")) { return; }
-      var shared = Object.keys(mine).filter(function (w) { return bag[i.id][w]; });
-      var score = shared.reduce(function (a, w) { return a + Math.log(all.length / df[w]); }, 0);
-      if (shared.length >= 2 && score >= 4.5) {
-        shared.sort(function (a, b) { return df[a] - df[b]; });
-        res.push({ issue: i, score: score, shared: shared.map(function (w) { return mine[w]; }) });
-      }
-    });
-    res.sort(function (a, b) { return b.score - a.score || a.issue.seq - b.issue.seq; });
-    return res.slice(0, limit || 3);
-  }
-
-  // ---- decisions and undo ----
-  function ids(list) { return list.join(", "); }
-  function describe(d) {
-    switch (d.kind) {
-      case "promote": return d.ids.length === 1 ? d.ids[0] + " became story " + d.taskId + "." : ids(d.ids) + " became one story, " + d.taskId + ".";
-      case "link": return d.ids[0] + " linked to " + d.taskId + ".";
-      case "dismiss": return d.ids[0] + " dismissed: " + d.reason;
-      case "duplicate": return d.ids[0] + " marked a duplicate of " + d.of + ".";
-      case "reopen": return d.ids[0] + " reopened.";
-      case "unlink": return d.ids[0] + " unlinked from " + d.taskId + ".";
-    }
-    return "";
-  }
-  function record(d) {
-    undoStack.push(d);
-    lastMsg = describe(d);
-    pulse();
-    render();
-  }
-  function pulse() {
-    var u = document.getElementById("undo");
-    u.classList.remove("pulse"); void u.offsetWidth; u.classList.add("pulse");
-  }
-
-  function undo() {
-    var d = undoStack.pop();
-    if (!d) { lastMsg = "Nothing to undo in this sitting."; render(); return; }
-    var ok = Shell.guard(function () {
-      if (d.kind === "promote" || d.kind === "link") {
-        d.ids.forEach(function (id) { S.unlink(id, d.taskId); });
-      } else if (d.kind === "dismiss" || d.kind === "duplicate") {
-        S.reopen(d.ids[0]);
-      } else if (d.kind === "reopen") {
-        if (d.closure.kind === "dismissed") { S.dismiss(d.ids[0], d.closure.reason); } else { S.duplicate(d.ids[0], d.closure.duplicate_of); }
-      } else if (d.kind === "unlink") {
-        S.link(d.ids[0], d.taskId);
-      }
-      return true;
-    });
-    if (!ok) { undoStack.push(d); render(); return; }
-    if (d.kind === "promote") {
-      lastMsg = "Undone. " + ids(d.ids) + " no longer linked to " + d.taskId + ". The story stays in backlog; a story cannot be deleted from here.";
-    } else if (d.kind === "link") {
-      lastMsg = "Undone. " + d.ids[0] + " is no longer linked to " + d.taskId + ".";
-    } else if (d.kind === "dismiss" || d.kind === "duplicate") {
-      lastMsg = "Undone. " + d.ids[0] + " is open again.";
-    } else if (d.kind === "reopen") {
-      lastMsg = "Undone. " + d.ids[0] + " is closed again.";
-    } else {
-      lastMsg = "Undone. " + d.ids[0] + " is linked to " + d.taskId + " again.";
-    }
-    Shell.toast(esc(lastMsg), "info");
-    // Bring the viewer back to the issue that was undone, wherever it now lives.
-    goTo(d.ids[0]);
-    pulse();
-  }
-
-  // Each action goes through the store, then is recorded so z can take it back. The undo strip is the
-  // feedback; a toast per keystroke would pile up in a fast queue. Undo still toasts, since its message is long.
-  var act = {
-    promote: function (list, title) {
-      var t = Shell.guard(function () { return S.promote(list, title ? { title: title } : {}); });
-      if (t) { selection = []; record({ kind: "promote", ids: list.slice(), taskId: t.id }); }
-      return t;
-    },
-    link: function (id, taskId) {
-      var r = Shell.guard(function () { return S.link(id, taskId); });
-      if (r && !r.idempotent) { record({ kind: "link", ids: [id], taskId: taskId }); }
-      return r;
-    },
-    dismiss: function (id, reason) {
-      var ok = Shell.guard(function () { S.dismiss(id, reason); return true; });
-      if (ok) { record({ kind: "dismiss", ids: [id], reason: reason }); }
-      return ok;
-    },
-    duplicate: function (id, of) {
-      var ok = Shell.guard(function () { S.duplicate(id, of); return true; });
-      if (ok) { record({ kind: "duplicate", ids: [id], of: of }); }
-      return ok;
-    },
-    reopen: function (id) {
-      var closure = JSON.parse(JSON.stringify(S.get(id).closure));
-      var ok = Shell.reopen(id);
-      if (ok) { record({ kind: "reopen", ids: [id], closure: closure }); }
-      return ok;
-    },
-    unlink: function (id, taskId) {
-      Shell.guard(function () { S.unlink(id, taskId); });
-      record({ kind: "unlink", ids: [id], taskId: taskId });
-    }
-  };
-
-  // Keyboard entry points. Promote and link reuse the shell dialogs; dismiss and duplicate get
-  // small choosers of my own so the common answer is one more key, not a typed sentence.
-  function doMake() {
-    var i = current(); if (!i && !selection.length) { return; }
-    var list = selection.length ? selection.slice() : [i.id];
-    if (list.some(function (id) { return isClosed(S.get(id)); })) { Shell.toast("A closed issue cannot get a story. Reopen it first.", "error"); return; }
-    Shell.promoteDialog(list).then(function (t) {
-      if (t) { selection = []; record({ kind: "promote", ids: list, taskId: t.id }); }
-    });
-  }
-  function doLink() {
-    var i = current(); if (!i || isClosed(i)) { return; }
-    Shell.linkDialog(i.id).then(function (taskId) { if (taskId) { record({ kind: "link", ids: [i.id], taskId: taskId }); } });
-  }
-  function doDismiss() {
-    var i = current(); if (!i || isClosed(i)) { return; }
-    openChooser("Dismiss " + i.id, DISMISS_REASONS.map(function (r) {
-      return { html: '<div class="grow"><div class="line">' + esc(r) + "</div></div>", pick: function () { act.dismiss(i.id, r); } };
-    }).concat([{ key: "w", html: '<div class="grow"><div class="line">Write a reason</div></div>', pick: function () {
-      Shell.dismissDialog(i.id).then(function (ok) {
-        if (ok) { record({ kind: "dismiss", ids: [i.id], reason: S.get(i.id).closure.reason }); }
-      });
-    } }]), "The filer reads the reason. Nothing is deleted.");
-  }
-  function searchDuplicate(id) {
-    Shell.duplicateDialog(id).then(function (of) { if (of) { record({ kind: "duplicate", ids: [id], of: of }); } });
-  }
-  function doDuplicate() {
-    var i = current(); if (!i || isClosed(i)) { return; }
-    var sims = similar(i.id, 3);
-    if (!sims.length) { searchDuplicate(i.id); return; }
-    openChooser("Mark " + i.id + " as a duplicate of", sims.map(function (s) {
-      return { html: F.iid(s.issue.id) + F.state(S.state(s.issue)) + '<div class="grow"><div class="line">' + esc(F.firstLine(s.issue.text)) +
-        '</div><div class="sub">shares: ' + esc(s.shared.slice(0, 5).join(", ")) + "</div></div>",
-        pick: function () { act.duplicate(i.id, s.issue.id); } };
-    }).concat([{ key: "/", html: '<div class="grow"><div class="line">Search all issues</div></div>', pick: function () { searchDuplicate(i.id); } }]),
-      "Similar by shared words. You choose; nothing is marked for you.");
-  }
-  function doSelect() {
-    var i = current(); if (!i || isClosed(i)) { return; }
-    var n = selection.indexOf(i.id);
-    if (n >= 0) { selection.splice(n, 1); } else { selection.push(i.id); }
-    render();
-  }
-  function doReopen() {
-    var i = current(); if (!i || !isClosed(i)) { return; }
-    act.reopen(i.id);
   }
   function move(delta) {
     var list = listFor(view); if (!list.length) { return; }
@@ -424,87 +202,163 @@ body{overflow:hidden}
     cursorIdx[view] = idx; cursorBy[view] = list[idx].id;
     render();
   }
-  function switchQueue(key) {
-    if (view === key) { return; }
-    view = key; selection = [];
-    render();
-  }
-  // Show an issue wherever it now lives. Used by undo, by "Go to" on a similar issue,
-  // and by the prototype story-status control, so the viewer watches the issue follow its story.
+  function switchQueue(key) { if (view !== key) { view = key; render(); } }
+  // Show an issue wherever it now lives (used when a story's status moves it, and by the ?at= hook).
   function goTo(id) {
     var i = S.get(id); if (!i) { return; }
-    var q = queueOf(i);
-    if (q !== view) { selection = []; }
-    view = q; cursorBy[q] = id;
+    view = queueOf(i); cursorBy[view] = id;
     render();
   }
 
-  // ---- my small chooser ----
-  function openChooser(title, rows, hint) {
-    closeChooser();
-    var o = Shell.el('<div class="overlay"><div class="dialog" role="dialog" aria-label="' + esc(title) + '">' +
-      '<div class="dialog-head"><span>' + esc(title) + '</span><button class="btn btn-sm" data-x>Esc</button></div>' +
-      '<div class="dialog-body"><div class="choose-list">' + rows.map(function (r, n) {
-        return '<div class="choose-row' + (n === 0 ? " cursor" : "") + '" data-n="' + n + '"><kbd>' + esc(r.key || String(n + 1)) + "</kbd>" + r.html + "</div>";
-      }).join("") + '</div></div><div class="dialog-foot"><span class="hint">' + esc(hint) +
-      '</span><button class="btn" data-x>Cancel</button></div></div></div>');
-    chooser = { el: o, rows: rows, cursor: 0 };
-    o.addEventListener("mousedown", function (e) { if (e.target === o) { closeChooser(); } });
-    o.querySelectorAll("[data-x]").forEach(function (b) { b.onclick = closeChooser; });
-    o.querySelectorAll(".choose-row").forEach(function (row) { row.onclick = function () { pickChooser(+row.getAttribute("data-n")); }; });
-    document.body.appendChild(o);
-  }
-  function closeChooser() { if (chooser) { document.body.removeChild(chooser.el); chooser = null; } }
-  function pickChooser(n) { var r = chooser && chooser.rows[n]; closeChooser(); if (r) { r.pick(); } }
-  function chooserKey(e) {
-    var k = e.key, rows = chooser.rows;
-    if (k === "Escape") { closeChooser(); return true; }
-    if (k === "ArrowDown" || k === "j") { chooser.cursor = Math.min(rows.length - 1, chooser.cursor + 1); }
-    else if (k === "ArrowUp" || k === "k") { chooser.cursor = Math.max(0, chooser.cursor - 1); }
-    else if (k === "Enter") { pickChooser(chooser.cursor); return true; }
-    else {
-      for (var n = 0; n < rows.length; n++) { if ((rows[n].key || String(n + 1)) === k) { pickChooser(n); return true; } }
-      return k.length === 1; // swallow other letters so they do not reach the page
+  // ---- copy the ID: the way to act on an issue is to tell an agent about it ----
+  var copyTimer = null;
+  function copyId() {
+    var i = current(); if (!i) { return; }
+    var st = document.getElementById("copy-status");
+    function show(ok) {
+      st.textContent = ok ? "Copied" : "Not copied";
+      st.classList.toggle("done", ok);
+      clearTimeout(copyTimer);
+      copyTimer = setTimeout(function () { st.textContent = current() ? "copy" : ""; st.classList.remove("done"); }, 1600);
     }
-    chooser.el.querySelectorAll(".choose-row").forEach(function (r, n) { r.classList.toggle("cursor", n === chooser.cursor); });
-    return true;
+    function fallback() {
+      var ta = document.createElement("textarea");
+      ta.value = i.id; ta.setAttribute("readonly", ""); ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      var ok = false; try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+      document.body.removeChild(ta);
+      return ok;
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(i.id).then(function () { show(true); }, function () { show(fallback()); });
+    } else { show(fallback()); }
   }
 
-  function showKeys() {
-    openChooser("Keys", [], "");
-    var body = chooser.el.querySelector(".dialog-body");
-    var K = [["j  ↓", "next issue"], ["k  ↑", "previous issue"], ["s", "make a story (one story from the selection, if there is one)"],
-      ["l", "link to a story that already exists"], ["d", "dismiss, with a reason"], ["u", "mark a duplicate (similar issues first)"],
-      ["x", "add to or remove from the selection"], ["Esc", "clear the selection"], ["o", "reopen a closed issue"],
-      ["z", "undo the last decision"], ["1 2 3 4", "switch queue"], ["i", "file an issue"], ["?", "this list"]];
-    body.innerHTML = '<div class="keys">' + K.map(function (k) {
-      return "<div>" + k[0].split(/\s+/).map(function (x) { return "<kbd>" + esc(x) + "</kbd>"; }).join(" ") + "</div><span>" + esc(k[1]) + "</span>";
-    }).join("") + "</div>";
-    chooser.el.querySelector(".hint").textContent = "After each decision the next issue is already selected.";
-    chooser.el.querySelector(".dialog-foot .btn").textContent = "Close";
+  // ---- media inline ----
+  function thumbSrc(m) { return m.kind === "video" ? m.poster : m.src; }
+  function queueThumb(i) {
+    var ms = itemsOf(i);
+    if (!ms.length) { return '<span class="q-thumb none"></span>'; }
+    var m = ms.filter(function (x) { return x.kind === "video"; })[0] || ms[0], src = thumbSrc(m);
+    return '<span class="q-thumb" title="' + esc(F.mediaCount(ms)) + '">' +
+      (src ? '<img loading="lazy" decoding="async" src="' + esc(src) + '" alt="">' : "") +
+      (m.kind === "video" ? '<span class="q-badge q-vid">▶ ' + F.dur(m.duration) + "</span>" : "") +
+      (ms.length > 1 ? '<span class="q-badge q-count">' + ms.length + "</span>" : "") + "</span>";
+  }
+  function frameAt(frames, t) { var n = -1; frames.forEach(function (f, k) { if (f.t <= t + 0.05) { n = k; } }); return n; }
+
+  function renderMedia(i) {
+    var box = document.getElementById("d-media"); if (!box) { return; }
+    var ms = itemsOf(i), key = i.id + "|" + ms.map(function (m) { return m.id; }).join(",");
+    if (key === mediaKey) { return; }
+    mediaKey = key;
+    focusIdx = 0;
+    box.innerHTML = ms.map(function (m, k) {
+      var frame = m.kind === "video"
+        ? '<video src="' + esc(m.src) + '"' + (m.poster ? ' poster="' + esc(m.poster) + '"' : "") + ' muted playsinline preload="metadata" title="' + esc(m.name) + '"></video>' +
+          '<button class="m-play" data-play="' + k + '" title="Play (muted)">▶</button>'
+        : '<img src="' + esc(m.src) + '" alt="photo attached to ' + esc(i.id) + '" title="' + esc(m.name) + '">';
+      var agent = "";
+      if (m.kind === "video") {
+        agent = '<div class="af">' + (m.frames && m.frames.length
+          ? '<div class="af-label">What an agent sees: these frames, taken when it was filed. Click one to see that moment.</div><div class="af-row">' +
+            m.frames.map(function (f, n) {
+              return '<button class="af-f" data-frame="' + n + '" data-item="' + k + '"><img src="' + esc(f.src) + '" alt="frame at ' + F.dur(f.t, true) + '" loading="lazy"><span>' + F.dur(f.t, true) + "</span></button>";
+            }).join("") + "</div>"
+          : '<div class="af-none">Frames are made when this is filed.</div>') + "</div>";
+      }
+      return '<figure class="m-item" data-item="' + k + '"><div class="m-frame ' + m.kind + '" data-w="' + (m.w || 1280) + '" data-h="' + (m.h || 800) + '">' + frame + "</div>" + agent + "</figure>";
+    }).join("");
+    box.querySelectorAll("video").forEach(function (v) {
+      var fig = v.closest(".m-item"), m = ms[+fig.getAttribute("data-item")];
+      v.addEventListener("timeupdate", function () {
+        var n = frameAt(m.frames || [], v.currentTime);
+        fig.querySelectorAll(".af-f").forEach(function (f, k) { f.classList.toggle("on", k === n); });
+      });
+    });
+    sizeMedia();
+  }
+  // Each item is shown at its own pixel size, shrunk only to fit the pane and 72% of the window height.
+  // Sizes are set before the file loads, so nothing below jumps when it arrives.
+  function sizeMedia() {
+    var box = document.getElementById("d-media"); if (!box) { return; }
+    var maxW = box.clientWidth - 2, maxH = Math.round(window.innerHeight * 0.72);
+    box.querySelectorAll(".m-frame").forEach(function (f) {
+      var w = +f.getAttribute("data-w"), h = +f.getAttribute("data-h");
+      var s = Math.min(1, maxW / w, maxH / h);
+      f.style.width = Math.round(w * s) + 2 + "px";
+      f.style.height = Math.round(h * s) + 2 + "px";
+    });
+  }
+  window.addEventListener("resize", sizeMedia);
+
+  // Video is click to play: a poster and a play button until asked, then native controls.
+  function playInline(itemIdx) {
+    var fig = document.querySelector('.m-item[data-item="' + itemIdx + '"]'), v = fig && fig.querySelector("video");
+    if (!v) { return; }
+    v.controls = true;
+    fig.querySelector(".m-frame").classList.add("playing");
+    var p = v.play(); if (p && p.catch) { p.catch(function () {}); }
+  }
+  function seekFrame(itemIdx, frameIdx) {
+    var fig = document.querySelector('.m-item[data-item="' + itemIdx + '"]'), v = fig && fig.querySelector("video");
+    var m = itemsOf(current())[itemIdx]; if (!v || !m) { return; }
+    v.pause();
+    v.controls = true;
+    fig.querySelector(".m-frame").classList.add("playing");
+    v.currentTime = m.frames[frameIdx].t;
+    fig.querySelectorAll(".af-f").forEach(function (f, k) { f.classList.toggle("on", k === frameIdx); });
+    focusIdx = itemIdx;
   }
 
-  // ---- keyboard ----
+  // ---- look closer ----
+  function openCloser(idx) {
+    var i = current(), ms = itemsOf(i);
+    if (!ms.length) { closeCloser(); return; }
+    idx = Math.max(0, Math.min(ms.length - 1, idx || 0));
+    var m = ms[idx], inline = document.querySelector('.m-item[data-item="' + idx + '"] video');
+    var start = inline ? inline.currentTime : 0, wasPlaying = inline && !inline.paused;
+    if (inline) { inline.pause(); }
+    var el = document.getElementById("closer");
+    if (!el) { el = document.createElement("div"); el.id = "closer"; el.className = "closer"; document.body.appendChild(el); }
+    el.innerHTML = '<div class="closer-bar">' + F.iid(i.id) + '<span class="cb-text">' + esc(i.text) + '</span><span class="cb-pos">' +
+      (ms.length > 1 ? (idx + 1) + " of " + ms.length : "") + '</span><span class="cb-keys">' + (ms.length > 1 ? "<kbd>←</kbd> <kbd>→</kbd> item &nbsp; " : "") +
+      "<kbd>j</kbd> <kbd>k</kbd> issue &nbsp; <kbd>f</kbd> or <kbd>Esc</kbd> closes</span></div>" +
+      '<div class="closer-media" data-close>' + (m.kind === "video"
+        ? '<video src="' + esc(m.src) + '"' + (m.poster ? ' poster="' + esc(m.poster) + '"' : "") + ' muted playsinline controls></video>'
+        : '<img src="' + esc(m.src) + '" alt="">') + "</div>";
+    var v = el.querySelector("video");
+    if (v) { v.currentTime = start; if (wasPlaying) { var p = v.play(); if (p && p.catch) { p.catch(function () {}); } } }
+    closer = { idx: idx, issue: i.id };
+  }
+  function closeCloser() {
+    var el = document.getElementById("closer");
+    if (el) {
+      var v = el.querySelector("video"), inline = closer && document.querySelector('.m-item[data-item="' + closer.idx + '"] video');
+      if (v && inline) { inline.currentTime = v.currentTime; }
+      el.parentNode.removeChild(el);
+    }
+    closer = null;
+  }
+  document.addEventListener("click", function (e) {
+    if (e.target.closest && e.target.closest("[data-close]") && !e.target.closest("video")) { closeCloser(); }
+  });
+
+  // ---- keyboard: moving and looking only; decisions are made by telling an agent ----
   document.addEventListener("keydown", function (e) {
-    if (chooser) {
-      if (chooserKey(e)) { e.preventDefault(); e.stopPropagation(); }
-      return;
-    }
     if (Shell.dialogOpen() || e.metaKey || e.ctrlKey || e.altKey) { return; }
     var tag = (e.target.tagName || "").toLowerCase();
     if (tag === "input" || tag === "textarea" || tag === "select") { return; }
     var k = e.key, handled = true;
     if (k === "j" || k === "ArrowDown") { move(1); }
     else if (k === "k" || k === "ArrowUp") { move(-1); }
-    else if (k === "s") { doMake(); }
-    else if (k === "l") { doLink(); }
-    else if (k === "d") { doDismiss(); }
-    else if (k === "u") { doDuplicate(); }
-    else if (k === "x") { doSelect(); }
-    else if (k === "o") { doReopen(); }
-    else if (k === "z") { undo(); }
-    else if (k === "?") { showKeys(); }
-    else if (k === "Escape") { if (selection.length) { selection = []; render(); } }
+    else if (k === "c") { copyId(); }
+    else if (k === "f") { if (closer) { closeCloser(); } else if (itemsOf(current()).length) { openCloser(focusIdx); } }
+    else if (k === "Escape") { if (closer) { closeCloser(); } else { handled = false; } }
+    else if (closer && k === "ArrowRight") { openCloser(closer.idx + 1); }
+    else if (closer && k === "ArrowLeft") { openCloser(closer.idx - 1); }
+    else if (k === " " && !closer) { var iv = document.querySelector("#d-media video"); if (iv) { if (iv.paused) { playInline(+iv.closest(".m-item").getAttribute("data-item")); } else { iv.pause(); } } else { handled = false; } }
+    else if (closer && k === " ") { var v = document.querySelector("#closer video"); if (v) { if (v.paused) { v.play(); } else { v.pause(); } } }
     else if (/^[1-4]$/.test(k)) { switchQueue(QUEUES[+k - 1].key); }
     else { handled = false; }
     if (handled) { e.preventDefault(); }
@@ -516,27 +370,31 @@ body{overflow:hidden}
     return '<button class="q-tab" data-q="' + q.key + '" aria-pressed="false"><kbd>' + (n + 1) + '</kbd><span class="q-tab-label">' + q.label +
       '</span><span class="q-tab-count" id="qc-' + q.key + '">0</span></button>';
   }).join("");
-  tabsEl.addEventListener("click", function (e) { var b = e.target.closest(".q-tab"); if (b) { switchQueue(b.getAttribute("data-q")); } });
+  tabsEl.addEventListener("click", function (e) { var b = e.target.closest(".q-tab"); if (b) { b.blur(); switchQueue(b.getAttribute("data-q")); } });
   document.getElementById("q-list").addEventListener("click", function (e) {
     var row = e.target.closest(".q-row"); if (!row) { return; }
-    var id = row.getAttribute("data-id");
-    cursorBy[view] = id;
-    if (e.target.closest(".q-check")) { doSelect(); return; }
+    cursorBy[view] = row.getAttribute("data-id");
     render();
   });
-  document.getElementById("d-actions").addEventListener("click", function (e) {
-    var b = e.target.closest("[data-act]"); if (!b || b.disabled) { return; }
-    ({ s: doMake, l: doLink, d: doDismiss, u: doDuplicate, x: doSelect, o: doReopen })[b.getAttribute("data-act")]();
-  });
-  document.getElementById("u-btn").onclick = undo;
-  document.getElementById("sel-clear").onclick = function () { selection = []; render(); };
+  document.getElementById("id-copy").onclick = function () { this.blur(); copyId(); };
   document.getElementById("d-body").addEventListener("click", function (e) {
-    var b = e.target.closest("[data-unlink]");
-    if (b) { act.unlink(b.getAttribute("data-issue"), b.getAttribute("data-unlink")); return; }
+    var pl = e.target.closest("[data-play]");
+    if (pl) { pl.blur(); playInline(+pl.getAttribute("data-play")); return; }
+    var fr = e.target.closest("[data-frame]");
+    if (fr) { fr.blur(); seekFrame(+fr.getAttribute("data-item"), +fr.getAttribute("data-frame")); return; }
+    var tog = e.target.closest(".hist-toggle");
+    if (tog) { tog.blur(); histOpen = !histOpen; renderHistory(current()); return; }
     var g = e.target.closest("[data-goto]");
-    if (g) { goTo(g.getAttribute("data-goto")); return; }
-    var dup = e.target.closest("[data-dupof]");
-    if (dup) { act.duplicate(dup.getAttribute("data-issue"), dup.getAttribute("data-dupof")); }
+    if (g) { e.preventDefault(); goTo(g.getAttribute("data-goto")); return; }
+    var fig = e.target.closest(".m-item");
+    if (fig) {
+      focusIdx = +fig.getAttribute("data-item");
+      if (e.target.closest(".m-frame.photo")) { openCloser(focusIdx); }
+      else if (e.target.closest(".m-frame.video:not(.playing)")) { playInline(focusIdx); }
+    }
+  });
+  document.getElementById("d-body").addEventListener("dblclick", function (e) {
+    var fig = e.target.closest(".m-item"); if (fig && e.target.closest(".m-frame")) { openCloser(+fig.getAttribute("data-item")); }
   });
   document.getElementById("d-body").addEventListener("change", function (e) {
     var sel = e.target.closest("select[data-task]"); if (!sel) { return; }
@@ -544,190 +402,106 @@ body{overflow:hidden}
     var before = S.state(S.get(issueId));
     S.setTaskStatus(taskId, sel.value);
     var after = S.state(S.get(issueId));
-    lastMsg = "Prototype: " + taskId + " moved to " + sel.value.replace(/_/g, " ") + ". " + issueId +
-      (before === after ? " stays " + after + "." : " went from " + before + " to " + after + ".");
-    pulse();
-    goTo(issueId);
+    Shell.toast("Prototype: " + esc(taskId) + " moved to " + esc(sel.value.replace(/_/g, " ")) + ". " + F.iid(issueId) +
+      (before === after ? " stays " + after + "." : " went from " + before + " to " + after + "."), "info");
+    goTo(issueId); // follow the issue to its new queue
     sel.blur();
   });
-
-  function tally() {
-    var t = { stories: 0, promoted: 0, linked: 0, dismissed: 0, duplicate: 0, reopened: 0, unlinked: 0, decided: 0 };
-    undoStack.forEach(function (d) {
-      if (d.kind === "promote") { t.stories += 1; t.promoted += d.ids.length; t.decided += d.ids.length; }
-      else if (d.kind === "link") { t.linked += 1; t.decided += 1; }
-      else if (d.kind === "dismiss") { t.dismissed += 1; t.decided += 1; }
-      else if (d.kind === "duplicate") { t.duplicate += 1; t.decided += 1; }
-      else if (d.kind === "reopen") { t.reopened += 1; }
-      else if (d.kind === "unlink") { t.unlinked += 1; }
-    });
-    return t;
-  }
 
   function tagFor(i) {
     var q = queueOf(i);
     if (q === "open") { return esc(i.filed_by); }
-    if (q === "closed") {
-      return i.closure.kind === "duplicate" ? "duplicate of " + esc(i.closure.duplicate_of) : "dismissed: " + esc(i.closure.reason);
-    }
+    if (q === "closed") { return i.closure.kind === "duplicate" ? "duplicate of " + esc(i.closure.duplicate_of) : "dismissed"; }
     var live = S.liveLinks(i).map(function (l) { return l.task_id; });
-    return '<span class="tid">' + esc(live[0]) + "</span>" + (live.length > 1 ? " +" + (live.length - 1) : "") +
-      " " + esc(S.task(live[0]).status.replace(/_/g, " "));
+    return '<span class="tid">' + esc(live[0]) + "</span>" + (live.length > 1 ? " +" + (live.length - 1) : "") + " " + esc(S.task(live[0]).status.replace(/_/g, " "));
   }
 
   function renderQueue(list) {
     var el = document.getElementById("q-list"), curId = cursorBy[view];
-    if (!list.length) {
-      el.innerHTML = '<div class="q-empty">' + (view === "open" ? "Nothing needs a story." : esc(EMPTY[view])) + "</div>";
-      return;
-    }
+    if (!list.length) { el.innerHTML = '<div class="q-empty">' + esc(view === "open" ? "Nothing needs a story." : EMPTY[view]) + "</div>"; return; }
     el.innerHTML = list.map(function (i) {
-      var cls = "q-row" + (i.id === curId ? " cursor" : "") + (selection.indexOf(i.id) >= 0 ? " sel" : "");
-      return '<div class="' + cls + '" data-id="' + i.id + '" role="option" aria-selected="' + (i.id === curId) + '">' +
-        '<span class="q-check' + (isClosed(i) ? " off" : "") + '" title="Select (x)">✓</span>' +
+      return '<div class="q-row' + (i.id === curId ? " cursor" : "") + '" data-id="' + i.id + '" role="option" aria-selected="' + (i.id === curId) + '">' +
         '<div class="q-main"><div class="q-top">' + F.iid(i.id) + '<span class="q-tag">' + tagFor(i) + '</span><span class="q-age">' + F.rel(i.filed_at) + "</span></div>" +
-        '<div class="q-text" title="' + esc(i.text) + '">' + esc(i.text) + "</div></div></div>";
+        '<div class="q-text" title="' + esc(i.text) + '">' + esc(i.text) + "</div></div>" + queueThumb(i) + "</div>";
     }).join("");
     var c = el.querySelector(".cursor"); if (c) { c.scrollIntoView({ block: "nearest" }); }
   }
 
-  function renderProgress(counts) {
-    var t = tally(), open = counts.open;
-    var num = document.getElementById("pg-num");
-    num.textContent = open;
-    num.classList.toggle("zero", open === 0);
-    document.getElementById("pg-label").textContent = open === 1 ? "issue needs a story" : "issues need a story";
-    var done = t.decided;
-    document.getElementById("pg-bar").style.width = (done + open ? Math.round(100 * done / (done + open)) : 100) + "%";
-    document.getElementById("pg-tally").innerHTML = "This sitting" +
-      '<span class="t">stories <b>' + t.stories + '</b></span><span class="t">linked <b>' + t.linked +
-      '</b></span><span class="t">closed <b>' + (t.dismissed + t.duplicate) + "</b></span>";
+  // What came of it: its stories with their live status, or why it was closed, or how to get a story made.
+  function outcomeHtml(i) {
+    if (i.closure) {
+      var c = i.closure;
+      return '<div class="closure">' + (c.kind === "dismissed" ? "<b>Dismissed.</b> " + esc(c.reason)
+        : '<b>Duplicate of <a href="#" data-goto="' + esc(c.duplicate_of) + '">' + esc(c.duplicate_of) + "</a>.</b> " + esc(F.firstLine(S.get(c.duplicate_of).text, 100))) + "</div>";
+    }
+    var stories = i.links.map(function (l) {
+      var t = S.task(l.task_id);
+      return '<div class="story' + (t.status === "cancelled" ? " dead" : "") + '">' + F.tid(t.id) + F.tstatus(t.status) +
+        '<span class="s-title" title="' + esc(t.title) + '">' + esc(t.title) + "</span>" +
+        '<label class="proto-ctl">prototype only: move this story to <select data-task="' + t.id + '" data-issue="' + i.id + '">' +
+        S.TASK_STATUSES.map(function (s) { return '<option value="' + s + '"' + (s === t.status ? " selected" : "") + ">" + s.replace(/_/g, " ") + "</option>"; }).join("") +
+        "</select></label></div>";
+    }).join("");
+    return stories;
   }
 
-  function renderSelbar(list) {
-    var bar = document.getElementById("selbar"), txt = document.getElementById("sel-text");
-    bar.classList.toggle("has", selection.length > 0);
-    document.getElementById("sel-clear").disabled = !selection.length;
-    if (view === "closed") { txt.innerHTML = "Closed issues cannot be selected. <kbd>o</kbd> reopens one."; return; }
-    txt.innerHTML = selection.length
-      ? "<b>" + selection.length + " selected</b> " + esc(selection.join(" ")) + ". <kbd>s</kbd> makes one story."
-      : "<kbd>x</kbd> selects several issues for one story.";
-  }
-
-  function renderActions(i) {
-    var closed = i && isClosed(i), none = !i;
-    var btn = function (k) { return document.querySelector('[data-act="' + k + '"]'); };
-    btn("s").disabled = selection.length ? false : (none || closed);
-    btn("l").disabled = none || closed;
-    btn("d").disabled = none || closed;
-    btn("u").disabled = none || closed;
-    btn("x").disabled = none || closed;
-    btn("o").disabled = none || !closed;
-    document.getElementById("a-s-label").textContent = selection.length > 1 ? "One story from " + selection.length : "Make a story";
-    var inSel = i && selection.indexOf(i.id) >= 0;
-    btn("x").setAttribute("aria-pressed", inSel ? "true" : "false");
-    document.getElementById("a-x-label").textContent = inSel ? "Selected" : "Select";
+  // filed by, when, source, how sure: one small line in the header
+  function factsHtml(i) {
+    var bits = [F.actor(i.filed_by), '<span title="' + esc(F.abs(i.filed_at)) + '">' + F.rel(i.filed_at) + "</span>"];
+    if (i.source) { bits.push(esc(i.source)); }
+    if (i.confidence) { bits.push(esc(i.confidence)); }
+    i.evidence.forEach(function (e) { bits.push(esc(e)); });
+    return bits.join(" · ");
   }
 
   function histLine(h) {
     var d = h.data, what;
     switch (h.type) {
-      case "issue_filed": what = "filed"; break;
+      case "issue_filed": what = "filed" + (d.photos || d.videos ? " with " + F.mediaCount(Array(d.photos || 0).fill({ kind: "photo" }).concat(Array(d.videos || 0).fill({ kind: "video" }))) : ""); break;
       case "issue_linked": what = (d.promoted ? "made story " : "linked to ") + F.tid(d.task_id); break;
       case "issue_unlinked": what = "unlinked from " + F.tid(d.task_id); break;
       case "issue_dismissed": what = "dismissed: " + esc(d.reason); break;
       case "issue_marked_duplicate": what = "marked a duplicate of " + F.iid(d.duplicate_of); break;
       case "issue_reopened": what = "reopened"; break;
+      case "issue_media_added": what = "added a " + esc(d.kind); break;
+      case "issue_media_removed": what = "removed a " + esc(d.kind) + ": " + esc(d.reason); break;
       default: what = esc(h.type);
     }
     return '<div><span class="h-at" title="' + esc(F.abs(h.at)) + '">' + F.rel(h.at) + '</span><span class="h-what">' + F.actor(h.by) + " " + what + "</span></div>";
   }
-
-  function storyBlock(i, l) {
-    var t = S.task(l.task_id), dead = t.status === "cancelled";
-    var others = S.issuesFor(t.id).filter(function (x) { return x.id !== i.id; }).map(function (x) { return x.id; });
-    return '<div class="story' + (dead ? " dead" : "") + '"><div class="story-top">' + F.tid(t.id) + F.tstatus(t.status) +
-      '<span class="s-title" title="' + esc(t.title) + '">' + esc(t.title) + "</span>" +
-      '<button class="btn btn-sm" data-unlink="' + t.id + '" data-issue="' + i.id + '">Unlink</button></div>' +
-      '<div class="story-sub"><span class="also">' + (dead ? "Cancelled, so it does not count. " : "") +
-      (l.linked_by ? "linked " + F.rel(l.linked_at) + " by " + esc(l.linked_by) : "") +
-      (others.length ? ". Also from " + esc(others.join(", ")) : "") + "</span>" +
-      '<label class="proto-ctl">prototype only: move this story to <select data-task="' + t.id + '" data-issue="' + i.id + '">' +
-      S.TASK_STATUSES.map(function (s) { return '<option value="' + s + '"' + (s === t.status ? " selected" : "") + ">" + s.replace(/_/g, " ") + "</option>"; }).join("") +
-      "</select></label></div></div>";
+  function renderHistory(i) {
+    var box = document.getElementById("d-hist"); if (!box || !i) { return; }
+    var h = S.history(i.id);
+    box.innerHTML = '<button class="hist-toggle" aria-expanded="' + histOpen + '"><span class="caret">' + (histOpen ? "▾" : "▸") + "</span>History (" + h.length + ")</button>" +
+      (histOpen ? '<div class="hist">' + h.map(histLine).join("") + "</div>" : "");
   }
 
-  function renderDetail(i, list, counts) {
-    var head = document.getElementById("d-head"), body = document.getElementById("d-body");
+  function renderDetail(i) {
+    var body = document.getElementById("d-body");
     var changed = (i ? i.id : "none:" + view) !== shownId;
     shownId = i ? i.id : "none:" + view;
-    var keep = changed ? 0 : body.scrollTop;
-
+    document.getElementById("id-copy").textContent = i ? i.id : "";
+    document.getElementById("id-copy").disabled = !i;
+    document.getElementById("d-state").innerHTML = i ? F.state(S.state(i)) : "";
+    document.getElementById("d-facts").innerHTML = i ? factsHtml(i) : "";
+    var cs = document.getElementById("copy-status");
+    if (changed && !cs.classList.contains("done")) { cs.textContent = i ? "copy" : ""; }
     if (!i) {
-      var q = QUEUES.filter(function (x) { return x.key === view; })[0];
-      head.innerHTML = '<span class="d-filed">' + esc(q.label) + '</span><span class="d-pos">0 of 0</span>';
-      if (view === "open") {
-        var t = tally();
-        body.innerHTML = '<div class="done-state"><h2>Nothing needs a story.</h2>' +
-          "<p>Every issue has a story, a link to one, or a reason it was closed.</p>" +
-          '<div class="done-tally"><div class="head">This sitting</div>' +
-          "<b>" + t.decided + "</b><span>issues decided</span>" +
-          "<b>" + t.promoted + "</b><span>became " + t.stories + (t.stories === 1 ? " new story" : " new stories") + "</span>" +
-          "<b>" + t.linked + "</b><span>linked to stories that already existed</span>" +
-          "<b>" + (t.dismissed + t.duplicate) + "</b><span>closed (" + t.dismissed + " dismissed, " + t.duplicate + " duplicate)</span></div>" +
-          "<p>New issues arrive at the bottom of this queue. <kbd>i</kbd> files one. <kbd>z</kbd> undoes the last decision.</p>" +
-          '<p class="muted">' + counts.linked + " issues have a story in progress (<kbd>2</kbd>).</p></div>";
-      } else {
-        body.innerHTML = '<div class="quiet">' + esc(EMPTY[view]) + "</div>";
-      }
-      body.scrollTop = 0;
+      mediaKey = null;
+      body.innerHTML = view === "open"
+        ? '<div class="quiet"><h2>Nothing needs a story.</h2>Every issue has a story, a link to one, or a reason it was closed. New issues arrive here as they are filed.</div>'
+        : '<div class="quiet">' + esc(EMPTY[view]) + "</div>";
       return;
     }
-
-    var st = S.state(i);
-    head.innerHTML = F.iid(i.id) + F.state(st) + '<span class="d-filed">filed ' + F.rel(i.filed_at) + " by " + esc(i.filed_by) + "</span>" +
-      '<span class="d-pos">' + (cursorIdx[view] + 1) + " of " + list.length + "</span>";
-
-    var main = '<p class="d-text">' + esc(i.text) + "</p>" +
-      '<dl class="meta"><dt>Filed by</dt><dd>' + F.actor(i.filed_by) + "</dd>" +
-      '<dt>Filed</dt><dd title="' + esc(F.abs(i.filed_at)) + '">' + esc(F.abs(i.filed_at)) + " (" + F.rel(i.filed_at) + ")</dd>" +
-      "<dt>Source</dt><dd>" + (i.source ? esc(i.source) : '<span class="muted">—</span>') + "</dd>" +
-      "<dt>How sure</dt><dd>" + F.conf(i.confidence) + "</dd>" +
-      "<dt>Evidence</dt><dd>" + (i.evidence.length ? i.evidence.map(function (e) { return '<span class="evidence">' + esc(e) + "</span>"; }).join("") : '<span class="muted">—</span>') + "</dd></dl>";
-
-    if (i.closure) {
-      var c = i.closure;
-      main += '<div class="closure">' + (c.kind === "dismissed"
-        ? "<b>Dismissed.</b> " + esc(c.reason)
-        : '<b>Duplicate of</b> <a href="#" data-goto="' + esc(c.duplicate_of) + '">' + esc(c.duplicate_of) + "</a>: " + esc(F.firstLine(S.get(c.duplicate_of).text, 90))) +
-        '<div class="c-by">by ' + esc(c.by) + ", " + F.rel(c.at) + ". <kbd>o</kbd> reopens it.</div></div>";
+    if (!document.getElementById("d-media")) {
+      body.innerHTML = '<p class="d-text" id="d-text"></p><div id="d-media"></div><div class="outcome" id="d-outcome"></div><div id="d-hist"></div>';
+      mediaKey = null;
     }
-
-    main += '<div class="sec"><h3>Stories <span class="h-note">' + (i.links.length || "") + "</span></h3>" +
-      (i.links.length ? i.links.map(function (l) { return storyBlock(i, l); }).join("")
-        : '<div class="none">No story yet. <kbd>s</kbd> makes one, <kbd>l</kbd> links one that exists.</div>') + "</div>";
-
-    var dups = S.duplicatesOf(i.id);
-    if (dups.length) {
-      main += '<div class="sec"><h3>Marked duplicate of this</h3><div class="sim-list">' + dups.map(function (d) {
-        return '<div class="sim">' + F.iid(d.id) + '<div class="sim-text"><div class="sim-line" title="' + esc(d.text) + '">' + esc(d.text) +
-          '</div></div><button class="btn btn-sm" data-goto="' + d.id + '">Go to</button></div>';
-      }).join("") + "</div></div>";
-    }
-
-    var sims = similar(i.id, 3);
-    var aside = '<div class="sec"><h3>Similar issues <span class="h-note">by shared words</span></h3>' +
-      (sims.length ? '<div class="sim-list">' + sims.map(function (s) {
-        var canDup = !isClosed(i);
-        return '<div class="sim">' + F.iid(s.issue.id) + '<div class="sim-text"><div class="sim-line" title="' + esc(s.issue.text) + '">' +
-          esc(s.issue.text) + '</div><div class="sim-shares">' + esc(S.state(s.issue)) + " · shares " + esc(s.shared.slice(0, 5).join(", ")) + "</div></div>" +
-          '<button class="btn btn-sm" data-goto="' + s.issue.id + '" title="Show it in its queue">Go to</button>' +
-          (canDup ? '<button class="btn btn-sm" data-dupof="' + s.issue.id + '" data-issue="' + i.id + '" title="Mark ' + i.id + ' a duplicate of ' + s.issue.id + '">Duplicate</button>' : "") +
-          "</div>";
-      }).join("") + "</div>" : '<div class="none">No other issue shares enough words with this one.</div>') + "</div>" +
-      '<div class="sec"><h3>History</h3><div class="hist">' + S.history(i.id).map(histLine).join("") + "</div></div>";
-
-    body.innerHTML = '<div class="d-grid"><div>' + main + "</div><div>" + aside + "</div></div>";
+    var keep = changed ? 0 : body.scrollTop;
+    document.getElementById("d-text").textContent = i.text;
+    renderMedia(i);
+    document.getElementById("d-outcome").innerHTML = outcomeHtml(i);
+    renderHistory(i);
     body.scrollTop = keep;
   }
 
@@ -740,118 +514,207 @@ body{overflow:hidden}
     var list = listFor(view);
     settleCursor(list);
     var i = current();
-    renderProgress(counts);
-    renderSelbar(list);
     renderQueue(list);
-    renderActions(i);
-    renderDetail(i, list, counts);
-    var um = document.getElementById("u-msg");
-    um.textContent = lastMsg || "Each decision can be undone with z.";
-    um.title = um.textContent;
-    document.getElementById("u-btn").disabled = !undoStack.length;
-    document.getElementById("u-btn").title = undoStack.length ? "Undo: " + describe(undoStack[undoStack.length - 1]) : "Nothing to undo";
+    renderDetail(i);
+    // Look closer follows the cursor while it has something to show, and steps aside when it does not.
+    if (closer && (!i || closer.issue !== i.id)) { if (i && itemsOf(i).length) { openCloser(0); } else { closeCloser(); } }
   }
 
   S.subscribe(render);
   render();
 
   // ---- test hooks ----
-  // ?keys=jjx   replays keystrokes after load (for headless screenshots of a given state).
-  // ?selftest=1 runs every action against the store and writes PASS/FAIL lines into <pre id="selftest">.
+  // ?at=LAT-I24   selects that issue on load, in whichever queue it lives.
+  // ?keys=jf      replays keystrokes after load (for headless screenshots of a given state).
+  // ?hist=1       opens the history.
+  // ?tray=1       opens the file panel with a photo and a video in the tray.
+  // ?selftest=1   checks the viewer, the media, the store and filing; PASS/FAIL lines go into <pre id="selftest">.
   var params = new URLSearchParams(location.search);
-  function key(k) { document.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true })); }
-  if (params.get("keys")) { params.get("keys").split("").forEach(key); }
+  function key(k, target) { (target || document).dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true })); }
+  function wait(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  function until(fn, ms) {
+    var end = Date.now() + (ms || 4000);
+    return new Promise(function (resolve) { (function poll() { var v = fn(); if (v || Date.now() > end) { resolve(v); } else { setTimeout(poll, 50); } })(); });
+  }
+  function fetchFile(url, name, type) { return fetch(url).then(function (r) { return r.blob(); }).then(function (b) { return new File([b], name, { type: type }); }); }
+  if (params.get("hist") === "1") { histOpen = true; render(); }
+  if (params.get("at")) { goTo(params.get("at")); }
+  var keysDone = Promise.resolve();
+  if (params.get("keys")) { keysDone = wait(300).then(function () { params.get("keys").split("").forEach(function (k) { key(k); }); }); }
+  if (params.get("tray") === "1") {
+    Shell.openFile({ text: "Dragging a card to Done snaps back; the lane header also wraps" });
+    Promise.all([fetchFile("media/lane-wrap.jpg", "Screenshot 2026-09-29 at 09.14.02.png", "image/jpeg"),
+      fetchFile("media/drag-done-snapback.mp4", "drag-done-snapback.mov", "video/mp4")]).then(function (fs) {
+      var p = Shell.filePanel(); if (p) { p.addFiles(fs, "choose"); }
+    });
+  }
 
   if (params.get("selftest") === "1") {
     var out = [], pass = 0, failN = 0;
     var check = function (name, cond) { out.push((cond ? "PASS " : "FAIL ") + name); if (cond) { pass++; } else { failN++; } };
     var st = function (id) { return S.state(S.get(id)); };
-    var rects = function () {
-      return Array.prototype.map.call(document.querySelectorAll("#d-actions .btn, #undo .btn, .q-tab"), function (b) {
-        var r = b.getBoundingClientRect(); return [Math.round(r.left), Math.round(r.top), Math.round(r.width)].join(",");
-      }).join(" ");
+    var top = function (sel) { var n = document.querySelector(sel); return n ? Math.round(n.getBoundingClientRect().top) + "," + Math.round(n.getBoundingClientRect().left) : "none"; };
+    var fixed = function () { return [top("#id-copy"), top("#copy-status"), top("#d-text"), top(".q-tab")].join(" "); };
+    var f0;
+    var finish = function () {
+      out.push((failN ? "FAIL" : "PASS") + " total " + pass + " passed, " + failN + " failed");
+      document.getElementById("selftest").textContent = out.join("\n");
     };
-    try {
-      var r0 = rects();
-      var open0 = listFor("open"), n0 = open0.length;
-      check("default queue is Needs a story, oldest first (" + n0 + " issues, LAT-I8 first because its only story was cancelled)",
-        view === "open" && n0 === S.counts().open && open0[0].id === "LAT-I8");
-      check("cursor starts on the oldest open issue", cursorBy.open === open0[0].id);
-      key("j");
-      check("j moves to the next issue", cursorBy.open === open0[1].id);
-      key("k");
-      check("k moves back", cursorBy.open === open0[0].id);
-      key("j");
-      check("similar(LAT-I38) offers LAT-I11 (swatch, click)", similar("LAT-I38").some(function (s) { return s.issue.id === "LAT-I11"; }));
-      check("similar(LAT-I40) offers LAT-I2 (footer, last comment)", similar("LAT-I40").some(function (s) { return s.issue.id === "LAT-I2"; }));
-      check("similar never offers an issue that is itself a duplicate", similar("LAT-I1").every(function (s) { return s.issue.id !== "LAT-I19"; }));
+    window.__selftest = keysDone.then(function () {
+      var open0 = listFor("open");
+      f0 = fixed();
+      check("default queue is Needs a story, oldest first (" + open0.length + ", LAT-I8 first because its only story was cancelled)",
+        view === "open" && open0.length === S.counts().open && open0[0].id === "LAT-I8" && cursorBy.open === "LAT-I8");
+      key("j"); check("j moves to the next", cursorBy.open === open0[1].id);
+      key("k"); check("k moves back", cursorBy.open === open0[0].id);
+      key("2"); check("2 switches to Has a story", view === "linked"); key("1");
 
-      var t1 = act.promote(["LAT-I21"]);
-      check("promote one: LAT-I21 is linked to a new backlog story", st("LAT-I21") === "linked" && S.task(t1.id).status === "backlog");
-      check("after promote the cursor moved to the next issue (LAT-I22)", cursorBy.open === "LAT-I22");
-      check("open count fell by one and the progress number follows", listFor("open").length === n0 - 1 && document.getElementById("pg-num").textContent === String(n0 - 1));
-      check("action buttons and tabs did not move", rects() === r0);
-      undo();
-      check("undo promote: LAT-I21 open again, story kept in backlog", st("LAT-I21") === "open" && S.task(t1.id) && S.task(t1.id).status === "backlog");
-      check("undo message says the story stays in backlog", /stays in backlog/.test(lastMsg));
-      check("undo brings the cursor back to LAT-I21", cursorBy.open === "LAT-I21");
+      // a viewer: nothing to decide with
+      check("no decision controls in the view", !document.querySelector("[data-act], .q-check, #undo, .sim-list, [data-unlink], [data-dupof]"));
+      var before = JSON.stringify(S.counts());
+      ["s", "l", "d", "u", "x", "o", "z"].forEach(function (k) { key(k); });
+      check("the old decision keys do nothing", JSON.stringify(S.counts()) === before && !Shell.dialogOpen());
+      check("no Similar issues section", !/Similar/.test(document.getElementById("d-body").textContent));
 
-      cursorBy.open = "LAT-I22"; render(); key("x");
-      cursorBy.open = "LAT-I23"; render(); key("x");
-      check("x builds a selection of two", selection.length === 2 && document.getElementById("a-s-label").textContent === "One story from 2");
-      var t2 = act.promote(selection.slice(), "Two issues, one story");
-      check("promote several: both issues share one story", st("LAT-I22") === "linked" && st("LAT-I23") === "linked" &&
-        S.issuesFor(t2.id).length === 2 && selection.length === 0);
+      // history collapsed; opening it moves nothing above it
+      goTo("LAT-I1");
+      var h = S.history("LAT-I1").length, above = function () { return [top("#d-text"), top("#d-media"), top("#d-outcome"), top(".hist-toggle")].join(" "); };
+      var beforeOpen = above();
+      check("history is collapsed by default and says how many", !document.querySelector(".hist") && document.querySelector(".hist-toggle").textContent === "▸History (" + h + ")");
+      document.querySelector(".hist-toggle").click();
+      check("History opens in place with every event", document.querySelectorAll(".hist > div").length === h);
+      check("opening History moves nothing above it", above() === beforeOpen);
+      document.querySelector(".hist-toggle").click();
 
-      act.link("LAT-I24", "LAT-373");
-      check("link: LAT-I24 linked to LAT-373", st("LAT-I24") === "linked");
-      undo();
-      check("undo link: LAT-I24 open again", st("LAT-I24") === "open");
+      // the ID is prominent and copies
+      goTo("LAT-I21");
+      document.getElementById("id-copy").click();
+      return until(function () { return document.getElementById("copy-status").textContent !== "copy"; }, 2000);
+    }).then(function () {
+      var cs = document.getElementById("copy-status").textContent;
+      check("clicking the ID shows a copy result in its fixed slot (" + cs + ")", cs === "Copied" || cs === "Not copied");
+      check("the ID is the largest text in the header", parseFloat(getComputedStyle(document.getElementById("id-copy")).fontSize) > parseFloat(getComputedStyle(document.getElementById("d-facts")).fontSize));
+      check("the header line carries filed by, when, source and how sure", /agent:qa-browser/.test(document.getElementById("d-facts").textContent) && /qa-sweep-2026-09-27/.test(document.getElementById("d-facts").textContent) && /definite/.test(document.getElementById("d-facts").textContent));
+      check("nothing else below: text, media, stories, history", !document.getElementById("d-meta") && !document.querySelector(".no-story"));
 
-      act.dismiss("LAT-I25", DISMISS_REASONS[0]);
-      check("dismiss: LAT-I25 dismissed with the reason", st("LAT-I25") === "dismissed" && S.get("LAT-I25").closure.reason === DISMISS_REASONS[0]);
-      undo();
-      check("undo dismiss: LAT-I25 open again", st("LAT-I25") === "open");
+      // steady layout with and without media
+      goTo("LAT-I22"); var a = fixed(); goTo("LAT-I24"); var b = fixed(); goTo("LAT-I31"); var c = fixed(); goTo("LAT-I35"); var d = fixed();
+      check("ID, copy slot, text and tabs stay put across no media, video, vertical video, photo", a === f0 && b === f0 && c === f0 && d === f0);
+      goTo("LAT-I22");
+      check("no media: nothing is drawn for it", document.getElementById("d-media").children.length === 0);
 
-      act.duplicate("LAT-I38", "LAT-I11");
-      check("duplicate: LAT-I38 duplicate of LAT-I11", st("LAT-I38") === "duplicate");
-      undo();
-      check("undo duplicate: LAT-I38 open again", st("LAT-I38") === "open");
+      // queue
+      var lefts = Array.prototype.map.call(document.querySelectorAll(".q-row .q-text"), function (n) { return Math.round(n.getBoundingClientRect().left); });
+      check("queue text starts at the same x on rows with and without thumbnails", lefts.length > 5 && lefts.every(function (x) { return x === lefts[0]; }));
+      var row24 = document.querySelector('.q-row[data-id="LAT-I24"]');
+      check("LAT-I24 row: video badge with duration, count 2", /▶ 0:07/.test(row24.querySelector(".q-vid").textContent) && row24.querySelector(".q-count").textContent === "2");
+      check("a row without media keeps an empty thumbnail slot", !!document.querySelector('.q-row[data-id="LAT-I28"] .q-thumb.none'));
+      check("queue thumbnails are posters, never video", !document.querySelector("#q-list video") && /poster/.test(row24.querySelector("img").getAttribute("src")));
+      check("no per-row controls in the queue", !document.querySelector("#q-list button, #q-list input"));
 
-      key("4");
-      check("4 switches to Closed", view === "closed");
-      cursorBy.closed = "LAT-I20"; render();
-      check("s and d are disabled on a closed issue, o is enabled",
-        document.querySelector('[data-act="s"]').disabled && document.querySelector('[data-act="d"]').disabled && !document.querySelector('[data-act="o"]').disabled);
-      key("o");
-      check("reopen: LAT-I20 open", st("LAT-I20") === "open");
-      undo();
-      check("undo reopen: LAT-I20 dismissed again with its reason", st("LAT-I20") === "dismissed" && /No page/.test(S.get("LAT-I20").closure.reason));
+      // photos inline, legible
+      goTo("LAT-I35");
+      var ph = document.querySelector("#d-media .m-frame.photo"), paneW = document.getElementById("d-media").clientWidth;
+      var want = Math.min(1600, paneW - 2, window.innerHeight * 0.72 * 1600 / 688);
+      check("LAT-I35: the photo is inline as large as its own size, the pane and 72% of the window allow (" + ph.offsetWidth + " of " + paneW + ")", ph && Math.abs(ph.offsetWidth - 2 - want) <= 2);
+      goTo("LAT-I2");
+      check("LAT-I2: both photos inline, one under the other", document.querySelectorAll("#d-media .m-frame.photo").length === 2);
+      var small = document.querySelectorAll("#d-media .m-frame.photo")[1];
+      check("a small screenshot is not upscaled (400 wide stays 400)", small.offsetWidth <= 402);
 
-      var t3 = act.promote(["LAT-I26"]);
-      S.setTaskStatus(t3.id, "done");
-      check("story done: LAT-I26 resolved", st("LAT-I26") === "resolved");
-      S.setTaskStatus(t3.id, "cancelled");
-      check("story cancelled: LAT-I26 back to open", st("LAT-I26") === "open");
-      S.setTaskStatus(t3.id, "in_progress");
-      act.unlink("LAT-I26", t3.id);
-      check("unlink: LAT-I26 open", st("LAT-I26") === "open");
-      undo();
-      check("undo unlink: LAT-I26 linked again", st("LAT-I26") === "linked");
+      // video inline, frames under it
+      goTo("LAT-I24");
+      var v = document.querySelector("#d-media video");
+      check("LAT-I24: video inline, muted, not playing until asked, with a play button", v && v.muted && v.paused && !v.autoplay && !!document.querySelector(".m-play"));
+      check("five agent frames under it, with timestamps", document.querySelectorAll(".af-f").length === 5 && document.querySelectorAll(".af-f span")[1].textContent === "0:01.5");
+      check("its photo follows inline", !!document.querySelector('.m-item[data-item="1"] .m-frame.photo'));
+      return until(function () { var x = document.querySelector("#d-media video"); return x && x.readyState >= 1; }, 5000);
+    }).then(function () {
+      var v = document.querySelector("#d-media video");
+      check("the video loaded (duration " + (v && v.duration) + ")", v && v.readyState >= 1);
+      document.querySelector(".m-play").click();
+      check("clicking play plays it inline with native controls", !v.paused && v.controls && !document.querySelector(".m-play").offsetParent);
+      document.querySelectorAll(".af-f")[3].click();
+      check("clicking the 4.5s frame seeks the video there and pauses", Math.abs(v.currentTime - 4.5) < 0.01 && v.paused && document.querySelectorAll(".af-f")[3].classList.contains("on"));
+      goTo("LAT-I31");
+      var vv = document.querySelector("#d-media .m-frame.video");
+      check("LAT-I31: the vertical video is capped in height, not absurdly tall (" + vv.offsetHeight + "px)", vv.offsetHeight <= window.innerHeight * 0.72 + 3);
 
+      // look closer
+      goTo("LAT-I24");
+      key("f"); var cl = document.getElementById("closer");
+      check("f opens look closer over everything", cl && getComputedStyle(cl).position === "fixed" && !!cl.querySelector("video"));
+      key("ArrowRight"); check("→ moves to the next item (the photo)", !!document.querySelector("#closer img") && /2 of 2/.test(document.querySelector(".cb-pos").textContent));
+      key("Escape"); check("Escape closes look closer", !document.getElementById("closer"));
+      key("f"); key("f"); check("f closes it too", !document.getElementById("closer"));
+      document.querySelector("#d-media .m-frame.photo").click();
+      check("clicking a photo opens look closer on it", !!document.querySelector("#closer img")); key("Escape");
+
+      // prototype story control: the issue follows its story
+      goTo("LAT-I1");
+      var sel = document.querySelector('select[data-task="LAT-370"]');
+      sel.value = "done"; sel.dispatchEvent(new Event("change", { bubbles: true }));
+      check("prototype control: LAT-370 done makes LAT-I1 resolved, and the view follows it", st("LAT-I1") === "resolved" && view === "resolved" && cursorBy.resolved === "LAT-I1");
+      S.setTaskStatus("LAT-370", "in_progress");
+
+      // the store
+      var n = S.counts().total;
+      var filed = S.file({ text: "Store test with a photo", media: [{ kind: "photo", src: "media/lane-wrap.jpg", bytes: 94454, w: 1100, h: 700, name: "lane.png" }] });
+      check("file() takes media; history says filed with 1 photo", filed.media.length === 1 && S.counts().total === n + 1 && S.history(filed.id)[0].data.photos === 1);
+      var added = S.addMedia(filed.id, { kind: "video", src: "media/begin-noop.mp4", bytes: 12044870, duration: 8, name: "IMG_0001.MOV", frames: [] });
+      var hh = S.history(filed.id);
+      check("addMedia records issue_media_added", S.get(filed.id).media.length === 2 && hh[hh.length - 1].type === "issue_media_added");
+      var noReason = false; try { S.removeMedia(filed.id, added.id, " "); } catch (e) { noReason = e.code === "VALIDATION_ERROR"; }
+      check("removeMedia refuses without a reason", noReason);
+      S.removeMedia(filed.id, added.id, "Shows a token");
+      hh = S.history(filed.id); var last = hh[hh.length - 1];
+      check("removeMedia records who and why, and keeps neither file nor name", last.type === "issue_media_removed" && last.data.reason === "Shows a token" &&
+        last.by === S.me && JSON.stringify(last).indexOf("IMG_0001") < 0 && JSON.stringify(last).indexOf("begin-noop") < 0);
+      check("an 8 s phone recording (31.2 MB) is accepted under the 100 MB limit", !S.mediaProblem([], { kind: "video", bytes: 31209455 }));
+      check("oversized: 101 MB is refused against 100 MB", /Too large: 101 MB\. The limit is 100 MB/.test(S.mediaProblem([], { kind: "video", bytes: 101 * 1000 * 1000 }) || ""));
+
+      // filing, lean: text, tray, file button
+      Shell.openFile();
+      var p = Shell.filePanel();
+      check("the file panel is lean: no confidence, no evidence field, one file button",
+        !document.getElementById("fi-conf") && !document.getElementById("fi-ev") && document.querySelectorAll(".dialog-file .dialog-foot .btn").length === 1 && !!document.getElementById("fi-tray"));
+      // A small limit for this check, so the test does not allocate 100 MB in the browser.
+      var savedLimit = S.LIMITS.file; S.LIMITS.file = 25 * 1000 * 1000;
+      p.addFiles([new File([new Uint8Array(26 * 1000 * 1000)], "IMG_9999.MOV", { type: "video/quicktime" })], "choose");
+      check("the tray refuses a file over the limit and says why", p.tray()[0].state === "refused" && /Too large: 26 MB\. The limit is 25 MB a file\./.test(document.getElementById("fi-tray").textContent));
+      S.LIMITS.file = savedLimit;
+      var cv = document.createElement("canvas"); cv.width = 320; cv.height = 200;
+      cv.getContext("2d").fillRect(0, 0, 320, 200);
+      return new Promise(function (r) { cv.toBlob(r, "image/png"); }).then(function (blob) {
+        var png = new File([blob], "Screenshot 2026-09-29 at 09.30.00.png", { type: "image/png" });
+        var dt = new DataTransfer(); dt.items.add(png);
+        document.getElementById("fi-text").dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+        return until(function () { return p.tray().some(function (t) { return t.state === "ok"; }); }, 4000).then(function () { return png; });
+      });
+    }).then(function (png) {
+      var p = Shell.filePanel();
+      check("a synthetic paste of an image attaches it", p.tray().filter(function (t) { return t.state === "ok"; }).length === 1);
+      var n = S.counts().total;
+      document.querySelector(".dialog-file [data-go]").click();
+      check("empty text with a photo attached is refused, kindly and specifically", S.counts().total === n && /Add a line saying what the photo shows/.test(document.getElementById("fi-err").textContent));
+      document.getElementById("fi-text").value = "Pasted screenshot, a black block";
+      document.querySelector(".dialog-file [data-go]").click();
+      var newest = S.issues()[S.issues().length - 1];
+      check("with text it files with the photo, not the refused file", S.counts().total === n + 1 && newest.media.length === 1 && !Shell.dialogOpen());
+      var dt = new DataTransfer(); dt.items.add(png);
+      document.getElementById("d-body").dispatchEvent(new DragEvent("drop", { dataTransfer: dt, bubbles: true, cancelable: true }));
+      return until(function () { var q = Shell.filePanel(); return q && q.tray().some(function (t) { return t.state === "ok"; }); }, 4000);
+    }).then(function () {
+      check("a synthetic drop anywhere opens the file panel with the photo in the tray", !!Shell.filePanel() && Shell.filePanel().tray().length === 1);
+      Shell.closeDialog();
+
+      // empty queue
       key("1");
-      var guardN = 0;
-      while (listFor("open").length && guardN++ < 60) { act.dismiss(cursorBy.open, DISMISS_REASONS[1]); }
-      var body = document.getElementById("d-body").textContent;
-      check("clearing the queue shows the empty state", /Nothing needs a story/.test(body) && document.getElementById("pg-num").textContent === "0");
-      check("empty state reports this sitting", /issues decided/.test(body) && /became 2 new stories/.test(body));
-      check("buttons still in place in the empty state", rects() === r0);
-      check("no issue text overflows its row", Array.prototype.every.call(document.querySelectorAll(".q-row"), function (r) { return r.scrollWidth <= r.clientWidth + 1; }));
-    } catch (e) {
-      check("no exception: " + e.message, false);
-    }
-    out.push((failN ? "FAIL" : "PASS") + " total " + pass + " passed, " + failN + " failed");
-    document.getElementById("selftest").textContent = out.join("\n");
+      listFor("open").forEach(function (i) { S.dismiss(i.id, "selftest"); });
+      check("an empty Needs a story is calm and plain", /Nothing needs a story/.test(document.getElementById("d-body").textContent) && document.getElementById("id-copy").textContent === "");
+      check("header and tabs stay put in the empty state", top("#copy-status") === f0.split(" ")[1] && top(".q-tab") === f0.split(" ")[3]);
+      check("no text overflows its row", Array.prototype.every.call(document.querySelectorAll(".q-row"), function (r) { return r.scrollWidth <= r.clientWidth + 1; }));
+    }).catch(function (e) { check("no exception: " + (e && e.stack || e), false); }).then(finish);
   }
 })();
 </script>

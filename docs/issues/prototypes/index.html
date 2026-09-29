@@ -31,16 +31,32 @@ h1{font-size:1.5rem;margin:0 0 .25rem}
 .tally{display:grid;grid-template-columns:repeat(5,1fr);gap:.5rem;margin-top:.5rem}
 .tally div{border:1px solid var(--border);border-radius:var(--radius-md);padding:.5rem;text-align:center;background:var(--surface-card)}
 .tally b{display:block;font-size:1.5rem;line-height:1.2}
+.round{background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--accent-primary);border-radius:var(--radius-lg);padding:.875rem 1.125rem;margin:0 0 1.25rem;max-width:62rem}
+.round b{display:block;font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted);margin-bottom:.25rem}
+.round p{margin:0;color:var(--text-secondary)}
+.round p + p{margin-top:.375rem}
+.take-top{display:flex;justify-content:space-between;align-items:center;gap:.5rem}
+.tag{display:inline-block;width:10rem;text-align:center;padding:.0625rem 0;border-radius:var(--radius-sm);border:1px solid var(--border);font-size:.7rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text-muted)}
+.tag-chosen{border-color:var(--accent-primary);color:var(--accent-primary);background:var(--accent-glow)}
+.take.retired{background:var(--surface-card)}
+.take.retired h2,.take.retired .assume,.take.retired dd{color:var(--text-muted)}
+.take.retired .open{color:var(--text-secondary)}
+.mediatally{margin:.5rem 0 0;font-size:.86rem}
 </style>
 </head>
 <body>
 <div class="page">
-  <h1>Issue log: three directions</h1>
-  <p class="lede">Filing is the same in all three. What differs is where issues live in the dashboard and what the screen is built to do. Each direction rests on a different belief about how the issue log will be used. All three run on the same 41 mock issues and 14 stories, and every action works.</p>
+  <h1>Issue log prototypes</h1>
+  <div class="round">
+    <b>Round 2</b>
+    <p>Take A, the Inbox, was chosen. The board is for stories, and a ledger feels like the board. Issues are hazier than stories, so their home should feel different.</p>
+    <p>Round 2 makes photos and video first-class: in filing, in the queue and in the detail pane. It also shows what an agent gets from a recording, since an agent reads images and cannot watch video. Takes B and C stay as the record of round 1.</p>
+  </div>
+  <p class="lede">Filing is the same everywhere. All three takes run on the same 41 mock issues and 14 stories, and every action works.</p>
 
   <div class="grid">
     <a class="take" href="take-a-inbox.html">
-      <span class="letter">Take A</span>
+      <span class="take-top"><span class="letter">Take A</span><span class="tag tag-chosen">Chosen, round 2</span></span>
       <h2>Inbox</h2>
       <p class="assume"><b>It assumes</b>One person clears a queue, and the job is to decide each issue fast.</p>
       <dl>
@@ -51,8 +67,8 @@ h1{font-size:1.5rem;margin:0 0 .25rem}
       </dl>
       <span class="open">Open Take A &rarr;</span>
     </a>
-    <a class="take" href="take-b-ledger.html">
-      <span class="letter">Take B</span>
+    <a class="take retired" href="take-b-ledger.html">
+      <span class="take-top"><span class="letter">Take B</span><span class="tag">Round 1, retired</span></span>
       <h2>Ledger</h2>
       <p class="assume"><b>It assumes</b>The log is mostly read. The job is to see what happened to everything that was reported.</p>
       <dl>
@@ -61,10 +77,10 @@ h1{font-size:1.5rem;margin:0 0 .25rem}
         <dt>Best when</dt><dd>The question is "what came of Sunday's sweep" or "what is LAT-377 meant to fix".</dd>
         <dt>Weakest when</dt><dd>Forty new issues need deciding quickly.</dd>
       </dl>
-      <span class="open">Open Take B &rarr;</span>
+      <span class="open">Open Take B, as it was in round 1 &rarr;</span>
     </a>
-    <a class="take" href="take-c-board.html">
-      <span class="letter">Take C</span>
+    <a class="take retired" href="take-c-board.html">
+      <span class="take-top"><span class="letter">Take C</span><span class="tag">Round 1, retired</span></span>
       <h2>On the board</h2>
       <p class="assume"><b>It assumes</b>Nobody opens another tab. Issues belong beside the stories, on the board you already watch.</p>
       <dl>
@@ -73,7 +89,7 @@ h1{font-size:1.5rem;margin:0 0 .25rem}
         <dt>Best when</dt><dd>Issues are few and the board is where decisions get made.</dd>
         <dt>Weakest when</dt><dd>The log grows past what a side rail can hold, or you need the closed ones.</dd>
       </dl>
-      <span class="open">Open Take C &rarr;</span>
+      <span class="open">Open Take C, as it was in round 1 &rarr;</span>
     </a>
   </div>
 
@@ -82,21 +98,23 @@ h1{font-size:1.5rem;margin:0 0 .25rem}
       <h2>The mock data</h2>
       <p>Written the way agents and testers really file: five words to fifty, some vague, some repeats of each other.</p>
       <div class="tally" id="tally"></div>
+      <p class="mediatally" id="mediatally">&nbsp;</p>
       <p style="margin-top:.75rem"><a href="filing.html">See what filing looks like &rarr;</a></p>
     </div>
     <div class="box">
-      <h2>Things to try in each</h2>
+      <h2>Things to try in round 2</h2>
       <ol>
-        <li>Find an open issue that is the same problem as one that already has a story, and deal with it.</li>
-        <li>Make one story from two issues.</li>
-        <li>Find out what LAT-377 is meant to fix.</li>
-        <li>Dismiss a vague issue, then change your mind.</li>
-        <li>Mark a story done with the purple prototype control and watch its issues become resolved.</li>
-        <li>File a new issue with <kbd>i</kbd> and find it again.</li>
+        <li>Take a screenshot to the clipboard (<kbd>⌘</kbd> <kbd>⌃</kbd> <kbd>⇧</kbd> <kbd>4</kbd>), press <kbd>i</kbd> in Take A, then <kbd>⌘</kbd> <kbd>V</kbd>. Try filing it with no text.</li>
+        <li>Drag a video from the desktop onto the page with no panel open. The panel opens with it attached.</li>
+        <li>Record the screen from the panel, with the microphone on, and talk through a problem.</li>
+        <li>In Take A, open LAT-I24, the card that snaps back when dragged to Done. Step through the frames under the video: they are what an agent reads.</li>
+        <li>Find the vertical phone recording (LAT-I31) and an issue with two items (LAT-I2).</li>
+        <li>Make one story from two issues, then mark it done with the purple prototype control and watch both become resolved.</li>
       </ol>
     </div>
   </div>
 </div>
+<script src="shared/mock-media.js"></script>
 <script src="shared/mock-data.js"></script>
 <script src="shared/store.js"></script>
 <script src="shared/shell.js"></script>
@@ -104,12 +122,18 @@ h1{font-size:1.5rem;margin:0 0 .25rem}
 (function () {
   "use strict";
   var S = window.IssueStore, F = window.Shell.fmt;
-  window.Shell.mount({ active: "none", page: "index" });
+  window.Shell.mount({ active: "none", page: "index", title: "Issue log prototypes" });
   function draw() {
-    var c = S.counts();
+    var c = S.counts(), all = S.issues(), withMedia = 0, withVideo = 0;
     document.getElementById("tally").innerHTML = S.STATES.map(function (st) {
       return "<div><b>" + c[st] + "</b>" + F.state(st) + "</div>";
     }).join("");
+    all.forEach(function (i) {
+      var m = i.media || [];
+      if (m.length) { withMedia++; }
+      if (m.some(function (x) { return x.kind === "video"; })) { withVideo++; }
+    });
+    document.getElementById("mediatally").textContent = withMedia + " of " + all.length + " issues have a photo or video; " + withVideo + " have a video.";
   }
   S.subscribe(draw); draw();
 })();

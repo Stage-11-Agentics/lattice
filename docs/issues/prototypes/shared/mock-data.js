@@ -69,7 +69,24 @@
     { seq: 41, text: "stats counts a task twice in Assigned when it was reassigned during the same second", confidence: "possible", evidence: [], source: null, filed_by: "agent:qa-cli", filed_at: "2026-09-29T08:40:55Z", links: [] }
   ];
 
+  // Photos and videos that belong to an issue. Plain `evidence` strings stay as pointers (a log path, a doc).
+  var MEDIA = {
+    1: ["dp-footer-400"], 2: ["dp-footer-short", "dp-footer-400"], 3: ["lane-wrap"], 5: ["slash-focus"],
+    8: ["cube-252"], 15: ["history-ulid"], 17: ["begin-noop"], 21: ["clamp-identical"],
+    24: ["drag-done-snapback", "lane-wrap"], 25: ["flag-contrast"], 31: ["activity-chip-shift"],
+    35: ["board-wide"], 40: ["reaction-under-footer"]
+  };
+  var lib = window.MOCK_MEDIA || {};
+
   issues.forEach(function (i) {
+    i.media = (MEDIA[i.seq] || []).filter(function (k) { return lib[k]; }).map(function (k, n) {
+      var m = JSON.parse(JSON.stringify(lib[k]));
+      m.id = "med_" + i.seq + "_" + (n + 1);
+      m.added_by = i.filed_by; m.added_at = i.filed_at;
+      return m;
+    });
+    // A photo or video is no longer listed as a path once it belongs to the issue.
+    i.evidence = (i.evidence || []).filter(function (e) { return !/\.(png|jpe?g|gif|webp|mov|mp4|webm)$/i.test(e); });
     i.id = "LAT-I" + i.seq;
     i.closure = i.closure || null;
     if (i.closure && i.closure.duplicate_of) { i.closure.duplicate_of = "LAT-I" + i.closure.duplicate_of; }
