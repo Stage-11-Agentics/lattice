@@ -51,6 +51,8 @@
     i.media = i.media || [];
     log(i.id, "issue_filed", i.filed_by, mediaSummary(i.media), i.filed_at);
     i.links.forEach(function (l) { log(i.id, "issue_linked", l.linked_by, { task_id: l.task_id }, l.linked_at); });
+    i.comments = i.comments || [];
+    i.comments.forEach(function (c) { log(i.id, "issue_comment_added", c.by, { comment_id: c.id }, c.at); });
     if (i.closure) {
       log(i.id, i.closure.kind === "dismissed" ? "issue_dismissed" : "issue_marked_duplicate", i.closure.by,
         i.closure.kind === "dismissed" ? { reason: i.closure.reason } : { duplicate_of: i.closure.duplicate_of }, i.closure.at);
@@ -94,8 +96,10 @@
   }
 
   function file(p) {
-    var text = (p.text || "").trim();
-    if (!text) { fail("VALIDATION_ERROR", "An issue needs some text."); }
+    // A title is required; a description is optional. Round-1 callers pass text, which becomes the title.
+    var title = (p.title || p.text || "").trim();
+    if (!title) { fail("VALIDATION_ERROR", "An issue needs a title."); }
+    var text = title;
     var incoming = p.media || [], kept = [];
     incoming.forEach(function (m) {
       var why = mediaProblem(kept, m);
@@ -104,7 +108,7 @@
     });
     var seq = issues.reduce(function (m, i) { return Math.max(m, i.seq); }, 0) + 1;
     var issue = {
-      seq: seq, id: M.project_code + "-I" + seq, text: text, confidence: p.confidence || null,
+      seq: seq, id: M.project_code + "-I" + seq, title: title, description: (p.description || "").trim(), text: text, comments: [], confidence: p.confidence || null,
       evidence: p.evidence || [], source: p.source || null, filed_by: p.by || M.me, filed_at: tick(),
       links: [], closure: null, media: []
     };
@@ -214,6 +218,19 @@
     emit();
   }
 
+  // A comment on an issue. Anyone can comment on any issue, open or closed.
+  var commentSeq = 0;
+  function comment(id, body, by) {
+    var i = need(id);
+    var b = (body || "").trim();
+    if (!b) { fail("VALIDATION_ERROR", "A comment needs some text."); }
+    var c = { id: "com_new_" + (++commentSeq), by: by || M.me, at: tick(), body: b };
+    i.comments.push(c);
+    log(i.id, "issue_comment_added", c.by, { comment_id: c.id }, c.at);
+    emit();
+    return c;
+  }
+
   // Prototype-only: lets a viewer move a story along to watch issue states follow it.
   function setTaskStatus(taskId, status) {
     var t = task(taskId);
@@ -230,7 +247,7 @@
     history: function (id) { return (history[id] || []).slice(); },
     duplicatesOf: function (id) { return issues.filter(function (i) { return i.closure && i.closure.duplicate_of === id; }); },
     file: file, link: link, unlink: unlink, promote: promote, dismiss: dismiss, duplicate: duplicate, reopen: reopen,
-    setTaskStatus: setTaskStatus,
+    setTaskStatus: setTaskStatus, comment: comment,
     addMedia: addMedia, removeMedia: removeMedia, mediaProblem: mediaProblem, LIMITS: LIMITS, mb: mb,
     refresh: emit,
     subscribe: function (fn) { listeners.push(fn); },

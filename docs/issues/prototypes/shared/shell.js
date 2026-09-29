@@ -188,8 +188,10 @@
       return;
     }
     var o = dialog("File an issue",
-      '<label for="fi-text">What did you see?</label>' +
-      '<textarea id="fi-text" placeholder="The footer overlaps the Complete button at 400px wide"></textarea>' +
+      '<label for="fi-text">Title</label>' +
+      '<input type="text" id="fi-text" autocomplete="off" placeholder="Footer overlaps the Complete button at 400px">' +
+      '<label for="fi-desc">Description <span class="muted">(optional)</span></label>' +
+      '<textarea id="fi-desc" placeholder="Steps, what you expected, what happened"></textarea>' +
       '<div class="err" id="fi-err"></div>' +
       '<div class="fi-media-head"><label>Photos and video <span class="muted">(optional)</span></label><span class="fi-total" id="fi-total"></span></div>' +
       '<div class="tray" id="fi-tray"></div>' +
@@ -201,7 +203,7 @@
       '<button class="btn btn-primary" data-go>File issue</button>',
       { cls: "dialog-file" });
     if (!o.parentNode) { return; } // refused while recording
-    var text = o.querySelector("#fi-text"), err = o.querySelector("#fi-err");
+    var text = o.querySelector("#fi-text"), desc = o.querySelector("#fi-desc"), err = o.querySelector("#fi-err");
     var trayEl = o.querySelector("#fi-tray"), input = o.querySelector("#fi-input");
     var tray = []; // { state: "reading" | "ok" | "refused", item, reason, name, bytes }
     if (prefill.text) { text.value = prefill.text; }
@@ -260,13 +262,13 @@
       if (reading) { err.textContent = "Still reading " + (reading === 1 ? "one file" : reading + " files") + ". A moment."; return; }
       var media = accepted();
       if (!text.value.trim() && media.length) {
-        err.textContent = "Add a line saying what the " + (media.length === 1 ? media[0].kind : "attachments") + " show" + (media.length === 1 ? "s" : "") +
+        err.textContent = "Add a title saying what the " + (media.length === 1 ? media[0].kind : "attachments") + " show" + (media.length === 1 ? "s" : "") +
           ". Without words, a queue of screenshots cannot be scanned or searched, by a person or an agent.";
         text.focus(); return;
       }
       try {
-        var issue = S.file({ text: text.value, media: media });
-        toast("Filed " + fmt.iid(issue.id) + ": " + esc(fmt.firstLine(issue.text, 70)) + (media.length ? " (" + fmt.mediaCount(issue.media) + ")" : ""));
+        var issue = S.file({ title: text.value, description: desc.value, media: media });
+        toast("Filed " + fmt.iid(issue.id) + ": " + esc(fmt.firstLine(issue.title, 70)) + (media.length ? " (" + fmt.mediaCount(issue.media) + ")" : ""));
         tray = []; // filed items now belong to the issue; their object URLs stay alive
         closeDialog();
       } catch (e) { err.textContent = e.message; text.focus(); }
@@ -277,6 +279,7 @@
     };
     o.querySelector("[data-go]").onclick = go;
     o.addEventListener("keydown", function (e) { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); go(); } });
+    text.addEventListener("keydown", function (e) { if (e.key === "Enter" && !e.metaKey && !e.ctrlKey) { e.preventDefault(); desc.focus(); } });
     panel = { overlay: o, addFiles: addFiles, tray: function () { return tray; } };
     drawTray();
     if (prefill.files) { addFiles(prefill.files, prefill.via || "drop"); }

@@ -139,7 +139,8 @@ kbd{font-family:var(--font-mono);font-size:.75rem;padding:0 .35rem;border:1px so
 .dialog-file{width:min(48rem,calc(100vw - 2rem))}
 .overlay:has(.dialog-file){padding-top:8vh}
 .dialog-file .dialog-body{padding-top:.75rem}
-.dialog-file textarea{min-height:4.75rem}
+.dialog-file textarea{min-height:4.5rem}
+.dialog-file #fi-text{font-size:1.05rem}
 .fi-media-head{display:flex;align-items:baseline;justify-content:space-between;margin-top:.375rem}
 .fi-media-head label{margin:0 0 .25rem!important}
 .fi-total{font-size:.75rem;color:var(--text-muted);width:9rem;text-align:right}

@@ -64,7 +64,10 @@ body{overflow:hidden}
 .d-facts .actor{font-size:.7rem}
 
 .d-body{position:relative;flex:1;overflow-y:auto;min-height:0;padding:1.5rem 2rem 3rem}
-.d-text{max-width:62rem;font-size:1.25rem;line-height:1.55;color:var(--text-primary);white-space:pre-wrap;word-break:break-word;margin:0 0 1.5rem}
+.d-title{max-width:62rem;font-size:1.4rem;line-height:1.4;font-weight:700;color:var(--text-primary);word-break:break-word;margin:0 0 .75rem}
+.d-desc{max-width:52rem;font-size:1rem;line-height:1.65;color:#CFCFCF;white-space:pre-wrap;word-break:break-word;margin:0 0 1.5rem}
+.d-desc:empty{display:none}
+#d-title + .d-desc:empty + #d-media{margin-top:1.25rem}
 
 /* media inline, in the reading flow; each item at its own size up to the pane width, never upscaled */
 .m-item{margin:0 0 1.75rem}
@@ -103,6 +106,26 @@ body{overflow:hidden}
 .meta{max-width:62rem;font-size:.8rem;color:var(--text-muted);line-height:1.7;margin:0 0 1rem}
 .meta .actor{font-size:.7rem}
 .meta .evidence{display:inline;margin-left:.25rem}
+
+/* comments: who said it is the point, so the author chip leads and the rule on the left says human or agent */
+.comments{max-width:52rem;margin:1.5rem 0 1rem}
+.c-head{font-size:.74rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);margin:0 0 .5rem}
+.cm{padding:.35rem 0 .35rem .75rem;border-left:2px solid var(--border);margin-bottom:.75rem}
+.cm-human{border-left-color:var(--chip-human-border)}
+.cm-agent{border-left-color:var(--chip-agent-border)}
+.cm-meta{font-size:.75rem;color:var(--text-muted);display:flex;gap:.5rem;align-items:center}
+.cm-body{font-size:.95rem;line-height:1.55;color:var(--text-primary);white-space:pre-wrap;word-break:break-word;margin-top:.2rem}
+.cm-body .mention{color:var(--text-primary);font-weight:700}
+.cm-body .iid,.cm-body .tid{font-weight:600}
+.compose{max-width:52rem;display:flex;gap:.5rem;align-items:flex-start;margin:0 0 1.5rem}
+.compose textarea{flex:1;min-width:0;height:2.1rem;resize:none;background:transparent;color:var(--text-primary);border:1px solid var(--border-subtle);border-radius:var(--radius-sm);
+  padding:.35rem .6rem;font-family:inherit;font-size:.9rem;line-height:1.4;transition:height .12s ease}
+.compose textarea::placeholder{color:var(--text-muted)}
+.compose textarea:focus{outline:none;height:5rem;border-color:var(--accent-primary);background:var(--bg-base)}
+.compose .btn{width:4.5rem;height:2.1rem;color:var(--text-muted)}
+.compose.active .btn{background:var(--accent-primary);border-color:var(--accent-primary);color:#fff;font-weight:600}
+.q-com{flex-shrink:0;width:2.25rem;display:inline-flex;align-items:center;gap:.2rem;justify-content:flex-end;color:var(--text-muted);font-size:.72rem}
+.q-com svg{width:.8rem;height:.8rem}
 
 .hist-toggle{background:transparent;border:0;padding:0;color:var(--text-muted);font-family:inherit;font-size:.8rem;cursor:pointer}
 .hist-toggle:hover{color:var(--text-primary)}
@@ -321,7 +344,7 @@ body{overflow:hidden}
     if (inline) { inline.pause(); }
     var el = document.getElementById("closer");
     if (!el) { el = document.createElement("div"); el.id = "closer"; el.className = "closer"; document.body.appendChild(el); }
-    el.innerHTML = '<div class="closer-bar">' + F.iid(i.id) + '<span class="cb-text">' + esc(i.text) + '</span><span class="cb-pos">' +
+    el.innerHTML = '<div class="closer-bar">' + F.iid(i.id) + '<span class="cb-text">' + esc(i.title) + '</span><span class="cb-pos">' +
       (ms.length > 1 ? (idx + 1) + " of " + ms.length : "") + '</span><span class="cb-keys">' + (ms.length > 1 ? "<kbd>←</kbd> <kbd>→</kbd> item &nbsp; " : "") +
       "<kbd>j</kbd> <kbd>k</kbd> issue &nbsp; <kbd>f</kbd> or <kbd>Esc</kbd> closes</span></div>" +
       '<div class="closer-media" data-close>' + (m.kind === "video"
@@ -421,8 +444,8 @@ body{overflow:hidden}
     if (!list.length) { el.innerHTML = '<div class="q-empty">' + esc(view === "open" ? "Nothing needs a story." : EMPTY[view]) + "</div>"; return; }
     el.innerHTML = list.map(function (i) {
       return '<div class="q-row' + (i.id === curId ? " cursor" : "") + '" data-id="' + i.id + '" role="option" aria-selected="' + (i.id === curId) + '">' +
-        '<div class="q-main"><div class="q-top">' + F.iid(i.id) + '<span class="q-tag">' + tagFor(i) + '</span><span class="q-age">' + F.rel(i.filed_at) + "</span></div>" +
-        '<div class="q-text" title="' + esc(i.text) + '">' + esc(i.text) + "</div></div>" + queueThumb(i) + "</div>";
+        '<div class="q-main"><div class="q-top">' + F.iid(i.id) + '<span class="q-tag">' + tagFor(i) + "</span>" + comCount(i) + '<span class="q-age">' + F.rel(i.filed_at) + "</span></div>" +
+        '<div class="q-text" title="' + esc(i.title) + '">' + esc(i.title) + "</div></div>" + queueThumb(i) + "</div>";
     }).join("");
     var c = el.querySelector(".cursor"); if (c) { c.scrollIntoView({ block: "nearest" }); }
   }
@@ -464,11 +487,49 @@ body{overflow:hidden}
       case "issue_marked_duplicate": what = "marked a duplicate of " + F.iid(d.duplicate_of); break;
       case "issue_reopened": what = "reopened"; break;
       case "issue_media_added": what = "added a " + esc(d.kind); break;
+      case "issue_comment_added": what = "commented"; break;
       case "issue_media_removed": what = "removed a " + esc(d.kind) + ": " + esc(d.reason); break;
       default: what = esc(h.type);
     }
     return '<div><span class="h-at" title="' + esc(F.abs(h.at)) + '">' + F.rel(h.at) + '</span><span class="h-what">' + F.actor(h.by) + " " + what + "</span></div>";
   }
+  var BUBBLE = '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M2 2h12a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H7l-3.5 3v-3H2a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z"/></svg>';
+  function comCount(i) {
+    var n = (i.comments || []).length;
+    return '<span class="q-com" title="' + n + (n === 1 ? " comment" : " comments") + '">' + (n ? BUBBLE + n : "") + "</span>";
+  }
+  // @mentions stand out, and story and issue IDs read as IDs, so a request and its answer are easy to follow.
+  function commentBody(t) {
+    return esc(t).replace(/(^|\s)(@[\w:.-]+)/g, '$1<span class="mention">$2</span>')
+      .replace(/\bLAT-I\d+\b/g, function (x) { return '<span class="iid">' + x + "</span>"; })
+      .replace(/\bLAT-\d+\b/g, function (x) { return '<span class="tid">' + x + "</span>"; });
+  }
+  function commentsHtml(i) {
+    var cs = i.comments || [];
+    if (!cs.length) { return ""; }
+    return '<div class="c-head">Comments (' + cs.length + ")</div>" + cs.map(function (c) {
+      var kind = c.by.indexOf("human:") === 0 ? "human" : "agent";
+      return '<div class="cm cm-' + kind + '"><div class="cm-meta">' + F.actor(c.by) + '<span title="' + esc(F.abs(c.at)) + '">' + F.rel(c.at) + "</span></div>" +
+        '<div class="cm-body">' + commentBody(c.body) + "</div></div>";
+    }).join("");
+  }
+  function postComment() {
+    var i = current(), box = document.getElementById("cm-box"); if (!i || !box) { return; }
+    var c = Shell.guard(function () { return S.comment(i.id, box.value); });
+    if (c) { box.value = ""; box.focus(); }
+  }
+  function wireCompose() {
+    var box = document.getElementById("cm-box"), wrap = document.getElementById("d-compose");
+    box.addEventListener("focus", function () { wrap.classList.add("active"); });
+    box.addEventListener("blur", function () { if (!box.value.trim()) { wrap.classList.remove("active"); } });
+    box.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); postComment(); }
+      else if (e.key === "Escape") { e.preventDefault(); box.blur(); }
+    });
+    document.getElementById("cm-post").addEventListener("mousedown", function (e) { e.preventDefault(); }); // keep focus in the box
+    document.getElementById("cm-post").onclick = postComment;
+  }
+
   function renderHistory(i) {
     var box = document.getElementById("d-hist"); if (!box || !i) { return; }
     var h = S.history(i.id);
@@ -494,11 +555,17 @@ body{overflow:hidden}
       return;
     }
     if (!document.getElementById("d-media")) {
-      body.innerHTML = '<p class="d-text" id="d-text"></p><div id="d-media"></div><div class="outcome" id="d-outcome"></div><div id="d-hist"></div>';
+      body.innerHTML = '<h1 class="d-title" id="d-title"></h1><div class="d-desc" id="d-desc"></div><div id="d-media"></div><div class="outcome" id="d-outcome"></div>' +
+        '<div class="comments" id="d-comments"></div><div class="compose" id="d-compose"><textarea id="cm-box" rows="1" placeholder="Comment, or ask an agent: @claude-opus-impl ..."></textarea>' +
+        '<button class="btn btn-sm" id="cm-post" title="Post (⌘ Enter)">Post</button></div><div id="d-hist"></div>';
+      wireCompose();
       mediaKey = null;
     }
     var keep = changed ? 0 : body.scrollTop;
-    document.getElementById("d-text").textContent = i.text;
+    document.getElementById("d-title").textContent = i.title;
+    document.getElementById("d-desc").textContent = i.description || "";
+    document.getElementById("d-comments").innerHTML = commentsHtml(i);
+    if (changed) { document.getElementById("cm-box").value = ""; document.getElementById("d-compose").classList.remove("active"); }
     renderMedia(i);
     document.getElementById("d-outcome").innerHTML = outcomeHtml(i);
     renderHistory(i);
@@ -539,6 +606,8 @@ body{overflow:hidden}
   function fetchFile(url, name, type) { return fetch(url).then(function (r) { return r.blob(); }).then(function (b) { return new File([b], name, { type: type }); }); }
   if (params.get("hist") === "1") { histOpen = true; render(); }
   if (params.get("at")) { goTo(params.get("at")); }
+  // ?to=comments   scrolls the detail pane to the comment thread.
+  if (params.get("to") === "comments") { setTimeout(function () { var c = document.getElementById("d-comments"); if (c) { c.scrollIntoView({ block: "start" }); } }, 200); }
   var keysDone = Promise.resolve();
   if (params.get("keys")) { keysDone = wait(300).then(function () { params.get("keys").split("").forEach(function (k) { key(k); }); }); }
   if (params.get("tray") === "1") {
@@ -554,7 +623,7 @@ body{overflow:hidden}
     var check = function (name, cond) { out.push((cond ? "PASS " : "FAIL ") + name); if (cond) { pass++; } else { failN++; } };
     var st = function (id) { return S.state(S.get(id)); };
     var top = function (sel) { var n = document.querySelector(sel); return n ? Math.round(n.getBoundingClientRect().top) + "," + Math.round(n.getBoundingClientRect().left) : "none"; };
-    var fixed = function () { return [top("#id-copy"), top("#copy-status"), top("#d-text"), top(".q-tab")].join(" "); };
+    var fixed = function () { return [top("#id-copy"), top("#copy-status"), top("#d-title"), top(".q-tab")].join(" "); };
     var f0;
     var finish = function () {
       out.push((failN ? "FAIL" : "PASS") + " total " + pass + " passed, " + failN + " failed");
@@ -578,7 +647,7 @@ body{overflow:hidden}
 
       // history collapsed; opening it moves nothing above it
       goTo("LAT-I1");
-      var h = S.history("LAT-I1").length, above = function () { return [top("#d-text"), top("#d-media"), top("#d-outcome"), top(".hist-toggle")].join(" "); };
+      var h = S.history("LAT-I1").length, above = function () { return [top("#d-title"), top("#d-media"), top("#d-outcome"), top("#d-comments"), top("#d-compose"), top(".hist-toggle")].join(" "); };
       var beforeOpen = above();
       check("history is collapsed by default and says how many", !document.querySelector(".hist") && document.querySelector(".hist-toggle").textContent === "▸History (" + h + ")");
       document.querySelector(".hist-toggle").click();
@@ -595,7 +664,39 @@ body{overflow:hidden}
       check("clicking the ID shows a copy result in its fixed slot (" + cs + ")", cs === "Copied" || cs === "Not copied");
       check("the ID is the largest text in the header", parseFloat(getComputedStyle(document.getElementById("id-copy")).fontSize) > parseFloat(getComputedStyle(document.getElementById("d-facts")).fontSize));
       check("the header line carries filed by, when, source and how sure", /agent:qa-browser/.test(document.getElementById("d-facts").textContent) && /qa-sweep-2026-09-27/.test(document.getElementById("d-facts").textContent) && /definite/.test(document.getElementById("d-facts").textContent));
-      check("nothing else below: text, media, stories, history", !document.getElementById("d-meta") && !document.querySelector(".no-story"));
+      check("nothing else below: title, description, media, stories, comments, history", !document.getElementById("d-meta") && !document.querySelector(".no-story"));
+
+      // round 3: title and description
+      goTo("LAT-I24");
+      var i24 = S.get("LAT-I24");
+      check("LAT-I24: the title is large and the description keeps its paragraphs", document.getElementById("d-title").textContent === i24.title &&
+        document.getElementById("d-desc").textContent === i24.description && /\n\n/.test(i24.description) &&
+        getComputedStyle(document.getElementById("d-desc")).whiteSpace === "pre-wrap" &&
+        parseFloat(getComputedStyle(document.getElementById("d-title")).fontSize) > parseFloat(getComputedStyle(document.getElementById("d-desc")).fontSize));
+      check("the queue row shows the title", document.querySelector('.q-row[data-id="LAT-I24"] .q-text').textContent === i24.title);
+      goTo("LAT-I26");
+      check("LAT-I26 has no description and shows nothing in its place", S.get("LAT-I26").description === "" && document.getElementById("d-desc").offsetHeight === 0);
+
+      // round 3: comments
+      goTo("LAT-I24");
+      check("LAT-I24 shows its five comments, oldest first", document.querySelectorAll("#d-comments .cm").length === 5 &&
+        document.querySelector("#d-comments .cm .cm-body").textContent.indexOf("Reproduced at 1280x800") === 0);
+      check("attribution: 2 human and 3 agent comments, each with its chip", document.querySelectorAll("#d-comments .cm-human .actor-human").length === 2 &&
+        document.querySelectorAll("#d-comments .cm-agent .actor-agent").length === 3);
+      var slotW = function (id) { return Math.round(document.querySelector('.q-row[data-id="' + id + '"] .q-com').getBoundingClientRect().width); };
+      check("queue: LAT-I24 shows 5 comments; LAT-I22 keeps an empty slot of the same width",
+        document.querySelector('.q-row[data-id="LAT-I24"] .q-com').textContent === "5" && document.querySelector('.q-row[data-id="LAT-I22"] .q-com').textContent === "" && slotW("LAT-I24") === slotW("LAT-I22"));
+      goTo("LAT-I22");
+      var box = document.getElementById("cm-box");
+      box.focus(); box.value = "@claude-opus-impl check whether this also happens with --status";
+      document.getElementById("cm-post").click();
+      var i22 = S.get("LAT-I22"), hh22 = S.history("LAT-I22");
+      check("posting a comment adds it as human:atin and to the history", i22.comments.length === 1 && i22.comments[0].by === "human:atin" &&
+        hh22[hh22.length - 1].type === "issue_comment_added" && document.querySelectorAll("#d-comments .cm-human").length === 1 && box.value === "");
+      check("the queue count follows the new comment", document.querySelector('.q-row[data-id="LAT-I22"] .q-com').textContent === "1" && slotW("LAT-I22") === slotW("LAT-I24"));
+      var blank = false; try { S.comment("LAT-I22", "   "); } catch (e) { blank = e.code === "VALIDATION_ERROR"; }
+      check("an empty comment is refused", blank && S.get("LAT-I22").comments.length === 1);
+      box.blur();
 
       // steady layout with and without media
       goTo("LAT-I22"); var a = fixed(); goTo("LAT-I24"); var b = fixed(); goTo("LAT-I31"); var c = fixed(); goTo("LAT-I35"); var d = fixed();
@@ -676,12 +777,19 @@ body{overflow:hidden}
       // filing, lean: text, tray, file button
       Shell.openFile();
       var p = Shell.filePanel();
-      check("the file panel is lean: no confidence, no evidence field, one file button",
-        !document.getElementById("fi-conf") && !document.getElementById("fi-ev") && document.querySelectorAll(".dialog-file .dialog-foot .btn").length === 1 && !!document.getElementById("fi-tray"));
+      check("the file panel is lean: title, description, tray, one file button",
+        !document.getElementById("fi-conf") && !document.getElementById("fi-ev") && document.querySelectorAll(".dialog-file .dialog-foot .btn").length === 1 &&
+        !!document.getElementById("fi-tray") && document.getElementById("fi-text").tagName === "INPUT" && !!document.getElementById("fi-desc"));
+      var n0 = S.counts().total;
+      document.querySelector(".dialog-file [data-go]").click();
+      check("the title is required", S.counts().total === n0 && /An issue needs a title/.test(document.getElementById("fi-err").textContent));
       // A small limit for this check, so the test does not allocate 100 MB in the browser.
       var savedLimit = S.LIMITS.file; S.LIMITS.file = 25 * 1000 * 1000;
-      p.addFiles([new File([new Uint8Array(26 * 1000 * 1000)], "IMG_9999.MOV", { type: "video/quicktime" })], "choose");
-      check("the tray refuses a file over the limit and says why", p.tray()[0].state === "refused" && /Too large: 26 MB\. The limit is 25 MB a file\./.test(document.getElementById("fi-tray").textContent));
+      // a file one MB over the per-file limit; refused on its size before anything is read, so a stand-in object is enough
+      var over = S.LIMITS.file + 1000 * 1000;
+      p.addFiles([{ name: "IMG_9999.MOV", size: over, type: "video/quicktime" }], "choose");
+      check("the tray refuses a file over the limit and says why", p.tray()[0].state === "refused" &&
+        document.getElementById("fi-tray").textContent.indexOf("Too large: " + S.mb(over) + ". The limit is " + S.mb(S.LIMITS.file) + " a file.") >= 0);
       S.LIMITS.file = savedLimit;
       var cv = document.createElement("canvas"); cv.width = 320; cv.height = 200;
       cv.getContext("2d").fillRect(0, 0, 320, 200);
@@ -696,11 +804,13 @@ body{overflow:hidden}
       check("a synthetic paste of an image attaches it", p.tray().filter(function (t) { return t.state === "ok"; }).length === 1);
       var n = S.counts().total;
       document.querySelector(".dialog-file [data-go]").click();
-      check("empty text with a photo attached is refused, kindly and specifically", S.counts().total === n && /Add a line saying what the photo shows/.test(document.getElementById("fi-err").textContent));
+      check("empty text with a photo attached is refused, kindly and specifically", S.counts().total === n && /Add a title saying what the photo shows/.test(document.getElementById("fi-err").textContent));
       document.getElementById("fi-text").value = "Pasted screenshot, a black block";
+      document.getElementById("fi-desc").value = "Steps: paste.\n\nExpected: a photo. Got: a black block.";
       document.querySelector(".dialog-file [data-go]").click();
       var newest = S.issues()[S.issues().length - 1];
-      check("with text it files with the photo, not the refused file", S.counts().total === n + 1 && newest.media.length === 1 && !Shell.dialogOpen());
+      check("with a title it files with the photo, not the refused file", S.counts().total === n + 1 && newest.media.length === 1 && !Shell.dialogOpen());
+      check("filing keeps the title and the description", newest.title === "Pasted screenshot, a black block" && newest.description === "Steps: paste.\n\nExpected: a photo. Got: a black block.");
       var dt = new DataTransfer(); dt.items.add(png);
       document.getElementById("d-body").dispatchEvent(new DragEvent("drop", { dataTransfer: dt, bubbles: true, cancelable: true }));
       return until(function () { var q = Shell.filePanel(); return q && q.tray().some(function (t) { return t.state === "ok"; }); }, 4000);
