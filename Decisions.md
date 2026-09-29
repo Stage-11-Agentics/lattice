@@ -1268,3 +1268,37 @@ Additionally, `lattice advance N` processed multiple tasks in a single context w
   the project once a minute. A process has its own interpreter.
 - **Consequence:** `audit_commit` logs the cycle's timings, and any work-lock
   hold of 1 s or more logs `work_lock_slow`.
+
+---
+
+## 2026-09-29: Optional issue log (LAT-361)
+
+- **Decision:** a per-project issue log for observations that are not yet
+  commitments, off unless `.lattice/config.json` has
+  `"issues": {"enabled": true}`. Issues live in their own directory,
+  `.lattice/issues/`: one event log per issue (`events/iss_<ULID>.jsonl`, the
+  authority), a snapshot replayed from it, and `ids.json` with an issue-only
+  sequence. Display IDs are `<project_code>-I<n>`.
+- **Links on the issue side only.** `issue_linked` / `issue_unlinked` events
+  go in the issue's log; task logs never gain an issue event, so older
+  Lattice versions and task replay never meet one. `lattice show <task>`
+  finds linked issues by scanning issue snapshots.
+- **Derived state.** open, linked, resolved, dismissed or duplicate is
+  computed on every read from the issue's closure and its linked tasks'
+  current statuses, never stored. A cancelled or erased task no longer
+  counts, so its issue returns to `open`.
+- **Why a separate directory:** nothing that enumerates `events/` or `tasks/`
+  (rebuild, doctor, stats, archive, the dashboard, the short-ID floor) sees
+  it, so none of them needs an exclusion, and turning the feature off leaves
+  every other output byte-identical.
+- **No enable command.** Board configuration is admin-only for operations
+  (SPEC §8.2; `OPERATION_CONFIG_KEYS` stays at three keys), so the toggle is
+  a hand edit, and `ISSUES_DISABLED` prints the line to add. Agents are told
+  not to make that edit themselves.
+- **Local boards only.** Every `lattice issue` command refuses a bound
+  checkout with `LOCAL_ONLY`, and each operation refuses a hosted board.
+  `issues/` is unmanaged on a server, so `lattice server project import` does
+  not copy it. Hosted support (a durable `issues/`, SPEC and `api.md` rows, a
+  `min_client_version` bump) is a follow-up.
+- **No schema bump.** Issue events and snapshots carry `schema_version: 1`;
+  replay ignores an `issue_*` type it does not know.

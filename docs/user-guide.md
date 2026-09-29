@@ -227,6 +227,42 @@ if the spawn fails (no `lattice` on PATH, OS kill the fork, etc.), the status tr
 
 ---
 
+## the issue log. optional.
+
+not everything an agent notices is a commitment. a flaky test. a footer that overlaps a button at 400px. a confusing error message. make each one a task and the backlog fills with noise. drop them and they are gone.
+
+the issue log is the place in between. an issue is an observation: one line of text, filed in one command. later, someone triages the log. an issue becomes a task, joins an existing task, or gets closed.
+
+it is off by default. to turn it on:
+
+1. add `"issues": {"enabled": true}` to `.lattice/config.json`.
+2. run `lattice setup-claude --force`, so your agents' CLAUDE.md learns the new commands.
+
+agents never turn it on themselves. on a board where it is off, `lattice issue` answers `ISSUES_DISABLED` and names the line to add.
+
+filing takes one argument:
+
+```bash
+lattice issue file "Footer overlaps the CTA at 400px" --actor agent:qa
+# optional: --confidence possible|definite  --evidence <path-or-url> (repeatable)  --source <where>
+# text with backticks or $(...)? pipe it in: lattice issue file - --actor agent:qa < note.txt
+```
+
+each issue gets its own number, like `LAT-I3`. the `I` keeps it apart from task IDs, and filing issues never uses up a task number.
+
+triage is four moves:
+
+- `lattice issue promote LAT-I3 LAT-I5` creates one backlog task from one or more issues and links them to it.
+- `lattice issue link LAT-I4 LAT-370` attaches an issue to an existing task. `unlink` takes it back off.
+- `lattice issue dismiss LAT-I6 --reason "not reproducible"` closes an issue that is not worth acting on.
+- `lattice issue duplicate LAT-I7 --of LAT-I3` closes a repeat. `reopen` undoes either close.
+
+nobody sets an issue's state by hand. it follows the tasks it is linked to: `open` with no live task, `linked` while one is in flight, `resolved` when every linked task is done. a cancelled or erased task sends it back to `open`, because it needs a new task. `lattice issue list` shows what is open and linked. `--all` shows the rest. `lattice show <task>` lists the issues a task came from.
+
+the issue log works on local boards only for now. tasks, `list`, `next`, `stats` and the dashboard never see it.
+
+---
+
 ## how it works under the hood
 
 you don't need to understand this to use Lattice. but knowing the shape of the machine helps you trust it. and trust. is everything.
