@@ -79,7 +79,7 @@ def _warn_unreadable(path, exc: OpError) -> None:  # noqa: ANN001
     """Skip an unreadable issue file with one line on stderr (stdout stays clean)."""
     from lattice.core.issues import unreadable_issue_warning
 
-    click.echo(unreadable_issue_warning(path, exc.message), err=True)
+    click.echo(unreadable_issue_warning(path, exc), err=True)
 
 
 def _read_stdin_text() -> str:

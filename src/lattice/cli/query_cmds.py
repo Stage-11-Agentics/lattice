@@ -648,7 +648,7 @@ def show_cmd(
         def skip(path: Path, exc: OpError) -> None:
             # Best effort, as _read_artifact_info is: one unreadable issue
             # file never takes down show for every task.
-            click.echo(unreadable_issue_warning(path, exc.message), err=True)
+            click.echo(unreadable_issue_warning(path, exc), err=True)
 
         linked = issues_linked_to(lattice_dir, task_id, on_unreadable=skip)
         linked_issues = [linked_issue_summary(v) for v in linked]

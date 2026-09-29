@@ -102,6 +102,15 @@ An issue is an observation, not a commitment: "the footer overlaps the CTA at 40
 | `resolved` | Every live linked task is `done`. |
 | `linked` | Anything else: at least one live linked task is not done yet. |
 
+`lattice issue list` prints one row per issue, with its columns aligned: ID, state, confidence (`-` when none was given), the first line of the text, then the linked tasks and their statuses:
+
+```
+LAT-I9   open       -         Signup button does nothing on Safari
+LAT-I10  linked     definite  Footer overlaps the CTA at 400px -> LAT-370 (in_progress)
+LAT-I3   dismissed  -         Tooltip flickers once on hover
+3 issues (1 open, 1 linked, 0 resolved, 1 dismissed, 0 duplicate)
+```
+
 **Rules.** Linking the same task twice, or unlinking a task that is not linked, does nothing. `link` accepts archived tasks and refuses erased ones (`TASK_ERASED`). `link`, `promote`, `dismiss` and `duplicate` on a closed issue give `CONFLICT`; `reopen` it first. `dismiss` requires `--reason`. `duplicate` refuses the issue itself and a target that is itself a duplicate (point at its original instead). `promote` creates one backlog task whose description names each issue, then links them; if a link fails after the task exists, the error names the task, and `lattice issue link` finishes the job.
 
 **Crash recovery.** An issue's event log is its authority; its snapshot is rewritten from the whole log on every write. An issue whose log has no snapshot (a crash right after filing) or whose snapshot is unreadable is replayed in memory on read, so it still lists and resolves. A snapshot left stale by a later event is corrected by the next successful write to that issue, or by `lattice rebuild --all`. `lattice show` and `lattice issue list` skip an unreadable issue file with a warning on stderr.
