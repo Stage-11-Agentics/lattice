@@ -43,7 +43,7 @@ class IssuePromote:
             snapshot = current_issue(ctx.lattice_dir, issue_id)
             if snapshot is None:
                 raise OpError("NOT_FOUND", f"Issue {issue_id} not found.")
-            issue_common.refuse_closed(snapshot, "promoting it")
+            issue_common.refuse_closed(snapshot, "promote it")
             snapshots.append(snapshot)
 
         created = Create().run(

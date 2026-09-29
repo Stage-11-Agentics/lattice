@@ -25,7 +25,7 @@ class IssueDismiss:
         issue_id = issue_common.resolve(ctx, p.issue)
 
         def decide(snapshot: dict) -> tuple[str, dict]:
-            issue_common.refuse_closed(snapshot, "dismissing it")
+            issue_common.refuse_closed(snapshot, "dismiss it")
             return "issue_dismissed", {"reason": p.reason}
 
         snapshot, events = issue_common.append(ctx, issue_id, decide, p)

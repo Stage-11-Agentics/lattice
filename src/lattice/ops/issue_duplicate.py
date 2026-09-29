@@ -40,7 +40,7 @@ class IssueDuplicate:
             )
 
         def decide(snapshot: dict) -> tuple[str, dict]:
-            issue_common.refuse_closed(snapshot, "marking it a duplicate")
+            issue_common.refuse_closed(snapshot, "mark it a duplicate")
             return "issue_marked_duplicate", {"duplicate_of": target_id}
 
         snapshot, events = issue_common.append(ctx, issue_id, decide, p)

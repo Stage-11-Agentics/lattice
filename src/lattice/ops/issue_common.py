@@ -116,7 +116,7 @@ def link_one(
     """Link one issue to one task; idempotent when already linked."""
 
     def decide(snapshot: dict) -> tuple[str, dict] | None:
-        refuse_closed(snapshot, "linking it")
+        refuse_closed(snapshot, "link it")
         if any(link["task_id"] == task_id for link in snapshot["links"]):
             return None
         return "issue_linked", {"task_id": task_id}
