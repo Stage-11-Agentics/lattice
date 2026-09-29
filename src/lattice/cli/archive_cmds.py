@@ -19,7 +19,6 @@ from lattice.cli.main import cli
 from lattice.cli.ops_bridge import board_or_exit, caller_from_context, is_hosted, run_operation
 from lattice.ops import OpError, check_path_component
 from lattice.ops.base import check_board_writable, resolve_actor
-from lattice.ops.task_archive import UNRESOLVED_TASK
 
 
 def _parse_task_ids(raw_ids: tuple[str, ...]) -> list[str]:
@@ -109,6 +108,8 @@ def _move_one(
             op_name, {"task": raw_id, **provenance}, caller_from_context(), config=config
         ).value
     except OpError as exc:
+        from lattice.ops.task_archive import UNRESOLVED_TASK
+
         if exc.details.get("reason") == UNRESOLVED_TASK:
             click.echo(f"Error: {exc.message}", err=True)
             return f"Invalid or unresolvable task ID: {raw_id}"

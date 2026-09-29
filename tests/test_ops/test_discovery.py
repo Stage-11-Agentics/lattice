@@ -123,6 +123,7 @@ def test_plugin_lookup_falls_back_to_full_discovery(
     monkeypatch.setattr(
         base, "_REGISTRY", {k: v for k, v in base._REGISTRY.items() if k != "xplugin.ping"}
     )
+    monkeypatch.delitem(sys.modules, "tests.test_ops.plugin_ops", raising=False)
 
     assert get_operation("xplugin.ping").name == "xplugin.ping"
     assert discovery._discovered

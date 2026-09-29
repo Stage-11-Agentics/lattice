@@ -20,7 +20,6 @@ from lattice.cli.main import cli
 from lattice.core.config import resolve_status_input
 from lattice.core.errors import OpError
 from lattice.core.event_stream import stream_events
-from lattice.remote.hosted_watch import event_source, hosted_read
 
 
 def _format_human(event: dict) -> str:
@@ -185,6 +184,10 @@ def watch_cmd(
 
         lattice watch --type status_changed --status done --exec "echo '{short_code} done'"
     """
+    # Deferred: the hosted watch path pulls in the HTTP client, which no
+    # other command needs at start-up (LAT-359).
+    from lattice.remote.hosted_watch import event_source, hosted_read
+
     is_json = output_json
     lattice_dir = require_root(is_json)
     task_filter: list[str] | None = None

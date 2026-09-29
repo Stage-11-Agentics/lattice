@@ -22,7 +22,6 @@ from lattice.cli.ops_bridge import (
     provenance_params,
     run_operation,
 )
-from lattice.ops.task_criterion_add import check_criterion_id
 from lattice.core.acceptance_criteria import criterion_without_history
 from lattice.storage.operations import read_task_authority
 
@@ -117,6 +116,8 @@ def criterion_edit(
     is_json = output_json
     # Today's argument order: the criterion ID, then OUTCOME or --file (exactly
     # one, and the file is read only then), then the prose; all before the board.
+    from lattice.ops.task_criterion_add import check_criterion_id
+
     check_or_exit(is_json, check_criterion_id, criterion_id)
     try:
         body = resolve_body(

@@ -5,14 +5,16 @@ from __future__ import annotations
 import signal
 import threading
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import click
 
 from lattice.cli.helpers import json_envelope, output_error
 from lattice.cli.main import cli
 from lattice.core.errors import OpError
-from lattice.remote import cache
-from lattice.remote.follower import Follower, follow_target, succeeded
+
+if TYPE_CHECKING:
+    from lattice.remote.follower import Follower
 
 NOT_HOSTED_MESSAGE = (
     "This checkout is not bound to a Lattice server; 'lattice sync' works only on a "
@@ -50,11 +52,16 @@ def _hosted_root_or_exit(is_json: bool) -> Path:
 
 
 def _alias(root: Path) -> str:
+    from lattice.remote import cache
+
     identity = cache.cache_identity(root)
     return identity[0] if identity else "the server"
 
 
 def _sync_once(root: Path, is_json: bool) -> None:
+    from lattice.remote import cache
+    from lattice.remote.follower import succeeded
+
     try:
         outcome = cache.catch_up(root, bulk=True)
     except OpError as exc:
@@ -109,6 +116,9 @@ def sync_cmd(follow: bool, output_json: bool) -> None:
     if follow and is_json:
         output_error("--follow and --json cannot be combined.", "VALIDATION_ERROR", is_json)
     root = _hosted_root_or_exit(is_json)
+    from lattice.remote import cache
+    from lattice.remote.follower import Follower, follow_target
+
     if not follow:
         _sync_once(root, is_json)
         return

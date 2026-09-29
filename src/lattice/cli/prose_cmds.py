@@ -28,8 +28,6 @@ from lattice.cli.helpers import (
 )
 from lattice.cli.main import cli
 from lattice.cli.ops_bridge import check_or_exit, provenance_params, run_operation
-from lattice.ops.board_file_write import check_board_path
-from lattice.ops.prose_common import check_content_sources, check_expect_sha256
 from lattice.storage.operations import resolve_task_prose_path
 
 
@@ -39,6 +37,8 @@ def _read_content(file_path: str | None, use_stdin: bool, is_json: bool, what: s
     The bytes are decoded as UTF-8 exactly (no newline translation), so the
     written file is byte-identical to its source.
     """
+    from lattice.ops.prose_common import check_content_sources
+
     check_or_exit(is_json, check_content_sources, file_path is not None, use_stdin, what)
     if file_path is not None:
         try:
@@ -153,6 +153,8 @@ def _prose_write(
     is_json: bool,
     quiet: bool,
 ) -> None:
+    from lattice.ops.prose_common import check_content_sources, check_expect_sha256
+
     check_or_exit(is_json, check_content_sources, file_path is not None, use_stdin, f"the {kind}")
     check_or_exit(is_json, check_expect_sha256, expect_sha256)
     content = _read_content(file_path, use_stdin, is_json, f"the {kind}")
@@ -289,6 +291,9 @@ def board_write(
     task's own <task_id>.md. There is no remove: overwrite a file instead.
     """
     is_json = output_json
+    from lattice.ops.board_file_write import check_board_path
+    from lattice.ops.prose_common import check_content_sources, check_expect_sha256
+
     relative = normalize_board_path(path)
     check_or_exit(is_json, check_board_path, relative)
     check_or_exit(is_json, check_content_sources, file_path is not None, use_stdin, "the content")

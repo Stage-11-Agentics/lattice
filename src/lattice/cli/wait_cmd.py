@@ -19,7 +19,6 @@ from lattice.cli.main import cli
 from lattice.core.config import resolve_status_input
 from lattice.core.errors import OpError
 from lattice.core.event_stream import _check_fswatch, stream_events
-from lattice.remote.hosted_watch import event_source, hosted_read, is_hosted
 
 
 def _check_tasks_status(
@@ -30,6 +29,8 @@ def _check_tasks_status(
     """:func:`_read_tasks_status` as one read: on a hosted checkout under the
     cache's shared read lock, so a sync applying meanwhile is seen whole or not
     at all, never an old snapshot of one task beside a new one of another."""
+    from lattice.remote.hosted_watch import hosted_read
+
     with hosted_read(lattice_dir):
         return _read_tasks_status(lattice_dir, task_ids, target_status)
 
@@ -109,6 +110,10 @@ def wait_cmd(
 
         lattice wait SUB-55,SUB-56 --json
     """
+    # Deferred: the hosted watch path pulls in the HTTP client, which no
+    # other command needs at start-up (LAT-359).
+    from lattice.remote.hosted_watch import event_source, hosted_read, is_hosted
+
     is_json = output_json
     lattice_dir = require_root(is_json)
 
