@@ -35,7 +35,7 @@ def _lattice_script() -> str:
     beside = Path(sys.executable).with_name("lattice")
     found = str(beside) if beside.exists() else shutil.which("lattice")
     if found is None:
-        pytest.skip("no lattice console script installed")
+        pytest.fail("no lattice console script installed beside the interpreter or on PATH")
     return found
 
 
@@ -59,8 +59,11 @@ def _event_types(root: Path) -> list[str]:
     return [json.loads(line)["type"] for line in log.read_text().splitlines()]
 
 
-def _run(root: Path, *args: str, prog: str | None = None, **kwargs) -> subprocess.CompletedProcess:
-    """The real program in a child process, so fd 0 is what *kwargs* make it."""
+def _run(
+    root: Path, *args: str, prog: str | None = None, close_stdin: bool = False, **kwargs
+) -> subprocess.CompletedProcess:
+    """The real program in a child process, so fd 0 is what *kwargs* make it
+    (with *close_stdin*, closed, as ``<&-`` does)."""
     script = _lattice_script()
     if prog is not None:
         alias = root.parent / prog
@@ -70,9 +73,10 @@ def _run(root: Path, *args: str, prog: str | None = None, **kwargs) -> subproces
     if "input" not in kwargs:
         kwargs.setdefault("stdin", subprocess.DEVNULL)
     env = {k: v for k, v in os.environ.items() if k != "LATTICE_ROOT"}
-    return subprocess.run(
-        [script, *args], cwd=root, capture_output=True, env=env, timeout=60, **kwargs
-    )
+    argv = [script, *args]
+    if close_stdin:
+        argv = ["sh", "-c", 'exec "$0" "$@" <&-', *argv]
+    return subprocess.run(argv, cwd=root, capture_output=True, env=env, timeout=60, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -113,6 +117,19 @@ class TestImplicitStdin:
         assert "lattice plan write LOC-1 --stdin" in error["message"]
         assert _plan(board).read_bytes() == before
         assert "plan_written" not in _event_types(board)
+
+    def test_closed_stdin_keeps_the_error(self, board: Path) -> None:
+        before = _plan(board).read_bytes()
+        plain = _run(board, "plan", "write", "LOC-1", *A, close_stdin=True)
+        assert plain.returncode == 1
+        assert plain.stderr.decode() == (
+            "Error: Provide the plan as --file PATH or --stdin, for example: "
+            "lattice plan write LOC-1 --stdin < plan.md\n"
+        )
+        as_json = _run(board, "plan", "write", "LOC-1", "--json", *A, close_stdin=True)
+        assert as_json.returncode == 1
+        assert json.loads(as_json.stdout)["error"]["code"] == "VALIDATION_ERROR"
+        assert _plan(board).read_bytes() == before
 
     def test_empty_pipe_is_refused_and_the_plan_is_untouched(self, board: Path) -> None:
         assert _run(board, "plan", "write", "LOC-1", "--stdin", *A, input=b"old\n").returncode == 0
@@ -290,6 +307,62 @@ def test_program_name_outside_a_command() -> None:
     assert program_name() == "lattice"
 
 
+def test_skip_reason_hint_names_the_alias(tmp_path: Path) -> None:
+    import click
+
+    from lattice.cli.task_cmds import compute_next_steps
+
+    skipped = {"fired": False, "reason": "run_auto_reviews_false"}
+    for status in ("planned", "review"):
+        with click.Context(cli, info_name="lattice-v2"):
+            hint, _ = compute_next_steps(
+                status, {}, "task_x", tmp_path, display_id="DEM-1", auto_review_result=skipped
+            )
+        assert hint is not None
+        assert "run lattice-v2 code-review / plan-review by hand" in hint
+        assert "'lattice-v2 " in hint
+        hint, _ = compute_next_steps(
+            status, {}, "task_x", tmp_path, display_id="DEM-1", auto_review_result=skipped
+        )
+        assert hint is not None and "run lattice code-review / plan-review by hand" in hint
+
+
+def test_review_failure_rerun_hint_names_the_alias(capsys: pytest.CaptureFixture[str]) -> None:
+    import click
+
+    from lattice.cli.review_cmds import _echo_review_failure
+
+    with click.Context(cli, info_name="lattice-v2"):
+        _echo_review_failure("DEM-1", error="boom", review_type="plan-review")
+    assert "  Re-run with:  lattice-v2 plan-review DEM-1" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("args", "needle"),
+    [
+        (("sync",), "'lattice-v2 sync' works only on a hosted checkout"),
+        (("remote", "status"), "'lattice-v2 remote attach <alias> <project>'"),
+        (("list", "--json"), "Run 'lattice-v2 init' first."),
+    ],
+)
+def test_client_errors_name_the_alias(tmp_path: Path, args: tuple, needle: str) -> None:
+    """Messages that tell the user what to run next name the alias too."""
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    if args[0] != "list":
+        create_board(plain, project_code="LOC", actor="human:a")
+    previous = Path.cwd()
+    os.chdir(plain)
+    try:
+        result = CliRunner().invoke(
+            cli, list(args), prog_name="lattice-v2", env={"LATTICE_ROOT": None}
+        )
+    finally:
+        os.chdir(previous)
+    assert result.exit_code == 1
+    assert needle in result.output
+
+
 # ---------------------------------------------------------------------------
 # Item 3: show's plan line on a bound checkout
 # ---------------------------------------------------------------------------
@@ -307,7 +380,10 @@ def test_hosted_show_names_the_plan_once_written(
 ) -> None:
     repo = make_repo(tmp_path / "repo")
     assert run_cli(repo, "remote", "attach", "team", "demo").exit_code == 0
-    created = run_cli(repo, "create", "Hosted", "--description", "Why.", "--json", *A)
+    # A bulleted description makes the scaffold look structured (LAT-357 repair).
+    created = run_cli(
+        repo, "create", "Hosted", "--description", "- Fix this behavior", "--json", *A
+    )
     task_id = json.loads(created.stdout)["data"]["id"]
 
     before = run_cli(repo, "show", "DEM-1").stdout.splitlines()
@@ -324,26 +400,48 @@ def test_hosted_show_names_the_plan_once_written(
     as_json = json.loads(run_cli(repo, "show", "DEM-1", "--json").stdout)["data"]
     assert as_json["plan_path"] == f"plans/{task_id}.md"
 
-    # A heading alone is scaffold-shaped, but it was written: the task has a plan.
-    assert run_cli(repo, "plan", "write", "DEM-1", "--stdin", *A, input="# Plan\n").exit_code == 0
+    # An empty or heading-only plan is what the plan gate refuses as scaffold:
+    # show agrees and still says none yet.
+    for scaffoldish in ("", "# Plan\n"):
+        written = run_cli(repo, "plan", "write", "DEM-1", "--stdin", *A, input=scaffoldish)
+        assert written.exit_code == 0, written.output
+        lines = run_cli(repo, "show", "DEM-1").stdout.splitlines()
+        assert "Plan: none yet (lattice plan write DEM-1 --stdin)" in lines
+    assert run_cli(repo, "status", "DEM-1", "in_planning", *A).exit_code == 0
+    assert run_cli(repo, "status", "DEM-1", "planned", "--no-auto-review", *A).exit_code == 0
+    gate = run_cli(repo, "status", "DEM-1", "in_progress", *A)
+    assert gate.exit_code == 1 and "scaffold" in gate.output
+
+    assert (
+        run_cli(repo, "plan", "write", "DEM-1", "--stdin", *A, input="# Plan\n\nGo.\n").exit_code
+        == 0
+    )
     after = run_cli(repo, "show", "DEM-1").stdout.splitlines()
     assert f"Plan: plans/{task_id}.md" in after
     assert not any("none yet" in line for line in after)
 
 
-def test_plan_written_without_an_event(tmp_path: Path) -> None:
-    """A plan that arrived without a ``plan_written`` event (a board moved to a
-    server with its files) counts once it is more than the scaffold."""
+def test_plan_written(tmp_path: Path) -> None:
+    """The generated scaffold never reads as written, even when its description
+    is structured or the title has changed since; a real plan does."""
     from lattice.cli.query_cmds import _plan_written
 
     plan = tmp_path / "p.md"
-    snapshot = {"description": "Why."}
-    assert not _plan_written(plan, snapshot, [])
-    plan.write_text("# DEM-1: T\n\nWhy.\n")
-    assert not _plan_written(plan, snapshot, [])
-    assert _plan_written(plan, snapshot, [{"type": "plan_written"}])
-    plan.write_text("# DEM-1: T\n\n- step one\n")
-    assert _plan_written(plan, snapshot, [])
+    created = {
+        "type": "task_created",
+        "data": {"title": "Old", "short_id": "DEM-1", "description": "- Fix this behavior"},
+    }
+    snapshot = {"title": "New", "short_id": "DEM-1", "description": "- Fix this behavior"}
+    assert not _plan_written(plan, snapshot, [created])  # no file
+    plan.write_text("# DEM-1: Old\n\n- Fix this behavior\n")
+    assert not _plan_written(plan, snapshot, [created])
+    plan.write_text("# DEM-1: New\n\n- Fix this behavior\n")
+    assert not _plan_written(plan, snapshot, [created])
+    for scaffoldish in ("", "# Plan\n"):
+        plan.write_text(scaffoldish)
+        assert not _plan_written(plan, snapshot, [created])
+    plan.write_text("# DEM-1: New\n\n- step one\n")
+    assert _plan_written(plan, snapshot, [created])
 
 
 # ---------------------------------------------------------------------------

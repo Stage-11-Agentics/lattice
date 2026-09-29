@@ -9,17 +9,21 @@ from typing import TYPE_CHECKING
 
 import click
 
-from lattice.cli.helpers import json_envelope, output_error
+from lattice.cli.helpers import json_envelope, output_error, program_name
 from lattice.cli.main import cli
 from lattice.core.errors import OpError
 
 if TYPE_CHECKING:
     from lattice.remote.follower import Follower
 
-NOT_HOSTED_MESSAGE = (
-    "This checkout is not bound to a Lattice server; 'lattice sync' works only on a "
-    "hosted checkout. Bind one with 'lattice remote attach <alias> <project>'."
-)
+
+def not_hosted_message() -> str:
+    prog = program_name()
+    return (
+        f"This checkout is not bound to a Lattice server; '{prog} sync' works only on a "
+        f"hosted checkout. Bind one with '{prog} remote attach <alias> <project>'."
+    )
+
 
 # SPEC §9.5 / §9.4: why a sync did not complete.
 _FAILURES = {
@@ -28,7 +32,7 @@ _FAILURES = {
     "incomplete": (
         "CACHE_INCOMPLETE",
         "The cache was interrupted mid-update and the server is unreachable; "
-        "run `lattice sync` when it is back.",
+        "run `{program} sync` when it is back.",
     ),
 }
 
@@ -45,7 +49,7 @@ def _hosted_root_or_exit(is_json: bool) -> Path:
         scrub_output()  # the message quotes the binding (SPEC §4)
         output_error(exc.message, exc.code, is_json)
     if hosted is None:
-        output_error(NOT_HOSTED_MESSAGE, "NOT_HOSTED", is_json)
+        output_error(not_hosted_message(), "NOT_HOSTED", is_json)
     # From here on this command prints server-supplied text (SPEC §4).
     scrub_output()
     return hosted.root
@@ -68,7 +72,9 @@ def _sync_once(root: Path, is_json: bool) -> None:
         output_error(exc.message, exc.code, is_json)
     if not succeeded(outcome):
         code, template = _FAILURES.get(outcome.kind, _FAILURES["unreachable"])
-        message = template.format(alias=_alias(root), synced_at=outcome.synced_at or "never")
+        message = template.format(
+            alias=_alias(root), synced_at=outcome.synced_at or "never", program=program_name()
+        )
         output_error(message, code, is_json)
     data = {"status": outcome.kind, "head_seq": outcome.head_seq, "synced_at": outcome.synced_at}
     if is_json:

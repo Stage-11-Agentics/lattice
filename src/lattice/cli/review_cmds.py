@@ -834,7 +834,7 @@ def _echo_review_failure(
         click.echo(f"  duration:     {duration}s")
     if stderr_tail:
         click.echo(f"  stderr tail:  {stderr_tail}")
-    click.echo(f"  Re-run with:  lattice {review_type} {task_id}")
+    click.echo(f"  Re-run with:  {program_name()} {review_type} {task_id}")
 
 
 @cli.command("review-status")
@@ -1004,7 +1004,7 @@ def _report_board_gates(lattice_dir: Path, task_id: str, is_json: bool) -> bool:
     for gate in remote:
         click.echo(f"  {gate.review_type}: {gate.message()}")
         if gate.state == FAILED:
-            click.echo(f"  Re-run with:  lattice {gate.review_type} {task_id}")
+            click.echo(f"  Re-run with:  {program_name()} {gate.review_type} {task_id}")
     return True
 
 

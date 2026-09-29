@@ -519,14 +519,26 @@ def _read_plan_content_for_next(lattice_dir: Path, task_id: str) -> str | None:
 
 
 def _plan_written(plan_path: Path, snapshot: dict, events: list[dict]) -> bool:
-    """Whether the task has a plan: one was written (a ``plan_written`` event),
-    or the file at *plan_path* holds more than the scaffold."""
-    if any(event.get("type") == "plan_written" for event in events):
-        return True
+    """Whether the task on a bound checkout has a plan: the file at *plan_path*
+    is neither the scaffold generated when the task was created nor, by the
+    plan gate's rule, scaffold-shaped (so show and the gate agree)."""
+    from lattice.core.plans import scaffold_plan_text
+
     try:
         content = plan_path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return False
+    # The scaffold as created (task_created's data), and as the task reads now.
+    sources = [e.get("data") or {} for e in events if e.get("type") == "task_created"]
+    sources.append(snapshot)
+    for source in sources:
+        generated = scaffold_plan_text(
+            source.get("title") or snapshot.get("title", ""),
+            source.get("short_id") or snapshot.get("short_id"),
+            source.get("description"),
+        )
+        if content == generated:
+            return False
     return not helpers.is_scaffold_plan(content, description=snapshot.get("description"))
 
 

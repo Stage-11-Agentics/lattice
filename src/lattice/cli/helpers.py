@@ -12,6 +12,7 @@ from lattice.core.actors import build_actor_dict
 from lattice.core.errors import OpError
 from lattice.core.ids import is_short_id, validate_actor, validate_id
 from lattice.core.plans import is_scaffold_plan  # noqa: F401 - CLI re-export
+from lattice.program import program_name
 from lattice.storage.fs import LATTICE_DIR, LatticeRootError, find_root
 from lattice.storage.operations import (
     AuthoritativeLogError,
@@ -62,7 +63,7 @@ def require_root(is_json: bool = False) -> Path:
         output_error(str(e), "NOT_INITIALIZED", is_json)
     if root is None:
         output_error(
-            "Not a Lattice project (no .lattice/ found). Run 'lattice init' first.",
+            f"Not a Lattice project (no .lattice/ found). Run '{program_name()} init' first.",
             "NOT_INITIALIZED",
             is_json,
         )
@@ -324,21 +325,6 @@ def require_actor(is_json: bool, *, optional: bool = False) -> str | dict | None
         touch_session(lattice_dir, session_name)
     ctx.obj["_resolved_actor"] = result
     return result
-
-
-def program_name() -> str:
-    """The name this program was invoked as, for the commands hints print.
-
-    The console script's basename (``lattice``, or an alias such as
-    ``lattice-v2``) with a Windows ``.exe`` dropped. Outside a command, and
-    under Click's test runner (whose default name is the group's, ``cli``),
-    and under ``python -c`` (whose name is ``-c``), it is ``lattice``.
-    """
-    ctx = click.get_current_context(silent=True)
-    name = ctx.find_root().info_name if ctx is not None else None
-    if not name or name == "cli" or name.startswith("-"):
-        return "lattice"
-    return name[:-4] if name.lower().endswith(".exe") else name
 
 
 def _is_cache(lattice_dir: Path | None) -> bool:

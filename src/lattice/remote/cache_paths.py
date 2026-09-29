@@ -47,6 +47,7 @@ import stat
 from collections.abc import Iterator
 from pathlib import Path
 
+from lattice.program import program_name
 from lattice.core.errors import OpError
 from lattice.storage.fs import BINDING_FILE, LATTICE_DIR
 
@@ -186,7 +187,7 @@ def cache_access_error(exc: BaseException) -> OpError | None:
     return BoardIsCache(
         f"this is a read-only mirror of {_mirror_label(root)}, and it cannot use "
         f"{shown} ({exc.strerror}). Restore that path's permissions, or run "
-        "'lattice cache clear' and then any lattice command to rebuild the mirror.",
+        f"'{program_name()} cache clear' and then any lattice command to rebuild the mirror.",
         {
             "root": str(root),
             "path": shown,

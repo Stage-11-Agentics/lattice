@@ -322,6 +322,7 @@ def compute_next_steps(
                     + format_skip_reason(
                         auto_review_result.get("reason", "unknown"),
                         holder_pid=auto_review_result.get("holder_pid"),
+                        program=prog,
                     )
                     + ")"
                 )
@@ -362,6 +363,7 @@ def compute_next_steps(
                 + format_skip_reason(
                     auto_review_result.get("reason", "unknown"),
                     holder_pid=auto_review_result.get("holder_pid"),
+                    program=prog,
                 )
                 + ")"
             )

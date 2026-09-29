@@ -26,6 +26,7 @@ import urllib.parse
 from collections.abc import Callable, Iterator
 from typing import Any
 
+from lattice.program import program_name
 from lattice.core.errors import OpError
 from lattice.remote import http
 
@@ -94,7 +95,7 @@ def outcome_unknown(remote: http.Remote, op_id: str, detail: str) -> OpError:
     return OpError(
         "OUTCOME_UNKNOWN",
         f"the server may have applied this write (operation {op_id}); check with "
-        f"`lattice remote op-status {op_id}` before retrying. ({remote.alias}: {detail})",
+        f"`{program_name()} remote op-status {op_id}` before retrying. ({remote.alias}: {detail})",
         {"op_id": op_id, "remote": remote.alias},
     )
 

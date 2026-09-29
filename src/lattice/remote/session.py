@@ -33,6 +33,7 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any, TextIO
 
+from lattice.program import program_name
 from lattice.core.errors import OpError
 from lattice.remote import cache_paths
 from lattice.remote.binding import Hosted
@@ -321,7 +322,7 @@ def catch_up_and_report(
         raise OpError(
             "CACHE_INCOMPLETE",
             "the cache was interrupted mid-update and the server is unreachable; "
-            f"run `lattice sync` when {hosted.remote} is back.",
+            f"run `{program_name()} sync` when {hosted.remote} is back.",
             {"root": str(hosted.root)},
         )
     if outcome.synced_at is None and not after_write:

@@ -68,11 +68,12 @@ def _stdin_has_input() -> bool:
     A terminal, ``/dev/null`` and other character devices are not: a command
     run with neither ``--file`` nor ``--stdin`` there keeps refusing rather
     than waiting on the keyboard or writing an empty file. A stream with no
-    file descriptor (Click's test runner) is not either.
+    file descriptor (Click's test runner) or no stream at all (fd 0 closed)
+    is not either.
     """
     try:
         mode = os.fstat(click.get_binary_stream("stdin").fileno()).st_mode
-    except (AttributeError, OSError, ValueError):
+    except (AttributeError, OSError, RuntimeError, ValueError):
         return False
     return stat.S_ISFIFO(mode) or stat.S_ISREG(mode)
 

@@ -147,18 +147,21 @@ def should_auto_fire(
 RUN_AUTO_REVIEWS_FALSE = "run_auto_reviews_false"
 
 
-def format_skip_reason(reason: str, *, holder_pid: int | None = None) -> str:
+def format_skip_reason(
+    reason: str, *, holder_pid: int | None = None, program: str = "lattice"
+) -> str:
     """Return a human-readable one-liner explaining why auto-fire skipped.
 
     Used by ``status_cmd`` to surface the skip in its end-of-command output
     so an operator can tell at a glance whether the review fired and, if
     not, why.  The returned string is suitable for appending to the
-    existing next-step hint.
+    existing next-step hint. *program* is the name the hint gives the
+    program (the client's invoked name).
     """
     if reason == RUN_AUTO_REVIEWS_FALSE:
         return (
             "auto-review skipped (this machine's remote sets run_auto_reviews: false; "
-            "run lattice code-review / plan-review by hand)"
+            f"run {program} code-review / plan-review by hand)"
         )
     if reason == "inline_mode":
         return "auto-review skipped (inline mode)"
