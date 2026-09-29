@@ -5,6 +5,11 @@ run through the board (``board.execute``), so the dashboard obeys the CLI's
 rules and stamps a browser origin (SPEC §4, §10). POSTs must be same-origin
 JSON: ``Content-Type: application/json`` and an ``Origin`` equal to the
 served host.
+
+The server is threaded, but one lock (:data:`_BOARD_LOCK`) runs every POST
+and every GET other than issue media one at a time, as a single-threaded
+server did. Only issue media GETs (``dashboard/media.py``, LAT-366) run
+beside them, so a video held open by a browser never stalls the board.
 """
 
 from __future__ import annotations
@@ -14,10 +19,11 @@ import json
 import platform
 import subprocess
 import sys
+import threading
 from collections.abc import Callable
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -25,7 +31,7 @@ from urllib.parse import urlparse
 from lattice.boards import LocalBoard, browser_reported_origin
 from lattice.core.errors import OpError
 from lattice.core.ids import validate_id
-from lattice.dashboard import api
+from lattice.dashboard import api, media
 from lattice.dashboard.api import MAX_REQUEST_BODY_BYTES, ApiError, ApiResponse
 from lattice.core.plans import scaffold_plan_text
 from lattice.storage.operations import resolve_task_prose_path
@@ -35,6 +41,10 @@ __all__ = ["MAX_REQUEST_BODY_BYTES", "STATIC_DIR", "create_server", "origin_allo
 STATIC_DIR = Path(__file__).parent / "static"
 
 _LOOPBACK_NAMES = frozenset({"localhost", "127.0.0.1", "::1"})
+
+#: Held around every request but issue media GETs: the board sees one request
+#: at a time, as it did before the server was threaded.
+_BOARD_LOCK = threading.Lock()
 
 _STATIC_TYPES = {
     ".js": "application/javascript",
@@ -138,6 +148,19 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
             sys.stderr.write(f"{self.address_string()} - {format % args}\n")
 
         def do_GET(self) -> None:  # noqa: N802
+            path = urlparse(self.path).path.rstrip("/") or "/"
+            if media.MEDIA_ROUTE.fullmatch(path):
+                self.connection.settimeout(media.SOCKET_TIMEOUT)
+                media.serve_issue_media(self, self._target, path)
+                return
+            with _BOARD_LOCK:
+                self._do_get()
+
+        def do_POST(self) -> None:  # noqa: N802
+            with _BOARD_LOCK:
+                self._do_post()
+
+        def _do_get(self) -> None:
             parsed = urlparse(self.path)
             path = parsed.path.rstrip("/") or "/"
 
@@ -184,7 +207,7 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
             else:
                 self._send_error(404, "NOT_FOUND", f"Not found: {path}")
 
-        def do_POST(self) -> None:  # noqa: N802
+        def _do_post(self) -> None:
             if self._readonly:
                 self._send_error(403, "FORBIDDEN", "Dashboard is in read-only mode")
                 return
@@ -473,4 +496,4 @@ def create_server(
         root = Path(lattice_dir).parent
         board = DashboardBoard(LocalBoard(root=root, start=root))
     handler_cls = _make_handler_class(board, readonly=readonly)
-    return HTTPServer((host, port), handler_cls)
+    return ThreadingHTTPServer((host, port), handler_cls)

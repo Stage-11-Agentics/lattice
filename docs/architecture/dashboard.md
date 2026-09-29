@@ -21,6 +21,11 @@ Top-level behavior:
 - `GET /api/*` serves JSON data endpoints
 - `POST /api/*` handles mutations when not in read-only mode
 
+The server is a `ThreadingHTTPServer`, but one module lock (`_BOARD_LOCK`)
+runs every POST and every GET except issue media one at a time, exactly as a
+single-threaded server would. Only the issue media GETs below run beside
+them, so a browser holding a video stream open never stalls the board.
+
 JSON envelope is consistent:
 
 - success: `{ "ok": true, "data": ... }`
@@ -39,6 +44,23 @@ Key read endpoints:
 - `/api/git`, `/api/git/branches/<name>/commits`
 
 These are used by the frontend for board, graph, activity, and git overlays.
+
+Issue media (LAT-366, `dashboard/media.py`), local boards with the issue log on:
+
+- `GET /api/issues/<iss_ULID>/media/<med_ULID>`: a photo or video's bytes
+- `GET /api/issues/<iss_ULID>/media/<med_ULID>/frames/<tNNNN.NNNs.jpg>`: a video's frame
+
+The file must be listed in the issue's snapshot, not removed, with an accepted
+type; its path comes from the IDs and the recorded type, and a symlink or
+non-regular file is refused (404). Responses carry the recorded
+`Content-Type`, `X-Content-Type-Options: nosniff`,
+`Content-Security-Policy: default-src 'none'; sandbox`, `Accept-Ranges: bytes`
+and, for media, `ETag: "<sha256>"` (304 on `If-None-Match`). One `Range` is
+honoured with 206, capped at 1 MiB per response; several ranges or a malformed
+header get the whole file (200); a start past the end gets 416. A malformed ID
+is 400 `INVALID_ID`, a bound checkout 400 `LOCAL_ONLY`, the log off 409
+`ISSUES_DISABLED`. A video poster is its first frame's URL; the server makes
+no thumbnails.
 
 `/api/tasks` does not return whole snapshots. Each task is passed through
 `compact_snapshot()` in `src/lattice/core/tasks.py`, which projects a fixed
