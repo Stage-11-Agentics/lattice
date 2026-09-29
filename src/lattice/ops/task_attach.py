@@ -2,10 +2,11 @@
 
 A file source travels as ``payload: {filename, content_b64, sha256}`` (SPEC
 §3.8). ``filename`` is metadata only: it supplies the default title, the
-content-type guess, and the stored name's suffix; it is never a path. The
-payload is stored at ``artifacts/payload/<artifact_id><suffix>`` with
-``atomic_write``. A URL travels as ``source``. A ``source`` that is not a URL
-names a file the client could not read, and is reported as not found.
+content-type guess (from Lattice's own table, ``lattice.core.content_types``),
+and the stored name's suffix; it is never a path. The payload is stored at
+``artifacts/payload/<artifact_id><suffix>`` with ``atomic_write``. A URL
+travels as ``source``. A ``source`` that is not a URL names a file the client
+could not read, and is reported as not found.
 """
 
 from __future__ import annotations
@@ -14,7 +15,6 @@ import base64
 import binascii
 import hashlib
 import json
-import mimetypes
 import re
 from dataclasses import dataclass
 from pathlib import PurePosixPath
@@ -22,6 +22,7 @@ from pathlib import PurePosixPath
 from lattice.core.acceptance_criteria import normalize_criterion_ids
 from lattice.core.artifacts import ARTIFACT_TYPES, create_artifact_metadata, serialize_artifact
 from lattice.core.config import get_configured_roles
+from lattice.core.content_types import guess_content_type
 from lattice.core.events import create_event
 from lattice.core.ids import generate_artifact_id, validate_id
 from lattice.ops.base import CommonParams, OpContext, OpError, OpResult, operation
@@ -222,7 +223,7 @@ class Attach:
             custom_fields = {"url": p.source}
         else:
             assert content is not None and payload_file is not None
-            content_type, _ = mimetypes.guess_type(PurePosixPath(filename or "").name)
+            content_type = guess_content_type(PurePosixPath(filename or "").name)
             size_bytes = len(content)
             atomic_write(lattice_dir / "artifacts" / "payload" / payload_file, content)
 
