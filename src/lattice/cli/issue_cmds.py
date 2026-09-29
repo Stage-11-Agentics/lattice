@@ -525,7 +525,10 @@ def issue_show(issue_id: str, output_json: bool) -> None:
     view = issue_views(lattice_dir, [snapshot])[0]
     events = read_issue_events(lattice_dir, resolved)
     if is_json:
-        click.echo(json_envelope(True, data={**view, "events": events}))
+        from lattice.core.issues import redact_removed_media_names
+
+        shown = redact_removed_media_names(events, snapshot)
+        click.echo(json_envelope(True, data={**view, "events": shown}))
         return
 
     click.echo(f"{_name(view)} ({view['id']})  {view['state']}")

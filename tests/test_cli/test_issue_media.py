@@ -323,8 +323,16 @@ def test_detach_removes_the_file_and_the_name(root: Path, invoke, files: Path) -
     shown = invoke("issue", "show", "LAT-I1").stdout
     assert "2  removed " in shown and "by human:atin: shows an API key" in shown
     assert "after.jpg" not in shown
-    for view in (ok(invoke, "issue", "show", "LAT-I1"), ok(invoke, "issue", "list")[0]):
-        assert "after.jpg" not in json.dumps(view["media"])
+    for view in (ok(invoke, "issue", "show", "LAT-I1"), ok(invoke, "issue", "list")):
+        assert "after.jpg" not in json.dumps(view)  # events included
+    log = (
+        root
+        / ".lattice"
+        / "issues"
+        / "events"
+        / f"{ok(invoke, 'issue', 'show', 'LAT-I1')['id']}.jsonl"
+    )
+    assert "after.jpg" in log.read_text()  # the append-only log keeps it
     assert invoke("issue", "media", "LAT-I1", "--paths").stdout.count("\n") == 1
     again = invoke("issue", "detach", "LAT-I1", "2", "--reason", "r", *A)
     assert again.stdout == "Media 2 of LAT-I1 was already removed\n"

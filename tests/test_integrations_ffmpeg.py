@@ -67,7 +67,7 @@ def test_last_frame_is_retried_earlier_and_named_by_its_time(
 
 def test_a_tool_that_hangs_is_killed(tmp_path: Path) -> None:
     slow = tmp_path / "ffmpeg"
-    slow.write_text("#!/bin/sh\nsleep 5\n")
+    slow.write_text("#!/bin/sh\nexec sleep 5\n")
     slow.chmod(0o755)
     tools = ffmpeg.Tools(str(slow), str(slow))
     assert ffmpeg.extract_frames(tools, tmp_path / "v", [0], timeout=0.2) == []

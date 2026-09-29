@@ -191,6 +191,19 @@ def _media_removed(snapshot: dict, event: dict) -> None:
             return
 
 
+def redact_removed_media_names(events: Iterable[dict], snapshot: Mapping) -> list[dict]:
+    """*events* as a command prints them: the ``original_name`` of media since
+    removed is left out, as it is from the views. The log itself keeps it."""
+    removed = {m.get("id") for m in snapshot.get("media", []) if m.get("removed")}
+    shown = []
+    for event in events:
+        data = event.get("data") or {}
+        if event.get("type") == "issue_media_added" and data.get("media_id") in removed:
+            event = {**event, "data": {k: v for k, v in data.items() if k != "original_name"}}
+        shown.append(event)
+    return shown
+
+
 _HANDLERS: dict[str, Callable[[dict, dict], None]] = {
     "issue_linked": _linked,
     "issue_unlinked": _unlinked,
