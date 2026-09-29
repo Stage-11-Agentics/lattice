@@ -118,7 +118,8 @@ def test_an_error_envelope_becomes_a_server_error() -> None:
     assert (err.value.code, err.value.status, err.value.retry_after) == ("BOARD_BUSY", 503, 3.0)
 
 
-@pytest.mark.parametrize("status", [500, 502, 503, 504])
+# A gateway's own 502, 503 or 504 is unreachable instead (test_gateway_failures.py).
+@pytest.mark.parametrize("status", [500, 501, 505])
 @pytest.mark.parametrize(
     "content_type,body",
     [("text/html", b"<html>Bad gateway</html>"), ("application/json", b'{"message": "down"}')],
@@ -357,10 +358,17 @@ def test_redirect_on_info_is_rejected_too() -> None:
             ["200", "text/html"],
         ),
         (
+            500,
+            {"Content-Type": "text/html"},
+            b"<html>Internal error</html>",
+            "PROXY_REJECTED",
+            ["500"],
+        ),
+        (
             502,
             {"Content-Type": "text/html"},
             b"<html>Bad gateway</html>",
-            "PROXY_REJECTED",
+            "SERVER_UNREACHABLE",
             ["502"],
         ),
         (
