@@ -190,7 +190,7 @@ def _prose_write(
     content = _read_content(file_path, use_stdin, is_json, f"the {kind}")
     if implicit and not content["stdin"]:
         output_error(
-            f"Standard input was empty; the {kind} was not written.",
+            "Standard input was empty; nothing was written.",
             "VALIDATION_ERROR",
             is_json,
         )
