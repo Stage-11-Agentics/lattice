@@ -284,6 +284,52 @@ def test_a_write_forwarded_before_a_gateway_failure_applies_once(
     assert _titles_on_server(hosted_env).count("Forwarded first") == 1
 
 
+def test_op_status_behind_a_gateway_outage_keeps_the_outcome_unknown(
+    hosted_env: HostedEnv, gw: Gateway, repo: Path
+) -> None:
+    """The recovery step after OUTCOME_UNKNOWN never says "Nothing was written"
+    when the lookup itself cannot reach the server: the write may exist."""
+    hosted_env.write_remote(retry_seconds=0.4)
+    gw.match, gw.fail, gw.forward_first = "/ops/", -1, True
+    gw.answer = (503, {"Content-Type": "text/html"}, b"<html>gateway</html>")
+    write = run_cli(repo, "create", "Maybe written", "--actor", "human:alice", "--json")
+    assert write.exit_code == 1
+    error = json.loads(write.stdout)["error"]
+    assert error["code"] == "OUTCOME_UNKNOWN"
+    (op_id,) = {body["op_id"] for _, _, _, body in gw.requests("/ops/", method="POST")}
+    assert f"lattice remote op-status {op_id}" in error["message"]
+    assert _titles_on_server(hosted_env).count("Maybe written") == 1  # it was written
+
+    gw.forward_first = False  # the lookup (GET .../ops/<op_id>) meets the gateway's 503
+    as_json = run_cli(repo, "remote", "op-status", op_id, "--json")
+    plain = run_cli(repo, "remote", "op-status", op_id)
+    assert as_json.exit_code == 1 and plain.exit_code == 1
+    lookup = json.loads(as_json.stdout)["error"]
+    assert lookup["code"] == "SERVER_UNREACHABLE"
+    assert lookup["details"]["op_id"] == op_id
+    for message in (lookup["message"], plain.stderr):
+        assert "Nothing was written" not in message
+        assert f"look up operation {op_id}" in message
+        assert "outcome is still unknown; do not run the write again" in message
+        assert f"lattice remote op-status {op_id}" in message
+
+    gw.fail = 0  # the gateway recovers: the lookup settles it
+    settled = run_cli(repo, "remote", "op-status", op_id, "--json")
+    assert settled.exit_code == 0
+    assert json.loads(settled.stdout)["data"]["state"] == "committed"
+
+
+def test_a_read_only_lookup_never_says_nothing_was_written() -> None:
+    """``get_json`` (``remote list``, ``remote status``) cannot reach the
+    server: its error makes no claim about writes."""
+    with fixed_answer(503, {"Content-Type": "text/html"}, b"<html/>") as proxy:
+        with pytest.raises(OpError) as err:
+            client.get_json(_remote(proxy.url), "/v1/projects")
+    assert err.value.code == "SERVER_UNREACHABLE"
+    assert "HTTP 503" in err.value.message
+    assert "Nothing was written" not in err.value.message
+
+
 def test_sync_names_the_gateway_status(gw: Gateway, repo: Path, read_waits: list[float]) -> None:
     gw.match, gw.fail = "", -1
     result = run_cli(repo, "sync", "--json")

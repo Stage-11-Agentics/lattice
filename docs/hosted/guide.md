@@ -891,7 +891,7 @@ A write retries on its own for up to `retry_seconds` (15 by default) on connecti
   - `in flight`: the server is still applying it. Check again in a moment; do not rerun it yet.
   - `not found`: it did not apply. Running the command again applies it once, as a new operation.
 
-  `op-status` exits 0 in all three cases; `--json` carries `state` (`committed`, `in_flight`, `not_found`). An agent that reruns an `OUTCOME_UNKNOWN` command without checking may apply it twice.
+  `op-status` exits 0 in all three cases; `--json` carries `state` (`committed`, `in_flight`, `not_found`). If the lookup itself cannot reach the server, it exits 1 with `SERVER_UNREACHABLE`: the outcome is still unknown, so run `op-status` again later, not the write. An agent that reruns an `OUTCOME_UNKNOWN` command without checking may apply it twice.
 
 ## 19. Upgrading
 

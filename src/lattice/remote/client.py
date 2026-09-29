@@ -109,11 +109,26 @@ def outcome_unknown(remote: http.Remote, op_id: str, detail: str) -> OpError:
 
 
 def server_unreachable(remote: http.Remote, detail: str) -> OpError:
+    """A read-only request that could not reach the server. It says nothing
+    about writes: "Nothing was written" belongs only to a write that never
+    connected (:func:`write_unreachable`)."""
     return OpError(
         "SERVER_UNREACHABLE",
-        f"cannot reach {remote.alias} ({remote.url}): {detail}. Nothing was written; "
+        f"cannot reach {remote.alias} ({remote.url}): {detail}; "
         "run the command again when the server is reachable.",
         {"remote": remote.alias},
+    )
+
+
+def lookup_unreachable(remote: http.Remote, op_id: str, detail: str) -> OpError:
+    """An op-status lookup that could not reach the server: the write's outcome
+    is still unknown, so the only safe next step is the lookup again."""
+    return OpError(
+        "SERVER_UNREACHABLE",
+        f"cannot reach {remote.alias} ({remote.url}) to look up operation {op_id}: "
+        f"{detail}. Its outcome is still unknown; do not run the write again. Check "
+        f"again when the server is reachable: lattice remote op-status {op_id}",
+        {"remote": remote.alias, "op_id": op_id},
     )
 
 
@@ -311,7 +326,7 @@ def op_status(remote: http.Remote, project: str, op_id: str) -> dict:
     try:
         return http.request(remote, "GET", path, policy=http.BULK).data()
     except http.Unreachable as exc:
-        raise server_unreachable(remote, exc.reason) from None
+        raise lookup_unreachable(remote, op_id, exc.reason) from None
     except http.ServerError as exc:
         raise OpError(exc.code, exc.message, exc.details) from None
 
