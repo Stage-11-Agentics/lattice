@@ -5,6 +5,7 @@ Everything lives in ``.lattice/issues/``, created by the first ``issue file``::
     issues/ids.json                   the issue-only sequence: next_seq and seq -> iss_ ID
     issues/events/iss_<ULID>.jsonl    one issue's event log (the authority)
     issues/iss_<ULID>.json            its snapshot, a full replay of that log
+    issues/media/<iss_ULID>/          its photos and videos (LAT-366, storage/issue_media.py)
 
 Nothing else in Lattice enumerates ``issues/``: task rebuilds, doctor, stats,
 archive, the dashboard and the short-ID floor never see it. The readers here
@@ -250,10 +251,18 @@ def task_info_for(lattice_dir: Path, task_ids: Iterable[str]) -> dict[str, TaskI
 
 
 def issue_views(lattice_dir: Path, snapshots: list[dict]) -> list[dict]:
-    """The ``--json`` views of *snapshots*, each linked task read once."""
+    """The ``--json`` views of *snapshots*, each linked task read once; each
+    view's ``media`` carries its files' paths (LAT-366)."""
+    from lattice.storage.issue_media import media_views
+
     task_ids = [link["task_id"] for s in snapshots for link in s.get("links", [])]
     info = task_info_for(lattice_dir, task_ids)
-    return [issue_view(s, info) for s in snapshots]
+    views = []
+    for snapshot in snapshots:
+        view = issue_view(snapshot, info)
+        view["media"] = media_views(lattice_dir, snapshot)
+        views.append(view)
+    return views
 
 
 def issues_linked_to(

@@ -81,6 +81,9 @@ class HeartbeatConfig(TypedDict, total=False):
 
 class IssuesConfig(TypedDict, total=False):
     enabled: bool
+    #: Per file and per issue media limits in MB (LAT-366); see ``core.issue_media``.
+    max_media_mb: int
+    max_issue_media_mb: int
 
 
 def issues_enabled(config: dict) -> bool:

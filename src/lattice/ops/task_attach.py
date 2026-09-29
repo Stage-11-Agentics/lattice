@@ -51,7 +51,7 @@ def encode_payload(filename: str, content: bytes) -> dict:
     }
 
 
-def _decode_payload(payload: dict) -> tuple[str, bytes]:
+def decode_payload(payload: dict) -> tuple[str, bytes]:
     """``(filename, content)`` from a ``payload`` param, or ``VALIDATION_ERROR``."""
     if set(payload) != _PAYLOAD_KEYS or not all(isinstance(v, str) for v in payload.values()):
         raise OpError(
@@ -111,7 +111,7 @@ class AttachParams(CommonParams):
                 f"When using --inline, --type must be 'note' or 'file' (got '{self.type}').",
             )
         if self.payload is not None:
-            _decode_payload(self.payload)
+            decode_payload(self.payload)
 
 
 @operation("task.attach")
@@ -162,7 +162,7 @@ class Attach:
             if art_type is None:
                 art_type = "note"
         elif p.payload is not None:
-            filename, content = _decode_payload(p.payload)
+            filename, content = decode_payload(p.payload)
         is_url = p.source is not None and _is_url(p.source)
         if art_type is None:
             art_type = "reference" if is_url else "file"

@@ -259,6 +259,25 @@ triage is four moves:
 
 nobody sets an issue's state by hand. it follows the tasks it is linked to: `open` with no live task, `linked` while one is in flight, `resolved` when every linked task is done. a cancelled or erased task sends it back to `open`, because it needs a new task. `lattice issue list` shows what is open and linked. `--all` shows the rest. `lattice show <task>` lists the issues a task came from.
 
+### screenshots and recordings
+
+pass a photo or a video as `--evidence` and it is copied into the issue. the link can never break, because the file now lives with the issue:
+
+```bash
+lattice issue file "Footer overlaps the CTA at 400px" --evidence shot.png --evidence repro.mov --actor agent:qa
+# Filed LAT-I42: Footer overlaps the CTA at 400px (1 photo, 1 video, 8 frames)
+#   repro.mov: 18.7 MB recording, stored as 1.9 MB (H.264)
+lattice issue attach LAT-I42 after-fix.png --actor agent:qa     # more, later
+```
+
+with ffmpeg installed, a video is re-encoded to H.264 and gets up to eight still frames, first to last. an agent that cannot watch video reads the frames:
+
+```bash
+lattice issue media LAT-I42 --paths    # every photo, and every video's frames, one path per line
+```
+
+anything that is not a photo or video (a log, a URL) stays a text pointer, as before. `lattice issue detach LAT-I42 2 --reason "shows an API key"` deletes a file for good. the details, limits and the git story are in the user reference.
+
 the issue log works on local boards only for now. tasks, `list`, `next`, `stats` and the dashboard never see it.
 
 ---

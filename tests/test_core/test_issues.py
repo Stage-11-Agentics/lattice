@@ -269,3 +269,86 @@ def test_promote_description_names_every_issue() -> None:
     )
     assert "  Evidence: a.png, b.log" in text
     assert "- LAT-I4 (filed by Argus-3 on 2026-09-30): Signup button dead" in text
+
+
+# ---------------------------------------------------------------------------
+# Media (LAT-366)
+# ---------------------------------------------------------------------------
+
+MED1 = "med_01K00000000000000000000001"
+MED2 = "med_01K00000000000000000000002"
+
+
+def added(media_id: str, n: int, at: int, kind: str = "photo", **extra: object) -> dict:
+    data = {
+        "media_id": media_id,
+        "n": n,
+        "kind": kind,
+        "content_type": "image/png" if kind == "photo" else "video/mp4",
+        "original_name": f"shot{n}.png",
+        "size_bytes": 10 * n,
+        "sha256": f"{n:064x}",
+        **extra,
+    }
+    return ev("issue_media_added", data, n=at)
+
+
+def test_media_replay_added_and_removed() -> None:
+    snap = replay_issue(
+        [
+            filed(),
+            added(MED1, 1, 2, width=3, height=2),
+            added(MED2, 2, 3, kind="video", duration_ms=1400),
+            added(MED1, 1, 4),  # merged logs: a duplicate media_id is ignored
+            ev("issue_media_removed", {"media_id": MED2, "n": 2, "reason": "key"}, "human:a", 5),
+            ev("issue_media_removed", {"media_id": MED2, "reason": "again"}, n=6),
+            ev("issue_media_removed", {"media_id": "med_unknown", "reason": "x"}, n=7),
+        ]
+    )
+    assert snap is not None
+    first, second = snap["media"]
+    assert first == {
+        "id": MED1,
+        "n": 1,
+        "kind": "photo",
+        "content_type": "image/png",
+        "original_name": "shot1.png",
+        "size_bytes": 10,
+        "sha256": f"{1:064x}",
+        "width": 3,
+        "height": 2,
+        "added_at": "2026-09-29T09:00:02Z",
+        "added_by": "agent:qa",
+    }
+    assert "original_name" not in second  # m3: a removed item's name leaves the views
+    assert second["removed"] == {"at": "2026-09-29T09:00:05Z", "by": "human:a", "reason": "key"}
+    assert snap["last_event_id"] == f"ev_{7:026d}"
+
+
+def test_no_media_key_without_media_events() -> None:
+    snap = replay_issue([filed(), ev("issue_media_removed", {"media_id": MED1}, n=2)])
+    assert snap is not None and "media" not in snap
+    assert issue_view(snap, {})["media"] == []
+
+
+def test_media_log_replays_on_a_build_without_the_media_types(monkeypatch) -> None:
+    """AC-10: LAT-361's replay ignores the unknown types (only last_event_id moves)."""
+    from lattice.core import issues
+
+    events = [filed(), added(MED1, 1, 2), ev("issue_linked", {"task_id": T1}, n=3)]
+    old = {k: v for k, v in issues._HANDLERS.items() if not k.startswith("issue_media")}
+    monkeypatch.setattr(issues, "_HANDLERS", old)
+    snap = replay_issue([*events, added(MED2, 2, 4)])
+    assert snap is not None
+    assert "media" not in snap
+    assert snap["links"][0]["task_id"] == T1
+    assert snap["last_event_id"] == f"ev_{4:026d}"
+
+
+def test_issue_view_and_promote_description_carry_media() -> None:
+    snap = replay_issue([filed(), added(MED1, 1, 2), added(MED2, 2, 3, kind="video")])
+    assert snap is not None
+    assert [m["id"] for m in issue_view(snap, {})["media"]] == [MED1, MED2]
+    text = promote_description([snap])
+    assert "  Media: 1 photo, 1 video (lattice issue media LAT-I3)" in text
+    assert "Media:" not in promote_description([replay_issue([filed()])])

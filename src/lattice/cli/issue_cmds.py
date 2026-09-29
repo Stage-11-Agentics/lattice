@@ -89,6 +89,297 @@ def _read_stdin_text() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Media (LAT-366): photos and videos copied into the issue
+# ---------------------------------------------------------------------------
+
+_KEPT_TEXT = {
+    "not_media": "not a photo or video by its content",
+    "directory": "a directory",
+    "not_found": "no such file",
+}
+
+
+def _heic_unconverted_text() -> str:
+    from lattice.core.issue_media import HEIC_HINT
+
+    return f"a HEIC photo, and neither sips nor ffmpeg could convert it; convert it: {HEIC_HINT}"
+
+
+def _classify(arg: str) -> tuple[str, object, str | None]:
+    """``(what, path, content_type)`` for one ``--evidence`` or ``attach`` argument.
+
+    *what* is ``url``, ``not_found``, ``directory``, ``not_media``, ``heic`` or
+    ``media``. Symlinks are followed: it is the filer's own file.
+    """
+    import os
+    import stat
+    from pathlib import Path
+
+    from lattice.core.issue_media import SNIFF_BYTES, sniff_heic, sniff_media
+
+    if arg.startswith(("http://", "https://")):
+        return "url", None, None
+    path = Path(os.path.expanduser(arg))
+    try:
+        mode = os.stat(path).st_mode
+    except (OSError, ValueError):
+        return "not_found", path, None
+    if stat.S_ISDIR(mode):
+        return "directory", path, None
+    if not stat.S_ISREG(mode):
+        return "not_found", path, None
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(SNIFF_BYTES)
+    except OSError:
+        return "not_found", path, None
+    content_type = sniff_media(head)
+    if content_type is not None:
+        return "media", path, content_type
+    if sniff_heic(head):
+        return "heic", path, "image/heic"
+    return "not_media", path, None
+
+
+def _refuse_too_large(name: str, size: int, limit: int, video: bool, nothing: str, is_json: bool):  # noqa: ANN202
+    from lattice.core.issue_media import file_too_large_message
+
+    message = file_too_large_message(name, size, limit, nothing=nothing)
+    if video:
+        stem = name.rsplit(".", 1)[0] or "video"
+        message += (
+            " Shorten or compress it, for example: "
+            f"ffmpeg -i {name} -vf scale=1280:-2 -crf 30 {stem}-small.mp4"
+        )
+    output_error(message, "PAYLOAD_TOO_LARGE", is_json)
+
+
+def _read_media_file(path, limit: int, nothing: str, is_json: bool, video: bool) -> bytes:  # noqa: ANN001
+    """The file's bytes, refused unread when ``stat`` says it is over *limit*; at
+    most *limit* + 1 bytes are read, which also catches a file that grows."""
+    import os
+
+    size = os.stat(path).st_size
+    if size > limit:
+        _refuse_too_large(path.name, size, limit, video, nothing, is_json)
+    try:
+        with open(path, "rb") as fh:
+            content = fh.read(limit + 1)
+    except OSError as exc:
+        output_error(f"Cannot read {path}: {exc}.", "VALIDATION_ERROR", is_json)
+    if len(content) > limit:
+        _refuse_too_large(path.name, len(content), limit, video, nothing, is_json)
+    return content
+
+
+def _prepare_media(
+    arg: str,
+    path,
+    content_type: str,
+    limit: int,
+    nothing: str,
+    is_json: bool,  # noqa: ANN001
+) -> dict | None:
+    """One file, ready to send: ``{"item", "name", "arg", "hashes", "notes", "sizes"}``.
+
+    A video is transcoded and gets frames when ffmpeg is present; a HEIC photo is
+    converted to JPEG. ``None`` for a HEIC photo nothing could convert.
+    """
+    import hashlib
+
+    from lattice.core.issue_media import clean_original_name, frame_name, media_kind
+    from lattice.ops.task_attach import encode_payload
+
+    name = clean_original_name(path.name) or "file"
+    video = media_kind(content_type) == "video"
+    content = _read_media_file(path, limit, nothing, is_json, video)
+    sha256 = hashlib.sha256(content).hexdigest()
+    record: dict = {"arg": arg, "name": name, "hashes": {sha256}, "notes": [], "sizes": None}
+    item: dict
+    if content_type == "image/heic":
+        from lattice.integrations.ffmpeg import convert_heic
+
+        converted = convert_heic(path)
+        if converted is None:
+            return None
+        item = {
+            "payload": encode_payload(name, converted),
+            "converted_from": {
+                "content_type": "image/heic",
+                "size_bytes": len(content),
+                "sha256": sha256,
+            },
+        }
+        record["notes"].append(("converted", "heic"))
+    elif video:
+        from lattice.integrations.ffmpeg import ffmpeg_state, prepare_video
+
+        prepared = prepare_video(path, content, content_type, sha256)
+        if len(prepared.content) > limit:
+            _refuse_too_large(name, len(prepared.content), limit, True, nothing, is_json)
+        item = {"payload": encode_payload(name, prepared.content)}
+        if prepared.video:
+            item["video"] = prepared.video
+        if prepared.frames:
+            item["frames"] = [
+                {"t_ms": t_ms, "payload": encode_payload(frame_name(t_ms), data)}
+                for t_ms, data in prepared.frames
+            ]
+        if prepared.converted_from:
+            item["converted_from"] = prepared.converted_from
+            record["sizes"] = (len(content), len(prepared.content))
+        notes = list(prepared.notes)
+        if ("no_frames", "ffmpeg_not_found") in notes and ffmpeg_state() == "off":
+            notes[notes.index(("no_frames", "ffmpeg_not_found"))] = ("no_frames", "ffmpeg_off")
+        record["notes"] = notes
+    else:
+        item = {"payload": encode_payload(name, content)}
+    record["item"] = item
+    return record
+
+
+def _collect_evidence(
+    evidence: tuple[str, ...], config: dict, is_json: bool
+) -> tuple[list[str], list[dict], list[dict]]:
+    """``(pointers, media records, kept-as-text notes)`` for ``issue file --evidence``.
+
+    URLs and anything that is not a photo or video stay text pointers, as before;
+    photos and videos are prepared to be copied in. The same content twice is
+    sent once. A file over the per-file limit refuses the whole command.
+    """
+    from lattice.core.issue_media import media_limits
+
+    limit, _per_issue = media_limits(config)
+    pointers: list[str] = []
+    records: list[dict] = []
+    kept: list[dict] = []
+    seen: set[str] = set()
+    for arg in evidence:
+        what, path, content_type = _classify(arg)
+        if what in ("media", "heic"):
+            record = _prepare_media(arg, path, content_type, limit, "Nothing was filed.", is_json)
+            if record is None:
+                pointers.append(arg)
+                kept.append({"evidence": arg, "kept_as": "text", "reason": "heic_unconverted"})
+                continue
+            if record["hashes"] & seen:
+                continue
+            seen |= record["hashes"]
+            records.append(record)
+            continue
+        pointers.append(arg)
+        if what != "url":
+            kept.append({"evidence": arg, "kept_as": "text", "reason": what})
+    return pointers, records, kept
+
+
+def _check_attach_args(files: tuple[str, ...], is_json: bool) -> list[tuple]:
+    """Every ``attach`` argument must be an existing photo or video (all or nothing)."""
+    from lattice.core.issue_media import ACCEPTED_FORMATS_TEXT
+
+    checked = []
+    for arg in files:
+        what, path, content_type = _classify(arg)
+        if what == "not_found" or what == "url":
+            output_error(f"No such file: {arg}.", "VALIDATION_ERROR", is_json)
+        if what == "directory":
+            output_error(
+                f"{arg} is a directory, not a photo or video. Accepted: {ACCEPTED_FORMATS_TEXT}.",
+                "VALIDATION_ERROR",
+                is_json,
+            )
+        if what == "not_media":
+            output_error(
+                f"{arg} is not a photo or video by its content. Accepted: "
+                f"{ACCEPTED_FORMATS_TEXT}.",
+                "VALIDATION_ERROR",
+                is_json,
+            )
+        checked.append((arg, path, content_type))
+    return checked
+
+
+def _media_entry_for(view: dict, record: dict) -> dict | None:
+    """The view's present media entry holding *record*'s content."""
+    for entry in view.get("media", []):
+        if entry.get("removed"):
+            continue
+        hashes = {entry.get("sha256"), (entry.get("converted_from") or {}).get("sha256")}
+        if hashes & record["hashes"]:
+            return entry
+    return None
+
+
+def _media_notes(
+    view: dict, records: list[dict], kept: list[dict], added_ids: set[str]
+) -> tuple[list[dict], list[str]]:
+    """``(data.notes, the human note lines)`` after a write that sent *records*."""
+    from lattice.core.issue_media import format_size
+
+    notes: list[dict] = []
+    lines: list[str] = []
+    for record in records:
+        entry = _media_entry_for(view, record) or {}
+        n, name = entry.get("n"), record["name"]
+        if entry and entry.get("id") not in added_ids:
+            notes.append({"evidence": record["arg"], "media_n": n, "reason": "duplicate"})
+            lines.append(f"{_name(view)} already has {name} (media {n})")
+            continue
+        for reason, detail in record["notes"]:
+            note: dict = {"evidence": record["arg"], "media_n": n, "reason": reason}
+            if detail:
+                note["detail"] = detail
+            if reason == "transcoded" and record["sizes"]:
+                before, after = record["sizes"]
+                note.update(from_size_bytes=before, size_bytes=after)
+                lines.append(
+                    f"{name}: {format_size(before)} recording, stored as "
+                    f"{format_size(after)} (H.264)"
+                )
+            elif reason == "converted":
+                lines.append(f"{name}: converted from HEIC to JPEG")
+            elif reason == "not_transcoded" and detail == "kept_smaller_original":
+                lines.append(f"{name}: stored as it is (already H.264, smaller than re-encoded)")
+            elif reason == "not_transcoded":
+                lines.append(f"{name}: stored as it is; ffmpeg could not transcode it")
+            elif reason == "one_frame":
+                lines.append(f"{name}: its length is unknown, so it has one frame, at 0:00")
+            elif reason == "no_frames":
+                lines.append(f"no frames for {name}: {_NO_FRAMES_DETAIL[detail]}")
+            notes.append(note)
+    for note in kept:
+        notes.append(note)
+        why = _KEPT_TEXT.get(note["reason"]) or _heic_unconverted_text()
+        lines.append(f"kept as text: {note['evidence']} ({why})")
+    return notes, lines
+
+
+_NO_FRAMES_DETAIL = {
+    "ffmpeg_not_found": "ffmpeg not found (install ffmpeg, or set LATTICE_FFMPEG)",
+    "ffmpeg_off": "ffmpeg is off (LATTICE_FFMPEG=off)",
+    "ffmpeg_failed": "ffmpeg could not read it",
+}
+
+
+def _print_write(
+    view: dict, notes: list[dict], lines: list[str], message: str, is_json: bool, quiet: bool
+) -> None:
+    """A media write's output: notes under ``data.notes``, on stdout after the
+    message, or on stderr under ``--quiet``."""
+    if is_json:
+        click.echo(json_envelope(True, data={**view, "notes": notes}))
+        return
+    if quiet:
+        click.echo(_name(view))
+        for line in lines:
+            click.echo(line, err=True)
+        return
+    click.echo(message)
+    for line in lines:
+        click.echo(f"  {line}")
+
+
+# ---------------------------------------------------------------------------
 # The group
 # ---------------------------------------------------------------------------
 
@@ -110,7 +401,11 @@ def issue() -> None:
     default=None,
     help="How sure the filer is.",
 )
-@click.option("--evidence", multiple=True, help="A path or URL backing it up (repeatable).")
+@click.option(
+    "--evidence",
+    multiple=True,
+    help="A path or URL backing it up (repeatable). Photos and videos are copied in.",
+)
 @click.option("--source", default=None, help="Where it came from (e.g., tester-round-8).")
 @common_options
 def issue_file(
@@ -126,33 +421,42 @@ def issue_file(
     on_behalf_of: str | None,
     provenance_reason: str | None,
 ) -> None:
-    """File an issue. TEXT is the observation; '-' reads it from stdin."""
+    """File an issue. TEXT is the observation; '-' reads it from stdin.
+
+    A photo or video passed as --evidence (decided by its content: PNG, JPEG,
+    GIF, WebP; MP4, MOV, WebM; HEIC is converted to JPEG) is copied into the
+    issue. With ffmpeg, a video is re-encoded to H.264 and gets still frames an
+    agent can read ('lattice issue media <issue> --paths').
+    """
     is_json = output_json
     checked = _require_issue_log(is_json)
     if text == "-":
         text = _read_stdin_text()
+    pointers, records, kept = _collect_evidence(evidence, checked[1], is_json)
     _lattice_dir, result = _write(
         "issue.file",
         {
             "text": text,
             "confidence": confidence,
-            "evidence": evidence,
+            "evidence": tuple(pointers),
             "source": source,
+            "media": tuple(r["item"] for r in records),
             **provenance_params(model, session, triggered_by, on_behalf_of, provenance_reason),
         },
         is_json,
         checked,
     )
+    from lattice.core.issue_media import media_summary
     from lattice.core.issues import first_line
 
     view = result.value
-    output_result(
-        data=view,
-        human_message=f"Filed {_name(view)}: {first_line(view['text'])}",
-        quiet_value=_name(view),
-        is_json=is_json,
-        is_quiet=quiet,
-    )
+    added = {e["data"]["media_id"] for e in result.events if e["type"] == "issue_media_added"}
+    notes, lines = _media_notes(view, records, kept, added)
+    message = f"Filed {_name(view)}: {first_line(view['text'])}"
+    summary = media_summary(view.get("media", []))
+    if summary:
+        message += f" ({summary})"
+    _print_write(view, notes, lines, message, is_json, quiet)
 
 
 @issue.command("list")
@@ -239,6 +543,13 @@ def issue_show(issue_id: str, output_json: bool) -> None:
         click.echo("Evidence:")
         for item in view["evidence"]:
             click.echo(f"  {item}")
+    if view.get("media"):
+        from lattice.core.issue_media import format_media_lines
+
+        click.echo("")
+        click.echo("Media:")
+        for line in format_media_lines(view["media"], get_actor_display):
+            click.echo(f"  {line}")
     if view["tasks"]:
         click.echo("")
         click.echo("Tasks:")
@@ -442,3 +753,200 @@ issue.command("duplicate")(
     _closing_command("issue.duplicate", "Close an issue as a duplicate of another.", of=True)
 )
 issue.command("reopen")(_closing_command("issue.reopen", "Reopen a dismissed or duplicate issue."))
+
+
+@issue.command("attach")
+@click.argument("issue_id")
+@click.argument("files", nargs=-1, required=True)
+@common_options
+def issue_attach(
+    issue_id: str,
+    files: tuple[str, ...],
+    output_json: bool,
+    quiet: bool,
+    session: str | None,
+    model: str | None,
+    triggered_by: str | None,
+    on_behalf_of: str | None,
+    provenance_reason: str | None,
+) -> None:
+    """Add photos and videos to an issue after filing (closed issues too).
+
+    All or nothing: every FILE must be a photo or video by its content (PNG,
+    JPEG, GIF, WebP; MP4, MOV, WebM; HEIC is converted to JPEG). Content the
+    issue already holds is skipped.
+    """
+    from lattice.core.issue_media import HEIC_HINT, media_limits, media_summary
+
+    is_json = output_json
+    checked = _require_issue_log(is_json)
+    limit, _per_issue = media_limits(checked[1])
+    records: list[dict] = []
+    seen: set[str] = set()
+    for arg, path, content_type in _check_attach_args(files, is_json):
+        record = _prepare_media(arg, path, content_type, limit, "Nothing was attached.", is_json)
+        if record is None:
+            output_error(
+                f"{arg} is a HEIC photo, and neither sips nor ffmpeg could convert it to JPEG. "
+                f"Convert it, then attach the JPEG: {HEIC_HINT}",
+                "VALIDATION_ERROR",
+                is_json,
+            )
+        if record["hashes"] & seen:
+            continue
+        seen |= record["hashes"]
+        records.append(record)
+    _lattice_dir, result = _write(
+        "issue.attach",
+        {
+            "issue": issue_id,
+            "media": tuple(r["item"] for r in records),
+            **provenance_params(model, session, triggered_by, on_behalf_of, provenance_reason),
+        },
+        is_json,
+        checked,
+    )
+    view = result.value
+    added_ids = {e["data"]["media_id"] for e in result.events if e["type"] == "issue_media_added"}
+    notes, lines = _media_notes(view, records, [], added_ids)
+    added = [m for m in view.get("media", []) if m.get("id") in added_ids]
+    message = (
+        f"Attached to {_name(view)}: {media_summary(added)}"
+        if added
+        else f"Nothing attached to {_name(view)}"
+    )
+    _print_write(view, notes, lines, message, is_json, quiet)
+
+
+@issue.command("detach")
+@click.argument("issue_id")
+@click.argument("media")
+@common_options
+def issue_detach(
+    issue_id: str,
+    media: str,
+    output_json: bool,
+    quiet: bool,
+    session: str | None,
+    model: str | None,
+    triggered_by: str | None,
+    on_behalf_of: str | None,
+    provenance_reason: str | None,
+) -> None:
+    """Remove one photo or video from an issue for good. Requires --reason.
+
+    MEDIA is its number on the issue (see 'lattice issue media') or its med_ ID.
+    The file and its frames are deleted; the log keeps who, when and why. If
+    .lattice/ is tracked in git, the file stays in git history.
+    """
+    is_json = output_json
+    checked = _require_issue_log(is_json)
+    before = _media_before_detach(checked[0], issue_id, media)
+    _lattice_dir, result = _write(
+        "issue.detach",
+        {
+            "issue": issue_id,
+            "media": media,
+            **provenance_params(model, session, triggered_by, on_behalf_of, provenance_reason),
+        },
+        is_json,
+        checked,
+    )
+    view = result.value
+    if result.idempotent:
+        message = f"Media {media} of {_name(view)} was already removed"
+    else:
+        entry, frames = before or ({}, 0)
+        what = ", ".join(x for x in (entry.get("kind"), entry.get("original_name")) if x)
+        n = entry.get("n", media)
+        deleted = (
+            f"its file and {frames} frame{'s' if frames != 1 else ''} are"
+            if frames
+            else ("its file is")
+        )
+        message = (
+            f"Removed media {n}{f' ({what})' if what else ''} from {_name(view)}; "
+            f"{deleted} deleted.\n"
+            "  If .lattice/ is tracked in git, the file is still in git history: "
+            'see "Removing media" in docs/user-reference.md.'
+        )
+    output_result(
+        data=view,
+        human_message=message,
+        quiet_value=_name(view),
+        is_json=is_json,
+        is_quiet=quiet,
+    )
+
+
+def _media_before_detach(lattice_dir, raw_issue: str, raw_media: str) -> tuple | None:  # noqa: ANN001
+    """The entry ``detach`` will remove and its frame count, read before the write
+    (the removal drops its name from the snapshot). ``None`` when not found."""
+    from lattice.storage.issue_media import list_frames
+    from lattice.storage.issues import read_issue_snapshot, resolve_issue
+
+    try:
+        issue_id = resolve_issue(lattice_dir, raw_issue)
+        snapshot = read_issue_snapshot(lattice_dir, issue_id) or {}
+    except OpError:
+        return None
+    text = raw_media.strip()
+    for entry in snapshot.get("media", []):
+        if entry.get("removed"):
+            continue
+        if str(entry.get("n")) == text or str(entry.get("id", "")).lower() == text.lower():
+            return entry, len(list_frames(lattice_dir, issue_id, entry))
+    return None
+
+
+@issue.command("media")
+@click.argument("issue_id")
+@click.option(
+    "--paths",
+    is_flag=True,
+    help="Print only the files an agent can read, one per line: photos, and videos' frames.",
+)
+@click.option("--json", "output_json", is_flag=True, help="Output structured JSON.")
+def issue_media(issue_id: str, paths: bool, output_json: bool) -> None:
+    """List an issue's photos and videos with the paths of their files.
+
+    With --paths, print what an agent can read: each photo, and each video's
+    still frames, in order. A video with no frames goes to stderr instead.
+    """
+    from lattice.core.events import get_actor_display
+    from lattice.core.issue_media import NO_FRAMES_TEXT, format_media_lines
+    from lattice.storage.issues import issue_views, read_issue_snapshot, resolve_issue
+
+    is_json = output_json
+    lattice_dir, _config = _require_issue_log(is_json)
+    try:
+        resolved = resolve_issue(lattice_dir, issue_id)
+        snapshot = read_issue_snapshot(lattice_dir, resolved, on_unreadable=_warn_unreadable)
+    except OpError as exc:
+        output_error(exc.message, exc.code, is_json)
+    if snapshot is None:
+        output_error(f"Issue '{issue_id}' not found.", "NOT_FOUND", is_json)
+    view = issue_views(lattice_dir, [snapshot])[0]
+    present = [m for m in view.get("media", []) if not m.get("removed")]
+    if is_json:
+        data = {"id": view["id"], "short_id": view.get("short_id"), "media": present}
+        click.echo(json_envelope(True, data=data))
+        return
+    if paths:
+        for entry in present:
+            if entry.get("missing"):
+                click.echo(f"missing: {entry.get('path')}", err=True)
+            elif entry.get("kind") == "photo":
+                click.echo(entry["path"])
+            elif entry.get("frames"):
+                for frame in entry["frames"]:
+                    click.echo(frame["path"])
+            else:
+                click.echo(f"{entry['path']}: {NO_FRAMES_TEXT}", err=True)
+        return
+    if not present:
+        click.echo(f"{_name(view)} has no media")
+        return
+    click.echo(f"{_name(view)} media ({len(present)})")
+    for line in format_media_lines(present, get_actor_display):
+        click.echo(f"  {line}")

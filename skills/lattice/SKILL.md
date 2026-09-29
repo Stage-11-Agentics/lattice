@@ -236,6 +236,8 @@ lattice issue file - --actor agent:<id> < note.md     # text with backticks or $
 
 Observations go to `lattice issue file`; commitments go to `lattice create`. Triage later with `lattice issue promote` (a new backlog task), `lattice issue link` (an existing task), `lattice issue dismiss --reason`, or `lattice issue duplicate --of`. An issue's state follows its linked tasks. `lattice issue list` shows what is still open.
 
+Pass screenshots and recordings as `--evidence <file>`: photos and videos are copied into the issue (`lattice issue attach <issue> <file>...` adds more later). Read an issue's media with `lattice issue media <issue> --paths` (videos as still frames).
+
 If a command answers `ISSUES_DISABLED`, the log is off on this board. Do not turn it on yourself: record the observation as a comment on the task you are working, or tell the human.
 
 ## Multi-Agent Coordination
