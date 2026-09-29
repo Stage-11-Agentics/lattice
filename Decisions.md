@@ -1268,3 +1268,18 @@ Additionally, `lattice advance N` processed multiple tasks in a single context w
   the project once a minute. A process has its own interpreter.
 - **Consequence:** `audit_commit` logs the cycle's timings, and any work-lock
   hold of 1 s or more logs `work_lock_slow`.
+
+---
+
+## 2026-09-29: A gateway's 502, 503, or 504 means unreachable (LAT-358)
+
+- **Decision:** a 502, 503, or 504 without `Lattice-Protocol` is a gateway
+  failure. The client treats it as the server being unreachable: writes retry
+  it within `retry_seconds` with the same `op_id` (a 502 or 504 may have
+  forwarded the request, so an exhausted budget is `OUTCOME_UNKNOWN`); a read
+  retries once after about a second, then serves the cache. Every other
+  non-Lattice answer stays `PROXY_REJECTED`.
+- **Why:** in the v2 trial a box behind a Cloudflare tunnel saw transient 502s
+  that never reached the server. Refusing them as a proxy misconfiguration
+  failed writes that a retry would have landed, and failed reads that the
+  cache could have served.
