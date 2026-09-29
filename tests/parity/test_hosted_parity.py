@@ -185,6 +185,9 @@ def foreign_mimetypes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         for k, v in mimetypes._types_map_default.items()  # type: ignore[attr-defined]
         if k not in (".md", ".markdown", ".rst")
     }
+    # mimetypes.init() rebinds these module globals; monkeypatch restores them.
+    for name in ("types_map", "suffix_map", "encodings_map", "common_types"):
+        monkeypatch.setattr(mimetypes, name, getattr(mimetypes, name))
     monkeypatch.setattr(mimetypes, "_types_map_default", builtin)
     monkeypatch.setattr(mimetypes, "knownfiles", [str(host)])
     monkeypatch.setattr(mimetypes, "_db", None)

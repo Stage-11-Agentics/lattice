@@ -2,12 +2,13 @@
 
 The type is guessed from the payload's filename by the stdlib ``mimetypes``
 algorithm (compression suffixes first, then an encoding suffix, then the type
-by lowercased suffix), but over the frozen tables below rather than
-``mimetypes``' live ones. The live tables differ by interpreter (3.12.0 has no
-``.md``; 3.14 adds and changes entries) and are extended by host files such as
-``/etc/apache2/mime.types`` and ``/etc/mime.types``, which differ between
-machines. An artifact's metadata is board bytes, so the same attach must store
-the same type wherever it runs: locally, or on a server (LAT-356).
+by lowercased suffix), over the literal name (never parsed as a URL) and the
+frozen tables below rather than ``mimetypes``' live ones. The live tables
+differ by interpreter (3.12.0 has no ``.md``; 3.14 adds and changes entries)
+and are extended by host files such as ``/etc/apache2/mime.types`` and
+``/etc/mime.types``, or the registry on Windows, which differ between machines.
+An artifact's metadata is board bytes, so the same attach must store the same
+type wherever it runs: locally, or on a server (LAT-356).
 
 ``TYPES`` is CPython 3.13's built-in strict ``types_map``: a superset of 3.12's
 with no entry changed. Change it only as a declared change (SPEC G-6).

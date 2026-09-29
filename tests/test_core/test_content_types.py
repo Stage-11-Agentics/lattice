@@ -30,6 +30,9 @@ from lattice.core.content_types import TYPES, guess_content_type
         ("Makefile", None),
         (".md", None),
         ("", None),
+        # Read literally, not as a URL as mimetypes.guess_type did (G-6).
+        ("data:report.md", "text/markdown"),
+        ("release:report.md?1", None),
     ],
 )
 def test_guess(name: str, expected: str | None) -> None:
@@ -49,6 +52,9 @@ def test_the_live_mimetypes_tables_never_enter(
     host = tmp_path / "mime.types"
     host.write_text("text/x-host-markdown md\napplication/x-host-sqlite sqlite\n")
     builtin = {k: v for k, v in mimetypes._types_map_default.items() if k != ".md"}  # type: ignore[attr-defined]
+    # mimetypes.init() rebinds these module globals; monkeypatch restores them.
+    for name in ("types_map", "suffix_map", "encodings_map", "common_types"):
+        monkeypatch.setattr(mimetypes, name, getattr(mimetypes, name))
     monkeypatch.setattr(mimetypes, "_types_map_default", builtin)
     monkeypatch.setattr(mimetypes, "knownfiles", [str(host)])
     monkeypatch.setattr(mimetypes, "_db", None)
