@@ -324,13 +324,26 @@ def test_hosted_show_names_the_plan_once_written(
     as_json = json.loads(run_cli(repo, "show", "DEM-1", "--json").stdout)["data"]
     assert as_json["plan_path"] == f"plans/{task_id}.md"
 
-    assert (
-        run_cli(repo, "plan", "write", "DEM-1", "--stdin", *A, input="# Plan\n\nGo.\n").exit_code
-        == 0
-    )
+    # A heading alone is scaffold-shaped, but it was written: the task has a plan.
+    assert run_cli(repo, "plan", "write", "DEM-1", "--stdin", *A, input="# Plan\n").exit_code == 0
     after = run_cli(repo, "show", "DEM-1").stdout.splitlines()
     assert f"Plan: plans/{task_id}.md" in after
     assert not any("none yet" in line for line in after)
+
+
+def test_plan_written_without_an_event(tmp_path: Path) -> None:
+    """A plan that arrived without a ``plan_written`` event (a board moved to a
+    server with its files) counts once it is more than the scaffold."""
+    from lattice.cli.query_cmds import _plan_written
+
+    plan = tmp_path / "p.md"
+    snapshot = {"description": "Why."}
+    assert not _plan_written(plan, snapshot, [])
+    plan.write_text("# DEM-1: T\n\nWhy.\n")
+    assert not _plan_written(plan, snapshot, [])
+    assert _plan_written(plan, snapshot, [{"type": "plan_written"}])
+    plan.write_text("# DEM-1: T\n\n- step one\n")
+    assert _plan_written(plan, snapshot, [])
 
 
 # ---------------------------------------------------------------------------

@@ -518,8 +518,11 @@ def _read_plan_content_for_next(lattice_dir: Path, task_id: str) -> str | None:
     return content
 
 
-def _plan_written(plan_path: Path, snapshot: dict) -> bool:
-    """Whether the plan file at *plan_path* holds more than the scaffold."""
+def _plan_written(plan_path: Path, snapshot: dict, events: list[dict]) -> bool:
+    """Whether the task has a plan: one was written (a ``plan_written`` event),
+    or the file at *plan_path* holds more than the scaffold."""
+    if any(event.get("type") == "plan_written" for event in events):
+        return True
     try:
         content = plan_path.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -609,7 +612,9 @@ def show_cmd(
     has_plan = plan_path.exists()
     # On a bound checkout the server scaffolds every task's plan, so the file
     # alone says nothing: plain output names it only once it holds a plan.
-    plan_written = _plan_written(plan_path, snapshot) if helpers._is_cache(lattice_dir) else None
+    plan_written = (
+        _plan_written(plan_path, snapshot, events) if helpers._is_cache(lattice_dir) else None
+    )
 
     # Read outgoing relationship target titles (best effort)
     relationships_out = _enrich_relationships(lattice_dir, snapshot)
