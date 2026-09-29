@@ -1315,5 +1315,12 @@ Additionally, `lattice advance N` processed multiple tasks in a single context w
   `issues/` is unmanaged on a server, so `lattice server project import` does
   not copy it. Hosted support (a durable `issues/`, SPEC and `api.md` rows, a
   `min_client_version` bump) is a follow-up.
+- **Crash recovery.** A write appends the event, then rewrites the snapshot
+  from the whole log. An issue whose log has no snapshot (a crash after its
+  first event) or an unreadable one is replayed in memory by every read, so it
+  still lists and resolves by its display ID. A snapshot left stale by a
+  later event is corrected by the next successful write to that issue, or by
+  `lattice rebuild --all`; until then reads show the stale state. `lattice
+  show` and `issue list` skip an unreadable issue file with a warning.
 - **No schema bump.** Issue events and snapshots carry `schema_version: 1`;
   replay ignores an `issue_*` type it does not know.

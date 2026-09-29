@@ -75,6 +75,13 @@ def _task_entry(view: dict, raw_task: str) -> dict | None:
     )
 
 
+def _warn_unreadable(path, exc: OpError) -> None:  # noqa: ANN001
+    """Skip an unreadable issue file with one line on stderr (stdout stays clean)."""
+    from lattice.core.issues import unreadable_issue_warning
+
+    click.echo(unreadable_issue_warning(path, exc.message), err=True)
+
+
 def _read_stdin_text() -> str:
     import sys
 
@@ -160,12 +167,13 @@ def issue_file(
 @click.option("--json", "output_json", is_flag=True, help="Output structured JSON.")
 def issue_list(states: tuple[str, ...], show_all: bool, output_json: bool) -> None:
     """List issues: open, then linked, each oldest first."""
-    from lattice.core.issues import DEFAULT_LIST_STATES, ISSUE_STATES, format_issue_row
+    from lattice.core.issues import DEFAULT_LIST_STATES, ISSUE_STATES, format_issue_row, id_width
     from lattice.storage.issues import issue_views, list_issue_snapshots
 
     is_json = output_json
     lattice_dir, _config = _require_issue_log(is_json)
-    views = issue_views(lattice_dir, list_issue_snapshots(lattice_dir))
+    snapshots = list_issue_snapshots(lattice_dir, on_unreadable=_warn_unreadable)
+    views = issue_views(lattice_dir, snapshots)
     wanted = ISSUE_STATES if show_all else (states or DEFAULT_LIST_STATES)
     order = {state: i for i, state in enumerate(ISSUE_STATES)}
     shown = sorted(
@@ -175,8 +183,9 @@ def issue_list(states: tuple[str, ...], show_all: bool, output_json: bool) -> No
     if is_json:
         click.echo(json_envelope(True, data=shown))
         return
+    width = id_width(shown)
     for view in shown:
-        click.echo(format_issue_row(view))
+        click.echo(format_issue_row(view, width))
     counts = {state: sum(1 for v in shown if v["state"] == state) for state in ISSUE_STATES}
     summary = ", ".join(f"{counts[s]} {s}" for s in ISSUE_STATES if s in wanted)
     footer = f"{len(shown)} issue{'s' if len(shown) != 1 else ''} ({summary})"
@@ -192,7 +201,7 @@ def issue_list(states: tuple[str, ...], show_all: bool, output_json: bool) -> No
 def issue_show(issue_id: str, output_json: bool) -> None:
     """Show one issue: its text, evidence, state, linked tasks and history."""
     from lattice.core.events import get_actor_display
-    from lattice.core.issues import task_label
+    from lattice.core.issues import format_task_link_line, id_width, task_status
     from lattice.storage.issues import (
         issue_views,
         read_issue_events,
@@ -233,10 +242,14 @@ def issue_show(issue_id: str, output_json: bool) -> None:
     if view["tasks"]:
         click.echo("")
         click.echo("Tasks:")
+        widths = (
+            id_width(view["tasks"]),
+            max(len(task_status(t)) for t in view["tasks"]),
+        )
         for task in view["tasks"]:
-            title = f' "{task["title"]}"' if task.get("title") else ""
             by = get_actor_display(task.get("linked_by") or "?")
-            click.echo(f"  {task_label(task)}{title}  linked {task.get('linked_at')} by {by}")
+            line = format_task_link_line(task, *widths)
+            click.echo(f"  {line}  (linked {task.get('linked_at')} by {by})")
     closure = view.get("closure")
     if closure:
         click.echo("")

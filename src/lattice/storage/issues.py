@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import contextlib
 import json
-from collections.abc import Generator, Iterable
+from collections.abc import Callable, Generator, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -76,19 +76,75 @@ def _load_json(path: Path) -> dict:
         raise OpError("INTEGRITY_ERROR", f"Cannot read {path}: {exc}.") from exc
 
 
-def read_issue_snapshot(lattice_dir: Path, issue_id: str) -> dict | None:
-    path = _snapshot_path(lattice_dir, issue_id)
+#: Called with the unreadable file and the error when a list skips an issue.
+OnUnreadable = Callable[[Path, OpError], None]
+
+
+def _replayed(lattice_dir: Path, issue_id: str) -> dict | None:
+    """The issue built in memory from its log, or ``None`` with no log. Writes nothing."""
+    path = _events_path(lattice_dir, issue_id)
     if not path.exists():
         return None
-    return _load_json(path)
+    try:
+        return replay_issue(read_issue_events(lattice_dir, issue_id))
+    except (ValueError, KeyError) as exc:
+        raise OpError("INTEGRITY_ERROR", f"Cannot replay {path}: {exc}.") from exc
 
 
-def list_issue_snapshots(lattice_dir: Path) -> list[dict]:
-    """Every issue snapshot, by sequence number."""
+def read_issue_snapshot(lattice_dir: Path, issue_id: str) -> dict | None:
+    """The issue's snapshot; replayed from its log when the file is missing or
+    unreadable (a crash between the event and the snapshot, a merge conflict).
+
+    ``None`` when there is neither. An unreadable snapshot with no log raises
+    ``INTEGRITY_ERROR``.
+    """
+    path = _snapshot_path(lattice_dir, issue_id)
+    if path.exists():
+        try:
+            return _load_json(path)
+        except OpError:
+            replayed = _replayed(lattice_dir, issue_id)
+            if replayed is None:
+                raise
+            return replayed
+    return _replayed(lattice_dir, issue_id)
+
+
+def list_issue_snapshots(
+    lattice_dir: Path, *, on_unreadable: OnUnreadable | None = None
+) -> list[dict]:
+    """Every issue, by sequence number.
+
+    An issue whose log has no snapshot file (a crash after the first event) is
+    replayed in memory; only the names are compared, so the other logs are not
+    read. With *on_unreadable*, a file that cannot be read is skipped and
+    reported to it; without, the ``INTEGRITY_ERROR`` propagates.
+    """
     directory = issues_dir(lattice_dir)
     if not directory.is_dir():
         return []
-    snapshots = [_load_json(p) for p in sorted(directory.glob("iss_*.json"))]
+    snapshot_paths = sorted(directory.glob("iss_*.json"))
+    have = {p.stem for p in snapshot_paths}
+    events_dir = directory / "events"
+    missing = (
+        sorted(p.stem for p in events_dir.glob("iss_*.jsonl") if p.stem not in have)
+        if events_dir.is_dir()
+        else []
+    )
+    snapshots: list[dict] = []
+    for path, load in [
+        *((p, lambda p=p: _load_json(p)) for p in snapshot_paths),
+        *((_events_path(lattice_dir, i), lambda i=i: _replayed(lattice_dir, i)) for i in missing),
+    ]:
+        try:
+            snapshot = load()
+        except OpError as exc:
+            if on_unreadable is None:
+                raise
+            on_unreadable(path, exc)
+            continue
+        if snapshot is not None:
+            snapshots.append(snapshot)
     return sorted(snapshots, key=lambda s: (s.get("seq") or 0, s.get("id", "")))
 
 
@@ -142,9 +198,8 @@ def resolve_issue(lattice_dir: Path, raw: str) -> str:
     issue_id = load_issue_ids(lattice_dir)["map"].get(str(seq))
     snapshot = read_issue_snapshot(lattice_dir, issue_id) if issue_id else None
     if snapshot is None:  # a stale index: look for the number itself
-        snapshot = next(
-            (s for s in list_issue_snapshots(lattice_dir) if s.get("seq") == seq), None
-        )
+        readable = list_issue_snapshots(lattice_dir, on_unreadable=lambda _p, _e: None)
+        snapshot = next((s for s in readable if s.get("seq") == seq), None)
     if snapshot is None:
         raise OpError("NOT_FOUND", f"Issue '{raw}' not found.")
     if prefix is not None and str(snapshot.get("short_id", "")).upper() != raw.strip().upper():
@@ -184,11 +239,13 @@ def issue_views(lattice_dir: Path, snapshots: list[dict]) -> list[dict]:
     return [issue_view(s, info) for s in snapshots]
 
 
-def issues_linked_to(lattice_dir: Path, task_id: str) -> list[dict]:
+def issues_linked_to(
+    lattice_dir: Path, task_id: str, *, on_unreadable: OnUnreadable | None = None
+) -> list[dict]:
     """The views of every issue linked to *task_id*, by sequence number."""
     linked = [
         s
-        for s in list_issue_snapshots(lattice_dir)
+        for s in list_issue_snapshots(lattice_dir, on_unreadable=on_unreadable)
         if any(link.get("task_id") == task_id for link in s.get("links", []))
     ]
     return issue_views(lattice_dir, linked)

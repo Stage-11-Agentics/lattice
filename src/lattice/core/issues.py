@@ -42,6 +42,14 @@ def issues_disabled_message(has_existing: bool) -> str:
     return message
 
 
+def unreadable_issue_warning(path: object, reason: str) -> str:
+    """The stderr line a read prints when it skips an issue file it cannot read."""
+    return (
+        f"Warning: skipped unreadable issue file {path} ({reason}). "
+        "Run 'lattice rebuild --all' to rebuild it from its log."
+    )
+
+
 # ---------------------------------------------------------------------------
 # IDs
 # ---------------------------------------------------------------------------
@@ -282,26 +290,54 @@ def default_task_title(snapshot: dict) -> str:
     return first_line(snapshot.get("text", ""))
 
 
+#: Column widths: every state fits ``duplicate``, every confidence ``definite``.
+STATE_WIDTH = max(len(state) for state in ISSUE_STATES)
+CONFIDENCE_WIDTH = max(len(value) for value in CONFIDENCE_VALUES)
+
+
+def id_width(items: Iterable[Mapping]) -> int:
+    """The widest ``short_id`` among *items* (issues or task entries), for padding."""
+    return max((len(str(i.get("short_id") or i.get("id") or "")) for i in items), default=0)
+
+
+def task_status(entry: Mapping) -> str:
+    """A view's task entry's status, ``erased`` or ``missing``."""
+    if entry.get("erased"):
+        return "erased"
+    if entry.get("status") is None:
+        return "missing"
+    return entry["status"]
+
+
 def task_label(entry: Mapping) -> str:
     """``LAT-370 (in_progress)`` for a view's task entry."""
-    name = entry.get("short_id") or entry.get("id")
-    if entry.get("erased"):
-        status = "erased"
-    elif entry.get("status") is None:
-        status = "missing"
-    else:
-        status = entry["status"]
-    return f"{name} ({status})"
+    return f"{entry.get('short_id') or entry.get('id')} ({task_status(entry)})"
 
 
-def format_issue_row(view: Mapping, text_width: int = 60) -> str:
-    """One ``issue list`` row: ID, state, confidence, text, and linked tasks."""
+def format_issue_row(view: Mapping, id_width: int = 0, text_width: int = 60) -> str:
+    """One ``issue list`` row: ID, state, confidence, text, and linked tasks.
+
+    *id_width* pads the ID column (the caller passes the widest ID it prints);
+    state and confidence pad to their widest possible value.
+    """
     confidence = view.get("confidence") or "-"
-    row = f"{view.get('short_id')}  {view['state']}  {confidence}  "
+    row = (
+        f"{view.get('short_id') or view.get('id'):<{id_width}}  "
+        f"{view['state']:<{STATE_WIDTH}}  {confidence:<{CONFIDENCE_WIDTH}}  "
+    )
     row += first_line(view.get("text", ""), text_width)
     if view.get("tasks"):
         row += " -> " + ", ".join(task_label(t) for t in view["tasks"])
     return row
+
+
+def format_task_link_line(entry: Mapping, id_width: int = 0, status_width: int = 0) -> str:
+    """One task line of ``issue show``: ID, status and title, padded like ``issue list``."""
+    line = f"{entry.get('short_id') or entry.get('id'):<{id_width}}  "
+    line += f"{task_status(entry):<{status_width}}"
+    if entry.get("title"):
+        line += f'  "{entry["title"]}"'
+    return line
 
 
 def linked_issue_summary(view: Mapping) -> dict:
@@ -314,10 +350,11 @@ def linked_issue_summary(view: Mapping) -> dict:
     }
 
 
-def format_linked_issue_line(item: Mapping, text_width: int = 70) -> str:
-    """One line of ``lattice show``'s ``Issues:`` section."""
+def format_linked_issue_line(item: Mapping, id_width: int = 0, text_width: int = 70) -> str:
+    """One line of ``lattice show``'s ``Issues:`` section, padded like ``issue list``."""
     return (
-        f"{item.get('short_id')}  {item['state']}  {first_line(item.get('text', ''), text_width)}"
+        f"{item.get('short_id') or item.get('id'):<{id_width}}  "
+        f"{item['state']:<{STATE_WIDTH}}  {first_line(item.get('text', ''), text_width)}"
     )
 
 

@@ -134,3 +134,45 @@ def test_rebuild_reports_a_sequence_collision(board: Path) -> None:
     assert load_issue_ids(board)["map"] == {"1": other_id}
     assert read_issue_snapshot(board, one["id"])["text"] == "Footer overlaps"
     assert resolve_issue(board, one["id"]) == one["id"]
+
+
+def test_issue_without_a_snapshot_is_replayed_by_every_read(board: Path) -> None:
+    """A crash between the first event and the snapshot: the issue still lists,
+    resolves by its display ID, and links; the reads write nothing."""
+    from lattice.boards import resolve_board
+    from lattice.ops import Caller
+
+    file_issue(board, "first")
+    lost = file_issue(board, "lost in a crash")
+    (board / "issues" / f"{lost['id']}.json").unlink()
+    before = {p: p.read_bytes() for p in (board / "issues").rglob("*") if p.is_file()}
+
+    assert [s["short_id"] for s in list_issue_snapshots(board)] == ["LAT-I1", "LAT-I2"]
+    assert read_issue_snapshot(board, lost["id"]) == lost
+    assert resolve_issue(board, "LAT-I2") == lost["id"]
+    after = {p: p.read_bytes() for p in (board / "issues").rglob("*") if p.is_file()}
+    assert after == before  # no reader wrote anything
+
+    config = json.loads((board / "config.json").read_text())
+    config["issues"] = {"enabled": True}
+    (board / "config.json").write_text(json.dumps(config))
+    local = resolve_board(board.parent)
+    task = local.execute("task.create", {"title": "T"}, Caller(actor="agent:qa")).task
+    result = local.execute(
+        "issue.link", {"issue": "LAT-I2", "task": task["id"]}, Caller(actor="agent:qa")
+    )
+    assert result.value["state"] == "linked"
+    assert (board / "issues" / f"{lost['id']}.json").exists()  # the write repaired it
+
+
+def test_list_skips_an_unreadable_snapshot_when_asked(board: Path) -> None:
+    good = file_issue(board, "good")
+    bad = file_issue(board, "bad")
+    path = board / "issues" / f"{bad['id']}.json"
+    path.write_text("{not json")
+    with pytest.raises(OpError):
+        list_issue_snapshots(board)
+    skipped: list[Path] = []
+    listed = list_issue_snapshots(board, on_unreadable=lambda p, _e: skipped.append(p))
+    assert listed == [good] and skipped == [path]
+    assert read_issue_snapshot(board, bad["id"]) == bad  # replayed from its log

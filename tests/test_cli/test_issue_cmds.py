@@ -231,15 +231,15 @@ def test_promote_two_issues(on: Path, ok, invoke) -> None:
     assert [i["short_id"] for i in task["linked_issues"]] == ["LAT-I1", "LAT-I2"]
     assert {i["state"] for i in task["linked_issues"]} == {"linked"}
     shown = invoke("show", "LAT-1").output
-    assert "Issues:\n  LAT-I1  linked  Footer overlaps the CTA\n" in shown
+    assert "Issues:\n  LAT-I1  linked     Footer overlaps the CTA\n" in shown
 
     rows = invoke("issue", "list").output.splitlines()
-    assert rows[0] == "LAT-I1  linked  definite  Footer overlaps the CTA -> LAT-1 (backlog)"
+    assert rows[0] == "LAT-I1  linked     definite  Footer overlaps the CTA -> LAT-1 (backlog)"
     view = ok("issue", "show", "LAT-I2")
     assert view["tasks"][0]["short_id"] == "LAT-1"
     assert view["tasks"][0]["status"] == "backlog"
     assert [e["type"] for e in view["events"]] == ["issue_filed", "issue_linked"]
-    assert "LAT-1 (backlog)" in invoke("issue", "show", "LAT-I2").output
+    assert 'LAT-1  backlog  "Footer overlaps the CTA"' in invoke("issue", "show", "LAT-I2").output
 
     again = ok("issue", "promote", "LAT-I1", "--title", "Separate", "--priority", "high", *A)
     assert again["task"]["title"] == "Separate" and again["task"]["priority"] == "high"
@@ -458,3 +458,37 @@ def test_show_compact_and_empty(on: Path, ok) -> None:
     ok("create", "Task", *A)
     assert ok("show", "LAT-1")["linked_issues"] == []  # on, but no issues/ yet
     assert "linked_issues" not in ok("show", "LAT-1", "--compact")
+
+
+# ---------------------------------------------------------------------------
+# Review fixes: an unreadable issue file never breaks a read
+# ---------------------------------------------------------------------------
+
+
+def test_corrupt_snapshot_does_not_break_show_or_list(on: Path, ok, invoke) -> None:
+    ok("create", "Unrelated", *A)
+    ok("issue", "file", "Linked one", *A)
+    ok("issue", "file", "Corrupt one", *A)
+    ok("issue", "link", "LAT-I1", "LAT-1", *A)
+    corrupt = on / ".lattice" / "issues" / f"{ok('issue', 'show', 'LAT-I2')['id']}.json"
+    corrupt.write_text("{not json")
+
+    plain = invoke("show", "LAT-1")
+    assert plain.exit_code == 0, plain.output
+    assert "LAT-I1  linked" in plain.stdout
+    assert f"skipped unreadable issue file {corrupt}" in plain.stderr
+    assert "lattice rebuild --all" in plain.stderr
+
+    as_json = invoke("show", "LAT-1", "--json")
+    assert as_json.exit_code == 0
+    data = json.loads(as_json.stdout)["data"]  # stdout stays valid JSON
+    assert [i["short_id"] for i in data["linked_issues"]] == ["LAT-I1"]
+    assert "skipped unreadable issue file" in as_json.stderr
+
+    listed = invoke("issue", "list")
+    assert listed.exit_code == 0
+    assert listed.stdout.startswith("LAT-I1  linked")
+    assert "skipped unreadable issue file" in listed.stderr
+    # The unreadable issue itself still shows, replayed from its log.
+    assert ok("issue", "show", "LAT-I2")["text"] == "Corrupt one"
+    assert corrupt.read_text() == "{not json"  # reads wrote nothing

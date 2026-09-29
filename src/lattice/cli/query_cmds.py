@@ -642,10 +642,16 @@ def show_cmd(
     # The optional issue log (LAT-361): issues linked to this task, only when it is on.
     linked_issues: list[dict] | None = None
     if issues_enabled(config):
-        from lattice.core.issues import linked_issue_summary
+        from lattice.core.issues import linked_issue_summary, unreadable_issue_warning
         from lattice.storage.issues import issues_linked_to
 
-        linked_issues = [linked_issue_summary(v) for v in issues_linked_to(lattice_dir, task_id)]
+        def skip(path: Path, exc: OpError) -> None:
+            # Best effort, as _read_artifact_info is: one unreadable issue
+            # file never takes down show for every task.
+            click.echo(unreadable_issue_warning(path, exc.message), err=True)
+
+        linked = issues_linked_to(lattice_dir, task_id, on_unreadable=skip)
+        linked_issues = [linked_issue_summary(v) for v in linked]
 
     # Auto-detect branch links from git branches matching the task's short code
     short_id = snapshot.get("short_id")
@@ -1101,12 +1107,12 @@ def _print_human_show(
                     )
 
     if linked_issues:
-        from lattice.core.issues import format_linked_issue_line
+        from lattice.core.issues import format_linked_issue_line, id_width
 
         click.echo("")
         click.echo("Issues:")
         for item in linked_issues:
-            click.echo(f"  {format_linked_issue_line(item)}")
+            click.echo(f"  {format_linked_issue_line(item, id_width(linked_issues))}")
 
     if artifact_info:
         click.echo("")

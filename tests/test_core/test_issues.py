@@ -13,6 +13,9 @@ from lattice.core.issues import (
     derive_issue_state,
     format_issue_row,
     format_issue_short_id,
+    format_linked_issue_line,
+    format_task_link_line,
+    id_width,
     issue_view,
     parse_issue_ref,
     promote_description,
@@ -195,8 +198,32 @@ def test_view_and_row() -> None:
     assert view["tasks"][0]["short_id"] == "LAT-9"
     assert view["tasks"][1]["status"] is None
     assert format_issue_row(view) == (
-        f"LAT-I3  linked  -  Footer overlaps -> LAT-9 (in_progress), {T2} (missing)"
+        f"LAT-I3  linked     -         Footer overlaps -> LAT-9 (in_progress), {T2} (missing)"
     )
+
+
+def test_rows_line_up() -> None:
+    """ID pads to the widest ID given, state to `duplicate`, confidence to `definite`."""
+    short = {"short_id": "I9", "state": "open", "confidence": None, "text": "a", "tasks": []}
+    long = {"short_id": "I10", "state": "duplicate", "confidence": "definite", "text": "b"}
+    width = id_width([short, long])
+    assert width == 3
+    rows = [format_issue_row(v, width) for v in (short, long)]
+    assert rows == ["I9   open       -         a", "I10  duplicate  definite  b"]
+    assert rows[0].index("a") == rows[1].index("b")
+    lines = [
+        format_linked_issue_line({"short_id": "I9", "state": "open", "text": "a"}, 3),
+        format_linked_issue_line({"short_id": "I10", "state": "resolved", "text": "b"}, 3),
+    ]
+    assert lines == ["I9   open       a", "I10  resolved   b"]
+    entries = [
+        {"short_id": "LAT-9", "status": "done", "title": "T"},
+        {"short_id": "LAT-10", "status": "in_progress", "erased": True},
+    ]
+    assert [format_task_link_line(e, id_width(entries), 6) for e in entries] == [
+        'LAT-9   done    "T"',
+        "LAT-10  erased",
+    ]
 
 
 # ---------------------------------------------------------------------------

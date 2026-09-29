@@ -104,6 +104,8 @@ An issue is an observation, not a commitment: "the footer overlaps the CTA at 40
 
 **Rules.** Linking the same task twice, or unlinking a task that is not linked, does nothing. `link` accepts archived tasks and refuses erased ones (`TASK_ERASED`). `link`, `promote`, `dismiss` and `duplicate` on a closed issue give `CONFLICT`; `reopen` it first. `dismiss` requires `--reason`. `duplicate` refuses the issue itself and a target that is itself a duplicate (point at its original instead). `promote` creates one backlog task whose description names each issue, then links them; if a link fails after the task exists, the error names the task, and `lattice issue link` finishes the job.
 
+**Crash recovery.** An issue's event log is its authority; its snapshot is rewritten from the whole log on every write. An issue whose log has no snapshot (a crash right after filing) or whose snapshot is unreadable is replayed in memory on read, so it still lists and resolves. A snapshot left stale by a later event is corrected by the next successful write to that issue, or by `lattice rebuild --all`. `lattice show` and `lattice issue list` skip an unreadable issue file with a warning on stderr.
+
 **Local boards only.** On a checkout bound to a Lattice server, every `lattice issue` command exits with `LOCAL_ONLY` before reading anything, and a server refuses the issue operations. `issues/` is not board data a server manages, so `lattice server project import` does not copy it: moving a board to a server leaves its issues behind in the old board.
 
 ---
