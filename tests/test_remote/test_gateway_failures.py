@@ -49,13 +49,16 @@ def _notices(stderr: str) -> list[str]:
 class Gateway:
     """Forwards every request to *upstream*, except that the next ``fail``
     requests whose path contains ``match`` get ``answer`` from the gateway
-    itself (``fail < 0``: every one). ``seen`` lists ``(method, path,
+    itself (``fail < 0``: every one). With ``forward_first``, those requests
+    reach the server too and the gateway discards its answer (a gateway that
+    fails after forwarding). ``seen`` lists ``(method, path,
     answered_by_gateway, json_body)``."""
 
     upstream: str
     url: str = ""
     fail: int = 0
     match: str = ""
+    forward_first: bool = False
     answer: tuple[int, dict[str, str], bytes] = BAD_GATEWAY
     seen: list[tuple[str, str, bool, Any]] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock)
@@ -84,23 +87,15 @@ def gateway(upstream: str) -> Iterator[Gateway]:
             raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
             failed = gw.take(self.path)
             gw.seen.append((self.command, self.path, failed, json.loads(raw) if raw else None))
+            if failed and gw.forward_first:
+                self._forward(raw)
             if failed:
                 status, headers, body = gw.answer
                 self.send_response(status)
                 for name, value in headers.items():
                     self.send_header(name, value)
             else:
-                req = urllib.request.Request(
-                    gw.upstream + self.path, data=raw or None, method=self.command
-                )
-                for name, value in self.headers.items():
-                    if name.lower() not in ("host", "connection", "content-length"):
-                        req.add_header(name, value)
-                try:
-                    resp = urllib.request.urlopen(req, timeout=30)
-                except urllib.error.HTTPError as exc:
-                    resp = exc
-                body = resp.read()
+                resp, body = self._forward(raw)
                 self.send_response(resp.status)
                 for name, value in resp.headers.items():
                     if name.lower() not in ("connection", "content-length", "transfer-encoding"):
@@ -108,6 +103,19 @@ def gateway(upstream: str) -> Iterator[Gateway]:
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+
+        def _forward(self, raw: bytes) -> tuple[Any, bytes]:
+            req = urllib.request.Request(
+                gw.upstream + self.path, data=raw or None, method=self.command
+            )
+            for name, value in self.headers.items():
+                if name.lower() not in ("host", "connection", "content-length"):
+                    req.add_header(name, value)
+            try:
+                resp = urllib.request.urlopen(req, timeout=30)
+            except urllib.error.HTTPError as exc:
+                resp = exc
+            return resp, resp.read()
 
         do_GET = do_POST = _go
 
@@ -169,17 +177,17 @@ def _remote(url: str) -> http.Remote:
     return http.Remote(alias="team", url=url, token="t")
 
 
-@pytest.mark.parametrize(("status", "sent"), [(502, True), (503, False), (504, True)])
+@pytest.mark.parametrize("status", [502, 503, 504])
 @pytest.mark.parametrize("content_type", ["text/html", "application/json", None])
-def test_a_gateway_5xx_is_unreachable(status: int, sent: bool, content_type: str | None) -> None:
+def test_a_gateway_5xx_is_unreachable(status: int, content_type: str | None) -> None:
     headers = {"Content-Type": content_type} if content_type else {}
     with fixed_answer(status, headers, b"<html>gateway</html>") as proxy:
         with pytest.raises(http.GatewayUnavailable) as err:
             http.request(_remote(proxy.url), "GET", SYNC)
     assert isinstance(err.value, http.Unreachable)
     assert err.value.status == status
-    # A 502 or 504 may have forwarded the request; a 503 did not (SPEC §8.6).
-    assert err.value.sent is sent
+    # Any of the three may have forwarded the request first (SPEC §8.6).
+    assert err.value.sent is True
     assert f"HTTP {status}" in err.value.reason
     assert err.value.retry_after is None
 
@@ -258,6 +266,35 @@ def test_a_write_after_one_gateway_502_applies_once(
     assert _titles_on_server(hosted_env).count("Through the gateway") == 1
 
 
+@pytest.mark.parametrize("status", [502, 503, 504])
+def test_a_write_forwarded_before_a_gateway_failure_applies_once(
+    hosted_env: HostedEnv, gw: Gateway, repo: Path, status: int
+) -> None:
+    """The gateway forwards the POST, the server commits it, and the gateway
+    answers its own error: the retry (same op_id) is answered from the
+    receipt, so the task exists once."""
+    gw.match, gw.fail, gw.forward_first = "/ops/", 1, True
+    gw.answer = (status, {"Content-Type": "text/html"}, b"<html>gateway</html>")
+    result = run_cli(repo, "create", "Forwarded first", "--actor", "human:alice", "--json")
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["data"]["title"] == "Forwarded first"
+    posts = gw.requests("/ops/", method="POST")
+    assert [failed for _, _, failed, _ in posts] == [True, False]
+    assert posts[0][3]["op_id"] == posts[1][3]["op_id"]
+    assert _titles_on_server(hosted_env).count("Forwarded first") == 1
+
+
+def test_sync_names_the_gateway_status(gw: Gateway, repo: Path, read_waits: list[float]) -> None:
+    gw.match, gw.fail = "", -1
+    result = run_cli(repo, "sync", "--json")
+    assert result.exit_code == 1
+    error = json.loads(result.stdout)["error"]
+    assert error["code"] == "SERVER_UNREACHABLE"
+    assert error["message"].startswith(
+        "Cannot reach team (a gateway in front of it answered HTTP 502"
+    )
+
+
 def test_a_write_past_the_budget_is_outcome_unknown(
     hosted_env: HostedEnv, gw: Gateway, repo: Path
 ) -> None:
@@ -332,22 +369,40 @@ def scripted(answers: list[tuple]) -> Iterator[dict[str, Any]]:
         thread.join(timeout=5)
 
 
+START = 1000.0
+
+
+class Clock(list):
+    """The waits between attempts (a wait sliced for progress lines counts
+    once), plus each attempt's start time on the fake clock. ``oversleep`` is
+    added to every sleep (a loaded host); ``request_seconds`` is how long each
+    attempt takes to fail."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.starts: list[float] = []
+        self.oversleep = 0.0
+        self.request_seconds = 0.0
+
+
 @pytest.fixture()
-def clock(monkeypatch: pytest.MonkeyPatch) -> list[float]:
-    """A fake clock for the write's retry loop; returns the waits between attempts."""
-    now = [1000.0]
-    waits: list[float] = []
+def clock(monkeypatch: pytest.MonkeyPatch) -> Clock:
+    """A fake clock for the write's retry loop."""
+    now = [START]
+    waits = Clock()
     pending = [0.0]
     send = http.request
 
     def sleep(seconds: float) -> None:
-        pending[0] += seconds
-        now[0] += seconds
+        pending[0] += seconds + waits.oversleep
+        now[0] += seconds + waits.oversleep
 
     def request(*args: Any, **kwargs: Any) -> Any:
         if pending[0]:
             waits.append(pending[0])
             pending[0] = 0.0
+        waits.starts.append(now[0])
+        now[0] += waits.request_seconds
         return send(*args, **kwargs)
 
     monkeypatch.setattr(client, "_now", lambda: now[0])
@@ -382,11 +437,11 @@ def test_gateway_answers_are_retried_with_the_same_op_id(
     ]
 
 
-@pytest.mark.parametrize("status", [502, 504])
+@pytest.mark.parametrize("status", [502, 503, 504])
 def test_gateway_failures_past_the_budget_may_have_applied(
     clock: list[float], status: int
 ) -> None:
-    """A gateway's 502 or 504 may have forwarded the request (SPEC §8.6)."""
+    """A gateway's 502, 503, or 504 may have forwarded the request (SPEC §8.6)."""
     with scripted([_gateway_answer(status)]) as server, pytest.raises(OpError) as err:
         _post(server["url"], retry_seconds=3)
     assert err.value.code == "OUTCOME_UNKNOWN"
@@ -395,13 +450,40 @@ def test_gateway_failures_past_the_budget_may_have_applied(
     assert len(server["bodies"]) == len(clock) + 1
 
 
-def test_gateway_503s_past_the_budget_wrote_nothing(clock: list[float]) -> None:
-    """A gateway's 503 says the server was not available: nothing forwarded."""
-    with scripted([_gateway_answer(503)]) as server, pytest.raises(OpError) as err:
+@pytest.mark.parametrize(("oversleep", "request_seconds"), [(0.3, 0.0), (0.0, 0.7), (0.3, 0.7)])
+def test_no_attempt_starts_past_the_budget(
+    clock: Clock, oversleep: float, request_seconds: float
+) -> None:
+    """Sleeps that overshoot and attempts that take time never let an attempt
+    start after ``retry_seconds``."""
+    clock.oversleep, clock.request_seconds = oversleep, request_seconds
+    with scripted([_gateway_answer(502)]) as server, pytest.raises(OpError) as err:
         _post(server["url"], retry_seconds=3)
-    assert err.value.code == "SERVER_UNREACHABLE"
-    assert "is not available. Nothing was written" in err.value.message
-    assert sum(clock) <= 3
+    assert err.value.code == "OUTCOME_UNKNOWN"
+    assert len(clock.starts) >= 2
+    assert all(start < START + 3 for start in clock.starts), clock.starts
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [_gateway_answer(503, retry_after="0"), None],
+    ids=["gateway-503", "server-busy"],
+)
+def test_a_zero_retry_after_waits_the_backoff(clock: Clock, answer: tuple | None) -> None:
+    """Retry-After is floored at the current backoff: ``0`` never spins."""
+    if answer is None:
+        answer = (
+            503,
+            {"Content-Type": "application/json", "Lattice-Protocol": "1", "Retry-After": "0"},
+            b'{"ok": false, "error": {"code": "BOARD_BUSY", "message": "busy"}}',
+        )
+    with scripted([answer, answer, OK]) as server:
+        _post(server["url"])
+    assert clock == [0.5, 1.0]
+    with scripted([answer]) as server, pytest.raises(OpError) as err:
+        _post(server["url"], retry_seconds=3)
+    assert err.value.code == "OUTCOME_UNKNOWN"
+    assert len(server["bodies"]) <= 4  # 0.5 + 1 + 2 s of backoff fill the budget
 
 
 def test_a_gateway_retry_after_is_honored_within_the_budget(clock: list[float]) -> None:
@@ -416,15 +498,17 @@ def test_a_gateway_retry_after_past_the_budget_gives_up_at_once(clock: list[floa
         pytest.raises(OpError) as err,
     ):
         _post(server["url"], retry_seconds=15)
-    assert err.value.code == "SERVER_UNREACHABLE"
+    assert err.value.code == "OUTCOME_UNKNOWN"
     assert clock == [] and len(server["bodies"]) == 1
 
 
-def test_a_gateway_503_in_the_offline_window_does_not_wait(clock: list[float]) -> None:
-    with scripted([_gateway_answer(503)]) as server, pytest.raises(OpError) as err:
-        _post(server["url"], offline=True)
-    assert err.value.code == "SERVER_UNREACHABLE"
-    assert clock == [] and len(server["bodies"]) == 1
+def test_a_gateway_failure_in_the_offline_window_still_retries(clock: list[float]) -> None:
+    """The request may have been forwarded, so the write retries for the full
+    budget (SPEC §8.6 "No repeated wait" gives up at once only when nothing
+    was sent)."""
+    with scripted([_gateway_answer(503), OK]) as server:
+        assert _post(server["url"], offline=True)["seq"] == 7
+    assert clock == [0.5] and len(server["bodies"]) == 2
 
 
 # ---------------------------------------------------------------------------

@@ -1275,7 +1275,7 @@ Additionally, `lattice advance N` processed multiple tasks in a single context w
 
 - **Decision:** a 502, 503, or 504 without `Lattice-Protocol` is a gateway
   failure. The client treats it as the server being unreachable: writes retry
-  it within `retry_seconds` with the same `op_id` (a 502 or 504 may have
+  it within `retry_seconds` with the same `op_id` (any of the three may have
   forwarded the request, so an exhausted budget is `OUTCOME_UNKNOWN`); a read
   retries once after about a second, then serves the cache. Every other
   non-Lattice answer stays `PROXY_REJECTED`.

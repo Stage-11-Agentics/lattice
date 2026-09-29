@@ -133,11 +133,12 @@ GATEWAY_STATUSES = frozenset({502, 503, 504})
 
 class GatewayUnavailable(Unreachable):
     """A gateway in front of the server answered 502, 503 or 504 itself (no
-    ``Lattice-Protocol``). ``sent`` is true for 502 and 504: the gateway may
-    have forwarded the request before it failed (SPEC §8.6)."""
+    ``Lattice-Protocol``). ``sent`` is always true: the gateway may have
+    forwarded the request, and the server committed it, before the gateway
+    answered with its own error (SPEC §8.6)."""
 
     def __init__(self, reason: str, *, status: int, retry_after: float | None = None):
-        super().__init__(reason, sent=status != 503, retry_after=retry_after)
+        super().__init__(reason, sent=True, retry_after=retry_after)
         self.status = status
 
 

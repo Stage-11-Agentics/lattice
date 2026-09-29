@@ -9,10 +9,13 @@
   read timeout, a gateway's 502, 503, or 504 (no ``Lattice-Protocol``; it
   counts as unreachable, SPEC §9.1), HTTP 429, 502, or 504, and HTTP 503
   unless the envelope says ``BOARD_UNAVAILABLE``. It waits ``Retry-After``
-  when given, else backs off from 0.5 s doubling to 5 s, and says so on stderr
-  (never silently). When it gives up, ``SERVER_UNREACHABLE`` means no attempt
-  ever reached the server (nothing was written); ``OUTCOME_UNKNOWN`` means one
-  may have been applied (a gateway's 502 or 504 may have forwarded it).
+  when given (never less than the current backoff), else backs off from 0.5 s
+  doubling to 5 s, and says so on stderr (never silently). No attempt starts
+  after ``retry_seconds``: the last backoff ends just before it, and the
+  deadline is checked again after every wait. When it gives up,
+  ``SERVER_UNREACHABLE`` means no attempt ever reached the server (nothing was
+  written); ``OUTCOME_UNKNOWN`` means one may have been applied (a gateway's
+  502, 503, or 504 may have forwarded it).
   A write started inside the offline window gives up at once when its first
   attempt cannot connect, so a stopped server costs one wait per outage.
 """
@@ -40,6 +43,9 @@ FIRST_BACKOFF_SECONDS = 0.5
 MAX_BACKOFF_SECONDS = 5.0
 #: A retrying write reports progress this often (SPEC §8.6).
 PROGRESS_SECONDS = 5.0
+#: The last attempt starts at least this long before the retry deadline, so a
+#: sleep that overshoots cannot push it past ``retry_seconds``.
+LAST_ATTEMPT_MARGIN_SECONDS = 0.1
 
 #: Test seams: the clock the retry budget runs on, and the sleep between attempts.
 _now: Callable[[], float] = time.monotonic
@@ -257,7 +263,7 @@ def post_operation(
             reached = reached or exc.sent
             detail = exc.reason
             progress.state = "not available"
-            wait = exc.retry_after  # a gateway's 503 may name one (SPEC §8.6)
+            wait = exc.retry_after  # a gateway may name one (SPEC §8.6)
             if first and offline and not exc.sent:
                 raise write_unreachable(remote, detail, _now() - started) from None
         except http.ServerError as exc:
@@ -269,17 +275,31 @@ def post_operation(
             wait = exc.retry_after
         first = False
         now = _now()
+        latest = deadline - LAST_ATTEMPT_MARGIN_SECONDS
         if wait is None:
-            # The last backoff ends at the deadline, so the retries fill the
-            # whole budget; a server's Retry-After past it is honored by giving up.
-            wait = min(backoff, max(0.0, deadline - now))
-            backoff = min(backoff * 2, MAX_BACKOFF_SECONDS)
-        if now >= deadline or now + wait > deadline:
-            if reached:
-                raise outcome_unknown(remote, op_id, detail)
-            raise write_unreachable(remote, detail, now - started)
+            # The last backoff ends just before the deadline, so the retries
+            # fill the budget.
+            wait = min(backoff, latest - now)
+        else:
+            # A Retry-After (0 included) never retries faster than the backoff;
+            # one past the budget is honored by giving up.
+            wait = max(wait, backoff)
+        backoff = min(backoff * 2, MAX_BACKOFF_SECONDS)
+        if wait <= 0 or now + wait > latest:
+            raise _give_up(remote, op_id, detail, reached, now - started)
         progress.begin(now)  # no silent wait: say so at once, in plain words
         progress.sleep(wait)
+        now = _now()
+        if now >= deadline:  # the sleep overshot: no attempt past the budget
+            raise _give_up(remote, op_id, detail, reached, now - started)
+
+
+def _give_up(
+    remote: http.Remote, op_id: str, detail: str, reached: bool, waited: float
+) -> OpError:
+    if reached:
+        return outcome_unknown(remote, op_id, detail)
+    return write_unreachable(remote, detail, waited)
 
 
 def op_status(remote: http.Remote, project: str, op_id: str) -> dict:
