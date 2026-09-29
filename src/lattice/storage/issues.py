@@ -20,7 +20,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from lattice.core.errors import OpError
-from lattice.core.events import serialize_event
 from lattice.core.issues import (
     TaskInfo,
     issue_view,
@@ -28,11 +27,14 @@ from lattice.core.issues import (
     replay_issue,
     serialize_issue_snapshot,
 )
-from lattice.core.origin import stamp_origin
 from lattice.core.visibility import is_tombstoned
-from lattice.storage.fs import atomic_write, ensure_dir, jsonl_append
+from lattice.storage.fs import atomic_write, ensure_dir
 from lattice.storage.locks import lattice_lock
-from lattice.storage.operations import AuthoritativeLogError, read_task_authority
+from lattice.storage.operations import (
+    AuthoritativeLogError,
+    read_task_authority,
+    write_issue_events,
+)
 
 ISSUES_DIR = "issues"
 IDS_LOCK = "issues_ids"
@@ -52,6 +54,10 @@ def _snapshot_path(lattice_dir: Path, issue_id: str) -> Path:
 
 def _events_path(lattice_dir: Path, issue_id: str) -> Path:
     return issues_dir(lattice_dir) / "events" / f"{issue_id}.jsonl"
+
+
+# ``write_issue_events`` lives in ``storage/operations.py`` beside
+# ``write_resource_event``: it is the one appender of an issue log.
 
 
 def _ids_path(lattice_dir: Path) -> Path:
@@ -224,20 +230,6 @@ def allocate_issue_seq(lattice_dir: Path, issue_id: str) -> int:
         data["schema_version"] = 1
         atomic_write(_ids_path(lattice_dir), _serialize_ids(data))
     return seq
-
-
-def write_issue_events(
-    lattice_dir: Path, issue_id: str, events: list[dict], snapshot: dict
-) -> None:
-    """Append *events* to the issue's log, then write *snapshot*. Hold its lock."""
-    ensure_dir(issues_dir(lattice_dir) / "events")
-    for event in events:
-        stamp_origin(event)
-    if events:
-        jsonl_append(
-            _events_path(lattice_dir, issue_id), "".join(serialize_event(e) for e in events)
-        )
-    atomic_write(_snapshot_path(lattice_dir, issue_id), serialize_issue_snapshot(snapshot))
 
 
 def current_issue(lattice_dir: Path, issue_id: str) -> dict | None:
