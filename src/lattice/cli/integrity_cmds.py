@@ -22,7 +22,7 @@ from lattice.cli.maintenance import (
     offline_maintenance_option,
     refuse_on_hosted_checkout,
 )
-from lattice.core.config import configured_event_prefix
+from lattice.core.config import configured_event_prefix, issues_enabled
 from lattice.core.errors import OpError
 from lattice.core.events import LIFECYCLE_EVENT_TYPES, serialize_event
 from lattice.storage.fs import atomic_write, ensure_dir
@@ -570,25 +570,47 @@ def rebuild(
                 else:
                     click.echo(f"Error rebuilding resource {res_id}: {e}", err=True)
 
+        # The optional issue log (LAT-361): only when it is on and has files.
+        issue_rebuild = None
+        if issues_enabled(load_project_config(lattice_dir)):
+            from lattice.storage.issues import issues_dir, rebuild_issue_snapshots
+
+            if issues_dir(lattice_dir).is_dir():
+                try:
+                    issue_rebuild = rebuild_issue_snapshots(lattice_dir)
+                except (OpError, ValueError, KeyError) as exc:
+                    message = exc.message if isinstance(exc, OpError) else str(exc)
+                    output_error(f"Rebuilding issues failed: {message}", "REBUILD_ERROR", is_json)
+
         if is_json:
-            click.echo(
-                json_envelope(
-                    True,
-                    data={
-                        "rebuilt_tasks": rebuilt_ids,
-                        "rebuilt_resources": rebuilt_resources,
-                        "global_log_rebuilt": True,
-                    },
-                )
-            )
+            data: dict = {
+                "rebuilt_tasks": rebuilt_ids,
+                "rebuilt_resources": rebuilt_resources,
+                "global_log_rebuilt": True,
+            }
+            if issue_rebuild is not None:
+                data["rebuilt_issues"] = issue_rebuild.rebuilt
+                if issue_rebuild.collisions:
+                    data["issue_seq_collisions"] = issue_rebuild.collisions
+            click.echo(json_envelope(True, data=data))
         else:
             parts = [f"Rebuilt {len(rebuilt_ids)} task{'s' if len(rebuilt_ids) != 1 else ''}"]
             if rebuilt_resources:
                 parts.append(
                     f"{len(rebuilt_resources)} resource{'s' if len(rebuilt_resources) != 1 else ''}"
                 )
+            if issue_rebuild is not None:
+                count = len(issue_rebuild.rebuilt)
+                parts.append(f"{count} issue{'s' if count != 1 else ''}")
             parts.append("regenerated lifecycle log")
             click.echo(", ".join(parts))
+            for collision in issue_rebuild.collisions if issue_rebuild else []:
+                click.echo(
+                    f"Warning: issue number {collision['seq']} was filed more than once "
+                    f"({', '.join(collision['issues'])}); it now names {collision['mapped_to']}. "
+                    "The others stay readable by their iss_ IDs.",
+                    err=True,
+                )
     else:
         # Single task rebuild
         assert task_id is not None

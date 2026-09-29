@@ -79,6 +79,19 @@ class HeartbeatConfig(TypedDict, total=False):
     max_advances: int
 
 
+class IssuesConfig(TypedDict, total=False):
+    enabled: bool
+
+
+def issues_enabled(config: dict) -> bool:
+    """Whether the optional issue log is on: ``"issues": {"enabled": true}``.
+
+    Off unless the key is exactly that; ``default_config()`` leaves it out.
+    """
+    section = config.get("issues")
+    return isinstance(section, dict) and section.get("enabled") is True
+
+
 def configured_event_prefix(config: dict) -> str | None:
     """Return the exact short-ID prefix used for newly created task events."""
     project_code = config.get("project_code")
@@ -163,6 +176,7 @@ class LatticeConfig(TypedDict, total=False):
     model_tiers: ModelTiers
     resources: dict[str, ResourceDef]
     heartbeat: HeartbeatConfig
+    issues: IssuesConfig
     workflow_preset: str
     project_name: str
     model: str

@@ -51,6 +51,7 @@ BOARD_CONFIG_KEYS = frozenset(
         "hooks",
         "instance_id",
         "instance_name",
+        "issues",
         "model",
         "plan_approval",
         "plan_review_mode",

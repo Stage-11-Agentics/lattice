@@ -61,6 +61,12 @@ class TestBuiltinEventTypes:
             "plan_written",
             "notes_written",
             "task_history_reconciled",
+            "issue_filed",
+            "issue_linked",
+            "issue_unlinked",
+            "issue_dismissed",
+            "issue_marked_duplicate",
+            "issue_reopened",
         }
     )
 
@@ -71,7 +77,7 @@ class TestBuiltinEventTypes:
         assert isinstance(BUILTIN_EVENT_TYPES, frozenset)
 
     def test_count(self) -> None:
-        assert len(BUILTIN_EVENT_TYPES) == 37
+        assert len(BUILTIN_EVENT_TYPES) == 43
 
     def test_auto_review_spawned_is_not_lifecycle(self) -> None:
         # ``auto_review_spawned`` is a per-task event, not a lifecycle one.

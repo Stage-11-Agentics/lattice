@@ -717,7 +717,7 @@ lattice doctor
 
 Read the two lists it prints:
 
-- **paths not copied**: anything that is not board data (for example `reviews/`, `logs/`, `exports/`). They stay in the old board, which step 3 keeps.
+- **paths not copied**: anything that is not board data (for example `reviews/`, `logs/`, `exports/`, and the optional issue log's `issues/`). They stay in the old board, which step 3 keeps.
 - **non-canonical plan and notes files**: loose files under `plans/` or `notes/`. They are copied, and on a hosted checkout they are read-only; write them with `lattice board write`, and put new working files under `orchestration/`.
 
 The import also repairs short-ID bookkeeping from the logs, starts the project's journal and its audit history (section 16), and prints these same steps with your slug filled in.

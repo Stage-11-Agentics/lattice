@@ -87,6 +87,38 @@ When a `project_code` is configured (e.g., `PROJ`), tasks get human-friendly ali
 
 ---
 
+## Issue log (optional)
+
+An issue is an observation, not a commitment: "the footer overlaps the CTA at 400px". Issues live apart from tasks and link to them many-to-many. The log is off unless `.lattice/config.json` has `"issues": {"enabled": true}`; it is edited by hand, since operations never write board configuration (SPEC §8.2). Run `lattice setup-claude --force` afterwards so the CLAUDE.md block gains its Issue Log section. With the log off, every `lattice issue` command exits with `ISSUES_DISABLED`, and nothing reads or writes `issues/`. Turning it off deletes nothing; turning it back on restores every issue.
+
+**IDs.** Issues are numbered in their own sequence: `<project_code>-I<n>` (for example `LAT-I3`), or `I<n>` with no project code. The number never touches the task sequence in `ids.json`, and it can never be read as a task short ID. Commands accept the display ID, `I<n>`, or the `iss_<ULID>`, in any case.
+
+**States.** An issue's state is derived every time it is read, never stored:
+
+| State | When |
+|-------|------|
+| `dismissed` / `duplicate` | The issue was closed with `dismiss` or `duplicate` (until `reopen`). A close wins over any link. |
+| `open` | No live linked task. A task is live when it exists and is neither erased nor cancelled; archived tasks count with their status. |
+| `resolved` | Every live linked task is `done`. |
+| `linked` | Anything else: at least one live linked task is not done yet. |
+
+`lattice issue list` prints one row per issue, with its columns aligned: ID, state, confidence (`-` when none was given), the first line of the text, then the linked tasks and their statuses:
+
+```
+LAT-I9   open       -         Signup button does nothing on Safari
+LAT-I10  linked     definite  Footer overlaps the CTA at 400px -> LAT-370 (in_progress)
+LAT-I3   dismissed  -         Tooltip flickers once on hover
+3 issues (1 open, 1 linked, 0 resolved, 1 dismissed, 0 duplicate)
+```
+
+**Rules.** Linking the same task twice, or unlinking a task that is not linked, does nothing. `link` accepts archived tasks and refuses erased ones (`TASK_ERASED`). `link`, `promote`, `dismiss` and `duplicate` on a closed issue give `CONFLICT`; `reopen` it first. `dismiss` requires `--reason`. `duplicate` refuses the issue itself and a target that is itself a duplicate (point at its original instead). `promote` creates one backlog task whose description names each issue, then links them; if a link fails after the task exists, the error names the task, and `lattice issue link` finishes the job.
+
+**Crash recovery.** An issue's event log is its authority; its snapshot is rewritten from the whole log on every write. An issue whose log has no snapshot (a crash right after filing) or whose snapshot is unreadable is replayed in memory on read, so it still lists and resolves. A snapshot left stale by a later event is corrected by the next successful write to that issue, or by `lattice rebuild --all`. The same rule holds for `lattice issue list`, `lattice issue show` and the Issues section of `lattice show`: an issue with an intact log is always shown. When its snapshot is unreadable, the command also prints one warning on stderr naming the file and suggesting `lattice rebuild --all`. An issue whose log is also unreadable or absent is left out, with the warning; `lattice issue show` of it fails with `INTEGRITY_ERROR`.
+
+**Local boards only.** On a checkout bound to a Lattice server, every `lattice issue` command exits with `LOCAL_ONLY` before reading anything, and a server refuses the issue operations. `issues/` is not board data a server manages, so `lattice server project import` does not copy it: moving a board to a server leaves its issues behind in the old board.
+
+---
+
 ## Events and the event log
 
 Every change is recorded as an immutable event in a per-task JSONL file at `.lattice/events/<task_id>.jsonl`. Events are the source of truth. Task JSON files at `.lattice/tasks/<task_id>.json` are materialized snapshots — convenient caches that can be rebuilt at any time.
@@ -131,6 +163,10 @@ CLI flags: `--triggered-by`, `--on-behalf-of`, `--reason`. All write commands su
 ├── artifacts/payload/<art_id>.*   # Artifact payloads
 ├── plans/<task_id>.md             # Structured plan files (scaffolded on create)
 ├── notes/<task_id>.md             # Scratchpad notes (created on demand)
+├── issues/                        # Optional issue log (only when "issues": {"enabled": true})
+│   ├── ids.json                   # Issue-only sequence: next_seq + number -> iss_ ID
+│   ├── iss_<ULID>.json            # Issue snapshots (rebuilt by `lattice rebuild --all`)
+│   └── events/iss_<ULID>.jsonl    # Per-issue event logs (append-only, the authority)
 ├── archive/                       # Mirrors structure for archived items
 │   ├── tasks/
 │   ├── events/
@@ -365,6 +401,13 @@ The CLI is Lattice's write interface — the primary way agents interact with th
 | `lattice file-link <id> <path>...` | Link file(s) to a task (`--reason` for annotation) |
 | `lattice file-unlink <id> <path>...` | Unlink file(s) from a task |
 | `lattice explain <path>` | Show decisions behind a file (supports directory/glob) |
+| `lattice issue file "<text>"` | File an issue (`-` reads the text from stdin; `--confidence`, repeatable `--evidence`, `--source`) |
+| `lattice issue list` | List open and linked issues (`--state` repeatable, `--all`) |
+| `lattice issue show <issue>` | An issue's text, evidence, state, linked tasks and history |
+| `lattice issue promote <issue>...` | Create one backlog task from issues and link them (`--title`, `--priority`, `--type`) |
+| `lattice issue link <issue> <task>` | Link an issue to a task; `lattice issue unlink` removes the link |
+| `lattice issue dismiss <issue> --reason "..."` | Close an issue as not worth acting on |
+| `lattice issue duplicate <issue> --of <issue>` | Close an issue as a duplicate; `lattice issue reopen` undoes either close |
 | `lattice archive <id>` | Archive a completed task |
 | `lattice unarchive <id>` | Restore an archived task |
 | `lattice dashboard` | Launch the web dashboard |

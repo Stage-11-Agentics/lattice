@@ -25,7 +25,7 @@ from lattice.cli.main import cli
 from lattice.cli.ops_bridge import board_or_exit, caller_from_context, is_hosted, run_operation
 from lattice.core.errors import OpError
 from lattice.core.comments import materialize_comments
-from lattice.core.config import get_valid_transitions, validate_status
+from lattice.core.config import get_valid_transitions, issues_enabled, validate_status
 from lattice.core.events import get_actor_display
 from lattice.core.ids import extract_short_ids
 from lattice.core.next import select_next
@@ -639,6 +639,20 @@ def show_cmd(
     # Read artifact metadata (best effort)
     artifact_info = _read_artifact_info(lattice_dir, snapshot)
 
+    # The optional issue log (LAT-361): issues linked to this task, only when it is on.
+    linked_issues: list[dict] | None = None
+    if issues_enabled(config):
+        from lattice.core.issues import linked_issue_summary, unreadable_issue_warning
+        from lattice.storage.issues import issues_linked_to
+
+        def skip(path: Path, exc: OpError) -> None:
+            # Best effort, as _read_artifact_info is: one unreadable issue
+            # file never takes down show for every task.
+            click.echo(unreadable_issue_warning(path, exc), err=True)
+
+        linked = issues_linked_to(lattice_dir, task_id, on_unreadable=skip)
+        linked_issues = [linked_issue_summary(v) for v in linked]
+
     # Auto-detect branch links from git branches matching the task's short code
     short_id = snapshot.get("short_id")
     explicit_branches = [bl["branch"] for bl in snapshot.get("branch_links", [])]
@@ -660,6 +674,8 @@ def show_cmd(
         data["relationships_enriched"] = relationships_out
         data["relationships_in"] = relationships_in
         data["artifact_info"] = artifact_info
+        if linked_issues is not None:
+            data["linked_issues"] = linked_issues
         if auto_branches:
             data["auto_detected_branches"] = auto_branches
         if auto_commits:
@@ -688,6 +704,7 @@ def show_cmd(
             config=config,
             reopened_warning=reopened_warning,
             plan_written=plan_written,
+            linked_issues=linked_issues,
         )
 
 
@@ -986,6 +1003,7 @@ def _print_human_show(
     config: dict | None = None,
     reopened_warning: str | None = None,
     plan_written: bool | None = None,
+    linked_issues: list[dict] | None = None,
 ) -> None:
     """Print full human-readable show output.
 
@@ -1087,6 +1105,14 @@ def _print_human_show(
                         f"by {get_actor_display(history.get('changed_by', '?'))}: "
                         f"{history.get('outcome', '')}"
                     )
+
+    if linked_issues:
+        from lattice.core.issues import format_linked_issue_line, id_width
+
+        click.echo("")
+        click.echo("Issues:")
+        for item in linked_issues:
+            click.echo(f"  {format_linked_issue_line(item, id_width(linked_issues))}")
 
     if artifact_info:
         click.echo("")

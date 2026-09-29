@@ -1353,3 +1353,27 @@ def write_resource_event(
 
         for event in events:
             execute_resource_hooks(config, lattice_dir, resource_id, resource_name, event)
+
+
+def write_issue_events(
+    lattice_dir: Path, issue_id: str, events: list[dict], snapshot: dict
+) -> None:
+    """Append *events* to the issue's log, then write *snapshot* (LAT-361).
+
+    The issue-log counterpart of :func:`write_resource_event`: event first,
+    then the snapshot replayed from the whole log. The caller holds the
+    issue's lock (``storage.issues.issue_write_context``). Issue logs live in
+    ``issues/events/``, never beside task logs.
+    """
+    from lattice.core.issues import serialize_issue_snapshot
+
+    issues = Path(lattice_dir) / "issues"
+    ensure_dir(issues / "events")
+    for event in events:
+        stamp_origin(event)
+    if events:
+        jsonl_append(
+            issues / "events" / f"{issue_id}.jsonl",
+            "".join(serialize_event(event) for event in events),
+        )
+    atomic_write(issues / f"{issue_id}.json", serialize_issue_snapshot(snapshot))
