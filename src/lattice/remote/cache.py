@@ -69,6 +69,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
 from lattice.core.errors import OpError
+from lattice.program import program_name
 from lattice.remote import cache_paths, http
 from lattice.remote.config import resolve_remote
 from lattice.storage.fs import atomic_write, ensure_dir, unlink_entry
@@ -531,7 +532,7 @@ def read_lock(hosted_root: Path) -> Iterator[Path]:
             raise OpError(
                 "CACHE_INCOMPLETE",
                 "the cache was interrupted mid-update and the server is unreachable; "
-                f"run `lattice sync` when {name} is back.",
+                f"run `{program_name()} sync` when {name} is back.",
                 {"root": str(hosted_root)},
             )
         # Only the syncer's exclusive apply (and ``cache clear``) changes a
@@ -1189,12 +1190,13 @@ class _Syncer:
         if not victims:
             return
         rescue_dir = self._new_rescue_dir()
+        prog = program_name()
         for rel in victims:
             self._rescue_one(lattice_dir / rel, rescue_dir / rel)
         print(
-            f"lattice: {len(victims)} locally edited board file(s) moved to {rescue_dir}; "
-            "the cache is read-only. Write a plan with: lattice plan write <task> "
-            "--file <path> (notes: lattice notes write)",
+            f"{prog}: {len(victims)} locally edited board file(s) moved to {rescue_dir}; "
+            f"the cache is read-only. Write a plan with: {prog} plan write <task> "
+            f"--file <path> (notes: {prog} notes write)",
             file=sys.stderr,
         )
 

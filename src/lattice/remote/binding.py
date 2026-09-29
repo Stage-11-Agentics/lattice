@@ -25,6 +25,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from lattice.program import program_name
 from lattice.core.errors import OpError
 from lattice.storage.fs import BINDING_FILE, LATTICE_DIR
 
@@ -110,7 +111,7 @@ def classify(root: Path) -> Hosted | None:
                 "BINDING_CONFLICT",
                 f"{root} holds a cache of {marker[0]}/{marker[1]}, but its "
                 f"{BINDING_FILE} names {binding[0]}/{binding[1]}. To rebind this checkout, "
-                "run 'lattice cache clear --forget' and then any lattice command.",
+                f"run '{program_name()} cache clear --forget' and then any lattice command.",
                 {"root": str(root), "cache": "/".join(marker), "binding": "/".join(binding)},
             )
         return Hosted(root, *marker)

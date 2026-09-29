@@ -531,7 +531,7 @@
       "exit_code": 1,
       "stderr": {
         "lines": [
-          "Error: Provide the plan as --file PATH or --stdin."
+          "Error: Provide the plan as --file PATH or --stdin, for example: lattice plan write PAR-1 --stdin < plan.md"
         ]
       },
       "stdout": {

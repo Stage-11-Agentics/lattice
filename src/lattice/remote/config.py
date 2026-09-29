@@ -28,6 +28,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from lattice.program import program_name
 from lattice.core.errors import OpError
 from lattice.remote.http import Remote
 
@@ -49,7 +50,7 @@ def _not_configured(alias: str) -> OpError:
     return OpError(
         "REMOTE_NOT_CONFIGURED",
         f"no remote named '{alias}' is configured on this machine. Run: "
-        f"lattice remote add {alias} <url> --token-env <VAR> "
+        f"{program_name()} remote add {alias} <url> --token-env <VAR> "
         "(ask your server admin for the URL and a token).",
         {"remote": alias},
     )
@@ -187,7 +188,7 @@ def check_url(alias: str, url: str, *, allow_plaintext: bool) -> None:
             f"remote '{alias}' uses plaintext http:// to {parts.hostname}, which is not "
             "loopback; the token would cross the network unencrypted. Use https://, or, "
             "for a server reached over an encrypted private network, allow it with "
-            f"'lattice remote add {alias} {url} --allow-plaintext' (or "
+            f"'{program_name()} remote add {alias} {url} --allow-plaintext' (or "
             f"{env_prefix(alias)}ALLOW_PLAINTEXT=1).",
             {"remote": alias, "host": parts.hostname},
         )

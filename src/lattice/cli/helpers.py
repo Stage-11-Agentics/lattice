@@ -12,6 +12,7 @@ from lattice.core.actors import build_actor_dict
 from lattice.core.errors import OpError
 from lattice.core.ids import is_short_id, validate_actor, validate_id
 from lattice.core.plans import is_scaffold_plan  # noqa: F401 - CLI re-export
+from lattice.program import program_name
 from lattice.storage.fs import LATTICE_DIR, LatticeRootError, find_root
 from lattice.storage.operations import (
     AuthoritativeLogError,
@@ -62,7 +63,7 @@ def require_root(is_json: bool = False) -> Path:
         output_error(str(e), "NOT_INITIALIZED", is_json)
     if root is None:
         output_error(
-            "Not a Lattice project (no .lattice/ found). Run 'lattice init' first.",
+            f"Not a Lattice project (no .lattice/ found). Run '{program_name()} init' first.",
             "NOT_INITIALIZED",
             is_json,
         )

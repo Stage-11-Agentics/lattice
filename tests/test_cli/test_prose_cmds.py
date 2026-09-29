@@ -110,7 +110,7 @@ class TestPlanWrite:
         cases = [
             (["--file", str(tmp_path)], "VALIDATION_ERROR", "Is a directory"),
             (["--file", str(src), "--stdin"], "VALIDATION_ERROR", "not both"),
-            ([], "VALIDATION_ERROR", "Provide the plan as --file PATH or --stdin."),
+            ([], "VALIDATION_ERROR", "Provide the plan as --file PATH or --stdin, for example"),
             (["--file", str(src), "--expect-sha256", "nope"], "VALIDATION_ERROR", "64 hex"),
         ]
         for args, code, needle in cases:

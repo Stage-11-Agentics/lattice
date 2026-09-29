@@ -1,5 +1,6 @@
 """AC-38 (CLI): ``lattice show`` prints ``actor · user@machine · worktree (branch)``
-under each event that has an origin, and nothing extra for older events."""
+under each event that has an origin (``actor · via token user@machine · ...`` when
+the token's user is not the actor), and nothing extra for older events."""
 
 from __future__ import annotations
 
@@ -38,7 +39,18 @@ def _event(origin: dict | None, actor: object = ACTOR) -> dict:
                 "reported": {"os_user": "alice", "host": "lap", "worktree": "/w", "branch": "b"},
                 "authenticated": {"user": "human:alice", "machine": "alice-laptop"},
             },
-            "agent:o · human:alice@alice-laptop · /w (b)",
+            "agent:o · via token human:alice@alice-laptop · /w (b)",
+        ),
+        (
+            {
+                "reported": {"os_user": "alice", "host": "lap", "worktree": "/w", "branch": "b"},
+                "authenticated": {"user": ACTOR, "machine": "alice-laptop"},
+            },
+            "agent:o · agent:o@alice-laptop · /w (b)",
+        ),
+        (
+            {"reported": {"source": "browser"}, "authenticated": {"user": "human:alice"}},
+            "agent:o · via token human:alice · browser",
         ),
         (
             {"reported": {"os_user": "alice", "host": "lap", "source": "browser"}},

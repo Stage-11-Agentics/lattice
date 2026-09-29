@@ -21,7 +21,7 @@ from pathlib import Path
 
 import click
 
-from lattice.cli.helpers import json_envelope, output_error
+from lattice.cli.helpers import json_envelope, output_error, program_name
 from lattice.cli.main import cli
 from lattice.core.errors import OpError
 from lattice.storage.fs import BINDING_FILE, LATTICE_DIR
@@ -30,7 +30,7 @@ _HEADER_RE = re.compile(r"^([!#$%&'*+.^_`|~0-9A-Za-z-]+)=([A-Za-z_][A-Za-z0-9_]*
 _OP_ID_RE = re.compile(r"^op_[0-9A-HJKMNP-TV-Z]{26}$")
 _IGNORE_LINE = "/.lattice/"
 _IGNORE_EQUIVALENTS = {".lattice", ".lattice/", "/.lattice", "/.lattice/"}
-REFRESH_COMMANDS = ("lattice setup-claude --force", "lattice setup-claude-skill --force")
+REFRESH_COMMANDS = ("setup-claude --force", "setup-claude-skill --force")
 
 
 def _emit(is_json: bool, data: dict, lines: list[str]) -> None:
@@ -256,7 +256,7 @@ def remote_attach(alias: str, project: str, output_json: bool) -> None:
     if cached is not None and cached != (alias, project):
         output_error(
             f"{primary} holds a cache of {cached[0]}/{cached[1]}. To rebind it to "
-            f"{alias}/{project}, run 'lattice cache clear --forget' first.",
+            f"{alias}/{project}, run '{program_name()} cache clear --forget' first.",
             "BINDING_CONFLICT",
             is_json,
         )
@@ -276,7 +276,7 @@ def remote_attach(alias: str, project: str, output_json: bool) -> None:
     if outcome.kind not in ("applied", "unchanged"):
         output_error(
             f"bound {primary} to {alias}/{project}, but the first sync did not complete "
-            f"({outcome.kind}: {outcome.detail or 'no detail'}); run 'lattice sync' to retry.",
+            f"({outcome.kind}: {outcome.detail or 'no detail'}); run '{program_name()} sync' to retry.",
             "SERVER_UNREACHABLE",
             is_json,
         )
@@ -284,6 +284,7 @@ def remote_attach(alias: str, project: str, output_json: bool) -> None:
     session.refresh_server_info(hosted, force=True)
 
     to_commit = [BINDING_FILE] + ([".gitignore"] if changed_gitignore else [])
+    refresh = [f"{program_name()} {command}" for command in REFRESH_COMMANDS]
     lines = [
         f"Attached {primary} to {alias}/{project} (cache at seq {outcome.head_seq}).",
         # The files live in the primary checkout, which may not be the cwd (a
@@ -293,7 +294,7 @@ def remote_attach(alias: str, project: str, output_json: bool) -> None:
         f"{shlex.quote(f'Bind the board to {alias}/{project}')}",
         "Refresh agent instructions installed before v2 (they tell agents to write plan "
         "files directly, which a cache refuses):",
-        *(f"  {command}" for command in REFRESH_COMMANDS),
+        *(f"  {command}" for command in refresh),
     ]
     _emit(
         is_json,
@@ -303,7 +304,7 @@ def remote_attach(alias: str, project: str, output_json: bool) -> None:
             "project": project,
             "head_seq": outcome.head_seq,
             "commit": to_commit,
-            "refresh_commands": list(REFRESH_COMMANDS),
+            "refresh_commands": refresh,
         },
         lines,
     )
@@ -329,7 +330,7 @@ def _hosted_or_exit(is_json: bool):  # noqa: ANN202 - Hosted
     if hosted is None:
         output_error(
             "This checkout is not bound to a Lattice server. Bind it with "
-            "'lattice remote attach <alias> <project>'.",
+            f"'{program_name()} remote attach <alias> <project>'.",
             "NOT_HOSTED",
             is_json,
         )
@@ -467,7 +468,7 @@ def remote_op_status(op_id: str, output_json: bool) -> None:
         # Never advise a rerun here: the pending write can still commit (SPEC §9.2).
         line = (
             f"{op_id}: in flight. The server is still applying this write; check again "
-            f"in a moment with: lattice remote op-status {op_id}"
+            f"in a moment with: {program_name()} remote op-status {op_id}"
         )
     else:
         line = (

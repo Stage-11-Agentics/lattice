@@ -214,7 +214,7 @@ lattice show DEMO-1
 lattice remote status
 ```
 
-`show` prints, for each event, who wrote it and from where: `actor · user@machine · worktree (branch)`. On a hosted board, user and machine come from the token.
+`show` prints, for each event, who wrote it and from where: `actor · user@machine · worktree (branch)`. On a hosted board, user and machine come from the token; when the token's user is not the actor, the line reads `actor · via token user@machine · worktree (branch)`.
 
 The write went to the server; your `.lattice/` holds a read-only copy:
 
@@ -645,7 +645,7 @@ Everything you and your agents do locally works the same: `create`, `status`, `c
   ```
 
   `context write` and `board write` take no `--actor`; on a server they are attributed to your token's default actor (the person for a person token, the seat's actor for a seat token), with the token's user and machine in `origin.authenticated`. `lattice board write` writes files under `orchestration/` (an orchestrator's run-state and working files) and loose files directly under `plans/` or `notes/`. There is no remove; overwrite instead. If an edit gets into the cache anyway (after a `chmod`, or as root), the next command moves it to `.lattice/cache/rescued/<time>/` and says so. It is never silently discarded; write it back with `lattice plan write`.
-- **Who acted, and whose token.** `lattice remote status` shows the token's person and machine (for example `human:alice on laptop`). Agents still pass `--actor agent:<id>`. Every event records both: the actor, and the token's user and machine in `origin.authenticated`. `lattice show <task>` prints `actor · user@machine · worktree (branch)` per event; `lattice show <task> --full` and `--json` include the whole origin.
+- **Who acted, and whose token.** `lattice remote status` shows the token's person and machine (for example `human:alice on laptop`). Agents still pass `--actor agent:<id>`. Every event records both: the actor, and the token's user and machine in `origin.authenticated`. `lattice show <task>` prints `actor · user@machine · worktree (branch)` per event (`actor · via token user@machine · …` when the token's user is not the actor); `lattice show <task> --full` and `--json` include the whole origin.
 - **Linked worktrees** of a bound clone hold only `.lattice-remote.json`; the read-only mirror is the primary checkout's `.lattice/`, and every worktree uses it.
 - **Finishing without a PR.** For work not merged through a pull request, go `review -> done` with `lattice complete`, not through `pr_open`, and say in the completion review how the work was integrated (commit SHA and branch, or where the change lives).
 - **`--actor` is optional.** Without it, the server acts as your token's one actor pattern without a wildcard: the person for a person token (`human:alice`, beside `agent:*`), the seat's actor for a seat token. Agents should still pass their own `--actor agent:<id>`, so the board shows which agent did what.

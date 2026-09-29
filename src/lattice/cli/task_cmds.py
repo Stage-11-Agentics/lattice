@@ -276,15 +276,18 @@ def compute_next_steps(
 
     from lattice.core.auto_review import format_skip_reason
 
+    from lattice.cli.helpers import program_name
+
     lattice_dir = Path(lattice_dir)
     label = display_id or task_id
+    prog = program_name()
 
     if new_status == "in_planning":
         hint = f"Next: write the plan in plans/{task_id}.md, then move to planned."
         if (lattice_dir / "cache" / "state.json").exists():
             # A hosted cache is read-only: plans go through the server (SPEC §3.9).
             hint = (
-                f"Next: write the plan with 'lattice plan write {label} --file <path>', "
+                f"Next: write the plan with '{prog} plan write {label} --file <path>', "
                 "then move to planned."
             )
         return hint, {
@@ -299,7 +302,7 @@ def compute_next_steps(
             hint = (
                 f"Auto-firing plan-review (pid {auto_review_result['pid']}, "
                 f"plan_review_mode: {auto_review_result['mode']}). "
-                f"Tail: lattice review-status {label}."
+                f"Tail: {prog} review-status {label}."
             )
             return hint, {
                 "action": "plan_review_auto_fired",
@@ -310,7 +313,7 @@ def compute_next_steps(
             }
         if plan_review_mode != "inline":
             hint = (
-                f"Next: run 'lattice plan-review {label}' "
+                f"Next: run '{prog} plan-review {label}' "
                 f"(plan_review_mode: {plan_review_mode}) before moving to in_progress."
             )
             if auto_review_result and not auto_review_result.get("fired"):
@@ -319,12 +322,13 @@ def compute_next_steps(
                     + format_skip_reason(
                         auto_review_result.get("reason", "unknown"),
                         holder_pid=auto_review_result.get("holder_pid"),
+                        program=prog,
                     )
                     + ")"
                 )
             return hint, {
                 "action": "plan_review",
-                "command": f"lattice plan-review {label}",
+                "command": f"{prog} plan-review {label}",
                 "plan_review_mode": plan_review_mode,
                 "then": "in_progress",
             }
@@ -340,7 +344,7 @@ def compute_next_steps(
             hint = (
                 f"Auto-firing code-review (pid {auto_review_result['pid']}, "
                 f"review_mode: {auto_review_result['mode']}). "
-                f"Tail: lattice review-status {label}."
+                f"Tail: {prog} review-status {label}."
             )
             return hint, {
                 "action": "code_review_auto_fired",
@@ -350,7 +354,7 @@ def compute_next_steps(
                 "then": "in_validation",
             }
         hint = (
-            f"Next: run 'lattice code-review {label}' "
+            f"Next: run '{prog} code-review {label}' "
             f"(review_mode: {review_mode}) before moving to in_validation."
         )
         if auto_review_result and not auto_review_result.get("fired"):
@@ -359,12 +363,13 @@ def compute_next_steps(
                 + format_skip_reason(
                     auto_review_result.get("reason", "unknown"),
                     holder_pid=auto_review_result.get("holder_pid"),
+                    program=prog,
                 )
                 + ")"
             )
         return hint, {
             "action": "code_review",
-            "command": f"lattice code-review {label}",
+            "command": f"{prog} code-review {label}",
             "review_mode": review_mode,
             "then": "in_validation",
         }
@@ -374,14 +379,14 @@ def compute_next_steps(
             "Next: validate end-to-end against a running system — browser "
             "automation for web, simulator MCP for mobile, curl for APIs. "
             "Exercise the actual flow this task touched, then record evidence: "
-            f"lattice attach {label} --role validation (or lattice comment "
+            f"{prog} attach {label} --role validation (or {prog} comment "
             f"{label} --role validation). On pass move to pr_open; on fail "
             "route back to in_progress (impl-level) or in_planning (plan-level). "
             "The bar: 'I saw it work,' not 'I think it should work.'"
         )
         return hint, {
             "action": "validate_e2e",
-            "evidence": f"lattice attach {label} --role validation",
+            "evidence": f"{prog} attach {label} --role validation",
             "then": "pr_open",
         }
 

@@ -147,6 +147,20 @@ def test_a_spawn_older_than_the_timeout_reads_as_failed(
             "code-review: spawned on a, no artifact after 600 s; treat as failed" in plain.stdout
         )
         assert "Re-run with:  lattice code-review" in plain.stdout
+        # Under an alias the hint names the alias (LAT-357).
+        import os
+
+        from click.testing import CliRunner
+
+        from lattice.cli.main import cli
+
+        previous = Path.cwd()
+        os.chdir(b)
+        try:
+            aliased = CliRunner().invoke(cli, ["review-status", "DEM-1"], prog_name="lattice-v2")
+        finally:
+            os.chdir(previous)
+        assert "Re-run with:  lattice-v2 code-review task_" in aliased.stdout
         data = json.loads(run_cli(b, "review-status", "DEM-1", "--json").stdout)["data"]
         assert data["status"] == "failed"
         assert data["gates"][0]["status"] == "failed"

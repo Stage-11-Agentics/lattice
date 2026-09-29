@@ -16,6 +16,7 @@ from lattice.cli.helpers import (
     common_options,
     load_project_config,
     output_error,
+    program_name,
     read_snapshot_or_exit,
     require_actor,
     require_root,
@@ -242,7 +243,7 @@ def _claim_or_refuse(
         f"A review is already in flight for this task "
         f"(pid {holder_pid}, started {holder_started}, "
         f"auto_fired={holder_auto}).  "
-        f"Use 'lattice review-status {task_id}' to monitor, "
+        f"Use '{program_name()} review-status {task_id}' to monitor, "
         f"or wait for it to complete."
         f"{log_hint}"
     )
@@ -316,7 +317,7 @@ def _refuse_if_in_flight_on_board(
         if not is_own_spawn(events, gate, triggered_by):
             output_error(
                 f"A {review_type} of this task is already in flight: {gate.message()}. "
-                f"Use 'lattice review-status {task_id}' to monitor, or pass --force to "
+                f"Use '{program_name()} review-status {task_id}' to monitor, or pass --force to "
                 "run another.",
                 "REVIEW_IN_FLIGHT",
                 is_json,
@@ -833,7 +834,7 @@ def _echo_review_failure(
         click.echo(f"  duration:     {duration}s")
     if stderr_tail:
         click.echo(f"  stderr tail:  {stderr_tail}")
-    click.echo(f"  Re-run with:  lattice {review_type} {task_id}")
+    click.echo(f"  Re-run with:  {program_name()} {review_type} {task_id}")
 
 
 @cli.command("review-status")
@@ -1003,7 +1004,7 @@ def _report_board_gates(lattice_dir: Path, task_id: str, is_json: bool) -> bool:
     for gate in remote:
         click.echo(f"  {gate.review_type}: {gate.message()}")
         if gate.state == FAILED:
-            click.echo(f"  Re-run with:  lattice {gate.review_type} {task_id}")
+            click.echo(f"  Re-run with:  {program_name()} {gate.review_type} {task_id}")
     return True
 
 

@@ -14,6 +14,8 @@ checked before anything is read, and a file is read only once they pass.
 
 from __future__ import annotations
 
+import os
+import stat
 from pathlib import Path
 
 import click
@@ -23,6 +25,7 @@ from lattice.cli.helpers import (
     json_envelope,
     output_error,
     output_result,
+    program_name,
     require_root,
     resolve_task_id,
 )
@@ -57,6 +60,22 @@ def _read_content(file_path: str | None, use_stdin: bool, is_json: bool, what: s
         return {source: data.decode("utf-8")}
     except UnicodeDecodeError:
         output_error(f"{label} is not UTF-8 text.", "VALIDATION_ERROR", is_json)
+
+
+def _stdin_has_input() -> bool:
+    """Whether standard input is a pipe or a regular file (implicit ``--stdin``).
+
+    A terminal, ``/dev/null`` and other character devices are not: a command
+    run with neither ``--file`` nor ``--stdin`` there keeps refusing rather
+    than waiting on the keyboard or writing an empty file. A stream with no
+    file descriptor (Click's test runner) or no stream at all (fd 0 closed)
+    is not either.
+    """
+    try:
+        mode = os.fstat(click.get_binary_stream("stdin").fileno()).st_mode
+    except (AttributeError, OSError, RuntimeError, ValueError):
+        return False
+    return stat.S_ISFIFO(mode) or stat.S_ISREG(mode)
 
 
 def _content_options(f):  # noqa: ANN001, ANN202
@@ -138,6 +157,9 @@ def plan() -> None:
     """Show a task's plan (lattice plan TASK_ID [--json]) or write it (plan write)."""
 
 
+plan.add_command(_plan_read, "show")
+
+
 @cli.group()
 def notes() -> None:
     """Write a task's notes."""
@@ -155,9 +177,24 @@ def _prose_write(
 ) -> None:
     from lattice.ops.prose_common import check_content_sources, check_expect_sha256
 
+    implicit = file_path is None and not use_stdin
+    if implicit and not _stdin_has_input():
+        output_error(
+            f"Provide the {kind} as --file PATH or --stdin, for example: "
+            f"{program_name()} {kind} write {task_id} --stdin < {kind}.md",
+            "VALIDATION_ERROR",
+            is_json,
+        )
+    use_stdin = use_stdin or implicit
     check_or_exit(is_json, check_content_sources, file_path is not None, use_stdin, f"the {kind}")
     check_or_exit(is_json, check_expect_sha256, expect_sha256)
     content = _read_content(file_path, use_stdin, is_json, f"the {kind}")
+    if implicit and not content["stdin"]:
+        output_error(
+            "Standard input was empty; nothing was written.",
+            "VALIDATION_ERROR",
+            is_json,
+        )
     result = run_operation(
         f"task.{kind}_write",
         {"task": task_id, "expect_sha256": expect_sha256, **content, **provenance},
