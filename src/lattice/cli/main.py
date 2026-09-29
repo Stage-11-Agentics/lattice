@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import sys
 from pathlib import Path
 from typing import NoReturn
@@ -259,6 +260,21 @@ class _LatticeGroup(click.Group):
     def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
         ctx.meta["lattice.argv"] = tuple(args)
         return super().parse_args(ctx, args)
+
+    def get_command(self, ctx: click.Context, cmd_name: str) -> click.Command | None:
+        # Import only the module that registers *cmd_name* (COMMAND_MODULES);
+        # a name the index does not know imports every module first.
+        if cmd_name not in self.commands:
+            module = COMMAND_MODULES.get(cmd_name)
+            if module is not None:
+                importlib.import_module(f"lattice.cli.{module}")
+            if cmd_name not in self.commands:
+                load_all_commands()
+        return super().get_command(ctx, cmd_name)
+
+    def list_commands(self, ctx: click.Context) -> list[str]:
+        load_all_commands()
+        return super().list_commands(ctx)
 
     def invoke(self, ctx: click.Context):  # noqa: ANN201
         try:
@@ -1560,8 +1576,9 @@ def plugins_cmd(as_json: bool) -> None:
 def command_module_names() -> list[str]:
     """Every ``*_cmds`` / ``*_cmd`` module in ``lattice.cli``, sorted by name.
 
-    Adding a command module edits no shared file. Sorted import order keeps
-    registration deterministic; ``tests/test_cli/test_discovery.py`` freezes the set.
+    Sorted import order keeps registration deterministic;
+    ``tests/test_cli/test_discovery.py`` freezes the set. A new command also
+    gets a line in ``COMMAND_MODULES`` (the test says which).
     """
     import pkgutil
 
@@ -1574,21 +1591,93 @@ def command_module_names() -> list[str]:
     )
 
 
-def _register_command_modules() -> None:
-    import importlib
+# Command name -> the module in ``lattice.cli`` that registers it. A command
+# imports only its own module at start-up, not all of them (LAT-359: ~15 ms per
+# command). A name missing here still resolves, through ``load_all_commands``;
+# ``tests/test_cli/test_discovery.py`` checks this index against the modules.
+COMMAND_MODULES: dict[str, str] = {
+    "archive": "archive_cmds",
+    "assign": "task_cmds",
+    "attach": "artifact_cmds",
+    "backfill-ids": "migration_cmds",
+    "board": "prose_cmds",
+    "branch-link": "link_cmds",
+    "branch-unlink": "link_cmds",
+    "cache": "cache_cmds",
+    "claim": "claim_cmd",
+    "code-review": "review_cmds",
+    "comment": "task_cmds",
+    "comment-delete": "task_cmds",
+    "comment-edit": "task_cmds",
+    "comments": "query_cmds",
+    "complete": "task_cmds",
+    "context": "prose_cmds",
+    "create": "task_cmds",
+    "criterion": "criterion_cmds",
+    "dashboard": "dashboard_cmd",
+    "demo": "demo_cmd",
+    "doctor": "integrity_cmds",
+    "edit-description": "task_cmds",
+    "erase": "erase_cmds",
+    "event": "query_cmds",
+    "explain": "file_cmds",
+    "file-link": "file_cmds",
+    "file-unlink": "file_cmds",
+    "link": "link_cmds",
+    "list": "query_cmds",
+    "migrate": "migration_cmds",
+    "needs-human": "flag_cmds",
+    "next": "query_cmds",
+    "notes": "prose_cmds",
+    "plan": "prose_cmds",
+    "plan-review": "review_cmds",
+    "react": "task_cmds",
+    "rebuild": "integrity_cmds",
+    "remote": "remote_cmds",
+    "resource": "resource_cmds",
+    "restart": "dashboard_cmd",
+    "review-status": "review_cmds",
+    "server": "server_cmds",
+    "session": "session_cmds",
+    "show": "query_cmds",
+    "stats": "stats_cmds",
+    "status": "task_cmds",
+    "sync": "sync_cmd",
+    "unarchive": "archive_cmds",
+    "unclaim": "claim_cmd",
+    "unerase": "erase_cmds",
+    "unlink": "link_cmds",
+    "unreact": "task_cmds",
+    "update": "task_cmds",
+    "wait": "wait_cmd",
+    "watch": "watch_cmd",
+    "weather": "weather_cmds",
+}
 
+_all_commands_loaded = False
+
+
+def load_all_commands() -> None:
+    """Import every command module, registering every built-in command."""
+    global _all_commands_loaded
+    if _all_commands_loaded:
+        return
     for name in command_module_names():
         importlib.import_module(f"lattice.cli.{name}")
+    _all_commands_loaded = True
 
-
-_register_command_modules()
 
 # ---------------------------------------------------------------------------
-# Load CLI plugins (must be after all built-in commands are registered)
+# Load CLI plugins (after every built-in command is registered, so a plugin
+# sees the whole group and its commands win a name clash). With no plugin
+# installed, command modules stay unimported until a command needs one.
 # ---------------------------------------------------------------------------
+from lattice.plugins import discover_cli_plugins as _discover_cli_plugins  # noqa: E402
 from lattice.plugins import load_cli_plugins as _load_cli_plugins  # noqa: E402
 
-_load_cli_plugins(cli)
+if _discover_cli_plugins():
+    load_all_commands()
+    _load_cli_plugins(cli)
 
 if __name__ == "__main__":
     cli()
