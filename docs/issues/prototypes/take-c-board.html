@@ -1,0 +1,1046 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Board with issues (Take C)</title>
+<link rel="stylesheet" href="shared/shell.css">
+<style>
+/* Take C: issues live on the Board. A rail of loose issues at the left; cards carry their issues. */
+:root{--nav-h:3rem;--rail-w:22rem;--rail-w-min:3rem;--col-min-w:300px;--dp-w:31rem;
+  --proto:#C084FC;--proto-bg:#3B0764;--proto-text:#F3E8FF}
+body{overflow:hidden}
+.page{display:flex;height:calc(100vh - var(--nav-h) - var(--proto-bar-h));min-height:0}
+
+/* ---------- Rail ---------- */
+.rail{flex:none;width:var(--rail-w);background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;min-height:0;
+  transition:width .18s ease;overflow:hidden;position:relative}
+.rail.collapsed{width:var(--rail-w-min)}
+.rail-inner{width:var(--rail-w);display:flex;flex-direction:column;min-height:0;flex:1}
+.rail.collapsed .rail-inner{visibility:hidden}
+.rail-strip{position:absolute;inset:0;width:var(--rail-w-min);display:none;flex-direction:column;align-items:center;gap:.625rem;padding-top:.5rem;cursor:pointer;background:var(--surface)}
+.rail.collapsed .rail-strip{display:flex}
+.rail-strip:hover{background:var(--surface-hover)}
+.rail-strip .strip-count{font-size:1.05rem;font-weight:700;color:var(--st-open);width:2.5rem;text-align:center}
+.rail-strip .strip-count.zero{color:var(--st-resolved)}
+.rail-strip .strip-label{writing-mode:vertical-rl;transform:rotate(180deg);font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;color:var(--text-secondary);font-weight:700}
+
+.rail-head{display:flex;align-items:center;gap:.5rem;padding:.5rem .625rem .5rem .75rem;border-bottom:1px solid var(--border);height:3.25rem;flex:none}
+.rail-title{font-size:.78rem;text-transform:uppercase;letter-spacing:.1em;font-weight:700;color:var(--text-primary);white-space:nowrap}
+.rail-title .sub{display:block;font-size:.68rem;letter-spacing:.02em;text-transform:none;font-weight:400;color:var(--text-muted)}
+.rail-count{margin-left:auto;min-width:3rem;text-align:right;font-size:1.5rem;font-weight:700;color:var(--st-open);line-height:1}
+.rail-count.zero{color:var(--st-resolved)}
+.icon-btn{width:1.9rem;height:1.9rem;flex:none;display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--border);border-radius:var(--radius-sm);
+  background:var(--surface);color:var(--text-secondary);cursor:pointer;font-size:.9rem;padding:0}
+.icon-btn:hover{background:var(--surface-hover);color:var(--text-primary)}
+
+.selbar{flex:none;height:5.25rem;border-bottom:1px solid var(--border);padding:.4rem .75rem;font-size:.72rem;color:var(--text-muted);display:flex;flex-direction:column;justify-content:center;gap:.25rem}
+.selbar .row{display:flex;align-items:center;gap:.3rem;white-space:nowrap}
+.selbar .n{color:var(--text-primary);font-weight:700;width:7.5rem;white-space:nowrap}
+.selbar .btn-sm{width:6.75rem;text-align:center}
+.selbar .btn-clear{width:4rem}
+.selbar kbd{font-size:.68rem;min-width:1.2rem;padding:0 .25rem}
+
+.rail-list{flex:1;overflow-y:auto;min-height:0;padding:.375rem 0}
+.ri{position:relative;display:flex;gap:.5rem;padding:.5rem .75rem .55rem .5rem;border-left:3px solid transparent;cursor:pointer;outline:none;border-bottom:1px solid var(--border-row)}
+.ri:hover{background:var(--surface-hover)}
+.ri.cursor{border-left-color:var(--accent-primary);background:var(--surface-raised)}
+.ri.cursor:focus-visible,.ri:focus-visible{box-shadow:inset 0 0 0 1px var(--accent-primary)}
+.ri.sel{background:var(--st-open-bg)}
+.ri.sel.cursor{background:rgba(245,158,11,.2)}
+.ri.in-panel .ri-text{color:#fff}
+.ri.dragging{opacity:.4}
+.ri-check{flex:none;width:1.05rem;height:1.05rem;margin-top:.15rem;border:1px solid var(--text-muted);border-radius:2px;background:transparent;cursor:pointer;padding:0;
+  display:inline-flex;align-items:center;justify-content:center;color:#1a1a1a;font-size:.72rem;font-weight:900;line-height:1}
+.ri-check[aria-checked=true]{background:var(--st-open);border-color:var(--st-open)}
+.ri-check[aria-checked=true]::after{content:"\2713"}
+.ri-main{flex:1;min-width:0}
+.ri-top{display:flex;align-items:center;gap:.5rem;font-size:.75rem;height:1.15rem}
+.ri-top .iid{color:var(--st-open)}
+.ri-when{margin-left:auto;color:var(--text-muted);white-space:nowrap}
+.ri-text{font-size:.86rem;line-height:1.4;color:var(--text-primary);margin:.15rem 0 .25rem;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word}
+.ri-meta{display:flex;align-items:center;gap:.5rem;font-size:.72rem;color:var(--text-muted);height:1.2rem;overflow:hidden;white-space:nowrap}
+.ri-meta .actor{max-width:14rem;overflow:hidden;text-overflow:ellipsis;flex:none}
+.ri-note{font-size:.72rem;color:var(--text-secondary);margin-top:.2rem}
+.ri-note .tid{font-size:.72rem}
+.grip{position:absolute;right:.35rem;top:50%;transform:translateY(-50%);color:var(--text-muted);opacity:0;font-size:.8rem;letter-spacing:-2px;pointer-events:none}
+.ri:hover .grip{opacity:.55}
+
+.rail-empty{padding:2.5rem 1.25rem;text-align:center;color:var(--text-secondary);font-size:.86rem;line-height:1.55}
+.rail-empty .mark{display:inline-flex;width:2.75rem;height:2.75rem;border-radius:50%;align-items:center;justify-content:center;border:1px solid var(--st-resolved-border);
+  color:var(--st-resolved);background:var(--st-resolved-bg);font-size:1.2rem;margin-bottom:.75rem}
+.rail-empty strong{display:block;color:var(--text-primary);font-size:.95rem;margin-bottom:.35rem}
+
+.rail-foot{flex:none;border-top:1px solid var(--border);padding:.45rem .75rem;display:flex;align-items:center;gap:.5rem;font-size:.76rem;color:var(--text-muted);height:2.6rem}
+.rail-foot b{color:var(--text-secondary);display:inline-block;min-width:1.5rem}
+.rail-foot .btn-sm{margin-left:auto;width:7.5rem;text-align:center;color:var(--text-secondary);background:transparent}
+.rail-foot .btn-sm.on{background:var(--surface-hover);color:var(--text-primary);border-color:#555}
+
+/* ---------- Board (reproduces the real carbon board) ---------- */
+.board-area{flex:1;min-width:0;overflow:auto;padding:1rem;position:relative}
+.board{display:grid;gap:.75rem;align-items:start;grid-auto-flow:column;width:max-content;padding-bottom:1rem}
+.board-col{background:#1E1E1E;border:1px solid #333;border-radius:3px;position:relative;transition:box-shadow .15s,border-color .15s}
+.board-col-header{padding:6px 10px;font-size:.78rem;text-transform:uppercase;letter-spacing:.1em;font-weight:700;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;
+  border-radius:3px 3px 0 0;position:relative;overflow:hidden;color:#fff;height:2rem}
+.board-col-header>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.board-col-header .count{font-weight:400;color:rgba(255,255,255,.75);font-size:.75rem;flex-shrink:0;margin-left:.25rem;letter-spacing:0}
+.board-col-toolbar{padding:.25rem .375rem;border-bottom:1px solid var(--border);display:flex}
+.lane-sort{width:100%;background:transparent;color:var(--text-muted);border:1px solid transparent;border-radius:var(--radius-sm);font-family:inherit;font-size:.7rem;padding:.125rem .25rem}
+.board-col-body{padding:.5rem}
+.board-col.empty-col .board-col-header{padding:.5rem;font-size:.7rem;justify-content:flex-start}
+.board-col.empty-col .board-col-header .count{display:none}
+.lane-empty{color:var(--text-muted);font-size:.75rem;padding:8px;text-align:center}
+
+.card{position:relative;background:#1C1C1C;border:1px solid #2A2A2A;border-radius:2px;padding:6px 8px;margin-bottom:4px;cursor:pointer;font-size:.85rem;transition:box-shadow .15s,border-color .15s;outline:none}
+.card:hover{box-shadow:0 1px 6px rgba(0,0,0,.4);border-color:#EA580C}
+.card:focus-visible{border-color:#EA580C;box-shadow:0 0 0 2px var(--accent-glow)}
+.card.open-in-panel{border-color:#EA580C;box-shadow:inset 3px 0 0 #EA580C}
+.card-id{font-size:.7rem;font-weight:600;color:var(--accent-primary);height:1.2rem;display:flex;align-items:center;gap:.375rem}
+.card-new{font-size:.62rem;font-weight:700;letter-spacing:.06em;color:var(--text-muted);text-transform:uppercase}
+.card-title{font-weight:600;margin-bottom:2px;word-break:break-word;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;line-height:1.4}
+.card-meta{display:flex;gap:.375rem;flex-wrap:wrap;align-items:center;margin-top:3px}
+.card-meta .badge{font-size:.66rem;padding:.0625em .375em;text-transform:uppercase;letter-spacing:.04em;border-radius:2px}
+.pri-critical{background:var(--pri-critical-bg);color:#fff}.pri-high{background:var(--pri-high-bg);color:#fff}
+.pri-medium{background:var(--pri-medium-bg);color:#fff}.pri-low{background:var(--pri-low-bg);color:#fff}
+.type-badge{background:var(--surface-raised);color:var(--text-secondary)}
+.actor-chip{display:inline-flex;align-items:center;max-width:10.75em;min-width:0;padding:.0625em .4em;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface-raised);color:var(--text-secondary);font-size:.72rem}
+.actor-chip span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.actor-unassigned{font-size:.72rem;color:var(--text-muted);font-style:italic}
+
+/* The issue marker: fixed top-right slot on the ID row. Quiet until you look for it. */
+.imark{position:absolute;top:5px;right:6px;height:1.2rem;min-width:2.6rem;padding:0 .375rem;display:inline-flex;align-items:center;justify-content:center;gap:.3rem;
+  border:1px solid #3a3a3a;border-radius:10px;background:transparent;color:var(--text-muted);font-size:.7rem;font-weight:600;cursor:pointer;font-family:inherit;line-height:1}
+.imark svg{width:9px;height:9px;flex:none}
+.card:hover .imark{color:var(--text-secondary);border-color:#4a4a4a}
+.imark:hover,.imark:focus-visible{color:var(--st-linked);border-color:var(--st-linked-border);background:var(--st-linked-bg);outline:none}
+.imark.all-done{color:#5f8f6d}
+@keyframes flashring{0%{box-shadow:0 0 0 2px var(--st-open)}100%{box-shadow:0 0 0 2px rgba(245,158,11,0)}}
+.card.flash{animation:flashring 1.6s ease-out 1}
+.card.flash .imark{color:var(--st-open);border-color:var(--st-open-border)}
+
+/* Drag and drop */
+.drop-label{position:absolute;right:6px;bottom:5px;display:none;font-size:.7rem;font-weight:700;color:#1a1a1a;background:var(--st-open);padding:0 .4rem;border-radius:2px;pointer-events:none}
+body.dnd .card{border-style:dashed;border-color:rgba(245,158,11,.35)}
+body.dnd .card.drop-hover{border-style:solid;border-color:var(--st-open);background:#231d12;box-shadow:0 0 0 1px var(--st-open)}
+body.dnd .card.drop-hover .drop-label{display:block}
+.newstory-hint{position:absolute;inset:0;display:none;align-items:center;justify-content:center;background:rgba(245,158,11,.92);color:#1a1a1a;font-size:.72rem;letter-spacing:.08em;pointer-events:none}
+body.dnd .status-backlog .newstory-hint{display:flex;background:rgba(245,158,11,.55)}
+body.dnd .status-backlog.drop-hover .newstory-hint{background:var(--st-open)}
+.newstory-slot{display:none}
+body.dnd .status-backlog .newstory-slot{display:flex;align-items:center;justify-content:center;text-align:center;height:6.5rem;border:1px dashed var(--st-open-border);border-radius:2px;
+  color:var(--st-open);font-size:.8rem;padding:.5rem;margin-top:.25rem}
+body.dnd .status-backlog.drop-hover .newstory-slot{background:var(--st-open-bg);border-style:solid;border-color:var(--st-open)}
+body.dnd .status-backlog{border-color:var(--st-open-border)}
+body.dnd .status-backlog.drop-hover{border-color:var(--st-open);box-shadow:0 0 0 2px rgba(245,158,11,.25)}
+.drag-ghost{position:fixed;top:-100px;left:-400px;padding:.3rem .6rem;background:var(--st-open);color:#1a1a1a;font-weight:700;font-size:.8rem;border-radius:3px;font-family:var(--font-mono)}
+
+/* Marker preview popover */
+.ipop{position:fixed;z-index:35;width:27rem;max-width:calc(100vw - 1rem);background:var(--surface-raised);border:1px solid #444;border-radius:var(--radius-md);box-shadow:var(--shadow-modal);font-size:.82rem;display:none}
+.ipop.show{display:block}
+.ipop-head{padding:.4rem .7rem;border-bottom:1px solid var(--border);color:var(--text-secondary);font-size:.74rem;display:flex;gap:.5rem}
+.ipop-head .tid{font-size:.74rem}
+.ipop-row{padding:.45rem .7rem;border-bottom:1px solid var(--border-row)}
+.ipop-row:last-of-type{border-bottom:0}
+.ipop-row .top{display:flex;align-items:center;gap:.5rem;margin-bottom:.15rem;font-size:.74rem}
+.ipop-row .top .rel{margin-left:auto;color:var(--text-muted)}
+.ipop-row .txt{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;line-height:1.4;color:var(--text-primary)}
+.ipop-foot{padding:.35rem .7rem;border-top:1px solid var(--border);color:var(--text-muted);font-size:.72rem}
+
+/* ---------- Detail panel (as the real one: slides in from the right, board stays interactive) ---------- */
+.detail-panel{position:fixed;top:var(--nav-h);right:0;bottom:var(--proto-bar-h);width:var(--dp-w);max-width:92vw;background:var(--surface);border-left:1px solid var(--border);
+  box-shadow:-4px 0 24px rgba(0,0,0,.45);z-index:30;transform:translateX(105%);transition:transform .22s ease;overflow-y:auto}
+.detail-panel.open{transform:translateX(0)}
+.dp-header{display:flex;align-items:center;gap:.5rem;padding:.75rem 1rem .75rem 1.25rem;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface);z-index:2;min-height:3.4rem}
+.dp-header h2{font-size:.98rem;font-weight:700;margin:0;flex:1;min-width:0;display:flex;align-items:center;gap:.5rem;overflow:hidden}
+.dp-header h2 .ttl{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dp-close{background:none;border:none;font-size:26px;line-height:1;cursor:pointer;color:var(--text-secondary);padding:.25rem .6rem;border-radius:var(--radius-sm)}
+.dp-close:hover{color:var(--text-primary);background:var(--surface-hover)}
+.dp-body{padding:1rem 1.25rem 2rem}
+.dp-back{display:inline-block;font-size:.78rem;color:var(--text-secondary);cursor:pointer;margin-bottom:.75rem;border:0;background:none;padding:0;font-family:inherit}
+.dp-back:hover{color:var(--text-primary);text-decoration:underline}
+.dp-actions{display:flex;gap:.375rem;flex-wrap:wrap;margin-bottom:.875rem}
+.dp-actions select{font-size:.8rem;padding:.1875rem .375rem;background:var(--bg-base);color:var(--text-primary);border:1px solid var(--border);border-radius:2px;font-family:inherit}
+.dp-field{margin-bottom:.5rem}
+.dp-field dt{font-weight:600;font-size:.76rem;color:var(--text-muted);margin-bottom:1px}
+.dp-field dd{font-size:.86rem;color:var(--text-primary);margin:0}
+.dp-section{margin-top:.875rem;padding-top:.625rem;border-top:1px solid var(--border)}
+.dp-section h3{font-size:.86rem;font-weight:700;margin:0 0 .5rem;display:flex;align-items:center;gap:.5rem}
+.dp-section h3 .cnt{color:var(--text-muted);font-weight:400}
+.legacy{position:relative;border:1px dashed #3a3a3a;border-radius:var(--radius-sm);padding:1.35rem .75rem .5rem;margin:.25rem 0 .75rem;opacity:.82}
+.legacy-tag{position:absolute;top:.3rem;left:.6rem;font-size:.62rem;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted)}
+.legacy .dp-section:first-of-type{border-top:0;margin-top:0;padding-top:0}
+.legacy .placeholder{font-size:.82rem;color:var(--text-muted);font-style:italic}
+.new-tag{font-size:.6rem;letter-spacing:.12em;text-transform:uppercase;color:var(--st-open);border:1px solid var(--st-open-border);border-radius:2px;padding:0 .3rem;font-weight:700}
+.issues-sec{border-top:0;margin-top:.25rem;padding-top:0}
+
+.dpi{border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface-card);margin-bottom:.5rem}
+.dpi-top{display:flex;align-items:center;gap:.5rem;padding:.4rem .6rem;border-bottom:1px solid var(--border-row);font-size:.76rem}
+.dpi-top .rel{color:var(--text-muted)}
+.dpi-top .btn-sm{margin-left:auto}
+.dpi-body{padding:.5rem .6rem}
+.dpi-text{font-size:.88rem;line-height:1.5;white-space:pre-wrap;word-break:break-word}
+.dpi-meta{margin-top:.4rem;font-size:.74rem;color:var(--text-muted);display:flex;flex-wrap:wrap;gap:.25rem .75rem;align-items:center}
+.dpi-foot{display:flex;gap:.375rem;padding:.35rem .6rem;border-top:1px solid var(--border-row)}
+.dpi-foot .btn-sm{width:7.5rem;text-align:center}
+.linkbtn{background:none;border:0;color:var(--text-secondary);font-family:inherit;font-size:.76rem;cursor:pointer;padding:0}
+.linkbtn:hover{color:var(--text-primary);text-decoration:underline}
+.hist{list-style:none;margin:0;padding:.25rem .6rem .5rem;font-size:.76rem}
+.hist li{display:flex;gap:.5rem;padding:.15rem 0;color:var(--text-secondary);align-items:baseline}
+.hist .when{color:var(--text-muted);width:5.5rem;flex:none}
+.hist .what{flex:1;min-width:0;word-break:break-word}
+.hist .by{flex:none}
+.dp-empty{font-size:.84rem;color:var(--text-muted);padding:.75rem;border:1px dashed var(--border);border-radius:var(--radius-sm);line-height:1.5}
+
+.iss-text{font-size:1rem;line-height:1.55;white-space:pre-wrap;word-break:break-word;margin:0 0 .875rem}
+.iss-acts{display:grid;grid-template-columns:repeat(4,1fr);gap:.375rem;margin:.25rem 0 .5rem}
+.iss-acts .btn{min-width:0;padding:.25rem .3rem;font-size:.8rem;text-align:center;display:inline-flex;align-items:center;justify-content:center;gap:.3rem}
+.iss-acts .btn:only-child{grid-column:span 1}
+.iss-acts kbd{font-size:.66rem;min-width:1.1rem;padding:0 .2rem}
+.iss-acts .kbd-slot{display:inline-block;width:1.2rem}
+.closure{font-size:.84rem;padding:.55rem .7rem;border:1px solid var(--st-closed-border);background:var(--st-closed-bg);border-radius:var(--radius-sm);margin:.25rem 0 .6rem;line-height:1.5}
+.story-row{display:flex;align-items:center;gap:.5rem;padding:.4rem .5rem;border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:.375rem;background:var(--surface-card);font-size:.8rem}
+.story-row .ttl{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
+.story-row .ttl:hover{text-decoration:underline}
+.story-block{margin-bottom:.5rem}
+
+/* Prototype-only control: purple, so it cannot be mistaken for a designed feature */
+.proto-ctl{display:flex;align-items:center;gap:.5rem;background:var(--proto-bg);border:1px dashed var(--proto);color:var(--proto-text);font-size:.72rem;padding:.25rem .5rem;border-radius:var(--radius-sm);margin:.25rem 0 .5rem}
+.proto-ctl select{background:#1E0333;color:var(--proto-text);border:1px solid var(--proto);font-family:inherit;font-size:.72rem;border-radius:2px;padding:.05rem .25rem}
+
+.closed-row{border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface-card);margin-bottom:.45rem;padding:.45rem .6rem;cursor:pointer}
+.closed-row:hover{border-color:#555}
+.closed-row .top{display:flex;align-items:center;gap:.5rem;font-size:.76rem;margin-bottom:.2rem}
+.closed-row .top .btn-sm{margin-left:auto;width:5.5rem}
+.closed-row .txt{font-size:.84rem;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;color:var(--text-secondary)}
+.closed-row .why{font-size:.74rem;color:var(--text-muted);margin-top:.2rem}
+.intro{font-size:.82rem;color:var(--text-secondary);margin:0 0 .875rem;line-height:1.5}
+
+#selftest{display:none}
+</style>
+</head>
+<body>
+<div class="page" id="page">
+  <aside class="rail" id="rail" aria-label="Issues that need a story">
+    <div class="rail-strip" id="rail-strip" title="Show the issues rail ([)">
+      <button type="button" class="icon-btn" id="rail-expand" aria-label="Show the issues rail">&#187;</button>
+      <span class="strip-count" id="strip-count"></span>
+      <span class="strip-label">Needs a story</span>
+    </div>
+    <div class="rail-inner">
+      <div class="rail-head">
+        <div class="rail-title">Needs a story<span class="sub">Issues with no live story</span></div>
+        <span class="rail-count" id="rail-count"></span>
+        <button type="button" class="icon-btn" id="rail-collapse" title="Hide the rail ([)" aria-label="Hide the issues rail">&#171;</button>
+      </div>
+      <div class="selbar" id="selbar"></div>
+      <div class="rail-list" id="rail-list" role="listbox" aria-multiselectable="true"></div>
+      <div class="rail-foot" id="rail-foot"></div>
+    </div>
+  </aside>
+  <main class="board-area" id="board-area"><div class="board" id="board"></div></main>
+</div>
+<div class="detail-panel" id="dp" role="dialog" aria-label="Detail">
+  <div class="dp-header"><h2 id="dp-title"></h2><button type="button" class="dp-close" id="dp-close" aria-label="Close">&times;</button></div>
+  <div class="dp-body" id="dp-body"></div>
+</div>
+<div class="ipop" id="ipop" role="tooltip"></div>
+<pre id="selftest"></pre>
+
+<script src="shared/mock-data.js"></script>
+<script src="shared/store.js"></script>
+<script src="shared/shell.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  var S = window.IssueStore, F = Shell.fmt, esc = F.esc;
+  var params = new URLSearchParams(location.search);
+
+  Shell.mount({ active: "board", page: "c", hideIssuesTab: true, onTab: function (v) { return v === "board"; } });
+
+  var LANES = [["backlog", "Backlog"], ["in_planning", "In Planning"], ["planned", "Planned"], ["in_progress", "In Progress"],
+    ["review", "Review"], ["in_validation", "In Validation"], ["pr_open", "PR Open"], ["done", "Done"]];
+  // Carbon lane colours from the real dashboard. In Validation and PR Open have no carbon default there and fall back to #6c757d.
+  var LANE_COLOR = { backlog: "#404040", in_planning: "#0E7490", planned: "#0F766E", in_progress: "#2563EB", review: "#7C3AED",
+    in_validation: "#6c757d", pr_open: "#6c757d", done: "#16A34A" };
+  var PROTO_STATUSES = LANES.map(function (l) { return l[0]; }).concat(["cancelled"]);
+  var MARK_SVG = '<svg viewBox="0 0 10 10" aria-hidden="true"><circle cx="5" cy="5" r="3.6" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="5" cy="5" r="1.2" fill="currentColor"/></svg>';
+
+  var ui = {
+    collapsed: false,
+    cursorId: null, cursorIdx: 0,
+    selected: {},           // issue id -> true
+    panel: null,            // { kind: "story"|"issue"|"closed", id, from, focusIssues }
+    openHist: {},           // issue id -> true, history expanded inside the story panel
+    flashId: null, flashUntil: 0,
+    drag: null              // { ids: [] }
+  };
+  try { ui.collapsed = localStorage.getItem("takeC.railCollapsed") === "1"; } catch (e) { /* storage blocked */ }
+
+  var $ = function (id) { return document.getElementById(id); };
+  var rail = $("rail"), railList = $("rail-list"), boardArea = $("board-area"), boardEl = $("board"), dp = $("dp"), ipop = $("ipop");
+
+  // ---------- data helpers ----------
+  function openIssues() {
+    return S.issues().filter(function (i) { return S.state(i) === "open"; }).sort(function (a, b) { return b.seq - a.seq; });
+  }
+  function closedIssues() {
+    return S.issues().filter(function (i) { return !!i.closure; }).sort(function (a, b) { return a.closure.at < b.closure.at ? 1 : -1; });
+  }
+  function cancelledLinks(issue) {
+    return issue.links.filter(function (l) { var t = S.task(l.task_id); return t && t.status === "cancelled"; });
+  }
+  function selectedIds() {
+    return openIssues().map(function (i) { return i.id; }).filter(function (id) { return ui.selected[id]; });
+  }
+  function actorName(a) { return String(a || "").replace(/^(agent|human):/, ""); }
+  function plural(n, one, many) { return n + " " + (n === 1 ? one : (many || one + "s")); }
+  function laneName(st) {
+    for (var k = 0; k < LANES.length; k++) { if (LANES[k][0] === st) { return LANES[k][1]; } }
+    return st.replace(/_/g, " ");
+  }
+
+  // ---------- rail ----------
+  function renderRail() {
+    var list = openIssues(), n = list.length;
+    // Keep the cursor on the same issue; if it left the rail, keep the same position so the next one is under it.
+    var idx = -1;
+    list.forEach(function (i, k) { if (i.id === ui.cursorId) { idx = k; } });
+    if (idx < 0) { idx = Math.min(ui.cursorIdx, n - 1); }
+    ui.cursorIdx = Math.max(0, idx);
+    ui.cursorId = n ? list[ui.cursorIdx].id : null;
+    Object.keys(ui.selected).forEach(function (id) { if (S.state(S.get(id)) !== "open") { delete ui.selected[id]; } });
+
+    rail.classList.toggle("collapsed", ui.collapsed);
+    $("rail-count").textContent = n;
+    $("rail-count").className = "rail-count" + (n ? "" : " zero");
+    $("rail-count").title = plural(n, "issue") + " with no live story";
+    $("strip-count").textContent = n;
+    $("strip-count").className = "strip-count" + (n ? "" : " zero");
+
+    var panelIssue = ui.panel && ui.panel.kind === "issue" ? ui.panel.id : null;
+    if (!n) {
+      railList.innerHTML = '<div class="rail-empty"><div class="mark">&#10003;</div><strong>Nothing needs a story.</strong>' +
+        'Every issue is on a card or closed.<br>New issues land here. Press <kbd>i</kbd> to file one.</div>';
+    } else {
+      railList.innerHTML = list.map(function (i, k) {
+        var sel = !!ui.selected[i.id], cur = k === ui.cursorIdx;
+        var canc = cancelledLinks(i);
+        return '<div class="ri' + (cur ? " cursor" : "") + (sel ? " sel" : "") + (i.id === panelIssue ? " in-panel" : "") +
+          '" role="option" aria-selected="' + sel + '" tabindex="' + (cur ? 0 : -1) + '" draggable="true" data-id="' + i.id + '" title="' + esc(i.text) + '">' +
+          '<button type="button" class="ri-check" role="checkbox" aria-checked="' + sel + '" aria-label="Select ' + i.id + '" tabindex="-1" data-check></button>' +
+          '<div class="ri-main"><div class="ri-top">' + F.iid(i.id) + '<span class="ri-when">' + F.rel(i.filed_at) + '</span></div>' +
+          '<div class="ri-text">' + esc(i.text) + '</div>' +
+          '<div class="ri-meta">' + F.actor(i.filed_by) +
+          (i.confidence ? '<span>' + esc(i.confidence) + '</span>' : "") +
+          (i.evidence.length ? '<span title="' + esc(i.evidence.join("\n")) + '">&#128206; ' + i.evidence.length + '</span>' : "") +
+          '</div>' +
+          (canc.length ? '<div class="ri-note">Story ' + canc.map(function (l) { return F.tid(l.task_id); }).join(", ") + ' was cancelled</div>' : "") +
+          '</div><span class="grip" aria-hidden="true">&#8942;&#8942;</span></div>';
+      }).join("");
+    }
+    renderSelbar();
+    renderFoot();
+  }
+
+  function renderSelbar() {
+    var ids = selectedIds(), bar = $("selbar");
+    if (ids.length) {
+      bar.innerHTML = '<div class="row"><span class="n">' + plural(ids.length, "selected", "selected") + '</span>' +
+        '<button type="button" class="btn btn-sm btn-clear" data-sel="clear">Clear</button></div>' +
+        '<div class="row"><button type="button" class="btn btn-sm btn-primary" data-sel="story" title="Make one story from the selected issues (s)">Make story</button>' +
+        '<button type="button" class="btn btn-sm" data-sel="link" title="Link all selected to one story (l)">Link to...</button>' +
+        '<span class="muted" style="font-size:.7rem">or drag</span></div>';
+    } else {
+      bar.innerHTML = '<div class="row">Drag to a card: link. To Backlog: new story.</div>' +
+        '<div class="row"><kbd>j</kbd><kbd>k</kbd> move &nbsp;<kbd>x</kbd> select &nbsp;<kbd>o</kbd> open</div>' +
+        '<div class="row"><kbd>s</kbd> story <kbd>l</kbd> link <kbd>d</kbd> dismiss <kbd>u</kbd> duplicate</div>';
+    }
+  }
+
+  function renderFoot() {
+    var c = S.counts(), closed = c.dismissed + c.duplicate;
+    $("rail-foot").innerHTML = '<span title="' + c.linked + ' on live stories, ' + c.resolved + ' resolved on done stories">On cards <b>' + (c.linked + c.resolved) + '</b></span>' +
+      '<button type="button" class="btn btn-sm' + (ui.panel && ui.panel.kind === "closed" ? " on" : "") + '" id="open-closed" aria-pressed="' + !!(ui.panel && ui.panel.kind === "closed") + '" title="Dismissed and duplicate issues">Closed (' + closed + ')</button>';
+    $("open-closed").onclick = function () { openPanel({ kind: "closed" }); };
+  }
+
+  function setCursor(idx, focus) {
+    var list = openIssues();
+    if (!list.length) { return; }
+    ui.cursorIdx = Math.max(0, Math.min(list.length - 1, idx));
+    ui.cursorId = list[ui.cursorIdx].id;
+    railList.querySelectorAll(".ri").forEach(function (row, k) {
+      row.classList.toggle("cursor", k === ui.cursorIdx);
+      row.tabIndex = k === ui.cursorIdx ? 0 : -1;
+      if (k === ui.cursorIdx) {
+        row.scrollIntoView({ block: "nearest" });
+        if (focus) { row.focus({ preventScroll: true }); }
+      }
+    });
+  }
+  function toggleSelect(id) {
+    if (ui.selected[id]) { delete ui.selected[id]; } else { ui.selected[id] = true; }
+    renderRail();
+  }
+
+  railList.addEventListener("click", function (e) {
+    var row = e.target.closest(".ri"); if (!row) { return; }
+    var id = row.getAttribute("data-id");
+    var list = openIssues().map(function (i) { return i.id; });
+    ui.cursorId = id; ui.cursorIdx = list.indexOf(id);
+    if (e.target.closest("[data-check]") || e.shiftKey || e.metaKey) { toggleSelect(id); return; }
+    openPanel({ kind: "issue", id: id });
+  });
+
+  $("selbar").addEventListener("click", function (e) {
+    var b = e.target.closest("[data-sel]"); if (!b) { return; }
+    var what = b.getAttribute("data-sel");
+    if (what === "clear") { ui.selected = {}; renderRail(); }
+    else if (what === "story") { makeStory(selectedIds()); }
+    else if (what === "link") { linkIds(selectedIds()); }
+  });
+
+  function setCollapsed(v) {
+    ui.collapsed = v;
+    try { localStorage.setItem("takeC.railCollapsed", v ? "1" : "0"); } catch (e) { /* storage blocked */ }
+    // scrollLeft is left as it is: the lane at the left edge of the board stays at the left edge,
+    // and the width animates so the eye can follow the lanes as they slide.
+    rail.classList.toggle("collapsed", v);
+    hidePop();
+  }
+  $("rail-collapse").onclick = function () { setCollapsed(true); };
+  $("rail-strip").onclick = function () { setCollapsed(false); };
+
+  // ---------- board ----------
+  function renderBoard() {
+    var tasks = S.tasks().filter(function (t) { return t.status !== "cancelled"; });
+    var grouped = {};
+    LANES.forEach(function (l) { grouped[l[0]] = []; });
+    tasks.forEach(function (t) { if (grouped[t.status]) { grouped[t.status].push(t); } });
+    // Stories made here go to the top of Backlog, newest first, so the result of a drop is in view.
+    grouped.backlog.sort(function (a, b) {
+      if (!!a.created_here !== !!b.created_here) { return a.created_here ? -1 : 1; }
+      return a.created_here ? (a.id < b.id ? 1 : -1) : (a.id < b.id ? -1 : 1);
+    });
+    var widths = LANES.map(function (l) { return grouped[l[0]].length || l[0] === "backlog" ? "var(--col-min-w)" : "120px"; }).join(" ");
+    var openStory = ui.panel && ui.panel.kind === "story" ? ui.panel.id : null;
+    var html = "";
+    LANES.forEach(function (l) {
+      var st = l[0], items = grouped[st], empty = !items.length && st !== "backlog";
+      html += '<div class="board-col status-' + st + (empty ? " empty-col" : "") + '" data-status="' + st + '">';
+      html += '<div class="board-col-header" style="background:' + LANE_COLOR[st] + '"><span>' + esc(l[1]) + '</span><span class="count">' + items.length + '</span>' +
+        (st === "backlog" ? '<span class="newstory-hint">Drop: new story</span>' : "") + '</div>';
+      if (!empty) { html += '<div class="board-col-toolbar"><select class="lane-sort" tabindex="-1" title="How cards in this lane are organized"><option>Sort: default</option></select></div>'; }
+      html += '<div class="board-col-body">';
+      items.forEach(function (t) { html += cardHtml(t, t.id === openStory); });
+      if (!items.length) { html += '<div class="lane-empty">' + (empty ? "" : "No stories") + '</div>'; }
+      if (st === "backlog") { html += '<div class="newstory-slot">Drop here to make a new story</div>'; }
+      html += '</div></div>';
+    });
+    boardEl.style.gridTemplateColumns = widths;
+    boardEl.innerHTML = html;
+  }
+
+  function cardHtml(t, inPanel) {
+    var iss = S.issuesFor(t.id), n = iss.length;
+    var flash = ui.flashId === t.id && Date.now() < ui.flashUntil;
+    var h = '<div class="card' + (inPanel ? " open-in-panel" : "") + (flash ? " flash" : "") + '" tabindex="0" data-task-id="' + t.id + '">';
+    h += '<div class="card-id">' + esc(t.id) + (t.created_here ? '<span class="card-new">made here</span>' : "") + '</div>';
+    if (n) {
+      var allDone = iss.every(function (i) { return S.state(i) === "resolved"; });
+      h += '<button type="button" class="imark' + (allDone ? " all-done" : "") + '" data-mark="' + t.id + '" aria-label="' + plural(n, "issue") + ' on ' + t.id + '">' + MARK_SVG + n + '</button>';
+    }
+    h += '<div class="card-title">' + esc(t.title) + '</div><div class="card-meta">' +
+      '<span class="badge pri-' + t.priority + '">' + esc(t.priority) + '</span><span class="badge type-badge">' + esc(t.type) + '</span>' +
+      (t.assigned ? '<span class="actor-chip" title="' + esc(t.assigned) + '"><span>' + esc(actorName(t.assigned)) + '</span></span>' : '<span class="actor-unassigned">unassigned</span>') +
+      '</div><span class="drop-label">Link here</span></div>';
+    return h;
+  }
+
+  boardEl.addEventListener("click", function (e) {
+    var mark = e.target.closest("[data-mark]");
+    var card = e.target.closest(".card");
+    if (!card) { return; }
+    hidePop();
+    openPanel({ kind: "story", id: card.getAttribute("data-task-id"), focusIssues: !!mark });
+  });
+  boardEl.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && e.target.classList && e.target.classList.contains("card")) {
+      e.preventDefault(); openPanel({ kind: "story", id: e.target.getAttribute("data-task-id") });
+    }
+  });
+
+  // ---------- marker preview ----------
+  var popFor = null;
+  function showPop(mark) {
+    var taskId = mark.getAttribute("data-mark"), iss = S.issuesFor(taskId);
+    popFor = taskId;
+    ipop.innerHTML = '<div class="ipop-head">' + F.tid(taskId) + '<span>' + plural(iss.length, "issue") + ' on this story</span></div>' +
+      iss.map(function (i) {
+        return '<div class="ipop-row"><div class="top">' + F.iid(i.id) + F.state(S.state(i)) + '<span class="rel">' + esc(actorName(i.filed_by)) + ' &middot; ' + F.rel(i.filed_at) + '</span></div>' +
+          '<div class="txt">' + esc(i.text) + '</div></div>';
+      }).join("") + '<div class="ipop-foot">Click for the full text, evidence and history.</div>';
+    ipop.classList.add("show");
+    var r = mark.getBoundingClientRect(), w = ipop.offsetWidth, h = ipop.offsetHeight;
+    var left = Math.max(8, Math.min(r.right - w, window.innerWidth - w - 8));
+    var top = r.bottom + 6;
+    var limit = window.innerHeight - 44;
+    if (top + h > limit) { top = Math.max(8, r.top - h - 6); }
+    ipop.style.left = left + "px"; ipop.style.top = top + "px";
+  }
+  function hidePop() { popFor = null; ipop.classList.remove("show"); }
+  boardEl.addEventListener("mouseover", function (e) {
+    var m = e.target.closest("[data-mark]");
+    if (m && !ui.drag) { if (popFor !== m.getAttribute("data-mark")) { showPop(m); } }
+    else if (popFor && !(document.activeElement && document.activeElement.hasAttribute && document.activeElement.hasAttribute("data-mark"))) { hidePop(); }
+  });
+  boardEl.addEventListener("mouseleave", function () { if (!(document.activeElement && document.activeElement.hasAttribute && document.activeElement.hasAttribute("data-mark"))) { hidePop(); } });
+  boardEl.addEventListener("focusin", function (e) { if (e.target.hasAttribute && e.target.hasAttribute("data-mark")) { showPop(e.target); } });
+  boardEl.addEventListener("focusout", function (e) { if (e.target.hasAttribute && e.target.hasAttribute("data-mark")) { hidePop(); } });
+  boardArea.addEventListener("scroll", hidePop);
+
+  // ---------- drag and drop ----------
+  var ghost = null;
+  railList.addEventListener("dragstart", function (e) {
+    var row = e.target.closest(".ri"); if (!row) { return; }
+    var id = row.getAttribute("data-id");
+    var ids = ui.selected[id] ? selectedIds() : [id];
+    ui.drag = { ids: ids };
+    e.dataTransfer.effectAllowed = "link";
+    try { e.dataTransfer.setData("text/plain", ids.join(" ")); } catch (x) { /* ignore */ }
+    if (ids.length > 1) {
+      ghost = Shell.el('<div class="drag-ghost">' + ids.length + ' issues</div>');
+      document.body.appendChild(ghost);
+      e.dataTransfer.setDragImage(ghost, 12, 12);
+    }
+    ids.forEach(function (x) { var r = railList.querySelector('[data-id="' + x + '"]'); if (r) { r.classList.add("dragging"); } });
+    hidePop();
+    setTimeout(function () { document.body.classList.add("dnd"); }, 0);
+  });
+  function endDrag() {
+    ui.drag = null;
+    document.body.classList.remove("dnd");
+    clearDropHover();
+    if (ghost && ghost.parentNode) { ghost.parentNode.removeChild(ghost); }
+    ghost = null;
+    railList.querySelectorAll(".dragging").forEach(function (r) { r.classList.remove("dragging"); });
+  }
+  railList.addEventListener("dragend", endDrag);
+
+  function clearDropHover() { document.querySelectorAll(".drop-hover").forEach(function (x) { x.classList.remove("drop-hover"); }); }
+  function dropTarget(e) {
+    var card = e.target.closest && e.target.closest(".card");
+    if (card) { return { kind: "card", el: card, taskId: card.getAttribute("data-task-id") }; }
+    var col = e.target.closest && e.target.closest(".board-col.status-backlog");
+    if (col) { return { kind: "new", el: col }; }
+    return null;
+  }
+  boardArea.addEventListener("dragover", function (e) {
+    if (!ui.drag) { return; }
+    var t = dropTarget(e);
+    if (!t) { clearDropHover(); e.dataTransfer.dropEffect = "none"; return; }
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "link";
+    if (!t.el.classList.contains("drop-hover")) {
+      clearDropHover();
+      t.el.classList.add("drop-hover");
+      var lbl = t.el.querySelector(".drop-label");
+      if (lbl) { lbl.textContent = ui.drag.ids.length > 1 ? "Link " + ui.drag.ids.length + " here" : "Link here"; }
+    }
+  });
+  boardArea.addEventListener("dragleave", function (e) { if (e.target === boardArea) { clearDropHover(); } });
+  boardArea.addEventListener("drop", function (e) {
+    if (!ui.drag) { return; }
+    e.preventDefault();
+    var t = dropTarget(e), ids = ui.drag.ids;
+    endDrag();
+    if (t) { dropOn(t, ids); }
+  });
+
+  // Shared by drag and drop and the selftest.
+  function dropOn(target, ids) {
+    if (target.kind === "card") { return linkTo(ids, target.taskId, false); }
+    return makeStory(ids);
+  }
+
+  // ---------- actions ----------
+  var undoSeq = 0, undos = {};
+  function flash(taskId, reveal) {
+    ui.flashId = taskId; ui.flashUntil = Date.now() + 1600;
+    renderBoard();
+    if (reveal) {
+      var c = boardEl.querySelector('[data-task-id="' + taskId + '"]');
+      if (c) { c.scrollIntoView({ block: "nearest", inline: "nearest" }); }
+    }
+  }
+  function forget(ids) { ids.forEach(function (id) { delete ui.selected[id]; }); }
+
+  function linkTo(ids, taskId, reveal) {
+    var done = [];
+    ids.forEach(function (id) {
+      var r = Shell.guard(function () { return S.link(id, taskId); });
+      if (r && !r.idempotent) { done.push(id); }
+    });
+    forget(ids);
+    renderRail();
+    if (done.length) {
+      var key = "u" + (++undoSeq);
+      undos[key] = { ids: done, taskId: taskId };
+      Shell.toast("Linked " + done.map(F.iid).join(", ") + " to " + F.tid(taskId) + " " + F.tstatus(S.task(taskId).status) +
+        ' <button type="button" class="btn btn-sm" data-undo="' + key + '" style="margin-left:.5rem">Undo</button>');
+      flash(taskId, reveal);
+    }
+    return done;
+  }
+  document.addEventListener("click", function (e) {
+    var b = e.target.closest && e.target.closest("[data-undo]"); if (!b) { return; }
+    var u = undos[b.getAttribute("data-undo")]; if (!u) { return; }
+    delete undos[b.getAttribute("data-undo")];
+    u.ids.forEach(function (id) { Shell.guard(function () { S.unlink(id, u.taskId); }); });
+    Shell.toast("Undone. " + u.ids.map(F.iid).join(", ") + " back in the rail.", "info");
+    var t = b.closest(".toast"); if (t && t.parentNode) { t.parentNode.removeChild(t); }
+  });
+
+  function makeStory(ids) {
+    if (!ids.length) { return Promise.resolve(null); }
+    return Shell.promoteDialog(ids).then(function (t) {
+      if (t) { forget(ids); renderRail(); flash(t.id, true); }
+      return t;
+    });
+  }
+  function linkIds(ids) {
+    if (!ids.length) { return Promise.resolve(null); }
+    return Shell.linkDialog(ids[0]).then(function (taskId) {
+      if (!taskId) { return null; }
+      var rest = ids.slice(1);
+      if (rest.length) { linkTo(rest, taskId, true); } else { forget(ids); renderRail(); flash(taskId, true); }
+      return taskId;
+    });
+  }
+  function dismissIds(ids) {
+    if (!ids.length) { return Promise.resolve(false); }
+    return Shell.dismissDialog(ids[0]).then(function (ok) {
+      if (ok && ids.length > 1) {
+        var reason = S.get(ids[0]).closure.reason;
+        ids.slice(1).forEach(function (id) { Shell.guard(function () { S.dismiss(id, reason); }); });
+        Shell.toast("Dismissed " + ids.slice(1).map(F.iid).join(", ") + " with the same reason");
+      }
+      if (ok) { forget(ids); renderRail(); }
+      return ok;
+    });
+  }
+  function dupIds(ids) {
+    if (!ids.length) { return Promise.resolve(null); }
+    return Shell.duplicateDialog(ids[0]).then(function (ofId) {
+      if (ofId && ids.length > 1) {
+        ids.slice(1).forEach(function (id) { if (id !== ofId) { Shell.guard(function () { S.duplicate(id, ofId); }); } });
+      }
+      if (ofId) { forget(ids); renderRail(); }
+      return ofId;
+    });
+  }
+  function targets() {
+    var sel = selectedIds();
+    if (sel.length) { return sel; }
+    return ui.cursorId ? [ui.cursorId] : [];
+  }
+
+  // ---------- detail panel ----------
+  function openPanel(p) {
+    ui.panel = p;
+    if (p.kind === "issue") {
+      var list = openIssues().map(function (i) { return i.id; });
+      if (list.indexOf(p.id) >= 0) { ui.cursorId = p.id; ui.cursorIdx = list.indexOf(p.id); }
+    }
+    renderAll();
+    if (p.kind === "issue") {
+      var row = railList.querySelector('[data-id="' + p.id + '"]');
+      if (row) { row.scrollIntoView({ block: "nearest" }); }
+    }
+    dp.scrollTop = 0;
+    if (p.focusIssues) {
+      var sec = $("dp-issues");
+      if (sec) { dp.scrollTop = Math.max(0, sec.offsetTop - 70); }
+    }
+  }
+  function closePanel() { ui.panel = null; renderAll(); }
+  $("dp-close").onclick = closePanel;
+
+  function histLine(ev) {
+    var d = ev.data || {}, what;
+    if (ev.type === "issue_filed") { what = "filed"; }
+    else if (ev.type === "issue_linked") { what = (d.promoted ? "made story " : "linked to ") + F.tid(d.task_id); }
+    else if (ev.type === "issue_unlinked") { what = "unlinked from " + F.tid(d.task_id); }
+    else if (ev.type === "issue_dismissed") { what = "dismissed: " + esc(d.reason); }
+    else if (ev.type === "issue_marked_duplicate") { what = "marked duplicate of " + F.iid(d.duplicate_of); }
+    else if (ev.type === "issue_reopened") { what = "reopened"; }
+    else { what = esc(ev.type); }
+    return '<li><span class="when" title="' + esc(F.abs(ev.at)) + '">' + F.rel(ev.at) + '</span><span class="what">' + what + '</span><span class="by">' + F.actor(ev.by) + '</span></li>';
+  }
+  function historyHtml(id) { return '<ul class="hist">' + S.history(id).slice().reverse().map(histLine).join("") + '</ul>'; }
+  function protoCtl(taskId) {
+    var t = S.task(taskId);
+    return '<label class="proto-ctl">prototype only: move this story to <select data-proto-task="' + taskId + '">' +
+      PROTO_STATUSES.map(function (s) { return '<option value="' + s + '"' + (s === t.status ? " selected" : "") + '>' + esc(laneName(s)) + '</option>'; }).join("") +
+      '</select></label>';
+  }
+
+  function renderPanel() {
+    dp.classList.toggle("open", !!ui.panel);
+    if (!ui.panel) { return; }
+    var p = ui.panel;
+    if (p.kind === "story") { renderStoryPanel(p); }
+    else if (p.kind === "issue") { renderIssuePanel(p); }
+    else { renderClosedPanel(p); }
+  }
+
+  function backHtml(p) {
+    if (!p.from) { return ""; }
+    var label = p.from.kind === "story" ? "Back to " + esc(p.from.id) : p.from.kind === "closed" ? "Back to closed issues" : "Back to " + esc(p.from.id);
+    return '<button type="button" class="dp-back" data-back>&#8592; ' + label + '</button>';
+  }
+
+  function renderStoryPanel(p) {
+    var t = S.task(p.id), iss = S.issuesFor(p.id);
+    $("dp-title").innerHTML = F.tid(t.id) + '<span class="ttl">' + esc(t.title) + '</span>';
+    var h = backHtml(p);
+    h += '<div class="legacy"><span class="legacy-tag">Existing panel, unchanged</span>' +
+      '<div class="dp-actions"><select title="Change status" data-legacy><option>' + esc(laneName(t.status)) + '</option></select>' +
+      '<select title="Change priority" data-legacy><option>' + esc(t.priority) + '</option></select>' +
+      '<select title="Change type" data-legacy><option>' + esc(t.type) + '</option></select></div>' +
+      '<dl style="margin:0"><div class="dp-field"><dt>Title</dt><dd>' + esc(t.title) + '</dd></div>' +
+      '<div class="dp-field"><dt>Short ID</dt><dd style="font-weight:600;color:var(--accent-primary)">' + esc(t.id) + '</dd></div>' +
+      '<div class="dp-field"><dt>Assigned to</dt><dd>' + (t.assigned ? esc(t.assigned) : '<span class="muted">unassigned</span>') + '</dd></div></dl></div>';
+    h += protoCtl(t.id);
+    h += '<section class="dp-section issues-sec" id="dp-issues"><h3>Issues <span class="cnt">' + iss.length + '</span><span class="new-tag">New</span></h3>';
+    if (!iss.length) {
+      h += '<div class="dp-empty">No issues on this story. Drag one from the rail onto the card, or focus it in the rail and press <kbd>l</kbd>.</div>';
+    }
+    iss.forEach(function (i) {
+      var st = S.state(i), link = null;
+      i.links.forEach(function (l) { if (l.task_id === t.id) { link = l; } });
+      h += '<div class="dpi" data-issue="' + i.id + '"><div class="dpi-top">' + F.iid(i.id) + F.state(st) +
+        '<span class="rel">' + F.rel(i.filed_at) + '</span>' +
+        '<button type="button" class="btn btn-sm" data-unlink="' + i.id + '" title="Unlink from ' + t.id + '">Unlink</button></div>' +
+        '<div class="dpi-body"><div class="dpi-text">' + esc(i.text) + '</div><div class="dpi-meta">' + F.actor(i.filed_by) +
+        (i.confidence ? '<span>' + esc(i.confidence) + '</span>' : "") + (i.source ? '<span>' + esc(i.source) + '</span>' : "") +
+        (link ? '<span>linked by ' + esc(actorName(link.linked_by)) + ', ' + F.rel(link.linked_at) + '</span>' : "") + '</div>' +
+        i.evidence.map(function (ev) { return '<div class="evidence" style="margin-top:.25rem">' + esc(ev) + '</div>'; }).join("") +
+        (i.links.length > 1 ? '<div class="dpi-meta">Also on ' + i.links.filter(function (l) { return l.task_id !== t.id; }).map(function (l) { return F.tid(l.task_id); }).join(", ") + '</div>' : "") +
+        '</div><div class="dpi-foot"><button type="button" class="btn btn-sm" data-hist="' + i.id + '">' + (ui.openHist[i.id] ? "Hide history" : "History") + '</button>' +
+        '<button type="button" class="btn btn-sm" data-open-issue="' + i.id + '">Open issue</button></div>' +
+        (ui.openHist[i.id] ? historyHtml(i.id) : "") + '</div>';
+    });
+    h += '</section>';
+    h += '<div class="legacy"><span class="legacy-tag">Existing panel, unchanged</span>' +
+      '<div class="dp-section"><h3>Description</h3><div class="placeholder">The story description, plan and notes render here as they do today.</div></div>' +
+      '<div class="dp-section"><h3>Comments (0)</h3><div class="placeholder">No comments.</div></div>' +
+      '<div class="dp-section"><h3>History</h3><div class="placeholder">Status changes and assignments, as today.</div></div></div>';
+    $("dp-body").innerHTML = h;
+  }
+
+  function renderIssuePanel(p) {
+    var i = S.get(p.id), st = S.state(i), isCursor = ui.cursorId === i.id && st === "open" && !selectedIds().length;
+    $("dp-title").innerHTML = F.iid(i.id) + F.state(st);
+    var h = backHtml(p);
+    h += '<p class="iss-text">' + esc(i.text) + '</p>';
+    h += '<dl style="margin:0 0 .5rem">' +
+      '<div class="dp-field"><dt>Filed by</dt><dd>' + F.actor(i.filed_by) + '</dd></div>' +
+      '<div class="dp-field"><dt>Filed</dt><dd>' + F.rel(i.filed_at) + ' <span class="muted">&middot; ' + esc(F.abs(i.filed_at)) + '</span></dd></div>' +
+      '<div class="dp-field"><dt>Confidence</dt><dd>' + F.conf(i.confidence) + '</dd></div>' +
+      '<div class="dp-field"><dt>Source</dt><dd>' + (i.source ? esc(i.source) : '<span class="muted">none given</span>') + '</dd></div>' +
+      '<div class="dp-field"><dt>Evidence</dt><dd>' + (i.evidence.length ? i.evidence.map(function (ev) { return '<div class="evidence">' + esc(ev) + '</div>'; }).join("") : '<span class="muted">none attached</span>') + '</dd></div></dl>';
+
+    function kb(k) { return '<span class="kbd-slot">' + (isCursor ? "<kbd>" + k + "</kbd>" : "") + '</span>'; }
+    if (i.closure) {
+      h += '<div class="closure">' + (i.closure.kind === "dismissed"
+        ? 'Dismissed by ' + F.actor(i.closure.by) + ' ' + F.rel(i.closure.at) + '.<br>' + esc(i.closure.reason)
+        : 'Duplicate of <button type="button" class="linkbtn" data-open-issue="' + i.closure.duplicate_of + '">' + F.iid(i.closure.duplicate_of) + '</button>, marked by ' + F.actor(i.closure.by) + ' ' + F.rel(i.closure.at) + '.') + '</div>';
+      h += '<div class="iss-acts"><button type="button" class="btn btn-primary" data-act="reopen">Reopen</button></div>';
+    } else {
+      h += '<div class="iss-acts"><button type="button" class="btn btn-primary" data-act="story">Make story ' + kb("s") + '</button>' +
+        '<button type="button" class="btn" data-act="link">Link ' + kb("l") + '</button>' +
+        '<button type="button" class="btn btn-danger" data-act="dismiss">Dismiss ' + kb("d") + '</button>' +
+        '<button type="button" class="btn" data-act="dup">Duplicate ' + kb("u") + '</button></div>';
+    }
+
+    h += '<section class="dp-section"><h3>Stories <span class="cnt">' + i.links.length + '</span></h3>';
+    if (!i.links.length) {
+      h += '<div class="dp-empty">No story yet. Make one, or drag this issue from the rail onto a card.</div>';
+    }
+    i.links.forEach(function (l) {
+      var t = S.task(l.task_id);
+      h += '<div class="story-block"><div class="story-row">' + F.tid(t.id) + F.tstatus(t.status) +
+        '<span class="ttl" data-open-story="' + t.id + '" title="' + esc(t.title) + '">' + esc(t.title) + '</span>' +
+        '<button type="button" class="btn btn-sm" data-unlink="' + i.id + '" data-task="' + t.id + '">Unlink</button></div>' +
+        (t.status === "cancelled" ? '<div class="muted" style="font-size:.74rem;margin:-.15rem 0 .3rem .25rem">Cancelled stories are off the board, so this issue is back in the rail.</div>' : "") +
+        protoCtl(t.id) + '</div>';
+    });
+    h += '</section>';
+    var dups = S.duplicatesOf(i.id);
+    if (dups.length) {
+      h += '<section class="dp-section"><h3>Duplicates of this issue <span class="cnt">' + dups.length + '</span></h3>' +
+        dups.map(function (d) { return '<div class="story-row">' + F.iid(d.id) + '<span class="ttl" data-open-issue="' + d.id + '">' + esc(F.firstLine(d.text, 90)) + '</span></div>'; }).join("") + '</section>';
+    }
+    h += '<section class="dp-section"><h3>History</h3>' + historyHtml(i.id) + '</section>';
+    $("dp-body").innerHTML = h;
+  }
+
+  function renderClosedPanel() {
+    var list = closedIssues();
+    $("dp-title").innerHTML = '<span class="ttl">Closed issues</span><span class="muted" style="font-weight:400">' + list.length + '</span>';
+    var h = '<p class="intro">Dismissed and duplicate issues. They stay off the board. Reopen one to put it back in the rail. Resolved issues live on their done stories.</p>';
+    if (!list.length) { h += '<div class="dp-empty">No closed issues.</div>'; }
+    list.forEach(function (i) {
+      var why = i.closure.kind === "dismissed" ? esc(i.closure.reason) : "Duplicate of " + F.iid(i.closure.duplicate_of);
+      h += '<div class="closed-row" data-open-issue="' + i.id + '"><div class="top">' + F.iid(i.id) + F.state(i.closure.kind) +
+        '<span class="muted">' + esc(actorName(i.closure.by)) + ' &middot; ' + F.rel(i.closure.at) + '</span>' +
+        '<button type="button" class="btn btn-sm" data-reopen="' + i.id + '">Reopen</button></div>' +
+        '<div class="txt">' + esc(i.text) + '</div><div class="why">' + why + '</div></div>';
+    });
+    $("dp-body").innerHTML = h;
+  }
+
+  $("dp-body").addEventListener("click", function (e) {
+    var b;
+    var p = ui.panel;
+    if ((b = e.target.closest("[data-back]"))) { openPanel(p.from); return; }
+    if ((b = e.target.closest("[data-legacy]"))) { return; }
+    if ((b = e.target.closest("[data-reopen]"))) { e.stopPropagation(); Shell.reopen(b.getAttribute("data-reopen")); return; }
+    if ((b = e.target.closest("[data-unlink]"))) {
+      var tid = b.getAttribute("data-task") || p.id;
+      Shell.unlink(b.getAttribute("data-unlink"), tid);
+      return;
+    }
+    if ((b = e.target.closest("[data-hist]"))) {
+      var hid = b.getAttribute("data-hist");
+      if (ui.openHist[hid]) { delete ui.openHist[hid]; } else { ui.openHist[hid] = true; }
+      renderPanel(); return;
+    }
+    if ((b = e.target.closest("[data-open-story]"))) { openPanel({ kind: "story", id: b.getAttribute("data-open-story"), from: p }); return; }
+    if ((b = e.target.closest("[data-open-issue]"))) { openPanel({ kind: "issue", id: b.getAttribute("data-open-issue"), from: p }); return; }
+    if ((b = e.target.closest("[data-act]")) && p.kind === "issue") {
+      var a = b.getAttribute("data-act"), ids = [p.id];
+      if (a === "story") { makeStory(ids); }
+      else if (a === "link") { linkIds(ids); }
+      else if (a === "dismiss") { dismissIds(ids); }
+      else if (a === "dup") { dupIds(ids); }
+      else if (a === "reopen") { Shell.reopen(p.id); }
+    }
+  });
+  $("dp-body").addEventListener("change", function (e) {
+    var s = e.target.closest("[data-proto-task]");
+    if (s) {
+      S.setTaskStatus(s.getAttribute("data-proto-task"), s.value);
+      Shell.toast("Prototype: " + F.tid(s.getAttribute("data-proto-task")) + " moved to " + esc(laneName(s.value)), "info");
+    }
+  });
+
+  // ---------- keyboard ----------
+  document.addEventListener("keydown", function (e) {
+    if (Shell.dialogOpen() || e.metaKey || e.ctrlKey || e.altKey) { return; }
+    var tag = (e.target.tagName || "").toLowerCase();
+    if (tag === "input" || tag === "textarea" || tag === "select") { return; }
+    var inPanel = dp.contains(e.target);
+    var onButton = tag === "button" || (e.target.classList && e.target.classList.contains("card"));
+    var k = e.key;
+    if (k === "Escape") {
+      if (popFor) { hidePop(); }
+      else if (ui.panel) { closePanel(); }
+      else if (selectedIds().length) { ui.selected = {}; renderRail(); }
+      return;
+    }
+    if (k === "[") { e.preventDefault(); setCollapsed(!ui.collapsed); return; }
+    var railKeys = ["j", "k", "x", "s", "l", "d", "u", "o"];
+    var arrows = (k === "ArrowDown" || k === "ArrowUp") && !inPanel;
+    var enter = k === "Enter" && !inPanel && !onButton;
+    var space = k === " " && !inPanel && !onButton;
+    if (railKeys.indexOf(k) < 0 && !arrows && !enter && !space) { return; }
+    if (ui.collapsed) { e.preventDefault(); setCollapsed(false); return; }
+    if (!ui.cursorId && ["s", "l", "d", "u"].indexOf(k) >= 0 && !selectedIds().length) { return; }
+    e.preventDefault();
+    if (k === "j" || k === "ArrowDown") { setCursor(ui.cursorIdx + 1, true); }
+    else if (k === "k" || k === "ArrowUp") { setCursor(ui.cursorIdx - 1, true); }
+    else if (k === "x" || space) { if (ui.cursorId) { toggleSelect(ui.cursorId); setCursor(ui.cursorIdx, true); } }
+    else if (k === "o" || enter) { if (ui.cursorId) { openPanel({ kind: "issue", id: ui.cursorId }); setCursor(ui.cursorIdx, true); } }
+    else if (k === "s") { makeStory(targets()); }
+    else if (k === "l") { linkIds(targets()); }
+    else if (k === "d") { dismissIds(targets()); }
+    else if (k === "u") { dupIds(targets()); }
+  });
+
+  // ---------- render ----------
+  function renderAll() {
+    if (ui.panel && ui.panel.kind === "story" && !S.task(ui.panel.id)) { ui.panel = null; }
+    renderRail();
+    renderBoard();
+    renderPanel();
+  }
+  S.subscribe(renderAll);
+
+  // ---------- viewing hooks (for screenshots and the next agent) ----------
+  // ?cleared=1        dismiss every open issue at load, to show the empty rail
+  // ?collapsed=1      start with the rail collapsed
+  // ?open=LAT-370     open a story panel; ?open=LAT-I24 an issue; ?open=closed the closed list
+  // ?pop=LAT-377      show the marker preview for that card
+  // ?drag=LAT-370     show the drag state with LAT-I41 and LAT-I40 selected, hovering that card (or "backlog")
+  // ?selftest=1       run every action against the store and the UI, PASS/FAIL lines into <pre id="selftest">
+  if (params.get("cleared") === "1") {
+    openIssues().forEach(function (i) { S.dismiss(i.id, "Prototype: cleared to show the empty rail."); });
+  }
+  if (params.get("collapsed")) { ui.collapsed = params.get("collapsed") === "1"; }
+  renderAll();
+  var openP = params.get("open");
+  if (openP === "closed") { openPanel({ kind: "closed" }); }
+  else if (openP && S.get(openP)) { openPanel({ kind: "issue", id: openP }); }
+  else if (openP && S.task(openP)) { openPanel({ kind: "story", id: openP, focusIssues: params.get("focus") === "1" }); }
+  if (params.get("pop")) {
+    setTimeout(function () { var m = boardEl.querySelector('[data-mark="' + params.get("pop") + '"]'); if (m) { showPop(m); } }, 50);
+  }
+  if (params.get("drag")) {
+    ui.selected["LAT-I41"] = true; ui.selected["LAT-I40"] = true; renderRail();
+    ui.drag = { ids: ["LAT-I41", "LAT-I40"] };
+    document.body.classList.add("dnd");
+    railList.querySelectorAll('[data-id="LAT-I41"],[data-id="LAT-I40"]').forEach(function (r) { r.classList.add("dragging"); });
+    var dt = params.get("drag") === "backlog" ? boardEl.querySelector(".status-backlog") : boardEl.querySelector('[data-task-id="' + params.get("drag") + '"]');
+    if (dt) { dt.classList.add("drop-hover"); var dl = dt.querySelector(".drop-label"); if (dl) { dl.textContent = "Link 2 here"; } }
+  }
+
+  // ---------- selftest ----------
+  if (params.get("selftest") === "1") {
+    var out = $("selftest"), lines = [], fails = 0;
+    var ok = function (name, cond) { lines.push((cond ? "PASS " : "FAIL ") + name); if (!cond) { fails++; } out.textContent = lines.join("\n"); };
+    var railIds = function () { return Array.prototype.map.call(railList.querySelectorAll(".ri"), function (r) { return r.getAttribute("data-id"); }); };
+    var markCount = function (tid) { var m = boardEl.querySelector('[data-mark="' + tid + '"]'); return m ? parseInt(m.textContent, 10) : 0; };
+    var cardLane = function (tid) { var c = boardEl.querySelector('[data-task-id="' + tid + '"]'); return c ? c.closest(".board-col").getAttribute("data-status") : null; };
+    var key = function (k) { document.body.focus(); document.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true })); };
+    var overlay = function () { return document.querySelector(".overlay"); };
+    var steps = [
+      function () {
+        ok("initial rail count matches store (" + S.counts().open + ")", $("rail-count").textContent === String(S.counts().open) && railIds().length === S.counts().open);
+        ok("LAT-370 marker shows 2", markCount("LAT-370") === 2);
+        ok("LAT-383 marker shows 3", markCount("LAT-383") === 3);
+        ok("cancelled LAT-376 is not on the board", !cardLane("LAT-376"));
+        ok("LAT-I8 (story cancelled) is in the rail with a note", railIds().indexOf("LAT-I8") >= 0 && /cancelled/.test(railList.querySelector('[data-id="LAT-I8"]').textContent));
+        ok("8 lanes rendered, In Planning is a stub", boardEl.querySelectorAll(".board-col").length === 8 && boardEl.querySelector(".status-in_planning").classList.contains("empty-col"));
+        ok("closed control reads Closed (4)", $("open-closed").textContent === "Closed (4)");
+      },
+      function () {
+        dropOn({ kind: "card", taskId: "LAT-370" }, ["LAT-I24", "LAT-I40"]);
+        ok("drop two issues on a card links both", S.state(S.get("LAT-I24")) === "linked" && S.state(S.get("LAT-I40")) === "linked");
+        ok("marker on LAT-370 now 4", markCount("LAT-370") === 4);
+        ok("both left the rail", railIds().indexOf("LAT-I24") < 0 && railIds().indexOf("LAT-I40") < 0);
+      },
+      function () {
+        openPanel({ kind: "story", id: "LAT-370", focusIssues: true });
+        ok("story panel open with New Issues section of 4", dp.classList.contains("open") && $("dp-issues") && $("dp-issues").querySelectorAll(".dpi").length === 4);
+        ok("story panel marks the existing parts", $("dp-body").querySelectorAll(".legacy").length === 2);
+        $("dp-body").querySelector('[data-hist="LAT-I24"]').click();
+        ok("issue history reachable from the story panel", /linked to/.test($("dp-body").querySelector('[data-issue="LAT-I24"]').textContent));
+        $("dp-body").querySelector('[data-unlink="LAT-I24"]').click();
+        ok("unlink from story panel puts LAT-I24 back in the rail", S.state(S.get("LAT-I24")) === "open" && railIds().indexOf("LAT-I24") >= 0);
+        ok("marker on LAT-370 now 3", markCount("LAT-370") === 3);
+        closePanel();
+      },
+      function () {
+        ui.cursorId = "LAT-I41"; renderRail();
+        key("s");
+        ok("s opens the make-story dialog", !!overlay());
+        overlay().querySelector("[data-go]").click();
+        var t = S.tasks().filter(function (x) { return x.created_here; })[0];
+        ok("s made story " + (t && t.id) + " in Backlog", t && cardLane(t.id) === "backlog" && S.state(S.get("LAT-I41")) === "linked");
+        ok("new story card carries marker 1", t && markCount(t.id) === 1);
+        ok("cursor moved to the next issue", ui.cursorId && ui.cursorId !== "LAT-I41");
+      },
+      function () {
+        ui.selected = {}; ui.selected["LAT-I38"] = true; ui.selected["LAT-I26"] = true; renderRail();
+        ok("selection bar shows 2 selected", /2 selected/.test($("selbar").textContent));
+        dropOn({ kind: "new" }, selectedIds());
+        ok("drop on Backlog opens make-story for 2", !!overlay() && /2 issues/.test(overlay().textContent));
+        overlay().querySelector("#pr-title").value = "Settings and help drawer polish";
+        overlay().querySelector("[data-go]").click();
+        var t = S.tasks().filter(function (x) { return x.title === "Settings and help drawer polish"; })[0];
+        ok("two issues became one story", t && S.issuesFor(t.id).length === 2 && markCount(t.id) === 2);
+        ok("selection cleared", selectedIds().length === 0);
+      },
+      function () {
+        ui.cursorId = "LAT-I23"; renderRail();
+        key("l");
+        var q = overlay() && overlay().querySelector("#pk-q");
+        ok("l opens the story picker", !!q);
+        q.value = "LAT-381"; q.dispatchEvent(new Event("input"));
+        q.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      },
+      function () {
+        ok("l linked LAT-I23 to LAT-381", S.get("LAT-I23").links.some(function (l) { return l.task_id === "LAT-381"; }) && markCount("LAT-381") === 2);
+        ui.cursorId = "LAT-I22"; renderRail();
+        key("d");
+        var r = overlay() && overlay().querySelector("#ds-r");
+        ok("d opens the dismiss dialog", !!r);
+        r.value = "Works as intended; exit 0 is the documented contract.";
+        overlay().querySelector("[data-go]").click();
+        ok("d dismissed LAT-I22", S.state(S.get("LAT-I22")) === "dismissed" && railIds().indexOf("LAT-I22") < 0);
+        ok("closed control reads Closed (5)", $("open-closed").textContent === "Closed (5)");
+      },
+      function () {
+        ui.cursorId = "LAT-I34"; renderRail();
+        key("u");
+        var q = overlay() && overlay().querySelector("#pk-q");
+        ok("u opens the duplicate picker", !!q);
+        q.value = "LAT-I29"; q.dispatchEvent(new Event("input"));
+        q.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      },
+      function () {
+        ok("u marked LAT-I34 duplicate of LAT-I29", S.state(S.get("LAT-I34")) === "duplicate" && S.get("LAT-I34").closure.duplicate_of === "LAT-I29");
+        $("open-closed").click();
+        ok("closed panel lists 6", $("dp-body").querySelectorAll(".closed-row").length === 6);
+        $("dp-body").querySelector('[data-reopen="LAT-I22"]').click();
+        ok("reopen from closed panel puts LAT-I22 back in the rail", S.state(S.get("LAT-I22")) === "open" && railIds().indexOf("LAT-I22") >= 0);
+        ok("closed panel now lists 5", $("dp-body").querySelectorAll(".closed-row").length === 5);
+      },
+      function () {
+        openPanel({ kind: "issue", id: "LAT-I1" });
+        var sel = $("dp-body").querySelector('[data-proto-task="LAT-370"]');
+        ok("issue panel shows the prototype-only control", !!sel);
+        sel.value = "done"; sel.dispatchEvent(new Event("change", { bubbles: true }));
+        ok("story done: LAT-I1 resolved and LAT-370 in Done", S.state(S.get("LAT-I1")) === "resolved" && cardLane("LAT-370") === "done");
+        ok("issue panel follows: state chip reads resolved", /resolved/.test($("dp-title").textContent));
+        openPanel({ kind: "issue", id: "LAT-I14" });
+        sel = $("dp-body").querySelector('[data-proto-task="LAT-381"]');
+        sel.value = "cancelled"; sel.dispatchEvent(new Event("change", { bubbles: true }));
+        ok("story cancelled: LAT-381 leaves the board", !cardLane("LAT-381"));
+        ok("its issues LAT-I14 and LAT-I23 are back in the rail", railIds().indexOf("LAT-I14") >= 0 && railIds().indexOf("LAT-I23") >= 0);
+        closePanel();
+      },
+      function () {
+        var m = boardEl.querySelector('[data-mark="LAT-377"]');
+        showPop(m);
+        ok("marker preview shows both issue texts", ipop.classList.contains("show") && /SIGKILL/.test(ipop.textContent) && /laptop lid/.test(ipop.textContent));
+        hidePop();
+        key("[");
+        ok("[ collapses the rail and the strip keeps the count", rail.classList.contains("collapsed") && $("strip-count").textContent === String(S.counts().open));
+        key("j");
+        ok("a rail key expands it again", !rail.classList.contains("collapsed"));
+        var before = ui.cursorIdx; key("j");
+        ok("j moves the cursor down", ui.cursorIdx === before + 1);
+      },
+      function () {
+        ok("rail count still matches the store (" + S.counts().open + ")", $("rail-count").textContent === String(S.counts().open) && railIds().length === S.counts().open);
+        lines.push(fails ? "RESULT FAIL (" + fails + ")" : "RESULT PASS");
+        out.textContent = lines.join("\n");
+        try { localStorage.removeItem("takeC.railCollapsed"); } catch (e) { /* ignore */ }
+      }
+    ];
+    var n = 0;
+    var run = function () {
+      if (n >= steps.length) { return; }
+      try { steps[n](); } catch (err) { ok("step " + n + " threw: " + err.message, false); }
+      n++; setTimeout(run, 40);
+    };
+    setTimeout(run, 60);
+  }
+})();
+</script>
+</body>
+</html>

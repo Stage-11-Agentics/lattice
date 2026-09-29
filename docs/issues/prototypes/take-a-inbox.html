@@ -1,0 +1,859 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Issues (Take A: Inbox)</title>
+<link rel="stylesheet" href="shared/shell.css">
+<style>
+/* Take A: Inbox. A queue on the left, the selected issue in full on the right.
+   Every fixed width and height below exists so that nothing moves while the viewer decides. */
+:root{
+  --qw:clamp(28rem,26vw,38rem);
+  --row-h:4.5rem;
+  --proto:#C084FC;--proto-bg:#3B0764;--proto-text:#F3E8FF;
+}
+body{overflow:hidden}
+.inbox{display:grid;grid-template-columns:var(--qw) 1fr;height:calc(100vh - 3rem - var(--proto-bar-h));min-width:0}
+
+/* ---------- left: the queue ---------- */
+.q-pane{display:flex;flex-direction:column;min-height:0;border-right:1px solid var(--border);background:var(--surface-card)}
+.q-tabs{display:grid;grid-template-columns:1.35fr 1.2fr 1fr .9fr;gap:.375rem;padding:.75rem .75rem .5rem}
+.q-tab{position:relative;height:3.25rem;text-align:left;padding:.3rem .55rem;border:1px solid var(--border);border-radius:var(--radius-sm);
+  background:var(--surface);color:var(--text-secondary);cursor:pointer;font-size:.74rem;line-height:1.2;overflow:hidden}
+.q-tab:hover{background:var(--surface-hover)}
+.q-tab .q-tab-label{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.q-tab .q-tab-count{display:block;font-size:1.2rem;font-weight:700;color:var(--text-primary);margin-top:.1rem}
+.q-tab kbd{position:absolute;bottom:.35rem;right:.35rem;font-size:.62rem;min-width:1rem;padding:0 .2rem;line-height:1.3}
+.q-tab[aria-pressed=true]{border-color:var(--accent-primary);background:var(--surface-raised);color:var(--text-primary);box-shadow:inset 0 -2px 0 var(--accent-primary)}
+.q-tab[data-q=open] .q-tab-count{color:var(--st-open)}
+
+.progress{padding:.5rem .875rem .625rem;border-top:1px solid var(--border-subtle);border-bottom:1px solid var(--border-subtle)}
+.pg-top{display:flex;align-items:baseline;gap:.625rem}
+.pg-num{font-size:2.25rem;font-weight:700;line-height:1;width:3ch;text-align:right;color:var(--st-open)}
+.pg-num.zero{color:var(--st-resolved)}
+.pg-label{font-size:.9rem;color:var(--text-secondary);white-space:nowrap}
+.pg-bar{height:4px;background:var(--border);border-radius:2px;margin:.5rem 0 .5rem;overflow:hidden}
+.pg-bar span{display:block;height:100%;background:var(--st-resolved);width:0;transition:width .25s ease}
+.pg-tally{display:flex;align-items:center;gap:.25rem;font-size:.78rem;color:var(--text-muted);white-space:nowrap}
+.pg-tally .t{display:inline-flex;gap:.35rem;align-items:baseline;margin-left:.6rem}
+.pg-tally .t b{display:inline-block;width:2ch;text-align:right;color:var(--text-primary);font-weight:700}
+
+.selbar{height:2.25rem;display:flex;align-items:center;gap:.5rem;padding:0 .875rem;font-size:.78rem;color:var(--text-muted);border-bottom:1px solid var(--border-subtle);white-space:nowrap}
+.selbar .sel-text{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.selbar.has{background:var(--accent-glow);color:var(--text-primary)}
+.selbar .btn{width:4.5rem}
+
+.q-list{flex:1;overflow-y:auto;min-height:0}
+.q-row{display:flex;gap:.625rem;height:var(--row-h);padding:.5rem .875rem .5rem .625rem;border-bottom:1px solid var(--border-row);border-left:3px solid transparent;cursor:pointer}
+.q-row:hover{background:var(--surface-hover)}
+.q-row.cursor{background:var(--surface-raised);border-left-color:var(--accent-primary)}
+.q-check{flex:0 0 1.05rem;height:1.05rem;margin-top:.15rem;border:1px solid var(--border);border-radius:var(--radius-sm);display:flex;align-items:center;justify-content:center;font-size:.72rem;color:transparent;background:var(--bg-base)}
+.q-row.sel .q-check{background:var(--accent-primary);border-color:var(--accent-primary);color:#fff}
+.q-check.off{visibility:hidden}
+.q-main{flex:1;min-width:0}
+.q-top{display:flex;align-items:center;gap:.5rem;font-size:.78rem;height:1.3rem}
+.q-top .iid{font-size:.82rem;width:5.5rem;flex-shrink:0}
+.q-tag{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-muted)}
+.q-age{flex-shrink:0;width:4.5rem;text-align:right;color:var(--text-muted)}
+.q-text{font-size:.9rem;line-height:1.35;color:var(--text-secondary);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-top:.1rem}
+.q-row.cursor .q-text{color:var(--text-primary)}
+.q-empty{padding:2.5rem 1.25rem;color:var(--text-muted);font-size:.9rem;line-height:1.6}
+.q-foot{height:2rem;display:flex;align-items:center;gap:.5rem;padding:0 .875rem;border-top:1px solid var(--border-subtle);font-size:.74rem;color:var(--text-muted);white-space:nowrap;overflow:hidden}
+
+/* ---------- right: the issue ---------- */
+.d-pane{display:flex;flex-direction:column;min-width:0;min-height:0}
+.undo-strip{height:2.5rem;flex-shrink:0;display:flex;align-items:center;gap:.75rem;padding:0 1.5rem;border-bottom:1px solid var(--border-subtle);font-size:.85rem;color:var(--text-secondary)}
+.undo-strip .u-msg{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.undo-strip .btn{width:6.5rem;flex-shrink:0}
+.undo-strip.pulse{animation:pulse 1.1s ease-out}
+@keyframes pulse{0%{background:rgba(234,88,12,.22)}100%{background:transparent}}
+
+.d-head{height:3.25rem;flex-shrink:0;display:flex;align-items:center;gap:.75rem;padding:0 1.5rem}
+.d-head .iid{font-size:1.15rem;width:6.5rem}
+.d-head .d-filed{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.85rem;color:var(--text-secondary)}
+.d-head .d-pos{flex-shrink:0;width:8.5rem;text-align:right;font-size:.85rem;color:var(--text-muted)}
+.d-actions{flex-shrink:0;display:flex;align-items:center;gap:.375rem;padding:0 1.5rem .75rem;border-bottom:1px solid var(--border)}
+.d-actions .btn{height:2.1rem;font-size:.82rem;padding:0 .5rem;display:inline-flex;align-items:center;gap:.4rem;overflow:hidden}
+.d-actions .btn kbd{flex-shrink:0}
+.d-actions .btn[aria-pressed=true]{background:var(--surface-hover);border-color:var(--accent-primary)}
+.d-actions .spacer{flex:1}
+.a-s{width:11.5rem}.a-l{width:6rem}.a-d{width:6.75rem}.a-u{width:7.75rem}.a-x{width:7rem}.a-o{width:6.25rem}
+
+.d-body{flex:1;overflow-y:auto;min-height:0;padding:1.25rem 1.5rem 2.5rem}
+/* header, actions and undo strip line up with the reading column instead of stretching across a wide screen */
+.undo-strip,.d-head,.d-actions{padding-right:max(1.5rem,calc(100% - 63.5rem))}
+.d-grid{display:block;max-width:62rem}
+.d-text{font-size:1.2rem;line-height:1.55;color:var(--text-primary);white-space:pre-wrap;word-break:break-word;margin:0 0 1.25rem}
+.meta{display:grid;grid-template-columns:7.5rem 1fr;gap:.35rem .75rem;font-size:.85rem;margin-bottom:1.5rem}
+.meta dt{color:var(--text-muted)}
+.meta dd{margin:0;min-width:0;color:var(--text-secondary)}
+.meta .evidence{display:block}
+.sec{margin-bottom:1.5rem}
+.sec h3{font-size:.78rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);margin:0 0 .5rem;font-weight:600;display:flex;gap:.5rem;align-items:baseline}
+.sec h3 .h-note{text-transform:none;letter-spacing:0;font-weight:400}
+.sec .none{font-size:.85rem;color:var(--text-muted)}
+.closure{border:1px solid var(--st-closed-border);background:var(--st-closed-bg);border-radius:var(--radius-md);padding:.625rem .875rem;font-size:.9rem;margin-bottom:1.5rem}
+.closure .c-by{font-size:.78rem;color:var(--text-muted);margin-top:.25rem}
+
+.story{border:1px solid var(--border);border-radius:var(--radius-md);padding:.5rem .75rem;margin-bottom:.5rem;background:var(--surface)}
+.story.dead{opacity:.6}
+.story-top{display:flex;align-items:center;gap:.625rem}
+.story-top .tid{width:5.25rem}
+.story-top .s-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.9rem}
+.story-top .btn{width:5.25rem;flex-shrink:0}
+.story-sub{display:flex;align-items:center;gap:.75rem;margin-top:.4rem;font-size:.75rem;color:var(--text-muted);min-height:1.6rem}
+.story-sub .also{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.proto-ctl{display:inline-flex;align-items:center;gap:.4rem;flex-shrink:0;background:var(--proto-bg);border:1px dashed var(--proto);color:var(--proto-text);border-radius:var(--radius-sm);padding:.1rem .4rem;font-size:.72rem}
+.proto-ctl select{background:#1E0333;color:var(--proto-text);border:1px solid var(--proto);border-radius:var(--radius-sm);font-family:inherit;font-size:.72rem;width:8rem}
+
+.sim{display:flex;align-items:center;gap:.625rem;padding:.4rem .5rem;border-bottom:1px solid var(--border-row);font-size:.85rem}
+.sim:last-child{border-bottom:0}
+.sim-list{border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface)}
+.sim .iid{width:5.5rem}
+.sim .sim-text{flex:1;min-width:0}
+.sim .sim-line{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-secondary)}
+.sim .sim-shares{font-size:.72rem;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sim .btn{width:4.5rem;flex-shrink:0}.sim .btn[data-dupof]{width:6.5rem}
+
+.hist{font-size:.8rem;border-left:2px solid var(--border);padding-left:.875rem}
+.hist div{display:flex;gap:.75rem;padding:.2rem 0}
+.hist .h-at{width:5.5rem;flex-shrink:0;color:var(--text-muted)}
+.hist .h-what{flex:1;min-width:0;color:var(--text-secondary);word-break:break-word}
+
+.done-state{max-width:40rem;margin:4rem auto 0;padding:0 1rem}
+.done-state h2{font-size:1.6rem;font-weight:700;margin:0 0 .5rem;color:var(--st-resolved)}
+.done-state p{color:var(--text-secondary);font-size:1rem;line-height:1.6;margin:.25rem 0 1rem}
+.done-tally{display:grid;grid-template-columns:4ch 1fr;gap:.35rem 1rem;font-size:1rem;margin:1.25rem 0 1.5rem;padding:1rem 1.25rem;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface)}
+.done-tally b{text-align:right;font-weight:700}
+.done-tally .head{grid-column:1 / -1;font-size:.78rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);margin-bottom:.25rem}
+.quiet{max-width:36rem;margin:4rem auto 0;color:var(--text-muted);font-size:1rem;line-height:1.6;text-align:center}
+
+/* my own small choosers (dismiss reasons, duplicate candidates) and the key list reuse the shell's dialog look */
+.choose-row{display:flex;align-items:center;gap:.75rem;padding:.5rem .625rem;border-bottom:1px solid var(--border-row);cursor:pointer;font-size:.88rem}
+.choose-row:last-child{border-bottom:0}
+.choose-row:hover,.choose-row.cursor{background:var(--surface-hover)}
+.choose-row .grow{flex:1;min-width:0}
+.choose-row .grow .line{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.choose-row .grow .sub{font-size:.72rem;color:var(--text-muted)}
+.choose-list{border:1px solid var(--border);border-radius:var(--radius-sm)}
+.keys{display:grid;grid-template-columns:9rem 1fr;gap:.45rem 1rem;font-size:.88rem;align-items:center}
+.keys span{color:var(--text-secondary)}
+
+@media (min-width:1800px){
+  .d-grid{display:grid;grid-template-columns:minmax(0,1fr) 36rem;gap:2.5rem;max-width:100rem}
+  .undo-strip,.d-head,.d-actions{padding-right:max(1.5rem,calc(100% - 101.5rem))}
+}
+#selftest{display:none}
+</style>
+</head>
+<body>
+<div class="inbox">
+  <section class="q-pane" aria-label="Issue queue">
+    <div class="q-tabs" id="q-tabs"></div>
+    <div class="progress" id="progress">
+      <div class="pg-top"><span class="pg-num" id="pg-num">0</span><span class="pg-label" id="pg-label">need a story</span></div>
+      <div class="pg-bar"><span id="pg-bar"></span></div>
+      <div class="pg-tally" id="pg-tally"></div>
+    </div>
+    <div class="selbar" id="selbar"><span class="sel-text" id="sel-text"></span><button class="btn btn-sm" id="sel-clear">Clear</button></div>
+    <div class="q-list" id="q-list" role="listbox" aria-label="Issues"></div>
+    <div class="q-foot"><kbd>j</kbd><kbd>k</kbd> move <kbd>x</kbd> select <kbd>z</kbd> undo <kbd>?</kbd> all keys</div>
+  </section>
+  <section class="d-pane" aria-label="Selected issue">
+    <div class="undo-strip" id="undo"><span class="u-msg" id="u-msg"></span><button class="btn btn-sm" id="u-btn"><kbd>z</kbd> Undo</button></div>
+    <div class="d-head" id="d-head"></div>
+    <div class="d-actions" id="d-actions">
+      <button class="btn btn-primary a-s" data-act="s"><kbd>s</kbd><span id="a-s-label">Make a story</span></button>
+      <button class="btn a-l" data-act="l" title="Link to a story that already exists"><kbd>l</kbd>Link</button>
+      <button class="btn a-d" data-act="d"><kbd>d</kbd>Dismiss</button>
+      <button class="btn a-u" data-act="u"><kbd>u</kbd>Duplicate</button>
+      <span class="spacer"></span>
+      <button class="btn a-x" data-act="x" aria-pressed="false"><kbd>x</kbd><span id="a-x-label">Select</span></button>
+      <button class="btn a-o" data-act="o"><kbd>o</kbd>Reopen</button>
+    </div>
+    <div class="d-body" id="d-body"></div>
+  </section>
+</div>
+<pre id="selftest"></pre>
+
+<script src="shared/mock-data.js"></script>
+<script src="shared/store.js"></script>
+<script src="shared/shell.js"></script>
+<script>
+(function () {
+  "use strict";
+  var S = window.IssueStore, F = Shell.fmt, esc = F.esc;
+
+  Shell.mount({ active: "issues", page: "a" });
+
+  var QUEUES = [
+    { key: "open", label: "Needs a story", states: ["open"] },
+    { key: "linked", label: "Has a story", states: ["linked"] },
+    { key: "resolved", label: "Resolved", states: ["resolved"] },
+    { key: "closed", label: "Closed", states: ["dismissed", "duplicate"] }
+  ];
+  var EMPTY = {
+    linked: "No issue has a story in progress. Issues land here when you make or link a story.",
+    resolved: "No issue is resolved yet. An issue is resolved when every story linked to it is done.",
+    closed: "Nothing has been dismissed or marked a duplicate."
+  };
+  var DISMISS_REASONS = [
+    "Not reproducible on the current build.",
+    "Working as intended.",
+    "Too vague to act on. Refile with steps or a screenshot.",
+    "Already fixed. No story needed."
+  ];
+
+  // ---- UI state ----
+  var view = "open";
+  var cursorBy = { open: null, linked: null, resolved: null, closed: null }; // cursor id per queue
+  var cursorIdx = { open: 0, linked: 0, resolved: 0, closed: 0 };
+  var selection = [];      // issue ids, current queue only
+  var undoStack = [];      // decisions made in this sitting, newest last
+  var lastMsg = "";        // what the undo strip says
+  var shownId = null;      // issue currently in the right pane, to keep or reset its scroll
+  var chooser = null;      // my own small dialog, when open
+
+  function queueOf(issue) {
+    var st = S.state(issue);
+    for (var n = 0; n < QUEUES.length; n++) { if (QUEUES[n].states.indexOf(st) >= 0) { return QUEUES[n].key; } }
+    return "open";
+  }
+  function listFor(key) {
+    return S.issues().filter(function (i) { return queueOf(i) === key; }); // S.issues() is oldest first
+  }
+  function isClosed(i) { return !!i.closure; }
+  function current() {
+    var id = cursorBy[view];
+    return id ? S.get(id) : null;
+  }
+
+  // Keep the cursor on the same issue if it is still here; otherwise take whatever now sits at its old
+  // position, which after a decision is the next issue in line.
+  function settleCursor(list) {
+    var id = cursorBy[view], idx = -1;
+    for (var n = 0; n < list.length; n++) { if (list[n].id === id) { idx = n; } }
+    if (idx < 0) { idx = Math.min(cursorIdx[view], list.length - 1); }
+    cursorIdx[view] = Math.max(0, idx);
+    cursorBy[view] = list.length ? list[Math.max(0, idx)].id : null;
+    selection = selection.filter(function (sid) { return list.some(function (i) { return i.id === sid; }); });
+  }
+
+  // ---- similar issues: plain word overlap, weighted so rare words count more ----
+  var STOP = ("the and for with when that this from have has had but not are was were its into then than there their they " +
+    "what which while will would can cannot does did doing done only also same each every any all some more most other about " +
+    "after before over under still just like very you your our out off too why how who where here been being because see seen " +
+    "get got use used using one two instead nothing something expected found may might should could say says itself first look " +
+    "need needs whose within tell work during lattice lat").split(" ");
+  function stem(w) {
+    if (w.length > 5 && /ing$/.test(w)) { return w.slice(0, -3); }
+    if (w.length > 4 && /ed$/.test(w)) { return w.slice(0, -2); }
+    if (w.length > 3 && /s$/.test(w) && !/ss$/.test(w)) { return w.slice(0, -1); }
+    return w;
+  }
+  function words(text) {
+    var out = {};
+    text.toLowerCase().replace(/[^a-z0-9]+/g, " ").split(" ").forEach(function (w) {
+      if (w.length < 3 || STOP.indexOf(w) >= 0 || /^\d+$/.test(w)) { return; }
+      var s = stem(w);
+      if (!out[s]) { out[s] = w; }
+    });
+    return out; // stem -> first spelling seen, for display
+  }
+  function similar(id, limit) {
+    var all = S.issues(), me = S.get(id), mine = words(me.text), df = {}, bag = {};
+    all.forEach(function (i) { bag[i.id] = words(i.text); Object.keys(bag[i.id]).forEach(function (w) { df[w] = (df[w] || 0) + 1; }); });
+    var res = [];
+    all.forEach(function (i) {
+      if (i.id === id || (i.closure && i.closure.kind === "duplicate")) { return; }
+      var shared = Object.keys(mine).filter(function (w) { return bag[i.id][w]; });
+      var score = shared.reduce(function (a, w) { return a + Math.log(all.length / df[w]); }, 0);
+      if (shared.length >= 2 && score >= 4.5) {
+        shared.sort(function (a, b) { return df[a] - df[b]; });
+        res.push({ issue: i, score: score, shared: shared.map(function (w) { return mine[w]; }) });
+      }
+    });
+    res.sort(function (a, b) { return b.score - a.score || a.issue.seq - b.issue.seq; });
+    return res.slice(0, limit || 3);
+  }
+
+  // ---- decisions and undo ----
+  function ids(list) { return list.join(", "); }
+  function describe(d) {
+    switch (d.kind) {
+      case "promote": return d.ids.length === 1 ? d.ids[0] + " became story " + d.taskId + "." : ids(d.ids) + " became one story, " + d.taskId + ".";
+      case "link": return d.ids[0] + " linked to " + d.taskId + ".";
+      case "dismiss": return d.ids[0] + " dismissed: " + d.reason;
+      case "duplicate": return d.ids[0] + " marked a duplicate of " + d.of + ".";
+      case "reopen": return d.ids[0] + " reopened.";
+      case "unlink": return d.ids[0] + " unlinked from " + d.taskId + ".";
+    }
+    return "";
+  }
+  function record(d) {
+    undoStack.push(d);
+    lastMsg = describe(d);
+    pulse();
+    render();
+  }
+  function pulse() {
+    var u = document.getElementById("undo");
+    u.classList.remove("pulse"); void u.offsetWidth; u.classList.add("pulse");
+  }
+
+  function undo() {
+    var d = undoStack.pop();
+    if (!d) { lastMsg = "Nothing to undo in this sitting."; render(); return; }
+    var ok = Shell.guard(function () {
+      if (d.kind === "promote" || d.kind === "link") {
+        d.ids.forEach(function (id) { S.unlink(id, d.taskId); });
+      } else if (d.kind === "dismiss" || d.kind === "duplicate") {
+        S.reopen(d.ids[0]);
+      } else if (d.kind === "reopen") {
+        if (d.closure.kind === "dismissed") { S.dismiss(d.ids[0], d.closure.reason); } else { S.duplicate(d.ids[0], d.closure.duplicate_of); }
+      } else if (d.kind === "unlink") {
+        S.link(d.ids[0], d.taskId);
+      }
+      return true;
+    });
+    if (!ok) { undoStack.push(d); render(); return; }
+    if (d.kind === "promote") {
+      lastMsg = "Undone. " + ids(d.ids) + " no longer linked to " + d.taskId + ". The story stays in backlog; a story cannot be deleted from here.";
+    } else if (d.kind === "link") {
+      lastMsg = "Undone. " + d.ids[0] + " is no longer linked to " + d.taskId + ".";
+    } else if (d.kind === "dismiss" || d.kind === "duplicate") {
+      lastMsg = "Undone. " + d.ids[0] + " is open again.";
+    } else if (d.kind === "reopen") {
+      lastMsg = "Undone. " + d.ids[0] + " is closed again.";
+    } else {
+      lastMsg = "Undone. " + d.ids[0] + " is linked to " + d.taskId + " again.";
+    }
+    Shell.toast(esc(lastMsg), "info");
+    // Bring the viewer back to the issue that was undone, wherever it now lives.
+    goTo(d.ids[0]);
+    pulse();
+  }
+
+  // Each action goes through the store, then is recorded so z can take it back. The undo strip is the
+  // feedback; a toast per keystroke would pile up in a fast queue. Undo still toasts, since its message is long.
+  var act = {
+    promote: function (list, title) {
+      var t = Shell.guard(function () { return S.promote(list, title ? { title: title } : {}); });
+      if (t) { selection = []; record({ kind: "promote", ids: list.slice(), taskId: t.id }); }
+      return t;
+    },
+    link: function (id, taskId) {
+      var r = Shell.guard(function () { return S.link(id, taskId); });
+      if (r && !r.idempotent) { record({ kind: "link", ids: [id], taskId: taskId }); }
+      return r;
+    },
+    dismiss: function (id, reason) {
+      var ok = Shell.guard(function () { S.dismiss(id, reason); return true; });
+      if (ok) { record({ kind: "dismiss", ids: [id], reason: reason }); }
+      return ok;
+    },
+    duplicate: function (id, of) {
+      var ok = Shell.guard(function () { S.duplicate(id, of); return true; });
+      if (ok) { record({ kind: "duplicate", ids: [id], of: of }); }
+      return ok;
+    },
+    reopen: function (id) {
+      var closure = JSON.parse(JSON.stringify(S.get(id).closure));
+      var ok = Shell.reopen(id);
+      if (ok) { record({ kind: "reopen", ids: [id], closure: closure }); }
+      return ok;
+    },
+    unlink: function (id, taskId) {
+      Shell.guard(function () { S.unlink(id, taskId); });
+      record({ kind: "unlink", ids: [id], taskId: taskId });
+    }
+  };
+
+  // Keyboard entry points. Promote and link reuse the shell dialogs; dismiss and duplicate get
+  // small choosers of my own so the common answer is one more key, not a typed sentence.
+  function doMake() {
+    var i = current(); if (!i && !selection.length) { return; }
+    var list = selection.length ? selection.slice() : [i.id];
+    if (list.some(function (id) { return isClosed(S.get(id)); })) { Shell.toast("A closed issue cannot get a story. Reopen it first.", "error"); return; }
+    Shell.promoteDialog(list).then(function (t) {
+      if (t) { selection = []; record({ kind: "promote", ids: list, taskId: t.id }); }
+    });
+  }
+  function doLink() {
+    var i = current(); if (!i || isClosed(i)) { return; }
+    Shell.linkDialog(i.id).then(function (taskId) { if (taskId) { record({ kind: "link", ids: [i.id], taskId: taskId }); } });
+  }
+  function doDismiss() {
+    var i = current(); if (!i || isClosed(i)) { return; }
+    openChooser("Dismiss " + i.id, DISMISS_REASONS.map(function (r) {
+      return { html: '<div class="grow"><div class="line">' + esc(r) + "</div></div>", pick: function () { act.dismiss(i.id, r); } };
+    }).concat([{ key: "w", html: '<div class="grow"><div class="line">Write a reason</div></div>', pick: function () {
+      Shell.dismissDialog(i.id).then(function (ok) {
+        if (ok) { record({ kind: "dismiss", ids: [i.id], reason: S.get(i.id).closure.reason }); }
+      });
+    } }]), "The filer reads the reason. Nothing is deleted.");
+  }
+  function searchDuplicate(id) {
+    Shell.duplicateDialog(id).then(function (of) { if (of) { record({ kind: "duplicate", ids: [id], of: of }); } });
+  }
+  function doDuplicate() {
+    var i = current(); if (!i || isClosed(i)) { return; }
+    var sims = similar(i.id, 3);
+    if (!sims.length) { searchDuplicate(i.id); return; }
+    openChooser("Mark " + i.id + " as a duplicate of", sims.map(function (s) {
+      return { html: F.iid(s.issue.id) + F.state(S.state(s.issue)) + '<div class="grow"><div class="line">' + esc(F.firstLine(s.issue.text)) +
+        '</div><div class="sub">shares: ' + esc(s.shared.slice(0, 5).join(", ")) + "</div></div>",
+        pick: function () { act.duplicate(i.id, s.issue.id); } };
+    }).concat([{ key: "/", html: '<div class="grow"><div class="line">Search all issues</div></div>', pick: function () { searchDuplicate(i.id); } }]),
+      "Similar by shared words. You choose; nothing is marked for you.");
+  }
+  function doSelect() {
+    var i = current(); if (!i || isClosed(i)) { return; }
+    var n = selection.indexOf(i.id);
+    if (n >= 0) { selection.splice(n, 1); } else { selection.push(i.id); }
+    render();
+  }
+  function doReopen() {
+    var i = current(); if (!i || !isClosed(i)) { return; }
+    act.reopen(i.id);
+  }
+  function move(delta) {
+    var list = listFor(view); if (!list.length) { return; }
+    var idx = Math.max(0, Math.min(list.length - 1, cursorIdx[view] + delta));
+    cursorIdx[view] = idx; cursorBy[view] = list[idx].id;
+    render();
+  }
+  function switchQueue(key) {
+    if (view === key) { return; }
+    view = key; selection = [];
+    render();
+  }
+  // Show an issue wherever it now lives. Used by undo, by "Go to" on a similar issue,
+  // and by the prototype story-status control, so the viewer watches the issue follow its story.
+  function goTo(id) {
+    var i = S.get(id); if (!i) { return; }
+    var q = queueOf(i);
+    if (q !== view) { selection = []; }
+    view = q; cursorBy[q] = id;
+    render();
+  }
+
+  // ---- my small chooser ----
+  function openChooser(title, rows, hint) {
+    closeChooser();
+    var o = Shell.el('<div class="overlay"><div class="dialog" role="dialog" aria-label="' + esc(title) + '">' +
+      '<div class="dialog-head"><span>' + esc(title) + '</span><button class="btn btn-sm" data-x>Esc</button></div>' +
+      '<div class="dialog-body"><div class="choose-list">' + rows.map(function (r, n) {
+        return '<div class="choose-row' + (n === 0 ? " cursor" : "") + '" data-n="' + n + '"><kbd>' + esc(r.key || String(n + 1)) + "</kbd>" + r.html + "</div>";
+      }).join("") + '</div></div><div class="dialog-foot"><span class="hint">' + esc(hint) +
+      '</span><button class="btn" data-x>Cancel</button></div></div></div>');
+    chooser = { el: o, rows: rows, cursor: 0 };
+    o.addEventListener("mousedown", function (e) { if (e.target === o) { closeChooser(); } });
+    o.querySelectorAll("[data-x]").forEach(function (b) { b.onclick = closeChooser; });
+    o.querySelectorAll(".choose-row").forEach(function (row) { row.onclick = function () { pickChooser(+row.getAttribute("data-n")); }; });
+    document.body.appendChild(o);
+  }
+  function closeChooser() { if (chooser) { document.body.removeChild(chooser.el); chooser = null; } }
+  function pickChooser(n) { var r = chooser && chooser.rows[n]; closeChooser(); if (r) { r.pick(); } }
+  function chooserKey(e) {
+    var k = e.key, rows = chooser.rows;
+    if (k === "Escape") { closeChooser(); return true; }
+    if (k === "ArrowDown" || k === "j") { chooser.cursor = Math.min(rows.length - 1, chooser.cursor + 1); }
+    else if (k === "ArrowUp" || k === "k") { chooser.cursor = Math.max(0, chooser.cursor - 1); }
+    else if (k === "Enter") { pickChooser(chooser.cursor); return true; }
+    else {
+      for (var n = 0; n < rows.length; n++) { if ((rows[n].key || String(n + 1)) === k) { pickChooser(n); return true; } }
+      return k.length === 1; // swallow other letters so they do not reach the page
+    }
+    chooser.el.querySelectorAll(".choose-row").forEach(function (r, n) { r.classList.toggle("cursor", n === chooser.cursor); });
+    return true;
+  }
+
+  function showKeys() {
+    openChooser("Keys", [], "");
+    var body = chooser.el.querySelector(".dialog-body");
+    var K = [["j  ↓", "next issue"], ["k  ↑", "previous issue"], ["s", "make a story (one story from the selection, if there is one)"],
+      ["l", "link to a story that already exists"], ["d", "dismiss, with a reason"], ["u", "mark a duplicate (similar issues first)"],
+      ["x", "add to or remove from the selection"], ["Esc", "clear the selection"], ["o", "reopen a closed issue"],
+      ["z", "undo the last decision"], ["1 2 3 4", "switch queue"], ["i", "file an issue"], ["?", "this list"]];
+    body.innerHTML = '<div class="keys">' + K.map(function (k) {
+      return "<div>" + k[0].split(/\s+/).map(function (x) { return "<kbd>" + esc(x) + "</kbd>"; }).join(" ") + "</div><span>" + esc(k[1]) + "</span>";
+    }).join("") + "</div>";
+    chooser.el.querySelector(".hint").textContent = "After each decision the next issue is already selected.";
+    chooser.el.querySelector(".dialog-foot .btn").textContent = "Close";
+  }
+
+  // ---- keyboard ----
+  document.addEventListener("keydown", function (e) {
+    if (chooser) {
+      if (chooserKey(e)) { e.preventDefault(); e.stopPropagation(); }
+      return;
+    }
+    if (Shell.dialogOpen() || e.metaKey || e.ctrlKey || e.altKey) { return; }
+    var tag = (e.target.tagName || "").toLowerCase();
+    if (tag === "input" || tag === "textarea" || tag === "select") { return; }
+    var k = e.key, handled = true;
+    if (k === "j" || k === "ArrowDown") { move(1); }
+    else if (k === "k" || k === "ArrowUp") { move(-1); }
+    else if (k === "s") { doMake(); }
+    else if (k === "l") { doLink(); }
+    else if (k === "d") { doDismiss(); }
+    else if (k === "u") { doDuplicate(); }
+    else if (k === "x") { doSelect(); }
+    else if (k === "o") { doReopen(); }
+    else if (k === "z") { undo(); }
+    else if (k === "?") { showKeys(); }
+    else if (k === "Escape") { if (selection.length) { selection = []; render(); } }
+    else if (/^[1-4]$/.test(k)) { switchQueue(QUEUES[+k - 1].key); }
+    else { handled = false; }
+    if (handled) { e.preventDefault(); }
+  }, true);
+
+  // ---- rendering ----
+  var tabsEl = document.getElementById("q-tabs");
+  tabsEl.innerHTML = QUEUES.map(function (q, n) {
+    return '<button class="q-tab" data-q="' + q.key + '" aria-pressed="false"><kbd>' + (n + 1) + '</kbd><span class="q-tab-label">' + q.label +
+      '</span><span class="q-tab-count" id="qc-' + q.key + '">0</span></button>';
+  }).join("");
+  tabsEl.addEventListener("click", function (e) { var b = e.target.closest(".q-tab"); if (b) { switchQueue(b.getAttribute("data-q")); } });
+  document.getElementById("q-list").addEventListener("click", function (e) {
+    var row = e.target.closest(".q-row"); if (!row) { return; }
+    var id = row.getAttribute("data-id");
+    cursorBy[view] = id;
+    if (e.target.closest(".q-check")) { doSelect(); return; }
+    render();
+  });
+  document.getElementById("d-actions").addEventListener("click", function (e) {
+    var b = e.target.closest("[data-act]"); if (!b || b.disabled) { return; }
+    ({ s: doMake, l: doLink, d: doDismiss, u: doDuplicate, x: doSelect, o: doReopen })[b.getAttribute("data-act")]();
+  });
+  document.getElementById("u-btn").onclick = undo;
+  document.getElementById("sel-clear").onclick = function () { selection = []; render(); };
+  document.getElementById("d-body").addEventListener("click", function (e) {
+    var b = e.target.closest("[data-unlink]");
+    if (b) { act.unlink(b.getAttribute("data-issue"), b.getAttribute("data-unlink")); return; }
+    var g = e.target.closest("[data-goto]");
+    if (g) { goTo(g.getAttribute("data-goto")); return; }
+    var dup = e.target.closest("[data-dupof]");
+    if (dup) { act.duplicate(dup.getAttribute("data-issue"), dup.getAttribute("data-dupof")); }
+  });
+  document.getElementById("d-body").addEventListener("change", function (e) {
+    var sel = e.target.closest("select[data-task]"); if (!sel) { return; }
+    var taskId = sel.getAttribute("data-task"), issueId = sel.getAttribute("data-issue");
+    var before = S.state(S.get(issueId));
+    S.setTaskStatus(taskId, sel.value);
+    var after = S.state(S.get(issueId));
+    lastMsg = "Prototype: " + taskId + " moved to " + sel.value.replace(/_/g, " ") + ". " + issueId +
+      (before === after ? " stays " + after + "." : " went from " + before + " to " + after + ".");
+    pulse();
+    goTo(issueId);
+    sel.blur();
+  });
+
+  function tally() {
+    var t = { stories: 0, promoted: 0, linked: 0, dismissed: 0, duplicate: 0, reopened: 0, unlinked: 0, decided: 0 };
+    undoStack.forEach(function (d) {
+      if (d.kind === "promote") { t.stories += 1; t.promoted += d.ids.length; t.decided += d.ids.length; }
+      else if (d.kind === "link") { t.linked += 1; t.decided += 1; }
+      else if (d.kind === "dismiss") { t.dismissed += 1; t.decided += 1; }
+      else if (d.kind === "duplicate") { t.duplicate += 1; t.decided += 1; }
+      else if (d.kind === "reopen") { t.reopened += 1; }
+      else if (d.kind === "unlink") { t.unlinked += 1; }
+    });
+    return t;
+  }
+
+  function tagFor(i) {
+    var q = queueOf(i);
+    if (q === "open") { return esc(i.filed_by); }
+    if (q === "closed") {
+      return i.closure.kind === "duplicate" ? "duplicate of " + esc(i.closure.duplicate_of) : "dismissed: " + esc(i.closure.reason);
+    }
+    var live = S.liveLinks(i).map(function (l) { return l.task_id; });
+    return '<span class="tid">' + esc(live[0]) + "</span>" + (live.length > 1 ? " +" + (live.length - 1) : "") +
+      " " + esc(S.task(live[0]).status.replace(/_/g, " "));
+  }
+
+  function renderQueue(list) {
+    var el = document.getElementById("q-list"), curId = cursorBy[view];
+    if (!list.length) {
+      el.innerHTML = '<div class="q-empty">' + (view === "open" ? "Nothing needs a story." : esc(EMPTY[view])) + "</div>";
+      return;
+    }
+    el.innerHTML = list.map(function (i) {
+      var cls = "q-row" + (i.id === curId ? " cursor" : "") + (selection.indexOf(i.id) >= 0 ? " sel" : "");
+      return '<div class="' + cls + '" data-id="' + i.id + '" role="option" aria-selected="' + (i.id === curId) + '">' +
+        '<span class="q-check' + (isClosed(i) ? " off" : "") + '" title="Select (x)">✓</span>' +
+        '<div class="q-main"><div class="q-top">' + F.iid(i.id) + '<span class="q-tag">' + tagFor(i) + '</span><span class="q-age">' + F.rel(i.filed_at) + "</span></div>" +
+        '<div class="q-text" title="' + esc(i.text) + '">' + esc(i.text) + "</div></div></div>";
+    }).join("");
+    var c = el.querySelector(".cursor"); if (c) { c.scrollIntoView({ block: "nearest" }); }
+  }
+
+  function renderProgress(counts) {
+    var t = tally(), open = counts.open;
+    var num = document.getElementById("pg-num");
+    num.textContent = open;
+    num.classList.toggle("zero", open === 0);
+    document.getElementById("pg-label").textContent = open === 1 ? "issue needs a story" : "issues need a story";
+    var done = t.decided;
+    document.getElementById("pg-bar").style.width = (done + open ? Math.round(100 * done / (done + open)) : 100) + "%";
+    document.getElementById("pg-tally").innerHTML = "This sitting" +
+      '<span class="t">stories <b>' + t.stories + '</b></span><span class="t">linked <b>' + t.linked +
+      '</b></span><span class="t">closed <b>' + (t.dismissed + t.duplicate) + "</b></span>";
+  }
+
+  function renderSelbar(list) {
+    var bar = document.getElementById("selbar"), txt = document.getElementById("sel-text");
+    bar.classList.toggle("has", selection.length > 0);
+    document.getElementById("sel-clear").disabled = !selection.length;
+    if (view === "closed") { txt.innerHTML = "Closed issues cannot be selected. <kbd>o</kbd> reopens one."; return; }
+    txt.innerHTML = selection.length
+      ? "<b>" + selection.length + " selected</b> " + esc(selection.join(" ")) + ". <kbd>s</kbd> makes one story."
+      : "<kbd>x</kbd> selects several issues for one story.";
+  }
+
+  function renderActions(i) {
+    var closed = i && isClosed(i), none = !i;
+    var btn = function (k) { return document.querySelector('[data-act="' + k + '"]'); };
+    btn("s").disabled = selection.length ? false : (none || closed);
+    btn("l").disabled = none || closed;
+    btn("d").disabled = none || closed;
+    btn("u").disabled = none || closed;
+    btn("x").disabled = none || closed;
+    btn("o").disabled = none || !closed;
+    document.getElementById("a-s-label").textContent = selection.length > 1 ? "One story from " + selection.length : "Make a story";
+    var inSel = i && selection.indexOf(i.id) >= 0;
+    btn("x").setAttribute("aria-pressed", inSel ? "true" : "false");
+    document.getElementById("a-x-label").textContent = inSel ? "Selected" : "Select";
+  }
+
+  function histLine(h) {
+    var d = h.data, what;
+    switch (h.type) {
+      case "issue_filed": what = "filed"; break;
+      case "issue_linked": what = (d.promoted ? "made story " : "linked to ") + F.tid(d.task_id); break;
+      case "issue_unlinked": what = "unlinked from " + F.tid(d.task_id); break;
+      case "issue_dismissed": what = "dismissed: " + esc(d.reason); break;
+      case "issue_marked_duplicate": what = "marked a duplicate of " + F.iid(d.duplicate_of); break;
+      case "issue_reopened": what = "reopened"; break;
+      default: what = esc(h.type);
+    }
+    return '<div><span class="h-at" title="' + esc(F.abs(h.at)) + '">' + F.rel(h.at) + '</span><span class="h-what">' + F.actor(h.by) + " " + what + "</span></div>";
+  }
+
+  function storyBlock(i, l) {
+    var t = S.task(l.task_id), dead = t.status === "cancelled";
+    var others = S.issuesFor(t.id).filter(function (x) { return x.id !== i.id; }).map(function (x) { return x.id; });
+    return '<div class="story' + (dead ? " dead" : "") + '"><div class="story-top">' + F.tid(t.id) + F.tstatus(t.status) +
+      '<span class="s-title" title="' + esc(t.title) + '">' + esc(t.title) + "</span>" +
+      '<button class="btn btn-sm" data-unlink="' + t.id + '" data-issue="' + i.id + '">Unlink</button></div>' +
+      '<div class="story-sub"><span class="also">' + (dead ? "Cancelled, so it does not count. " : "") +
+      (l.linked_by ? "linked " + F.rel(l.linked_at) + " by " + esc(l.linked_by) : "") +
+      (others.length ? ". Also from " + esc(others.join(", ")) : "") + "</span>" +
+      '<label class="proto-ctl">prototype only: move this story to <select data-task="' + t.id + '" data-issue="' + i.id + '">' +
+      S.TASK_STATUSES.map(function (s) { return '<option value="' + s + '"' + (s === t.status ? " selected" : "") + ">" + s.replace(/_/g, " ") + "</option>"; }).join("") +
+      "</select></label></div></div>";
+  }
+
+  function renderDetail(i, list, counts) {
+    var head = document.getElementById("d-head"), body = document.getElementById("d-body");
+    var changed = (i ? i.id : "none:" + view) !== shownId;
+    shownId = i ? i.id : "none:" + view;
+    var keep = changed ? 0 : body.scrollTop;
+
+    if (!i) {
+      var q = QUEUES.filter(function (x) { return x.key === view; })[0];
+      head.innerHTML = '<span class="d-filed">' + esc(q.label) + '</span><span class="d-pos">0 of 0</span>';
+      if (view === "open") {
+        var t = tally();
+        body.innerHTML = '<div class="done-state"><h2>Nothing needs a story.</h2>' +
+          "<p>Every issue has a story, a link to one, or a reason it was closed.</p>" +
+          '<div class="done-tally"><div class="head">This sitting</div>' +
+          "<b>" + t.decided + "</b><span>issues decided</span>" +
+          "<b>" + t.promoted + "</b><span>became " + t.stories + (t.stories === 1 ? " new story" : " new stories") + "</span>" +
+          "<b>" + t.linked + "</b><span>linked to stories that already existed</span>" +
+          "<b>" + (t.dismissed + t.duplicate) + "</b><span>closed (" + t.dismissed + " dismissed, " + t.duplicate + " duplicate)</span></div>" +
+          "<p>New issues arrive at the bottom of this queue. <kbd>i</kbd> files one. <kbd>z</kbd> undoes the last decision.</p>" +
+          '<p class="muted">' + counts.linked + " issues have a story in progress (<kbd>2</kbd>).</p></div>";
+      } else {
+        body.innerHTML = '<div class="quiet">' + esc(EMPTY[view]) + "</div>";
+      }
+      body.scrollTop = 0;
+      return;
+    }
+
+    var st = S.state(i);
+    head.innerHTML = F.iid(i.id) + F.state(st) + '<span class="d-filed">filed ' + F.rel(i.filed_at) + " by " + esc(i.filed_by) + "</span>" +
+      '<span class="d-pos">' + (cursorIdx[view] + 1) + " of " + list.length + "</span>";
+
+    var main = '<p class="d-text">' + esc(i.text) + "</p>" +
+      '<dl class="meta"><dt>Filed by</dt><dd>' + F.actor(i.filed_by) + "</dd>" +
+      '<dt>Filed</dt><dd title="' + esc(F.abs(i.filed_at)) + '">' + esc(F.abs(i.filed_at)) + " (" + F.rel(i.filed_at) + ")</dd>" +
+      "<dt>Source</dt><dd>" + (i.source ? esc(i.source) : '<span class="muted">—</span>') + "</dd>" +
+      "<dt>How sure</dt><dd>" + F.conf(i.confidence) + "</dd>" +
+      "<dt>Evidence</dt><dd>" + (i.evidence.length ? i.evidence.map(function (e) { return '<span class="evidence">' + esc(e) + "</span>"; }).join("") : '<span class="muted">—</span>') + "</dd></dl>";
+
+    if (i.closure) {
+      var c = i.closure;
+      main += '<div class="closure">' + (c.kind === "dismissed"
+        ? "<b>Dismissed.</b> " + esc(c.reason)
+        : '<b>Duplicate of</b> <a href="#" data-goto="' + esc(c.duplicate_of) + '">' + esc(c.duplicate_of) + "</a>: " + esc(F.firstLine(S.get(c.duplicate_of).text, 90))) +
+        '<div class="c-by">by ' + esc(c.by) + ", " + F.rel(c.at) + ". <kbd>o</kbd> reopens it.</div></div>";
+    }
+
+    main += '<div class="sec"><h3>Stories <span class="h-note">' + (i.links.length || "") + "</span></h3>" +
+      (i.links.length ? i.links.map(function (l) { return storyBlock(i, l); }).join("")
+        : '<div class="none">No story yet. <kbd>s</kbd> makes one, <kbd>l</kbd> links one that exists.</div>') + "</div>";
+
+    var dups = S.duplicatesOf(i.id);
+    if (dups.length) {
+      main += '<div class="sec"><h3>Marked duplicate of this</h3><div class="sim-list">' + dups.map(function (d) {
+        return '<div class="sim">' + F.iid(d.id) + '<div class="sim-text"><div class="sim-line" title="' + esc(d.text) + '">' + esc(d.text) +
+          '</div></div><button class="btn btn-sm" data-goto="' + d.id + '">Go to</button></div>';
+      }).join("") + "</div></div>";
+    }
+
+    var sims = similar(i.id, 3);
+    var aside = '<div class="sec"><h3>Similar issues <span class="h-note">by shared words</span></h3>' +
+      (sims.length ? '<div class="sim-list">' + sims.map(function (s) {
+        var canDup = !isClosed(i);
+        return '<div class="sim">' + F.iid(s.issue.id) + '<div class="sim-text"><div class="sim-line" title="' + esc(s.issue.text) + '">' +
+          esc(s.issue.text) + '</div><div class="sim-shares">' + esc(S.state(s.issue)) + " · shares " + esc(s.shared.slice(0, 5).join(", ")) + "</div></div>" +
+          '<button class="btn btn-sm" data-goto="' + s.issue.id + '" title="Show it in its queue">Go to</button>' +
+          (canDup ? '<button class="btn btn-sm" data-dupof="' + s.issue.id + '" data-issue="' + i.id + '" title="Mark ' + i.id + ' a duplicate of ' + s.issue.id + '">Duplicate</button>' : "") +
+          "</div>";
+      }).join("") + "</div>" : '<div class="none">No other issue shares enough words with this one.</div>') + "</div>" +
+      '<div class="sec"><h3>History</h3><div class="hist">' + S.history(i.id).map(histLine).join("") + "</div></div>";
+
+    body.innerHTML = '<div class="d-grid"><div>' + main + "</div><div>" + aside + "</div></div>";
+    body.scrollTop = keep;
+  }
+
+  function render() {
+    var counts = S.counts();
+    QUEUES.forEach(function (q) {
+      document.getElementById("qc-" + q.key).textContent = q.states.reduce(function (a, s) { return a + counts[s]; }, 0);
+      tabsEl.querySelector('[data-q="' + q.key + '"]').setAttribute("aria-pressed", q.key === view ? "true" : "false");
+    });
+    var list = listFor(view);
+    settleCursor(list);
+    var i = current();
+    renderProgress(counts);
+    renderSelbar(list);
+    renderQueue(list);
+    renderActions(i);
+    renderDetail(i, list, counts);
+    var um = document.getElementById("u-msg");
+    um.textContent = lastMsg || "Each decision can be undone with z.";
+    um.title = um.textContent;
+    document.getElementById("u-btn").disabled = !undoStack.length;
+    document.getElementById("u-btn").title = undoStack.length ? "Undo: " + describe(undoStack[undoStack.length - 1]) : "Nothing to undo";
+  }
+
+  S.subscribe(render);
+  render();
+
+  // ---- test hooks ----
+  // ?keys=jjx   replays keystrokes after load (for headless screenshots of a given state).
+  // ?selftest=1 runs every action against the store and writes PASS/FAIL lines into <pre id="selftest">.
+  var params = new URLSearchParams(location.search);
+  function key(k) { document.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true })); }
+  if (params.get("keys")) { params.get("keys").split("").forEach(key); }
+
+  if (params.get("selftest") === "1") {
+    var out = [], pass = 0, failN = 0;
+    var check = function (name, cond) { out.push((cond ? "PASS " : "FAIL ") + name); if (cond) { pass++; } else { failN++; } };
+    var st = function (id) { return S.state(S.get(id)); };
+    var rects = function () {
+      return Array.prototype.map.call(document.querySelectorAll("#d-actions .btn, #undo .btn, .q-tab"), function (b) {
+        var r = b.getBoundingClientRect(); return [Math.round(r.left), Math.round(r.top), Math.round(r.width)].join(",");
+      }).join(" ");
+    };
+    try {
+      var r0 = rects();
+      var open0 = listFor("open"), n0 = open0.length;
+      check("default queue is Needs a story, oldest first (" + n0 + " issues, LAT-I8 first because its only story was cancelled)",
+        view === "open" && n0 === S.counts().open && open0[0].id === "LAT-I8");
+      check("cursor starts on the oldest open issue", cursorBy.open === open0[0].id);
+      key("j");
+      check("j moves to the next issue", cursorBy.open === open0[1].id);
+      key("k");
+      check("k moves back", cursorBy.open === open0[0].id);
+      key("j");
+      check("similar(LAT-I38) offers LAT-I11 (swatch, click)", similar("LAT-I38").some(function (s) { return s.issue.id === "LAT-I11"; }));
+      check("similar(LAT-I40) offers LAT-I2 (footer, last comment)", similar("LAT-I40").some(function (s) { return s.issue.id === "LAT-I2"; }));
+      check("similar never offers an issue that is itself a duplicate", similar("LAT-I1").every(function (s) { return s.issue.id !== "LAT-I19"; }));
+
+      var t1 = act.promote(["LAT-I21"]);
+      check("promote one: LAT-I21 is linked to a new backlog story", st("LAT-I21") === "linked" && S.task(t1.id).status === "backlog");
+      check("after promote the cursor moved to the next issue (LAT-I22)", cursorBy.open === "LAT-I22");
+      check("open count fell by one and the progress number follows", listFor("open").length === n0 - 1 && document.getElementById("pg-num").textContent === String(n0 - 1));
+      check("action buttons and tabs did not move", rects() === r0);
+      undo();
+      check("undo promote: LAT-I21 open again, story kept in backlog", st("LAT-I21") === "open" && S.task(t1.id) && S.task(t1.id).status === "backlog");
+      check("undo message says the story stays in backlog", /stays in backlog/.test(lastMsg));
+      check("undo brings the cursor back to LAT-I21", cursorBy.open === "LAT-I21");
+
+      cursorBy.open = "LAT-I22"; render(); key("x");
+      cursorBy.open = "LAT-I23"; render(); key("x");
+      check("x builds a selection of two", selection.length === 2 && document.getElementById("a-s-label").textContent === "One story from 2");
+      var t2 = act.promote(selection.slice(), "Two issues, one story");
+      check("promote several: both issues share one story", st("LAT-I22") === "linked" && st("LAT-I23") === "linked" &&
+        S.issuesFor(t2.id).length === 2 && selection.length === 0);
+
+      act.link("LAT-I24", "LAT-373");
+      check("link: LAT-I24 linked to LAT-373", st("LAT-I24") === "linked");
+      undo();
+      check("undo link: LAT-I24 open again", st("LAT-I24") === "open");
+
+      act.dismiss("LAT-I25", DISMISS_REASONS[0]);
+      check("dismiss: LAT-I25 dismissed with the reason", st("LAT-I25") === "dismissed" && S.get("LAT-I25").closure.reason === DISMISS_REASONS[0]);
+      undo();
+      check("undo dismiss: LAT-I25 open again", st("LAT-I25") === "open");
+
+      act.duplicate("LAT-I38", "LAT-I11");
+      check("duplicate: LAT-I38 duplicate of LAT-I11", st("LAT-I38") === "duplicate");
+      undo();
+      check("undo duplicate: LAT-I38 open again", st("LAT-I38") === "open");
+
+      key("4");
+      check("4 switches to Closed", view === "closed");
+      cursorBy.closed = "LAT-I20"; render();
+      check("s and d are disabled on a closed issue, o is enabled",
+        document.querySelector('[data-act="s"]').disabled && document.querySelector('[data-act="d"]').disabled && !document.querySelector('[data-act="o"]').disabled);
+      key("o");
+      check("reopen: LAT-I20 open", st("LAT-I20") === "open");
+      undo();
+      check("undo reopen: LAT-I20 dismissed again with its reason", st("LAT-I20") === "dismissed" && /No page/.test(S.get("LAT-I20").closure.reason));
+
+      var t3 = act.promote(["LAT-I26"]);
+      S.setTaskStatus(t3.id, "done");
+      check("story done: LAT-I26 resolved", st("LAT-I26") === "resolved");
+      S.setTaskStatus(t3.id, "cancelled");
+      check("story cancelled: LAT-I26 back to open", st("LAT-I26") === "open");
+      S.setTaskStatus(t3.id, "in_progress");
+      act.unlink("LAT-I26", t3.id);
+      check("unlink: LAT-I26 open", st("LAT-I26") === "open");
+      undo();
+      check("undo unlink: LAT-I26 linked again", st("LAT-I26") === "linked");
+
+      key("1");
+      var guardN = 0;
+      while (listFor("open").length && guardN++ < 60) { act.dismiss(cursorBy.open, DISMISS_REASONS[1]); }
+      var body = document.getElementById("d-body").textContent;
+      check("clearing the queue shows the empty state", /Nothing needs a story/.test(body) && document.getElementById("pg-num").textContent === "0");
+      check("empty state reports this sitting", /issues decided/.test(body) && /became 2 new stories/.test(body));
+      check("buttons still in place in the empty state", rects() === r0);
+      check("no issue text overflows its row", Array.prototype.every.call(document.querySelectorAll(".q-row"), function (r) { return r.scrollWidth <= r.clientWidth + 1; }));
+    } catch (e) {
+      check("no exception: " + e.message, false);
+    }
+    out.push((failN ? "FAIL" : "PASS") + " total " + pass + " passed, " + failN + " failed");
+    document.getElementById("selftest").textContent = out.join("\n");
+  }
+})();
+</script>
+</body>
+</html>
