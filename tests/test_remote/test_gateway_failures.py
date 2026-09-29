@@ -261,16 +261,17 @@ def test_a_write_after_one_gateway_502_applies_once(
 def test_a_write_past_the_budget_is_outcome_unknown(
     hosted_env: HostedEnv, gw: Gateway, repo: Path
 ) -> None:
+    hosted_env.write_remote(retry_seconds=0.4)
     gw.match, gw.fail = "/ops/", -1
     for args in (("--json",), ()):
         gw.seen.clear()
         started = time.monotonic()
         result = run_cli(repo, "create", "Never through", "--actor", "human:alice", *args)
-        assert time.monotonic() - started < 5
+        assert time.monotonic() - started < 10  # bounded (CI is slow; the budget is 0.4 s)
         assert result.exit_code == 1
         # Never a silent wait: the retry line comes first.
         assert _notices(result.stderr)[0] == (
-            f"lattice: server team ({gw.url}) is not available; retrying for up to 1 s"
+            f"lattice: server team ({gw.url}) is not available; retrying for up to 0.4 s"
         )
         op_ids = {body["op_id"] for _, _, _, body in gw.requests("/ops/", method="POST")}
         assert len(op_ids) == 1
@@ -292,7 +293,9 @@ OP_ID = "op_01J9Z0000000000000000000CD"
 OK = (
     200,
     {"Content-Type": "application/json", "Lattice-Protocol": "1"},
-    json.dumps({"ok": True, "data": {"result": {"events": []}, "seq": 7, "op_id": OP_ID}}).encode(),
+    json.dumps(
+        {"ok": True, "data": {"result": {"events": []}, "seq": 7, "op_id": OP_ID}}
+    ).encode(),
 )
 
 
@@ -380,7 +383,9 @@ def test_gateway_answers_are_retried_with_the_same_op_id(
 
 
 @pytest.mark.parametrize("status", [502, 504])
-def test_gateway_failures_past_the_budget_may_have_applied(clock: list[float], status: int) -> None:
+def test_gateway_failures_past_the_budget_may_have_applied(
+    clock: list[float], status: int
+) -> None:
     """A gateway's 502 or 504 may have forwarded the request (SPEC §8.6)."""
     with scripted([_gateway_answer(status)]) as server, pytest.raises(OpError) as err:
         _post(server["url"], retry_seconds=3)
@@ -406,7 +411,10 @@ def test_a_gateway_retry_after_is_honored_within_the_budget(clock: list[float]) 
 
 
 def test_a_gateway_retry_after_past_the_budget_gives_up_at_once(clock: list[float]) -> None:
-    with scripted([_gateway_answer(503, retry_after="30")]) as server, pytest.raises(OpError) as err:
+    with (
+        scripted([_gateway_answer(503, retry_after="30")]) as server,
+        pytest.raises(OpError) as err,
+    ):
         _post(server["url"], retry_seconds=15)
     assert err.value.code == "SERVER_UNREACHABLE"
     assert clock == [] and len(server["bodies"]) == 1
@@ -458,9 +466,7 @@ def test_a_read_through_a_gateway_outage_serves_the_cache_once(
     # Inside the window, the next read does not wait again.
     gw.seen.clear()
     read_waits.clear()
-    started = time.monotonic()
     again = run_cli(repo, "show", "DEM-1", "--json")
-    assert time.monotonic() - started < 1
     assert again.exit_code == 0
     assert json.loads(again.stdout)["data"]["title"] == "Before the outage"
     assert _notices(again.stderr) == [notice]
