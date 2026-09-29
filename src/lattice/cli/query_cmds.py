@@ -16,6 +16,7 @@ from lattice.cli.helpers import (
     load_project_config,
     output_error,
     output_result,
+    program_name,
     require_actor,
     require_root,
     resolve_task_id,
@@ -517,6 +518,15 @@ def _read_plan_content_for_next(lattice_dir: Path, task_id: str) -> str | None:
     return content
 
 
+def _plan_written(plan_path: Path, snapshot: dict) -> bool:
+    """Whether the plan file at *plan_path* holds more than the scaffold."""
+    try:
+        content = plan_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return False
+    return not helpers.is_scaffold_plan(content, description=snapshot.get("description"))
+
+
 def _is_scaffold_plan_content(content: str) -> bool:
     """Return True when plan content still matches the default scaffold placeholders."""
     from lattice.cli.helpers import is_scaffold_plan
@@ -597,6 +607,9 @@ def show_cmd(
         plan_path = lattice_dir / "plans" / f"{task_id}.md"
     has_notes = notes_path.exists()
     has_plan = plan_path.exists()
+    # On a bound checkout the server scaffolds every task's plan, so the file
+    # alone says nothing: plain output names it only once it holds a plan.
+    plan_written = _plan_written(plan_path, snapshot) if helpers._is_cache(lattice_dir) else None
 
     # Read outgoing relationship target titles (best effort)
     relationships_out = _enrich_relationships(lattice_dir, snapshot)
@@ -655,6 +668,7 @@ def show_cmd(
             auto_commits,
             config=config,
             reopened_warning=reopened_warning,
+            plan_written=plan_written,
         )
 
 
@@ -952,8 +966,14 @@ def _print_human_show(
     auto_detected_commits: list[dict[str, str]] | None = None,
     config: dict | None = None,
     reopened_warning: str | None = None,
+    plan_written: bool | None = None,
 ) -> None:
-    """Print full human-readable show output."""
+    """Print full human-readable show output.
+
+    *plan_written* is ``None`` on a local board (the plan line appears when
+    the file exists) and, on a bound checkout, whether the plan is more than
+    the scaffold (the line then always appears).
+    """
     from lattice.core.config import get_display_name
 
     short_id = snapshot.get("short_id")
@@ -1122,12 +1142,19 @@ def _print_human_show(
             subject = commit.get("subject", "")
             click.echo(f"  {sha}  {date}  {subject}")
 
-    if has_plan:
+    if plan_written is not None:
+        click.echo("")
+        if plan_written:
+            click.echo(f"Plan: plans/{task_id}.md")
+        else:
+            label = short_id or task_id
+            click.echo(f"Plan: none yet ({program_name()} plan write {label} --stdin)")
+    elif has_plan:
         click.echo("")
         click.echo(f"Plan: plans/{task_id}.md")
 
     if has_notes:
-        if not has_plan:
+        if not has_plan and plan_written is None:
             click.echo("")
         click.echo(f"Notes: notes/{task_id}.md")
 

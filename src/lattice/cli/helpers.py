@@ -326,6 +326,21 @@ def require_actor(is_json: bool, *, optional: bool = False) -> str | dict | None
     return result
 
 
+def program_name() -> str:
+    """The name this program was invoked as, for the commands hints print.
+
+    The console script's basename (``lattice``, or an alias such as
+    ``lattice-v2``) with a Windows ``.exe`` dropped. Outside a command, and
+    under Click's test runner (whose default name is the group's, ``cli``),
+    and under ``python -c`` (whose name is ``-c``), it is ``lattice``.
+    """
+    ctx = click.get_current_context(silent=True)
+    name = ctx.find_root().info_name if ctx is not None else None
+    if not name or name == "cli" or name.startswith("-"):
+        return "lattice"
+    return name[:-4] if name.lower().endswith(".exe") else name
+
+
 def _is_cache(lattice_dir: Path | None) -> bool:
     if lattice_dir is None:
         return False

@@ -43,20 +43,26 @@ def format_origin_line(event: dict) -> str | None:
 
     ``user@machine`` comes from ``authenticated`` when a server stamped it,
     else from ``reported``; a browser write shows ``browser`` in place of the
-    worktree. Missing parts are left out. ``None`` for an event written
-    before origins existed.
+    worktree. When the token's user is not the actor, the pair reads ``via
+    token user@machine``, so it is not taken for a second actor. Missing parts
+    are left out. ``None`` for an event written before origins existed.
     """
     origin = event.get("origin")
     if not isinstance(origin, dict):
         return None
     reported = _reported(origin)
     actor = event.get("actor", "?")
-    parts = [actor.get("name", str(actor)) if isinstance(actor, dict) else str(actor)]
+    actor_name = actor.get("name", str(actor)) if isinstance(actor, dict) else str(actor)
+    parts = [actor_name]
     user, machine = _user_and_machine(origin)
     if user and machine:
         parts.append(f"{user}@{machine}")
     elif user or machine:
         parts.append(str(user or machine))
+    authenticated = origin.get("authenticated")
+    if isinstance(authenticated, dict) and authenticated and len(parts) > 1:
+        if authenticated.get("user") != actor_name:
+            parts[1] = f"via token {parts[1]}"
     if reported.get("source") == "browser":
         parts.append("browser")
     elif reported.get("worktree"):
