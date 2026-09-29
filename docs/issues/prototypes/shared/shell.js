@@ -49,7 +49,7 @@
     actor: function (a) {
       if (!a) { return '<span class="muted">unassigned</span>'; }
       var kind = a.indexOf("human:") === 0 ? "human" : "agent";
-      return '<span class="actor actor-' + kind + '">' + esc(a) + "</span>";
+      return '<span class="actor actor-' + kind + '" data-actor="' + esc(a) + '">' + esc(a) + "</span>";
     },
     state: function (st) { return '<span class="state state-' + st + '">' + st + "</span>"; },
     tstatus: function (st) { return '<span class="tstatus tstatus-' + esc(st) + '">' + esc(String(st).replace(/_/g, " ")) + "</span>"; },

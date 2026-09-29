@@ -138,6 +138,21 @@
     ]
   };
 
+  // Where each filing and comment came from: Lattice records the OS user and host on every event
+  // (origin.reported.os_user and .host). Most agents run on Atlas, the always-on Mac Studio; the human and the
+  // interactive agents work from Hyperion, the laptop; codex runs on a cloud box. Some agents appear from two machines.
+  var HOME = {
+    "human:atin": "Hyperion", "agent:claude-fable-orchestrator": "Hyperion", "agent:claude-opus-impl": "Hyperion",
+    "agent:qa-browser": "Atlas", "agent:qa-cli": "Atlas", "agent:validator": "Atlas", "agent:research-sweep": "Atlas",
+    "agent:codex-impl": "lattice-prime-1", "agent:codex-reviewer": "lattice-prime-1"
+  };
+  var AWAY = { // f<seq> is a filing, c<seq>_<n> a comment
+    f1: "Hyperion", f2: "Hyperion", f3: "Hyperion", c1_1: "Hyperion", c2_1: "Hyperion",  // an early QA sweep run from the laptop
+    f32: "lattice-prime-1", c24_2: "lattice-prime-1", c24_4: "lattice-prime-1", c21_2: "lattice-prime-1", // opus on the cloud box
+    f23: "Atlas", c39_2: "Atlas"                                                          // the orchestrator's overnight runs
+  };
+  function originOf(actor, key) { return { user: "atin", machine: AWAY[key] || HOME[actor] || "Hyperion" }; }
+
   // Photos and videos that belong to an issue. Plain `evidence` strings stay as pointers (a log path, a doc).
   var MEDIA = {
     1: ["dp-footer-400"], 2: ["dp-footer-short", "dp-footer-400"], 3: ["lane-wrap"], 5: ["slash-focus"],
@@ -156,7 +171,10 @@
     });
     // A photo or video is no longer listed as a path once it belongs to the issue.
     i.evidence = (i.evidence || []).filter(function (e) { return !/\.(png|jpe?g|gif|webp|mov|mp4|webm)$/i.test(e); });
-    i.comments = (COMMENTS[i.seq] || []).map(function (c, n) { return { id: "com_" + i.seq + "_" + (n + 1), by: c.by, at: c.at, body: c.body }; });
+    i.origin = originOf(i.filed_by, "f" + i.seq);
+    i.comments = (COMMENTS[i.seq] || []).map(function (c, n) {
+      return { id: "com_" + i.seq + "_" + (n + 1), by: c.by, at: c.at, body: c.body, origin: originOf(c.by, "c" + i.seq + "_" + (n + 1)) };
+    });
     i.text = i.title; // round-1 pages read text
     i.id = "LAT-I" + i.seq;
     i.closure = i.closure || null;

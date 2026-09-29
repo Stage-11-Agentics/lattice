@@ -38,6 +38,9 @@
     return m;
   }
 
+  // Where this browser's writes come from: the operator's laptop. On a real board this is origin.reported.
+  var HERE = { user: "atin", machine: "Hyperion" };
+
   function tick() { clock += 1000; return new Date(clock).toISOString().replace(/\.\d+Z$/, "Z"); }
   function emit() { listeners.forEach(function (fn) { fn(); }); }
   function fail(code, message) { var e = new Error(message); e.code = code; throw e; }
@@ -49,10 +52,11 @@
   // Seed each issue's history from its mock fields, so the detail views have a trail to show.
   issues.forEach(function (i) {
     i.media = i.media || [];
-    log(i.id, "issue_filed", i.filed_by, mediaSummary(i.media), i.filed_at);
+    var fd = mediaSummary(i.media); fd.origin = i.origin || null;
+    log(i.id, "issue_filed", i.filed_by, fd, i.filed_at);
     i.links.forEach(function (l) { log(i.id, "issue_linked", l.linked_by, { task_id: l.task_id }, l.linked_at); });
     i.comments = i.comments || [];
-    i.comments.forEach(function (c) { log(i.id, "issue_comment_added", c.by, { comment_id: c.id }, c.at); });
+    i.comments.forEach(function (c) { log(i.id, "issue_comment_added", c.by, { comment_id: c.id, origin: c.origin || null }, c.at); });
     if (i.closure) {
       log(i.id, i.closure.kind === "dismissed" ? "issue_dismissed" : "issue_marked_duplicate", i.closure.by,
         i.closure.kind === "dismissed" ? { reason: i.closure.reason } : { duplicate_of: i.closure.duplicate_of }, i.closure.at);
@@ -114,7 +118,9 @@
     };
     issue.media = kept.map(function (m) { return newMedia(m, issue.filed_by, issue.filed_at); });
     issues.push(issue);
-    log(issue.id, "issue_filed", issue.filed_by, mediaSummary(issue.media), issue.filed_at);
+    issue.origin = p.origin || HERE;
+    var fd = mediaSummary(issue.media); fd.origin = issue.origin;
+    log(issue.id, "issue_filed", issue.filed_by, fd, issue.filed_at);
     emit();
     return issue;
   }
@@ -224,7 +230,7 @@
     var i = need(id);
     var b = (body || "").trim();
     if (!b) { fail("VALIDATION_ERROR", "A comment needs some text."); }
-    var c = { id: "com_new_" + (++commentSeq), by: by || M.me, at: tick(), body: b };
+    var c = { id: "com_new_" + (++commentSeq), by: by || M.me, at: tick(), body: b, origin: HERE };
     i.comments.push(c);
     log(i.id, "issue_comment_added", c.by, { comment_id: c.id }, c.at);
     emit();

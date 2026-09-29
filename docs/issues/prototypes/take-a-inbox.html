@@ -48,6 +48,19 @@ body{overflow:hidden}
 .q-badge{position:absolute;font-size:.64rem;line-height:1;padding:.15rem .25rem;border-radius:2px;background:rgba(0,0,0,.78);color:#fff;font-weight:700}
 .q-vid{left:.2rem;bottom:.2rem}
 .q-count{right:.2rem;top:.2rem;background:var(--accent-primary)}
+/* person view: a reserved slot above the queue, so entering and leaving it moves nothing */
+.p-head{height:3.9rem;flex-shrink:0;display:flex;flex-direction:column;justify-content:center;gap:.2rem;padding:0 .875rem;border-bottom:1px solid var(--border-subtle);font-size:.78rem;color:var(--text-muted)}
+.p-head.on{background:var(--surface-raised)}
+.p-line{display:flex;align-items:center;gap:.5rem;white-space:nowrap;min-width:0}
+.p-line .p-counts{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--text-secondary)}
+.p-line .btn{width:5.5rem;height:1.5rem;flex-shrink:0;display:inline-flex;gap:.35rem;align-items:center;justify-content:center}
+.p-machines{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.q-why{color:var(--text-secondary);font-style:italic}
+.q-actor{cursor:pointer}
+.q-actor:hover{color:var(--text-primary);text-decoration:underline}
+[data-actor].actor{cursor:pointer}
+[data-actor].actor:hover{filter:brightness(1.3);text-decoration:underline}
+.origin{color:var(--text-muted);font-size:.72rem;white-space:nowrap}
 .q-empty{padding:2.5rem 1.25rem;color:var(--text-muted);font-size:.9rem;line-height:1.6}
 .q-foot{height:2rem;display:flex;align-items:center;gap:.4rem;padding:0 .875rem;border-top:1px solid var(--border-subtle);font-size:.74rem;color:var(--text-muted);white-space:nowrap;overflow:hidden}
 .q-foot .sep{width:.5rem}
@@ -154,6 +167,7 @@ body{overflow:hidden}
 <div class="inbox">
   <section class="q-pane" aria-label="Queue">
     <div class="q-tabs" id="q-tabs"></div>
+    <div class="p-head" id="p-head"></div>
     <div class="q-list" id="q-list" role="listbox" aria-label="Issues"></div>
     <div class="q-foot"><kbd>j</kbd><kbd>k</kbd> move<span class="sep"></span><kbd>c</kbd> copy ID<span class="sep"></span><kbd>f</kbd> look closer<span class="sep"></span><kbd>i</kbd> file</div>
   </section>
@@ -194,8 +208,9 @@ body{overflow:hidden}
 
   // ---- UI state ----
   var view = "open";
-  var cursorBy = { open: null, linked: null, resolved: null, closed: null }; // cursor id per queue
-  var cursorIdx = { open: 0, linked: 0, resolved: 0, closed: 0 };
+  var cursorBy = {};  // cursor id per queue; keys are the queue, or "p:" + queue in the person view
+  var cursorIdx = {};
+  var person = null;  // { actor, back: { view, cursor } } while looking at everything from one person
   var shownId = null;     // issue in the right pane, to keep or reset its scroll
   var mediaKey = null;    // what the media section shows; rebuilt only when this changes, so video keeps playing
   var focusIdx = 0;       // which item look closer opens: the last one clicked, else the first
@@ -207,28 +222,92 @@ body{overflow:hidden}
     for (var n = 0; n < QUEUES.length; n++) { if (QUEUES[n].states.indexOf(st) >= 0) { return QUEUES[n].key; } }
     return "open";
   }
-  function listFor(key) { return S.issues().filter(function (i) { return queueOf(i) === key; }); } // oldest first
-  function current() { var id = cursorBy[view]; return id ? S.get(id) : null; }
+  function vk() { return (person ? "p:" : "") + view; }
+  function listFor(key) {
+    if (person) { return personList(person.actor).filter(function (i) { return key === "all" || queueOf(i) === key; }); }
+    return S.issues().filter(function (i) { return queueOf(i) === key; }); // oldest first
+  }
+  function current() { var id = cursorBy[vk()]; return id ? S.get(id) : null; }
+
+  // ---- everything from one person: what they filed and what they commented on, newest activity first ----
+  function byActor(i, actor) { return (i.comments || []).filter(function (c) { return c.by === actor; }); }
+  function lastActivity(i, actor) {
+    var t = i.filed_by === actor ? i.filed_at : "";
+    byActor(i, actor).forEach(function (c) { if (c.at > t) { t = c.at; } });
+    return t;
+  }
+  function personList(actor) {
+    return S.issues().filter(function (i) { return i.filed_by === actor || byActor(i, actor).length; })
+      .sort(function (a, b) { var x = lastActivity(a, actor), y = lastActivity(b, actor); return x < y ? 1 : x > y ? -1 : b.seq - a.seq; });
+  }
+  // "agent:qa-browser · atin@Atlas"; for a human who is the machine's own user, just the machine.
+  function originLabel(actor, o) {
+    if (!o) { return ""; }
+    return actor === "human:" + o.user ? o.machine : o.user + "@" + o.machine;
+  }
+  function originHtml(actor, o) { var t = originLabel(actor, o); return t ? ' <span class="origin">· ' + esc(t) + "</span>" : ""; }
+  function enterPerson(actor) {
+    if (person && person.actor === actor) { return; }
+    var cur = current();
+    var back = person ? person.back : { view: view, cursor: cursorBy[view] };
+    person = { actor: actor, back: back };
+    view = "all";
+    var list = personList(actor), keep = cur && list.some(function (x) { return x.id === cur.id; });
+    cursorBy["p:all"] = keep ? cur.id : (list[0] && list[0].id); cursorIdx["p:all"] = 0;
+    document.getElementById("q-list").scrollTop = 0;
+    render();
+  }
+  function leavePerson() {
+    if (!person) { return; }
+    view = person.back.view; cursorBy[view] = person.back.cursor;
+    person = null;
+    render();
+  }
+  function renderPersonHead() {
+    var h = document.getElementById("p-head");
+    h.classList.toggle("on", !!person);
+    if (!person) { h.innerHTML = '<span>Click a name to see everything from that person.</span>'; return; }
+    var a = person.actor, filed = 0, comments = 0, seen = {}, order = [];
+    function note(o) { var t = originLabel(a, o); if (!t) { return; } if (!seen[t]) { seen[t] = 0; order.push(t); } seen[t]++; }
+    S.issues().forEach(function (i) {
+      if (i.filed_by === a) { filed++; note(i.origin); }
+      byActor(i, a).forEach(function (c) { comments++; note(c.origin); });
+    });
+    order.sort(function (x, y) { return seen[y] - seen[x]; });
+    h.innerHTML = '<div class="p-line">' + F.actor(a) + '<span class="p-counts">' + filed + " filed · " + comments + (comments === 1 ? " comment" : " comments") + "</span></div>" +
+      '<div class="p-line"><span class="p-machines">from ' + esc(order.join(", ") || "unknown") + "</span>" +
+      '<button class="btn btn-sm" id="p-leave" title="Back to all issues (Esc)"><kbd>Esc</kbd>All</button></div>';
+    document.getElementById("p-leave").onclick = leavePerson;
+  }
   function itemsOf(i) { return (i && i.media) || []; }
 
   // Keep the cursor on the same issue if it is still in this queue; otherwise take whatever now sits at its old position.
   function settleCursor(list) {
-    var id = cursorBy[view], idx = -1;
+    var k = vk(), id = cursorBy[k], idx = -1;
     for (var n = 0; n < list.length; n++) { if (list[n].id === id) { idx = n; } }
-    if (idx < 0) { idx = Math.min(cursorIdx[view], list.length - 1); }
-    cursorIdx[view] = Math.max(0, idx);
-    cursorBy[view] = list.length ? list[Math.max(0, idx)].id : null;
+    if (idx < 0) { idx = Math.min(cursorIdx[k] || 0, list.length - 1); }
+    cursorIdx[k] = Math.max(0, idx);
+    cursorBy[k] = list.length ? list[Math.max(0, idx)].id : null;
   }
   function move(delta) {
     var list = listFor(view); if (!list.length) { return; }
-    var idx = Math.max(0, Math.min(list.length - 1, cursorIdx[view] + delta));
-    cursorIdx[view] = idx; cursorBy[view] = list[idx].id;
+    var k = vk(), idx = Math.max(0, Math.min(list.length - 1, (cursorIdx[k] || 0) + delta));
+    cursorIdx[k] = idx; cursorBy[k] = list[idx].id;
     render();
   }
-  function switchQueue(key) { if (view !== key) { view = key; render(); } }
+  // In the person view a tab narrows that person's list; pressing it again shows all of it.
+  function switchQueue(key) {
+    if (person) { view = view === key ? "all" : key; render(); return; }
+    if (view !== key) { view = key; render(); }
+  }
   // Show an issue wherever it now lives (used when a story's status moves it, and by the ?at= hook).
   function goTo(id) {
     var i = S.get(id); if (!i) { return; }
+    if (person && personList(person.actor).some(function (x) { return x.id === id; })) {
+      if (view !== "all" && queueOf(i) !== view) { view = "all"; }
+      cursorBy[vk()] = id; render(); return;
+    }
+    person = null;
     view = queueOf(i); cursorBy[view] = id;
     render();
   }
@@ -377,7 +456,7 @@ body{overflow:hidden}
     else if (k === "k" || k === "ArrowUp") { move(-1); }
     else if (k === "c") { copyId(); }
     else if (k === "f") { if (closer) { closeCloser(); } else if (itemsOf(current()).length) { openCloser(focusIdx); } }
-    else if (k === "Escape") { if (closer) { closeCloser(); } else { handled = false; } }
+    else if (k === "Escape") { if (closer) { closeCloser(); } else if (person) { leavePerson(); } else { handled = false; } }
     else if (closer && k === "ArrowRight") { openCloser(closer.idx + 1); }
     else if (closer && k === "ArrowLeft") { openCloser(closer.idx - 1); }
     else if (k === " " && !closer) { var iv = document.querySelector("#d-media video"); if (iv) { if (iv.paused) { playInline(+iv.closest(".m-item").getAttribute("data-item")); } else { iv.pause(); } } else { handled = false; } }
@@ -395,12 +474,17 @@ body{overflow:hidden}
   }).join("");
   tabsEl.addEventListener("click", function (e) { var b = e.target.closest(".q-tab"); if (b) { b.blur(); switchQueue(b.getAttribute("data-q")); } });
   document.getElementById("q-list").addEventListener("click", function (e) {
+    var who = e.target.closest("[data-actor]"); if (who) { enterPerson(who.getAttribute("data-actor")); return; }
     var row = e.target.closest(".q-row"); if (!row) { return; }
-    cursorBy[view] = row.getAttribute("data-id");
+    cursorBy[vk()] = row.getAttribute("data-id");
     render();
   });
   document.getElementById("id-copy").onclick = function () { this.blur(); copyId(); };
+  document.getElementById("d-head").addEventListener("click", function (e) {
+    var who = e.target.closest("[data-actor]"); if (who) { enterPerson(who.getAttribute("data-actor")); }
+  });
   document.getElementById("d-body").addEventListener("click", function (e) {
+    var who = e.target.closest("[data-actor]"); if (who) { enterPerson(who.getAttribute("data-actor")); return; }
     var pl = e.target.closest("[data-play]");
     if (pl) { pl.blur(); playInline(+pl.getAttribute("data-play")); return; }
     var fr = e.target.closest("[data-frame]");
@@ -433,14 +517,18 @@ body{overflow:hidden}
 
   function tagFor(i) {
     var q = queueOf(i);
-    if (q === "open") { return esc(i.filed_by); }
+    var why = person && i.filed_by !== person.actor ? '<span class="q-why">commented</span> · ' : "";
+    return why + tagText(i, q);
+  }
+  function tagText(i, q) {
+    if (q === "open") { return '<span class="q-actor" data-actor="' + esc(i.filed_by) + '">' + esc(i.filed_by) + "</span>"; }
     if (q === "closed") { return i.closure.kind === "duplicate" ? "duplicate of " + esc(i.closure.duplicate_of) : "dismissed"; }
     var live = S.liveLinks(i).map(function (l) { return l.task_id; });
     return '<span class="tid">' + esc(live[0]) + "</span>" + (live.length > 1 ? " +" + (live.length - 1) : "") + " " + esc(S.task(live[0]).status.replace(/_/g, " "));
   }
 
   function renderQueue(list) {
-    var el = document.getElementById("q-list"), curId = cursorBy[view];
+    var el = document.getElementById("q-list"), curId = cursorBy[vk()];
     if (!list.length) { el.innerHTML = '<div class="q-empty">' + esc(view === "open" ? "Nothing needs a story." : EMPTY[view]) + "</div>"; return; }
     el.innerHTML = list.map(function (i) {
       return '<div class="q-row' + (i.id === curId ? " cursor" : "") + '" data-id="' + i.id + '" role="option" aria-selected="' + (i.id === curId) + '">' +
@@ -470,7 +558,7 @@ body{overflow:hidden}
 
   // filed by, when, source, how sure: one small line in the header
   function factsHtml(i) {
-    var bits = [F.actor(i.filed_by), '<span title="' + esc(F.abs(i.filed_at)) + '">' + F.rel(i.filed_at) + "</span>"];
+    var bits = [F.actor(i.filed_by) + originHtml(i.filed_by, i.origin), '<span title="' + esc(F.abs(i.filed_at)) + '">' + F.rel(i.filed_at) + "</span>"];
     if (i.source) { bits.push(esc(i.source)); }
     if (i.confidence) { bits.push(esc(i.confidence)); }
     i.evidence.forEach(function (e) { bits.push(esc(e)); });
@@ -491,7 +579,7 @@ body{overflow:hidden}
       case "issue_media_removed": what = "removed a " + esc(d.kind) + ": " + esc(d.reason); break;
       default: what = esc(h.type);
     }
-    return '<div><span class="h-at" title="' + esc(F.abs(h.at)) + '">' + F.rel(h.at) + '</span><span class="h-what">' + F.actor(h.by) + " " + what + "</span></div>";
+    return '<div><span class="h-at" title="' + esc(F.abs(h.at)) + '">' + F.rel(h.at) + '</span><span class="h-what">' + F.actor(h.by) + (d.origin ? originHtml(h.by, d.origin) : "") + " " + what + "</span></div>";
   }
   var BUBBLE = '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M2 2h12a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H7l-3.5 3v-3H2a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z"/></svg>';
   function comCount(i) {
@@ -509,7 +597,7 @@ body{overflow:hidden}
     if (!cs.length) { return ""; }
     return '<div class="c-head">Comments (' + cs.length + ")</div>" + cs.map(function (c) {
       var kind = c.by.indexOf("human:") === 0 ? "human" : "agent";
-      return '<div class="cm cm-' + kind + '"><div class="cm-meta">' + F.actor(c.by) + '<span title="' + esc(F.abs(c.at)) + '">' + F.rel(c.at) + "</span></div>" +
+      return '<div class="cm cm-' + kind + '"><div class="cm-meta">' + F.actor(c.by) + originHtml(c.by, c.origin) + '<span title="' + esc(F.abs(c.at)) + '">' + F.rel(c.at) + "</span></div>" +
         '<div class="cm-body">' + commentBody(c.body) + "</div></div>";
     }).join("");
   }
@@ -573,14 +661,17 @@ body{overflow:hidden}
   }
 
   function render() {
-    var counts = S.counts();
+    var counts = S.counts(), mine = person ? personList(person.actor) : null;
     QUEUES.forEach(function (q) {
-      document.getElementById("qc-" + q.key).textContent = q.states.reduce(function (a, s) { return a + counts[s]; }, 0);
+      document.getElementById("qc-" + q.key).textContent = mine
+        ? mine.filter(function (i) { return queueOf(i) === q.key; }).length
+        : q.states.reduce(function (a, s) { return a + counts[s]; }, 0);
       tabsEl.querySelector('[data-q="' + q.key + '"]').setAttribute("aria-pressed", q.key === view ? "true" : "false");
     });
     var list = listFor(view);
     settleCursor(list);
     var i = current();
+    renderPersonHead();
     renderQueue(list);
     renderDetail(i);
     // Look closer follows the cursor while it has something to show, and steps aside when it does not.
@@ -606,6 +697,8 @@ body{overflow:hidden}
   function fetchFile(url, name, type) { return fetch(url).then(function (r) { return r.blob(); }).then(function (b) { return new File([b], name, { type: type }); }); }
   if (params.get("hist") === "1") { histOpen = true; render(); }
   if (params.get("at")) { goTo(params.get("at")); }
+  // ?person=agent:qa-browser   opens the person view.
+  if (params.get("person")) { enterPerson(params.get("person")); }
   // ?to=comments   scrolls the detail pane to the comment thread.
   if (params.get("to") === "comments") { setTimeout(function () { var c = document.getElementById("d-comments"); if (c) { c.scrollIntoView({ block: "start" }); } }, 200); }
   var keysDone = Promise.resolve();
@@ -697,6 +790,41 @@ body{overflow:hidden}
       var blank = false; try { S.comment("LAT-I22", "   "); } catch (e) { blank = e.code === "VALIDATION_ERROR"; }
       check("an empty comment is refused", blank && S.get("LAT-I22").comments.length === 1);
       box.blur();
+
+      // round 4: everything from one person, and the machine each filing and comment came from
+      goTo("LAT-I24");
+      check("the top line shows where it was filed from: agent:qa-browser · atin@Atlas", /agent:qa-browser · atin@Atlas/.test(document.getElementById("d-facts").textContent));
+      var metas = Array.prototype.map.call(document.querySelectorAll("#d-comments .cm-meta"), function (n) { return n.textContent; });
+      check("comments show their machine: opus from atin@lattice-prime-1, the human from Hyperion only",
+        metas.some(function (t) { return /claude-opus-impl · atin@lattice-prime-1/.test(t); }) && metas.some(function (t) { return /human:atin · Hyperion/.test(t); }) &&
+        !metas.some(function (t) { return /human:atin · atin@/.test(t); }));
+      var rowBox = function (id) { var r = document.querySelector('.q-row[data-id="' + id + '"]'); return r ? [Math.round(r.offsetHeight), Math.round(r.querySelector(".q-text").getBoundingClientRect().left)].join(",") : "none"; };
+      var row0 = rowBox("LAT-I24"), listTop0 = top("#q-list"), backView = view, backCur = cursorBy[view];
+      document.querySelector("#d-facts [data-actor]").click();
+      var qa = "agent:qa-browser";
+      var mine = S.issues().filter(function (i) { return i.filed_by === qa || i.comments.some(function (c) { return c.by === qa; }); });
+      var nF = S.issues().filter(function (i) { return i.filed_by === qa; }).length, nC = 0;
+      S.issues().forEach(function (i) { i.comments.forEach(function (c) { if (c.by === qa) { nC++; } }); });
+      var rows = Array.prototype.map.call(document.querySelectorAll("#q-list .q-row"), function (r) { return r.getAttribute("data-id"); });
+      check("clicking the filer opens the person view: every issue they filed or commented on (" + mine.length + ")", !!person && person.actor === qa && rows.length === mine.length);
+      var head = document.getElementById("p-head").textContent;
+      check("the header shows " + nF + " filed · " + nC + " comments and both machines", head.indexOf(nF + " filed · " + nC + " comments") >= 0 && /atin@Atlas/.test(head) && /atin@Hyperion/.test(head));
+      var tabSum = QUEUES.reduce(function (a, q) { return a + (+document.getElementById("qc-" + q.key).textContent); }, 0);
+      check("tabs count this person only, and none is pressed", tabSum === mine.length && !document.querySelector('.q-tab[aria-pressed="true"]'));
+      check("newest activity first", rows.every(function (id, n) { return n === 0 || lastActivity(S.get(rows[n - 1]), qa) >= lastActivity(S.get(id), qa); }));
+      check("the detail pane keeps the selected issue", document.getElementById("id-copy").textContent === "LAT-I24");
+      check("queue rows keep their layout, and the list does not move", rowBox("LAT-I24") === row0 && top("#q-list") === listTop0);
+      key("2");
+      check("a tab narrows the person view to that state", view === "linked" && Array.prototype.every.call(document.querySelectorAll("#q-list .q-row"), function (r) { return S.state(S.get(r.getAttribute("data-id"))) === "linked"; }));
+      key("2"); check("pressing it again shows all of theirs", view === "all");
+      key("Escape");
+      check("Escape leaves it and restores the tab and selection", !person && view === backView && cursorBy[view] === backCur && document.getElementById("id-copy").textContent === backCur);
+      var human = document.querySelector("#d-comments .cm-human [data-actor]"); human.click();
+      var whyRow = document.querySelector('#q-list .q-row[data-id="LAT-I24"] .q-why'), ownRow = document.querySelector('#q-list .q-row[data-id="LAT-I5"] .q-why');
+      check("rows a person only commented on are marked; rows they filed are not", person.actor === "human:atin" && !!whyRow && whyRow.textContent === "commented" &&
+        !!document.querySelector('#q-list .q-row[data-id="LAT-I5"]') && !ownRow);
+      document.getElementById("p-leave").click();
+      check("the All button leaves the person view too", !person && view === backView);
 
       // steady layout with and without media
       goTo("LAT-I22"); var a = fixed(); goTo("LAT-I24"); var b = fixed(); goTo("LAT-I31"); var c = fixed(); goTo("LAT-I35"); var d = fixed();
