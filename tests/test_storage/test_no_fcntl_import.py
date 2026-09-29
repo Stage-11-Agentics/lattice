@@ -14,6 +14,7 @@ sys.modules["fcntl"] = None  # any import of fcntl now raises ImportError
 warnings.simplefilter("ignore")  # filelock warns that only its soft lock is available
 
 import lattice.cli.main
+lattice.cli.main.load_all_commands()  # command modules load on demand
 import lattice.boards
 import lattice.storage.fs
 import lattice.ops
