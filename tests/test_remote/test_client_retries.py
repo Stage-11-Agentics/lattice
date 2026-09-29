@@ -196,8 +196,9 @@ def test_never_connecting_is_server_unreachable(
     assert set(details) == {"remote", "url", "os_error", "waited_seconds"}
     assert (details["remote"], details["url"]) == ("team", url)
     assert "refused" in details["os_error"].lower()
-    assert details["waited_seconds"] == 2.0
-    assert clock == [0.5, 1.0, 0.5]  # the last wait ends at the deadline
+    assert details["waited_seconds"] == 1.9
+    # The last wait ends just before the deadline (no attempt starts past it).
+    assert clock == pytest.approx([0.5, 1.0, 2 - 1.5 - client.LAST_ATTEMPT_MARGIN_SECONDS])
     err = capsys.readouterr().err
     assert err.splitlines() == [
         f"lattice: server team ({url}) is not available; retrying for up to 2 s"
@@ -212,8 +213,8 @@ def test_progress_every_five_seconds(clock: list[float], capsys: pytest.CaptureF
     with pytest.raises(OpError) as exc:
         _post(url, retry_seconds=16)
     assert exc.value.code == "SERVER_UNREACHABLE"
-    # Backoff 0.5, 1, 2, 4, 5 s, then the last wait ends at the 16 s deadline.
-    assert clock == [0.5, 1.0, 2.0, 4.0, 5.0, 3.5]
+    # Backoff 0.5, 1, 2, 4, 5 s, then the last wait ends just before the 16 s deadline.
+    assert clock == pytest.approx([0.5, 1.0, 2.0, 4.0, 5.0, 3.4])
     lines = capsys.readouterr().err.splitlines()
     assert lines == [
         f"lattice: server team ({url}) is not available; retrying for up to 16 s",

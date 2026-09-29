@@ -27,7 +27,10 @@ def not_hosted_message() -> str:
 
 # SPEC §9.5 / §9.4: why a sync did not complete.
 _FAILURES = {
-    "unreachable": ("SERVER_UNREACHABLE", "Cannot reach {alias}; the cache is as of {synced_at}."),
+    "unreachable": (
+        "SERVER_UNREACHABLE",
+        "Cannot reach {alias}{reason}; the cache is as of {synced_at}.",
+    ),
     "busy": ("BOARD_BUSY", "{alias} is busy; the cache is as of {synced_at}. Try again shortly."),
     "incomplete": (
         "CACHE_INCOMPLETE",
@@ -62,6 +65,15 @@ def _alias(root: Path) -> str:
     return identity[0] if identity else "the server"
 
 
+def _reason(alias: str, detail: str | None) -> str:
+    """`` (<why>)`` from a sync outcome's detail (a gateway's HTTP status, a
+    refused connection), as ``remote status`` shows it; empty when none."""
+    if not detail:
+        return ""
+    prefix = f"cannot reach {alias}: "
+    return f" ({detail[len(prefix) :] if detail.startswith(prefix) else detail})"
+
+
 def _sync_once(root: Path, is_json: bool) -> None:
     from lattice.remote import cache
     from lattice.remote.follower import succeeded
@@ -72,8 +84,12 @@ def _sync_once(root: Path, is_json: bool) -> None:
         output_error(exc.message, exc.code, is_json)
     if not succeeded(outcome):
         code, template = _FAILURES.get(outcome.kind, _FAILURES["unreachable"])
+        alias = _alias(root)
         message = template.format(
-            alias=_alias(root), synced_at=outcome.synced_at or "never", program=program_name()
+            alias=alias,
+            reason=_reason(alias, outcome.detail),
+            synced_at=outcome.synced_at or "never",
+            program=program_name(),
         )
         output_error(message, code, is_json)
     data = {"status": outcome.kind, "head_seq": outcome.head_seq, "synced_at": outcome.synced_at}

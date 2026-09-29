@@ -1271,6 +1271,21 @@ Additionally, `lattice advance N` processed multiple tasks in a single context w
 
 ---
 
+## 2026-09-29: A gateway's 502, 503, or 504 means unreachable (LAT-358)
+
+- **Decision:** a 502, 503, or 504 without `Lattice-Protocol` is a gateway
+  failure. The client treats it as the server being unreachable: writes retry
+  it within `retry_seconds` with the same `op_id` (any of the three may have
+  forwarded the request, so an exhausted budget is `OUTCOME_UNKNOWN`); a read
+  retries once after about a second, then serves the cache. Every other
+  non-Lattice answer stays `PROXY_REJECTED`.
+- **Why:** in the v2 trial a box behind a Cloudflare tunnel saw transient 502s
+  that never reached the server. Refusing them as a proxy misconfiguration
+  failed writes that a retry would have landed, and failed reads that the
+  cache could have served.
+
+---
+
 ## 2026-09-29: Optional issue log (LAT-361)
 
 - **Decision:** a per-project issue log for observations that are not yet
