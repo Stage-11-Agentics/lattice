@@ -7,7 +7,7 @@ Stage 11 Agentics' file-based, agent-native task tracker with an event-sourced c
 This project **dogfoods itself**. Two distinct things called "Lattice":
 
 1. **The Lattice source code** — the Python project under `src/lattice/`. This is what `git` tracks.
-2. **The `.lattice/` data directory** — a live Lattice instance for tracking dev tasks. Gitignored in this repo (heavy test/dev churn would pollute diffs).
+2. **The `.lattice/` data directory** — a live Lattice instance for tracking dev tasks. Gitignored in this repo and stays that way (operator ruling 2026-09-29: the repo is public, so its own board is never committed). Durability of this board comes from the event store itself, erase-as-tombstone (LAT-278) and `lattice doctor`, not from git.
 
 **Rule:** Never confuse changes to `src/lattice/` (source code) with changes to `.lattice/` (instance data). They are independent. Editing source code does not affect the running instance until you reinstall (`uv pip install -e ".[dev]"`).
 
