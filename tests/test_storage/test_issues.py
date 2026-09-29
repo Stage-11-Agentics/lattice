@@ -165,14 +165,23 @@ def test_issue_without_a_snapshot_is_replayed_by_every_read(board: Path) -> None
     assert (board / "issues" / f"{lost['id']}.json").exists()  # the write repaired it
 
 
-def test_list_skips_an_unreadable_snapshot_when_asked(board: Path) -> None:
+def test_an_unreadable_snapshot_is_replayed_and_reported(board: Path) -> None:
     good = file_issue(board, "good")
     bad = file_issue(board, "bad")
     path = board / "issues" / f"{bad['id']}.json"
     path.write_text("{not json")
+    reported: list[Path] = []
+    listed = list_issue_snapshots(board, on_unreadable=lambda p, _e: reported.append(p))
+    assert listed == [good, bad] and reported == [path]
+    assert read_issue_snapshot(board, bad["id"]) == bad
+    assert path.read_text() == "{not json"  # reads wrote nothing
+
+    # The log unreadable too: skipped (reported), or raised without a reporter.
+    (board / "issues" / "events" / f"{bad['id']}.jsonl").write_text("{broken\n")
+    reported.clear()
+    assert list_issue_snapshots(board, on_unreadable=lambda p, _e: reported.append(p)) == [good]
+    assert reported == [path]
     with pytest.raises(OpError):
         list_issue_snapshots(board)
-    skipped: list[Path] = []
-    listed = list_issue_snapshots(board, on_unreadable=lambda p, _e: skipped.append(p))
-    assert listed == [good] and skipped == [path]
-    assert read_issue_snapshot(board, bad["id"]) == bad  # replayed from its log
+    with pytest.raises(OpError):
+        read_issue_snapshot(board, bad["id"])

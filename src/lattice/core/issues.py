@@ -43,10 +43,10 @@ def issues_disabled_message(has_existing: bool) -> str:
 
 
 def unreadable_issue_warning(path: object, error: Exception) -> str:
-    """The stderr line a read prints when it skips an issue file it cannot read."""
+    """The stderr line a read prints for an issue file it cannot read."""
     cause = error.__cause__ or error
     return (
-        f"Warning: skipped unreadable issue file {path} ({cause}). "
+        f"Warning: issue file {path} is unreadable ({cause}). "
         "Run 'lattice rebuild --all' to rebuild it from its log."
     )
 

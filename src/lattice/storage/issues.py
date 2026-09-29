@@ -91,49 +91,66 @@ def _replayed(lattice_dir: Path, issue_id: str) -> dict | None:
         raise OpError("INTEGRITY_ERROR", f"Cannot replay {path}: {exc}.") from exc
 
 
-def read_issue_snapshot(lattice_dir: Path, issue_id: str) -> dict | None:
-    """The issue's snapshot; replayed from its log when the file is missing or
-    unreadable (a crash between the event and the snapshot, a merge conflict).
+def read_issue_snapshot(
+    lattice_dir: Path, issue_id: str, *, on_unreadable: OnUnreadable | None = None
+) -> dict | None:
+    """The issue, from its snapshot, or rebuilt in memory from its log when the
+    snapshot is missing (a crash after the first event) or unreadable (a merge
+    conflict). Writes nothing.
 
-    ``None`` when there is neither. An unreadable snapshot with no log raises
-    ``INTEGRITY_ERROR``.
+    An unreadable snapshot that the log replaces is reported to
+    *on_unreadable*. ``None`` when there is neither file; ``INTEGRITY_ERROR``
+    (the snapshot's) when the snapshot is unreadable and the log is unreadable
+    or absent.
     """
     path = _snapshot_path(lattice_dir, issue_id)
-    if path.exists():
+    if not path.exists():
+        return _replayed(lattice_dir, issue_id)
+    try:
+        return _load_json(path)
+    except OpError as exc:
         try:
-            return _load_json(path)
-        except OpError:
             replayed = _replayed(lattice_dir, issue_id)
-            if replayed is None:
-                raise
-            return replayed
-    return _replayed(lattice_dir, issue_id)
+        except OpError:
+            replayed = None
+        if replayed is None:
+            raise
+        if on_unreadable is not None:
+            on_unreadable(path, exc)
+        return replayed
 
 
 def list_issue_snapshots(
     lattice_dir: Path, *, on_unreadable: OnUnreadable | None = None
 ) -> list[dict]:
-    """Every issue, by sequence number.
+    """Every issue with a readable snapshot or log, by sequence number.
 
-    An issue whose log has no snapshot file (a crash after the first event) is
-    replayed in memory; only the names are compared, so the other logs are not
-    read. With *on_unreadable*, a file that cannot be read is skipped and
-    reported to it; without, the ``INTEGRITY_ERROR`` propagates.
+    An issue whose snapshot is missing or unreadable is rebuilt in memory from
+    its log; missing snapshots are found by comparing file names, so the other
+    logs are not read. Every unreadable file is reported to *on_unreadable*:
+    the issue is still listed when its log replaces the snapshot, and skipped
+    only when the log is unreadable or absent too. Without *on_unreadable*,
+    an issue that cannot be read raises ``INTEGRITY_ERROR``.
     """
     directory = issues_dir(lattice_dir)
     if not directory.is_dir():
         return []
-    snapshot_paths = sorted(directory.glob("iss_*.json"))
-    have = {p.stem for p in snapshot_paths}
+    snapshot_ids = sorted(p.stem for p in directory.glob("iss_*.json"))
     events_dir = directory / "events"
     missing = (
-        sorted(p.stem for p in events_dir.glob("iss_*.jsonl") if p.stem not in have)
+        sorted(p.stem for p in events_dir.glob("iss_*.jsonl") if p.stem not in set(snapshot_ids))
         if events_dir.is_dir()
         else []
     )
     snapshots: list[dict] = []
     for path, load in [
-        *((p, lambda p=p: _load_json(p)) for p in snapshot_paths),
+        *(
+            (
+                _snapshot_path(lattice_dir, i),
+                lambda i=i: read_issue_snapshot(lattice_dir, i, on_unreadable=on_unreadable),
+            )
+            for i in snapshot_ids
+        ),
         *((_events_path(lattice_dir, i), lambda i=i: _replayed(lattice_dir, i)) for i in missing),
     ]:
         try:

@@ -1320,7 +1320,11 @@ Additionally, `lattice advance N` processed multiple tasks in a single context w
   first event) or an unreadable one is replayed in memory by every read, so it
   still lists and resolves by its display ID. A snapshot left stale by a
   later event is corrected by the next successful write to that issue, or by
-  `lattice rebuild --all`; until then reads show the stale state. `lattice
-  show` and `issue list` skip an unreadable issue file with a warning.
+  `lattice rebuild --all`; until then reads show the stale state. One rule
+  for every read (`issue list`, `issue show`, the Issues section of `lattice
+  show`): an issue with an intact log is always shown; an unreadable snapshot
+  prints one stderr warning naming the file and `lattice rebuild --all`; only
+  an issue whose log is also unreadable or absent is left out, with the
+  warning.
 - **No schema bump.** Issue events and snapshots carry `schema_version: 1`;
   replay ignores an `issue_*` type it does not know.

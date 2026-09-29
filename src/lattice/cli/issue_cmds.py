@@ -215,7 +215,7 @@ def issue_show(issue_id: str, output_json: bool) -> None:
         resolved = resolve_issue(lattice_dir, issue_id)
     except OpError as exc:
         output_error(exc.message, exc.code, is_json)
-    snapshot = read_issue_snapshot(lattice_dir, resolved)
+    snapshot = read_issue_snapshot(lattice_dir, resolved, on_unreadable=_warn_unreadable)
     if snapshot is None:
         output_error(f"Issue '{issue_id}' not found.", "NOT_FOUND", is_json)
     view = issue_views(lattice_dir, [snapshot])[0]

@@ -465,30 +465,70 @@ def test_show_compact_and_empty(on: Path, ok) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_corrupt_snapshot_does_not_break_show_or_list(on: Path, ok, invoke) -> None:
-    ok("create", "Unrelated", *A)
-    ok("issue", "file", "Linked one", *A)
+def _corrupt_board(ok) -> tuple[Path, Path]:  # noqa: ANN001
+    """LAT-I1 linked and readable; LAT-I2 linked with a corrupt snapshot."""
+    ok("create", "Task", *A)
+    ok("issue", "file", "Readable one", *A)
     ok("issue", "file", "Corrupt one", *A)
     ok("issue", "link", "LAT-I1", "LAT-1", *A)
-    corrupt = on / ".lattice" / "issues" / f"{ok('issue', 'show', 'LAT-I2')['id']}.json"
-    corrupt.write_text("{not json")
+    ok("issue", "link", "LAT-I2", "LAT-1", *A)
+    issue_id = ok("issue", "show", "LAT-I2")["id"]
+    return Path(f"issues/{issue_id}.json"), Path(f"issues/events/{issue_id}.jsonl")
 
-    plain = invoke("show", "LAT-1")
-    assert plain.exit_code == 0, plain.output
-    assert "LAT-I1  linked" in plain.stdout
-    assert f"skipped unreadable issue file {corrupt}" in plain.stderr
-    assert "lattice rebuild --all" in plain.stderr
 
-    as_json = invoke("show", "LAT-1", "--json")
-    assert as_json.exit_code == 0
-    data = json.loads(as_json.stdout)["data"]  # stdout stays valid JSON
-    assert [i["short_id"] for i in data["linked_issues"]] == ["LAT-I1"]
-    assert "skipped unreadable issue file" in as_json.stderr
+def _warned(result, path: Path) -> bool:  # noqa: ANN001
+    return (
+        "is unreadable (" in result.stderr
+        and str(path) in result.stderr
+        and "lattice rebuild --all" in result.stderr
+    )
 
-    listed = invoke("issue", "list")
-    assert listed.exit_code == 0
-    assert listed.stdout.startswith("LAT-I1  linked")
-    assert "skipped unreadable issue file" in listed.stderr
-    # The unreadable issue itself still shows, replayed from its log.
-    assert ok("issue", "show", "LAT-I2")["text"] == "Corrupt one"
-    assert corrupt.read_text() == "{not json"  # reads wrote nothing
+
+def test_corrupt_snapshot_with_an_intact_log_is_shown_everywhere(on: Path, ok, invoke) -> None:
+    snap_rel, _log = _corrupt_board(ok)
+    snapshot = on / ".lattice" / snap_rel
+    snapshot.write_text("{not json")
+
+    for argv in (("show", "LAT-1"), ("issue", "list"), ("issue", "show", "LAT-I2")):
+        plain = invoke(*argv)
+        assert plain.exit_code == 0, argv
+        assert _warned(plain, snapshot), argv
+        assert plain.stderr.count("is unreadable (") == 1, argv
+        as_json = invoke(*argv, "--json")
+        assert as_json.exit_code == 0, argv
+        assert _warned(as_json, snapshot), argv
+        json.loads(as_json.stdout)  # stdout stays valid JSON
+    assert "LAT-I2  linked     Corrupt one" in invoke("show", "LAT-1").stdout
+    assert [
+        i["short_id"]
+        for i in json.loads(invoke("show", "LAT-1", "--json").stdout)["data"]["linked_issues"]
+    ] == ["LAT-I1", "LAT-I2"]
+    listed = json.loads(invoke("issue", "list", "--json").stdout)["data"]
+    assert [v["short_id"] for v in listed] == ["LAT-I1", "LAT-I2"]
+    assert json.loads(invoke("issue", "show", "LAT-I2", "--json").stdout)["data"]["state"] == (
+        "linked"
+    )
+    assert snapshot.read_text() == "{not json"  # reads wrote nothing
+
+
+def test_corrupt_snapshot_and_log_is_left_out_with_the_warning(on: Path, ok, invoke) -> None:
+    snap_rel, log_rel = _corrupt_board(ok)
+    snapshot = on / ".lattice" / snap_rel
+    snapshot.write_text("{not json")
+    (on / ".lattice" / log_rel).write_text("{broken\n")
+
+    shown = invoke("show", "LAT-1", "--json")
+    assert shown.exit_code == 0 and _warned(shown, snapshot)
+    linked = json.loads(shown.stdout)["data"]["linked_issues"]
+    assert [i["short_id"] for i in linked] == ["LAT-I1"]
+    assert _warned(invoke("show", "LAT-1"), snapshot)
+
+    listed = invoke("issue", "list", "--json")
+    assert listed.exit_code == 0 and _warned(listed, snapshot)
+    assert [v["short_id"] for v in json.loads(listed.stdout)["data"]] == ["LAT-I1"]
+    assert _warned(invoke("issue", "list"), snapshot)
+
+    missing = invoke("issue", "show", "LAT-I2", "--json")
+    assert missing.exit_code == 1
+    error = json.loads(missing.stdout)["error"]
+    assert error["code"] == "INTEGRITY_ERROR" and str(snapshot) in error["message"]
