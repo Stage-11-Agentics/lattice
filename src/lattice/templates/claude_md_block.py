@@ -13,6 +13,8 @@ stage11 default renders byte-identically to the historical static block
 
 from __future__ import annotations
 
+from lattice.core.config import issues_enabled
+
 #: Canonical forward ordering used to draw the lifecycle diagram.  Terminal /
 #: side statuses (blocked, cancelled) are not part of the forward chain.
 _CHAIN_ORDER = [
@@ -61,6 +63,24 @@ def _lifecycle_diagram(statuses: list[str]) -> str:
     return f"{line}\n{arrow}\n{blocked}"
 
 
+#: The section a board with the issue log on adds (``"issues": {"enabled": true}``).
+ISSUE_LOG_SECTION = """
+### Issue Log
+
+This board keeps an issue log: a place for observations that are not yet commitments. When you notice something wrong that is outside your task (a flaky test, a layout glitch, a confusing error), file it instead of creating a task:
+
+```
+lattice issue file "<what you saw>" --actor agent:<your-id> [--confidence possible|definite] [--evidence <path-or-url>]...
+```
+
+Observations go to `lattice issue file`; commitments go to `lattice create`. Someone triages the log later: `lattice issue promote` turns issues into a backlog task, `lattice issue link` attaches them to an existing one, and `lattice issue dismiss` or `lattice issue duplicate` closes them. An issue's state (open, linked, resolved, dismissed, duplicate) follows its linked tasks; nobody sets it by hand. `lattice issue list` shows what is still open, and `lattice show <task>` lists the issues linked to a task.
+"""
+
+ISSUE_LOG_QUICK_REFERENCE = """lattice issue file "<text>" --actor agent:<id>    # an observation, not a task
+lattice issue list
+"""
+
+
 def render_claude_md_block(config: dict | None = None) -> str:
     """Render the Lattice agent-integration block for *config*.
 
@@ -92,6 +112,8 @@ def render_claude_md_block(config: dict | None = None) -> str:
     next_after_review = next(
         (s for s in ("in_validation", "pr_open", "done") if s in statuses), "done"
     )
+
+    issues_on = issues_enabled(config)
 
     parts: list[str] = []
 
@@ -579,7 +601,13 @@ When the work is not merged through a pull request (committed straight to a bran
 ### Hosted Boards
 
 A checkout with a committed `.lattice-remote.json` is bound to a Lattice server: its board lives on the server, and the primary checkout's `.lattice/` is a read-only mirror. A linked worktree has only `.lattice-remote.json`; `lattice` finds the mirror in the primary checkout, so run commands from the worktree as usual. Every command above works the same; writes go to the server. Never edit files under `.lattice/` there: write plans and notes with `lattice plan write` / `lattice notes write`, and orchestration files with `lattice board write`. Whether a status change fires an automatic review depends on the board's config, set on the server; the `lattice status` output says what happened. `lattice remote status` shows the token's person (for example `human:alice`); you still act as `--actor agent:<your-id>`, and every event records both: your actor, and the token's user and machine (`lattice show <task>` prints `actor · user@machine`, `--full` the whole origin). If a write fails with `OUTCOME_UNKNOWN`, check `lattice remote op-status <op_id>` before retrying, or it may apply twice. Setup, moving a board to a server and back, and troubleshooting: follow `docs/hosted/guide.md` in the Lattice repository step by step; it is written for agents.
+""")
 
+    # ── Issue log (only when the board turned it on, LAT-361) ────────────
+    if issues_on:
+        parts.append(ISSUE_LOG_SECTION)
+
+    parts.append("""
 ### Quick Reference
 
 ```
@@ -597,7 +625,10 @@ lattice explain <path>                           # also supports directory/ and 
 lattice next [--actor agent:<id>] [--claim]
 lattice show <task>
 lattice list
-```
+""")
+    if issues_on:
+        parts.append(ISSUE_LOG_QUICK_REFERENCE)
+    parts.append("""```
 
 **Useful flags:**
 - `--quiet` — prints only the task ID (scripting: `TASK=$(lattice create "..." --quiet)`)

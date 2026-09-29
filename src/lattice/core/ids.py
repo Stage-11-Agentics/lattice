@@ -99,6 +99,11 @@ def generate_resource_id() -> str:
     return f"res_{ULID()}"
 
 
+def generate_issue_id() -> str:
+    """Generate a new issue ID with the iss_ prefix."""
+    return f"iss_{ULID()}"
+
+
 def generate_session_id() -> str:
     """Generate a new session ID with the sess_ prefix."""
     return f"sess_{ULID()}"

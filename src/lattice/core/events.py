@@ -50,6 +50,25 @@ BUILTIN_EVENT_TYPES: frozenset[str] = frozenset(
         "plan_written",
         "notes_written",
         "task_history_reconciled",
+        "issue_filed",
+        "issue_linked",
+        "issue_unlinked",
+        "issue_dismissed",
+        "issue_marked_duplicate",
+        "issue_reopened",
+    }
+)
+
+#: The optional issue log's events (LAT-361). They live in the issue's own log
+#: under ``issues/events/``, never in a task log.
+ISSUE_EVENT_TYPES: frozenset[str] = frozenset(
+    {
+        "issue_filed",
+        "issue_linked",
+        "issue_unlinked",
+        "issue_dismissed",
+        "issue_marked_duplicate",
+        "issue_reopened",
     }
 )
 
@@ -176,6 +195,38 @@ def create_resource_event(
             prov["reason"] = reason
         event["provenance"] = prov
 
+    return event
+
+
+def create_issue_event(
+    type: str,
+    issue_id: str,
+    actor: str | dict,
+    data: dict,
+    *,
+    event_id: str | None = None,
+    ts: str | None = None,
+    model: str | None = None,
+    session: str | None = None,
+    triggered_by: str | None = None,
+    on_behalf_of: str | None = None,
+    reason: str | None = None,
+) -> dict:
+    """Build a complete issue event dict: ``create_resource_event`` with ``issue_id``."""
+    event = create_resource_event(
+        type,
+        issue_id,
+        actor,
+        data,
+        event_id=event_id,
+        ts=ts,
+        model=model,
+        session=session,
+        triggered_by=triggered_by,
+        on_behalf_of=on_behalf_of,
+        reason=reason,
+    )
+    event["issue_id"] = event.pop("resource_id")
     return event
 
 

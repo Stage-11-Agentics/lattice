@@ -1626,6 +1626,7 @@ COMMAND_MODULES: dict[str, str] = {
     "explain": "file_cmds",
     "file-link": "file_cmds",
     "file-unlink": "file_cmds",
+    "issue": "issue_cmds",
     "link": "link_cmds",
     "list": "query_cmds",
     "migrate": "migration_cmds",
