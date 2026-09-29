@@ -10,7 +10,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from lattice.core.config import compose_workflow, default_config
-from lattice.templates.claude_md_block import CLAUDE_MD_BLOCK, render_claude_md_block
+from lattice.templates.claude_md_block import (
+    CLAUDE_MD_BLOCK,
+    ISSUE_LOG_QUICK_REFERENCE,
+    ISSUE_LOG_SECTION,
+    render_claude_md_block,
+)
 
 _SNAPSHOT = Path(__file__).parent.parent / "fixtures" / "claude_md_block_stage11_snapshot.md"
 
@@ -128,3 +133,22 @@ class TestCustomBlocks:
             block = render_claude_md_block(_custom_config(**combo))
             assert "→ needs_human" not in block
             assert "needs_human →" not in block
+
+
+class TestIssueLogSection:
+    """LAT-361: the issue log section renders only on a board that turned it on."""
+
+    def test_on_adds_the_section_and_quick_reference_line(self) -> None:
+        config = dict(default_config())
+        config["issues"] = {"enabled": True}
+        block = render_claude_md_block(config)
+        assert "### Issue Log" in block
+        assert 'lattice issue file "<text>" --actor agent:<id>' in block
+        assert block.index("### Issue Log") < block.index("### Quick Reference")
+        without = block.replace(ISSUE_LOG_SECTION, "").replace(ISSUE_LOG_QUICK_REFERENCE, "")
+        assert without == CLAUDE_MD_BLOCK
+
+    def test_off_renders_nothing(self) -> None:
+        config = dict(default_config())
+        config["issues"] = {"enabled": False}
+        assert render_claude_md_block(config) == CLAUDE_MD_BLOCK

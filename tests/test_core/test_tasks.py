@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from lattice.core.events import BUILTIN_EVENT_TYPES, RESOURCE_EVENT_TYPES
+from lattice.core.events import BUILTIN_EVENT_TYPES, ISSUE_EVENT_TYPES, RESOURCE_EVENT_TYPES
 from lattice.core.tasks import (
     PROTECTED_FIELDS,
     _MUTATION_HANDLERS,
@@ -1383,7 +1383,7 @@ class TestCompactSnapshot:
 # ---------------------------------------------------------------------------
 
 
-_TASK_EVENT_TYPES = sorted(BUILTIN_EVENT_TYPES - RESOURCE_EVENT_TYPES)
+_TASK_EVENT_TYPES = sorted(BUILTIN_EVENT_TYPES - RESOURCE_EVENT_TYPES - ISSUE_EVENT_TYPES)
 _COVERED_TYPES = set(_MUTATION_HANDLERS.keys()) | set(_NOOP_EVENT_TYPES) | {"task_created"}
 
 
