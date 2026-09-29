@@ -20,6 +20,7 @@ the golden.
 from __future__ import annotations
 
 import json
+import mimetypes
 import os
 import subprocess
 import sys
@@ -42,7 +43,15 @@ from tests.parity.hosted import (
     hosted_cases,
     hosted_target,
 )
-from tests.parity.record import _base_env, _chdir, _process_env, _runner
+from tests.parity.record import (
+    _base_env,
+    _chdir,
+    _process_env,
+    _runner,
+    dump,
+    load_golden,
+    run_scenario,
+)
 
 
 @pytest.mark.parametrize(("scenario", "mode"), hosted_cases(0))
@@ -161,6 +170,42 @@ def test_archive_loop_with_concurrent_client_reads(server: ParityServer, tmp_pat
     ]
     assert failures == []
     assert durable_tree(checkout / ".lattice") == durable_tree(server.board(target.slug))
+
+
+@pytest.fixture
+def foreign_mimetypes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The live ``mimetypes`` tables of another interpreter and host: CPython
+    3.12.0's built-in table (no ``.md``, ``.markdown`` or ``.rst``) extended by a host
+    file that maps ``.md`` elsewhere. Before LAT-356, attach stored whatever these
+    said, so the same attach stored different bytes on different machines."""
+    host = tmp_path / "mime.types"
+    host.write_text("text/x-host-markdown md markdown\n")
+    builtin = {
+        k: v
+        for k, v in mimetypes._types_map_default.items()  # type: ignore[attr-defined]
+        if k not in (".md", ".markdown", ".rst")
+    }
+    # mimetypes.init() rebinds these module globals; monkeypatch restores them.
+    for name in ("types_map", "suffix_map", "encodings_map", "common_types"):
+        monkeypatch.setattr(mimetypes, name, getattr(mimetypes, name))
+    monkeypatch.setattr(mimetypes, "_types_map_default", builtin)
+    monkeypatch.setattr(mimetypes, "knownfiles", [str(host)])
+    monkeypatch.setattr(mimetypes, "_db", None)
+    monkeypatch.setattr(mimetypes, "inited", False)
+    mimetypes.init()
+    assert mimetypes.guess_type("report.md")[0] == "text/x-host-markdown"
+
+
+@pytest.mark.usefixtures("foreign_mimetypes")
+def test_attach_stores_the_same_content_type_whatever_the_mimetypes_tables(
+    server: ParityServer, tmp_path: Path
+) -> None:
+    """LAT-356: served output equals local output, and both equal the golden, under
+    the tables that made the served corpus drift on a 3.12.0 host."""
+    (artifacts,) = [s for s in SCENARIOS if s.name == "artifacts"]
+    local = run_scenario(artifacts, tmp_path / "local", mode="plain")
+    assert dump(local) == dump(load_golden("artifacts", "plain"))
+    check_scenario_through_the_server(artifacts, "plain", server, tmp_path / "hosted")
 
 
 READER = """

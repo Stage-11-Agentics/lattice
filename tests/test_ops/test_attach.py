@@ -47,18 +47,28 @@ def test_payload_is_stored_under_the_artifact_id(board: LocalBoard) -> None:
     )
     meta = result.value
     assert meta["title"] == "trace.jsonl"
-    assert (
-        meta["payload"]
-        == {
-            "file": f"{meta['id']}.jsonl",
-            "content_type": None,
-            "size_bytes": 9,
-        }
-        or meta["payload"]["file"] == f"{meta['id']}.jsonl"
-    )
+    assert meta["payload"] == {
+        "file": f"{meta['id']}.jsonl",
+        "content_type": None,
+        "size_bytes": 9,
+    }
     stored = board.lattice_dir / "artifacts" / "payload" / f"{meta['id']}.jsonl"
     assert stored.read_bytes() == b'{"a": 1}\n'
     assert [e["type"] for e in result.events] == ["artifact_attached"]
+
+
+@pytest.mark.parametrize(
+    ("filename", "content_type"),
+    # mimetypes.guess_type parsed these as URLs (null, then text/markdown); the
+    # name is read literally now (SPEC §3.8, G-6; LAT-356).
+    [("data:report.md", "text/markdown"), ("release:report.md?1", None)],
+)
+def test_the_content_type_reads_the_filename_literally(
+    board: LocalBoard, filename: str, content_type: str | None
+) -> None:
+    task_id = _task(board)
+    meta = _run(board, {"task": task_id, "payload": encode_payload(filename, b"x")}).value
+    assert meta["payload"]["content_type"] == content_type
 
 
 @pytest.mark.parametrize(
