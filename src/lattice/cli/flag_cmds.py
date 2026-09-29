@@ -10,7 +10,6 @@ from lattice.cli.helpers import common_options, output_error, output_result
 from lattice.cli.main import cli
 from lattice.cli.ops_bridge import board_or_exit, caller_from_context, run_operation
 from lattice.ops import OpError
-from lattice.ops.task_needs_human import REASON_REQUIRED
 
 
 def _notify_c11(snapshot: dict, *, flagged: bool) -> None:
@@ -37,6 +36,8 @@ def _reject_before_unreadable_file(task_id: str, on_behalf_of: str | None, is_js
             caller_from_context(),
         )
     except OpError as exc:
+        from lattice.ops.task_needs_human import REASON_REQUIRED
+
         if exc.code == "VALIDATION_ERROR" and exc.message == REASON_REQUIRED:
             return
         output_error(exc.message, exc.code, is_json)

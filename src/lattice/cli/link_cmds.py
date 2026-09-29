@@ -7,7 +7,6 @@ import click
 from lattice.cli.helpers import common_options, output_result
 from lattice.cli.main import cli
 from lattice.cli.ops_bridge import params_or_exit, provenance_params, run_operation
-from lattice.ops.task_branch_link import repo_display
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +140,8 @@ def branch_link(
     result = run_operation("task.branch_link", params, is_json)
     task_id = result.value["id"]
     repo = result.events[-1]["data"].get("repo")
+    from lattice.ops.task_branch_link import repo_display
+
     output_result(
         data=result.value,
         human_message=f"Linked branch '{branch}'{repo_display(repo)} to {task_id}",
@@ -188,6 +189,8 @@ def branch_unlink(
     result = run_operation("task.branch_unlink", params, is_json)
     task_id = result.value["id"]
     repo = result.events[-1]["data"].get("repo")
+    from lattice.ops.task_branch_link import repo_display
+
     output_result(
         data=result.value,
         human_message=f"Unlinked branch '{branch}'{repo_display(repo)} from {task_id}",

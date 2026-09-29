@@ -19,7 +19,7 @@ import click
 import pytest
 from click.testing import CliRunner
 
-from lattice.cli.main import cli
+from lattice.cli.main import cli, load_all_commands
 from lattice.templates.claude_md_block import CLAUDE_MD_BLOCK
 
 REPO = Path(__file__).resolve().parents[1]
@@ -68,6 +68,7 @@ def _lattice_invocations(code: str) -> list[list[str]]:
 def _command_path(argv: list[str]) -> tuple[str, click.Command | None]:
     """Walk the Click tree along argv; return the path walked and the command
     (``None`` when a word names no subcommand of a group)."""
+    load_all_commands()  # the root group imports command modules on demand
     command: click.Command = cli
     path: list[str] = []
     for word in argv:

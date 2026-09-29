@@ -22,7 +22,6 @@ from lattice.cli.ops_bridge import (
     run_attested_operation,
     run_operation,
 )
-from lattice.ops.task_comment_edit import check_role_flags
 
 logger = logging.getLogger(__name__)
 
@@ -746,6 +745,8 @@ def comment_edit(
     is_json = output_json
     # Today's argument order: --role with --clear-role, then NEW_TEXT or --file
     # (exactly one, and the file is read only then); all before the board.
+    from lattice.ops.task_comment_edit import check_role_flags
+
     check_or_exit(is_json, check_role_flags, role, clear_role)
     body = resolve_body(
         new_text, file_path, is_json, what="the new comment text", arg_label="NEW_TEXT"
