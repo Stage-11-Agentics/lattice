@@ -193,6 +193,10 @@ Check if enabled: look for `"heartbeat": {"enabled": true}` in `.lattice/config.
 
 When enabled, keep advancing after each task: complete the current task → `lattice next --claim` → work the next one → repeat. Stop after `max_advances` (default 10), when the backlog is empty, or when a task is flagged `needs-human` or hits `blocked`.
 
+## Reading review artifacts
+
+When a review prints an artifact ID, read its content with `lattice artifact show <id>`; use `--json` for structured output. In JSON, `data.content` is UTF-8 text or `null`, and `data.payload_path` is relative to `.lattice`. Binary payloads have null content and include their path. Use `lattice review-status <task>` while a single-mode review runs; progress is reported on stderr.
+
 ## Hosted Boards
 
 A checkout with a committed `.lattice-remote.json` is bound to a Lattice server (Lattice v2, optional). Its board lives on the server; `.lattice/` is a read-only mirror, refreshed before every read.

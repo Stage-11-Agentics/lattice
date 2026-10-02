@@ -355,7 +355,7 @@ cat .lattice/config.json | python3 -c "import sys,json; d=json.load(sys.stdin); 
 2. Read the git diff to see what was actually built.
 3. Run tests and linting to verify nothing is broken.
 4. Compare the implementation against the plan's acceptance criteria.
-5. Use the artifact produced by the auto-fired review (or run `lattice code-review <task>` manually if you opted out / are inline).
+5. Use the review's artifact ID and read its content with `lattice artifact show <id>` (or `--json` for structured output). Run the review command manually if you opted out / are inline.
 
 **When moving to `done`:** If the completion policy blocks you for a missing review artifact, do the review. Do not `--force` past it. `--force --reason` is for genuinely exceptional cases, not a convenience shortcut.
 

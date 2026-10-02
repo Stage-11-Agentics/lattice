@@ -1203,6 +1203,7 @@ def build_trident_handoff_prompt(
     base_branch: str | None,
     head_ref: str | None = None,
     head_sha: str | None = None,
+    program: str = "lattice",
 ) -> str:
     """Build the prompt handed to the claude session running inside the c11 pane.
 
@@ -1215,6 +1216,7 @@ def build_trident_handoff_prompt(
     — left to infer, the pane diffs the wrong tree.
     """
     review_short = "code" if review_type == "code-review" else "plan"
+    artifact_role = "plan-review" if review_type == "plan-review" else "review"
     base_line = base_branch or "main"
     head_line = head_ref or "HEAD"
     if head_sha:
@@ -1238,8 +1240,10 @@ to complete.
 
 ## Step 2 — Read the result
 
-When trident reports done, find the merged artifact under
-`.lattice/artifacts/payload/<id>.md`. Read it — it gives a verdict (PASS,
+When trident reports done, use the artifact ID it prints. If it does not
+print an ID, run `{program} show {task_short_id}` and find the newest attached
+artifact with role `{artifact_role}`. Read it with
+`{program} artifact show <artifact-id>`. The artifact gives a verdict (PASS,
 FAIL implementation-level, FAIL plan-level) and a list of findings.
 
 ## Step 3 — Triage per Review Verdict Routing
@@ -1300,6 +1304,7 @@ def run_triple_review(
     short_id: str | None = None,
     worktree: Path | None = None,
     claim: str | None = None,
+    program: str = "lattice",
 ) -> tuple[bool, str]:
     """Spawn a c11 pane that runs /trident-{type}-review and applies fixes inline.
 
@@ -1330,6 +1335,7 @@ def run_triple_review(
         base_branch=base,
         head_ref=head,
         head_sha=head_sha,
+        program=program,
     )
     tab_title = f"{display_id} :: trident {review_type}"
     description = (

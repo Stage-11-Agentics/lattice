@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -520,6 +521,155 @@ class TestPlanReviewSingle:
                 catch_exceptions=False,
             )
         mock_move.assert_called_once()
+
+    @pytest.mark.parametrize("output_args", [("--json",), ("--quiet",)])
+    def test_human_plan_approval_keeps_result_stdout_clean(self, tmp_path, output_args):
+        from types import SimpleNamespace
+
+        root = _make_board(tmp_path, {"plan_review_mode": "single", "plan_approval": "human"})
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+        _write_plan(root, task_id, "## Plan\nRefactor the auth module.")
+        art_id = "art_fake-plan-review"
+
+        with (
+            patch(
+                "lattice.cli.review_cmds.run_single_review",
+                return_value=(True, "ok", "### 1. Verdict\n**PASS**"),
+            ),
+            patch("lattice.cli.review_cmds._attach_review_artifact", return_value=art_id),
+            patch(
+                "lattice.cli.review_cmds.subprocess.run",
+                return_value=SimpleNamespace(returncode=0, stdout="", stderr=""),
+            ),
+        ):
+            result = runner.invoke(
+                cli,
+                [
+                    "plan-review",
+                    task_id,
+                    "--mode",
+                    "single",
+                    "--actor",
+                    "agent:test",
+                    *output_args,
+                ],
+                env={"LATTICE_ROOT": str(root)},
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0, result.output
+        if "--json" in output_args:
+            payload = json.loads(result.stdout)
+            assert payload == {"ok": True, "data": {"artifact_id": art_id, "role": "plan-review"}}
+        else:
+            assert result.stdout == f"{art_id}\n"
+        assert "Running plan-review" not in result.stdout
+        assert "Running plan-review" in result.stderr
+        assert "timeout 600s" in result.stderr
+        assert f"lattice review-status {task_id}" in result.stderr
+        assert "needs_human flag set" in result.stderr
+
+    def test_completion_names_artifact_show_command(self, tmp_path):
+        root = _make_board(tmp_path, {"plan_review_mode": "single"})
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+        _write_plan(root, task_id, "## Plan\nRefactor the auth module.")
+
+        with (
+            patch(
+                "lattice.cli.review_cmds.run_single_review",
+                return_value=(True, "ok", "PASS"),
+            ),
+            patch("lattice.cli.review_cmds._attach_review_artifact", return_value="art_fake"),
+            patch("lattice.cli.review_cmds.program_name", return_value="lattice-alt"),
+        ):
+            result = runner.invoke(
+                cli,
+                ["plan-review", task_id, "--mode", "single", "--actor", "agent:test"],
+                env={"LATTICE_ROOT": str(root)},
+                catch_exceptions=False,
+            )
+        assert result.exit_code == 0, result.output
+        assert "lattice-alt artifact show art_fake" in result.stdout
+        assert "Running plan-review" in result.stderr
+        assert f"lattice-alt review-status {task_id}" in result.stderr
+
+    def test_heartbeat_stops_before_artifact_attachment(self, tmp_path):
+        import click
+
+        root = _make_board(tmp_path, {"plan_review_mode": "single"})
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+        _write_plan(root, task_id, "## Plan\nRefactor the auth module.")
+        real_echo = click.echo
+        ticks: list[str] = []
+        tick_count_at_attach: list[int] = []
+
+        def recording_echo(*args, **kwargs):
+            message = str(args[0]) if args else str(kwargs.get("message", ""))
+            if "still running" in message:
+                ticks.append(message)
+            return real_echo(*args, **kwargs)
+
+        def delayed_review(**_kwargs):
+            time.sleep(0.055)
+            return True, "ok", "PASS"
+
+        def delayed_attach(**_kwargs):
+            tick_count_at_attach.append(len(ticks))
+            time.sleep(0.045)
+            return "art_fake"
+
+        with (
+            patch("lattice.cli.review_cmds._REVIEW_HEARTBEAT_INTERVAL_SECONDS", 0.01),
+            patch("lattice.cli.review_cmds.run_single_review", side_effect=delayed_review),
+            patch("lattice.cli.review_cmds._attach_review_artifact", side_effect=delayed_attach),
+            patch("lattice.cli.review_cmds.click.echo", side_effect=recording_echo),
+        ):
+            result = runner.invoke(
+                cli,
+                ["plan-review", task_id, "--mode", "single", "--actor", "agent:test"],
+                env={"LATTICE_ROOT": str(root)},
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0, result.output
+        assert len(ticks) >= 2
+        assert tick_count_at_attach == [len(ticks)]
+        assert all("elapsed; timeout 600s" in tick for tick in ticks)
+
+    def test_heartbeat_stops_quietly_when_stderr_is_closed(self, tmp_path):
+        import click
+
+        root = _make_board(tmp_path, {"plan_review_mode": "single"})
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+        _write_plan(root, task_id, "## Plan\nRefactor the auth module.")
+        real_echo = click.echo
+
+        def broken_progress(*args, **kwargs):
+            message = str(args[0]) if args else str(kwargs.get("message", ""))
+            if "still running" in message:
+                raise BrokenPipeError("closed stderr")
+            return real_echo(*args, **kwargs)
+
+        with (
+            patch("lattice.cli.review_cmds._REVIEW_HEARTBEAT_INTERVAL_SECONDS", 0.001),
+            patch(
+                "lattice.cli.review_cmds.run_single_review",
+                side_effect=lambda **_kwargs: (time.sleep(0.01) or True, "ok", "PASS"),
+            ),
+            patch("lattice.cli.review_cmds._attach_review_artifact", return_value="art_fake"),
+            patch("lattice.cli.review_cmds.click.echo", side_effect=broken_progress),
+        ):
+            result = runner.invoke(
+                cli,
+                ["plan-review", task_id, "--mode", "single", "--actor", "agent:test"],
+                env={"LATTICE_ROOT": str(root)},
+                catch_exceptions=False,
+            )
+        assert result.exit_code == 0, result.output
 
 
 # ---------------------------------------------------------------------------
@@ -1308,7 +1458,7 @@ class TestFailedReviewIsVisible:
         result = _run_failing_code_review(runner, root, task_id, "--json")
 
         assert result.exit_code != 0
-        payload = json.loads(result.output[result.output.index("{") :])
+        payload = json.loads(result.stdout)
         assert payload["ok"] is False
         assert payload["error"]["code"] == "REVIEW_FAILED"
 

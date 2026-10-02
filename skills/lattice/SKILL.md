@@ -203,6 +203,10 @@ lattice list --json
 
 Returns `{"ok": true, "data": [...]}` on success or `{"ok": false, "error": {"code": "...", "message": "..."}}` on failure.
 
+## Reading review artifacts
+
+When a review prints an artifact ID, read its content with `lattice artifact show <id>`; use `--json` for structured output. In JSON, `data.content` is UTF-8 text or `null`, and `data.payload_path` is relative to `.lattice`. Binary payloads have null content and include their path. Use `lattice review-status <task>` while a single-mode review runs; progress is reported on stderr.
+
 ## Plans and Notes
 
 Every task has a plan at `.lattice/plans/<task_id>.md` (scaffolded on creation) and may have notes at `.lattice/notes/<task_id>.md`. Read them there; write them with a command, which works on every board, including a hosted checkout whose `.lattice/` is a read-only mirror:
