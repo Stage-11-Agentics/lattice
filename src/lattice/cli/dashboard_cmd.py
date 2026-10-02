@@ -10,6 +10,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import time
 
 import click
 
@@ -25,6 +26,8 @@ from lattice.core.errors import OpError
 from lattice.cli.main import cli
 
 _DEFAULT_PORT = 8799
+_RESTART_TIMEOUT_SECONDS = 5.0
+_RESTART_POLL_INTERVAL_SECONDS = 0.01
 
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
@@ -103,7 +106,15 @@ def dashboard_cmd(host: str, port: int | None, output_json: bool) -> None:
     if restart:
         os.environ[_RESTART_ENV] = "1"
         script = shutil.which(sys.argv[0]) or sys.argv[0]
-        os.execv(sys.executable, [sys.executable, script, *sys.argv[1:]])
+        if hasattr(signal, "SIGHUP"):
+            # exec resets caught handlers to their defaults. Ignore a second
+            # restart request until the new dashboard command installs its handler.
+            signal.signal(signal.SIGHUP, signal.SIG_IGN)
+        try:
+            os.execv(sys.executable, [sys.executable, script, *sys.argv[1:]])
+        except OSError as exc:
+            click.echo(f"Error: could not restart dashboard process: {exc}", err=True)
+            raise SystemExit(1) from exc
 
 
 def _dashboard_target(lattice_dir, stack, is_json):  # noqa: ANN001, ANN202
@@ -230,18 +241,49 @@ def restart_cmd(port: int | None) -> None:
         click.echo("Error: restart via signal is not supported on this platform.", err=True)
         raise SystemExit(1)
 
-    result = subprocess.run(
-        ["lsof", "-ti", f":{port}"],
-        capture_output=True,
-        text=True,
-    )
-    pids = sorted(set(p.strip() for p in result.stdout.strip().split("\n") if p.strip()))
+    pids = _listening_pids(port)
 
     if not pids:
         click.echo(f"No process found on port {port}.", err=True)
         raise SystemExit(1)
 
     for pid in pids:
-        os.kill(int(pid), signal.SIGHUP)
+        try:
+            os.kill(int(pid), signal.SIGHUP)
+        except OSError as exc:
+            click.echo(f"Error: could not signal dashboard PID {pid}: {exc}", err=True)
+            raise SystemExit(1) from exc
 
-    click.echo(f"Restart signal sent to dashboard on port {port}.")
+    if not _wait_for_dashboard_listener_restart(port, set(pids)):
+        click.echo(
+            f"Error: dashboard on port {port} did not resume listening within "
+            f"{_RESTART_TIMEOUT_SECONDS:g} seconds.",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    click.echo(f"Dashboard restarted and is listening on port {port}.")
+
+
+def _listening_pids(port: int) -> list[str]:
+    """Return process IDs that own a listening socket on *port*."""
+    result = subprocess.run(
+        ["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"],
+        capture_output=True,
+        text=True,
+    )
+    return sorted(set(pid.strip() for pid in result.stdout.splitlines() if pid.strip()))
+
+
+def _wait_for_dashboard_listener_restart(port: int, initial_pids: set[str]) -> bool:
+    """Wait until the old listener disappears and a dashboard listener returns."""
+    deadline = time.monotonic() + _RESTART_TIMEOUT_SECONDS
+    saw_listener_exit = False
+    while time.monotonic() < deadline:
+        pids = _listening_pids(port)
+        if not pids:
+            saw_listener_exit = True
+        elif saw_listener_exit or set(pids) != initial_pids:
+            return True
+        time.sleep(_RESTART_POLL_INTERVAL_SECONDS)
+    return False

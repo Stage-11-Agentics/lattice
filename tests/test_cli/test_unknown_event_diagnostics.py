@@ -3,10 +3,26 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from lattice.core.events import create_event, serialize_event
 from lattice.core.tasks import apply_event_to_snapshot, serialize_snapshot
 from lattice.storage.fs import LATTICE_DIR
+
+
+def _append_unknown_event(
+    lattice_dir: Path, task_id: str, event_type: str, *, archived: bool = False
+) -> None:
+    location = "archive/" if archived else ""
+    event = create_event(
+        event_type, task_id, "agent:newer-client", {"detail": "forward-compatible"}
+    )
+    event_path = lattice_dir / location / "events" / f"{task_id}.jsonl"
+    with event_path.open("a", encoding="utf-8") as handle:
+        handle.write(serialize_event(event))
+    snapshot_path = lattice_dir / location / "tasks" / f"{task_id}.json"
+    snapshot = apply_event_to_snapshot(json.loads(snapshot_path.read_text()), event)
+    snapshot_path.write_text(serialize_snapshot(snapshot), encoding="utf-8")
 
 
 def test_unknown_event_is_quiet_for_show_and_list_but_reported_by_doctor(
@@ -14,15 +30,8 @@ def test_unknown_event_is_quiet_for_show_and_list_but_reported_by_doctor(
 ) -> None:
     task = create_task("Forward-compatible task")
     task_id = task["id"]
-    event = create_event(
-        "process_started", task_id, "agent:older-client", {"process_id": "proc-1"}
-    )
     lattice_dir = initialized_root / LATTICE_DIR
-    with (lattice_dir / "events" / f"{task_id}.jsonl").open("a", encoding="utf-8") as handle:
-        handle.write(serialize_event(event))
-    snapshot_path = lattice_dir / "tasks" / f"{task_id}.json"
-    snapshot = apply_event_to_snapshot(json.loads(snapshot_path.read_text()), event)
-    snapshot_path.write_text(serialize_snapshot(snapshot), encoding="utf-8")
+    _append_unknown_event(lattice_dir, task_id, "process_started")
 
     shown = invoke("show", task_id)
     listed = invoke("list")
@@ -40,3 +49,50 @@ def test_unknown_event_is_quiet_for_show_and_list_but_reported_by_doctor(
     doctor_plain = invoke("doctor")
     assert doctor_plain.exit_code == 0
     assert "unknown event type 'process_started'" in doctor_plain.output
+
+
+def test_materializing_write_warns_and_keeps_forward_compatible_mutation(
+    initialized_root, create_task, invoke
+) -> None:
+    task_id = create_task("Forward-compatible write")["id"]
+    lattice_dir = initialized_root / LATTICE_DIR
+    _append_unknown_event(lattice_dir, task_id, "process_started")
+
+    updated = invoke(
+        "update", task_id, "title=Updated after unknown event", "--actor", "human:test"
+    )
+
+    assert updated.exit_code == 0, updated.output
+    assert updated.stderr.count("Warning:") == 1
+    assert task_id in updated.stderr
+    assert "process_started" in updated.stderr
+    assert "newer or foreign Lattice" in updated.stderr
+    assert "upgrade Lattice" in updated.stderr
+    assert "lattice doctor" in updated.stderr
+
+    shown = invoke("show", task_id, "--json")
+    assert shown.exit_code == 0, shown.output
+    assert shown.stderr == ""
+    assert json.loads(shown.output)["data"]["title"] == "Updated after unknown event"
+
+
+def test_rebuild_aggregates_unknown_task_and_type_pairs_including_archived_tasks(
+    initialized_root, create_task, invoke
+) -> None:
+    active_id = create_task("Active with future events")["id"]
+    archived_id = create_task("Archived with future events")["id"]
+    archived = invoke("archive", archived_id, "--actor", "human:test")
+    assert archived.exit_code == 0, archived.output
+
+    lattice_dir = initialized_root / LATTICE_DIR
+    _append_unknown_event(lattice_dir, active_id, "process_started")
+    _append_unknown_event(lattice_dir, active_id, "process_completed")
+    _append_unknown_event(lattice_dir, archived_id, "future_archived_event", archived=True)
+
+    rebuilt = invoke("rebuild", "--all")
+
+    assert rebuilt.exit_code == 0, rebuilt.output
+    assert rebuilt.stderr.count("Warning:") == 1
+    assert f"{active_id}: process_completed, process_started" in rebuilt.stderr
+    assert f"{archived_id}: future_archived_event" in rebuilt.stderr
+    assert "newer or foreign Lattice" in rebuilt.stderr

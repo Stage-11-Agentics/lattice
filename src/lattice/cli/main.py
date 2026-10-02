@@ -277,19 +277,42 @@ class _LatticeGroup(click.Group):
         return super().list_commands(ctx)
 
     def invoke(self, ctx: click.Context):  # noqa: ANN201
-        try:
-            return super().invoke(ctx)
-        except OpError as exc:
-            _render(ctx, exc)
-        except Exception as exc:
-            # A hosted checkout's read-only mirror refused this process a path
-            # (an OSError, or one a replay wrapped); anything else is re-raised.
-            from lattice.remote.cache_paths import cache_access_error
+        from lattice.core.tasks import capture_unknown_event_types
 
-            mapped = cache_access_error(exc)
-            if mapped is None:
-                raise
-            _render(ctx, mapped, hosted=True)
+        with capture_unknown_event_types() as unknown_events:
+            try:
+                return super().invoke(ctx)
+            except OpError as exc:
+                _render(ctx, exc)
+            except Exception as exc:
+                # A hosted checkout's read-only mirror refused this process a path
+                # (an OSError, or one a replay wrapped); anything else is re-raised.
+                from lattice.remote.cache_paths import cache_access_error
+
+                mapped = cache_access_error(exc)
+                if mapped is None:
+                    raise
+                _render(ctx, mapped, hosted=True)
+            finally:
+                if unknown_events and ctx.invoked_subcommand not in {"show", "list", "doctor"}:
+                    _report_unknown_event_types(unknown_events)
+
+
+def _report_unknown_event_types(unknown_events: set[tuple[str, str]]) -> None:
+    """Summarize unknown task events once after a command materializes them."""
+    by_task: dict[str, set[str]] = {}
+    for task_id, event_type in unknown_events:
+        by_task.setdefault(task_id, set()).add(event_type)
+    details = "; ".join(
+        f"{task_id}: {', '.join(sorted(event_types))}"
+        for task_id, event_types in sorted(by_task.items())
+    )
+    click.echo(
+        "Warning: skipped unknown task event types while materializing "
+        f"({details}). This board may come from a newer or foreign Lattice; "
+        "upgrade Lattice or run `lattice doctor` to inspect unknown_event_type findings.",
+        err=True,
+    )
 
 
 def _render(ctx: click.Context, exc: OpError, *, hosted: bool = False) -> NoReturn:

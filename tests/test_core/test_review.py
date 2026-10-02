@@ -28,6 +28,7 @@ from lattice.core.review import (
     record_agent_failure,
     write_review_state,
 )
+from lattice.storage.review_state import write_review_state_file
 
 
 @pytest.fixture
@@ -61,6 +62,17 @@ class TestReviewState:
     def test_clear_nonexistent(self, lattice_dir: Path) -> None:
         # Should not raise
         clear_review_state(lattice_dir, "nonexistent")
+
+    def test_storage_writer_rejects_paths_outside_lattice_review_state(
+        self, tmp_path: Path, lattice_dir: Path
+    ) -> None:
+        outside = tmp_path / "outside"
+        with pytest.raises(ValueError, match=".lattice directory"):
+            write_review_state_file(outside, "t1", "{}\n")
+
+        with pytest.raises(ValueError, match="one path component"):
+            write_review_state_file(lattice_dir, "../outside", "{}\n")
+        assert not (tmp_path / "outside.json").exists()
 
     def test_concurrent_writes_use_independent_atomic_temps(
         self, lattice_dir: Path, monkeypatch: pytest.MonkeyPatch

@@ -18,9 +18,9 @@ import pytest
 from click.testing import CliRunner
 
 from lattice.cli.main import cli
+from lattice.core.events import create_event, serialize_event
 from lattice.storage import integrity
 from lattice.storage.integrity import (
-    _fix_truncated_jsonl_locked,
     check_board,
     repair_task_derived_files,
 )
@@ -134,7 +134,7 @@ def test_doctor_repair_holds_task_lock_while_trimming_log(
     lattice_dir = src / ".lattice"
     path = lattice_dir / "events" / f"{task_id}.jsonl"
     path.write_text(path.read_text() + '{"truncated"')
-    appended = {"id": "ev_01J00000000000000000000000", "type": "x_note"}
+    appended = create_event("x_note", task_id, "human:t", {"note": "concurrent append"})
     writer_started = threading.Event()
     writer_finished = threading.Event()
     writers: list[threading.Thread] = []
@@ -144,7 +144,7 @@ def test_doctor_repair_holds_task_lock_while_trimming_log(
         writer_started.set()
         with task_locks(lattice_dir / "locks", [task_id]):
             with path.open("a") as stream:
-                stream.write(json.dumps(appended) + "\n")
+                stream.write(serialize_event(appended))
         writer_finished.set()
 
     def pause_repair_write(target: Path, content: str | bytes) -> None:
@@ -156,7 +156,8 @@ def test_doctor_repair_holds_task_lock_while_trimming_log(
         original_atomic_write(target, content)
 
     monkeypatch.setattr(integrity, "atomic_write", pause_repair_write)
-    assert _fix_truncated_jsonl_locked(lattice_dir, path)
+    report = check_board(lattice_dir, fix=True)
+    assert any("(fixed)" in finding["message"] for finding in report.findings)
     writers[0].join(timeout=2)
     assert not writers[0].is_alive()
     assert json.loads(path.read_text().splitlines()[-1]) == appended

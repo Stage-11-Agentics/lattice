@@ -186,6 +186,29 @@ def test_awaiting_merge_entries_are_still_missing() -> None:
     assert not landed, f"these commands have landed; drop them from AWAITING_MERGE: {landed}"
 
 
+def test_v2_declares_unknown_event_and_completion_warning_behavior() -> None:
+    spec = (HOSTED / "SPEC.md").read_text()
+    g6 = next(line for line in spec.splitlines() if line.startswith("| G-6 |"))
+    readme = (REPO / "README.md").read_text()
+    upgrade_note = readme.split("### upgrading to v2", 1)[1].split("\n## ", 1)[0]
+
+    for declaration in (
+        "Unknown task event types replay quietly on `show` and `list`",
+        "`lattice doctor` reports the `unknown_event_type` finding",
+        "materializing writes and rebuild warn once",
+        "not during a completion path that has not yet reached `done`",
+    ):
+        assert declaration in g6
+
+    for declaration in (
+        "`lattice show` and `lattice list` replay them quietly",
+        "`lattice doctor` reports an `unknown_event_type` finding",
+        "writes and rebuilds that materialize unknown task events continue",
+        "The completion path `pr_open -> review -> done` does not warn",
+    ):
+        assert declaration in upgrade_note
+
+
 # Hosts the docs may name: placeholders, loopback, the documentation address
 # ranges (RFC 5737), and public project links.
 _ALLOWED_HOSTS = re.compile(
