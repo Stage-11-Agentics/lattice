@@ -183,22 +183,30 @@ test("refresh plan: unchanged or unrelated rows leave the selected issue alone",
   assert.equal(ownComment.detail, "reload");
 });
 
-test("refresh plan: a selected issue that leaves the queue moves the cursor, unless the reader is busy with it", () => {
-  const previous = [{ id: "a", seq: 1 }, { id: "b", seq: 2 }];
-  const next = [{ id: "b", seq: 2 }];
-  const moved = logic.planRefresh({ previousRows: previous, nextRows: next, selectedId: "a", selectedIndex: 0, busy: false, selectedExists: true });
-  assert.deepEqual(moved.cursor, { id: "b", index: 0 });
-  assert.equal(moved.detail, "switch");
-  const kept = logic.planRefresh({ previousRows: previous, nextRows: next, selectedId: "a", selectedIndex: 0, busy: true, selectedExists: true });
-  assert.deepEqual(kept.cursor, { id: "a", index: 0 });
-  assert.equal(kept.detail, "reload");
-  const gone = logic.planRefresh({ previousRows: previous, nextRows: next, selectedId: "a", selectedIndex: 0, busy: true, selectedExists: false });
-  assert.equal(gone.cursor.id, "b");
+test("refresh plan: a selected issue that leaves the queue stays selected; only one gone from the board lets go", () => {
+  const previous = [{ id: "a", seq: 1 }, { id: "b", seq: 2 }, { id: "c", seq: 3 }];
+  const next = [{ id: "a", seq: 1 }, { id: "c", seq: 3 }];
+  const kept = logic.planRefresh({ previousRows: previous, nextRows: next, selectedId: "b", selectedIndex: 1, selectedSlot: 1, selectedExists: true });
+  assert.deepEqual(kept.cursor, { id: "b", index: 1 }, "still on b, at the slot where it would sit");
+  assert.equal(kept.detail, "reload", "shown, updated in place");
+  const gone = logic.planRefresh({ previousRows: previous, nextRows: next, selectedId: "b", selectedIndex: 1, selectedExists: false });
+  assert.deepEqual(gone.cursor, { id: "c", index: 1 });
+  assert.equal(gone.detail, "switch");
   const empty = logic.planRefresh({ previousRows: [], nextRows: [], selectedId: null, selectedIndex: 0 });
   assert.deepEqual(empty, { list: false, changedIds: [], cursor: { id: null, index: 0 }, detail: "keep" });
-  assert.equal(logic.busyWith({ playing: true }), true);
-  assert.equal(logic.busyWith({ commentDraft: true }), true);
-  assert.equal(logic.busyWith({ playing: false, commentFocused: false, commentDraft: false }), false);
+});
+
+test("j and k from an issue that left the queue start where it would sit", () => {
+  const bySeq = (x, y) => x.seq - y.seq;
+  const rows = [{ id: "a", seq: 1 }, { id: "c", seq: 3 }, { id: "d", seq: 4 }];
+  assert.equal(logic.slotOf(rows, { id: "b", seq: 2 }, bySeq), 1);
+  assert.equal(logic.slotOf(rows, { id: "e", seq: 9 }, bySeq), 3);
+  assert.equal(logic.stepIndex(3, -1, 1, 1), 1, "j: the row now in its slot (c)");
+  assert.equal(logic.stepIndex(3, -1, 1, -1), 0, "k: the row before it (a)");
+  assert.equal(logic.stepIndex(3, -1, 3, 1), 2, "past the end: the last row");
+  assert.equal(logic.stepIndex(3, -1, 0, -1), 0, "before the start: the first row");
+  assert.equal(logic.stepIndex(3, 1, 0, 1), 2, "on a row: one step");
+  assert.equal(logic.stepIndex(0, -1, 0, 1), -1);
 });
 
 test("the media key ignores everything but which media and frames are shown", () => {

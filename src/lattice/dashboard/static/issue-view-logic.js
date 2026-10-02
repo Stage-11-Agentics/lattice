@@ -361,10 +361,10 @@
     };
   }
 
-  // Whether the reader is busy with the selected issue: its video is playing, or the
-  // comment box has focus or a draft. A refresh then never moves the selection away.
-  function busyWith(state) {
-    return !!(state && (state.playing || state.commentFocused || state.commentDraft));
+  // Where an issue would sit in a sorted list it is not in: how many rows sort before it.
+  function slotOf(rows, issue, compare) {
+    if (!issue) return 0;
+    return (rows || []).filter(function (row) { return compare(row, issue) < 0; }).length;
   }
 
   // What one refresh does to the view. The view applies exactly this:
@@ -372,7 +372,11 @@
   //   cursor: the selected id and index afterwards
   //   detail: "keep" (touch nothing), "reload" (refetch, then patch only the parts
   //           that changed), or "switch" (a different issue is now selected)
-  // input: {previousRows, nextRows, selectedId, selectedIndex, busy, selectedExists}
+  // A refresh never moves the selection off the issue being read, whatever happened to
+  // it: linked, resolved, closed or out of this queue, it stays selected (and shown)
+  // until the reader moves. Its index is then where it would sit (selectedSlot). Only an
+  // issue gone from the board, or no selection at all, lets the cursor land on a row.
+  // input: {previousRows, nextRows, selectedId, selectedIndex, selectedSlot, selectedExists}
   function planRefresh(input) {
     var delta = refreshDelta(input.previousRows, input.nextRows, input.selectedId);
     var rows = input.nextRows || [];
@@ -383,9 +387,9 @@
     if (index >= 0) {
       cursorId = input.selectedId;
       cursorIndex = index;
-    } else if (input.selectedId != null && input.busy && input.selectedExists) {
+    } else if (input.selectedId != null && input.selectedExists) {
       cursorId = input.selectedId;
-      cursorIndex = input.selectedIndex || 0;
+      cursorIndex = typeof input.selectedSlot === "number" ? input.selectedSlot : input.selectedIndex || 0;
     } else if (!rows.length) {
       cursorId = null;
       cursorIndex = 0;
@@ -401,6 +405,15 @@
       cursor: { id: cursorId, index: cursorIndex },
       detail: detail
     };
+  }
+
+  // Where j/k go from the selection. On a row, one step. Off this queue's rows (it was
+  // linked, resolved or closed while being read), from the slot where it would sit: j
+  // takes the row now in that slot, k the one before it.
+  function stepIndex(rowCount, index, slot, delta) {
+    if (!rowCount) return -1;
+    var next = index >= 0 ? index + delta : delta > 0 ? slot : slot - 1;
+    return Math.max(0, Math.min(rowCount - 1, next));
   }
 
   var exported = {
@@ -435,8 +448,9 @@
     filingProblem: filingProblem,
     isUnavailable: isUnavailable,
     refreshDelta: refreshDelta,
-    busyWith: busyWith,
+    slotOf: slotOf,
     planRefresh: planRefresh,
+    stepIndex: stepIndex,
     matchedBy: matchedBy,
     commentActor: commentActor,
     commentTime: commentTime

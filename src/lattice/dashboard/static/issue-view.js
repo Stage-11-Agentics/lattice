@@ -82,15 +82,22 @@
         personRows.find(function (item) { return item.id === ref || item.short_id === ref; });
       return found ? found.short_id || found.id : ref;
     }
+    // The queue order: oldest first; on a person page, that person's latest activity first.
+    function compareRows(a, b) {
+      if (person) return logic.latestActorActivity(b, person.actor).localeCompare(logic.latestActorActivity(a, person.actor)) ||
+        (b.seq || 0) - (a.seq || 0);
+      return (a.seq || 0) - (b.seq || 0);
+    }
     function rowsForQueue(key, sourceRows) {
       var source = sourceRows || visibleRows();
       if (person && key === "all") return logic.sortPersonIssues(source, person.actor);
-      return logic.rowsForQueue(source, key, person ? person.actor : null)
-        .sort(function (a, b) {
-          if (person) return logic.latestActorActivity(b, person.actor).localeCompare(logic.latestActorActivity(a, person.actor)) ||
-            (b.seq || 0) - (a.seq || 0);
-          return (a.seq || 0) - (b.seq || 0);
-        });
+      return logic.rowsForQueue(source, key, person ? person.actor : null).sort(compareRows);
+    }
+    // The selected issue as the board knows it now, in this queue or not.
+    function knownIssue(id) {
+      if (id == null) return null;
+      return issues.find(function (issue) { return issue.id === id; }) ||
+        personRows.find(function (issue) { return issue.id === id; }) || null;
     }
     function currentKey() { return (person ? "p:" + person.actor + ":" : "") + queue; }
     function current() { return issueById(cursors[currentKey()]); }
@@ -98,11 +105,18 @@
       if (issue) cursors[currentKey()] = issue.id;
       else delete cursors[currentKey()];
     }
-    // Keep the cursor on the same issue if it is still in this queue; otherwise take whatever now sits at its old position.
-    function settleCursor(rows) {
+    // Keep the cursor on the same issue. One that has left this queue stays selected (shown,
+    // no row lit) unless the reader switched queue (move); then, or when it is gone from
+    // the board, take whatever now sits at its old position.
+    function settleCursor(rows, move) {
       var key = currentKey();
       var id = cursors[key];
       var index = rows.findIndex(function (issue) { return issue.id === id; });
+      var off = index < 0 && !move ? knownIssue(id) : null;
+      if (off) {
+        cursors[key + ":index"] = logic.slotOf(rows, off, compareRows);
+        return;
+      }
       if (index < 0) index = Math.min(cursors[key + ":index"] || 0, rows.length - 1);
       if (!rows.length) {
         delete cursors[key];
@@ -173,18 +187,6 @@
     }
 
     // ---- loading and refreshing ----
-    function interactionState(issueId) {
-      var inline = document.querySelector("#issue-d-media video");
-      var overlay = document.querySelector("#issue-closer video");
-      var commentBox = document.getElementById("issue-comment-box");
-      var mine = shownId === issueId;
-      return {
-        playing: !!(mine && inline && !inline.paused && !inline.ended) ||
-          !!(closer && closer.issue === issueId && overlay && !overlay.paused && !overlay.ended),
-        commentFocused: !!(mine && commentBox && document.activeElement === commentBox),
-        commentDraft: !!(mine && commentBox && commentBox.value.length > 0)
-      };
-    }
     async function loadIssues() {
       if (hosted || destroyed || unavailable) return;
       var wasLoaded = loaded;
@@ -216,19 +218,20 @@
         if (personDelta.listChanged) renderPersonHead();
 
         var nextVisible = rowsForQueue(queue);
+        var selectedNow = knownIssue(selectedId);
         var plan = logic.planRefresh({
           previousRows: previousVisible,
           nextRows: nextVisible,
           selectedId: selectedId,
           selectedIndex: selectedIndex,
-          busy: selectedId != null && logic.busyWith(interactionState(selectedId)),
-          selectedExists: selectedId != null && (issues.some(function (issue) { return issue.id === selectedId; }) ||
-            personRows.some(function (issue) { return issue.id === selectedId; }))
+          selectedSlot: selectedNow ? logic.slotOf(nextVisible, selectedNow, compareRows) : null,
+          selectedExists: !!selectedNow
         });
         if (plan.cursor.id == null) delete cursors[currentKey()];
         else cursors[currentKey()] = plan.cursor.id;
         cursors[currentKey() + ":index"] = plan.cursor.index;
-        if (plan.list) renderQueue(nextVisible, { preserveScroll: true });
+        // The rows, or only the lit row: the highlight follows the cursor either way.
+        if (plan.list || plan.cursor.id !== selectedId) renderQueue(nextVisible, { preserveScroll: true });
         updateQueueAges(nextVisible);
         var detail = plan.detail === "keep" && selectedId && changed[selectedId] ? "reload" : plan.detail;
         if (detail === "switch") renderDetail(current());
@@ -301,7 +304,7 @@
       if (!loading && (!loaded || fresh)) loadIssues();
       renderQueueCounts();
       var rows = rowsForQueue(queue);
-      settleCursor(rows);
+      settleCursor(rows, !!renderOptions.settle);
       renderPersonHead();
       if (loading && !loaded) {
         setHtmlIfChanged(document.getElementById("issue-q-list"), '<div class="issue-q-empty">Loading issues…</div>');
@@ -858,7 +861,9 @@
       if (!rows.length) return;
       var key = currentKey();
       var index = rows.findIndex(function (issue) { return issue.id === cursors[key]; });
-      index = Math.max(0, Math.min(rows.length - 1, (index < 0 ? cursors[key + ":index"] || 0 : index) + delta));
+      var off = index < 0 ? knownIssue(cursors[key]) : null;
+      var slot = off ? logic.slotOf(rows, off, compareRows) : cursors[key + ":index"] || 0;
+      index = logic.stepIndex(rows.length, index, slot, delta);
       cursors[key] = rows[index].id;
       cursors[key + ":index"] = index;
       render();
@@ -868,7 +873,7 @@
       if (person) queue = queue === key ? "all" : key;
       else if (queue === key) return;
       else queue = key;
-      render();
+      render({ settle: true });
     }
     function goTo(id) {
       var issue = issueById(id, issues);

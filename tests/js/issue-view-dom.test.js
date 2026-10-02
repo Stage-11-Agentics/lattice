@@ -408,3 +408,112 @@ test("Inbox keys stay out of the way while a dashboard drawer is open", async ()
     view.done();
   }
 });
+
+// ---- a refresh never moves the selection off the issue being read ----
+const litRow = () => { const row = $(".issue-q-row.cursor"); return row ? row.querySelector(".issue-iid").textContent : null; };
+const shownIssue = () => $("#issue-id-copy").textContent;
+function link(server, shortId) {
+  Object.assign(server.find(shortId), { state: "linked", tasks: [{ id: "task_9", short_id: "T-9", status: "backlog", title: "Fix it" }] });
+}
+
+test("an issue that leaves its queue while being read stays selected and shown, updated in place", async () => {
+  const server = makeServer([issue(1), issue(2, { title: "Being read" }), issue(3)]);
+  const view = boot(server);
+  try {
+    view.dashboard.render();
+    await flush();
+    key(document.body, "j");
+    await flush();
+    assert.equal(shownIssue(), "T-I2");
+    const title = $("#issue-d-title");
+    const body = $("#issue-d-body");
+    body.scrollTop = 120;
+
+    link(server, "T-I2");
+    await view.dashboard.refresh(); await flush();
+    assert.equal(shownIssue(), "T-I2", "still showing the issue being read");
+    same($("#issue-d-title"), title, "the same detail, not a re-mount");
+    assert.equal(title.textContent, "Being read");
+    assert.equal($("#issue-d-state").textContent, "linked", "updated in place");
+    assert.match($("#issue-outcome").textContent, /T-9/);
+    assert.equal(body.scrollTop, 120, "detail scroll kept");
+    assert.equal($$(".issue-q-row").length, 2, "it left the Open rows");
+    none($(".issue-q-row.cursor"), "no row is lit: the selected issue is not in this queue");
+
+    for (let i = 0; i < 2; i++) { await view.dashboard.refresh(); await flush(); }
+    assert.equal(shownIssue(), "T-I2", "later polls do not move it either");
+    none($(".issue-q-row.cursor"));
+  } finally {
+    view.done();
+  }
+});
+
+test("after a paused video's issue left its queue, the poll keeps it and the highlight follows it back", async () => {
+  const server = makeServer([issue(1, { media: [VIDEO] }), issue(2), issue(3)]);
+  const view = boot(server);
+  try {
+    view.dashboard.render();
+    await flush();
+    const video = $("#issue-d-media video");
+    $("[data-play]").click();
+    link(server, "T-I1");
+    await view.dashboard.refresh(); await flush();
+    video.pause();
+    await view.dashboard.refresh(); await flush();
+    assert.equal(shownIssue(), "T-I1", "pausing does not let a poll move the selection");
+    same($("#issue-d-media video"), video, "the same video, at the same point");
+    none($(".issue-q-row.cursor"), "no other row is lit");
+
+    Object.assign(server.find("T-I1"), { state: "open", tasks: [] }); // unlinked: back in Open
+    await view.dashboard.refresh(); await flush();
+    assert.equal(litRow(), "T-I1", "back in the queue, its row is lit");
+    assert.equal($$(".issue-q-row.cursor").length, 1);
+  } finally {
+    view.done();
+  }
+});
+
+test("j and k from an issue that left the queue step from where it would sit", async () => {
+  const server = makeServer([issue(1), issue(2), issue(3), issue(4)]);
+  const view = boot(server);
+  try {
+    view.dashboard.render();
+    await flush();
+    key(document.body, "j");
+    link(server, "T-I2");
+    await view.dashboard.refresh(); await flush();
+    assert.equal(shownIssue(), "T-I2");
+    key(document.body, "j");
+    assert.equal(litRow(), "T-I3", "j: the issue that came after it");
+    assert.equal(shownIssue(), "T-I3");
+
+    link(server, "T-I3");
+    await view.dashboard.refresh(); await flush();
+    assert.equal(shownIssue(), "T-I3");
+    key(document.body, "k");
+    assert.equal(litRow(), "T-I1", "k: the issue that came before it");
+    key(document.body, "j");
+    assert.equal(litRow(), "T-I4");
+  } finally {
+    view.done();
+  }
+});
+
+test("when the selected issue is gone from the board, the row the cursor lands on is lit", async () => {
+  const server = makeServer([issue(1), issue(2), issue(3)]);
+  const view = boot(server);
+  try {
+    view.dashboard.render();
+    await flush();
+    key(document.body, "j");
+    link(server, "T-I2");
+    await view.dashboard.refresh(); await flush();
+    none($(".issue-q-row.cursor"));
+    server.details.splice(1, 1); // gone, while the Open rows stay the same
+    await view.dashboard.refresh(); await flush();
+    assert.equal(shownIssue(), "T-I3");
+    assert.equal(litRow(), "T-I3", "the highlight moves with the cursor even when the rows did not change");
+  } finally {
+    view.done();
+  }
+});
