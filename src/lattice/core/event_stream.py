@@ -1,7 +1,8 @@
 """Shared event streaming infrastructure for lattice watch/wait.
 
-Provides a generator that yields events from .lattice/events/ as they are
-written, using fswatch when available and falling back to polling.
+Provides a generator that yields events from active, archived, and lifecycle
+logs as they are written, using fswatch when available and falling back to
+polling.
 """
 
 from __future__ import annotations
@@ -32,10 +33,10 @@ def _parse_jsonl_file(
 ) -> tuple[list[dict], int]:
     """Read new events from a JSONL file starting at *byte_offset*.
 
-    Returns (new_events, new_offset).  Each event dict has ``task_id``
-    injected from the filename stem.
+    Returns (new_events, new_offset). Serialized task IDs are preserved; a
+    file-stem fallback is applied only to older records without ``task_id``.
     """
-    task_id = path.stem
+    fallback_task_id = path.stem
     events: list[dict] = []
     try:
         with path.open("rb") as fh:
@@ -53,10 +54,106 @@ def _parse_jsonl_file(
             event = json.loads(line)
         except json.JSONDecodeError:
             continue
-        event["task_id"] = task_id
+        if not isinstance(event.get("task_id"), str) or not event["task_id"]:
+            event["task_id"] = fallback_task_id
         events.append(event)
 
     return events, new_offset
+
+
+def _event_log_paths(lattice_dir: Path) -> list[Path]:
+    """Return active and archived JSONL logs in stable order."""
+    paths: list[Path] = []
+    for directory in (lattice_dir / "events", lattice_dir / "archive" / "events"):
+        if directory.is_dir():
+            paths.extend(sorted(directory.glob("*.jsonl")))
+    return paths
+
+
+def _logical_log_key(path: Path) -> str:
+    """Key a per-task log by task across an active/archive move."""
+    return path.stem
+
+
+def _selected_event_logs(lattice_dir: Path, last_paths: dict[str, Path]) -> list[Path]:
+    """Choose one current copy per task, preferring the previous path on overlap."""
+    grouped: dict[str, list[Path]] = {}
+    for path in _event_log_paths(lattice_dir):
+        grouped.setdefault(_logical_log_key(path), []).append(path)
+    selected: list[Path] = []
+    for key, paths in sorted(grouped.items()):
+        previous = last_paths.get(key)
+        if previous in paths:
+            selected.append(previous)
+            continue
+        active = next((path for path in paths if path.parent == lattice_dir / "events"), None)
+        selected.append(active or paths[0])
+    return selected
+
+
+def _snapshot_event_offsets(
+    lattice_dir: Path,
+) -> tuple[dict[str, int], dict[str, Path]]:
+    """Seed a live-only stream across both task-log locations."""
+    last_paths: dict[str, Path] = {}
+    selected = _selected_event_logs(lattice_dir, last_paths)
+    offsets: dict[str, int] = {}
+    for path in selected:
+        key = _logical_log_key(path)
+        try:
+            offsets[key] = path.stat().st_size
+        except OSError:
+            offsets[key] = 0
+        last_paths[key] = path
+    return offsets, last_paths
+
+
+def _scan_event_logs(
+    lattice_dir: Path,
+    offsets: dict[str, int],
+    last_paths: dict[str, Path],
+) -> list[dict]:
+    """Read appended bytes, carrying each task offset across archive moves."""
+    batch: list[dict] = []
+    for path in _selected_event_logs(lattice_dir, last_paths):
+        key = _logical_log_key(path)
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        offset = offsets.get(key, 0)
+        if size < offset:
+            # A reset replaced this logical log. Treat its current bytes as
+            # history; the next append starts at this new boundary.
+            offsets[key] = size
+            last_paths[key] = path
+            continue
+        if size == offset:
+            last_paths[key] = path
+            continue
+        new_events, offsets[key] = _parse_jsonl_file(path, offset)
+        last_paths[key] = path
+        batch.extend(new_events)
+    batch.sort(key=lambda event: str(event.get("ts", "")))
+    return batch
+
+
+def _filtered_unique(
+    events: list[dict],
+    task_filter: list[str] | None,
+    type_filter: list[str] | None,
+    seen_event_ids: set[str],
+) -> Iterator[dict]:
+    """Apply filters and suppress mirrored event records by serialized ID."""
+    for event in events:
+        if not _matches_filters(event, task_filter, type_filter):
+            continue
+        event_id = event.get("id")
+        if isinstance(event_id, str) and event_id:
+            if event_id in seen_event_ids:
+                continue
+            seen_event_ids.add(event_id)
+        yield event
 
 
 def stream_events(
@@ -84,13 +181,13 @@ def stream_events(
     timeout:
         Stop after this many seconds (0 = never).
     """
-    events_dir = lattice_dir / "events"
+    lattice_dir = Path(lattice_dir).resolve()
     has_fswatch = _check_fswatch()
     start_time = time.monotonic()
 
     if has_fswatch:
         yield from _stream_with_fswatch(
-            events_dir,
+            lattice_dir,
             task_filter=task_filter,
             type_filter=type_filter,
             timeout=timeout,
@@ -98,7 +195,7 @@ def stream_events(
         )
     else:
         yield from _stream_with_poll(
-            events_dir,
+            lattice_dir,
             task_filter=task_filter,
             type_filter=type_filter,
             poll_interval=poll_interval,
@@ -121,23 +218,17 @@ def _matches_filters(
 
 
 def _stream_with_fswatch(
-    events_dir: Path,
+    lattice_dir: Path,
     task_filter: list[str] | None,
     type_filter: list[str] | None,
     timeout: int,
     start_time: float,
 ) -> Iterator[dict]:
     """Stream events using fswatch for near-instant detection."""
-    # Track byte offsets per file to avoid re-emitting on re-read
-    offsets: dict[Path, int] = {}
-
-    # Seed initial offsets so we don't replay history
-    if events_dir.is_dir():
-        for jsonl_path in events_dir.glob("*.jsonl"):
-            try:
-                offsets[jsonl_path] = jsonl_path.stat().st_size
-            except OSError:
-                offsets[jsonl_path] = 0
+    events_dir = lattice_dir / "events"
+    archive_events_dir = lattice_dir / "archive" / "events"
+    offsets, last_paths = _snapshot_event_offsets(lattice_dir)
+    seen_event_ids: set[str] = set()
 
     cmd = [
         "fswatch",
@@ -146,7 +237,9 @@ def _stream_with_fswatch(
         "Updated",
         "--event",
         "Created",
-        str(events_dir),
+        # Watch the stable board root so an archive/events directory created
+        # after this stream starts is still observed.
+        str(lattice_dir),
     ]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
 
@@ -175,16 +268,18 @@ def _stream_with_fswatch(
                     path_bytes, buffer = buffer.split(b"\0", 1)
                     changed_path = Path(path_bytes.decode().strip())
 
-                    if changed_path.suffix != ".jsonl":
+                    if changed_path.suffix != ".jsonl" or changed_path.parent not in {
+                        events_dir,
+                        archive_events_dir,
+                    }:
                         continue
-
-                    offset = offsets.get(changed_path, 0)
-                    new_events, new_offset = _parse_jsonl_file(changed_path, offset)
-                    offsets[changed_path] = new_offset
-
-                    for event in new_events:
-                        if _matches_filters(event, task_filter, type_filter):
-                            yield event
+                    for event in _filtered_unique(
+                        _scan_event_logs(lattice_dir, offsets, last_paths),
+                        task_filter,
+                        type_filter,
+                        seen_event_ids,
+                    ):
+                        yield event
 
             except (OSError, ValueError):
                 continue
@@ -199,7 +294,7 @@ def _stream_with_fswatch(
 
 
 def _stream_with_poll(
-    events_dir: Path,
+    lattice_dir: Path,
     task_filter: list[str] | None,
     type_filter: list[str] | None,
     poll_interval: int,
@@ -207,30 +302,21 @@ def _stream_with_poll(
     start_time: float,
 ) -> Iterator[dict]:
     """Stream events by polling byte offsets at regular intervals."""
-    offsets: dict[Path, int] = {}
-
-    # Seed offsets to skip existing history
-    if events_dir.is_dir():
-        for jsonl_path in events_dir.glob("*.jsonl"):
-            try:
-                offsets[jsonl_path] = jsonl_path.stat().st_size
-            except OSError:
-                offsets[jsonl_path] = 0
+    offsets, last_paths = _snapshot_event_offsets(lattice_dir)
+    seen_event_ids: set[str] = set()
 
     while True:
         elapsed = time.monotonic() - start_time
         if timeout > 0 and elapsed >= timeout:
             return
 
-        if events_dir.is_dir():
-            for jsonl_path in events_dir.glob("*.jsonl"):
-                offset = offsets.get(jsonl_path, 0)
-                new_events, new_offset = _parse_jsonl_file(jsonl_path, offset)
-                offsets[jsonl_path] = new_offset
-
-                for event in new_events:
-                    if _matches_filters(event, task_filter, type_filter):
-                        yield event
+        for event in _filtered_unique(
+            _scan_event_logs(lattice_dir, offsets, last_paths),
+            task_filter,
+            type_filter,
+            seen_event_ids,
+        ):
+            yield event
 
         sleep_for = min(
             float(poll_interval),
