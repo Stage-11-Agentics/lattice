@@ -407,8 +407,13 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
             except (TypeError, ValueError):
                 self._send_error(400, "BAD_REQUEST", "Missing or invalid Content-Length")
                 return None
-            if content_length == 0:
-                self._send_error(400, "BAD_REQUEST", "Empty request body")
+            if content_length <= 0:
+                message = (
+                    "Empty request body"
+                    if content_length == 0
+                    else "Missing or invalid Content-Length"
+                )
+                self._send_error(400, "BAD_REQUEST", message)
                 return None
             body_limit = MAX_REQUEST_BODY_BYTES
             if path == "/api/issues" and not self._target.hosted:

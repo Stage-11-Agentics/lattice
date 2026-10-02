@@ -1435,6 +1435,33 @@ class TestPostRouting:
 
 
 class TestPayloadSizeLimit:
+    def test_negative_content_length_is_rejected_before_reading_issue_body(self, dashboard_server):
+        """Negative Content-Length must not reach read(-1) and bypass the cap."""
+        import http.client
+
+        from lattice.core.config import serialize_config
+        from lattice.dashboard import api
+        from lattice.storage.fs import atomic_write
+
+        base_url, ld, _ids = dashboard_server
+        config = api.get_config(ld)
+        config["issues"] = {"enabled": True}
+        atomic_write(ld / "config.json", serialize_config(config))
+        host = base_url.replace("http://", "")
+
+        conn = http.client.HTTPConnection(host)
+        conn.putrequest("POST", "/api/issues")
+        conn.putheader("Content-Type", "application/json")
+        conn.putheader("Origin", base_url)
+        conn.putheader("Content-Length", "-1")
+        conn.endheaders()
+        response = conn.getresponse()
+        assert response.status == 400
+        error = json.loads(response.read())["error"]
+        assert error["code"] == "BAD_REQUEST"
+        assert "Content-Length" in error["message"]
+        conn.close()
+
     def test_issue_file_has_a_larger_hard_bounded_route_limit(self, dashboard_server):
         """Quick-file JSON may exceed 1 MiB, while its route still has a hard ceiling."""
         import http.client
