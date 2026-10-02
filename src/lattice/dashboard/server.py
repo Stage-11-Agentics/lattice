@@ -50,6 +50,7 @@ _LOOPBACK_NAMES = frozenset({"localhost", "127.0.0.1", "::1"})
 #: at a time, as it did before the server was threaded.
 _BOARD_LOCK = threading.Lock()
 _REQUEST_LINE_TIMEOUT_SECONDS = 1.0
+_ServerRequest = socket.socket | tuple[bytes, socket.socket]
 
 
 class _RestartAwareHTTPServer(ThreadingHTTPServer):
@@ -69,21 +70,23 @@ class _RestartAwareHTTPServer(ThreadingHTTPServer):
         # Exposed to the live regression test as a deterministic barrier.
         self._restart_drain_started = threading.Event()
 
-    def process_request(self, request: socket.socket, client_address) -> None:  # noqa: ANN001
+    def process_request(self, request: _ServerRequest, client_address) -> None:  # noqa: ANN001
+        connection = request if isinstance(request, socket.socket) else request[1]
         # TCPServer calls this synchronously after accept and before the worker
         # thread starts. Track that gap so SIGHUP cannot drain past an accepted
         # request before its handler has had a chance to register it.
         with self._request_condition:
-            self._pending_connections.add(request)
+            self._pending_connections.add(connection)
             self._request_condition.notify_all()
         try:
             super().process_request(request, client_address)
         except BaseException:
-            self.connection_closed(request)
+            self.connection_closed(connection)
             raise
 
-    def shutdown_request(self, request: socket.socket) -> None:
-        self.connection_closed(request)
+    def shutdown_request(self, request: _ServerRequest) -> None:
+        connection = request if isinstance(request, socket.socket) else request[1]
+        self.connection_closed(connection)
         super().shutdown_request(request)
 
     def request_started(self, connection: socket.socket) -> None:
