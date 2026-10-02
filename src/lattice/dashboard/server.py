@@ -17,17 +17,13 @@ from __future__ import annotations
 import ipaddress
 import json
 import platform
-import secrets
-import select
-import socket
 import subprocess
 import sys
 import threading
-import time
 from collections.abc import Callable
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -49,126 +45,6 @@ _LOOPBACK_NAMES = frozenset({"localhost", "127.0.0.1", "::1"})
 #: Held around every request but issue media GETs: the board sees one request
 #: at a time, as it did before the server was threaded.
 _BOARD_LOCK = threading.Lock()
-_REQUEST_LINE_TIMEOUT_SECONDS = 1.0
-_ServerRequest = socket.socket | tuple[bytes, socket.socket]
-
-
-class _RestartAwareHTTPServer(ThreadingHTTPServer):
-    """Track request handlers so SIGHUP drains work without waiting on idle sockets."""
-
-    daemon_threads = True
-    block_on_close = False
-
-    def __init__(self, server_address, RequestHandlerClass):  # noqa: ANN001, N803
-        super().__init__(server_address, RequestHandlerClass)
-        self._request_condition = threading.Condition()
-        self._pending_connections: set[socket.socket] = set()
-        self._idle_connections: set[socket.socket] = set()
-        self._active_connections: set[socket.socket] = set()
-        self._request_line_waiting: set[socket.socket] = set()
-        self._restart_draining = threading.Event()
-        # Exposed to the live regression test as a deterministic barrier.
-        self._restart_drain_started = threading.Event()
-
-    def process_request(self, request: _ServerRequest, client_address) -> None:  # noqa: ANN001
-        connection = request if isinstance(request, socket.socket) else request[1]
-        # TCPServer calls this synchronously after accept and before the worker
-        # thread starts. Track that gap so SIGHUP cannot drain past an accepted
-        # request before its handler has had a chance to register it.
-        with self._request_condition:
-            self._pending_connections.add(connection)
-            self._request_condition.notify_all()
-        try:
-            super().process_request(request, client_address)
-        except BaseException:
-            self.connection_closed(connection)
-            raise
-
-    def shutdown_request(self, request: _ServerRequest) -> None:
-        connection = request if isinstance(request, socket.socket) else request[1]
-        self.connection_closed(connection)
-        super().shutdown_request(request)
-
-    def request_started(self, connection: socket.socket) -> None:
-        with self._request_condition:
-            self._pending_connections.discard(connection)
-            self._idle_connections.discard(connection)
-            self._active_connections.add(connection)
-            self._request_line_waiting.add(connection)
-            self._request_condition.notify_all()
-
-    def request_line_received(self, connection: socket.socket) -> None:
-        with self._request_condition:
-            self._request_line_waiting.discard(connection)
-            self._request_condition.notify_all()
-
-    def request_finished(self, connection: socket.socket) -> bool:
-        """Mark a completed request; return whether its keep-alive should close."""
-        with self._request_condition:
-            self._active_connections.discard(connection)
-            self._request_line_waiting.discard(connection)
-            close = self._restart_draining.is_set()
-            if not close:
-                self._idle_connections.add(connection)
-            self._request_condition.notify_all()
-            return close
-
-    def connection_closed(self, connection: socket.socket) -> None:
-        with self._request_condition:
-            self._pending_connections.discard(connection)
-            self._idle_connections.discard(connection)
-            self._active_connections.discard(connection)
-            self._request_line_waiting.discard(connection)
-            self._request_condition.notify_all()
-
-    def wait_for_inflight_requests(self, timeout: float) -> int:
-        """Close idle sockets and wait at most *timeout* for active handlers."""
-        self._restart_draining.set()
-        self._restart_drain_started.set()
-        to_close: list[socket.socket] = []
-        with self._request_condition:
-            idle = tuple(self._idle_connections)
-            self._idle_connections.clear()
-            for connection in idle:
-                try:
-                    readable, _, _ = select.select([connection], [], [], 0)
-                except (OSError, ValueError):
-                    readable = []
-                if readable:
-                    # A keep-alive socket with another request already waiting
-                    # is active work, not an idle connection to discard.
-                    self._active_connections.add(connection)
-                    self._request_line_waiting.add(connection)
-                    try:
-                        connection.settimeout(_REQUEST_LINE_TIMEOUT_SECONDS)
-                    except OSError:
-                        pass
-                else:
-                    to_close.append(connection)
-            for connection in tuple(self._request_line_waiting):
-                try:
-                    connection.settimeout(_REQUEST_LINE_TIMEOUT_SECONDS)
-                except OSError:
-                    pass
-        for connection in to_close:
-            try:
-                connection.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
-            try:
-                connection.close()
-            except OSError:
-                pass
-
-        deadline = time.monotonic() + timeout
-        with self._request_condition:
-            while self._active_connections or self._pending_connections:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    return len(self._active_connections) + len(self._pending_connections)
-                self._request_condition.wait(remaining)
-            return 0
-
 
 _STATIC_TYPES = {
     ".js": "application/javascript",
@@ -274,39 +150,12 @@ class DashboardBoard:
 # ---------------------------------------------------------------------------
 
 
-def _make_handler_class(target: DashboardBoard, *, readonly: bool = False, boot_id: str) -> type:
+def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> type:
     """Create a handler class bound to one dashboard board."""
 
     class LatticeHandler(BaseHTTPRequestHandler):
         _target: DashboardBoard = target
         _readonly: bool = readonly
-        _boot_id = boot_id
-
-        def parse_request(self) -> bool:
-            # Request-line reads are bounded so idle connections cannot hold a
-            # drain. Restore the normal timeout before headers and bodies so
-            # an in-flight write can finish intact.
-            self.server.request_line_received(self.connection)
-            self.connection.settimeout(self.timeout)
-            return super().parse_request()
-
-        def handle_one_request(self) -> None:
-            self.server.request_started(self.connection)
-            self._lattice_request_active = True
-            self.connection.settimeout(_REQUEST_LINE_TIMEOUT_SECONDS)
-            try:
-                super().handle_one_request()
-            finally:
-                if self._lattice_request_active:
-                    if self.server.request_finished(self.connection):
-                        self.close_connection = True
-                    self._lattice_request_active = False
-
-        def finish(self) -> None:
-            try:
-                super().finish()
-            finally:
-                self.server.connection_closed(self.connection)
 
         # Suppress default access logging to stdout; send to stderr instead
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
@@ -340,13 +189,6 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False, boot_
                 self._serve_notes_file("stats-demo/demo.html", "text/html")
             elif path == "/api/head":
                 self._send_head()
-            elif path == "/api/boot":
-                self._send(
-                    api.ok(
-                        {"boot_id": self._boot_id},
-                        headers={"Cache-Control": "no-store"},
-                    )
-                )
             elif path == "/api/git" or path.startswith("/api/git/"):
                 # git only (SPEC §9.4): it reads no board file, so it runs
                 # without the cache's read lock and never under it.
@@ -650,7 +492,7 @@ def create_server(
     *,
     readonly: bool = False,
     board: DashboardBoard | None = None,
-) -> ThreadingHTTPServer:
+) -> HTTPServer:
     """Create an HTTP server bound to *host*:*port* serving the Lattice dashboard.
 
     Parameters
@@ -670,5 +512,5 @@ def create_server(
     if board is None:
         root = Path(lattice_dir).parent
         board = DashboardBoard(LocalBoard(root=root, start=root))
-    handler_cls = _make_handler_class(board, readonly=readonly, boot_id=secrets.token_urlsafe(18))
-    return _RestartAwareHTTPServer((host, port), handler_cls)
+    handler_cls = _make_handler_class(board, readonly=readonly)
+    return ThreadingHTTPServer((host, port), handler_cls)
