@@ -81,6 +81,7 @@ def strings(value: object) -> list[str]:
 # ---------------------------------------------------------------------------
 
 NEW_COMMANDS = [
+    ("issue", "file", "t", "--evidence", "x.png", *A),
     ("issue", "attach", "LAT-I1", "x.png", *A),
     ("issue", "detach", "LAT-I1", "1", "--reason", "r", *A),
     ("issue", "media", "LAT-I1"),

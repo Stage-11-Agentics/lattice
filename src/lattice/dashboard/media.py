@@ -42,9 +42,38 @@ RANGE_CAP = 1024 * 1024
 CHUNK = 64 * 1024
 #: A media connection that stops reading is dropped after this many seconds.
 SOCKET_TIMEOUT = 15
-_RANGE_RE = re.compile(r"^bytes=(\d*)-(\d*)$")
+_RANGE_RE = re.compile(r"^bytes=([0-9]*)-([0-9]*)$")
+
+_DIR_OPEN_FLAGS = (
+    os.O_RDONLY
+    | getattr(os, "O_DIRECTORY", 0)
+    | getattr(os, "O_NOFOLLOW", 0)
+    | getattr(os, "O_CLOEXEC", 0)
+)
+_FILE_OPEN_FLAGS = (
+    os.O_RDONLY
+    | getattr(os, "O_NOFOLLOW", 0)
+    | getattr(os, "O_CLOEXEC", 0)
+    | getattr(os, "O_NONBLOCK", 0)
+)
 
 UNSATISFIABLE = "unsatisfiable"
+
+
+def _decimal_less(left: str, right: str) -> bool:
+    """Compare two ASCII decimal strings without converting unbounded input."""
+    left = left.lstrip("0") or "0"
+    right = right.lstrip("0") or "0"
+    return len(left) < len(right) or (len(left) == len(right) and left < right)
+
+
+def _bounded_decimal(value: str, maximum: int) -> int:
+    """Convert a decimal string while saturating values above *maximum*."""
+    value = value.lstrip("0") or "0"
+    ceiling = str(maximum)
+    if len(value) > len(ceiling) or (len(value) == len(ceiling) and value > ceiling):
+        return maximum
+    return int(value)
 
 
 def parse_range(header: str | None, size: int, cap: int = RANGE_CAP) -> Any:
@@ -59,14 +88,14 @@ def parse_range(header: str | None, size: int, cap: int = RANGE_CAP) -> Any:
         return None
     first, last = match.groups()
     if first:
-        start = int(first)
-        if last and int(last) < start:
+        if last and _decimal_less(last, first):
             return None
+        start = _bounded_decimal(first, size)
         if start >= size:
             return UNSATISFIABLE
-        end = min(int(last), size - 1) if last else size - 1
+        end = _bounded_decimal(last, size - 1) if last else size - 1
     elif last:
-        suffix = int(last)
+        suffix = _bounded_decimal(last, size)
         if suffix == 0 or size == 0:
             return UNSATISFIABLE
         start, end = max(0, size - suffix), size - 1
@@ -76,29 +105,117 @@ def parse_range(header: str | None, size: int, cap: int = RANGE_CAP) -> Any:
 
 
 def _open_regular(path: Path, root: Path) -> tuple[int, int] | None:
-    """``(fd, size)`` of a regular file directly inside *root*'s tree, never
-    through a symlink: ``lstat`` first, then the descriptor must be that same
-    file. ``None`` otherwise."""
+    """``(fd, size)`` of a regular file reached through real directories.
+
+    Keep each directory descriptor while opening its child relative to that
+    descriptor when the platform supports it. Elsewhere, check and resolve
+    each path component before and after opening, and verify the opened file's
+    identity. The fallback preserves local media serving on platforms without
+    ``dir_fd`` while refusing detected links and replacements.
+    """
+    try:
+        relative = path.relative_to(root)
+        if len(relative.parts) not in (2, 3) or root.resolve(strict=True) != root:
+            return None
+    except (OSError, ValueError, RuntimeError):
+        return None
+
+    if (
+        getattr(os, "open", None) not in getattr(os, "supports_dir_fd", set())
+        or not hasattr(os, "O_DIRECTORY")
+        or not hasattr(os, "O_NOFOLLOW")
+    ):
+        return _open_regular_by_path(path, root, relative)
+
+    directory_fd: int | None = None
+    file_fd: int | None = None
+    try:
+        if not root.is_absolute():
+            return None
+        directory_fd = os.open(os.sep, _DIR_OPEN_FLAGS)
+        for component in (*root.parts[1:], *relative.parts[:-1]):
+            child_fd = os.open(component, _DIR_OPEN_FLAGS, dir_fd=directory_fd)
+            previous_fd = directory_fd
+            directory_fd = child_fd
+            os.close(previous_fd)
+        file_fd = os.open(relative.parts[-1], _FILE_OPEN_FLAGS, dir_fd=directory_fd)
+        info = os.fstat(file_fd)
+        if not stat.S_ISREG(info.st_mode):
+            return None
+        result = (file_fd, info.st_size)
+        file_fd = None
+        return result
+    except OSError:
+        return None
+    finally:
+        if file_fd is not None:
+            os.close(file_fd)
+        if directory_fd is not None:
+            os.close(directory_fd)
+
+
+def _directory_chain_identity(root: Path, relative: Path) -> tuple[tuple[int, int], ...] | None:
+    """Identity of real parent directories under root, or None if unsafe."""
+    try:
+        if root.resolve(strict=True) != root:
+            return None
+        parent = root
+        info = os.lstat(parent)
+        if not stat.S_ISDIR(info.st_mode):
+            return None
+        identities = [(info.st_dev, info.st_ino)]
+        for component in relative.parts[:-1]:
+            parent /= component
+            info = os.lstat(parent)
+            if not stat.S_ISDIR(info.st_mode):
+                return None
+            identities.append((info.st_dev, info.st_ino))
+        if not parent.resolve(strict=True).is_relative_to(root):
+            return None
+        return tuple(identities)
+    except (OSError, ValueError, RuntimeError):
+        return None
+
+
+def _open_regular_by_path(path: Path, root: Path, relative: Path) -> tuple[int, int] | None:
+    """Portable fallback for platforms without descriptor-relative ``os.open``.
+
+    Rechecking the chain and comparing the opened inode catches static links
+    and ordinary path replacement. Unlike the dirfd path, the standard library
+    cannot make intermediate directory traversal atomic on those platforms.
+    """
+    before_chain = _directory_chain_identity(root, relative)
+    if before_chain is None:
+        return None
     try:
         before = os.lstat(path)
         if not stat.S_ISREG(before.st_mode):
             return None
-        if not path.parent.resolve(strict=True).is_relative_to(root):
-            return None
-        fd = os.open(path, os.O_RDONLY)
-    except (OSError, ValueError):
+        fd = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0),
+        )
+    except OSError:
         return None
     try:
-        after = os.fstat(fd)
+        opened = os.fstat(fd)
+        current = os.lstat(path)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or not stat.S_ISREG(current.st_mode)
+            or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
+            or (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino)
+            or _directory_chain_identity(root, relative) != before_chain
+        ):
+            os.close(fd)
+            return None
+        return fd, opened.st_size
     except OSError:
         os.close(fd)
         return None
-    if (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino) or not stat.S_ISREG(
-        after.st_mode
-    ):
-        os.close(fd)
-        return None
-    return fd, after.st_size
 
 
 def _refuse(handler: Any, status: int, code: str, message: str) -> None:
@@ -194,7 +311,7 @@ def _send_file(
     offset, remaining = start, length
     try:
         while remaining > 0:
-            chunk = os.pread(fd, min(CHUNK, remaining), offset)
+            chunk = _read_at(fd, min(CHUNK, remaining), offset)
             if not chunk:
                 break
             handler.wfile.write(chunk)
@@ -203,6 +320,19 @@ def _send_file(
     except (BrokenPipeError, ConnectionResetError, TimeoutError):
         # Browsers cancel range requests constantly while seeking.
         handler.close_connection = True
+
+
+def _read_at(fd: int, size: int, offset: int) -> bytes:
+    """Read at *offset* using pread where available, with a portable fallback.
+
+    Every response owns its descriptor, so its seek position cannot race with
+    another request when the fallback uses ``lseek`` followed by ``read``.
+    """
+    pread = getattr(os, "pread", None)
+    if pread is not None:
+        return pread(fd, size, offset)
+    os.lseek(fd, offset, os.SEEK_SET)
+    return os.read(fd, size)
 
 
 __all__ = ["MEDIA_ROUTE", "RANGE_CAP", "SOCKET_TIMEOUT", "parse_range", "serve_issue_media"]

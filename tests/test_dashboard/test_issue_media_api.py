@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
 import socket
 import threading
 import time
@@ -39,6 +40,7 @@ VIDEO = mp4(bytes(range(256)) * 9000)  # a little over 2 MiB, past RANGE_CAP
         ("bytes=9-3", None),
         ("items=0-1", None),
         ("bytes=-", None),
+        ("bytes=١-٢", None),
     ],
 )
 def test_parse_range(header: str | None, expected: object) -> None:
@@ -48,6 +50,17 @@ def test_parse_range(header: str | None, expected: object) -> None:
 def test_parse_range_caps_long_ranges() -> None:
     assert parse_range("bytes=0-", 10_000, cap=4096) == (0, 4095)
     assert parse_range("bytes=10-9999", 10_000, cap=4096) == (10, 4105)
+
+
+def test_parse_range_bounds_oversized_decimal_groups() -> None:
+    oversized = "9" * 5000
+    zero_padded = "0" * 5000 + "5"
+
+    assert parse_range(f"bytes={oversized}-", 100) == UNSATISFIABLE
+    assert parse_range(f"bytes=0-{oversized}", 100, cap=16) == (0, 15)
+    assert parse_range(f"bytes=-{oversized}", 100, cap=16) == (0, 15)
+    assert parse_range(f"bytes={oversized}-1", 100) is None
+    assert parse_range(f"bytes={zero_padded}-9", 100) == (5, 9)
 
 
 @pytest.fixture()
@@ -126,6 +139,34 @@ def test_ranges(served) -> None:  # noqa: ANN001
     assert headers["content-range"] == f"bytes 0-{RANGE_CAP - 1}/{size}"
 
 
+def test_ranges_work_without_pread(served, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: ANN001
+    server, issue, _ld, _config = served
+    monkeypatch.delattr(os, "pread", raising=False)
+
+    status, headers, body = get(server, url(issue, 1), Range="bytes=17-31")
+
+    assert (status, headers["content-range"], body) == (
+        206,
+        f"bytes 17-31/{len(VIDEO)}",
+        VIDEO[17:32],
+    )
+
+
+def test_oversized_range_headers_keep_http_range_behavior(served) -> None:  # noqa: ANN001
+    server, issue, _ld, _config = served
+    oversized = "9" * 5000
+
+    status, headers, body = get(server, url(issue, 1), Range=f"bytes=0-{oversized}")
+    assert (status, len(body)) == (206, RANGE_CAP)
+    assert headers["content-range"] == f"bytes 0-{RANGE_CAP - 1}/{len(VIDEO)}"
+
+    status, headers, body = get(server, url(issue, 1), Range=f"bytes={oversized}-")
+    assert (status, headers["content-range"], body) == (416, f"bytes */{len(VIDEO)}", b"")
+
+    status, _headers, body = get(server, url(issue, 1), Range=f"bytes={oversized}-1")
+    assert (status, body) == (200, VIDEO)
+
+
 def test_refusals_serve_no_bytes(served, tmp_path: Path) -> None:  # noqa: ANN001
     server, issue, ld, config = served
     base = f"/api/issues/{issue['id']}/media/"
@@ -158,6 +199,58 @@ def test_refusals_serve_no_bytes(served, tmp_path: Path) -> None:  # noqa: ANN00
     atomic_write(ld / "config.json", serialize_config(config))
     status, _headers, body = get(server, url(issue, 0))
     assert status == 409 and json.loads(body)["error"]["code"] == "ISSUES_DISABLED"
+
+
+def test_issue_directory_symlink_cannot_read_sibling_media(served, tmp_path: Path) -> None:  # noqa: ANN001
+    server, issue, ld, _config = served
+    entry = issue["media"][0]
+    media_root = ld / "issues" / "media"
+    issue_dir = media_root / issue["id"]
+    issue_dir.rename(tmp_path / "saved-issue-media")
+    sibling = media_root / "sibling"
+    sibling.mkdir()
+    (sibling / Path(entry["path"]).name).write_bytes(b"sibling secret")
+    issue_dir.symlink_to(sibling, target_is_directory=True)
+
+    status, _headers, body = get(server, url(issue, 0))
+    assert status == 404
+    assert b"sibling secret" not in body
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO files are unavailable")
+def test_non_regular_media_is_refused_without_blocking(served) -> None:  # noqa: ANN001
+    server, issue, _ld, _config = served
+    photo = Path(issue["media"][0]["path"])
+    photo.unlink()
+    os.mkfifo(photo)
+
+    status, _headers, body = get(server, url(issue, 0))
+
+    assert status == 404
+    assert b"No such media" in body
+
+
+def test_path_fallback_serves_media_and_rejects_detected_symlinks(
+    served, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:  # noqa: ANN001
+    server, issue, ld, _config = served
+    monkeypatch.setattr(os, "supports_dir_fd", set(), raising=False)
+
+    status, _headers, body = get(server, url(issue, 0))
+    assert (status, body) == (200, png())
+
+    entry = issue["media"][0]
+    media_root = ld / "issues" / "media"
+    issue_dir = media_root / issue["id"]
+    issue_dir.rename(tmp_path / "saved-issue-media")
+    sibling = media_root / "sibling"
+    sibling.mkdir()
+    (sibling / Path(entry["path"]).name).write_bytes(b"sibling secret")
+    issue_dir.symlink_to(sibling, target_is_directory=True)
+
+    status, _headers, body = get(server, url(issue, 0))
+    assert status == 404
+    assert b"sibling secret" not in body
 
 
 def test_bound_checkout_is_local_only(served) -> None:  # noqa: ANN001

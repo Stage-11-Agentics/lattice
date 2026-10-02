@@ -293,14 +293,56 @@ def _writes_mode(mode: object) -> bool:
     return isinstance(mode, str) and bool(WRITE_MODE_CHARS & set(mode))
 
 
+def _read_only_flag_expr(
+    module: Module, flags: ast.expr, seen: frozenset[str] = frozenset()
+) -> bool:
+    """Whether *flags* combines only known non-writing ``os.open`` flags."""
+    if isinstance(flags, ast.BinOp) and isinstance(flags.op, ast.BitOr):
+        return _read_only_flag_expr(module, flags.left, seen) and _read_only_flag_expr(
+            module, flags.right, seen
+        )
+    if (
+        isinstance(flags, ast.Call)
+        and isinstance(flags.func, ast.Name)
+        and flags.func.id == "getattr"
+        and len(flags.args) == 3
+        and resolve(module, flags.args[0]) == "os"
+        and isinstance(flags.args[1], ast.Constant)
+        and flags.args[1].value
+        in {"O_BINARY", "O_CLOEXEC", "O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK"}
+        and isinstance(flags.args[2], ast.Constant)
+        and flags.args[2].value == 0
+    ):
+        return True
+    safe_flags = {
+        "os.O_RDONLY",
+        "os.O_DIRECTORY",
+        "os.O_NOFOLLOW",
+        "os.O_CLOEXEC",
+        "os.O_BINARY",
+        "os.O_NONBLOCK",
+    }
+    if isinstance(flags, (ast.Name, ast.Attribute)) and resolve(module, flags) in safe_flags:
+        return True
+    if isinstance(flags, ast.Name) and flags.id not in seen:
+        for node in module.tree.body:
+            if (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id == flags.id
+            ):
+                return _read_only_flag_expr(module, node.value, seen | {flags.id})
+    return False
+
+
 def _read_only_flags(module: Module, call: ast.Call) -> bool:
-    """Whether an ``os.open`` call's flags argument is exactly ``os.O_RDONLY``; any
-    other flags (combined, computed, or absent) count as a write."""
+    """Whether an ``os.open`` call uses only known non-writing flags."""
     flags = call.args[1] if len(call.args) > 1 else None
     for keyword in call.keywords:
         if keyword.arg == "flags":
             flags = keyword.value
-    return isinstance(flags, (ast.Name, ast.Attribute)) and resolve(module, flags) == "os.O_RDONLY"
+    return flags is not None and _read_only_flag_expr(module, flags)
 
 
 def raw_writes(module: Module) -> list[str]:
@@ -550,16 +592,18 @@ def f(p: Path):
     assert board == ["lattice.storage.fs.atomic_write", "lattice.storage.operations.mutate_task"]
 
 
-def test_os_open_is_a_read_only_with_exactly_o_rdonly() -> None:
+def test_os_open_accepts_known_read_only_flag_combinations() -> None:
     raw, _ = _scan(
         """
 import os
-from os import O_RDONLY
+from os import O_RDONLY, O_DIRECTORY, O_NOFOLLOW
 
 def f(p, flags):
     os.open(p, os.O_RDONLY)
     os.open(p, O_RDONLY)
     os.open(p, flags=os.O_RDONLY)
+    os.open(p, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    os.open(p, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
     os.open(p, os.O_WRONLY | os.O_CREAT)
     os.open(p, os.O_RDONLY | os.O_CREAT)
     os.open(p, flags)
