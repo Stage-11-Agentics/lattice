@@ -520,7 +520,7 @@ def test_next_claim_skips_an_erased_best_candidate(
         assert _json(shown)["data"]["id"] == second
         data = _json(claimed)["data"]
         assert data["id"] == second
-        assert data["status"] == "in_progress" and data["assigned_to"] == "agent:w"
+        assert data["status"] == "in_planning" and data["assigned_to"] == "agent:w"
     else:
         assert "Visible second" in shown.output and "Erased best" not in shown.output
         assert "Visible second" in claimed.output and "Erased best" not in claimed.output

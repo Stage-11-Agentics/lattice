@@ -19,8 +19,9 @@ What differs from the local run, and why:
   (``review_state/``) is machine-local, so it is written in the checkout's
   cache. Anything outside ``.lattice/`` is written in the checkout.
 - **Declared hosted differences** (normalized by :func:`declared_differences`):
-  the maintenance commands of SPEC §3.5 refuse with ``LOCAL_ONLY``, and
-  ``PLAN_REQUIRED`` appends the ``plan write`` hint (SPEC §3.9). Each
+  the maintenance commands of SPEC §3.5 refuse with ``LOCAL_ONLY``,
+  ``PLAN_REQUIRED`` appends the ``plan write`` hint (SPEC §3.9), and a refused
+  claim appends its no-assignment/no-status clause after that hint. Each
   normalization checks the hosted form exactly before rewriting it.
 
 Every durable mutation the server makes is recorded (``MutationLog``) for the
@@ -402,6 +403,7 @@ _PLAN_HINT = re.compile(
 _PLAN_REQUIRED_SUFFIX = re.compile(
     r"(Override with --force --reason\.) Write the plan with "
     r"`lattice plan write [^` ]+ --file <path>`\."
+    r"( No assignment or status change was made\.)?"
 )
 _HOSTED_TASK_TYPE_HINT = re.compile(
     r"On a hosted board, ask an admin on the server host to run `lattice server project "
@@ -496,7 +498,7 @@ def declared_differences(capture: dict[str, Any], *, binding: str) -> dict[str, 
             if " On a hosted board, " in value:
                 value = local_task_type_hint(value)
             value = _PLAN_HINT.sub(local_hint, value)
-            return _PLAN_REQUIRED_SUFFIX.sub(r"\1", value)
+            return _PLAN_REQUIRED_SUFFIX.sub(r"\1\2", value)
         return value
 
     steps = []

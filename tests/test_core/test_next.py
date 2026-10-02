@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from lattice.core.next import (
     _actors_match,
+    claim_target_status,
     compute_claim_transitions,
+    has_plan_review_claim_route,
     select_all_ready,
     select_next,
 )
@@ -440,6 +442,46 @@ class TestComputeClaimTransitions:
 
         # cancelled -> in_progress (no path)
         assert compute_claim_transitions("cancelled", "in_progress", transitions) is None
+
+
+class TestPlanReviewClaimRoute:
+    def test_complete_direct_route_stops_backlog_and_planning_claims(self) -> None:
+        workflow = {
+            "statuses": ["backlog", "in_planning", "planned", "in_progress"],
+            "transitions": {
+                "backlog": ["in_planning", "planned"],
+                "in_planning": ["planned"],
+                "planned": ["in_progress"],
+            },
+        }
+        assert has_plan_review_claim_route(workflow)
+        assert claim_target_status("backlog", workflow) == "in_planning"
+        assert claim_target_status("in_planning", workflow) == "in_planning"
+        assert claim_target_status("planned", workflow) == "in_progress"
+
+    def test_missing_status_or_direct_edge_keeps_existing_target(self) -> None:
+        complete = {
+            "statuses": ["backlog", "in_planning", "planned", "in_progress"],
+            "transitions": {
+                "backlog": ["in_planning"],
+                "in_planning": ["planned"],
+            },
+        }
+        variants = [
+            {**complete, "statuses": ["backlog", "planned", "in_progress"]},
+            {
+                **complete,
+                "transitions": {**complete["transitions"], "backlog": ["planned"]},
+            },
+            {
+                **complete,
+                "transitions": {**complete["transitions"], "in_planning": []},
+            },
+        ]
+        for workflow in variants:
+            assert not has_plan_review_claim_route(workflow)
+            assert claim_target_status("backlog", workflow) == "in_progress"
+            assert claim_target_status("in_planning", workflow) == "in_progress"
 
 
 # ---------------------------------------------------------------------------

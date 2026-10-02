@@ -21,7 +21,7 @@
         "default_priority": "medium",
         "default_status": "backlog",
         "done_display": "grouped",
-        "instance_id": "<ID-17>",
+        "instance_id": "<ID-18>",
         "plan_approval": "auto",
         "plan_review_mode": "single",
         "project_code": "PAR",
@@ -196,19 +196,7 @@
           "actor": "agent:third",
           "data": {
             "from": "backlog",
-            "to": "planned"
-          },
-          "id": "<ID-25>",
-          "schema_version": 1,
-          "task_id": "<ID-10>",
-          "ts": "<TS>",
-          "type": "status_changed"
-        },
-        {
-          "actor": "agent:third",
-          "data": {
-            "from": "planned",
-            "to": "in_progress"
+            "to": "in_planning"
           },
           "id": "<ID-12>",
           "schema_version": 1,
@@ -241,7 +229,7 @@
             "from": null,
             "to": "human:parity"
           },
-          "id": "<ID-26>",
+          "id": "<ID-24>",
           "schema_version": 1,
           "task_id": "<ID-13>",
           "ts": "<TS>",
@@ -275,6 +263,18 @@
           "task_id": "<ID-13>",
           "ts": "<TS>",
           "type": "assignment_changed"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "from": null,
+            "to": "agent:fourth"
+          },
+          "id": "<ID-17>",
+          "schema_version": 1,
+          "task_id": "<ID-13>",
+          "ts": "<TS>",
+          "type": "assignment_changed"
         }
       ]
     },
@@ -300,17 +300,6 @@
           "data": {
             "surface": "surface:7"
           },
-          "id": "<ID-18>",
-          "schema_version": 1,
-          "task_id": "<ID-1>",
-          "ts": "<TS>",
-          "type": "surface_bound"
-        },
-        {
-          "actor": "agent:worker",
-          "data": {
-            "surface": "surface:8"
-          },
           "id": "<ID-19>",
           "schema_version": 1,
           "task_id": "<ID-1>",
@@ -323,6 +312,17 @@
             "surface": "surface:8"
           },
           "id": "<ID-20>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "surface_bound"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "surface": "surface:8"
+          },
+          "id": "<ID-21>",
           "schema_version": 1,
           "task_id": "<ID-1>",
           "ts": "<TS>",
@@ -345,7 +345,7 @@
             "from": null,
             "to": "agent:worker"
           },
-          "id": "<ID-21>",
+          "id": "<ID-22>",
           "schema_version": 1,
           "task_id": "<ID-1>",
           "ts": "<TS>",
@@ -355,19 +355,7 @@
           "actor": "agent:worker",
           "data": {
             "from": "backlog",
-            "to": "planned"
-          },
-          "id": "<ID-22>",
-          "schema_version": 1,
-          "task_id": "<ID-1>",
-          "ts": "<TS>",
-          "type": "status_changed"
-        },
-        {
-          "actor": "agent:worker",
-          "data": {
-            "from": "planned",
-            "to": "in_progress"
+            "to": "in_planning"
           },
           "id": "<ID-8>",
           "schema_version": 1,
@@ -410,19 +398,7 @@
           "actor": "agent:other",
           "data": {
             "from": "backlog",
-            "to": "planned"
-          },
-          "id": "<ID-24>",
-          "schema_version": 1,
-          "task_id": "<ID-3>",
-          "ts": "<TS>",
-          "type": "status_changed"
-        },
-        {
-          "actor": "agent:other",
-          "data": {
-            "from": "planned",
-            "to": "in_progress"
+            "to": "in_planning"
           },
           "id": "<ID-9>",
           "schema_version": 1,
@@ -609,7 +585,7 @@
         "reopened_count": 0,
         "schema_version": 1,
         "short_id": "PAR-4",
-        "status": "in_progress",
+        "status": "in_planning",
         "tags": null,
         "title": "Assigned elsewhere",
         "type": "task",
@@ -620,7 +596,7 @@
     "tasks/<ID-13>.json": {
       "json": {
         "acceptance_criteria": [],
-        "assigned_to": null,
+        "assigned_to": "agent:fourth",
         "branch_links": [],
         "comment_count": 0,
         "complexity": null,
@@ -631,7 +607,7 @@
         "done_at": null,
         "evidence_refs": [],
         "id": "<ID-13>",
-        "last_event_id": "<ID-16>",
+        "last_event_id": "<ID-17>",
         "last_status_changed_at": "<TS>",
         "linked_files": [],
         "priority": "medium",
@@ -671,7 +647,7 @@
         "reopened_count": 0,
         "schema_version": 1,
         "short_id": "PAR-1",
-        "status": "in_progress",
+        "status": "in_planning",
         "tags": null,
         "title": "High one",
         "type": "task",
@@ -701,7 +677,7 @@
         "reopened_count": 0,
         "schema_version": 1,
         "short_id": "PAR-2",
-        "status": "in_progress",
+        "status": "in_planning",
         "tags": null,
         "title": "Medium one",
         "type": "task",
@@ -1109,17 +1085,50 @@
         "agent:worker",
         "--json"
       ],
-      "exit_code": 1,
+      "exit_code": 0,
       "stderr": {
         "lines": []
       },
       "stdout": {
         "json": {
-          "error": {
-            "code": "PLAN_REQUIRED",
-            "message": "Plan for <ID-1> is still scaffold. Write the plan (even one line) before moving to in_progress. Override with --force --reason."
+          "data": {
+            "acceptance_criteria": [],
+            "assigned_to": "agent:worker",
+            "branch_links": [],
+            "c11_surface": null,
+            "c11_workspace": null,
+            "comment_count": 0,
+            "complexity": null,
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "custom_fields": {},
+            "description": null,
+            "done_at": null,
+            "evidence_refs": [],
+            "id": "<ID-1>",
+            "last_event_id": "<ID-8>",
+            "last_status_changed_at": "<TS>",
+            "linked_files": [],
+            "next_steps": {
+              "action": "write_plan",
+              "command": "lattice status PAR-1 planned --actor agent:worker",
+              "plan_path": "plans/<ID-1>.md",
+              "then": "planned"
+            },
+            "plan_content": null,
+            "priority": "high",
+            "relationships_out": [],
+            "reopened_count": 0,
+            "schema_version": 1,
+            "short_id": "PAR-1",
+            "status": "in_planning",
+            "tags": null,
+            "title": "High one",
+            "type": "task",
+            "updated_at": "<TS>",
+            "urgency": null
           },
-          "ok": false
+          "ok": true
         }
       }
     },
@@ -1158,13 +1167,19 @@
             "last_event_id": "<ID-8>",
             "last_status_changed_at": "<TS>",
             "linked_files": [],
+            "next_steps": {
+              "action": "move_to_planned",
+              "command": "lattice status PAR-1 planned --actor agent:worker",
+              "plan_path": "plans/<ID-1>.md",
+              "then": "planned"
+            },
             "plan_content": "# Plan\n\n## Approach\n\n- Do the work in one careful pass.\n",
             "priority": "high",
             "relationships_out": [],
             "reopened_count": 0,
             "schema_version": 1,
             "short_id": "PAR-1",
-            "status": "in_progress",
+            "status": "in_planning",
             "tags": null,
             "title": "High one",
             "type": "task",
@@ -1207,13 +1222,19 @@
             "last_event_id": "<ID-8>",
             "last_status_changed_at": "<TS>",
             "linked_files": [],
+            "next_steps": {
+              "action": "move_to_planned",
+              "command": "lattice status PAR-1 planned --actor agent:worker",
+              "plan_path": "plans/<ID-1>.md",
+              "then": "planned"
+            },
             "plan_content": "# Plan\n\n## Approach\n\n- Do the work in one careful pass.\n",
             "priority": "high",
             "relationships_out": [],
             "reopened_count": 0,
             "schema_version": 1,
             "short_id": "PAR-1",
-            "status": "in_progress",
+            "status": "in_planning",
             "tags": null,
             "title": "High one",
             "type": "task",
@@ -1277,13 +1298,19 @@
             "last_event_id": "<ID-9>",
             "last_status_changed_at": "<TS>",
             "linked_files": [],
+            "next_steps": {
+              "action": "move_to_planned",
+              "command": "lattice status PAR-2 planned --actor agent:other",
+              "plan_path": "plans/<ID-3>.md",
+              "then": "planned"
+            },
             "plan_content": "# Plan\n\n## Approach\n\n- Do the work in one careful pass.\n",
             "priority": "medium",
             "relationships_out": [],
             "reopened_count": 0,
             "schema_version": 1,
             "short_id": "PAR-2",
-            "status": "in_progress",
+            "status": "in_planning",
             "tags": null,
             "title": "Medium one",
             "type": "task",
@@ -1331,7 +1358,7 @@
             "reopened_count": 0,
             "schema_version": 1,
             "short_id": "PAR-2",
-            "status": "in_progress",
+            "status": "in_planning",
             "tags": null,
             "title": "Medium one",
             "type": "task",
@@ -1425,13 +1452,19 @@
             "last_event_id": "<ID-12>",
             "last_status_changed_at": "<TS>",
             "linked_files": [],
+            "next_steps": {
+              "action": "move_to_planned",
+              "command": "lattice status PAR-4 planned --actor agent:third",
+              "plan_path": "plans/<ID-10>.md",
+              "then": "planned"
+            },
             "plan_content": "# Plan\n\n## Approach\n\n- Do the work in one careful pass.\n",
             "priority": "medium",
             "relationships_out": [],
             "reopened_count": 0,
             "schema_version": 1,
             "short_id": "PAR-4",
-            "status": "in_progress",
+            "status": "in_planning",
             "tags": null,
             "title": "Assigned elsewhere",
             "type": "task",
@@ -1618,6 +1651,102 @@
     },
     {
       "args": [
+        "assign",
+        "PAR-5",
+        "agent:fourth",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "acceptance_criteria": [],
+            "assigned_to": "agent:fourth",
+            "branch_links": [],
+            "comment_count": 0,
+            "complexity": null,
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "custom_fields": {},
+            "description": null,
+            "done_at": null,
+            "evidence_refs": [],
+            "id": "<ID-13>",
+            "last_event_id": "<ID-17>",
+            "last_status_changed_at": "<TS>",
+            "linked_files": [],
+            "priority": "medium",
+            "relationships_out": [],
+            "reopened_count": 0,
+            "schema_version": 1,
+            "short_id": "PAR-5",
+            "status": "in_progress",
+            "tags": null,
+            "title": "Orphan in progress",
+            "type": "task",
+            "updated_at": "<TS>",
+            "urgency": null
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "next",
+        "--status",
+        "in_progress",
+        "--claim",
+        "--actor",
+        "agent:fourth",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "acceptance_criteria": [],
+            "assigned_to": "agent:fourth",
+            "branch_links": [],
+            "comment_count": 0,
+            "complexity": null,
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "custom_fields": {},
+            "description": null,
+            "done_at": null,
+            "evidence_refs": [],
+            "id": "<ID-13>",
+            "last_event_id": "<ID-17>",
+            "last_status_changed_at": "<TS>",
+            "linked_files": [],
+            "plan_content": "# Plan\n\n## Approach\n\n- Do the work in one careful pass.\n",
+            "priority": "medium",
+            "relationships_out": [],
+            "reopened_count": 0,
+            "schema_version": 1,
+            "short_id": "PAR-5",
+            "status": "in_progress",
+            "tags": null,
+            "title": "Orphan in progress",
+            "type": "task",
+            "updated_at": "<TS>",
+            "urgency": null
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
         "next",
         "--status",
         "nowhere",
@@ -1653,7 +1782,7 @@
             "reopened_count": 0,
             "schema_version": 1,
             "short_id": "PAR-2",
-            "status": "in_progress",
+            "status": "in_planning",
             "tags": null,
             "title": "Medium one",
             "type": "task",
@@ -1681,6 +1810,79 @@
           "error": {
             "code": "SESSION_NOT_FOUND",
             "message": "No active session named 'Ghost'. Start one with 'lattice session start'."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "next",
+        "--status",
+        "in_progress",
+        "--claim",
+        "--actor",
+        "agent:fourth",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "acceptance_criteria": [],
+            "assigned_to": "agent:fourth",
+            "branch_links": [],
+            "comment_count": 0,
+            "complexity": null,
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "custom_fields": {},
+            "description": null,
+            "done_at": null,
+            "evidence_refs": [],
+            "id": "<ID-13>",
+            "last_event_id": "<ID-17>",
+            "last_status_changed_at": "<TS>",
+            "linked_files": [],
+            "plan_content": "# Plan\n\n## Approach\n\n- Do the work in one careful pass.\n",
+            "priority": "medium",
+            "relationships_out": [],
+            "reopened_count": 0,
+            "schema_version": 1,
+            "short_id": "PAR-5",
+            "status": "in_progress",
+            "tags": null,
+            "title": "Orphan in progress",
+            "type": "task",
+            "updated_at": "<TS>",
+            "urgency": null
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "next",
+        "--status",
+        "planned",
+        "--claim",
+        "--actor",
+        "agent:fifth",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "PLAN_REQUIRED",
+            "message": "Plan for <ID-5> is still scaffold. Write the plan (even one line) before moving to in_progress. Override with --force --reason. No assignment or status change was made."
           },
           "ok": false
         }

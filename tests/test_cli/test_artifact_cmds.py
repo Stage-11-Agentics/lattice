@@ -323,6 +323,208 @@ class TestAttachURL:
 
 
 # ---------------------------------------------------------------------------
+# Artifact show
+# ---------------------------------------------------------------------------
+
+
+class TestArtifactShow:
+    def _task_id(self, invoke) -> str:
+        result = invoke("create", "Review result", "--actor", _ACTOR, "--json")
+        return json.loads(result.output)["data"]["id"]
+
+    def _attach_inline(self, invoke, task_id: str, content: str, *args: str) -> dict:
+        result = invoke(
+            "attach",
+            task_id,
+            "--inline",
+            content,
+            "--actor",
+            _ACTOR,
+            "--json",
+            *args,
+        )
+        assert result.exit_code == 0, result.output
+        return json.loads(result.output)["data"]
+
+    def test_show_text_payload_json_and_verbatim_human(self, invoke, initialized_root) -> None:
+        task_id = self._task_id(invoke)
+        metadata = self._attach_inline(invoke, task_id, "PASS\n\nNo findings.")
+        art_id = metadata["id"]
+
+        result = invoke("artifact", "show", art_id, "--json")
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)["data"]
+        assert data == {
+            "artifact": metadata,
+            "content": "PASS\n\nNo findings.",
+            "payload_path": f"artifacts/payload/{art_id}.md",
+        }
+
+        human = invoke("artifact", "show", art_id)
+        assert human.exit_code == 0, human.output
+        expected_header = "\n".join(
+            (
+                f"Artifact {art_id}: inline attachment",
+                "  type: note",
+                "  content_type: text/markdown",
+                "  size_bytes: 18",
+                f"  created_by: {_ACTOR}",
+                f"  created_at: {metadata['created_at']}",
+            )
+        )
+        assert human.stdout == f"{expected_header}\n\nPASS\n\nNo findings.\n"
+
+    def test_show_binary_payload(self, invoke, initialized_root, tmp_path) -> None:
+        task_id = self._task_id(invoke)
+        source = tmp_path / "blob.bin"
+        source.write_bytes(b"\x00\x01\xff")
+        attached = invoke("attach", task_id, str(source), "--actor", _ACTOR, "--json")
+        art_id = json.loads(attached.output)["data"]["id"]
+
+        result = invoke("artifact", "show", art_id, "--json")
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)["data"]
+        assert data["content"] is None
+        assert data["payload_path"] == f"artifacts/payload/{art_id}.bin"
+
+        human = invoke("artifact", "show", art_id)
+        assert "Binary payload (application/octet-stream, 3 bytes) at " in human.stdout
+        assert data["payload_path"] in human.stdout
+        assert human.stdout.endswith("\n")
+
+    def test_show_reference_with_url_and_no_payload(self, invoke, initialized_root) -> None:
+        task_id = self._task_id(invoke)
+        attached = invoke(
+            "attach", task_id, "https://example.com/review", "--actor", _ACTOR, "--json"
+        )
+        art_id = json.loads(attached.output)["data"]["id"]
+
+        result = invoke("artifact", "show", art_id, "--json")
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)["data"]
+        assert data["content"] is None
+        assert data["payload_path"] is None
+
+        human = invoke("artifact", "show", art_id)
+        assert "No stored payload." in human.stdout
+        assert "URL: https://example.com/review" in human.stdout
+        assert human.stdout.endswith("\n")
+
+    def test_show_lowercase_id_resolves_uppercase_metadata(self, invoke, initialized_root) -> None:
+        task_id = self._task_id(invoke)
+        art_id = "art_01AAAAAAAAAAAAAAAAAAAAAAAA"
+        attached = invoke(
+            "attach",
+            task_id,
+            "--inline",
+            "PASS",
+            "--id",
+            art_id,
+            "--actor",
+            _ACTOR,
+            "--json",
+        )
+        assert json.loads(attached.output)["data"]["id"] == art_id
+
+        result = invoke("artifact", "show", art_id.lower(), "--json")
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output)["data"]["content"] == "PASS"
+
+    @pytest.mark.parametrize(
+        ("art_id", "expected_code"),
+        [
+            ("nope", "INVALID_ID"),
+            ("art_01AAAAAAAAAAAAAAAAAAAAAAAA", "NOT_FOUND"),
+        ],
+    )
+    def test_show_invalid_or_unknown_id(
+        self, invoke, initialized_root, art_id, expected_code
+    ) -> None:
+        result = invoke("artifact", "show", art_id, "--json")
+        assert result.exit_code != 0
+        assert json.loads(result.output)["error"]["code"] == expected_code
+
+    def test_show_rejects_payload_path_traversal(self, invoke, initialized_root) -> None:
+        task_id = self._task_id(invoke)
+        metadata = self._attach_inline(invoke, task_id, "secret")
+        meta_path = (
+            initialized_root / LATTICE_DIR / "artifacts" / "meta" / f"{metadata['id']}.json"
+        )
+        stored = json.loads(meta_path.read_text())
+        stored["payload"]["file"] = "../../config.json"
+        meta_path.write_text(json.dumps(stored), encoding="utf-8")
+
+        result = invoke("artifact", "show", metadata["id"], "--json")
+        assert result.exit_code != 0
+        error = json.loads(result.output)["error"]
+        assert error["code"] == "PAYLOAD_UNAVAILABLE"
+        assert "invalid payload path" in error["message"]
+
+    def test_show_rejects_payload_symlink_outside_payload_directory(
+        self, invoke, initialized_root, tmp_path
+    ) -> None:
+        task_id = self._task_id(invoke)
+        metadata = self._attach_inline(invoke, task_id, "secret")
+        payload_path = (
+            initialized_root / LATTICE_DIR / "artifacts" / "payload" / f"{metadata['id']}.md"
+        )
+        payload_path.unlink()
+        outside = tmp_path / "outside.md"
+        outside.write_text("secret outside the payload directory", encoding="utf-8")
+        payload_path.symlink_to(outside)
+
+        result = invoke("artifact", "show", metadata["id"], "--json")
+        assert result.exit_code != 0
+        error = json.loads(result.output)["error"]
+        assert error["code"] == "PAYLOAD_UNAVAILABLE"
+        assert "escapes artifacts/payload" in error["message"]
+
+    def test_show_missing_sensitive_payload_uses_neutral_hint(
+        self, invoke, initialized_root
+    ) -> None:
+        task_id = self._task_id(invoke)
+        metadata = self._attach_inline(invoke, task_id, "secret", "--sensitive")
+        payload_path = (
+            initialized_root / LATTICE_DIR / "artifacts" / "payload" / f"{metadata['id']}.md"
+        )
+        payload_path.unlink()
+
+        result = invoke("artifact", "show", metadata["id"], "--json")
+        assert result.exit_code != 0
+        error = json.loads(result.output)["error"]
+        assert error["code"] == "PAYLOAD_UNAVAILABLE"
+        assert "may not have been copied to this checkout" in error["message"]
+        assert "gitignored" not in error["message"]
+
+    def test_show_non_utf8_text_payload_is_unavailable(self, invoke, initialized_root) -> None:
+        task_id = self._task_id(invoke)
+        metadata = self._attach_inline(invoke, task_id, "text")
+        payload_path = (
+            initialized_root / LATTICE_DIR / "artifacts" / "payload" / f"{metadata['id']}.md"
+        )
+        payload_path.write_bytes(b"\xff")
+
+        result = invoke("artifact", "show", metadata["id"], "--json")
+        assert result.exit_code != 0
+        error = json.loads(result.output)["error"]
+        assert error["code"] == "PAYLOAD_UNAVAILABLE"
+        assert "text payload is not valid UTF-8" in error["message"]
+
+    def test_show_directory_payload_is_unavailable(self, invoke, initialized_root) -> None:
+        task_id = self._task_id(invoke)
+        metadata = self._attach_inline(invoke, task_id, "text")
+        payload_path = (
+            initialized_root / LATTICE_DIR / "artifacts" / "payload" / f"{metadata['id']}.md"
+        )
+        payload_path.unlink()
+        payload_path.mkdir()
+
+        result = invoke("artifact", "show", metadata["id"], "--json")
+        assert result.exit_code != 0
+        assert json.loads(result.output)["error"]["code"] == "PAYLOAD_UNAVAILABLE"
+
+
+# ---------------------------------------------------------------------------
 # Sensitive flag
 # ---------------------------------------------------------------------------
 

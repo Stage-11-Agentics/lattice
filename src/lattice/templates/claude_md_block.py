@@ -300,6 +300,8 @@ This is the **planning sub-agent's** job. Spawn a sub-agent whose sole purpose i
 
 **The test:** If you moved to `planned` and the plan file is still empty scaffold, you didn't plan. Every task gets a plan — even trivial tasks get a one-line plan. The CLI enforces this: transitioning to `in_progress` is blocked when the plan is still scaffold.
 
+On the complete plan-review route, every `lattice next --claim` for a backlog task stops in `in_planning`, even when a substantive plan already exists; write the plan if needed, then run the returned `lattice status <task> planned` command, which includes the identity option supplied for the claim, follow its review hint, and only then run `lattice status <task> in_progress`—never re-claim to advance it.
+
 **Plan review (default: single, fires automatically when the board enables it).** Moving the task to `planned` spawns a detached `lattice plan-review <task> --actor agent:<your-id>` in the background when the board's config has `auto_plan_review_on_transition` on; the `lattice status` output says whether it fired or why it did not. Run by hand, `plan-review` and `code-review` need `--actor` (or `--name`). Tail progress with `lattice review-status <task>` or `.lattice/.daemon/auto-plan-review-<task>.log`. Disable per-call with `--no-auto-review` on `lattice status`, or project-wide with `auto_plan_review_on_transition: false`. **If you opt into `plan_review_mode: triple`, every transition into `planned` spends three agent runs plus a merge — disable auto-fire or use `--no-auto-review` when cost matters.**
 
 The mode controls *how* the review runs:
@@ -355,7 +357,7 @@ cat .lattice/config.json | python3 -c "import sys,json; d=json.load(sys.stdin); 
 2. Read the git diff to see what was actually built.
 3. Run tests and linting to verify nothing is broken.
 4. Compare the implementation against the plan's acceptance criteria.
-5. Use the artifact produced by the auto-fired review (or run `lattice code-review <task>` manually if you opted out / are inline).
+5. Use the review's artifact ID and read its content with `lattice artifact show <id>` (or `--json` for structured output). Run the review command manually if you opted out / are inline.
 
 **When moving to `done`:** If the completion policy blocks you for a missing review artifact, do the review. Do not `--force` past it. `--force --reason` is for genuinely exceptional cases, not a convenience shortcut.
 

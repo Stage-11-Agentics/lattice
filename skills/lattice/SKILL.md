@@ -136,6 +136,17 @@ lattice next --actor agent:openclaw          # Suggest next task
 lattice next --actor agent:openclaw --claim  # Suggest and auto-assign
 ```
 
+On a workflow with the complete plan-review route (both direct edges
+`backlog → in_planning` and `in_planning → planned`), every backlog claim stops
+in `in_planning`, even when a substantive plan already exists; reclaiming an
+`in_planning` task keeps it there. Use the returned
+`lattice status <task> planned` command; it includes the identity option supplied
+for the claim when present. Write a missing or scaffold plan first, then run it; with an
+existing plan, run it directly. Follow its output about review, then explicitly run
+`lattice status <task> in_progress` before work. Do not re-claim a task already
+held in `in_planning` or `planned`. Other workflow configurations keep their
+existing claim behavior.
+
 ### Project health
 
 ```bash
@@ -202,6 +213,10 @@ lattice list --json
 ```
 
 Returns `{"ok": true, "data": [...]}` on success or `{"ok": false, "error": {"code": "...", "message": "..."}}` on failure.
+
+## Reading review artifacts
+
+When a review prints an artifact ID, read its content with `lattice artifact show <id>`; use `--json` for structured output. In JSON, `data.content` is UTF-8 text or `null`, and `data.payload_path` is relative to `.lattice`. Binary payloads have null content and include their path. Use `lattice review-status <task>` while a single-mode review runs; progress is reported on stderr.
 
 ## Plans and Notes
 

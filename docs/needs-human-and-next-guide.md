@@ -139,14 +139,25 @@ lattice next --actor agent:claude-cli --json
 
 ### Claiming a task
 
-The `--claim` flag atomically assigns the task and moves it to `in_progress`:
+The `--claim` flag atomically assigns the selected task. When the workflow has
+the complete plan-review route (`backlog → in_planning → planned` through both
+direct edges), every backlog claim enters `in_planning`, even if a substantive
+plan already exists. Re-claiming an `in_planning` task keeps it there, whether
+its plan is missing, scaffold, or substantive.
 
 ```bash
 # Claim in one step (requires --actor)
 lattice next --actor agent:claude-cli --claim --json
 ```
 
-This is equivalent to running `lattice assign` + `lattice status` but atomic — no race condition where another agent grabs the same task.
+For an `in_planning` claim, the output names `lattice status <task> planned`;
+JSON exposes the same command at `data.next_steps.command`. Add the same
+`--actor` or `--name` used for the claim. Write a missing or scaffold plan
+first, then run that status command. If a plan already exists, run it directly.
+Follow the status output to see whether review fired, then explicitly move to
+`in_progress` when ready. Do not use `next --claim` to advance a task already
+held in `in_planning`. Workflows without the complete route retain their
+existing behavior.
 
 ### Selection algorithm
 
@@ -203,12 +214,13 @@ For multiple advances, just invoke it again or tell the agent "do 3 advances" or
 ### What it does (the protocol)
 
 1. **Claim:** `lattice next --actor agent:claude-cli --claim --json`
-2. **Read:** Examine the task details and any notes/plans
-3. **Work:** Implement, test, iterate — full coding agent capabilities
-4. **Hand off:** Move the task to `review` or `blocked`, or raise the `needs-human` flag, depending on outcome
-5. **Comment:** Record what was done, what was chosen, what's left
-6. **Commit:** Commit changes
-7. **Report:** Tell you what happened — task, outcome, summary
+2. **Plan gate:** If the result is `in_planning`, read the task and linked context, write a missing or scaffold plan, then run `data.next_steps.command` with the same actor. Run it even when a substantive plan exists. Follow the status output about review, then explicitly move to `in_progress`; do not re-claim to advance.
+3. **Read:** Examine any remaining task details and notes
+4. **Work:** Implement, test, iterate — full coding agent capabilities
+5. **Hand off:** Move the task to `review` or `blocked`, or raise the `needs-human` flag, depending on outcome
+6. **Comment:** Record what was done, what was chosen, what's left
+7. **Commit:** Commit changes
+8. **Report:** Tell you what happened — task, outcome, summary
 
 ### When to use it
 

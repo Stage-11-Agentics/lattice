@@ -5,6 +5,7 @@ review for a transition the board config would review, and says why (SPEC
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from lattice.server import admin
 from tests.test_remote.hosted import (
     HostedEnv,
     SpawnRecorder,
+    add_worktree,
     events_of,
     fake_agent_on_path,
     git,
@@ -98,9 +100,41 @@ def test_declining_machine_still_runs_a_review_by_hand(
     )
     assert review.exit_code == 0, review.output
     assert "Review stored as artifact" in review.stdout
+    match = re.search(r"Review stored as artifact (art_[0-9A-HJKMNP-TV-Z]{26})", review.stdout)
+    assert match is not None, review.stdout
+    art_id = match.group(1)
     events = events_of(hosted_env, "DEM-1")
     attached = [e for e in events if e["type"] == "artifact_attached"]
     assert [e["data"]["role"] for e in attached] == ["review"]
     assert not [e for e in events if e["type"] == "auto_review_spawned"]
     status = run_cli(repo, "review-status", "DEM-1")
     assert "Review artifacts exist" in status.stdout
+
+    # A sibling linked worktree has no local .lattice tree. The binding file
+    # alone routes artifact reads to the hosted board and lets it catch up.
+    linked = add_worktree(repo, tmp_path / "review-reader", "review-reader")
+    binding = repo / ".lattice-remote.json"
+    assert binding.is_file()
+    (linked / ".lattice-remote.json").write_bytes(binding.read_bytes())
+    assert not (linked / ".lattice").exists()
+
+    from lattice.remote import http
+
+    real_request = http.request
+    requests: list[tuple[str, str]] = []
+
+    def recording_request(remote, method, path, **kwargs):
+        requests.append((method, path))
+        return real_request(remote, method, path, **kwargs)
+
+    monkeypatch.setattr(http, "request", recording_request)
+    shown = run_cli(linked, "artifact", "show", art_id, "--json")
+    assert shown.exit_code == 0, shown.output
+    payload = json.loads(shown.stdout)["data"]
+    assert payload["artifact"]["id"] == art_id
+    assert payload["content"].startswith("Lattice-Reviewed-Commit: ")
+    assert "Lattice-Reviewed-Commit:" in payload["content"]
+    assert payload["payload_path"] == f"artifacts/payload/{art_id}.md"
+    assert not [
+        (method, path) for method, path in requests if method == "POST" and "/ops/" in path
+    ]

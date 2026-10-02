@@ -703,6 +703,9 @@ class TestTripleReviewSpawn:
         )
         assert "/trident-plan-review LAT-42" in prompt
         assert "Review Verdict Routing" in prompt
+        assert "lattice artifact show <artifact-id>" in prompt
+        assert "lattice show LAT-42" in prompt
+        assert ".lattice/artifacts/payload/" not in prompt
         # Routing table outcomes — PASS routes to in_validation (LAT-233);
         # the PR opens only after validation evidence is recorded.
         for outcome in ("in_validation", "in_progress", "in_planning"):
@@ -740,6 +743,19 @@ class TestTripleReviewSpawn:
         )
         assert "- Head ref: `HEAD`" in prompt
         assert "Diff exactly `main...HEAD`" in prompt
+
+    def test_handoff_prompt_uses_program_name_for_artifact_show(self) -> None:
+        from lattice.core.review import build_trident_handoff_prompt
+
+        prompt = build_trident_handoff_prompt(
+            "LAT-42",
+            "code-review",
+            worktree=Path("/tmp/board"),
+            base_branch="main",
+            program="lattice-dev",
+        )
+        assert "lattice-dev artifact show <artifact-id>" in prompt
+        assert "newest attached\nartifact with role `review`" in prompt
 
 
 # ---------------------------------------------------------------------------

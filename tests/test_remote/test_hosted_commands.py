@@ -65,7 +65,8 @@ def test_the_server_defaults_a_missing_actor(hosted_env: HostedEnv, repo: Path) 
     assert claimed.exit_code == 0, claimed.output
     data = json.loads(claimed.stdout)["data"]
     assert data["assigned_to"] == "human:alice"
-    assert data["status"] == "in_progress"
+    assert data["status"] == "in_planning"
+    assert data["next_steps"]["command"] == "lattice status DEM-1 planned"
 
     for args in (
         ("archive", "DEM-2"),
@@ -114,6 +115,24 @@ def test_plan_gate_on_a_hosted_board_names_plan_write(
     assert error["code"] == "PLAN_REQUIRED"
     assert error["message"].endswith(
         "Write the plan with `lattice plan write DEM-1 --file <path>`."
+    )
+
+    claimed = run_cli(
+        repo,
+        "next",
+        "--status",
+        "planned",
+        "--claim",
+        "--actor",
+        "agent:dev",
+        "--json",
+    )
+    assert claimed.exit_code == 1
+    claim_error = json.loads(claimed.stdout)["error"]
+    assert claim_error["code"] == "PLAN_REQUIRED"
+    assert claim_error["message"].endswith(
+        "Write the plan with `lattice plan write DEM-1 --file <path>`. "
+        "No assignment or status change was made."
     )
 
 

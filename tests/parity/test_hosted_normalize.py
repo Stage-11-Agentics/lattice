@@ -143,6 +143,13 @@ def test_hints_are_rewritten_only_in_their_exact_form() -> None:
     assert out["steps"][1]["stderr"]["lines"] == [
         "Error: Plan for task_1 is still scaffold. Override with --force --reason."
     ]
+    claim_required = required + " No assignment or status change was made."
+    claim = plain(["next", "--status", "planned", "--claim"], [], [claim_required])
+    out = declared_differences(capture(claim), binding=BINDING)
+    assert out["steps"][1]["stderr"]["lines"] == [
+        "Error: Plan for task_1 is still scaffold. Override with --force --reason."
+        " No assignment or status change was made."
+    ]
     step = plain(["status", "PAR-1", "in_progress"], [], [required + " More."])
     out = declared_differences(capture(step), binding=BINDING)
     assert out["steps"][1]["stderr"]["lines"][0].endswith(" More.")

@@ -68,6 +68,7 @@ def test_representative_commands_are_registered() -> None:
     load_all_commands()
     for command in (
         "archive",
+        "artifact",
         "attach",
         "cache",
         "claim",

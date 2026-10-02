@@ -480,20 +480,18 @@
       ],
       "exit_code": 1,
       "stderr": {
-        "lines": []
+        "lines": [
+          "Running plan-review for <ID-1> (single mode; timeout 600s). Check progress with `lattice review-status <ID-1>`."
+        ]
       },
       "stdout": {
-        "lines": [
-          "Running plan-review (single mode)...",
-          "{",
-          "  \"error\": {",
-          "    \"code\": \"REVIEW_FAILED\",",
-          "    \"message\": \"Review failed: Agent 'claude': exited with code 1. fake_agent: simulated failure\"",
-          "  },",
-          "  \"ok\": false",
-          "}",
-          ""
-        ]
+        "json": {
+          "error": {
+            "code": "REVIEW_FAILED",
+            "message": "Review failed: Agent 'claude': exited with code 1. fake_agent: simulated failure"
+          },
+          "ok": false
+        }
       }
     },
     {

@@ -6,6 +6,8 @@ import json
 import os
 import subprocess
 import tempfile
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -45,6 +47,9 @@ from lattice.core.review import (
     write_owned_review_state,
 )
 from lattice.templates import load_review_template
+
+
+_REVIEW_HEARTBEAT_INTERVAL_SECONDS = 30.0
 
 
 def _now_iso() -> str:
@@ -1181,18 +1186,40 @@ def _run_single_and_store(
     claim: str | None = None,
 ) -> str | None:
     """Run single-agent review, store artifact, print result. Returns artifact ID or None."""
-    click.echo(f"Running {review_type} (single mode)...")
-
-    success, message, text = run_single_review(
-        lattice_dir=lattice_dir,
-        task_id=task_id,
-        review_type=review_type,
-        prompt_content=prompt,
-        actor=actor,
-        timeout=timeout,
-        worktree=worktree,
-        claim=claim,
+    click.echo(
+        f"Running {review_type} for {task_id} (single mode; timeout {timeout}s). "
+        f"Check progress with `{program_name()} review-status {task_id}`.",
+        err=True,
     )
+    started = time.monotonic()
+    heartbeat_stop = threading.Event()
+    heartbeat = threading.Thread(
+        target=_review_heartbeat,
+        kwargs={
+            "stop_event": heartbeat_stop,
+            "started": started,
+            "task_id": task_id,
+            "review_type": review_type,
+            "timeout": timeout,
+        },
+        name=f"lattice-{review_type}-heartbeat-{task_id}",
+        daemon=True,
+    )
+    heartbeat.start()
+    try:
+        success, message, text = run_single_review(
+            lattice_dir=lattice_dir,
+            task_id=task_id,
+            review_type=review_type,
+            prompt_content=prompt,
+            actor=actor,
+            timeout=timeout,
+            worktree=worktree,
+            claim=claim,
+        )
+    finally:
+        heartbeat_stop.set()
+        heartbeat.join()
 
     if not success:
         cleanup_temp_files(task_id)
@@ -1230,9 +1257,34 @@ def _run_single_and_store(
         elif quiet:
             click.echo(art_id)
         else:
-            click.echo(f"Review stored as artifact {art_id} (role={role}).")
+            click.echo(
+                f"Review stored as artifact {art_id} (role={role}). "
+                f"Show it with `{program_name()} artifact show {art_id}`."
+            )
 
     return art_id
+
+
+def _review_heartbeat(
+    *,
+    stop_event: threading.Event,
+    started: float,
+    task_id: str,
+    review_type: str,
+    timeout: int,
+) -> None:
+    """Report progress only while the single review subprocess is running."""
+    while not stop_event.wait(_REVIEW_HEARTBEAT_INTERVAL_SECONDS):
+        elapsed = int(time.monotonic() - started)
+        try:
+            click.echo(
+                f"{review_type} for {task_id} still running "
+                f"({elapsed}s elapsed; timeout {timeout}s).",
+                err=True,
+            )
+        except OSError:
+            # A closed stderr must not turn a successful review into a failure.
+            return
 
 
 def _spawn_triple_pane(
@@ -1273,6 +1325,7 @@ def _spawn_triple_pane(
         short_id=short_id,
         worktree=worktree,
         claim=claim,
+        program=program_name(),
     )
 
     if not success:
@@ -1426,13 +1479,13 @@ def _flag_needs_human(
         text=True,
     )
     if result.returncode == 0:
-        click.echo("needs_human flag set (plan_approval=human).")
+        click.echo("needs_human flag set (plan_approval=human).", err=True)
     elif (
         "FLAG_ALREADY_SET" in result.stderr or "already has the needs_human flag" in result.stderr
     ):
         # Benign: human attention is already requested (e.g. plan-level
         # rework re-fired the review while the earlier flag still stands).
-        click.echo("needs_human flag already set (plan_approval=human).")
+        click.echo("needs_human flag already set (plan_approval=human).", err=True)
     else:
         click.echo(
             f"Note: Could not set needs_human flag: {result.stderr.strip()}",

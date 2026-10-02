@@ -19,17 +19,17 @@ Every unit of work follows this arc: **claim → understand → work → complet
 # 1. Claim the next task (or create one)
 lattice next --actor agent:claude-cli --claim --json
 
-# 2. If the task needs planning (empty plan file), plan first
-lattice status <task_id> in_planning --actor agent:claude-cli
-lattice plan write <task_id> --file plan.md --actor agent:claude-cli   # or --stdin
-lattice status <task_id> planned --actor agent:claude-cli
+# 2. If the claim result is in_planning, inspect the task and plan it
+lattice plan write <task_id> --file plan.md --actor agent:claude-cli   # only if missing/scaffold; or --stdin
+lattice status <task_id> planned --actor agent:claude-cli            # also run when a substantive plan exists
+# Follow the status output about plan review, then explicitly advance:
 lattice status <task_id> in_progress --actor agent:claude-cli
 
 # 3. Working on a branch or worktree? Link it — BEFORE you reach review.
 lattice branch-link <task_id> <branch> --actor agent:claude-cli
 ```
 
-`lattice next --claim` atomically assigns the highest-priority ready task to you and moves it to `in_progress`. If you already have a task in progress, it returns that one (resume-first logic).
+`lattice next --claim` atomically assigns the highest-priority ready task. On the complete plan-review route (both direct edges `backlog → in_planning` and `in_planning → planned`), a backlog claim stops in `in_planning`, even when a substantive plan already exists; reclaiming a task in `in_planning` keeps it there. Use the returned `lattice status <task> planned` command; it includes the identity option supplied for the claim when present. Write a missing or scaffold plan first; otherwise run it directly. Follow its output about plan review, then explicitly run `lattice status <task> in_progress` before working. Do not re-claim a task already held in `in_planning` or `planned`. If the claim returns `in_progress`, continue under that workflow's existing behavior.
 
 **Link the branch, or review reads the wrong code.** `code-review` resolves its diff from the task's linked branch — authoritative, and a hard error if the branch does not resolve rather than a quiet fall back to whatever the checkout holding `.lattice/` has checked out. Under one-worktree-per-task that would be a *sibling's* branch. `--head`/`--base`/`--worktree` override the resolution; `code-review <task> --dry-run` prints the resolved range (and `--json` makes it assertable) without spending a model run.
 
@@ -191,7 +191,11 @@ All commands support `--json` for structured output: `{"ok": true, "data": ...}`
 
 Check if enabled: look for `"heartbeat": {"enabled": true}` in `.lattice/config.json`.
 
-When enabled, keep advancing after each task: complete the current task → `lattice next --claim` → work the next one → repeat. Stop after `max_advances` (default 10), when the backlog is empty, or when a task is flagged `needs-human` or hits `blocked`.
+When enabled, keep advancing after each task. After `lattice next --claim`, if the returned task is `in_planning`, read its details and linked context, write the plan if needed, and use the explicit `status ... planned` command even when a substantive plan already exists. Follow that status output about review, then explicitly move to `in_progress` before work; do not re-claim to advance it. Otherwise continue the existing claim-and-work loop. Stop after `max_advances` (default 10), when the backlog is empty, or when a task is flagged `needs-human` or hits `blocked`.
+
+## Reading review artifacts
+
+When a review prints an artifact ID, read its content with `lattice artifact show <id>`; use `--json` for structured output. In JSON, `data.content` is UTF-8 text or `null`, and `data.payload_path` is relative to `.lattice`. Binary payloads have null content and include their path. Use `lattice review-status <task>` while a single-mode review runs; progress is reported on stderr.
 
 ## Hosted Boards
 

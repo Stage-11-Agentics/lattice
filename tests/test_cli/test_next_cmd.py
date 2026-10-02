@@ -164,13 +164,13 @@ class TestNextStatusOverride:
 
 
 class TestNextClaim:
-    """--claim flag atomically assigns and moves to in_progress."""
+    """--claim atomically assigns and respects the explicit planning gate."""
 
     def test_claim_requires_actor(self, invoke) -> None:
         result = invoke("next", "--claim")
         assert result.exit_code != 0
 
-    def test_claim_assigns_and_starts(self, create_task, invoke, fill_plan) -> None:
+    def test_claim_assigns_and_stops_in_planning(self, create_task, invoke, fill_plan) -> None:
         task = create_task("Claimable task")
         task_id = task["id"]
         fill_plan(task_id, "Claimable task")
@@ -180,13 +180,17 @@ class TestNextClaim:
         parsed = json.loads(result.output)
         assert parsed["ok"] is True
         assert parsed["data"]["assigned_to"] == "agent:claude"
-        assert parsed["data"]["status"] == "in_progress"
+        assert parsed["data"]["status"] == "in_planning"
+        label = parsed["data"].get("short_id") or task_id
+        assert parsed["data"]["next_steps"]["command"] == (
+            f"lattice status {label} planned --actor agent:claude"
+        )
 
         # Verify the task was actually updated on disk
         show_result = invoke("show", task_id, "--json")
         show_parsed = json.loads(show_result.output)
         assert show_parsed["data"]["assigned_to"] == "agent:claude"
-        assert show_parsed["data"]["status"] == "in_progress"
+        assert show_parsed["data"]["status"] == "in_planning"
 
     def test_claim_no_task_available(self, invoke) -> None:
         result = invoke("next", "--actor", "agent:claude", "--claim", "--json")
@@ -220,8 +224,18 @@ class TestNextClaim:
         assert parsed["data"]["id"] == task_id
         assert parsed["data"]["plan_content"] is not None
         assert "Implement behavior" in parsed["data"]["plan_content"]
+        assert parsed["data"]["status"] == "in_planning"
+        label = parsed["data"].get("short_id") or task_id
+        assert parsed["data"]["next_steps"] == {
+            "action": "move_to_planned",
+            "command": f"lattice status {label} planned --actor agent:claude",
+            "plan_path": f"plans/{task_id}.md",
+            "then": "planned",
+        }
 
-    def test_claim_blocked_when_plan_missing(self, create_task, invoke, cli_env) -> None:
+    def test_claim_with_missing_plan_stops_and_names_steps(
+        self, create_task, invoke, cli_env
+    ) -> None:
         task = create_task("No plan file task")
         task_id = task["id"]
         plan_path = Path(cli_env["LATTICE_ROOT"]) / ".lattice" / "plans" / f"{task_id}.md"
@@ -229,18 +243,84 @@ class TestNextClaim:
             plan_path.unlink()
 
         result = invoke("next", "--actor", "agent:claude", "--claim", "--json")
-        assert result.exit_code != 0
+        assert result.exit_code == 0
         parsed = json.loads(result.output)
-        assert parsed["error"]["code"] == "PLAN_REQUIRED"
+        assert parsed["data"]["status"] == "in_planning"
+        assert parsed["data"]["plan_content"] is None
+        label = parsed["data"].get("short_id") or task_id
+        assert parsed["data"]["next_steps"] == {
+            "action": "write_plan",
+            "command": f"lattice status {label} planned --actor agent:claude",
+            "plan_path": f"plans/{task_id}.md",
+            "then": "planned",
+        }
 
-    def test_claim_blocked_when_plan_is_scaffold(self, create_task, invoke) -> None:
-        create_task("Scaffold plan task")
-        # Plan is auto-scaffolded on create — just title, no real content
+    def test_claim_with_scaffold_plan_prints_assignment_and_plan_gate(
+        self, create_task, invoke
+    ) -> None:
+        task = create_task("Scaffold plan task")
+        label = task.get("short_id") or task["id"]
+        # The plan is auto-scaffolded on create — the current hint stays verbatim.
+        result = invoke("next", "--actor", "agent:claude", "--claim")
+        assert result.exit_code == 0
+        assert result.output.startswith(f"{label}  in_planning")
+        assert "Assigned to agent:claude." in result.output
+        assert "Next: write the plan in plans/" in result.output
+        assert (
+            f"Next: run 'lattice status {label} planned --actor agent:claude' after writing the plan."
+            in result.output
+        )
 
-        result = invoke("next", "--actor", "agent:claude", "--claim", "--json")
-        assert result.exit_code != 0
-        parsed = json.loads(result.output)
+        quiet = invoke("next", "--actor", "agent:claude", "--claim", "--quiet")
+        assert quiet.output.strip() == label
+
+    def test_claim_with_existing_plan_prints_planned_command(
+        self, create_task, invoke, fill_plan
+    ) -> None:
+        task = create_task("Existing substantive plan")
+        task_id = task["id"]
+        label = task.get("short_id") or task_id
+        fill_plan(task_id, "Existing substantive plan")
+
+        result = invoke("next", "--actor", "agent:claude", "--claim")
+
+        assert result.exit_code == 0
+        assert result.output.startswith(f"{label}  in_planning")
+        assert "Assigned to agent:claude." in result.output
+        assert (
+            f"Next: run 'lattice status {label} planned --actor agent:claude' to enter planned and follow its review hint."
+            in result.output
+        )
+        assert "Next: write the plan in plans/" not in result.output
+
+    def test_described_scaffold_is_null_only_for_claim_json(self, create_task, invoke) -> None:
+        create_task("Description scaffold", "--description", "Details from the task.")
+        plain = invoke("next", "--json")
+        assert json.loads(plain.output)["data"]["plan_content"] is not None
+        assert "Details from the task." in json.loads(plain.output)["data"]["plan_content"]
+
+        claimed = invoke("next", "--actor", "agent:claude", "--claim", "--json")
+        data = json.loads(claimed.output)["data"]
+        assert data["status"] == "in_planning"
+        assert data["plan_content"] is None
+        assert data["next_steps"]["action"] == "write_plan"
+
+    def test_claim_plan_gate_refusal_keeps_no_write_suffix(self, create_task, invoke) -> None:
+        task = create_task("Planned scaffold")
+        task_id = task["id"]
+        invoke("status", task_id, "in_planning", "--actor", "human:test")
+        invoke("status", task_id, "planned", "--actor", "human:test")
+        invoke("assign", task_id, "none", "--actor", "human:test")
+        before = json.loads(invoke("show", task_id, "--full", "--json").output)["data"]["events"]
+
+        refused = invoke(
+            "next", "--status", "planned", "--actor", "agent:claude", "--claim", "--json"
+        )
+        parsed = json.loads(refused.output)
         assert parsed["error"]["code"] == "PLAN_REQUIRED"
+        assert parsed["error"]["message"].endswith("No assignment or status change was made.")
+        after = json.loads(invoke("show", task_id, "--full", "--json").output)["data"]["events"]
+        assert after == before
 
 
 class TestNextClaimTransitions:
@@ -268,7 +348,7 @@ class TestNextClaimTransitions:
     def test_claim_backlog_emits_intermediate_transitions(
         self, create_task, invoke, fill_plan
     ) -> None:
-        """Claiming a backlog task should emit backlog -> planned -> in_progress."""
+        """A plan-review workflow must stop before its explicit planned gate."""
         task = create_task("Backlog task")
         task_id = task["id"]
         fill_plan(task_id, "Backlog task")
@@ -276,19 +356,14 @@ class TestNextClaimTransitions:
         result = invoke("next", "--actor", "agent:claude", "--claim", "--json")
         assert result.exit_code == 0
         parsed = json.loads(result.output)
-        assert parsed["data"]["status"] == "in_progress"
+        assert parsed["data"]["status"] == "in_planning"
 
         # Verify events show intermediate transitions
         show_result = invoke("show", task_id, "--full", "--json")
         show_parsed = json.loads(show_result.output)
         events = show_parsed["data"].get("events", [])
         status_events = [e for e in events if e["type"] == "status_changed"]
-        # Should have at least 2 status changes: backlog->planned, planned->in_progress
-        assert len(status_events) >= 2
-        assert status_events[-2]["data"]["from"] == "backlog"
-        assert status_events[-2]["data"]["to"] == "planned"
-        assert status_events[-1]["data"]["from"] == "planned"
-        assert status_events[-1]["data"]["to"] == "in_progress"
+        assert status_events[-1]["data"] == {"from": "backlog", "to": "in_planning"}
 
     def test_claim_already_in_progress_is_noop(self, create_task, invoke, fill_plan) -> None:
         """If resume-first returns an in_progress task, --claim should not error."""
@@ -344,7 +419,11 @@ class TestNextWithSessionName:
         assert result.exit_code == 0
         parsed = json.loads(result.output)
         assert parsed["ok"] is True
-        assert parsed["data"]["status"] == "in_progress"
+        assert parsed["data"]["status"] == "in_planning"
+        label = task.get("short_id") or task["id"]
+        assert parsed["data"]["next_steps"]["command"] == (
+            f"lattice status {label} planned --name Argus-1"
+        )
         # assigned_to should be a structured dict with name
         assigned = parsed["data"]["assigned_to"]
         assert isinstance(assigned, dict)
@@ -385,7 +464,7 @@ class TestNextWithSessionName:
         assert claim_result.exit_code == 0
         parsed = json.loads(claim_result.output)
         task_id = parsed["data"]["id"]
-        assert parsed["data"]["status"] == "in_progress"
+        assert parsed["data"]["status"] == "in_planning"
 
         # Create another higher-priority task
         create_task("Higher priority", "--priority", "critical")
@@ -398,79 +477,50 @@ class TestNextWithSessionName:
 
 
 class TestNextClaimConcurrency:
-    """Concurrent claim guard — reject when another agent already claimed.
-
-    The guard fires inside the file lock, after re-reading the snapshot.
-    In a real race, both agents call select_next() and pick the same task
-    (both see it unassigned), then serialize through the lock.  The first
-    writes assignment + status; the second re-reads and should see the
-    first's claim.
-
-    To simulate this without threads, we:
-    1. Let agent:alpha claim the task normally (select → lock → write).
-    2. Manually mutate the snapshot back to 'backlog' + unassigned so
-       select_next() picks it again for agent:bravo.
-    3. agent:bravo calls next --claim, select_next sees the faked
-       snapshot (unassigned/backlog), but the lock path re-reads the
-       REAL snapshot (assigned to alpha, in_progress) and rejects.
-    """
+    """The mutation uses the task snapshot refreshed after selection."""
 
     def test_guard_ignores_non_authoritative_snapshot_patch(
-        self, create_task, invoke, fill_plan, cli_env, monkeypatch
+        self, create_task, invoke, fill_plan, monkeypatch
     ) -> None:
-        """A forged snapshot read cannot override the locked event replay."""
+        """A real assignment/status change after selection wins under the task lock."""
         task = create_task("Race task")
         task_id = task["id"]
         fill_plan(task_id, "Race task")
 
-        import lattice.cli.query_cmds as qmod
+        import lattice.ops.board_next_claim as claim_module
 
-        original_read = qmod.read_snapshot
+        original_select = claim_module.select_next
+        event_ids_after_race: list[str] = []
 
-        def patched_read(lattice_dir, tid):
-            snap = original_read(lattice_dir, tid)
-            if tid == task_id and snap is not None:
-                # Simulate: alpha claimed between select and lock
-                snap = dict(snap)
-                snap["assigned_to"] = "agent:alpha"
-                snap["status"] = "in_progress"
-            return snap
+        def select_then_change(snapshots, **kwargs):  # noqa: ANN003, ANN202
+            selected = original_select(snapshots, **kwargs)
+            if selected is not None:
+                assigned = invoke("assign", task_id, "agent:alpha", "--actor", "human:test")
+                changed = invoke("status", task_id, "in_planning", "--actor", "human:test")
+                assert assigned.exit_code == changed.exit_code == 0
+                full = json.loads(invoke("show", task_id, "--full", "--json").output)["data"]
+                event_ids_after_race.extend(event["id"] for event in full["events"])
+            return selected
 
-        monkeypatch.setattr(qmod, "read_snapshot", patched_read)
+        monkeypatch.setattr(claim_module, "select_next", select_then_change)
 
         result = invoke("next", "--actor", "agent:bravo", "--claim", "--json")
-        assert result.exit_code == 0
+        assert result.exit_code != 0
         parsed = json.loads(result.output)
-        assert parsed["ok"] is True
-        assert parsed["data"]["assigned_to"] == "agent:bravo"
-        assert parsed["data"]["status"] == "in_progress"
+        assert parsed["error"]["code"] == "ALREADY_CLAIMED"
+        full = json.loads(invoke("show", task_id, "--full", "--json").output)["data"]
+        assert [event["id"] for event in full["events"]] == event_ids_after_race
+        assert full["status"] == "in_planning" and full["assigned_to"] == "agent:alpha"
 
-    def test_guard_allows_reclaim_by_same_actor(
-        self, create_task, invoke, fill_plan, cli_env, monkeypatch
-    ) -> None:
-        """If the snapshot shows the SAME actor, claim should proceed (no false reject)."""
+    def test_guard_allows_reclaim_by_same_actor(self, create_task, invoke, fill_plan) -> None:
+        """An already-owned in-planning task is returned without a status change."""
         task = create_task("Own task")
         task_id = task["id"]
-        fill_plan(task_id, "Own task")
-
-        import lattice.cli.query_cmds as qmod
-
-        original_read = qmod.read_snapshot
-
-        def patched_read(lattice_dir, tid):
-            snap = original_read(lattice_dir, tid)
-            if tid == task_id and snap is not None:
-                snap = dict(snap)
-                snap["assigned_to"] = "agent:claude"
-                snap["status"] = "in_progress"
-            return snap
-
-        monkeypatch.setattr(qmod, "read_snapshot", patched_read)
-
         result = invoke("next", "--actor", "agent:claude", "--claim", "--json")
         assert result.exit_code == 0
         parsed = json.loads(result.output)
         assert parsed["data"]["id"] == task_id
+        assert parsed["data"]["status"] == "in_planning"
 
     def test_claim_rejects_when_in_progress_by_other(self, create_task, invoke, fill_plan) -> None:
         """If task is already in_progress by another agent, bravo picks the next task."""
@@ -504,37 +554,35 @@ class TestNextClaimConcurrency:
         assert result.exit_code == 0
         parsed = json.loads(result.output)
         assert parsed["data"]["id"] == task_id
-        assert parsed["data"]["status"] == "in_progress"
+        assert parsed["data"]["status"] == "in_planning"
 
         # Second claim by same actor (resume path)
         result = invoke("next", "--actor", "agent:claude", "--claim", "--json")
         assert result.exit_code == 0
         parsed = json.loads(result.output)
         assert parsed["data"]["id"] == task_id
-        assert parsed["data"]["status"] == "in_progress"
+        assert parsed["data"]["status"] == "in_planning"
 
-    def test_guard_human_readable_uses_authoritative_replay(
-        self, create_task, invoke, fill_plan, monkeypatch
+    def test_old_server_returned_status_does_not_get_a_planning_hint(
+        self, create_task, invoke, cli_env, monkeypatch
     ) -> None:
-        """Human output likewise ignores a forged snapshot-only owner."""
-        task = create_task("Contested HR task")
-        task_id = task["id"]
-        fill_plan(task_id, "Contested HR task")
+        """The renderer trusts returned task status rather than local workflow config."""
+        task = create_task("Old server result")
+        snapshot = {**task, "status": "in_progress", "assigned_to": "agent:claude"}
 
-        import lattice.cli.query_cmds as qmod
+        from types import SimpleNamespace
 
-        original_read = qmod.read_snapshot
+        import lattice.cli.query_cmds as query_module
 
-        def patched_read(lattice_dir, tid):
-            snap = original_read(lattice_dir, tid)
-            if tid == task_id and snap is not None:
-                snap = dict(snap)
-                snap["assigned_to"] = "agent:alpha"
-                snap["status"] = "in_progress"
-            return snap
+        class FakeBoard:
+            lattice_dir = Path(cli_env["LATTICE_ROOT"]) / ".lattice"
 
-        monkeypatch.setattr(qmod, "read_snapshot", patched_read)
+            def execute(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+                return SimpleNamespace(value=snapshot)
 
-        result = invoke("next", "--actor", "agent:bravo", "--claim")
+        monkeypatch.setattr(query_module, "board_or_exit", lambda *_args, **_kwargs: FakeBoard())
+        result = invoke("next", "--actor", "agent:claude", "--claim")
         assert result.exit_code == 0
         assert "in_progress" in result.output
+        assert "Assigned to" not in result.output
+        assert "status " not in result.output

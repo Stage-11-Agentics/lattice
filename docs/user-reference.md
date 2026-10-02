@@ -264,7 +264,7 @@ Output modes: human-readable (default), `--json` (structured), `--verbose` (full
 
 The pattern that turns a prioritized backlog into completed work — one task at a time:
 
-1. **`lattice next --claim`** — atomically grab the top task and move it to `in_progress`
+1. **`lattice next --claim`** — atomically grab and assign the top task. On the complete plan-review route, it stops in `in_planning` even when a substantive plan exists; run the returned `lattice status <task> planned` command, follow its review hint, then explicitly move to `in_progress`.
 2. **Work** — implement, test, iterate
 3. **Hand off** — move to `review` (done) or `blocked` (external dependency), or raise the `needs-human` flag (stuck on a human decision; the task keeps its status)
 4. **Comment** — record what was done, what was chosen, what's left
@@ -312,6 +312,17 @@ Three models surface issues no single model catches alone. The synthesis separat
 The review prompt and the stored artifact both carry `Lattice-Reviewed-Commit` (the SHA of the head actually diffed), `Lattice-Reviewed-Worktree`, `Lattice-Reviewed-Base`, and `Lattice-Reviewed-Head`.
 
 `lattice code-review <task> --dry-run` prints that resolution and the assembled prompt, then exits — it claims no review slot, spawns no agent, and stores no artifact. Add `--json` for a machine-readable form. Use it whenever a review's diff looks wrong (a truncation warning on a small ticket is the usual tell).
+
+### Reading review artifacts
+
+When a review prints an artifact ID, read its metadata and payload with:
+
+```bash
+lattice artifact show <artifact_id>                 # Human-readable header and text
+lattice artifact show <artifact_id> --json           # Structured result
+```
+
+JSON success returns `data.artifact` (metadata), `data.content` (UTF-8 text or `null`), and `data.payload_path` (a POSIX path relative to `.lattice`, such as `artifacts/payload/<artifact_id>.md`, or `null`). Reference artifacts with no stored payload have null content and path. Binary payloads have null content and a path; human output reports their content type, size, and path. Missing, unreadable, unsafe-path, or invalid-UTF-8 text payloads return `PAYLOAD_UNAVAILABLE`. A sensitive artifact uses a neutral message that the payload may not have been copied to this checkout.
 
 ### Auto-fire on status transitions
 
@@ -424,6 +435,7 @@ The CLI is Lattice's write interface — the primary way agents interact with th
 | `lattice link <src> <type> <tgt>` | Create a relationship |
 | `lattice unlink <src> <type> <tgt>` | Remove a relationship |
 | `lattice attach <id> <file-or-url>` | Attach an artifact (`--role` and repeatable `--criterion` add evidence metadata) |
+| `lattice artifact show <artifact_id>` | Read artifact metadata and text, or inspect the path and size of a binary payload (`--json` for structured output) |
 | `lattice event <id> <x_type>` | Record a custom event |
 | `lattice file-link <id> <path>...` | Link file(s) to a task (`--reason` for annotation) |
 | `lattice file-unlink <id> <path>...` | Unlink file(s) from a task |

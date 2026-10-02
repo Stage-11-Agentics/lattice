@@ -1600,6 +1600,7 @@ def command_module_names() -> list[str]:
 # ``tests/test_cli/test_discovery.py`` checks this index against the modules.
 COMMAND_MODULES: dict[str, str] = {
     "archive": "archive_cmds",
+    "artifact": "artifact_cmds",
     "assign": "task_cmds",
     "attach": "artifact_cmds",
     "backfill-ids": "migration_cmds",
