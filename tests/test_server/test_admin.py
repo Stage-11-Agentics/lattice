@@ -156,7 +156,7 @@ def test_project_config_refuses_before_writing(root: Path) -> None:
         "task_types=[",
         'task_types={"task":true}',
         'task_types="task"',
-        "task_types=[\"task\", 1]",
+        'task_types=["task", 1]',
         'task_types=["task",""]',
         'task_types=["task","  "]',
         'task_types=["task","bug","bug"]',

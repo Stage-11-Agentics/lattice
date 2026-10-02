@@ -21,9 +21,7 @@ def test_unconfigured_type_error_message_is_identical_locally_and_hosted(
     local = resolve_board(local_root)
 
     with pytest.raises(OpError) as local_error:
-        local.execute(
-            "task.create", {"title": "Local", "type": "research"}, Caller("human:test")
-        )
+        local.execute("task.create", {"title": "Local", "type": "research"}, Caller("human:test"))
 
     status, _, body = server.op(
         "alpha", "task.create", {"title": "Hosted", "type": "research"}, token=token

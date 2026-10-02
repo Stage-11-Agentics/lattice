@@ -111,12 +111,14 @@ class TestUpdate:
 
 
 class TestTaskTypes:
-    def test_create_and_update_share_actionable_invalid_type_message(self, board: LocalBoard) -> None:
+    def test_create_and_update_share_actionable_invalid_type_message(
+        self, board: LocalBoard
+    ) -> None:
         expected = (
             "Invalid task type: 'epic'. Valid types: task, bug, chore. "
             "On a local board, add the type to `.lattice/config.json` `task_types`. "
             "On a hosted board, run `lattice server project config <slug> "
-            "--set 'task_types=[\"task\",\"bug\",\"chore\",\"epic\"]'`; this replaces "
+            '--set \'task_types=["task","bug","chore","epic"]\'`; this replaces '
             "the list, so include the existing values when adding a type."
         )
         with pytest.raises(OpError) as create_error:

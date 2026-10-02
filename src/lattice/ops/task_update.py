@@ -94,9 +94,7 @@ def _normalize_values(parsed: list[tuple[str, object]], config: dict) -> list[tu
                 f"Invalid complexity: '{value}'. Valid complexities: {valid}.",
             )
         if field == "type" and not validate_task_type(config, value):
-            raise OpError(
-                "VALIDATION_ERROR", invalid_task_type_message(config, value)
-            )
+            raise OpError("VALIDATION_ERROR", invalid_task_type_message(config, value))
 
         if field == "tags" and isinstance(value, str):
             new_value: object = [t.strip() for t in value.split(",") if t.strip()]

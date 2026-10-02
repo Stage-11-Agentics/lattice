@@ -64,9 +64,7 @@ class Create:
                 "VALIDATION_ERROR", f"Invalid status: '{status}'. Valid statuses: {valid}."
             )
         if not validate_task_type(config, task_type):
-            raise OpError(
-                "VALIDATION_ERROR", invalid_task_type_message(config, task_type)
-            )
+            raise OpError("VALIDATION_ERROR", invalid_task_type_message(config, task_type))
         if priority not in VALID_PRIORITIES:
             valid = ", ".join(VALID_PRIORITIES)
             raise OpError(

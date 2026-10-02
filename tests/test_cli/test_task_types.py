@@ -36,9 +36,7 @@ def test_old_configured_types_still_create_read_list_show_and_transition(
     listed_types = {task["id"]: task["type"] for task in listed["data"]}
     for task_type, task_id in task_ids.items():
         assert listed_types[task_id] == task_type
-        transitioned, code = invoke_json(
-            "status", task_id, "in_planning", "--actor", "human:test"
-        )
+        transitioned, code = invoke_json("status", task_id, "in_planning", "--actor", "human:test")
         assert code == 0 and transitioned["data"]["status"] == "in_planning"
 
     assert json.loads(config_path.read_text())["task_types"] == legacy_types
