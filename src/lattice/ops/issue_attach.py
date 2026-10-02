@@ -35,7 +35,12 @@ class IssueAttach:
     def run(self, ctx: OpContext, p: IssueAttachParams) -> OpResult:
         issue_common.require_issue_log(ctx)
         issue_id = issue_common.resolve(ctx, p.issue)
-        decoded = issue_common.decode_media(p.media, ctx.config, nothing="Nothing was attached.")
+        decoded = issue_common.decode_media(
+            p.media,
+            ctx.config,
+            nothing="Nothing was attached.",
+            stage_manager=ctx.issue_media,
+        )
         with issue_write_context(ctx.lattice_dir, issue_id):
             snapshot = current_issue(ctx.lattice_dir, issue_id)
             if snapshot is None:

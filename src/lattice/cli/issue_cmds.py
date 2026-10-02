@@ -2,8 +2,8 @@
 
 Issues are observations, kept apart from tasks, which are commitments. The log
 is off unless ``.lattice/config.json`` has ``"issues": {"enabled": true}``, and
-works only on local boards. Writes run the ``issue.*`` operations; ``list``
-and ``show`` read the files directly.
+works on local boards and hosted boards whose owner enabled it. Hosted writes
+run as named server operations; reads use the synced, read-only cache.
 """
 
 from __future__ import annotations
@@ -17,50 +17,56 @@ from lattice.cli.helpers import (
     output_error,
     output_result,
     resolve_body,
-    require_root,
 )
 from lattice.cli.main import cli
-from lattice.cli.ops_bridge import provenance_params, run_operation
+from lattice.cli.ops_bridge import board_or_exit, provenance_params, run_operation
 from lattice.core.errors import OpError
 
 
 def _require_issue_log(is_json: bool) -> tuple:
-    """``(lattice_dir, config)`` when the issue log can be used here, else the
-    command's error: ``LOCAL_ONLY`` on a bound checkout (before anything is
-    read or fetched), ``NOT_INITIALIZED``, or ``ISSUES_DISABLED``."""
-    from lattice.boards import hosted_binding
+    """``(board, lattice_dir, config)`` after hosted freshness and issue checks."""
+    from lattice.boards import HostedBoard
     from lattice.core.config import issues_enabled
-    from lattice.core.issues import issues_disabled_message
-    from lattice.storage.issues import issues_dir
+    from lattice.core.issues import hosted_issues_disabled_message, issues_disabled_message
+    from lattice.storage.issues import has_issue_metadata
 
+    board = board_or_exit(is_json)
     try:
-        binding = hosted_binding(None)
+        # HostedBoard catches the cache up and holds its shared read lock here.
+        lattice_dir = board.lattice_dir
     except OpError as exc:
         output_error(exc.message, exc.code, is_json)
-    if binding is not None:
-        output_error(
-            "The issue log works only on local boards for now; this checkout's board "
-            f"lives on the server ('{binding}').",
-            "LOCAL_ONLY",
-            is_json,
-        )
-    lattice_dir = require_root(is_json)
     config = load_project_config(lattice_dir)
     if not issues_enabled(config):
-        output_error(
-            issues_disabled_message(issues_dir(lattice_dir).is_dir()), "ISSUES_DISABLED", is_json
+        message = (
+            hosted_issues_disabled_message(has_issue_metadata(lattice_dir), board.hosted.project)
+            if isinstance(board, HostedBoard)
+            else issues_disabled_message(has_issue_metadata(lattice_dir))
         )
-    return lattice_dir, config
+        output_error(message, "ISSUES_DISABLED", is_json)
+    return board, lattice_dir, config
 
 
 def _write(op_name: str, params: dict, is_json: bool, checked: tuple | None = None) -> tuple:
-    """``(lattice_dir, result)`` of running *op_name* after the issue-log checks."""
-    lattice_dir, config = checked or _require_issue_log(is_json)
-    return lattice_dir, run_operation(op_name, params, is_json, config=config)
+    """``(board, lattice_dir, result)`` after the issue-log checks."""
+    board, lattice_dir, config = checked or _require_issue_log(is_json)
+    return board, lattice_dir, run_operation(op_name, params, is_json, board=board, config=config)
 
 
 def _name(view: dict) -> str:
     return view.get("short_id") or view["id"]
+
+
+def _hosted_media_views(board, views: list[dict]) -> list[dict]:  # noqa: ANN001
+    """Add verified private-cache/server availability fields on a bound checkout."""
+    from lattice.boards import HostedBoard
+
+    if not isinstance(board, HostedBoard) or not any(view.get("media") for view in views):
+        return views
+    from lattice.remote.issue_media import annotate_views
+
+    board.end_read_phase()
+    return annotate_views(board.root, board.remote, board.hosted.project, views)
 
 
 def _task_entry(view: dict, raw_task: str) -> dict | None:
@@ -76,11 +82,17 @@ def _task_entry(view: dict, raw_task: str) -> dict | None:
     )
 
 
-def _warn_unreadable(path, exc: OpError) -> None:  # noqa: ANN001
+def _warn_unreadable(path, exc: OpError, board=None) -> None:  # noqa: ANN001
     """Skip an unreadable issue file with one line on stderr (stdout stays clean)."""
-    from lattice.core.issues import unreadable_issue_warning
+    from lattice.boards import HostedBoard
+    from lattice.core.issues import hosted_unreadable_issue_warning, unreadable_issue_warning
 
-    click.echo(unreadable_issue_warning(path, exc), err=True)
+    warning = (
+        hosted_unreadable_issue_warning(path, exc)
+        if isinstance(board, HostedBoard)
+        else unreadable_issue_warning(path, exc)
+    )
+    click.echo(warning, err=True)
 
 
 def _read_stdin_text() -> str:
@@ -391,8 +403,9 @@ def _print_write(
 def issue() -> None:
     """The issue log: file observations, discuss them, then promote or link them to tasks.
 
-    Optional and off by default. The board owner turns it on by adding
-    "issues": {"enabled": true} to .lattice/config.json. Local boards only.
+    Optional and off by default. The board owner turns it on with
+    ``lattice server project config <slug> --set issues.enabled=true`` on the
+    server host for hosted boards.
     """
 
 
@@ -444,7 +457,6 @@ def issue_file(
     agent can read ('lattice issue media <issue> --paths').
     """
     is_json = output_json
-    checked = _require_issue_log(is_json)
     if description is not None and description_file is not None:
         output_error(
             "Provide either --description or --description-file, not both.",
@@ -456,10 +468,13 @@ def issue_file(
             "Only one of TITLE and --description can read stdin.", "VALIDATION_ERROR", is_json
         )
     if title == "-":
+        # Read before HostedBoard takes its cache lock: a slow pipe must not
+        # hold up the next sync writer.
         title = _read_stdin_text()
     description = _resolve_issue_description(description, description_file, is_json)
-    pointers, records, kept = _collect_evidence(evidence, checked[1], is_json)
-    _lattice_dir, result = _write(
+    checked = _require_issue_log(is_json)
+    pointers, records, kept = _collect_evidence(evidence, checked[2], is_json)
+    _board, _lattice_dir, result = _write(
         "issue.file",
         {
             "title": title,
@@ -512,18 +527,18 @@ def issue_list(
     from lattice.storage.issues import issue_views, issues_by, list_issue_snapshots
 
     is_json = output_json
-    lattice_dir, _config = _require_issue_log(is_json)
+    board, lattice_dir, _config = _require_issue_log(is_json)
+
+    def unreadable(path, exc):  # noqa: ANN001
+        _warn_unreadable(path, exc, board)
+
     if by_actor is not None:
         wanted = states or ISSUE_STATES
-        shown = issues_by(
-            lattice_dir,
-            by_actor,
-            states=states or None,
-            on_unreadable=_warn_unreadable,
-        )
+        views = issues_by(lattice_dir, by_actor, states=states or None, on_unreadable=unreadable)
+        shown = _hosted_media_views(board, views)
     else:
-        snapshots = list_issue_snapshots(lattice_dir, on_unreadable=_warn_unreadable)
-        views = issue_views(lattice_dir, snapshots)
+        snapshots = list_issue_snapshots(lattice_dir, on_unreadable=unreadable)
+        views = _hosted_media_views(board, issue_views(lattice_dir, snapshots))
         wanted = ISSUE_STATES if show_all else (states or DEFAULT_LIST_STATES)
         shown = [view for view in views if view["state"] in wanted]
     order = {state: i for i, state in enumerate(ISSUE_STATES)}
@@ -562,13 +577,18 @@ def issue_show(issue_id: str, output_json: bool) -> None:
     )
 
     is_json = output_json
-    lattice_dir, _config = _require_issue_log(is_json)
+    board, lattice_dir, _config = _require_issue_log(is_json)
     try:
-        view = issue_detail(lattice_dir, issue_id, on_unreadable=_warn_unreadable)
+        view = issue_detail(
+            lattice_dir,
+            issue_id,
+            on_unreadable=lambda path, exc: _warn_unreadable(path, exc, board),
+        )
     except OpError as exc:
         output_error(exc.message, exc.code, is_json)
     if view is None:
         output_error(f"Issue '{issue_id}' not found.", "NOT_FOUND", is_json)
+    view = _hosted_media_views(board, [view])[0]
     events = view["events"]
     if is_json:
         click.echo(json_envelope(True, data=view))
@@ -655,7 +675,7 @@ def issue_promote(
 ) -> None:
     """Create one backlog task from one or more issues and link them to it."""
     is_json = output_json
-    _lattice_dir, result = _write(
+    _board, _lattice_dir, result = _write(
         "issue.promote",
         {
             "issues": issue_ids,
@@ -698,7 +718,7 @@ def _issue_task_command(op_name: str, verb: str):  # noqa: ANN202
         from lattice.core.issues import task_label
 
         is_json = output_json
-        _lattice_dir, result = _write(
+        _board, _lattice_dir, result = _write(
             op_name,
             {
                 "issue": issue_id,
@@ -761,7 +781,7 @@ def _closing_command(op_name: str, doc: str, *, of: bool = False):  # noqa: ANN2
         }
         if of:
             params["of"] = of_id
-        lattice_dir, result = _write(op_name, params, is_json)
+        board, _lattice_dir, result = _write(op_name, params, is_json)
         view = result.value
         closure = view.get("closure") or {}
         if op_name == "issue.dismiss":
@@ -769,7 +789,9 @@ def _closing_command(op_name: str, doc: str, *, of: bool = False):  # noqa: ANN2
         elif op_name == "issue.duplicate":
             from lattice.storage.issues import read_issue_snapshot
 
-            original = read_issue_snapshot(lattice_dir, closure["duplicate_of"])
+            # The hosted write has already caught up the cache. Reacquire its
+            # read lock now instead of reading through the pre-write path.
+            original = read_issue_snapshot(board.lattice_dir, closure["duplicate_of"])
             original_name = (original or {}).get("short_id") or closure["duplicate_of"]
             message = f"Marked {_name(view)} as a duplicate of {original_name}"
         else:
@@ -835,7 +857,7 @@ def issue_attach(
 
     is_json = output_json
     checked = _require_issue_log(is_json)
-    limit, _per_issue = media_limits(checked[1])
+    limit, _per_issue = media_limits(checked[2])
     records: list[dict] = []
     seen: set[str] = set()
     for arg, path, content_type in _check_attach_args(files, is_json):
@@ -851,7 +873,7 @@ def issue_attach(
             continue
         seen |= record["hashes"]
         records.append(record)
-    _lattice_dir, result = _write(
+    _board, _lattice_dir, result = _write(
         "issue.attach",
         {
             "issue": issue_id,
@@ -896,8 +918,8 @@ def issue_detach(
     """
     is_json = output_json
     checked = _require_issue_log(is_json)
-    before = _media_before_detach(checked[0], issue_id, media)
-    _lattice_dir, result = _write(
+    before = _media_before_detach(checked[1], issue_id, media)
+    _board, _lattice_dir, result = _write(
         "issue.detach",
         {
             "issue": issue_id,
@@ -973,15 +995,35 @@ def issue_media(issue_id: str, paths: bool, output_json: bool) -> None:
     from lattice.storage.issues import issue_views, read_issue_snapshot, resolve_issue
 
     is_json = output_json
-    lattice_dir, _config = _require_issue_log(is_json)
+    board, lattice_dir, _config = _require_issue_log(is_json)
     try:
         resolved = resolve_issue(lattice_dir, issue_id)
-        snapshot = read_issue_snapshot(lattice_dir, resolved, on_unreadable=_warn_unreadable)
+        snapshot = read_issue_snapshot(
+            lattice_dir,
+            resolved,
+            on_unreadable=lambda path, exc: _warn_unreadable(path, exc, board),
+        )
     except OpError as exc:
         output_error(exc.message, exc.code, is_json)
     if snapshot is None:
         output_error(f"Issue '{issue_id}' not found.", "NOT_FOUND", is_json)
     view = issue_views(lattice_dir, [snapshot])[0]
+    from lattice.boards import HostedBoard
+
+    if isinstance(board, HostedBoard) and paths:
+        from lattice.remote.issue_media import fetch_view_media
+
+        board.end_read_phase()
+        view = fetch_view_media(board.root, board.remote, board.hosted.project, view)
+        # A concurrent detach may have committed while bytes were fetched. Sync
+        # again and make the final printed paths follow the latest issue snapshot.
+        board.refresh()
+        lattice_dir = board.lattice_dir
+        refreshed = read_issue_snapshot(lattice_dir, resolved) or snapshot
+        view = issue_views(lattice_dir, [refreshed])[0]
+        view = _hosted_media_views(board, [view])[0]
+    else:
+        view = _hosted_media_views(board, [view])[0]
     present = [m for m in view.get("media", []) if not m.get("removed")]
     if is_json:
         data = {"id": view["id"], "short_id": view.get("short_id"), "media": present}
@@ -1057,9 +1099,10 @@ def issue_edit(
 ) -> None:
     """Correct an issue's title or description."""
     is_json = output_json
-    checked = _require_issue_log(is_json)
+    # Read stdin before the hosted read lock (see ``issue file``).
     description = _resolve_issue_description(description, description_file, is_json)
-    lattice_dir, result = _write(
+    checked = _require_issue_log(is_json)
+    _board, _lattice_dir, result = _write(
         "issue.edit",
         {
             "issue": issue_id,
@@ -1117,7 +1160,6 @@ def issue_comment(
 ) -> None:
     """Add an issue comment or reply to a top-level comment."""
     is_json = output_json
-    checked = _require_issue_log(is_json)
     body = resolve_body(
         text,
         file_path,
@@ -1128,7 +1170,8 @@ def issue_comment(
     )
     if body == "-":
         body = _read_stdin_text()
-    _lattice_dir, result = _write(
+    checked = _require_issue_log(is_json)
+    _board, _lattice_dir, result = _write(
         "issue.comment",
         {
             "issue": issue_id,

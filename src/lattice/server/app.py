@@ -336,6 +336,33 @@ def check_client_version(request: Request) -> None:
         )
 
 
+def check_issue_data_version(request: Request, project: Project) -> None:
+    """Gate issue-bearing sync and stream data for older clients.
+
+    Writes already use the server-wide minimum in :func:`check_client_version`.
+    Reads stay available to old clients until this project contains actual issue
+    metadata, so an empty cache scaffold never raises the compatibility floor.
+    """
+    version = client_version(request)
+    if (
+        project.has_issue_metadata
+        and version is not None
+        and is_older(version, MIN_CLIENT_VERSION)
+    ):
+        raise OpError(
+            "CLIENT_TOO_OLD",
+            f"this client runs Lattice {version}; project {project.slug} contains issue metadata "
+            f"and needs a client at least {MIN_CLIENT_VERSION} to sync or stream it. Upgrade Lattice.",
+            {
+                "client_version": version,
+                "min_client_version": MIN_CLIENT_VERSION,
+                "server_version": server_version(),
+                "project": project.slug,
+                "feature": "issue_metadata",
+            },
+        )
+
+
 def authenticate(request: Request, state: ServerState) -> TokenRecord:
     token = state.tokens.authenticate(request.headers.get("authorization"))
     request.scope["state"]["log"]["token_id"] = token.id
@@ -898,6 +925,7 @@ async def sync(request: Request, state: ServerState) -> Response:
         limits = state.config.limits
 
         def assemble(may_reset: bool) -> Response | None:
+            check_issue_data_version(request, project)
             current = project.journal
             if current is None or project.manifest is None:
                 project.require_loaded()
@@ -952,6 +980,127 @@ async def board_file(request: Request, state: ServerState) -> Response:
     return await _with_token(request, state, run)
 
 
+async def issue_media_upload(request: Request, state: ServerState) -> Response:
+    """Raw hosted media staging. This writes only outside-board transport state."""
+    slug = request.path_params["slug"]
+    sha256 = request.path_params["sha256"]
+    request.scope["state"]["log"].update(project=slug, op="issue.media_stage")
+    check_protocol(request)
+    token = authenticate(request, state)
+    project = resolve_project(state, token, slug)
+    check_client_version(request)
+    if (
+        request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        != "application/octet-stream"
+    ):
+        raise OpError(
+            "VALIDATION_ERROR", "issue media upload needs Content-Type: application/octet-stream."
+        )
+    declared = request.headers.get("content-length")
+    if declared is None or len(declared) > 20 or not declared.isascii() or not declared.isdigit():
+        raise OpError(
+            "VALIDATION_ERROR", "issue media upload needs a non-negative Content-Length."
+        )
+    size = int(declared)
+    if size > state.config.limits.max_issue_media_file_bytes:
+        raise OpError(
+            "PAYLOAD_TOO_LARGE",
+            f"media object is over the {state.config.limits.max_issue_media_file_bytes} byte per-file limit.",
+            {"limit_bytes": state.config.limits.max_issue_media_file_bytes},
+        )
+    state.limits.enter(token.id)
+    upload = None
+    finished = False
+    try:
+        state.limits.take_op(token.id)
+        state.limits.take_bytes(token.id, size)
+        state.disk.check()
+        async with state.registry.admitted(project):
+            project.require_loaded()
+        upload = await in_worker(lambda: project.issue_media.begin_upload(sha256, size))
+        received = 0
+        async for chunk in request.stream():
+            received += len(chunk)
+            if received > size:
+                raise OpError("VALIDATION_ERROR", "media upload exceeded Content-Length.")
+            upload.write(chunk)
+        metadata = await in_worker(upload.finish)
+        finished = True
+        return envelope_ok(metadata, status=201)
+    finally:
+        if upload is not None and not finished:
+            upload.abort()
+        state.limits.leave(token.id)
+
+
+async def issue_media_availability(request: Request, state: ServerState) -> Response:
+    """Verified issue-media presence metadata, separate from ordinary sync."""
+    slug = request.path_params["slug"]
+
+    async def run(token: TokenRecord) -> Response:
+        project = resolve_project(state, token, slug)
+        issue_ids = request.query_params.getlist("issue")
+        if not issue_ids or len(issue_ids) > 100:
+            raise OpError("VALIDATION_ERROR", "give between 1 and 100 issue query parameters.")
+
+        def read() -> dict:
+            check_issue_data_version(request, project)
+            from lattice.server.issue_media import available_media
+
+            return available_media(project.board, issue_ids)
+
+        return envelope_ok(await state.registry.run_locked(project, read))
+
+    return await _with_token(request, state, run)
+
+
+async def issue_media_file(request: Request, state: ServerState) -> Response:
+    """A verified original or video frame; supports one bounded HTTP byte range."""
+    slug = request.path_params["slug"]
+    request.scope["state"]["log"]["project"] = slug
+
+    async def run(token: TokenRecord) -> Response:
+        project = resolve_project(state, token, slug)
+        issue_id = request.path_params["issue_id"]
+        media_id = request.path_params["media_id"]
+        frame = request.path_params.get("frame")
+
+        def read():
+            check_issue_data_version(request, project)
+            from lattice.server.issue_media import read_media
+
+            return read_media(
+                project.board,
+                issue_id,
+                media_id,
+                frame_name_value=frame,
+                range_header=request.headers.get("range"),
+            )
+
+        try:
+            value = await state.registry.run_locked(project, read)
+        except OpError as exc:
+            if exc.code != "RANGE_NOT_SATISFIABLE":
+                raise
+            response = envelope_error(exc)
+            response.headers["Accept-Ranges"] = "bytes"
+            response.headers["Content-Range"] = f"bytes */{exc.details.get('size_bytes', 0)}"
+            return response
+        headers = {
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(len(value.body)),
+            "ETag": f'"{value.sha256}"',
+            "X-Content-Type-Options": "nosniff",
+        }
+        if value.content_range is not None:
+            headers["Content-Range"] = value.content_range
+        return Response(
+            value.body, status_code=value.status, headers=headers, media_type=value.content_type
+        )
+
+    return await _with_token(request, state, run)
+
+
 # ---------------------------------------------------------------------------
 # Stream (SPEC §8.9)
 # ---------------------------------------------------------------------------
@@ -978,13 +1127,35 @@ def _resume_point(request: Request) -> tuple[bool, str | None, int, str | None]:
 
 
 def _stream_start(
-    project: Project, limits: Any, subscriber: Subscriber, resume: tuple
+    project: Project,
+    limits: Any,
+    subscriber: Subscriber,
+    resume: tuple,
+    client_version: str | None = None,
 ) -> tuple[list[bytes], int]:
     """Under the work lock: subscribe, then build the replay (or one ``reset``).
 
     Publication happens only under this lock, so the subscriber's queue starts
     exactly after the head the replay reads up to: no gap, no duplicate.
     """
+    if (
+        project.has_issue_metadata
+        and client_version is not None
+        and is_older(client_version, MIN_CLIENT_VERSION)
+    ):
+        raise OpError(
+            "CLIENT_TOO_OLD",
+            f"this client runs Lattice {client_version}; project {project.slug} contains issue "
+            f"metadata and needs a client at least {MIN_CLIENT_VERSION} to sync or stream it. "
+            "Upgrade Lattice.",
+            {
+                "client_version": client_version,
+                "min_client_version": MIN_CLIENT_VERSION,
+                "server_version": server_version(),
+                "project": project.slug,
+                "feature": "issue_metadata",
+            },
+        )
     journal = project.journal
     if journal is None:
         project.require_loaded()
@@ -1049,7 +1220,8 @@ async def stream(request: Request, state: ServerState) -> Response:
         raise _too_many_streams(project)
     subscriber = Subscriber(asyncio.get_running_loop(), limits.stream_queue_entries)
     initial, sent_seq = await state.registry.run_locked(
-        project, lambda: _stream_start(project, limits, subscriber, resume)
+        project,
+        lambda: _stream_start(project, limits, subscriber, resume, client_version(request)),
     )
 
     def alive() -> bool:
@@ -1135,6 +1307,26 @@ def create_app(root: Path, *, config: ServerConfig, log: ServerLog | None = None
         Route("/v1/projects/{slug}/sync", endpoint(sync), methods=["GET"]),
         Route("/v1/projects/{slug}/stream", endpoint(stream), methods=["GET"]),
         Route("/v1/projects/{slug}/files/{path:path}", endpoint(board_file), methods=["GET"]),
+        Route(
+            "/v1/projects/{slug}/issues/media/staging/{sha256}",
+            endpoint(issue_media_upload),
+            methods=["PUT"],
+        ),
+        Route(
+            "/v1/projects/{slug}/issues/media/availability",
+            endpoint(issue_media_availability),
+            methods=["GET"],
+        ),
+        Route(
+            "/v1/projects/{slug}/issues/media/{issue_id}/{media_id}/frames/{frame}",
+            endpoint(issue_media_file),
+            methods=["GET"],
+        ),
+        Route(
+            "/v1/projects/{slug}/issues/media/{issue_id}/{media_id}",
+            endpoint(issue_media_file),
+            methods=["GET"],
+        ),
         Route("/v1/projects/{slug}/tasks", endpoint(task_list), methods=["GET"]),
         Route("/v1/projects/{slug}/tasks/{task_id}", endpoint(task_read), methods=["GET"]),
         Route("/", endpoint(web.index), methods=["GET"]),
@@ -1145,6 +1337,16 @@ def create_app(root: Path, *, config: ServerConfig, log: ServerLog | None = None
         Route("/p/{slug}", endpoint(dashboard.bare_slug), methods=["GET"]),
         Route("/p/{slug}/", endpoint(dashboard.page), methods=["GET"]),
         Route("/p/{slug}/favicon.ico", endpoint(dashboard.static), methods=["GET"]),
+        Route(
+            "/p/{slug}/issues/media/{issue_id}/{media_id}/frames/{frame}",
+            endpoint(dashboard.issue_media),
+            methods=["GET"],
+        ),
+        Route(
+            "/p/{slug}/issues/media/{issue_id}/{media_id}",
+            endpoint(dashboard.issue_media),
+            methods=["GET"],
+        ),
         Route(
             "/p/{slug}/static/{path:path}",
             endpoint(dashboard.dashboard_endpoint(dashboard.static)),

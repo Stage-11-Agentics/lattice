@@ -1,0 +1,1588 @@
+{
+  "board": {
+    ".gitignore": {
+      "lines": [
+        "# Ephemeral Lattice runtime state — not part of the durable board.",
+        "# The board (tasks/ events/ plans/ artifacts/ ids.json config.json)",
+        "# stays tracked: it is the audit log and cross-machine coordination",
+        "# state. The paths below are mutated constantly and must never",
+        "# diverge per-worktree or collide on merge.",
+        "review_state/",
+        "tmp-prompts/",
+        ".daemon/",
+        "locks/"
+      ]
+    },
+    "config.json": {
+      "json": {
+        "auto_code_review_on_transition": false,
+        "auto_plan_review_on_transition": false,
+        "default_actor": "human:parity",
+        "default_priority": "medium",
+        "default_status": "backlog",
+        "done_display": "grouped",
+        "instance_id": "<ID-27>",
+        "issues": {
+          "enabled": true
+        },
+        "plan_approval": "auto",
+        "plan_review_mode": "single",
+        "project_code": "PAR",
+        "review_max_diff_chars": 120000,
+        "review_max_diff_lines": 5000,
+        "review_mode": "single",
+        "review_timeout_seconds": 600,
+        "schema_version": 1,
+        "status_preset": "stage11",
+        "task_types": [
+          "task",
+          "bug",
+          "chore"
+        ],
+        "workflow": {
+          "completion_policies": {
+            "done": {
+              "require_roles": [
+                "review"
+              ]
+            },
+            "pr_open": {
+              "require_roles": [
+                "validation"
+              ]
+            }
+          },
+          "descriptions": {
+            "backlog": "Task is captured but no work has started. No planning, no implementation.",
+            "blocked": "Work cannot proceed due to an external dependency or unresolved issue.",
+            "cancelled": "Work has been abandoned. No further action will be taken.",
+            "done": "Work is reviewed, merged, and shipped. No further action needed.",
+            "in_planning": "Design, dialogue, and scoping underway. No implementation code should be written yet.",
+            "in_progress": "Implementation is actively underway. Code is being written, tested, or integrated.",
+            "in_validation": "End-to-end validation is underway. The change is being exercised against a running system — browser automation, simulator flows, curl — before the PR opens. The bar: 'I saw it work,' not 'I think it should work.'",
+            "planned": "Plan is written and approved. Ready for implementation but work has not started.",
+            "pr_open": "PR is open and awaiting human review, CI, or merge. Local review and validation artifacts are recorded.",
+            "review": "Local review is underway. A review sub-agent is examining the diff before validation begins."
+          },
+          "roles": [
+            "review",
+            "plan-review",
+            "review-individual",
+            "validation"
+          ],
+          "statuses": [
+            "backlog",
+            "in_planning",
+            "planned",
+            "in_progress",
+            "review",
+            "in_validation",
+            "pr_open",
+            "done",
+            "blocked",
+            "cancelled"
+          ],
+          "transitions": {
+            "backlog": [
+              "in_planning",
+              "planned",
+              "cancelled"
+            ],
+            "blocked": [
+              "in_planning",
+              "planned",
+              "in_progress",
+              "in_validation",
+              "pr_open",
+              "cancelled"
+            ],
+            "cancelled": [],
+            "done": [],
+            "in_planning": [
+              "planned",
+              "cancelled"
+            ],
+            "in_progress": [
+              "review",
+              "blocked",
+              "cancelled"
+            ],
+            "in_validation": [
+              "pr_open",
+              "in_progress",
+              "in_planning",
+              "blocked",
+              "cancelled"
+            ],
+            "planned": [
+              "in_progress",
+              "review",
+              "blocked",
+              "cancelled"
+            ],
+            "pr_open": [
+              "done",
+              "in_progress",
+              "review",
+              "blocked",
+              "cancelled"
+            ],
+            "review": [
+              "in_validation",
+              "pr_open",
+              "done",
+              "in_progress",
+              "in_planning",
+              "cancelled"
+            ]
+          },
+          "universal_targets": [
+            "cancelled"
+          ],
+          "wip_limits": {
+            "in_progress": 10,
+            "in_validation": 5,
+            "pr_open": 10,
+            "review": 5
+          }
+        },
+        "workflow_preset": "classic"
+      }
+    },
+    "context.md": {
+      "lines": [
+        "# Instance Context",
+        "",
+        "<!-- Every lattice instance exists for a reason — a convergence of intention",
+        "     and infrastructure. This file declares that reason. Agents and humans",
+        "     read it to understand the purpose, conventions, and relationships",
+        "     of this particular node in the lattice. -->",
+        "",
+        "## Purpose",
+        "",
+        "<!-- What does this instance observe? What project, team, or domain",
+        "     does it serve? Declare the scope of attention. -->",
+        "",
+        "## Related Instances",
+        "",
+        "<!-- If this node coordinates with other lattice instances, name them here.",
+        "     Include instance_id, instance_name, and the nature of the relationship.",
+        "     The lattice is stronger when its nodes are aware of each other. -->",
+        "",
+        "## Conventions",
+        "",
+        "<!-- Every instance develops its own rhythms — workflow conventions,",
+        "     naming patterns, status meanings that diverge from defaults.",
+        "     Record them here so that new minds arriving in this context",
+        "     can orient immediately. -->"
+      ]
+    },
+    "events/<ID-19>.jsonl": {
+      "jsonl": [
+        {
+          "actor": "human:parity",
+          "data": {
+            "description": "Made from issue(s):\n\n- PAR-I2 (filed by human:parity on 2100-01-01): A corrected observation\n  More detail.\n  Comments: 1 (lattice issue show PAR-I2)\n",
+            "priority": "medium",
+            "short_id": "PAR-2",
+            "status": "backlog",
+            "title": "Fix the observation",
+            "type": "task"
+          },
+          "id": "<ID-20>",
+          "schema_version": 1,
+          "task_id": "<ID-19>",
+          "ts": "<TS>",
+          "type": "task_created"
+        }
+      ]
+    },
+    "events/<ID-1>.jsonl": {
+      "jsonl": [
+        {
+          "actor": "human:parity",
+          "data": {
+            "priority": "medium",
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "title": "Issue-linked task",
+            "type": "task"
+          },
+          "id": "<ID-2>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "task_created"
+        }
+      ]
+    },
+    "events/_lifecycle.jsonl": {
+      "jsonl": [
+        {
+          "actor": "human:parity",
+          "data": {
+            "priority": "medium",
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "title": "Issue-linked task",
+            "type": "task"
+          },
+          "id": "<ID-2>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "task_created"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "description": "Made from issue(s):\n\n- PAR-I2 (filed by human:parity on 2100-01-01): A corrected observation\n  More detail.\n  Comments: 1 (lattice issue show PAR-I2)\n",
+            "priority": "medium",
+            "short_id": "PAR-2",
+            "status": "backlog",
+            "title": "Fix the observation",
+            "type": "task"
+          },
+          "id": "<ID-20>",
+          "schema_version": 1,
+          "task_id": "<ID-19>",
+          "ts": "<TS>",
+          "type": "task_created"
+        }
+      ]
+    },
+    "ids.json": {
+      "json": {
+        "map": {
+          "PAR-1": "<ID-1>",
+          "PAR-2": "<ID-19>"
+        },
+        "next_seqs": {
+          "PAR": 3
+        },
+        "schema_version": 2
+      }
+    },
+    "issues/<ID-15>.json": {
+      "json": {
+        "closure": {
+          "at": "<TS>",
+          "by": "human:parity",
+          "duplicate_of": "<ID-3>",
+          "kind": "duplicate"
+        },
+        "description": "",
+        "filed_at": "<TS>",
+        "filed_by": "human:parity",
+        "id": "<ID-15>",
+        "last_event_id": "<ID-17>",
+        "links": [],
+        "schema_version": 1,
+        "seq": 3,
+        "short_id": "PAR-I3",
+        "title": "A repeat of the first",
+        "updated_at": "<TS>"
+      }
+    },
+    "issues/<ID-3>.json": {
+      "json": {
+        "closure": null,
+        "description": "",
+        "filed_at": "<TS>",
+        "filed_by": "human:parity",
+        "id": "<ID-3>",
+        "last_event_id": "<ID-8>",
+        "links": [],
+        "schema_version": 1,
+        "seq": 1,
+        "short_id": "PAR-I1",
+        "title": "Observed a race",
+        "updated_at": "<TS>"
+      }
+    },
+    "issues/<ID-9>.json": {
+      "json": {
+        "closure": null,
+        "comment_count": 1,
+        "description": "More detail.",
+        "filed_at": "<TS>",
+        "filed_by": "human:parity",
+        "id": "<ID-9>",
+        "last_event_id": "<ID-18>",
+        "links": [
+          {
+            "linked_at": "<TS>",
+            "linked_by": "human:parity",
+            "task_id": "<ID-19>"
+          }
+        ],
+        "schema_version": 1,
+        "seq": 2,
+        "short_id": "PAR-I2",
+        "title": "A corrected observation",
+        "updated_at": "<TS>"
+      }
+    },
+    "issues/events/<ID-15>.jsonl": {
+      "jsonl": [
+        {
+          "actor": "human:parity",
+          "data": {
+            "seq": 3,
+            "short_id": "PAR-I3",
+            "title": "A repeat of the first"
+          },
+          "id": "<ID-16>",
+          "issue_id": "<ID-15>",
+          "schema_version": 1,
+          "ts": "<TS>",
+          "type": "issue_filed"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "duplicate_of": "<ID-3>"
+          },
+          "id": "<ID-17>",
+          "issue_id": "<ID-15>",
+          "schema_version": 1,
+          "ts": "<TS>",
+          "type": "issue_marked_duplicate"
+        }
+      ]
+    },
+    "issues/events/<ID-3>.jsonl": {
+      "jsonl": [
+        {
+          "actor": "human:parity",
+          "data": {
+            "seq": 1,
+            "short_id": "PAR-I1",
+            "title": "Observed a race"
+          },
+          "id": "<ID-4>",
+          "issue_id": "<ID-3>",
+          "schema_version": 1,
+          "ts": "<TS>",
+          "type": "issue_filed"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "task_id": "<ID-1>"
+          },
+          "id": "<ID-5>",
+          "issue_id": "<ID-3>",
+          "schema_version": 1,
+          "ts": "<TS>",
+          "type": "issue_linked"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "task_id": "<ID-1>"
+          },
+          "id": "<ID-8>",
+          "issue_id": "<ID-3>",
+          "schema_version": 1,
+          "ts": "<TS>",
+          "type": "issue_unlinked"
+        }
+      ]
+    },
+    "issues/events/<ID-9>.jsonl": {
+      "jsonl": [
+        {
+          "actor": "human:parity",
+          "data": {
+            "description": "More detail.",
+            "seq": 2,
+            "short_id": "PAR-I2",
+            "title": "A second observation"
+          },
+          "id": "<ID-10>",
+          "issue_id": "<ID-9>",
+          "schema_version": 1,
+          "ts": "<TS>",
+          "type": "issue_filed"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "from_title": "A second observation",
+            "title": "A corrected observation"
+          },
+          "id": "<ID-11>",
+          "issue_id": "<ID-9>",
+          "schema_version": 1,
+          "ts": "<TS>",
+          "type": "issue_edited"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "body": "Seen again on the nightly run"
+          },
+          "id": "<ID-12>",
+          "issue_id": "<ID-9>",
+          "schema_version": 1,
+          "ts": "<TS>",
+          "type": "issue_comment_added"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "reason": "noise"
+          },
+          "id": "<ID-13>",
+          "issue_id": "<ID-9>",
+          "provenance": {
+            "reason": "noise"
+          },
+          "schema_version": 1,
+          "ts": "<TS>",
+          "type": "issue_dismissed"
+        },
+        {
+          "actor": "human:parity",
+          "data": {},
+          "id": "<ID-14>",
+          "issue_id": "<ID-9>",
+          "schema_version": 1,
+          "ts": "<TS>",
+          "type": "issue_reopened"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "task_id": "<ID-19>"
+          },
+          "id": "<ID-18>",
+          "issue_id": "<ID-9>",
+          "schema_version": 1,
+          "ts": "<TS>",
+          "type": "issue_linked"
+        }
+      ]
+    },
+    "issues/ids.json": {
+      "json": {
+        "map": {
+          "1": "<ID-3>",
+          "2": "<ID-9>",
+          "3": "<ID-15>"
+        },
+        "next_seq": 4,
+        "schema_version": 1
+      }
+    },
+    "plans/<ID-19>.md": {
+      "lines": [
+        "# PAR-2: Fix the observation",
+        "",
+        "Made from issue(s):",
+        "",
+        "- PAR-I2 (filed by human:parity on 2100-01-01): A corrected observation",
+        "  More detail.",
+        "  Comments: 1 (lattice issue show PAR-I2)",
+        ""
+      ]
+    },
+    "plans/<ID-1>.md": {
+      "lines": [
+        "# PAR-1: Issue-linked task"
+      ]
+    },
+    "tasks/<ID-19>.json": {
+      "json": {
+        "acceptance_criteria": [],
+        "assigned_to": null,
+        "branch_links": [],
+        "comment_count": 0,
+        "complexity": null,
+        "created_at": "<TS>",
+        "created_by": "human:parity",
+        "custom_fields": {},
+        "description": "Made from issue(s):\n\n- PAR-I2 (filed by human:parity on 2100-01-01): A corrected observation\n  More detail.\n  Comments: 1 (lattice issue show PAR-I2)\n",
+        "done_at": null,
+        "evidence_refs": [],
+        "id": "<ID-19>",
+        "last_event_id": "<ID-20>",
+        "last_status_changed_at": "<TS>",
+        "linked_files": [],
+        "priority": "medium",
+        "relationships_out": [],
+        "reopened_count": 0,
+        "schema_version": 1,
+        "short_id": "PAR-2",
+        "status": "backlog",
+        "tags": null,
+        "title": "Fix the observation",
+        "type": "task",
+        "updated_at": "<TS>",
+        "urgency": null
+      }
+    },
+    "tasks/<ID-1>.json": {
+      "json": {
+        "acceptance_criteria": [],
+        "assigned_to": null,
+        "branch_links": [],
+        "comment_count": 0,
+        "complexity": null,
+        "created_at": "<TS>",
+        "created_by": "human:parity",
+        "custom_fields": {},
+        "description": null,
+        "done_at": null,
+        "evidence_refs": [],
+        "id": "<ID-1>",
+        "last_event_id": "<ID-2>",
+        "last_status_changed_at": "<TS>",
+        "linked_files": [],
+        "priority": "medium",
+        "relationships_out": [],
+        "reopened_count": 0,
+        "schema_version": 1,
+        "short_id": "PAR-1",
+        "status": "backlog",
+        "tags": null,
+        "title": "Issue-linked task",
+        "type": "task",
+        "updated_at": "<TS>",
+        "urgency": null
+      }
+    }
+  },
+  "description": "hosted and local issue filing, editing, closing, linking and promotion",
+  "mode": "json",
+  "scenario": "issues",
+  "steps": [
+    {
+      "args": [
+        "init",
+        "--path",
+        "<ROOT>",
+        "--actor",
+        "human:parity",
+        "--project-code",
+        "PAR",
+        "--no-setup-claude",
+        "--no-setup-agents",
+        "--no-seed"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "",
+          ".lattice/ created — a mind now has a place to remember.",
+          "Default actor: human:parity",
+          "Project code: PAR",
+          "Workflow statuses: stage11 (10 statuses)"
+        ]
+      }
+    },
+    {
+      "args": [
+        "create",
+        "Issue-linked task",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "acceptance_criteria": [],
+            "assigned_to": null,
+            "branch_links": [],
+            "comment_count": 0,
+            "complexity": null,
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "custom_fields": {},
+            "description": null,
+            "done_at": null,
+            "evidence_refs": [],
+            "id": "<ID-1>",
+            "last_event_id": "<ID-2>",
+            "last_status_changed_at": "<TS>",
+            "linked_files": [],
+            "priority": "medium",
+            "relationships_out": [],
+            "reopened_count": 0,
+            "schema_version": 1,
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "tags": null,
+            "title": "Issue-linked task",
+            "type": "task",
+            "updated_at": "<TS>",
+            "urgency": null
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "issue",
+        "file",
+        "Observed a race",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "closure": null,
+            "comment_count": 0,
+            "confidence": null,
+            "description": "",
+            "evidence": [],
+            "filed_at": "<TS>",
+            "filed_by": "human:parity",
+            "filed_origin": {
+              "machine": "<HOST>",
+              "user": "<USER>"
+            },
+            "id": "<ID-3>",
+            "last_event_id": "<ID-4>",
+            "media": [],
+            "notes": [],
+            "seq": 1,
+            "short_id": "PAR-I1",
+            "source": null,
+            "state": "open",
+            "tasks": [],
+            "title": "Observed a race",
+            "updated_at": "<TS>"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "issue",
+        "link",
+        "PAR-I1",
+        "PAR-1",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "closure": null,
+            "comment_count": 0,
+            "confidence": null,
+            "description": "",
+            "evidence": [],
+            "filed_at": "<TS>",
+            "filed_by": "human:parity",
+            "filed_origin": {
+              "machine": "<HOST>",
+              "user": "<USER>"
+            },
+            "id": "<ID-3>",
+            "last_event_id": "<ID-5>",
+            "media": [],
+            "seq": 1,
+            "short_id": "PAR-I1",
+            "source": null,
+            "state": "linked",
+            "tasks": [
+              {
+                "id": "<ID-1>",
+                "linked_at": "<TS>",
+                "linked_by": "human:parity",
+                "short_id": "PAR-1",
+                "status": "backlog",
+                "title": "Issue-linked task"
+              }
+            ],
+            "title": "Observed a race",
+            "updated_at": "<TS>"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "issue",
+        "show",
+        "PAR-I1",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "closure": null,
+            "comment_count": 0,
+            "comments": [],
+            "confidence": null,
+            "description": "",
+            "events": [
+              {
+                "actor": "human:parity",
+                "data": {
+                  "seq": 1,
+                  "short_id": "PAR-I1",
+                  "title": "Observed a race"
+                },
+                "id": "<ID-4>",
+                "issue_id": "<ID-3>",
+                "origin": {
+                  "op": "issue.file",
+                  "op_id": "<ID-6>",
+                  "reported": {
+                    "client_version": "<VERSION>",
+                    "host": "<HOST>",
+                    "os_user": "<USER>"
+                  }
+                },
+                "schema_version": 1,
+                "ts": "<TS>",
+                "type": "issue_filed"
+              },
+              {
+                "actor": "human:parity",
+                "data": {
+                  "task_id": "<ID-1>"
+                },
+                "id": "<ID-5>",
+                "issue_id": "<ID-3>",
+                "origin": {
+                  "op": "issue.link",
+                  "op_id": "<ID-7>",
+                  "reported": {
+                    "client_version": "<VERSION>",
+                    "host": "<HOST>",
+                    "os_user": "<USER>"
+                  }
+                },
+                "schema_version": 1,
+                "ts": "<TS>",
+                "type": "issue_linked"
+              }
+            ],
+            "evidence": [],
+            "filed_at": "<TS>",
+            "filed_by": "human:parity",
+            "filed_origin": {
+              "machine": "<HOST>",
+              "user": "<USER>"
+            },
+            "id": "<ID-3>",
+            "last_event_id": "<ID-5>",
+            "media": [],
+            "seq": 1,
+            "short_id": "PAR-I1",
+            "source": null,
+            "state": "linked",
+            "tasks": [
+              {
+                "id": "<ID-1>",
+                "linked_at": "<TS>",
+                "linked_by": "human:parity",
+                "short_id": "PAR-1",
+                "status": "backlog",
+                "title": "Issue-linked task"
+              }
+            ],
+            "title": "Observed a race",
+            "updated_at": "<TS>"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "issue",
+        "unlink",
+        "PAR-I1",
+        "PAR-1",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "closure": null,
+            "comment_count": 0,
+            "confidence": null,
+            "description": "",
+            "evidence": [],
+            "filed_at": "<TS>",
+            "filed_by": "human:parity",
+            "filed_origin": {
+              "machine": "<HOST>",
+              "user": "<USER>"
+            },
+            "id": "<ID-3>",
+            "last_event_id": "<ID-8>",
+            "media": [],
+            "seq": 1,
+            "short_id": "PAR-I1",
+            "source": null,
+            "state": "open",
+            "tasks": [],
+            "title": "Observed a race",
+            "updated_at": "<TS>"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "issue",
+        "file",
+        "A second observation",
+        "--description",
+        "More detail.",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "closure": null,
+            "comment_count": 0,
+            "confidence": null,
+            "description": "More detail.",
+            "evidence": [],
+            "filed_at": "<TS>",
+            "filed_by": "human:parity",
+            "filed_origin": {
+              "machine": "<HOST>",
+              "user": "<USER>"
+            },
+            "id": "<ID-9>",
+            "last_event_id": "<ID-10>",
+            "media": [],
+            "notes": [],
+            "seq": 2,
+            "short_id": "PAR-I2",
+            "source": null,
+            "state": "open",
+            "tasks": [],
+            "title": "A second observation",
+            "updated_at": "<TS>"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "issue",
+        "edit",
+        "PAR-I2",
+        "--title",
+        "A corrected observation",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "closure": null,
+            "comment_count": 0,
+            "confidence": null,
+            "description": "More detail.",
+            "evidence": [],
+            "filed_at": "<TS>",
+            "filed_by": "human:parity",
+            "filed_origin": {
+              "machine": "<HOST>",
+              "user": "<USER>"
+            },
+            "id": "<ID-9>",
+            "last_event_id": "<ID-11>",
+            "media": [],
+            "seq": 2,
+            "short_id": "PAR-I2",
+            "source": null,
+            "state": "open",
+            "tasks": [],
+            "title": "A corrected observation",
+            "updated_at": "<TS>"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "issue",
+        "comment",
+        "PAR-I2",
+        "Seen again on the nightly run",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "closure": null,
+            "comment": {
+              "author": "human:parity",
+              "body": "Seen again on the nightly run",
+              "created_at": "<TS>",
+              "criterion_ids": [],
+              "deleted": false,
+              "deleted_at": null,
+              "deleted_by": null,
+              "edit_history": [],
+              "edited": false,
+              "edited_at": null,
+              "id": "<ID-12>",
+              "origin": {
+                "machine": "<HOST>",
+                "user": "<USER>"
+              },
+              "parent_id": null,
+              "reactions": {},
+              "role": null
+            },
+            "comment_count": 1,
+            "confidence": null,
+            "description": "More detail.",
+            "evidence": [],
+            "filed_at": "<TS>",
+            "filed_by": "human:parity",
+            "filed_origin": {
+              "machine": "<HOST>",
+              "user": "<USER>"
+            },
+            "id": "<ID-9>",
+            "last_event_id": "<ID-12>",
+            "media": [],
+            "seq": 2,
+            "short_id": "PAR-I2",
+            "source": null,
+            "state": "open",
+            "tasks": [],
+            "title": "A corrected observation",
+            "updated_at": "<TS>"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "issue",
+        "dismiss",
+        "PAR-I2",
+        "--reason",
+        "noise",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "closure": {
+              "at": "<TS>",
+              "by": "human:parity",
+              "kind": "dismissed",
+              "reason": "noise"
+            },
+            "comment_count": 1,
+            "confidence": null,
+            "description": "More detail.",
+            "evidence": [],
+            "filed_at": "<TS>",
+            "filed_by": "human:parity",
+            "filed_origin": {
+              "machine": "<HOST>",
+              "user": "<USER>"
+            },
+            "id": "<ID-9>",
+            "last_event_id": "<ID-13>",
+            "media": [],
+            "seq": 2,
+            "short_id": "PAR-I2",
+            "source": null,
+            "state": "dismissed",
+            "tasks": [],
+            "title": "A corrected observation",
+            "updated_at": "<TS>"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "issue",
+        "reopen",
+        "PAR-I2",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "closure": null,
+            "comment_count": 1,
+            "confidence": null,
+            "description": "More detail.",
+            "evidence": [],
+            "filed_at": "<TS>",
+            "filed_by": "human:parity",
+            "filed_origin": {
+              "machine": "<HOST>",
+              "user": "<USER>"
+            },
+            "id": "<ID-9>",
+            "last_event_id": "<ID-14>",
+            "media": [],
+            "seq": 2,
+            "short_id": "PAR-I2",
+            "source": null,
+            "state": "open",
+            "tasks": [],
+            "title": "A corrected observation",
+            "updated_at": "<TS>"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "issue",
+        "file",
+        "A repeat of the first",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "closure": null,
+            "comment_count": 0,
+            "confidence": null,
+            "description": "",
+            "evidence": [],
+            "filed_at": "<TS>",
+            "filed_by": "human:parity",
+            "filed_origin": {
+              "machine": "<HOST>",
+              "user": "<USER>"
+            },
+            "id": "<ID-15>",
+            "last_event_id": "<ID-16>",
+            "media": [],
+            "notes": [],
+            "seq": 3,
+            "short_id": "PAR-I3",
+            "source": null,
+            "state": "open",
+            "tasks": [],
+            "title": "A repeat of the first",
+            "updated_at": "<TS>"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "issue",
+        "duplicate",
+        "PAR-I3",
+        "--of",
+        "PAR-I1",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "closure": {
+              "at": "<TS>",
+              "by": "human:parity",
+              "duplicate_of": "<ID-3>",
+              "kind": "duplicate"
+            },
+            "comment_count": 0,
+            "confidence": null,
+            "description": "",
+            "evidence": [],
+            "filed_at": "<TS>",
+            "filed_by": "human:parity",
+            "filed_origin": {
+              "machine": "<HOST>",
+              "user": "<USER>"
+            },
+            "id": "<ID-15>",
+            "last_event_id": "<ID-17>",
+            "media": [],
+            "seq": 3,
+            "short_id": "PAR-I3",
+            "source": null,
+            "state": "duplicate",
+            "tasks": [],
+            "title": "A repeat of the first",
+            "updated_at": "<TS>"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "issue",
+        "promote",
+        "PAR-I2",
+        "--title",
+        "Fix the observation",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "issues": [
+              {
+                "closure": null,
+                "comment_count": 1,
+                "confidence": null,
+                "description": "More detail.",
+                "evidence": [],
+                "filed_at": "<TS>",
+                "filed_by": "human:parity",
+                "filed_origin": {
+                  "machine": "<HOST>",
+                  "user": "<USER>"
+                },
+                "id": "<ID-9>",
+                "last_event_id": "<ID-18>",
+                "media": [],
+                "seq": 2,
+                "short_id": "PAR-I2",
+                "source": null,
+                "state": "linked",
+                "tasks": [
+                  {
+                    "id": "<ID-19>",
+                    "linked_at": "<TS>",
+                    "linked_by": "human:parity",
+                    "short_id": "PAR-2",
+                    "status": "backlog",
+                    "title": "Fix the observation"
+                  }
+                ],
+                "title": "A corrected observation",
+                "updated_at": "<TS>"
+              }
+            ],
+            "task": {
+              "acceptance_criteria": [],
+              "assigned_to": null,
+              "branch_links": [],
+              "comment_count": 0,
+              "complexity": null,
+              "created_at": "<TS>",
+              "created_by": "human:parity",
+              "custom_fields": {},
+              "description": "Made from issue(s):\n\n- PAR-I2 (filed by human:parity on 2100-01-01): A corrected observation\n  More detail.\n  Comments: 1 (lattice issue show PAR-I2)\n",
+              "done_at": null,
+              "evidence_refs": [],
+              "id": "<ID-19>",
+              "last_event_id": "<ID-20>",
+              "last_status_changed_at": "<TS>",
+              "linked_files": [],
+              "priority": "medium",
+              "relationships_out": [],
+              "reopened_count": 0,
+              "schema_version": 1,
+              "short_id": "PAR-2",
+              "status": "backlog",
+              "tags": null,
+              "title": "Fix the observation",
+              "type": "task",
+              "updated_at": "<TS>",
+              "urgency": null
+            }
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "issue",
+        "show",
+        "PAR-I2",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "closure": null,
+            "comment_count": 1,
+            "comments": [
+              {
+                "author": "human:parity",
+                "body": "Seen again on the nightly run",
+                "created_at": "<TS>",
+                "criterion_ids": [],
+                "deleted": false,
+                "deleted_at": null,
+                "deleted_by": null,
+                "edit_history": [],
+                "edited": false,
+                "edited_at": null,
+                "id": "<ID-12>",
+                "origin": {
+                  "machine": "<HOST>",
+                  "user": "<USER>"
+                },
+                "parent_id": null,
+                "reactions": {},
+                "replies": [],
+                "role": null
+              }
+            ],
+            "confidence": null,
+            "description": "More detail.",
+            "events": [
+              {
+                "actor": "human:parity",
+                "data": {
+                  "description": "More detail.",
+                  "seq": 2,
+                  "short_id": "PAR-I2",
+                  "title": "A second observation"
+                },
+                "id": "<ID-10>",
+                "issue_id": "<ID-9>",
+                "origin": {
+                  "op": "issue.file",
+                  "op_id": "<ID-21>",
+                  "reported": {
+                    "client_version": "<VERSION>",
+                    "host": "<HOST>",
+                    "os_user": "<USER>"
+                  }
+                },
+                "schema_version": 1,
+                "ts": "<TS>",
+                "type": "issue_filed"
+              },
+              {
+                "actor": "human:parity",
+                "data": {
+                  "from_title": "A second observation",
+                  "title": "A corrected observation"
+                },
+                "id": "<ID-11>",
+                "issue_id": "<ID-9>",
+                "origin": {
+                  "op": "issue.edit",
+                  "op_id": "<ID-22>",
+                  "reported": {
+                    "client_version": "<VERSION>",
+                    "host": "<HOST>",
+                    "os_user": "<USER>"
+                  }
+                },
+                "schema_version": 1,
+                "ts": "<TS>",
+                "type": "issue_edited"
+              },
+              {
+                "actor": "human:parity",
+                "data": {
+                  "body": "Seen again on the nightly run"
+                },
+                "id": "<ID-12>",
+                "issue_id": "<ID-9>",
+                "origin": {
+                  "op": "issue.comment",
+                  "op_id": "<ID-23>",
+                  "reported": {
+                    "client_version": "<VERSION>",
+                    "host": "<HOST>",
+                    "os_user": "<USER>"
+                  }
+                },
+                "schema_version": 1,
+                "ts": "<TS>",
+                "type": "issue_comment_added"
+              },
+              {
+                "actor": "human:parity",
+                "data": {
+                  "reason": "noise"
+                },
+                "id": "<ID-13>",
+                "issue_id": "<ID-9>",
+                "origin": {
+                  "op": "issue.dismiss",
+                  "op_id": "<ID-24>",
+                  "reported": {
+                    "client_version": "<VERSION>",
+                    "host": "<HOST>",
+                    "os_user": "<USER>"
+                  }
+                },
+                "provenance": {
+                  "reason": "noise"
+                },
+                "schema_version": 1,
+                "ts": "<TS>",
+                "type": "issue_dismissed"
+              },
+              {
+                "actor": "human:parity",
+                "data": {},
+                "id": "<ID-14>",
+                "issue_id": "<ID-9>",
+                "origin": {
+                  "op": "issue.reopen",
+                  "op_id": "<ID-25>",
+                  "reported": {
+                    "client_version": "<VERSION>",
+                    "host": "<HOST>",
+                    "os_user": "<USER>"
+                  }
+                },
+                "schema_version": 1,
+                "ts": "<TS>",
+                "type": "issue_reopened"
+              },
+              {
+                "actor": "human:parity",
+                "data": {
+                  "task_id": "<ID-19>"
+                },
+                "id": "<ID-18>",
+                "issue_id": "<ID-9>",
+                "origin": {
+                  "op": "issue.promote",
+                  "op_id": "<ID-26>",
+                  "reported": {
+                    "client_version": "<VERSION>",
+                    "host": "<HOST>",
+                    "os_user": "<USER>"
+                  }
+                },
+                "schema_version": 1,
+                "ts": "<TS>",
+                "type": "issue_linked"
+              }
+            ],
+            "evidence": [],
+            "filed_at": "<TS>",
+            "filed_by": "human:parity",
+            "filed_origin": {
+              "machine": "<HOST>",
+              "user": "<USER>"
+            },
+            "id": "<ID-9>",
+            "last_event_id": "<ID-18>",
+            "media": [],
+            "seq": 2,
+            "short_id": "PAR-I2",
+            "source": null,
+            "state": "linked",
+            "tasks": [
+              {
+                "id": "<ID-19>",
+                "linked_at": "<TS>",
+                "linked_by": "human:parity",
+                "short_id": "PAR-2",
+                "status": "backlog",
+                "title": "Fix the observation"
+              }
+            ],
+            "title": "A corrected observation",
+            "updated_at": "<TS>"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "issue",
+        "list",
+        "--all",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": [
+            {
+              "closure": null,
+              "comment_count": 0,
+              "confidence": null,
+              "description": "",
+              "evidence": [],
+              "filed_at": "<TS>",
+              "filed_by": "human:parity",
+              "filed_origin": {
+                "machine": "<HOST>",
+                "user": "<USER>"
+              },
+              "id": "<ID-3>",
+              "last_event_id": "<ID-8>",
+              "media": [],
+              "seq": 1,
+              "short_id": "PAR-I1",
+              "source": null,
+              "state": "open",
+              "tasks": [],
+              "title": "Observed a race",
+              "updated_at": "<TS>"
+            },
+            {
+              "closure": null,
+              "comment_count": 1,
+              "confidence": null,
+              "description": "More detail.",
+              "evidence": [],
+              "filed_at": "<TS>",
+              "filed_by": "human:parity",
+              "filed_origin": {
+                "machine": "<HOST>",
+                "user": "<USER>"
+              },
+              "id": "<ID-9>",
+              "last_event_id": "<ID-18>",
+              "media": [],
+              "seq": 2,
+              "short_id": "PAR-I2",
+              "source": null,
+              "state": "linked",
+              "tasks": [
+                {
+                  "id": "<ID-19>",
+                  "linked_at": "<TS>",
+                  "linked_by": "human:parity",
+                  "short_id": "PAR-2",
+                  "status": "backlog",
+                  "title": "Fix the observation"
+                }
+              ],
+              "title": "A corrected observation",
+              "updated_at": "<TS>"
+            },
+            {
+              "closure": {
+                "at": "<TS>",
+                "by": "human:parity",
+                "duplicate_of": "<ID-3>",
+                "kind": "duplicate"
+              },
+              "comment_count": 0,
+              "confidence": null,
+              "description": "",
+              "evidence": [],
+              "filed_at": "<TS>",
+              "filed_by": "human:parity",
+              "filed_origin": {
+                "machine": "<HOST>",
+                "user": "<USER>"
+              },
+              "id": "<ID-15>",
+              "last_event_id": "<ID-17>",
+              "media": [],
+              "seq": 3,
+              "short_id": "PAR-I3",
+              "source": null,
+              "state": "duplicate",
+              "tasks": [],
+              "title": "A repeat of the first",
+              "updated_at": "<TS>"
+            }
+          ],
+          "ok": true
+        }
+      }
+    }
+  ]
+}

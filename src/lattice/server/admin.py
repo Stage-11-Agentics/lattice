@@ -23,6 +23,7 @@ from typing import Any
 from filelock import FileLock
 
 from lattice.core.config import (
+    merge_config_changes,
     serialize_config,
     valid_git_branch_name,
     validate_project_code,
@@ -70,8 +71,13 @@ CONFIG_CHOICES: dict[str, tuple[str, ...]] = {
     "plan_approval": ("auto", "human"),
     "auto_code_review_on_transition": ("true", "false"),
     "auto_plan_review_on_transition": ("true", "false"),
+    "issues.enabled": ("true", "false"),
 }
-_BOOL_KEYS = ("auto_code_review_on_transition", "auto_plan_review_on_transition")
+_BOOL_KEYS = (
+    "auto_code_review_on_transition",
+    "auto_plan_review_on_transition",
+    "issues.enabled",
+)
 _STRING_CONFIG_KEYS = {"review_base_branch"}
 _LIST_CONFIG_KEYS = {"review_integration_branches"}
 _INTEGER_CONFIG_MINIMUMS = {
@@ -100,6 +106,9 @@ DEFAULT_SERVER_JSON: dict[str, Any] = {
         "stream_queue_entries": 1000,
         "replay_reset_entries": 1000,
         "min_free_disk_bytes": 1073741824,
+        "max_issue_media_file_bytes": 104857600,
+        "max_issue_media_issue_bytes": 262144000,
+        "max_issue_media_project_bytes": 10737418240,
     },
     "stream": {"heartbeat_seconds": 2},
 }
@@ -660,7 +669,7 @@ def set_project_config(
         return {"via": "server", **(answer.get("result") or {})}
     with admin_lock(root), offline_maintenance(board, "project config"):
         config = json.loads((board / "config.json").read_text(encoding="utf-8"))
-        config.update(typed)
+        config = merge_config_changes(config, typed)
         atomic_write(board / "config.json", serialize_config(config))
     return {"via": "offline", "project": slug, "set": typed, "maintenance": True}
 

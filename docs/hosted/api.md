@@ -17,7 +17,7 @@ export LATTICE_TOKEN="$(cat "$HOME/lattice-trial/token")"
   - `Authorization: Bearer <token>` on every authenticated route.
   - `Content-Type: application/json` on every POST.
   - `Lattice-Protocol: 1` (optional). If sent and different, the request fails with `PROTOCOL_MISMATCH` before anything runs.
-  - `Lattice-Client-Version: <version>` (optional; the Lattice client always sends it). If it is below the server's minimum, an operation fails with `CLIENT_TOO_OLD` before anything runs.
+  - `Lattice-Client-Version: <version>` (optional; the Lattice client always sends it). An operation below the server's minimum fails with `CLIENT_TOO_OLD` before execution. Sync and stream also check it before returning data when the project contains issue metadata; that conditional read gate is separate from the server-wide operation refusal.
 - **Task IDs.** The `/v1` routes and operation parameters take a ULID (`task_01...`) or a short ID (`DEMO-1`) wherever a task is named. The dashboard routes (`/p/<slug>/api/tasks/<id>...`) take the full ULID only; a short ID there answers 400 `INVALID_ID`.
 - **User-Agent.** The server does not check it, but a proxy's bot protection may. The Lattice client sends `lattice/<version>`; a script behind such a proxy sends a User-Agent the proxy admits.
 - **Redirects.** The server never redirects an API path. If you see a 3xx, a proxy is in the way (guide section 10).
@@ -31,6 +31,10 @@ export LATTICE_TOKEN="$(cat "$HOME/lattice-trial/token")"
 | `GET /v1/projects` | token | Projects your token can see |
 | `POST /v1/projects/{slug}/ops/{op}` | token | Run an operation (a write) |
 | `GET /v1/projects/{slug}/ops/{op_id}` | token | The outcome of one of your own operations: `committed`, `in_flight`, or `not_found` |
+| `PUT /v1/projects/{slug}/issues/media/staging/{sha256}` | token with project write permission | Upload raw issue-media bytes to private staging; does not mutate board state |
+| `GET /v1/projects/{slug}/issues/media/availability?issue=<ULID>` | token with project read permission | Presence metadata for issue media and frames; repeat `issue` for a batch |
+| `GET /v1/projects/{slug}/issues/media/{issue_id}/{media_id}` | token with project read permission | Read one media object; supports byte ranges |
+| `GET /v1/projects/{slug}/issues/media/{issue_id}/{media_id}/frames/{frame_name}` | token with project read permission | Read one client-derived frame; supports byte ranges |
 | `GET /v1/projects/{slug}/sync?since=N&epoch=E&hash=H` | token | What changed since your last sync |
 | `GET /v1/projects/{slug}/files/{path}` | token | One board file |
 | `GET /v1/projects/{slug}/stream` | token or session | Server-Sent Events: every committed change, live |
@@ -40,6 +44,7 @@ export LATTICE_TOKEN="$(cat "$HOME/lattice-trial/token")"
 | `GET /login`, `POST /login` | none (`POST` authenticates with the token it submits) | Dashboard login |
 | `POST /logout` | session | End the dashboard session |
 | `GET /p/{slug}/`, `/p/{slug}/static/*`, `/p/{slug}/api/*` | session or token | The project's dashboard |
+| `GET /p/{slug}/issues/media/...` | session | Same-origin dashboard media read; uses the same range-serving helper |
 | `GET /web/dashboard.css`, `GET /web/logout.js` | none | The login and index pages' stylesheet and logout script |
 
 A dashboard session cookie authenticates only `/`, `/logout`, `/p/<slug>/...`, and the stream. It never authenticates operations, sync, or files.
@@ -175,8 +180,36 @@ Operations by CLI command:
 | `set-project-code`, `set-subproject-code` | `board.set_project_code`, `board.set_subproject_code` |
 | `resource create`, `acquire`, `release`, `heartbeat` | `resource.create`, `resource.acquire` (one attempt; `RESOURCE_HELD` when held), `resource.release`, `resource.heartbeat` |
 | `session start`, `session end` | `session.start`, `session.end` |
+| `issue file` | `issue.file`: takes `title` or legacy `text`, never both; optional `description` |
+| `issue link`, `issue unlink` | `issue.link`, `issue.unlink` |
+| `issue dismiss`, `issue duplicate`, `issue reopen`, `issue promote` | `issue.dismiss`, `issue.duplicate`, `issue.reopen`, `issue.promote` |
+| `issue edit`, `issue comment` | `issue.edit`, `issue.comment` |
+| `issue attach`, `issue detach` | `issue.attach`, `issue.detach` |
 
-`GET /v1/info` lists every operation the server has, including plugin operations installed on it.
+`GET /v1/info` lists every operation the server has, including plugin operations installed on it. The current hosted issue operation set is `issue.file`, `issue.link`, `issue.unlink`, `issue.dismiss`, `issue.duplicate`, `issue.reopen`, `issue.promote`, `issue.attach`, `issue.detach`, `issue.edit`, and `issue.comment`. Issue reads use synced metadata; media bytes use the private staging and read routes below.
+
+## Issue media upload, availability, and reads
+
+Issue media is separate from the issue metadata carried by sync. Upload each stored original and each client-derived frame as its own raw request. The staging route requires a bearer token with write permission for the project and a `Content-Length`; the URL digest must be exactly 64 lowercase hexadecimal characters. The request body is the file bytes, not JSON or base64:
+
+```bash
+curl -s -X PUT \
+  -H "Authorization: Bearer $LATTICE_TOKEN" \
+  -H 'Content-Type: application/octet-stream' \
+  -H 'Content-Length: 21832' \
+  --data-binary @shot.jpg \
+  "$LATTICE_URL/v1/projects/demo/issues/media/staging/<64-lowercase-hex-sha256>"
+```
+
+The response uses the normal JSON envelope and describes the verified object (`sha256`, `size_bytes`, detected `content_type`, and `staged: true`). The server reserves project quota from the declared length, then streams the body and verifies its actual length, SHA-256, and supported photo/video type. Upload staging is under the project's private server runtime directory, outside the board. It creates no operation receipt, board sequence, audit commit, or stream event. Retrying the same hash and size is idempotent; a hash/size conflict fails. Failed uploads release their reservation, and abandoned stages expire.
+
+The raw upload limit is `limits.max_issue_media_file_bytes` (100 MiB per stored object). Hosted issue mutations remain separate JSON operations: `issue.file` and `issue.attach` pass `payload: {filename, sha256, size, staged: true}` and use the same shape under each `frames[].payload`; the server accepts neither media bytes nor `content_b64` in hosted operation params. Local operations retain LAT-366's `{filename, content_b64, sha256}` form. The server verifies staged bytes again when the named operation consumes them. These operations commit the issue event and snapshot in the ordinary write transaction, then finalize media paths after commit. `issue.detach` commits its removal event before unlinking or quarantining the bytes. The server trusts client-supplied video metadata and source hashes, while verifying the uploaded stored object's own hash and size. Raw staging avoids the 16 MiB JSON body cap, which leaves roughly 12 MiB for base64 file content.
+
+`GET /v1/projects/{slug}/issues/media/availability?issue=<ULID>` requires a bearer token with read permission. Repeat `issue` to check several issues. The response contains only present media/frame identifiers, hashes, and sizes, never bytes; availability is not part of sync or its reset manifest. A hosted client combines this result with verified local-cache files to report `local`, `remote`, or `missing` availability.
+
+`GET /v1/projects/{slug}/issues/media/{issue_id}/{media_id}` reads a stored original. `GET /v1/projects/{slug}/issues/media/{issue_id}/{media_id}/frames/{frame_name}` reads one client-derived JPEG frame. Both require a bearer token with project read permission. The server refuses traversal and symlinks, validates every recorded SHA-256 during issue-event replay and before using it in a header or path, and serves only regular files. A valid `Range` request returns `206` with `Accept-Ranges`, `Content-Range`, and the recorded content type; each range is capped at 1 MiB. An unsatisfiable range returns `416`. The hosted dashboard has a same-origin session-protected `GET /p/{slug}/issues/media/...` route using the same serving rules; a dashboard cookie does not authenticate `/v1` operations.
+
+The server limit is 250 MiB per issue, including frame sidecars, and 10 GiB per project by default; `max_issue_media_project_bytes` is configurable in `server.json`. Per-file and per-issue limit failures use `PAYLOAD_TOO_LARGE`. Project quota exhaustion uses `MEDIA_QUOTA_EXCEEDED`; its HTTP status follows the server's media quota error mapping. These caps are separate from `limits.max_body_bytes` for JSON requests.
 
 ## GET /v1/projects/{slug}/ops/{op_id}
 
@@ -202,7 +235,7 @@ The cache protocol. Send the position you last saw; get every file that changed 
 curl -s -H "Authorization: Bearer $LATTICE_TOKEN" "$LATTICE_URL/v1/projects/demo/sync?since=0"
 ```
 
-Query: `since` (the `head_seq` you last applied, 0 for none), `epoch` (the epoch it belongs to), `hash` (the `head_hash` you received with it), and `manifest=1` for hashes only.
+Query: `since` (the `head_seq` you last applied, 0 for none), `epoch` (the epoch it belongs to), `hash` (the `head_hash` you received with it), and `manifest=1` for hashes only. Before returning any delta or reset manifest, the server checks `Lattice-Client-Version`: if the project contains issue metadata and the client is below `0.2.2`, the response is `CLIENT_TOO_OLD` and contains no issue-bearing data. A project without issue metadata keeps its existing sync behavior.
 
 Response `data`: `epoch`, `head_seq`, `head_hash`, `reset`, `files`, `removed`.
 
@@ -223,7 +256,7 @@ With `?sha256=<hash>`, the server answers 412 `STALE_VERSION` if the file has ch
 
 ## GET /v1/projects/{slug}/stream
 
-Server-Sent Events (`text/event-stream`). Each committed change arrives once, in order.
+Server-Sent Events (`text/event-stream`). Each committed change arrives once, in order. Before sending the initial heartbeat, replay, or any live entry, the server checks `Lattice-Client-Version`: if the project contains issue metadata and the client is below `0.2.2`, it returns `CLIENT_TOO_OLD` without stream events. A project without issue metadata keeps its existing stream behavior.
 
 ```bash
 timeout 5 curl -s -N -H "Authorization: Bearer $LATTICE_TOKEN" "$LATTICE_URL/v1/projects/demo/stream" || true
@@ -271,6 +304,10 @@ curl -s -H "Authorization: Bearer $LATTICE_TOKEN" "$LATTICE_URL/p/demo/api/tasks
 
 **Live refresh.** The page follows `GET /v1/projects/<slug>/stream` with its session cookie and refetches on each entry; with the stream down, it polls every 5 seconds.
 
+## Version compatibility
+
+The hosted issue path sets both the pre-release package version and `min_client_version` to `0.2.2`. The minimum applies to writes server-wide: every operation request from a client below the floor is rejected with `CLIENT_TOO_OLD` before execution, even on a project without issues. Sync and stream have a separate conditional data gate: when a project contains issue metadata, a client below `0.2.2` is refused before any delta, reset manifest, heartbeat, or stream event is returned. Projects with no issue metadata keep their existing read behavior. The conditional read gate protects the newly synced issue path; it does not replace or narrow the server-wide write refusal.
+
 ## Error codes
 
 The CLI prints the same codes; the HTTP status is the server's.
@@ -286,12 +323,12 @@ The CLI prints the same codes; the HTTP status is the server's.
 | `UNAUTHENTICATED` | 401 | Missing, invalid, or revoked credential |
 | `FORBIDDEN` | 403 | The token cannot reach this project, or the change is admin-only configuration |
 | `ACTOR_NOT_PERMITTED` | 403 | The actor is outside the token's patterns; the message lists them and the command that widens them |
-| `NOT_FOUND`, `NOT_INITIALIZED`, `PLAN_NOT_FOUND`, `SESSION_NOT_FOUND` | 404 | No such task, board, plan, or session |
+| `NOT_FOUND`, `NOT_INITIALIZED`, `PLAN_NOT_FOUND`, `SESSION_NOT_FOUND` | 404 | No such task, board, plan, session, staged object, or hosted media object |
 | `UNKNOWN_OP` | 404 | The server has no such operation; the message names both versions |
 | `CONFLICT` | 409 | An expectation or a `from` status did not hold, or an `op_id` was reused (`details.reason: "OP_ID_REUSED"`) |
 | `ALREADY_CLAIMED`, `RESOURCE_HELD`, `NOT_HELD`, `EXPIRED`, `FLAG_ALREADY_SET`, `FLAG_NOT_SET` | 409 | State conflicts |
 | `STALE_VERSION` | 412 | A file read with `?sha256=` whose content has changed |
-| `PAYLOAD_TOO_LARGE` | 413 | Body over `limits.max_body_bytes`, or custom event data over `limits.max_event_data_bytes` |
+| `PAYLOAD_TOO_LARGE` | 413 | JSON body over `limits.max_body_bytes`, custom event data over `limits.max_event_data_bytes`, or media over its per-file or per-issue limit |
 | `INVALID_TRANSITION`, `PLAN_REQUIRED`, `COMPLETION_BLOCKED`, `REVIEW_CYCLE_LIMIT` | 422 | Workflow rules |
 | `TASK_ERASED` | 422 | A write to an erased task |
 | `RATE_LIMITED` | 429 | A per-token limit; wait `Retry-After` seconds |
@@ -299,6 +336,8 @@ The CLI prints the same codes; the HTTP status is the server's.
 | `BOARD_BUSY` | 503 | The project lock was not acquired in time; `Retry-After: 2` |
 | `BOARD_UNAVAILABLE` | 503 | The project failed its integrity check or recovery, or is unloaded |
 | `STORAGE_LOW` | 507 | The server's disk is below its floor; writes refused, reads work |
+
+Issue-media uploads and operation params use `VALIDATION_ERROR` for invalid hashes, sizes, content, or payload shapes. A hosted operation that receives inline `content_b64` fails with `HOSTED_MEDIA_INLINE_UNSUPPORTED`; stage bytes through the raw upload route instead. `MEDIA_QUOTA_EXCEEDED` identifies a project media quota refusal. Its HTTP status follows the server's media quota error mapping; clients should use the error code rather than assume a status.
 
 Every rejection about a task's state (`CONFLICT` from an expectation or `from` mismatch, `ALREADY_CLAIMED`, `FLAG_ALREADY_SET`, `FLAG_NOT_SET`, and the 422 codes) carries the task's current compact snapshot in `details.snapshot`. A reused operation ID:
 

@@ -400,9 +400,11 @@ def test_human_messages(on: Path, invoke, ok) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_bound_checkout_refuses_before_reading(
+def test_bound_checkout_without_a_remote_creates_nothing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A bound checkout routes issue commands through its server; with no remote
+    configured they stop before any local issue path exists."""
     (tmp_path / ".lattice-remote.json").write_text(
         json.dumps({"remote": "home", "project": "proj"})
     )
@@ -412,12 +414,13 @@ def test_bound_checkout_refuses_before_reading(
         result = runner.invoke(cli, [*argv, "--json"])
         assert result.exit_code == 1, argv
         error = json.loads(result.output)["error"]
-        assert error["code"] == "LOCAL_ONLY", argv
-        assert "'home/proj'" in error["message"]
+        assert error["code"] == "REMOTE_NOT_CONFIGURED", argv
     assert not (tmp_path / ".lattice").exists()
 
 
-def test_operations_refuse_a_server_owned_board(on: Path) -> None:
+def test_a_server_owned_board_takes_issue_writes_only_from_its_server(on: Path) -> None:
+    """Direct execution is refused by the ownership marker; the owning server runs
+    the same operations as transactions."""
     from lattice.ops import Caller, OpError, execute
     from lattice.storage.ownership import owning_board
 
@@ -425,19 +428,21 @@ def test_operations_refuse_a_server_owned_board(on: Path) -> None:
     (ld / "hosted").mkdir()
     (ld / "hosted" / "owner.json").write_text("{}")
     caller = Caller(actor="agent:qa", origin={"op_id": "op_01K00000000000000000000000"})
-    with owning_board(ld):
-        for op, params in (
-            ("issue.file", {"title": "x"}),
-            ("issue.edit", {"issue": "LAT-I1", "title": "x"}),
-            ("issue.comment", {"issue": "LAT-I1", "text": "x"}),
-            ("issue.link", {"issue": "LAT-I1", "task": "LAT-1"}),
-            ("issue.promote", {"issues": ["LAT-I1"]}),
-            ("issue.reopen", {"issue": "LAT-I1"}),
-        ):
-            with pytest.raises(OpError) as exc:
-                execute(ld, op, params, caller, run_hooks=False)
-            assert exc.value.code == "LOCAL_ONLY", op
+    for op, params in (
+        ("issue.file", {"title": "x"}),
+        ("issue.edit", {"issue": "LAT-I1", "title": "x"}),
+        ("issue.comment", {"issue": "LAT-I1", "text": "x"}),
+        ("issue.link", {"issue": "LAT-I1", "task": "LAT-1"}),
+        ("issue.promote", {"issues": ["LAT-I1"]}),
+        ("issue.reopen", {"issue": "LAT-I1"}),
+    ):
+        with pytest.raises(OpError) as exc:
+            execute(ld, op, params, caller, run_hooks=False)
+        assert exc.value.code == "BOARD_IS_HOSTED", op
     assert not (ld / "issues").exists()
+    with owning_board(ld):
+        filed = execute(ld, "issue.file", {"title": "x"}, caller, run_hooks=False)
+    assert filed.value["title"] == "x"
 
 
 # ---------------------------------------------------------------------------

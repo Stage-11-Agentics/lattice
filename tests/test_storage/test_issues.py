@@ -16,6 +16,7 @@ from lattice.storage.issues import (
     allocate_issue_seq,
     current_issue,
     issue_detail,
+    has_issue_metadata,
     issue_write_context,
     list_issue_snapshots,
     load_issue_ids,
@@ -78,6 +79,26 @@ def test_allocation_counts_up_and_leaves_the_task_index_alone(board: Path) -> No
     ids = load_issue_ids(board)
     assert ids["next_seq"] == 4
     assert sorted(ids["map"]) == ["1", "2", "3"]
+
+
+def test_issue_metadata_detection_ignores_empty_cache_scaffold(tmp_path: Path) -> None:
+    board = tmp_path / ".lattice"
+    issues = board / "issues"
+    assert not has_issue_metadata(board)
+    (issues / "events").mkdir(parents=True)
+    (issues / "ids.json").write_text(json.dumps({"schema_version": 1, "next_seq": 1, "map": {}}))
+    assert not has_issue_metadata(board)
+    (issues / "ids.json").write_text(
+        json.dumps({"schema_version": 1, "next_seq": 2, "map": {"1": "iss_x"}})
+    )
+    assert has_issue_metadata(board)
+    (issues / "ids.json").unlink()
+    snapshot = issues / "iss_01J9ZABCDEFGHJKMNPQRSTVWXY.json"
+    snapshot.write_text("{}\n")
+    assert has_issue_metadata(board)
+    snapshot.unlink()
+    (issues / "events" / "iss_01J9ZABCDEFGHJKMNPQRSTVWXY.jsonl").write_text("{}\n")
+    assert has_issue_metadata(board)
 
 
 def test_allocation_survives_a_stale_next_seq(board: Path) -> None:

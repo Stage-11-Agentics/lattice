@@ -97,6 +97,7 @@ class ProjectRegistry:
             self.server_id,
             on_state_change=self.write_status,
             audit_config=self.config.audit if self.audit_active else None,
+            issue_media_limits=self.config.limits,
         )
         self._projects[slug] = project
         return project

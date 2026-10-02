@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
+import stat
 from collections.abc import Callable, Generator, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -54,6 +56,48 @@ IDS_LOCK = "issues_ids"
 
 def issues_dir(lattice_dir: Path) -> Path:
     return Path(lattice_dir) / ISSUES_DIR
+
+
+def has_issue_metadata(lattice_dir: Path) -> bool:
+    """Whether actual issue metadata exists, excluding empty directory scaffolds.
+
+    Event logs and snapshots count by their names. The ID index counts only
+    when it contains at least one mapping, so a reset-created empty cache index
+    does not make a disabled log claim that prior issues are kept.
+    """
+    root = issues_dir(lattice_dir)
+    try:
+        if not stat.S_ISDIR(os.lstat(root).st_mode):
+            return False
+    except OSError:
+        return False
+
+    def contains_file(directory: Path, prefix: str, suffix: str) -> bool:
+        try:
+            if not stat.S_ISDIR(os.lstat(directory).st_mode):
+                return False
+            with os.scandir(directory) as entries:
+                return any(
+                    entry.name.startswith(prefix)
+                    and entry.name.endswith(suffix)
+                    and entry.is_file(follow_symlinks=False)
+                    for entry in entries
+                )
+        except OSError:
+            return False
+
+    if contains_file(root, "iss_", ".json") or contains_file(root / "events", "iss_", ".jsonl"):
+        return True
+
+    ids_path = root / "ids.json"
+    try:
+        if not stat.S_ISREG(os.lstat(ids_path).st_mode):
+            return False
+        data = json.loads(ids_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    mapping = data.get("map") if isinstance(data, dict) else None
+    return isinstance(mapping, dict) and bool(mapping)
 
 
 def _snapshot_path(lattice_dir: Path, issue_id: str) -> Path:
@@ -493,6 +537,7 @@ __all__ = [
     "IssueRebuild",
     "allocate_issue_seq",
     "current_issue",
+    "has_issue_metadata",
     "issue_views",
     "issue_detail",
     "issue_write_context",

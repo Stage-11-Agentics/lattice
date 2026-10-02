@@ -23,7 +23,11 @@
 from __future__ import annotations
 
 import contextlib
+import base64
+import binascii
 import dataclasses
+import hashlib
+import re
 import sys
 import threading
 import time
@@ -39,6 +43,9 @@ from lattice.remote import http
 #: (at most ``lock_timeout_seconds``) plus the work, so the read timeout sits
 #: above both and a slow admission is never mistaken for a lost request.
 OP_POLICY = http.Policy(connect_seconds=5.0, response_seconds=90.0)
+MEDIA_UPLOAD_POLICY = http.Policy(
+    connect_seconds=10.0, response_seconds=60.0, progress="uploading issue media"
+)
 FIRST_BACKOFF_SECONDS = 0.5
 MAX_BACKOFF_SECONDS = 5.0
 #: A retrying write reports progress this often (SPEC §8.6).
@@ -81,6 +88,82 @@ def wire_params(op_name: str, params: Any) -> dict[str, Any]:
             continue
         wire[f.name] = _jsonable(value)
     return wire
+
+
+_MEDIA_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
+
+
+def stage_issue_media(remote: http.Remote, project: str, params: dict) -> dict:
+    """Upload each LAT-366 payload as raw bytes and return hosted staged params."""
+    import copy
+
+    result = copy.deepcopy(params)
+    objects: dict[str, bytes] = {}
+
+    def stage(payload: dict) -> dict:
+        if set(payload) != {"filename", "content_b64", "sha256"}:
+            raise OpError(
+                "VALIDATION_ERROR",
+                "hosted media upload expects the local filename, content_b64, sha256 payload.",
+            )
+        claimed = payload.get("sha256")
+        if not isinstance(claimed, str) or not _MEDIA_SHA256_RE.fullmatch(claimed):
+            raise OpError(
+                "VALIDATION_ERROR", "media sha256 must be 64 lowercase hexadecimal characters."
+            )
+        try:
+            content = base64.b64decode(payload["content_b64"], validate=True)
+        except (binascii.Error, ValueError, TypeError) as exc:
+            raise OpError("VALIDATION_ERROR", "payload content_b64 is not valid base64.") from exc
+        actual = hashlib.sha256(content).hexdigest()
+        if actual != claimed:
+            raise OpError("VALIDATION_ERROR", "payload sha256 does not match its content.")
+        if actual not in objects:
+            objects[actual] = content
+            path = f"/v1/projects/{urllib.parse.quote(project, safe='')}/issues/media/staging/{actual}"
+            try:
+                response = http.request(
+                    remote,
+                    "PUT",
+                    path,
+                    raw_body=content,
+                    content_type="application/octet-stream",
+                    policy=MEDIA_UPLOAD_POLICY,
+                    what="issue media upload",
+                )
+            except http.Unreachable as exc:
+                raise server_unreachable(remote, exc.reason) from None
+            except http.ServerError as exc:
+                raise OpError(exc.code, exc.message, exc.details) from None
+            metadata = response.data()
+            if (
+                not isinstance(metadata, dict)
+                or metadata.get("sha256") != actual
+                or metadata.get("size_bytes") != len(content)
+                or metadata.get("staged") is not True
+            ):
+                raise OpError(
+                    "INTEGRITY_ERROR", "server returned invalid issue-media staging metadata."
+                )
+        return {
+            "filename": payload["filename"],
+            "sha256": actual,
+            "size": len(content),
+            "staged": True,
+        }
+
+    items = result.get("media")
+    if not isinstance(items, list):
+        raise OpError("VALIDATION_ERROR", "issue media must be a list.")
+    for item in items:
+        if not isinstance(item, dict) or not isinstance(item.get("payload"), dict):
+            raise OpError("VALIDATION_ERROR", "issue media item must contain a payload.")
+        item["payload"] = stage(item["payload"])
+        for frame in item.get("frames") or []:
+            if not isinstance(frame, dict) or not isinstance(frame.get("payload"), dict):
+                raise OpError("VALIDATION_ERROR", "issue media frame must contain a payload.")
+            frame["payload"] = stage(frame["payload"])
+    return result
 
 
 def result_from_json(data: dict) -> Any:
@@ -283,6 +366,12 @@ def post_operation(
                 raise write_unreachable(remote, detail, _now() - started) from None
         except http.ServerError as exc:
             if not _retryable(exc):
+                if op_name.startswith("issue.") and exc.code in {"UNKNOWN_OP", "LOCAL_ONLY"}:
+                    raise OpError(
+                        exc.code,
+                        "this server does not support the issue log; upgrade the server.",
+                        {**exc.details, "op": op_name},
+                    ) from None
                 raise OpError(exc.code, exc.message, exc.details) from None
             reached = True
             detail = f"HTTP {exc.status} {exc.code}"

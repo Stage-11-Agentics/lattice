@@ -1,14 +1,16 @@
 """What the ``issue.*`` operations share (LAT-361). Not an operation module.
 
-Every issue operation first checks :func:`require_issue_log`: the issue log
-works only on a local board (``LOCAL_ONLY``), and only when the board turned
-it on (``ISSUES_DISABLED``). Writes go through :func:`append`, which replays
-the issue's log under its lock, lets the caller decide, and writes the event
-and the new snapshot.
+Every issue operation first checks :func:`require_issue_log`: a bound client
+routes writes to the server, server-owned boards run them transactionally, and
+the issue log must be enabled (``ISSUES_DISABLED``). Writes go through
+:func:`append`, which replays the issue's log under its lock, lets the caller
+decide, and writes the event and the new snapshot.
 """
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import re
 from collections.abc import Callable
@@ -33,16 +35,20 @@ from lattice.core.issue_media import (
     media_limits,
     sniff_media,
 )
-from lattice.core.issues import apply_issue_event, issues_disabled_message
+from lattice.core.issues import (
+    apply_issue_event,
+    hosted_issues_disabled_message,
+    issues_disabled_message,
+)
 from lattice.core.visibility import require_not_tombstoned
 from lattice.ops.base import CommonParams, OpContext, OpError, OpResult
 from lattice.ops.task_attach import decode_payload
 from lattice.storage.issue_media import delete_media_files, store_media
 from lattice.storage.issues import (
     current_issue,
+    has_issue_metadata,
     issue_views,
     issue_write_context,
-    issues_dir,
     read_issue_events,
     resolve_issue,
     write_issue_events,
@@ -50,18 +56,30 @@ from lattice.storage.issues import (
 from lattice.storage.operations import read_task_authority
 from lattice.storage.ownership import board_state
 
-LOCAL_ONLY_MESSAGE = "The issue log works only on local boards for now; this board is {state}."
+LOCAL_ONLY_MESSAGE = (
+    "The issue log writes through its owning server; this board is a read-only {state} mirror."
+)
 
 
 def require_issue_log(ctx: OpContext) -> None:
-    """``LOCAL_ONLY`` on a hosted board or a cache; ``ISSUES_DISABLED`` when it is off."""
+    """Refuse direct writes on a cache; require the issue log to be enabled.
+
+    A server-owned board is allowed through this feature gate. Its storage
+    primitives still require the server's owner flag before the first write,
+    which also protects a locally-opened ``LocalBoard`` pointed at that path.
+    """
     state = board_state(ctx.lattice_dir)
-    if state != "local":
+    if state == "cache":
         raise OpError("LOCAL_ONLY", LOCAL_ONLY_MESSAGE.format(state=state), {"board": state})
     if not issues_enabled(ctx.config):
-        raise OpError(
-            "ISSUES_DISABLED", issues_disabled_message(issues_dir(ctx.lattice_dir).is_dir())
+        message = (
+            hosted_issues_disabled_message(
+                has_issue_metadata(ctx.lattice_dir), ctx.lattice_dir.parent.name
+            )
+            if state == "hosted"
+            else issues_disabled_message(has_issue_metadata(ctx.lattice_dir))
         )
+        raise OpError("ISSUES_DISABLED", message)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -151,7 +169,15 @@ def resolve(ctx: OpContext, raw: str) -> str:
 
 
 def view(ctx: OpContext, snapshot: dict) -> dict:
-    return issue_views(ctx.lattice_dir, [snapshot])[0]
+    value = issue_views(ctx.lattice_dir, [snapshot])[0]
+    if ctx.issue_media is not None:
+        for media in value.get("media", []):
+            if media.get("removed"):
+                continue
+            media.update(path=None, available="remote", missing=False)
+            for frame in media.get("frames", []):
+                frame.update(path=None, available="remote", missing=False)
+    return value
 
 
 def result(ctx: OpContext, snapshot: dict, events: list[dict]) -> OpResult:
@@ -175,7 +201,7 @@ _MEDIA_ITEM_KEYS = frozenset({"payload", "video", "frames", "converted_from"})
 _VIDEO_KEYS = frozenset({"width", "height", "duration_ms"})
 _CONVERTED_KEYS = frozenset({"content_type", "size_bytes", "sha256"})
 _CONTENT_TYPE_RE = re.compile(r"^[a-z]+/[a-z0-9.+-]{1,64}$")
-_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 MAX_VIDEO_DIMENSION = 100_000
 MAX_VIDEO_DURATION_MS = 86_400_000
 
@@ -201,12 +227,15 @@ class DecodedMedia:
     content_type: str
     kind: str
     original_name: str
-    content: bytes
+    content: bytes | None
     sha256: str
+    size_bytes: int
     width: int | None = None
     height: int | None = None
     duration_ms: int | None = None
     frames: tuple[tuple[int, bytes], ...] = ()
+    staged_frames: tuple[tuple[int, str, int], ...] = ()
+    staged: bool = False
     converted_from: dict | None = None
 
     @property
@@ -271,20 +300,52 @@ def check_media_items(items: tuple[dict, ...]) -> None:
                 raise _invalid(f"media item {i}: two frames have the same t_ms.")
 
 
-def _decode_one(item: dict, per_file: int, nothing: str) -> DecodedMedia:
+def _decode_one(item: dict, per_file: int, nothing: str, stage_manager=None) -> DecodedMedia:
     filename = item["payload"].get("filename")
     name = clean_original_name(filename) if isinstance(filename, str) else "?"
+    payload = item["payload"]
+    staged = "staged" in payload
     source = item.get("converted_from")
     if source is not None and source["size_bytes"] > per_file:
         raise _too_large_file(name, source["size_bytes"], per_file, nothing)
-    if _b64_size(item["payload"]) > per_file + 2:
-        size = _b64_size(item["payload"])
-        raise _too_large_file(name, size, per_file, nothing)
-    filename, content = decode_payload(item["payload"])
-    name = clean_original_name(filename)
-    if len(content) > per_file:
-        raise _too_large_file(name, len(content), per_file, nothing)
-    content_type = sniff_media(content[:SNIFF_BYTES])
+    if staged:
+        if stage_manager is None:
+            raise OpError(
+                "MEDIA_STAGE_UNAVAILABLE",
+                "staged media is only accepted by a hosted issue operation.",
+            )
+        if (
+            set(payload) != {"filename", "sha256", "size", "staged"}
+            or payload.get("staged") is not True
+        ):
+            raise _invalid("a staged media payload needs filename, sha256, size, staged=true.")
+        sha256 = payload.get("sha256")
+        if not isinstance(sha256, str) or not _SHA256_RE.fullmatch(sha256):
+            raise _invalid("media sha256 must be 64 lowercase hexadecimal characters.")
+        size = payload.get("size")
+        if not _non_negative_int(size):
+            raise _invalid("staged media size must be a non-negative integer.")
+        if size > per_file:
+            raise _too_large_file(name, size, per_file, nothing)
+        _validate_media_filename(filename)
+        metadata = stage_manager.verify_staged(sha256, size)
+        content_type = metadata["content_type"]
+        content = None
+    else:
+        if stage_manager is not None:
+            raise OpError(
+                "HOSTED_MEDIA_INLINE_UNSUPPORTED",
+                "hosted issue media must be uploaded as raw staged objects; inline base64 is refused.",
+            )
+        if _b64_size(item["payload"]) > per_file + 2:
+            size = _b64_size(item["payload"])
+            raise _too_large_file(name, size, per_file, nothing)
+        filename, content = decode_payload(item["payload"])
+        name = clean_original_name(filename)
+        if len(content) > per_file:
+            raise _too_large_file(name, len(content), per_file, nothing)
+        content_type = sniff_media(content[:SNIFF_BYTES])
+        sha256 = hashlib.sha256(content).hexdigest()
     if content_type is None:
         raise OpError(
             "VALIDATION_ERROR",
@@ -294,17 +355,57 @@ def _decode_one(item: dict, per_file: int, nothing: str) -> DecodedMedia:
     kind = media_kind(content_type) or ""
     video = item.get("video") or {}
     frames: list[tuple[int, bytes]] = []
+    staged_frames: list[tuple[int, str, int]] = []
     if kind != "video" and (item.get("video") is not None or item.get("frames")):
         raise _invalid(f"{name} is a photo; only a video carries video metadata or frames.")
     for frame in item.get("frames") or []:
-        if _b64_size(frame["payload"]) > MAX_FRAME_BYTES + 2:
-            raise _invalid(f"{name}: a frame is over {format_size(MAX_FRAME_BYTES)}.")
-        _frame_name, data = decode_payload(frame["payload"])
-        if sniff_media(data[:SNIFF_BYTES]) != "image/jpeg" or len(data) > MAX_FRAME_BYTES:
-            raise _invalid(f"{name}: every frame must be a JPEG of at most 2 MB.")
-        frames.append((frame["t_ms"], data))
+        frame_payload = frame["payload"]
+        if "staged" in frame_payload:
+            if stage_manager is None:
+                raise OpError(
+                    "MEDIA_STAGE_UNAVAILABLE",
+                    "staged media is only accepted by a hosted issue operation.",
+                )
+            if (
+                set(frame_payload) != {"filename", "sha256", "size", "staged"}
+                or frame_payload.get("staged") is not True
+            ):
+                raise _invalid("a staged frame payload needs filename, sha256, size, staged=true.")
+            frame_hash = frame_payload.get("sha256")
+            if not isinstance(frame_hash, str) or not _SHA256_RE.fullmatch(frame_hash):
+                raise _invalid("frame sha256 must be 64 lowercase hexadecimal characters.")
+            frame_size = frame_payload.get("size")
+            if not _non_negative_int(frame_size) or frame_size > MAX_FRAME_BYTES:
+                raise _invalid(f"{name}: a frame is over {format_size(MAX_FRAME_BYTES)}.")
+            _frame_name = frame_payload.get("filename")
+            _validate_media_filename(_frame_name)
+            frame_meta = stage_manager.verify_staged(frame_hash, frame_size)
+            if frame_meta["content_type"] != "image/jpeg":
+                raise _invalid(f"{name}: every frame must be a JPEG of at most 2 MB.")
+            staged_frames.append((frame["t_ms"], frame_hash, frame_size))
+        else:
+            if stage_manager is not None:
+                raise OpError(
+                    "HOSTED_MEDIA_INLINE_UNSUPPORTED",
+                    "hosted issue media must be uploaded as raw staged objects; inline base64 is refused.",
+                )
+            if _b64_size(frame_payload) > MAX_FRAME_BYTES + 2:
+                raise _invalid(f"{name}: a frame is over {format_size(MAX_FRAME_BYTES)}.")
+            if set(frame_payload) == {"filename", "content_b64"}:
+                try:
+                    inline_bytes = base64.b64decode(frame_payload["content_b64"], validate=True)
+                except (binascii.Error, TypeError, ValueError):
+                    inline_bytes = b""
+                frame_payload = {
+                    **frame_payload,
+                    "sha256": hashlib.sha256(inline_bytes).hexdigest(),
+                }
+            _frame_name, data = decode_payload(frame_payload)
+            if sniff_media(data[:SNIFF_BYTES]) != "image/jpeg" or len(data) > MAX_FRAME_BYTES:
+                raise _invalid(f"{name}: every frame must be a JPEG of at most 2 MB.")
+            frames.append((frame["t_ms"], data))
     if kind == "photo":
-        dims = image_dimensions(content_type, content)
+        dims = image_dimensions(content_type, content) if content is not None else (None, None)
         width, height = dims if dims else (None, None)
     else:
         width, height = video.get("width"), video.get("height")
@@ -313,13 +414,35 @@ def _decode_one(item: dict, per_file: int, nothing: str) -> DecodedMedia:
         kind=kind,
         original_name=name,
         content=content,
-        sha256=hashlib.sha256(content).hexdigest(),
+        sha256=sha256,
+        size_bytes=len(content) if content is not None else size,
         width=width,
         height=height,
         duration_ms=video.get("duration_ms"),
         frames=tuple(sorted(frames)),
+        staged_frames=tuple(sorted(staged_frames)),
+        staged=staged,
         converted_from=dict(item["converted_from"]) if item.get("converted_from") else None,
     )
+
+
+def _validate_media_filename(filename: object) -> None:
+    """Apply the same filename restrictions to staged payloads as inline payloads."""
+    from pathlib import PurePosixPath
+
+    if not isinstance(filename, str):
+        raise _invalid("media payload filename must be a string.")
+    name = PurePosixPath(filename).name
+    if (
+        not name
+        or re.search(r"[\x00-\x1f\x7f-\x9f]", filename)
+        or "\\" in PurePosixPath(filename).suffix
+    ):
+        raise OpError(
+            "VALIDATION_ERROR",
+            f"Invalid payload filename {filename!r}.",
+            {"reason": "UNSAFE_NAME", "param": "payload"},
+        )
 
 
 def _too_large_file(name: str, size: int, limit: int, nothing: str) -> OpError:
@@ -334,14 +457,16 @@ def _too_large_file(name: str, size: int, limit: int, nothing: str) -> OpError:
     )
 
 
-def decode_media(items: tuple[dict, ...], config: dict, *, nothing: str) -> list[DecodedMedia]:
+def decode_media(
+    items: tuple[dict, ...], config: dict, *, nothing: str, stage_manager=None
+) -> list[DecodedMedia]:
     """Decode and check every item, each within ``issues.max_media_mb``; the same
     content twice is kept once. *nothing*: the refusal's last sentence."""
     per_file, _per_issue = media_limits(config)
     decoded: list[DecodedMedia] = []
     seen: set[str] = set()
     for item in items:
-        one = _decode_one(item, per_file, nothing)
+        one = _decode_one(item, per_file, nothing, stage_manager)
         if not seen & one.hashes:
             seen |= one.hashes
             decoded.append(one)
@@ -361,7 +486,7 @@ def held_hashes(entries: list[dict]) -> set[str]:
 def check_issue_total(config: dict, issue: str, existing: int, new: list[DecodedMedia]) -> None:
     """``PAYLOAD_TOO_LARGE`` when the issue's present media would pass ``issues.max_issue_media_mb``."""
     _per_file, per_issue = media_limits(config)
-    total = existing + sum(len(d.content) for d in new)
+    total = existing + sum(d.size_bytes for d in new)
     if new and total > per_issue:
         raise OpError(
             "PAYLOAD_TOO_LARGE",
@@ -378,7 +503,7 @@ def media_added_data(decoded: DecodedMedia, media_id: str, n: int) -> dict:
         "kind": decoded.kind,
         "content_type": decoded.content_type,
         "original_name": decoded.original_name,
-        "size_bytes": len(decoded.content),
+        "size_bytes": decoded.size_bytes,
         "sha256": decoded.sha256,
     }
     for key in ("width", "height", "duration_ms", "converted_from"):
@@ -401,20 +526,75 @@ def stage_media(
     """
     events = []
     entries = []
+    staged_objects: list[dict] = []
+    if ctx.issue_media is not None:
+        additions = [item.size_bytes for item in decoded]
+        additions.extend(size for item in decoded for _time, _sha, size in item.staged_frames)
+        ctx.issue_media.check_issue_quota(issue_id, additions)
     try:
         for offset, item in enumerate(decoded):
             media_id = generate_media_id()
             entry = {"id": media_id, "content_type": item.content_type}
             entries.append(entry)
             data = media_added_data(item, media_id, first_n + offset)
-            store_media(ctx.lattice_dir, issue_id, entry, item.content, list(item.frames))
+            if ctx.issue_media is None:
+                if item.content is None:
+                    raise OpError(
+                        "MEDIA_STAGE_UNAVAILABLE",
+                        "staged media is only accepted by a hosted issue operation.",
+                    )
+                store_media(ctx.lattice_dir, issue_id, entry, item.content, list(item.frames))
+            else:
+                if not item.staged:
+                    raise OpError(
+                        "HOSTED_MEDIA_INLINE_UNSUPPORTED",
+                        "hosted issue media must be uploaded as raw staged objects; inline base64 is refused.",
+                    )
+                from lattice.core.issue_media import frame_name, media_ext
+                from lattice.storage.issue_media import frames_dir, media_path
+
+                original_path = media_path(ctx.lattice_dir, issue_id, entry)
+                if original_path is None or media_ext(item.content_type) is None:
+                    raise OpError("VALIDATION_ERROR", "invalid issue-media destination")
+                staged_objects.append(
+                    {
+                        "media_id": media_id,
+                        "t_ms": None,
+                        "sha256": item.sha256,
+                        "size_bytes": item.size_bytes,
+                        "target": original_path.relative_to(ctx.lattice_dir).as_posix(),
+                    }
+                )
+                sidecar_dir = frames_dir(ctx.lattice_dir, issue_id, entry)
+                for t_ms, sha256, size_bytes in item.staged_frames:
+                    if sidecar_dir is None:
+                        raise OpError("VALIDATION_ERROR", "invalid issue-media frame destination")
+                    staged_objects.append(
+                        {
+                            "media_id": media_id,
+                            "t_ms": t_ms,
+                            "sha256": sha256,
+                            "size_bytes": size_bytes,
+                            "target": (sidecar_dir / frame_name(t_ms))
+                            .relative_to(ctx.lattice_dir)
+                            .as_posix(),
+                        }
+                    )
             events.append(
                 create_issue_event(
                     "issue_media_added", issue_id, ctx.actor, data, **p.provenance()
                 )
             )
+        if staged_objects:
+            op_id = ctx.caller.origin.get("op_id")
+            if not isinstance(op_id, str):
+                raise OpError(
+                    "VALIDATION_ERROR", "hosted issue media operation has no operation ID"
+                )
+            ctx.issue_media.add_manifest(op_id, issue_id, staged_objects)
     except BaseException as failure:
-        _cleanup_media_entries(ctx.lattice_dir, issue_id, entries, failure)
+        if ctx.issue_media is None:
+            _cleanup_media_entries(ctx.lattice_dir, issue_id, entries, failure)
         raise
     return events
 

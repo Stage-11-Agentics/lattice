@@ -356,7 +356,13 @@ def user_agent() -> str:
 
 
 def build_request(
-    remote: Remote, method: str, url: str, body: bytes | None = None
+    remote: Remote,
+    method: str,
+    url: str,
+    body: bytes | None = None,
+    *,
+    content_type: str | None = None,
+    headers: Mapping[str, str] | None = None,
 ) -> urllib.request.Request:
     req = urllib.request.Request(url, data=body, method=method)
     req.add_header(HEADER_PROTOCOL, str(PROTOCOL))
@@ -366,12 +372,14 @@ def build_request(
     # header of that name (any case) replaces this one below.
     req.add_unredirected_header("User-Agent", user_agent())
     if body is not None:
-        req.add_header("Content-Type", "application/json")
+        req.add_header("Content-Type", content_type or "application/json")
     # Credentials never ride a redirect (SPEC §9.1).
     if remote.token:
         req.add_unredirected_header("Authorization", f"Bearer {remote.token}")
     for name, value in remote.headers.items():
         req.add_unredirected_header(name, value)
+    for name, value in (headers or {}).items():
+        req.add_header(name, value)
     return req
 
 
@@ -381,6 +389,9 @@ def request(
     path: str,
     *,
     json_body: Any = None,
+    raw_body: bytes | None = None,
+    content_type: str | None = None,
+    headers: Mapping[str, str] | None = None,
     expect: str = "json",
     policy: Policy = PROBE,
     sink: Callable[[bytes], None] | None = None,
@@ -400,8 +411,14 @@ def request(
     """
     url = remote.url + path
     what = what or f"{method} {path.split('?', 1)[0]}"
-    body = None if json_body is None else json.dumps(json_body).encode("utf-8")
-    req = build_request(remote, method, url, body)
+    if json_body is not None and raw_body is not None:
+        raise ValueError("request accepts either json_body or raw_body, not both")
+    body = (
+        raw_body
+        if raw_body is not None
+        else (None if json_body is None else json.dumps(json_body).encode("utf-8"))
+    )
+    req = build_request(remote, method, url, body, content_type=content_type, headers=headers)
     holder = _Socket(time.monotonic(), policy.response_seconds)
     opener = urllib.request.build_opener(
         _NoRedirect(), _HTTPHandler(holder), _HTTPSHandler(holder)

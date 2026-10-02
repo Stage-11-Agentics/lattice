@@ -318,7 +318,7 @@ lattice server project config web --set review_base_branch=v2
 lattice server project config web --set review_integration_branches=v2,release/next
 ```
 
-`project config` accepts `review_mode` and `plan_review_mode` (`inline`, `single`, `triple`), `plan_approval` (`auto`, `human`), `auto_code_review_on_transition` and `auto_plan_review_on_transition` (`true`, `false`), `review_base_branch` (a non-empty branch/ref), `review_integration_branches` (a comma-separated ordered list of unique Git-valid branch names), `review_timeout_seconds` (a positive integer), `review_max_diff_lines` and `review_max_diff_chars` (non-negative integers; zero disables that cap), and `task_types` (a complete replacement list):
+`project config` accepts `review_mode` and `plan_review_mode` (`inline`, `single`, `triple`), `plan_approval` (`auto`, `human`), `auto_code_review_on_transition` and `auto_plan_review_on_transition` (`true`, `false`), `review_base_branch` (a non-empty branch/ref), `review_integration_branches` (a comma-separated ordered list of unique Git-valid branch names), `review_timeout_seconds` (a positive integer), `review_max_diff_lines` and `review_max_diff_chars` (non-negative integers; zero disables that cap), `task_types` (a complete replacement list), and `issues.enabled` (`true`, `false`):
 
 - Integration branch names must be valid Git branch refs and resolve to remote-tracking refs. Inference considers the ordered `review_integration_branches` list plus one safe default: the branch named by `origin/HEAD`, or `origin/main` then `origin/master` if it does not resolve. When the configured list is empty and no remote default resolves, local `main` then `master` is the final fallback. A non-empty list with no resolvable entry fails closed, unresolved entries are named in a warning, and arbitrary remote branches are never candidates. Review resolution never fetches.
 - `task_types` must be a JSON array of unique, non-empty, trimmed strings containing `task`:
@@ -328,6 +328,14 @@ lattice server project config web --set 'task_types=["task","bug","chore","resea
 ```
 
 The task type list is replaced as a whole, so include every type the project should keep. New boards allow `task`, `bug`, and `chore` by default; existing project configs and tasks are preserved. With the server running, changes go through the server and every cache receives them at its next sync. Board configuration is admin-only: from a checkout, only `set-project-code`, `set-subproject-code`, and dashboard settings can change `config.json`.
+
+The issue log is off by default. After the server and every client have been upgraded to at least `0.2.2` (section 19), enable it on the server host:
+
+```bash
+lattice server project config web --set issues.enabled=true
+```
+
+Setting `issues.enabled` preserves the project's other `issues.*` limits and settings. Hosted issue commands read synced metadata and send writes through named server operations; an ordinary operation cannot change the project configuration.
 
 To bring an existing local board onto the server, import it instead of creating a project: section 14.
 
@@ -686,7 +694,7 @@ A machine that should never run reviews (a small box, a CI job) sets `"run_auto_
 
 ## 14. Moving a board to the server
 
-Moving a board needs one tool, a doctor-gated import, and five steps in the checkout. Nothing is deleted: the old board is kept beside the checkout.
+Moving a board needs one tool, a doctor-gated import, and five steps in the checkout. Nothing is deleted: the old board is kept beside the checkout. For a board with issues, first follow section 19: upgrade the server to the `0.2.2` floor and every client to at least `0.2.2` before import or enablement.
 
 The example below makes a local board to move, so it can be run on a scratch machine. For a real board, start at step 1 in your own checkout, with your own slug and alias. The quick start's server is still running:
 
@@ -706,6 +714,18 @@ mkdir -p "$TRIAL/legacy-copy"
 cp -R "$TRIAL/legacy/.lattice" "$TRIAL/legacy-copy/"
 lattice server project import legacy --from "$TRIAL/legacy-copy"
 ```
+
+By default, import copies issue media into private server storage along with the durable issue logs, snapshots, and ID index. Add `--omit-media` to import issue metadata without copying any media bytes:
+
+```bash
+lattice server project import legacy --from "$TRIAL/legacy-copy" --omit-media
+```
+
+`--omit-media` is an explicit metadata-only choice. Issue metadata syncs to bound clients; media bytes do not enter ordinary sync, reset manifests, deltas, stream events, or audit history. When a user requests media, a bound checkout fetches it on demand into a separate private `.lattice/cache/issue-media/` cache. `lattice cache clear` removes that cache. Default import and later uploads retain the media in private server storage. Phone photos may contain location in EXIF data: LAT-366 does not strip photo metadata.
+
+Before creating the project's staging directory or writing any imported file, the importer replays and validates source issue logs and metadata, then preflights every referenced original and frame. It refuses symlinks and special files, checks media IDs, extensions and lowercase SHA-256 fields, verifies file contents against their hashes, and calculates all three media quotas. Only after preflight succeeds does it stage the import, rebuild issue snapshots, and publish the project. Limits are 100 MiB per stored file, 250 MiB per issue including frame sidecars, and 10 GiB per project by default; the project cap is configurable as `max_issue_media_project_bytes` in `server.json`. Missing or corrupt media and any quota failure stop the default import before imported files are written. The error names an exceeded quota and says when `--omit-media` is an acceptable retry.
+
+The import report gives the exact copied media-object count and bytes when media is copied. In `--omit-media` mode, logs and snapshots still validate, including the syntax of stored hash fields, but media contents are never opened or hash-compared and no media quota is applied. The report inventories metadata-referenced originals and discoverable frame sidecars with no-follow directory enumeration and `lstat` only; it counts a missing original or an entry with failed/non-regular `lstat` as an object of unknown size. JSON always includes `media_count`, `media_bytes`, `media_known_bytes`, `media_unknown_size_count`, and `media_inventory_complete`. `media_bytes` is null when any object's size is unknown or frame enumeration is incomplete; `media_inventory_complete` is false when a frame directory could not be safely enumerated. Human output says when the byte total is unknown or the media count is incomplete.
 
 Every token that should reach the new project needs it granted (section 8). Here, the quick start's token; its ID is the middle of the token string:
 
@@ -728,7 +748,7 @@ lattice doctor
 
 Read the two lists it prints:
 
-- **paths not copied**: anything that is not board data (for example `reviews/`, `logs/`, `exports/`, and the optional issue log's `issues/`). They stay in the old board, which step 3 keeps.
+- **paths not copied**: anything that is not board data (for example `reviews/`, `logs/`, and `exports/`). Issue logs, snapshots, and the ID index are durable metadata and are copied; `issues/media/` follows the explicit default-copy or `--omit-media` policy above.
 - **non-canonical plan and notes files**: loose files under `plans/` or `notes/`. They are copied, and on a hosted checkout they are read-only; write them with `lattice board write`, and put new working files under `orchestration/`.
 
 The import also repairs short-ID bookkeeping from the logs, starts the project's journal and its audit history (section 16), and prints these same steps with your slug filled in.
@@ -906,12 +926,13 @@ A write retries on its own for up to `retry_seconds` (15 by default) on connecti
 
 ## 19. Upgrading
 
-Upgrade the server with the same install command (section 5, add `--force` for `uv tool install`) and restart it. Clients upgrade independently.
+Upgrade the server with the same install command (section 5, add `--force` for `uv tool install`) and restart it. For issue-bearing projects, upgrade the server first to the build with both package version and `min_client_version` at `0.2.2`, then upgrade every client to at least `0.2.2`; only after both steps may you import or enable a project with issue metadata. LAT-366 media transport uses this same floor.
 
 - **`server.json` from an early v2 trial** may hold `"trusted_proxy": false`. The server refuses to start with that key; replace it with `"trusted_proxies": []`, or with your proxy's address (section 10).
 - **Every machine that works in a bound checkout needs Lattice 2.** A recent Lattice 1 refuses a bound checkout with `BOUND_CHECKOUT`; an older one reads the read-only cache as if it were a board and fails on its first write. Upgrade it (section 5).
 - The server and clients speak protocol 1. A client and server on different protocols refuse each other before any write.
 - A client older than the server prints one line per command asking you to upgrade. When the server raises its minimum client version, older clients' writes fail with `CLIENT_TOO_OLD`, naming both versions.
+- The issue path has two version gates. Operations from any client below `0.2.2` are refused before execution, even on projects without issues. Sync and stream return `CLIENT_TOO_OLD` before any data only when the project contains issue metadata and the client is below `0.2.2`; projects without issue metadata keep their existing read behavior. Upgrade every client before importing or enabling an issue-bearing project so the new durable path is never exposed to an older reader.
 - A newer client works against an older server until it uses something the server lacks: `UNKNOWN_OP` or `UNSUPPORTED_PARAM`, naming both versions. Upgrade the server.
 - **Plugin operations** (from packages registering the `lattice.operations` entry point) run on a hosted board only when the plugin is installed on the server too. Install it into the server's environment (for example `uv tool install --with <plugin> 'lattice-tracker[server]'`) and restart.
 - After upgrading clients, refresh installed agent instructions with `lattice setup-claude --force` and `lattice setup-claude-skill --force`.

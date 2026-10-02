@@ -278,12 +278,18 @@ class HostedBoard:
         """
         from lattice.ops import Caller
         from lattice.remote import session
-        from lattice.remote.client import post_operation, result_from_json, wire_params
+        from lattice.remote.client import (
+            post_operation,
+            result_from_json,
+            stage_issue_media,
+            wire_params,
+        )
 
         caller = caller if caller is not None else Caller()
+        params_wire = wire_params(op_name, params)
         body: dict[str, Any] = {
             "op_id": caller.origin.get("op_id") or generate_op_id(),
-            "params": wire_params(op_name, params),
+            "params": params_wire,
             "origin": {"reported": caller.origin.get("reported") or reported_origin(self.start)},
         }
         if caller.actor is not None:
@@ -301,6 +307,8 @@ class HostedBoard:
         session.check_protocol(self.hosted)
         since = session.sync_ticket(self.hosted)
         try:
+            if op_name in {"issue.file", "issue.attach"} and params_wire.get("media"):
+                body["params"] = stage_issue_media(self.remote, self.hosted.project, params_wire)
             data = post_operation(self.remote, self.hosted.project, op_name, body, offline=offline)
         except OpError as exc:
             if exc.code == "SERVER_UNREACHABLE":

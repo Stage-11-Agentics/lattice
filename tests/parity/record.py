@@ -85,6 +85,7 @@ DURABLE_DIRS = (
     "sessions",
     "templates",
     "orchestration",
+    "issues",
 )
 DURABLE_FILES = ("config.json", "ids.json", "context.md", ".gitignore")
 
@@ -123,6 +124,15 @@ GIT_ENV = {
 # ---------------------------------------------------------------------------
 
 
+# The machine identity inside an origin's ``reported`` block (events); an issue
+# view's filing and comment origins carry the same as a ``user``/``machine`` pair.
+_REPORTED_IDENTITY = {"host": "<HOST>", "os_user": "<USER>", "client_version": "<VERSION>"}
+
+
+# ``user@machine`` after a middle dot in an issue view's text lines.
+_ORIGIN_PAIR_RE = re.compile(r"(?<= · )[\w.:-]+@[\w.-]+")
+
+
 class Normalizer:
     """Stateful normalizer: one per capture, so ``<ID-n>`` numbering is per run."""
 
@@ -134,6 +144,7 @@ class Normalizer:
     def text(self, value: str) -> str:
         for root in self._roots:
             value = value.replace(root, "<ROOT>")
+        value = _ORIGIN_PAIR_RE.sub("<USER>@<HOST>", value)
         value = ULID_RE.sub(self._id, value)
         return TS_RE.sub("<TS>", value)
 
@@ -146,10 +157,21 @@ class Normalizer:
     def obj(self, value: Any) -> Any:
         """Normalize a parsed JSON value, visiting object keys in sorted order."""
         if isinstance(value, dict):
+            if "authenticated" in value and "reported" in value:
+                # A server stamps who the token is; a local write has no such
+                # block (SPEC §4), so it is not part of the compared output.
+                value = {k: v for k, v in value.items() if k != "authenticated"}
             out: dict[str, Any] = {}
             for key in sorted(value):
                 norm_key = self.text(key)
                 out[norm_key] = self.obj(value[key])
+            reported = out.get("reported")
+            if isinstance(reported, dict):
+                for field, placeholder in _REPORTED_IDENTITY.items():
+                    if isinstance(reported.get(field), str):
+                        reported[field] = placeholder
+            if isinstance(out.get("user"), str) and isinstance(out.get("machine"), str):
+                out["user"], out["machine"] = "<USER>", "<HOST>"
             return out
         if isinstance(value, list):
             return [self.obj(v) for v in value]
@@ -212,12 +234,14 @@ class Normalizer:
 
 
 def is_event_log(rel: str) -> bool:
-    """True for an event-log path: ``events/<name>.jsonl`` or ``archive/events/<name>.jsonl``."""
+    """True for task, archive, or issue event-log paths."""
     parts = rel.split("/")
     if not rel.endswith(".jsonl"):
         return False
-    return (len(parts) == 2 and parts[0] == "events") or (
-        len(parts) == 3 and parts[:2] == ["archive", "events"]
+    return (
+        (len(parts) == 2 and parts[0] == "events")
+        or (len(parts) == 3 and parts[:2] == ["archive", "events"])
+        or (len(parts) == 3 and parts[:2] == ["issues", "events"])
     )
 
 
@@ -579,8 +603,11 @@ def _board_files(root: Path) -> list[tuple[str, bytes]]:
         if not base.is_dir():
             continue
         for path in base.rglob("*"):
+            relative = path.relative_to(lattice_dir)
+            if relative.parts[:2] == ("issues", "media"):
+                continue
             if path.is_file():
-                found.append((path.relative_to(lattice_dir).as_posix(), path.read_bytes()))
+                found.append((relative.as_posix(), path.read_bytes()))
     return sorted(found)
 
 

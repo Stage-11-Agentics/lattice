@@ -186,19 +186,28 @@ def project_create(
     type=click.Path(file_okay=True, dir_okay=True, path_type=Path),
     help="The directory that holds the board's .lattice/ (a copy of it, writers stopped).",
 )
+@click.option(
+    "--omit-media",
+    is_flag=True,
+    help="Import issue metadata without reading or copying issue media bytes.",
+)
 @_root_option
 @_json_option
-def project_import(slug: str, source: Path, root: str | None, is_json: bool) -> None:
+def project_import(
+    slug: str, source: Path, omit_media: bool, root: str | None, is_json: bool
+) -> None:
     """Import a local board as a new project; the source is never modified.
 
     Refuses a board that fails lattice doctor, a symbolic link or special file
-    under a durable path, and an existing slug. Prints the paths it does not
-    copy, the non-canonical plan and notes files it does copy, and the steps
-    that finish the move.
+    under a durable path, and an existing slug. Copies referenced issue media
+    by default; --omit-media imports metadata only. Prints the paths it does not
+    copy, the media inventory, and the steps that finish the move.
     """
     from lattice.server.importer import import_project
 
     def render(data: dict) -> str:
+        from lattice.core.issue_media import format_size
+
         summary = data["doctor"]["summary"]
         clean = (
             "doctor clean"
@@ -212,6 +221,25 @@ def project_import(slug: str, source: Path, root: str | None, is_json: bool) -> 
             f"Imported {data['slug']} from {data['source']} into {data['path']}: "
             f"{data['copied']} files copied, {clean}. Journal epoch {data['epoch']}, head 0."
         ]
+        if data["media_omitted"]:
+            count_label = (
+                f"at least {data['media_count']} objects"
+                if not data["media_inventory_complete"]
+                else f"{data['media_count']} objects"
+            )
+            lines.append(
+                f"Media omitted (--omit-media): {count_label}; "
+                f"{format_size(data['media_known_bytes'])} known bytes, "
+                f"{data['media_unknown_size_count']} unknown-size objects."
+            )
+            if not data["media_inventory_complete"]:
+                lines.append("  Frame-sidecar inventory is incomplete.")
+        elif data["media_count"]:
+            lines.append(
+                f"Media copied: {data['media_count']} objects, {format_size(data['media_bytes'])}."
+            )
+        else:
+            lines.append("Media copied: no referenced objects.")
         lines += [f"  {f['level']}: {f['message']}" for f in data["doctor"]["findings"]]
         lines.append("")
         if data["not_copied"]:
@@ -238,7 +266,11 @@ def project_import(slug: str, source: Path, root: str | None, is_json: bool) -> 
             lines += [f"       {command}" for command in step["commands"]]
         return "\n".join(lines)
 
-    _run(is_json, lambda: import_project(_root(root), slug, source.absolute()), render)
+    _run(
+        is_json,
+        lambda: import_project(_root(root), slug, source.absolute(), omit_media=omit_media),
+        render,
+    )
 
 
 @project_group.command("list")
@@ -291,7 +323,8 @@ def project_unlock(slug: str, root: str | None, is_json: bool) -> None:
     help="review_mode, plan_review_mode, plan_approval, auto_code_review_on_transition, "
     "auto_plan_review_on_transition, review_base_branch, review_integration_branches, "
     "review_timeout_seconds, review_max_diff_lines, review_max_diff_chars, "
-    "task_types (JSON array; replaces list and must include task).",
+    "task_types (JSON array; replaces list and must include task), "
+    "issues.enabled.",
 )
 @_root_option
 @_json_option

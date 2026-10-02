@@ -108,6 +108,18 @@ def _task_id(lattice_dir: Path) -> str:
         ("resources/db/resource.json", PathClass.DURABLE),
         ("sessions/archive/a.json", PathClass.DURABLE),
         ("templates/code_review.md", PathClass.DURABLE),
+        ("issues/ids.json", PathClass.DURABLE),
+        ("issues/events/iss_01J9ZABCDEFGHJKMNPQRSTVWXY.jsonl", PathClass.DURABLE),
+        ("issues/iss_01J9ZABCDEFGHJKMNPQRSTVWXY.json", PathClass.DURABLE),
+        (
+            "issues/media/iss_01J9ZABCDEFGHJKMNPQRSTVWXY/med_01J9ZABCDEFGHJKMNPQRSTVWXY.jpg",
+            PathClass.ISSUE_MEDIA,
+        ),
+        (
+            "issues/media/iss_01J9ZABCDEFGHJKMNPQRSTVWXY/.frames/med_01J9ZABCDEFGHJKMNPQRSTVWXY/1000.jpg",
+            PathClass.ISSUE_MEDIA,
+        ),
+        ("issues/media/iss_01J9ZABCDEFGHJKMNPQRSTVWXY/.tmp.atomic-write", PathClass.ISSUE_MEDIA),
         ("config.json", PathClass.DURABLE),
         ("ids.json", PathClass.DURABLE),
         ("context.md", PathClass.DURABLE),
@@ -194,6 +206,21 @@ def test_hosted_message_names_the_server(board: Path) -> None:
     with pytest.raises(BoardIsHosted) as exc:
         atomic_write(board / "context.md", "x")
     assert "owned by a Lattice server (srv_1 on atlas pid 4242)" in exc.value.message
+
+
+@pytest.mark.parametrize("marker", sorted(MARKERS))
+def test_issue_media_is_marker_checked_but_not_recorded(board: Path, marker: str) -> None:
+    from lattice.storage.ownership import locate
+
+    target = board / "issues" / "media" / "iss_01J9ZABCDEFGHJKMNPQRSTVWXY" / "med.jpg"
+    assert locate(target).path_class is PathClass.ISSUE_MEDIA
+    assert not locate(target).recorded
+    _plant(board, marker)
+    error_type, code = MARKERS[marker]
+    with pytest.raises(error_type) as exc:
+        atomic_write(target, b"private bytes")
+    assert exc.value.code == code
+    assert not target.exists()
 
 
 def test_board_state(board: Path) -> None:

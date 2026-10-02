@@ -281,6 +281,59 @@ async def api_get(request: Request, state: ServerState) -> Response:
     return await _limited(state, token, run)
 
 
+async def issue_media(request: Request, state: ServerState) -> Response:
+    """Same-origin, session-cookie path for dashboard media elements."""
+    if request.headers.get("authorization") is not None:
+        raise OpError("FORBIDDEN", "dashboard issue media uses the browser session cookie.")
+    if request.headers.get("origin") is not None:
+        web.require_origin(request, state)
+    _session, token = web.session_auth(request, state)
+
+    async def run() -> Response:
+        project = _project(request, state, token)
+        issue_id = request.path_params["issue_id"]
+        media_id = request.path_params["media_id"]
+        frame = request.path_params.get("frame")
+
+        def read():
+            from lattice.server.app import check_issue_data_version
+            from lattice.server.issue_media import read_media
+
+            check_issue_data_version(request, project)
+            return read_media(
+                project.board,
+                issue_id,
+                media_id,
+                frame_name_value=frame,
+                range_header=request.headers.get("range"),
+            )
+
+        try:
+            value = await state.registry.run_locked(project, read)
+        except OpError as exc:
+            if exc.code != "RANGE_NOT_SATISFIABLE":
+                raise
+            from lattice.server.app import envelope_error
+
+            response = envelope_error(exc)
+            response.headers["Accept-Ranges"] = "bytes"
+            response.headers["Content-Range"] = f"bytes */{exc.details.get('size_bytes', 0)}"
+            return response
+        headers = {
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(len(value.body)),
+            "ETag": f'"{value.sha256}"',
+            "X-Content-Type-Options": "nosniff",
+        }
+        if value.content_range is not None:
+            headers["Content-Range"] = value.content_range
+        return Response(
+            value.body, status_code=value.status, headers=headers, media_type=value.content_type
+        )
+
+    return await _limited(state, token, run)
+
+
 # ---------------------------------------------------------------------------
 # Writes
 # ---------------------------------------------------------------------------

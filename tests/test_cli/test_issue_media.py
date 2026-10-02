@@ -92,7 +92,7 @@ NEW_COMMANDS = [
 ]
 
 
-def test_new_commands_refuse_when_off_and_on_a_bound_checkout(
+def test_new_commands_refuse_when_off_and_stop_on_an_unconfigured_bound_checkout(
     initialized_root: Path, invoke, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     for argv in NEW_COMMANDS:
@@ -104,7 +104,8 @@ def test_new_commands_refuse_when_off_and_on_a_bound_checkout(
     monkeypatch.chdir(bound)
     for argv in NEW_COMMANDS:
         result = CliRunner().invoke(cli, [*argv, "--json"])
-        assert json.loads(result.output)["error"]["code"] == "LOCAL_ONLY", argv
+        assert json.loads(result.output)["error"]["code"] == "REMOTE_NOT_CONFIGURED", argv
+    assert not (bound / ".lattice").exists()
 
 
 # ---------------------------------------------------------------------------

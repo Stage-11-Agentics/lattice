@@ -138,6 +138,9 @@ def gitignore_text() -> str:
         "/.lattice/*",
     ]
     lines += [f"!/.lattice/{name}/" for name in sorted(DURABLE_DIRS) + list(WORKSPACE_DIRS)]
+    # Parent issues metadata is allowed above, but hosted audit history must
+    # never stage the private media store underneath it.
+    lines.append("/.lattice/issues/media/")
     lines += [f"!/.lattice/{name}" for name in sorted(DURABLE_FILES)]
     lines += ["# atomic_write temporaries (a crashed write can leave one behind)", ".tmp.*"]
     return "\n".join(lines) + "\n"

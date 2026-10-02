@@ -417,18 +417,25 @@ def format_media_lines(entries: Iterable[Mapping], actor_display=None) -> list[s
         lines.append((head + "  ".join(_entry_facts(entry))).rstrip())
         path = entry.get("path")
         if entry.get("missing"):
-            lines.append(f"{pad}(missing: {path})")
+            lines.append(f"{pad}(missing: {path or 'not on the server'})")
         elif path:
             lines.append(f"{pad}{path}")
+        elif entry.get("available") == "remote":
+            lines.append(f"{pad}{REMOTE_MEDIA_TEXT}")
         if entry.get("kind") == "video":
             frames = entry.get("frames") or []
-            if frames:
+            if frames and all(f.get("path") for f in frames):
                 lines.append(f"{pad}frames: {frames[0]['path']}")
                 lines.extend(f"{pad}        {f['path']}" for f in frames[1:])
+            elif frames:
+                at = ", ".join(f"{f.get('t_ms', 0) / 1000:.1f}s" for f in frames)
+                lines.append(f"{pad}frames: {len(frames)} (at {at}; fetched on request)")
             elif not entry.get("missing"):
                 lines.append(f"{pad}{NO_FRAMES_TEXT}")
     return lines
 
+
+REMOTE_MEDIA_TEXT = "(on the server; 'lattice issue media <issue> --paths' fetches it)"
 
 __all__ = [
     "ACCEPTED_FORMATS_TEXT",

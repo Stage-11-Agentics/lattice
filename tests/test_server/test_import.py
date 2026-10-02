@@ -160,8 +160,17 @@ def root(tmp_path: Path) -> Path:
     return root
 
 
-def _import(root: Path, source: Path, slug: str = "imp", *, as_json: bool = True):
+def _import(
+    root: Path,
+    source: Path,
+    slug: str = "imp",
+    *,
+    as_json: bool = True,
+    omit_media: bool = False,
+):
     args = ["server", "project", "import", slug, "--from", str(source), "--root", str(root)]
+    if omit_media:
+        args.append("--omit-media")
     return _cli(*args, *(["--json"] if as_json else []))
 
 
@@ -278,6 +287,52 @@ def test_import_copies_every_durable_file_byte_for_byte(root: Path, source: Path
 
     assert _tree(source) == before
     assert not list((root / "projects").glob(".importing-*"))
+
+
+def test_import_replays_issue_logs_and_excludes_media(root: Path, source: Path) -> None:
+    config_path = source / ".lattice" / "config.json"
+    config = json.loads(config_path.read_text())
+    config["issues"] = {"enabled": True, "future_setting": "keep"}
+    config_path.write_text(json.dumps(config, sort_keys=True, indent=2) + "\n")
+    filed = _ok("issue", "file", "A hosted issue", "--actor", "human:t", root=source)
+    issue_id = filed["id"]
+    issue_dir = source / ".lattice" / "issues"
+    (issue_dir / f"{issue_id}.json").write_text('{"text": "stale snapshot"}\n')
+    media = issue_dir / "media" / issue_id / "med_example.jpg"
+    media.parent.mkdir(parents=True)
+    media.write_bytes(b"private media")
+
+    result = importer.import_project(root, "imp", source)
+    imported = root / "projects" / "imp" / ".lattice"
+    snapshot = json.loads((imported / "issues" / f"{issue_id}.json").read_text())
+    assert snapshot["title"] == "A hosted issue"
+    ids = json.loads((imported / "issues" / "ids.json").read_text())
+    assert ids["map"] == {"1": issue_id}
+    assert json.loads((imported / "config.json").read_text())["issues"] == {
+        "enabled": True,
+        "future_setting": "keep",
+    }
+    assert not (imported / "issues" / "media").exists()
+    assert {row["class"] for row in result["not_copied"] if "issues/media" in row["path"]} == {
+        "issue_media"
+    }
+    assert media.read_bytes() == b"private media"
+
+
+def test_import_refuses_a_corrupt_issue_log_before_publishing(root: Path, source: Path) -> None:
+    config_path = source / ".lattice" / "config.json"
+    config = json.loads(config_path.read_text())
+    config["issues"] = {"enabled": True}
+    config_path.write_text(json.dumps(config, sort_keys=True, indent=2) + "\n")
+    filed = _ok("issue", "file", "A corruptable issue", "--actor", "human:t", root=source)
+    issue_log = source / ".lattice" / "issues" / "events" / f"{filed['id']}.jsonl"
+    issue_log.write_text("{broken\n")
+
+    with pytest.raises(OpError) as exc:
+        importer.import_project(root, "imp", source)
+    assert exc.value.code == "INTEGRITY_ERROR"
+    assert str(issue_log) in exc.value.message
+    _assert_nothing_created(root)
 
 
 def test_import_plain_output_names_both_lists_and_the_move(root: Path, source: Path) -> None:

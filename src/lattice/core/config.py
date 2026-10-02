@@ -131,6 +131,26 @@ def issues_enabled(config: dict) -> bool:
     return isinstance(section, dict) and section.get("enabled") is True
 
 
+def merge_config_changes(config: dict, changes: dict) -> dict:
+    """Return *config* with allowlisted dotted-key changes merged in place.
+
+    Admin config accepts a small number of dotted keys such as
+    ``issues.enabled``. Keep the external key dotted for validation and audit,
+    while storing its value in the nested config object.
+    """
+    merged = dict(config)
+    for key, value in changes.items():
+        parts = key.split(".")
+        target = merged
+        for part in parts[:-1]:
+            nested = target.get(part)
+            nested = dict(nested) if isinstance(nested, dict) else {}
+            target[part] = nested
+            target = nested
+        target[parts[-1]] = value
+    return merged
+
+
 def configured_event_prefix(config: dict) -> str | None:
     """Return the exact short-ID prefix used for newly created task events."""
     project_code = config.get("project_code")

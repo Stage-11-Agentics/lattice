@@ -6,9 +6,10 @@ write primitive in :mod:`lattice.storage.fs` calls :func:`locate` and
 board it does not own:
 
 - **Path classes (§6.1).** Every path under a ``.lattice/`` belongs to one
-  :class:`PathClass`. Only durable and workspace paths are marker-checked and
-  recorded; runtime, temporary, cache-control, and unmanaged paths stay
-  writable everywhere, so reads (which take lock files) work on a cache.
+  :class:`PathClass`. Durable and workspace paths are marker-checked and
+  recorded; issue media is marker-checked but never recorded. Runtime,
+  temporary, cache-control, and unmanaged paths stay writable everywhere, so
+  reads (which take lock files) work on a cache.
 - **Markers (§6.2).** ``cache/state.json`` or ``cache/applying`` makes a board a
   client cache (``BOARD_IS_CACHE`` unless the syncer flag is set for it);
   ``hosted/owner.json`` makes it server-owned (``BOARD_IS_HOSTED`` unless the
@@ -61,6 +62,7 @@ class PathClass(str, Enum):
     TEMPORARY = "temporary"
     SERVER_CONTROL = "server_control"
     CACHE_CONTROL = "cache_control"
+    ISSUE_MEDIA = "issue_media"
     UNMANAGED = "unmanaged"
 
 
@@ -75,6 +77,7 @@ DURABLE_DIRS = frozenset(
         "resources",
         "sessions",
         "templates",
+        "issues",
     }
 )
 DURABLE_FILES = frozenset({"config.json", "ids.json", "context.md", ".gitignore"})
@@ -84,6 +87,7 @@ TEMP_PREFIX = ".tmp."
 #: Classes whose writes are marker-checked against cache and hosted markers
 #: and recorded by the write recorder.
 RECORDED_CLASSES = frozenset({PathClass.DURABLE, PathClass.WORKSPACE})
+MARKER_CHECKED_CLASSES = RECORDED_CLASSES | {PathClass.ISSUE_MEDIA}
 
 
 def classify_path(relative: PurePath | str) -> PathClass:
@@ -94,9 +98,15 @@ def classify_path(relative: PurePath | str) -> PathClass:
     parts = tuple(p for p in PurePath(relative).parts if p != ".")
     if not parts:
         return PathClass.DURABLE
+    head = parts[0]
+    # Media bytes and frame sidecars have a separate private storage lifecycle:
+    # they are protected by board ownership markers but never synced, recorded,
+    # audited, imported as ordinary board data, or captured in undo pre-images.
+    # This precedes the temporary-file rule so atomic media writes stay protected.
+    if head == "issues" and len(parts) > 1 and parts[1] == "media":
+        return PathClass.ISSUE_MEDIA
     if parts[-1].startswith(TEMP_PREFIX):
         return PathClass.TEMPORARY
-    head = parts[0]
     if head in DURABLE_DIRS or (len(parts) == 1 and head in DURABLE_FILES):
         return PathClass.DURABLE
     if head == "orchestration":
@@ -304,7 +314,7 @@ def locate(path: Path, *, follow: bool = True) -> BoardTarget | None:
 def check_write(target: BoardTarget) -> None:
     """Refuse a write this context may not make to *target* (SPEC §6.2)."""
     for board, path_class in target.classes:
-        if path_class in RECORDED_CLASSES:
+        if path_class in MARKER_CHECKED_CLASSES:
             _check_markers(board, target.path)
         elif path_class is PathClass.SERVER_CONTROL and not (
             _set_for(_OWNER, board) or _set_for(_MAINTENANCE, board)

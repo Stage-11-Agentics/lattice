@@ -235,10 +235,9 @@ not everything an agent notices is a commitment. a flaky test. a footer that ove
 
 the issue log is the place in between. an issue is an observation with a short title and, if needed, a description. file it in one command. later, someone triages the log. an issue becomes a task, joins an existing task, or gets closed.
 
-it is off by default. to turn it on:
+it is off by default. on a local board, add `"issues": {"enabled": true}` to `.lattice/config.json`. on a hosted board, a server admin turns it on with `lattice server project config <slug> --set issues.enabled=true`. before importing or enabling issues on a hosted project, upgrade the server and every client to at least `0.2.2`.
 
-1. add `"issues": {"enabled": true}` to `.lattice/config.json`.
-2. run `lattice setup-claude --force`, so your agents' CLAUDE.md learns the new commands.
+then run `lattice setup-claude --force`, so your agents' CLAUDE.md learns the new commands.
 
 agents never turn it on themselves. on a board where it is off, `lattice issue` answers `ISSUES_DISABLED` and names the line to add.
 
@@ -280,9 +279,9 @@ with ffmpeg installed, a video is re-encoded to H.264 and gets up to eight still
 lattice issue media LAT-I42 --paths    # every photo, and every video's frames, one path per line
 ```
 
-anything that is not a photo or video (a log, a URL) stays a text pointer, as before. `lattice issue detach LAT-I42 2 --reason "shows an API key"` deletes a file for good. the details, limits and the git story are in the user reference.
+anything that is not a photo or video (a log, a URL) stays a text pointer, as before. `lattice issue detach LAT-I42 2 --reason "shows an API key"` deletes a file for good. on hosted boards, media is copied into private server storage during import by default; `--omit-media` opts out. a bound checkout fetches media into a separate private cache only when requested. phone photos may retain location in EXIF metadata. the details, limits and the local git story are in the [user reference](user-reference.md); hosted setup and import are in the [Hosted guide](hosted/guide.md).
 
-the issue log works on local boards only for now. tasks, `list`, `next`, `stats` and the dashboard never see it.
+the issue log remains separate from task workflow. promoting an issue creates a task; linking an issue connects it to an existing task. task list, `next`, and `stats` remain task-based.
 
 ---
 

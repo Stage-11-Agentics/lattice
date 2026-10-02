@@ -59,6 +59,9 @@ class Limits:
     stream_queue_entries: int = 1000
     replay_reset_entries: int = 1000
     min_free_disk_bytes: int = 1024 * 1024 * 1024
+    max_issue_media_file_bytes: int = 100 * 1024 * 1024
+    max_issue_media_issue_bytes: int = 250 * 1024 * 1024
+    max_issue_media_project_bytes: int = 10 * 1024 * 1024 * 1024
 
 
 @dataclass(frozen=True)

@@ -404,6 +404,10 @@ class OpContext:
     short_id_floor: Mapping[str, int] | None = None
     #: Exact IDs in event history, separate from map-only reservations.
     event_short_ids: Collection[str] | None = None
+    #: Whether this operation is enclosed by the server's rollback transaction.
+    transactional: bool = False
+    #: Host-private staged-media manager (server issue operations only).
+    issue_media: Any | None = None
     _expectation_pending: bool = True
 
     def resolve_task(self, raw_id: str) -> str:
@@ -609,6 +613,7 @@ def execute(
     authorize: Authorizer | None = None,
     short_id_floor: Mapping[str, int] | None = None,
     event_short_ids: Collection[str] | None = None,
+    issue_media: Any | None = None,
 ) -> OpResult:
     """Run one operation against the board at *board_dir* (its ``.lattice/``).
 
@@ -646,6 +651,8 @@ def execute(
             authorize=authorize,
             short_id_floor=short_id_floor,
             event_short_ids=event_short_ids,
+            transactional=on_mutation is not None,
+            issue_media=issue_media,
         )
     return dataclasses.replace(result, paths=tuple(recorder.relative_paths(board_dir)))
 
@@ -661,6 +668,8 @@ def _execute(
     authorize: Authorizer | None,
     short_id_floor: Mapping[str, int] | None = None,
     event_short_ids: Collection[str] | None = None,
+    transactional: bool = False,
+    issue_media: Any | None = None,
 ) -> OpResult:
     # 1. Only the board's owner writes it.
     check_board_writable(board_dir, caller)
@@ -701,6 +710,8 @@ def _execute(
         run_hooks=run_hooks,
         short_id_floor=short_id_floor,
         event_short_ids=event_short_ids,
+        transactional=transactional,
+        issue_media=issue_media,
     )
     # 5. Run it; storage failures surface as typed errors.
     with origin_scope(origin):

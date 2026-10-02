@@ -316,6 +316,28 @@ def test_project_config_sets_review_base_and_numeric_budgets(root: Path) -> None
     assert config["review_max_diff_chars"] == 120000
 
 
+def test_project_config_merges_dotted_issue_toggle_offline(root: Path) -> None:
+    admin.create_project(root, "p")
+    board = root / "projects" / "p" / ".lattice"
+    config_path = board / "config.json"
+    config = json.loads(config_path.read_text())
+    config["issues"] = {"enabled": False, "future_setting": "keep"}
+    config["project_name"] = "Preserve me"
+    config_path.write_text(json.dumps(config, sort_keys=True, indent=2) + "\n")
+
+    result = admin.set_project_config(root, "p", {"issues.enabled": True})
+
+    updated = json.loads(config_path.read_text())
+    assert result["set"] == {"issues.enabled": True}
+    assert updated["issues"] == {"enabled": True, "future_setting": "keep"}
+    assert updated["project_name"] == "Preserve me"
+
+
+def test_project_config_accepts_issues_enabled_boolean_values() -> None:
+    assert admin.validate_config_changes({"issues.enabled": "true"}) == {"issues.enabled": True}
+    assert admin.validate_config_changes({"issues.enabled": "false"}) == {"issues.enabled": False}
+
+
 def test_unlock_removes_a_stale_marker(root: Path) -> None:
     admin.create_project(root, "p")
     marker = root / "projects" / "p" / ".lattice" / "hosted" / "owner.json"

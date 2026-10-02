@@ -56,7 +56,12 @@ class IssueFile:
 
     def run(self, ctx: OpContext, p: IssueFileParams) -> OpResult:
         issue_common.require_issue_log(ctx)
-        decoded = issue_common.decode_media(p.media, ctx.config, nothing="Nothing was filed.")
+        decoded = issue_common.decode_media(
+            p.media,
+            ctx.config,
+            nothing="Nothing was filed.",
+            stage_manager=ctx.issue_media,
+        )
         issue_common.check_issue_total(ctx.config, "The issue", 0, decoded)
         raw_title = p.title if p.title is not None else (p.text or "")
         title, overflow, _shortened = split_title(raw_title)
