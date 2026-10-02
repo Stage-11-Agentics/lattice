@@ -266,6 +266,31 @@ test("history lines name the event's reported user and machine", async () => {
   }
 });
 
+test("a filing with media is one history line; media added later by someone else keeps its own", async () => {
+  const later = { op: "issue.attach", op_id: "op_2", reported: { host: "Hyperion", os_user: "atin" } };
+  const server = makeServer([issue(1, {
+    events: [
+      { type: "issue_filed", actor: "agent:qa", ts: ago(10), origin: ATLAS, data: {} },
+      { type: "issue_media_added", actor: "agent:qa", ts: ago(10), origin: ATLAS, data: { kind: "photo" } },
+      { type: "issue_media_added", actor: "agent:qa", ts: ago(10), origin: ATLAS, data: { kind: "video" } },
+      { type: "issue_media_added", actor: "human:atin", ts: ago(3), origin: later, data: { kind: "photo" } },
+    ],
+  })]);
+  const view = boot(server);
+  try {
+    view.dashboard.render();
+    await flush();
+    assert.equal($(".issue-history-toggle").textContent, "▸History (2)");
+    $(".issue-history-toggle").click();
+    assert.deepEqual($$(".issue-history-what").map((line) => line.textContent), [
+      "agent:qa · atin@Atlas filed with 1 photo and 1 video",
+      "human:atin · Hyperion added a photo",
+    ]);
+  } finally {
+    view.done();
+  }
+});
+
 test("a video is pictured by its first frame in the queue and as the inline poster, never by the video file", async () => {
   const noFrames = Object.assign({}, VIDEO, { id: "med_w", url: "/api/issues/iss_2/media/med_w", frames: [] });
   const server = makeServer([issue(1, { media: [VIDEO] }), issue(2, { media: [noFrames] })]);

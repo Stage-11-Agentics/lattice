@@ -209,6 +209,20 @@ test("j and k from an issue that left the queue start where it would sit", () =>
   assert.equal(logic.stepIndex(0, -1, 0, 1), -1);
 });
 
+test("history folds a filing's own media into the filed line, as the prototype words it", () => {
+  const op = (id) => ({ op: "issue.file", op_id: id });
+  const filed = (id) => ({ type: "issue_filed", origin: op(id), data: {} });
+  const media = (id, kind) => ({ type: "issue_media_added", origin: op(id), data: { kind } });
+  const line = (events) => logic.historyEntries(events).map((e) => e.type + (e.filedMedia ? " " + logic.mediaCountText(e.filedMedia.photos, e.filedMedia.videos) : ""));
+  assert.deepEqual(line([filed("a"), media("a", "video")]), ["issue_filed 1 video"]);
+  assert.deepEqual(line([filed("a"), media("a", "photo"), media("a", "photo")]), ["issue_filed 2 photos"]);
+  assert.deepEqual(line([filed("a"), media("a", "photo"), media("a", "video")]), ["issue_filed 1 photo and 1 video"]);
+  assert.deepEqual(line([filed("a"), media("b", "photo")]), ["issue_filed", "issue_media_added"], "another operation keeps its line");
+  assert.deepEqual(line([{ type: "issue_filed", data: {} }, { type: "issue_media_added", data: { kind: "photo" } }]),
+    ["issue_filed", "issue_media_added"], "without an op_id nothing is folded");
+  assert.deepEqual(logic.historyEntries(undefined), []);
+});
+
 test("the media key ignores everything but which media and frames are shown", () => {
   const media = [{ id: "m1", url: "/u", frames: [{ url: "/f0" }], width: 640 }];
   assert.equal(logic.mediaKey("i", media), logic.mediaKey("i", [Object.assign({}, media[0], { width: 641 })]));

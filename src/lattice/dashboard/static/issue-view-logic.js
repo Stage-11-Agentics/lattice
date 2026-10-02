@@ -361,6 +361,45 @@
     };
   }
 
+  // History reads one line per thing a person did. A filing with media is one operation
+  // (issue_filed plus an issue_media_added per file, sharing the origin's op_id), so it
+  // reads as one line, "filed with 1 photo and 1 video"; media added later keeps its own.
+  // Each returned event is the original; a filing that carried media gains filedMedia.
+  function historyEntries(events) {
+    var list = Array.isArray(events) ? events : [];
+    var opOf = function (event) { return event && event.origin && event.origin.op_id || null; };
+    var filings = Object.create(null);
+    list.forEach(function (event) {
+      var op = opOf(event);
+      if (event && event.type === "issue_filed" && op) filings[op] = { photos: 0, videos: 0 };
+    });
+    var entries = [];
+    list.forEach(function (event) {
+      if (!event) return;
+      var op = opOf(event);
+      if (event.type === "issue_media_added" && op && filings[op]) {
+        var kind = (event.data && (event.data.kind || event.data.media && event.data.media.kind)) || "";
+        if (kind === "video") filings[op].videos++;
+        else filings[op].photos++;
+        return;
+      }
+      entries.push(event);
+    });
+    return entries.map(function (event) {
+      var op = opOf(event);
+      if (event.type !== "issue_filed" || !op || !(filings[op].photos || filings[op].videos)) return event;
+      return Object.assign({}, event, { filedMedia: filings[op] });
+    });
+  }
+
+  // "1 photo and 2 videos", as the prototype counts media.
+  function mediaCountText(photos, videos) {
+    var parts = [];
+    if (photos) parts.push(photos + (photos === 1 ? " photo" : " photos"));
+    if (videos) parts.push(videos + (videos === 1 ? " video" : " videos"));
+    return parts.join(" and ");
+  }
+
   // Where an issue would sit in a sorted list it is not in: how many rows sort before it.
   function slotOf(rows, issue, compare) {
     if (!issue) return 0;
@@ -448,6 +487,8 @@
     filingProblem: filingProblem,
     isUnavailable: isUnavailable,
     refreshDelta: refreshDelta,
+    historyEntries: historyEntries,
+    mediaCountText: mediaCountText,
     slotOf: slotOf,
     planRefresh: planRefresh,
     stepIndex: stepIndex,

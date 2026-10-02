@@ -621,20 +621,14 @@
         refresh();
       }).catch(function (error) { options.showToast(error.message || String(error), "error"); });
     }
-    function mediaCountText(photos, videos) {
-      var parts = [];
-      if (photos) parts.push(photos + (photos === 1 ? " photo" : " photos"));
-      if (videos) parts.push(videos + (videos === 1 ? " video" : " videos"));
-      return parts.join(" and ");
-    }
+    // One history line; a filing's own media arrive folded in (logic.historyEntries).
     function eventHistoryLine(event) {
       var data = event.data || {};
       var what;
       switch (event.type) {
         case "issue_filed": {
-          var filedMedia = Array.isArray(data.media) ? data.media : [];
-          var videos = filedMedia.filter(function (item) { return item && item.kind === "video"; }).length;
-          var count = mediaCountText(filedMedia.length - videos, videos);
+          var folded = event.filedMedia || { photos: 0, videos: 0 };
+          var count = logic.mediaCountText(folded.photos, folded.videos);
           what = "filed" + (count ? " with " + esc(count) : "");
           break;
         }
@@ -654,7 +648,7 @@
         '</span><span class="issue-history-what">' + actorHtml(actor, event.origin || data.origin) + " " + what + "</span></div>";
     }
     function renderHistory(issue) {
-      var history = Array.isArray(issue.events) ? issue.events : [];
+      var history = logic.historyEntries(issue.events);
       var box = document.getElementById("issue-history");
       if (!box) return;
       setHtmlIfChanged(box, '<button type="button" class="issue-history-toggle" aria-expanded="' + historyOpen + '"><span class="caret">' +
