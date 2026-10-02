@@ -8,6 +8,7 @@ readers' catch-ups timed out. In the worker it keeps its idle speed.
 
 from __future__ import annotations
 
+import os
 import shutil
 import signal
 import subprocess
@@ -36,10 +37,6 @@ BOARD_FILES = 3000
 #: 0.11 s and in-process staging took 5-9 s (laptop, LAT-340). An absolute
 #: bound, so it runs in the perf lane on a quiet host (LAT-363).
 CONTENDED_LIMIT_SECONDS = 2.0
-#: The default suite's bound, relative to an idle stage measured in the same
-#: run: the worker's contended stage is about 1x its idle stage, in-process
-#: staging about 50x (LAT-363).
-CONTENDED_LIMIT_RATIO = 10
 QUICK = AuditConfig(debounce_seconds=0.05, max_interval_seconds=1)
 
 
@@ -128,30 +125,38 @@ def test_a_worker_that_dies_mid_stage_is_a_git_error(
     assert stager._worker is None
 
 
-def _timed_stage(stager: Stager, changed: Path, content: str, busy: int) -> float:
-    changed.write_text(content)
-    with _busy_threads(busy):
-        started = time.monotonic()
-        stager.stage()
-        return time.monotonic() - started
-
-
-def test_busy_server_threads_do_not_slow_the_stage(tmp_path: Path) -> None:
-    """Load-independent: the contended stage against an idle one timed in the same
-    run, alternating, best of three each, so machine load slows both alike."""
-    directory = _repo(tmp_path, BOARD_FILES)
-    changed = directory / ".lattice" / "tasks" / "task_00000.json"
+def test_stage_runs_in_the_worker_process(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    directory = _repo(tmp_path, 5)
+    marker = directory / ".stage-worker-pid"
+    worker_source = "\n".join(
+        (
+            "import os",
+            "from pathlib import Path",
+            "from lattice.server.audit import Stager, _stage_worker",
+            "_stage_here = Stager.stage_here",
+            "def _stage_here_and_mark_worker(self):",
+            "    tree = _stage_here(self)",
+            "    Path(os.environ['LATTICE_STAGE_WORKER_MARKER']).write_text(",
+            "        str(os.getpid())",
+            "    )",
+            "    return tree",
+            "Stager.stage_here = _stage_here_and_mark_worker",
+            "_stage_worker()",
+            "",
+        )
+    )
+    monkeypatch.setenv("LATTICE_STAGE_WORKER_MARKER", str(marker))
+    monkeypatch.setattr(audit, "_STAGE_WORKER", worker_source)
     stager = Stager(directory)
-    idle: list[float] = []
-    contended: list[float] = []
     try:
-        stager.stage()  # start the worker and fill its cache
-        for n in range(3):
-            idle.append(_timed_stage(stager, changed, f"idle {n}\n", busy=0))
-            contended.append(_timed_stage(stager, changed, f"busy {n}\n", busy=2))
+        stager.stage()
+        assert marker.exists(), "stage_here did not mark the worker process"
+        assert stager._worker is not None
+        worker_pid = int(marker.read_text())
+        assert worker_pid == stager._worker.pid
+        assert worker_pid != os.getpid()
     finally:
         stager.close()
-    assert min(contended) < CONTENDED_LIMIT_RATIO * min(idle), (idle, contended)
 
 
 @pytest.mark.perf
