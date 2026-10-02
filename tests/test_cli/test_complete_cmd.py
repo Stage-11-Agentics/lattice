@@ -69,6 +69,18 @@ def _create_and_advance_to(invoke, fill_plan, target_status: str) -> str:
 class TestCompleteBasic:
     """Basic happy-path tests for lattice complete."""
 
+    def test_complete_from_pr_open_does_not_warn_about_reset(
+        self, invoke, initialized_root, fill_plan
+    ) -> None:
+        task_id = _create_and_advance_to(invoke, fill_plan, "review")
+        invoke("status", task_id, "pr_open", "--actor", _ACTOR)
+
+        completed = invoke("complete", task_id, "--review", "Reviewed.", "--actor", _ACTOR)
+        assert completed.exit_code == 0, completed.output
+        shown = invoke("show", task_id)
+        assert shown.exit_code == 0, shown.output
+        assert "Previously completed, reset on " not in shown.output
+
     def test_complete_from_in_progress(self, invoke, initialized_root, fill_plan) -> None:
         task_id = _create_and_advance_to(invoke, fill_plan, "in_progress")
 

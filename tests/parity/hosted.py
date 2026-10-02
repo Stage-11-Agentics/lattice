@@ -241,8 +241,8 @@ def parity_server(base: Path) -> Iterator[ParityServer]:
 
     with recording_mutations() as mutations, running_server(root) as handle:
         # The server installs a process-wide reporter for unknown event types.
-        # This server outlives the parity tests (one per worker), so give the
-        # default back: other tests in the worker expect it on stderr.
+        # This server outlives the parity tests (one per worker), so clear the
+        # process-wide reporter before other tests use local replay.
         set_unknown_type_reporter(None)
         yield ParityServer(
             root=root, url=handle.url, token=person, strict_token=strict, mutations=mutations

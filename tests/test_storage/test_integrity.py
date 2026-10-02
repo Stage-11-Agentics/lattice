@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import time
 from pathlib import Path
 
@@ -17,7 +18,13 @@ import pytest
 from click.testing import CliRunner
 
 from lattice.cli.main import cli
-from lattice.storage.integrity import check_board, repair_task_derived_files
+from lattice.storage import integrity
+from lattice.storage.integrity import (
+    _fix_truncated_jsonl_locked,
+    check_board,
+    repair_task_derived_files,
+)
+from lattice.storage.locks import task_locks
 
 GOLDEN = Path(__file__).parents[1] / "fixtures" / "doctor_golden"
 
@@ -118,6 +125,41 @@ def test_check_board_reports_what_the_cli_prints(tmp_path: Path) -> None:
     assert payload["data"]["summary"]["errors"] == report.errors > 0
     assert payload["data"]["summary"]["warnings"] == report.warnings > 0
     assert not report.jsonl_ok and not report.drift_ok and not report.alias_ok
+
+
+def test_doctor_repair_holds_task_lock_while_trimming_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    src, (task_id, *_rest) = _board(tmp_path)
+    lattice_dir = src / ".lattice"
+    path = lattice_dir / "events" / f"{task_id}.jsonl"
+    path.write_text(path.read_text() + '{"truncated"')
+    appended = {"id": "ev_01J00000000000000000000000", "type": "x_note"}
+    writer_started = threading.Event()
+    writer_finished = threading.Event()
+    writers: list[threading.Thread] = []
+    original_atomic_write = integrity.atomic_write
+
+    def append_after_repair() -> None:
+        writer_started.set()
+        with task_locks(lattice_dir / "locks", [task_id]):
+            with path.open("a") as stream:
+                stream.write(json.dumps(appended) + "\n")
+        writer_finished.set()
+
+    def pause_repair_write(target: Path, content: str | bytes) -> None:
+        writer = threading.Thread(target=append_after_repair)
+        writers.append(writer)
+        writer.start()
+        assert writer_started.wait(timeout=2)
+        assert not writer_finished.wait(timeout=0.05)
+        original_atomic_write(target, content)
+
+    monkeypatch.setattr(integrity, "atomic_write", pause_repair_write)
+    assert _fix_truncated_jsonl_locked(lattice_dir, path)
+    writers[0].join(timeout=2)
+    assert not writers[0].is_alive()
+    assert json.loads(path.read_text().splitlines()[-1]) == appended
 
 
 def test_rebuild_all_raises_every_counter_to_the_log_floor(tmp_path: Path) -> None:

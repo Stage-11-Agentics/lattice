@@ -125,8 +125,8 @@ def test_an_older_client_prints_one_upgrade_line_and_filters_known_types(
     hosted = session.Hosted(repo, "team", "demo")
     session.announce_versions(hosted)
     capsys.readouterr()
-    core_tasks._unknown_type_reporter("future_judgment")
-    core_tasks._unknown_type_reporter("nobody_knows")
+    core_tasks._apply_mutation({}, "future_judgment", {})
+    core_tasks._apply_mutation({}, "nobody_knows", {})
     err = capsys.readouterr().err
     assert "future_judgment" not in err
     assert "nobody_knows" in err

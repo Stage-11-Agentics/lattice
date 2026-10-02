@@ -127,7 +127,7 @@ def lookup_unreachable(remote: http.Remote, op_id: str, detail: str) -> OpError:
         "SERVER_UNREACHABLE",
         f"cannot reach {remote.alias} ({remote.url}) to look up operation {op_id}: "
         f"{detail}. Its outcome is still unknown; do not run the write again. Check "
-        f"again when the server is reachable: lattice remote op-status {op_id}",
+        f"again when the server is reachable: {program_name()} remote op-status {op_id}",
         {"remote": remote.alias, "op_id": op_id},
     )
 

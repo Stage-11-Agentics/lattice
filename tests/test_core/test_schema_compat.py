@@ -73,8 +73,8 @@ def test_event_with_unknown_fields_survives_roundtrip():
     assert roundtripped["schema_version"] == 1
 
 
-def test_unknown_event_type_does_not_crash(capsys):
-    """An unknown built-in event type should warn on stderr but not raise."""
+def test_unknown_event_type_does_not_crash_or_warn_on_replay(capsys):
+    """An unknown built-in event is skipped quietly during forward-compatible replay."""
     event = _make_task_created_event(task_id="task_BBBB")
     snapshot = apply_event_to_snapshot(None, event)
 
@@ -88,8 +88,7 @@ def test_unknown_event_type_does_not_crash(capsys):
     result = apply_event_to_snapshot(snapshot, unknown_event)
 
     captured = capsys.readouterr()
-    assert "unknown event type" in captured.err.lower()
-    assert "some_future_type" in captured.err
+    assert captured.err == ""
 
     # Bookkeeping fields must still be updated
     assert result["last_event_id"] == unknown_event["id"]

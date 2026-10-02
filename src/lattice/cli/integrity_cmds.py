@@ -354,6 +354,10 @@ def _doctor_report(
                 click.echo(f"\u2139 {f['message']}")
 
         for f in findings:
+            if f["check"] == "unknown_event_type":
+                click.echo(f"\u26a0 {f['message']}")
+
+        for f in findings:
             if f["check"] == "missing_task_file":
                 click.echo(f"\u26a0 {f['message']}")
 

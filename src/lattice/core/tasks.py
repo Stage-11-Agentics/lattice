@@ -780,17 +780,27 @@ def _print_unknown_type(etype: str) -> None:
     )
 
 
-_unknown_type_reporter: Callable[[str], None] = _print_unknown_type
+_unknown_type_reporter: Callable[[str], None] | None = None
 
 
 def set_unknown_type_reporter(reporter: Callable[[str], None] | None) -> None:
-    """Route unknown-event-type warnings to *reporter* (``None`` restores stderr).
+    """Route unknown-event-type warnings to *reporter* (``None`` disables them).
 
-    A server installs one that logs each (project, type) once instead of
-    printing on every replay (SPEC §8.7).
+    Servers install a reporter that logs each (project, type) once. Local
+    diagnostics are reported by ``lattice doctor`` rather than on every replay.
     """
     global _unknown_type_reporter
-    _unknown_type_reporter = reporter if reporter is not None else _print_unknown_type
+    _unknown_type_reporter = reporter
+
+
+def is_known_event_type(etype: object) -> bool:
+    """Return whether replay recognizes *etype* as built-in or custom."""
+    return isinstance(etype, str) and (
+        etype == "task_created"
+        or etype in _MUTATION_HANDLERS
+        or etype in _NOOP_EVENT_TYPES
+        or etype.startswith("x_")
+    )
 
 
 def _apply_mutation(snap: dict, etype: str, event: dict) -> None:
@@ -809,6 +819,7 @@ def _apply_mutation(snap: dict, etype: str, event: dict) -> None:
         # Custom event type -- no snapshot field changes.
         pass
     else:
-        # Unknown built-in types: warn for discoverability but don't fail,
-        # to preserve forward compatibility (section 6).
-        _unknown_type_reporter(etype)
+        # Unknown built-in types don't fail replay; only report when an
+        # application has installed a reporter (SPEC §15).
+        if _unknown_type_reporter is not None:
+            _unknown_type_reporter(etype)

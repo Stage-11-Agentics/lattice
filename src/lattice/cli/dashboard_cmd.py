@@ -6,6 +6,7 @@ import contextlib
 import errno
 import os
 import signal
+import shutil
 import socket
 import subprocess
 import sys
@@ -30,6 +31,7 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 # Module-level state for SIGHUP restart coordination.
 _restart_requested = False
 _active_server = None
+_RESTART_ENV = "LATTICE_DASHBOARD_RESTART"
 
 
 def _handle_sighup(signum, frame):  # noqa: ARG001
@@ -96,7 +98,12 @@ def dashboard_cmd(host: str, port: int | None, output_json: bool) -> None:
 
     with contextlib.ExitStack() as stack:
         target = _dashboard_target(lattice_dir, stack, output_json)
-        _serve(lattice_dir, host, port, readonly, output_json, target)
+        restart = _serve(lattice_dir, host, port, readonly, output_json, target)
+
+    if restart:
+        os.environ[_RESTART_ENV] = "1"
+        script = shutil.which(sys.argv[0]) or sys.argv[0]
+        os.execv(sys.executable, [sys.executable, script, *sys.argv[1:]])
 
 
 def _dashboard_target(lattice_dir, stack, is_json):  # noqa: ANN001, ANN202
@@ -132,7 +139,7 @@ def _serve(lattice_dir, host, port, readonly, output_json, target):  # noqa: ANN
 
     from lattice.dashboard.server import create_server
 
-    first_start = True
+    first_start = os.environ.pop(_RESTART_ENV, None) != "1"
 
     while True:
         _restart_requested = False
@@ -195,6 +202,9 @@ def _serve(lattice_dir, host, port, readonly, output_json, target):  # noqa: ANN
             break
 
         click.echo("Restarting dashboard...", err=True)
+        return True
+
+    return False
 
 
 @cli.command("restart")

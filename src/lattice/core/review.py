@@ -35,6 +35,7 @@ from lattice.core.agent_spawn import (
     SpawnResult,
     spawn_one,
 )
+from lattice.storage.fs import atomic_write
 
 
 # ---------------------------------------------------------------------------
@@ -170,9 +171,7 @@ def write_review_state(lattice_dir: Path, state: dict) -> None:
     state_dir = lattice_dir / REVIEW_STATE_DIR
     state_dir.mkdir(exist_ok=True)
     path = _state_path(lattice_dir, state["task_id"])
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
-    tmp.replace(path)
+    atomic_write(path, json.dumps(state, indent=2) + "\n")
 
 
 def read_review_state(lattice_dir: Path, task_id: str) -> dict | None:
@@ -377,6 +376,8 @@ def record_agent_failure(
     entry = json.dumps(record, sort_keys=True, separators=(",", ":"))
     with open(path, "a", encoding="utf-8") as f:
         f.write(entry + "\n")
+        f.flush()
+        os.fsync(f.fileno())
     return count_agent_failures(lattice_dir, agent_type)
 
 

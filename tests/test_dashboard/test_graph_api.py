@@ -15,6 +15,7 @@ from lattice.core.config import default_config, serialize_config
 from lattice.core.events import create_event, serialize_event
 from lattice.core.ids import generate_task_id
 from lattice.core.tasks import apply_event_to_snapshot, serialize_snapshot
+from lattice.dashboard.api import get_graph
 from lattice.dashboard.server import create_server
 from lattice.storage.fs import atomic_write, ensure_lattice_dirs
 
@@ -349,3 +350,35 @@ def test_graph_etag_hashes_crlf_bearing_event_timestamp(dashboard_server) -> Non
     digest = hashlib.sha256(revision.encode("utf-8", errors="surrogatepass")).hexdigest()
     assert re.fullmatch(r'"[0-9a-f]{64}"', etag)
     assert etag == f'"{digest}"'
+
+
+def test_graph_etag_changes_when_relationship_changes_with_same_timestamp(dashboard_server):
+    """A graph projection change invalidates its ETag even within one timestamp."""
+    _base_url, lattice_dir, ids = dashboard_server
+    source_id = ids["in_progress"]
+    target_id = ids["done"]
+    first = get_graph(lattice_dir)
+    etag = first.headers["ETag"]
+    snapshot_path = lattice_dir / "tasks" / f"{source_id}.json"
+    snapshot = json.loads(snapshot_path.read_text())
+    event = create_event(
+        "relationship_added",
+        source_id,
+        "human:test",
+        {"type": "relates_to", "target_task_id": target_id},
+        ts=snapshot["updated_at"],
+    )
+    with (lattice_dir / "events" / f"{source_id}.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(serialize_event(event))
+    snapshot_path.write_text(
+        serialize_snapshot(apply_event_to_snapshot(snapshot, event)), encoding="utf-8"
+    )
+
+    changed = get_graph(lattice_dir, if_none_match=etag)
+    assert changed.status == 200
+    assert changed.headers["ETag"] != etag
+    assert changed.envelope["data"]["revision"] != first.envelope["data"]["revision"]
+    assert {link["type"] for link in changed.envelope["data"]["links"]} == {
+        "blocks",
+        "relates_to",
+    }

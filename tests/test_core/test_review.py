@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import tempfile
+import threading
 from pathlib import Path
 
 import pytest
@@ -60,6 +61,37 @@ class TestReviewState:
     def test_clear_nonexistent(self, lattice_dir: Path) -> None:
         # Should not raise
         clear_review_state(lattice_dir, "nonexistent")
+
+    def test_concurrent_writes_use_independent_atomic_temps(
+        self, lattice_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        barrier = threading.Barrier(2)
+        original_replace = os.replace
+
+        def rendezvous_replace(source, target):
+            barrier.wait(timeout=5)
+            return original_replace(source, target)
+
+        monkeypatch.setattr(os, "replace", rendezvous_replace)
+        failures: list[Exception] = []
+
+        def write_state(number: int) -> None:
+            try:
+                write_review_state(
+                    lattice_dir, {"task_id": "same-task", "writer": number, "agents": []}
+                )
+            except Exception as exc:
+                failures.append(exc)
+
+        threads = [threading.Thread(target=write_state, args=(number,)) for number in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5)
+
+        assert all(not thread.is_alive() for thread in threads)
+        assert failures == []
+        assert read_review_state(lattice_dir, "same-task")["writer"] in {0, 1}
 
 
 # ---------------------------------------------------------------------------
@@ -239,6 +271,14 @@ class TestFailureTracking:
 
     def test_count_empty(self, lattice_dir: Path) -> None:
         assert count_agent_failures(lattice_dir, "gemini") == 0
+
+    def test_record_failure_fsyncs_jsonl_append(
+        self, lattice_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fsynced: list[int] = []
+        monkeypatch.setattr(review_mod.os, "fsync", fsynced.append)
+        record_agent_failure(lattice_dir, "claude", "task-1")
+        assert len(fsynced) == 1
 
     def test_threshold_constant(self) -> None:
         assert FAILURE_THRESHOLD == 2
