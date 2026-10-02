@@ -25,7 +25,7 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
       - name: Install dependencies
-        run: uv sync --extra dev
+        run: uv sync --extra dev --extra server
       - name: Lint
         run: uv run ruff check src/ tests/
       - name: Format check
@@ -45,7 +45,7 @@ jobs:
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
       - name: Install dependencies
-        run: uv sync --extra dev --python ${{ matrix.python-version }}
+        run: uv sync --extra dev --extra server --python ${{ matrix.python-version }}
       - name: Smoke the installed CLI
         run: uv run python -c "import sys; print(sys.version)" && uv run lattice --version
       - name: Test
@@ -62,7 +62,7 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
       - name: Install dependencies
-        run: uv sync --extra dev
+        run: uv sync --extra dev --extra server
       - name: Type check
         run: uv run mypy src/lattice/
 

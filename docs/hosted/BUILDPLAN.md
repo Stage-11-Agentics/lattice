@@ -253,5 +253,5 @@ The critical path is H-0 → H-1 → H-8 → H-9 → H-22a → H-10a → H-10b �
 
 - Branches cut from `v2`; PRs target `v2`. The Merge Captain merges `main` into `v2` whenever `main` moves, before the next landing.
 - Project gate: `EVALUATION.md` §1. Green CI at the exact head stands in for a local run; the Merge Captain runs the per-PR torture lane locally on tickets touching `ops/`, `storage/`, `server/`, or `remote/`. Envelope tests run only in the background and never block a landing or an admission. The `perf` check runs on the operator's laptop at H-6 and before CP3, CP4, and the release gate.
-- The orchestrator's own Lattice commands run on the operator's current install, not on `v2`. Builders validate from their worktrees with the worktree's own virtualenv (`uv pip install -e ".[dev,server]"`, then `.venv/bin/lattice`), never the global command.
+- The orchestrator's own Lattice commands run on the operator's current install, not on `v2`. Builders validate from their worktrees with the worktree's own virtualenv (`uv sync --extra dev --extra server`, then `.venv/bin/lattice`), never the global command.
 - No ticket publishes a package or merges to `main`. Only H-18 deploys, apart from H-23's throwaway server behind the production proxy, which it removes when the spike ends.

@@ -56,7 +56,7 @@ Lattice is in active development and open source. Pull requests are welcome.
 
 ```bash
 cd lattice/
-uv venv && uv pip install -e ".[dev]"
+uv sync --extra dev --extra server
 ```
 
 ### Initialize a project

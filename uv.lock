@@ -337,7 +337,7 @@ requires-dist = [
     { name = "pytest-timeout", marker = "extra == 'dev'", specifier = ">=2.3" },
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3.5" },
     { name = "python-ulid", specifier = ">=2.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = "==0.15.1" },
     { name = "starlette", marker = "extra == 'dev'", specifier = ">=0.27" },
     { name = "starlette", marker = "extra == 'server'", specifier = ">=0.27" },
     { name = "typing-extensions", specifier = ">=4.0" },
