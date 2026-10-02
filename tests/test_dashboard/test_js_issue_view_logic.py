@@ -1,4 +1,4 @@
-"""Node bridge and feature-off integration guard for issue-view-logic.js."""
+"""Node bridge for the issue Inbox JS tests, and its feature-off integration guard."""
 
 from __future__ import annotations
 
@@ -9,15 +9,19 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-NODE_TEST_FILE = REPO_ROOT / "tests" / "js" / "issue-view-logic.test.js"
+NODE_TEST_FILES = (
+    REPO_ROOT / "tests" / "js" / "issue-view-logic.test.js",
+    REPO_ROOT / "tests" / "js" / "issue-view-dom.test.js",
+)
 INDEX_HTML = REPO_ROOT / "src" / "lattice" / "dashboard" / "static" / "index.html"
 ISSUE_VIEW_JS = REPO_ROOT / "src" / "lattice" / "dashboard" / "static" / "issue-view.js"
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
-def test_issue_view_logic_node_tests_pass() -> None:
+@pytest.mark.parametrize("test_file", NODE_TEST_FILES, ids=lambda path: path.name)
+def test_issue_view_node_tests_pass(test_file: Path) -> None:
     result = subprocess.run(
-        ["node", "--test", str(NODE_TEST_FILE)],
+        ["node", "--test", "--test-timeout=8000", str(test_file)],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
@@ -25,7 +29,7 @@ def test_issue_view_logic_node_tests_pass() -> None:
         check=False,
     )
     assert result.returncode == 0, (
-        "node issue-view-logic tests failed:\n"
+        f"node {test_file.name} failed:\n"
         f"--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
     )
 

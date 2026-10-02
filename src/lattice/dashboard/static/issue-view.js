@@ -1,6 +1,10 @@
-/* Round-four Inbox UI. Network calls and DOM rendering stay out of issue-view-logic.js. */
+/* The issue Inbox (round four, take A). DOM and network only: every decision it can
+   hand off (queues, labels, origins, formatting, filing checks, the refresh plan)
+   lives in issue-view-logic.js under node:test. */
 (function (root) {
   "use strict";
+
+  var BUBBLE = '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M2 2h12a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H7l-3.5 3v-3H2a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z"/></svg>';
 
   function mount(options) {
     var app = options.app;
@@ -30,74 +34,55 @@
     var active = false;
     var loaded = false;
     var loading = false;
-    var fileState = null;
+    var unavailable = false;
+    var panel = null;
     var recorder = null;
     var recorderStream = null;
+    var countLoading = false;
+    var dragDepth = 0;
+    var dropHint = null;
     var destroyed = false;
 
+    // ---- actors and origins ----
     function actorText(actor) {
       if (typeof actor === "string") return actor;
       var normalized = root.normalizeActor ? root.normalizeActor(actor) : null;
       return normalized || (root.actorTooltip ? root.actorTooltip(actor) : String(actor || ""));
     }
-    function actorName(actor) {
-      return root.actorDisplayName ? root.actorDisplayName(actor) : actorText(actor);
-    }
-    function originLabel(actor, origin) {
-      if (!origin) return "";
-      var user = origin.user || "unknown";
-      var machine = origin.machine || "unknown";
-      return actorText(actor) === "human:" + user ? machine : user + "@" + machine;
+    function actorChip(actor) {
+      var full = actorText(actor);
+      if (!full) return '<span class="issue-muted">unknown</span>';
+      var kind = full.indexOf("human:") === 0 ? "human" : "agent";
+      return '<span class="issue-actor issue-actor-' + kind + '" data-actor="' + esc(full) + '">' + esc(full) + "</span>";
     }
     function originHtml(actor, origin) {
-      var label = originLabel(actor, origin);
+      var label = logic.originLabel(actorText(actor), origin);
       return label ? ' <span class="issue-origin">· ' + esc(label) + "</span>" : "";
     }
-    function actorHtml(actor, origin) {
-      var full = actorText(actor);
-      if (!full) return "unknown";
-      return '<span class="actor issue-actor" data-actor="' + esc(full) + '" title="' + esc(full) + '">' +
-        esc(actorName(actor)) + "</span>" + originHtml(actor, origin);
-    }
+    function actorHtml(actor, origin) { return actorChip(actor) + originHtml(actor, origin); }
     function displayTime(timestamp) {
       if (!timestamp) return "unknown time";
       var date = new Date(timestamp);
       if (isNaN(date.getTime())) return String(timestamp);
       return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
     }
-    function relativeTime(timestamp) {
-      if (!timestamp) return "—";
-      var date = new Date(timestamp);
-      if (isNaN(date.getTime())) return "—";
-      var seconds = Math.max(0, Math.floor((Date.now() - date.getTime()) / 1000));
-      if (seconds < 60) return "now";
-      if (seconds < 3600) return Math.floor(seconds / 60) + "m";
-      if (seconds < 86400) return Math.floor(seconds / 3600) + "h";
-      if (seconds < 86400 * 30) return Math.floor(seconds / 86400) + "d";
-      if (seconds < 86400 * 365) return Math.floor(seconds / (86400 * 30)) + "mo";
-      return Math.floor(seconds / (86400 * 365)) + "y";
-    }
-    function formatDuration(seconds, precise) {
-      seconds = Math.max(0, Math.floor(Number(seconds) || 0));
-      var minutes = Math.floor(seconds / 60);
-      var remain = seconds % 60;
-      return precise ? minutes + ":" + String(remain).padStart(2, "0") :
-        (minutes ? minutes + ":" + String(remain).padStart(2, "0") : remain + "s");
-    }
+    function relativeTime(timestamp) { return logic.relativeTime(timestamp, Date.now()); }
+    function mediaOf(issue) { return logic.liveMedia(issue); }
+    function mediaUrl(path) { return root.apiUrl(options.basePath, path); }
+
+    // ---- queues and the cursor ----
     function issueById(id, source) {
       var rows = source || (person ? personRows : issues);
       return rows.find(function (issue) { return issue.id === id; }) || details[id] || null;
     }
-    function visibleRows() {
-      return person ? personRows : issues;
-    }
+    function visibleRows() { return person ? personRows : issues; }
     function rowsForQueue(key, sourceRows) {
       var source = sourceRows || visibleRows();
       if (person && key === "all") return logic.sortPersonIssues(source, person.actor);
       return logic.rowsForQueue(source, key, person ? person.actor : null)
         .sort(function (a, b) {
           if (person) return logic.latestActorActivity(b, person.actor).localeCompare(logic.latestActorActivity(a, person.actor)) ||
-            (a.seq || 0) - (b.seq || 0);
+            (b.seq || 0) - (a.seq || 0);
           return (a.seq || 0) - (b.seq || 0);
         });
     }
@@ -107,6 +92,7 @@
       if (issue) cursors[currentKey()] = issue.id;
       else delete cursors[currentKey()];
     }
+    // Keep the cursor on the same issue if it is still in this queue; otherwise take whatever now sits at its old position.
     function settleCursor(rows) {
       var key = currentKey();
       var id = cursors[key];
@@ -121,6 +107,8 @@
         cursors[key + ":index"] = index;
       }
     }
+
+    // ---- frame ----
     function mountFrame() {
       app.innerHTML = '<div class="issue-inbox">' +
         '<section class="issue-q-pane" aria-label="Issue queue">' +
@@ -131,7 +119,7 @@
             (hosted ? "" : '<span class="sep"></span><kbd>i</kbd> file') + "</div>" +
         "</section>" +
         '<section class="issue-d-pane" aria-label="Selected issue">' +
-          '<div class="issue-d-head" id="issue-d-head"><button class="issue-id-copy" id="issue-id-copy" title="Copy the ID (c), to tell an agent what to do with it" disabled></button>' +
+          '<div class="issue-d-head" id="issue-d-head"><button type="button" class="issue-id-copy" id="issue-id-copy" title="Copy the ID (c), to tell an agent what to do with it" disabled></button>' +
             '<span class="issue-copy-status" id="issue-copy-status"></span><span id="issue-d-state"></span><span class="issue-d-facts" id="issue-d-facts"></span></div>' +
           '<div class="issue-d-body" id="issue-d-body"></div>' +
         "</section></div>";
@@ -143,7 +131,7 @@
       }).join("");
       tabs.addEventListener("click", function (event) {
         var button = event.target.closest("[data-q]");
-        if (button) switchQueue(button.getAttribute("data-q"));
+        if (button) { button.blur(); switchQueue(button.getAttribute("data-q")); }
       });
       document.getElementById("issue-q-list").addEventListener("click", function (event) {
         var actor = event.target.closest("[data-actor]");
@@ -153,93 +141,102 @@
         setCursor(issueById(row.getAttribute("data-issue-id")));
         render();
       });
-      document.getElementById("issue-id-copy").addEventListener("click", copyId);
+      document.getElementById("issue-id-copy").addEventListener("click", function () { this.blur(); copyId(); });
       document.getElementById("issue-d-head").addEventListener("click", function (event) {
         var actor = event.target.closest("[data-actor]");
         if (actor) enterPerson(actor.getAttribute("data-actor"));
       });
       document.getElementById("issue-d-body").addEventListener("click", onDetailClick);
-      document.getElementById("issue-d-body").addEventListener("keydown", function (event) {
-        if (event.target.id === "issue-comment-box" && event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-          event.preventDefault(); postComment();
-        }
+      document.getElementById("issue-d-body").addEventListener("dblclick", function (event) {
+        var figure = event.target.closest(".issue-media-item");
+        if (figure && event.target.closest(".issue-media-frame")) openCloser(Number(figure.getAttribute("data-item")));
       });
     }
-    function setActive(active) {
-      document.body.classList.toggle("issue-view-active", !!active);
-      if (active) {
-        var nav = document.querySelector(".nav");
-        if (nav) document.documentElement.style.setProperty("--issue-nav-height", nav.offsetHeight + "px");
-      }
+    function setActive(on) {
+      document.body.classList.toggle("issue-view-active", !!on);
     }
-    function showHostedUnavailable() {
+    function showUnavailable() {
       setActive(false);
+      mediaKey = null;
       app.innerHTML = '<section class="issue-unavailable"><h1>Issues</h1><p>Issues are not available on this board yet.</p></section>';
     }
+    function markUnavailable() {
+      unavailable = true;
+      closeCloser();
+      if (active) showUnavailable();
+    }
+
+    // ---- loading and refreshing ----
+    function interactionState(issueId) {
+      var inline = document.querySelector("#issue-d-media video");
+      var overlay = document.querySelector("#issue-closer video");
+      var commentBox = document.getElementById("issue-comment-box");
+      var mine = shownId === issueId;
+      return {
+        playing: !!(mine && inline && !inline.paused && !inline.ended) ||
+          !!(closer && closer.issue === issueId && overlay && !overlay.paused && !overlay.ended),
+        commentFocused: !!(mine && commentBox && document.activeElement === commentBox),
+        commentDraft: !!(mine && commentBox && commentBox.value.length > 0)
+      };
+    }
     async function loadIssues() {
-      if (hosted || destroyed) return;
+      if (hosted || destroyed || unavailable) return;
       var wasLoaded = loaded;
       var previousIssues = issues;
       var previousPersonRows = personRows;
-      var previousVisibleRows = rowsForQueue(queue, person ? previousPersonRows : previousIssues);
-      var previousSelected = current();
-      var previousSelectedId = previousSelected && previousSelected.id;
+      var previousVisible = rowsForQueue(queue);
+      var selected = current();
+      var selectedId = selected ? selected.id : null;
+      var selectedIndex = cursors[currentKey() + ":index"] || 0;
       loading = true;
       var generation = ++requestGeneration;
       try {
         var rows = await api("/api/issues");
         if (destroyed || generation !== requestGeneration) return;
         issues = Array.isArray(rows) ? rows : [];
+        setNavCount(issues);
         if (person) await loadPersonIssues(person.actor, generation);
         if (destroyed || generation !== requestGeneration) return;
         loading = false;
         loaded = true;
-        if (!wasLoaded) {
-          render();
-          return;
-        }
+        if (!active) return;
+        if (!wasLoaded) { render(); return; }
 
-        var allDelta = logic.refreshDelta(previousIssues, issues, null);
-        allDelta.changedIds.forEach(markDetailStale);
+        var changed = Object.create(null);
+        logic.refreshDelta(previousIssues, issues, null).changedIds.forEach(function (id) { changed[id] = true; markDetailStale(id); });
         var personDelta = logic.refreshDelta(previousPersonRows, personRows, null);
-        personDelta.changedIds.forEach(markDetailStale);
+        personDelta.changedIds.forEach(function (id) { changed[id] = true; markDetailStale(id); });
         renderQueueCounts();
         if (personDelta.listChanged) renderPersonHead();
 
-        var nextVisibleRows = rowsForQueue(queue);
-        var selectedChanged = false;
-        logic.applyRefreshDelta(previousVisibleRows, nextVisibleRows, previousSelectedId, {
-          updateList: function () {
-            var selectedStillVisible = nextVisibleRows.some(function (issue) { return issue.id === previousSelectedId; });
-            var keepIssueInteraction = previousSelectedId && hasActiveIssueInteraction(previousSelectedId) &&
-              issues.some(function (issue) { return issue.id === previousSelectedId; });
-            if (!selectedStillVisible && !keepIssueInteraction) settleCursor(nextVisibleRows);
-            else if (selectedStillVisible) {
-              cursors[currentKey() + ":index"] = nextVisibleRows.findIndex(function (issue) {
-                return issue.id === previousSelectedId;
-              });
-            }
-            renderQueue(nextVisibleRows, { preserveScroll: true });
-          },
-          updateSelected: function () { selectedChanged = true; }
+        var nextVisible = rowsForQueue(queue);
+        var plan = logic.planRefresh({
+          previousRows: previousVisible,
+          nextRows: nextVisible,
+          selectedId: selectedId,
+          selectedIndex: selectedIndex,
+          busy: selectedId != null && logic.busyWith(interactionState(selectedId)),
+          selectedExists: selectedId != null && (issues.some(function (issue) { return issue.id === selectedId; }) ||
+            personRows.some(function (issue) { return issue.id === selectedId; }))
         });
-        updateQueueAges(nextVisibleRows);
-
-        var nextSelected = current();
-        var nextSelectedId = nextSelected && nextSelected.id;
-        if (previousSelectedId !== nextSelectedId) {
-          renderDetail(nextSelected);
-        } else if (selectedChanged && nextSelected) {
-          markDetailStale(nextSelected.id);
-          ensureDetail(nextSelected);
+        if (plan.cursor.id == null) delete cursors[currentKey()];
+        else cursors[currentKey()] = plan.cursor.id;
+        cursors[currentKey() + ":index"] = plan.cursor.index;
+        if (plan.list) renderQueue(nextVisible, { preserveScroll: true });
+        updateQueueAges(nextVisible);
+        var detail = plan.detail === "keep" && selectedId && changed[selectedId] ? "reload" : plan.detail;
+        if (detail === "switch") renderDetail(current());
+        else if (detail === "reload" && current()) {
+          markDetailStale(current().id);
+          ensureDetail(current());
         }
         syncCloser();
       } catch (error) {
-        if (generation === requestGeneration) {
-          loading = false;
-          loaded = true;
-          if (!wasLoaded) showLoadError(error);
-        }
+        if (generation !== requestGeneration) return;
+        loading = false;
+        loaded = true;
+        if (logic.isUnavailable(error)) markUnavailable();
+        else if (!wasLoaded && active) showLoadError(error);
       }
     }
     async function loadPersonIssues(actor, parentGeneration) {
@@ -247,6 +244,24 @@
       var rows = await api("/api/issues?by=" + encodeURIComponent(actor));
       if (destroyed || (parentGeneration != null && parentGeneration !== requestGeneration)) return;
       personRows = Array.isArray(rows) ? logic.sortPersonIssues(rows, actor) : [];
+    }
+    function setNavCount(rows) {
+      var badge = document.getElementById("issue-nav-count");
+      if (!badge) return;
+      var open = rows.filter(function (issue) { return logic.queueOf(issue) === "open"; }).length;
+      setTextIfChanged(badge, String(open));
+      var title = open + (open === 1 ? " issue has" : " issues have") + " no story yet";
+      if (badge.title !== title) badge.title = title;
+    }
+    // The nav count on every other view; the Inbox keeps it current itself.
+    function refreshCount() {
+      if (hosted || destroyed || unavailable || active || countLoading) return Promise.resolve();
+      countLoading = true;
+      return api("/api/issues").then(function (rows) {
+        if (!destroyed && Array.isArray(rows)) setNavCount(rows);
+      }, function (error) {
+        if (logic.isUnavailable(error)) unavailable = true;
+      }).then(function () { countLoading = false; });
     }
     function showLoadError(error) {
       var list = document.getElementById("issue-q-list");
@@ -258,31 +273,34 @@
       }
     }
     function refresh() {
-      if (hosted) { showHostedUnavailable(); return Promise.resolve(); }
+      if (hosted || unavailable) { active = true; showUnavailable(); return Promise.resolve(); }
       active = true;
+      if (!document.getElementById("issue-q-tabs")) { render(); return Promise.resolve(); }
       setActive(true);
       return loadIssues();
     }
     function render(renderOptions) {
       renderOptions = renderOptions || {};
       if (destroyed) return;
-      if (hosted) { showHostedUnavailable(); return; }
       active = true;
+      if (hosted || unavailable) { showUnavailable(); return; }
       setActive(true);
       var tabs = document.getElementById("issue-q-tabs");
-      if (!tabs) {
+      var fresh = !tabs;
+      if (fresh) {
         mountFrame();
-        tabs = document.getElementById("issue-q-tabs");
+        shownId = null;
+        mediaKey = null;
       }
-      if (!loaded && !loading) loadIssues();
+      if (!loading && (!loaded || fresh)) loadIssues();
       renderQueueCounts();
       var rows = rowsForQueue(queue);
       settleCursor(rows);
       renderPersonHead();
-      if (loading && !issues.length && !personRows.length) {
+      if (loading && !loaded) {
         setHtmlIfChanged(document.getElementById("issue-q-list"), '<div class="issue-q-empty">Loading issues…</div>');
       } else renderQueue(rows, { preserveScroll: !!renderOptions.preserveScroll });
-      if (!renderOptions.skipDetail) renderDetail(current());
+      if (loaded) renderDetail(current());
       syncCloser();
     }
     function renderQueueCounts() {
@@ -291,16 +309,16 @@
       queues.forEach(function (item) {
         var count = person ? logic.rowsForQueue(personRows, item.key, person.actor).length :
           issues.filter(function (issue) { return logic.queueOf(issue) === item.key; }).length;
-        var countEl = document.getElementById("issue-qc-" + item.key);
-        if (countEl && countEl.textContent !== String(count)) countEl.textContent = String(count);
+        setTextIfChanged(document.getElementById("issue-qc-" + item.key), String(count));
         var tab = tabs.querySelector('[data-q="' + item.key + '"]');
         var pressed = queue === item.key ? "true" : "false";
         if (tab && tab.getAttribute("aria-pressed") !== pressed) tab.setAttribute("aria-pressed", pressed);
       });
     }
+    // Look closer follows the cursor while it has something to show, and steps aside when it does not.
     function syncCloser() {
       if (closer && (!current() || closer.issue !== current().id)) {
-        if (current() && mediaOf(current()).length) openCloser(0);
+        if (current() && mediaOf(currentDetail()).length) openCloser(0);
         else closeCloser();
       }
     }
@@ -308,15 +326,6 @@
       if (!id) return;
       detailsStale[id] = true;
       detailEpochs[id] = (detailEpochs[id] || 0) + 1;
-    }
-    function hasActiveIssueInteraction(issueId) {
-      var inline = document.querySelector("#issue-d-media video");
-      if (shownId === issueId && inline && !inline.paused && !inline.ended) return true;
-      var overlay = document.querySelector("#issue-closer video");
-      if (closer && closer.issue === issueId && overlay && !overlay.paused && !overlay.ended) return true;
-      var commentBox = document.getElementById("issue-comment-box");
-      return !!(shownId === issueId && commentBox &&
-        (document.activeElement === commentBox || commentBox.value.length > 0));
     }
     function setHtmlIfChanged(element, html) {
       if (!element || element.__issueViewHtml === html) return;
@@ -326,31 +335,24 @@
     function setTextIfChanged(element, text) {
       if (element && element.textContent !== text) element.textContent = text;
     }
+
+    // ---- the person page head ----
     function renderPersonHead() {
       var head = document.getElementById("issue-person-head");
       head.classList.toggle("on", !!person);
       if (!person) {
-        head.removeAttribute("data-person-actor");
-        setHtmlIfChanged(head, '<span>Click a name to see everything from that person.</span>');
+        setHtmlIfChanged(head, "<span>Click a name to see everything from that person.</span>");
         return;
       }
       var summary = logic.personSummary(personRows, person.actor);
-      var actorKey = String(person.actor);
-      var existingCounts = head.querySelector(".issue-person-counts");
-      var existingMachines = head.querySelector(".issue-person-machines");
-      if (head.getAttribute("data-person-actor") === actorKey && existingCounts && existingMachines) {
-        setTextIfChanged(existingCounts, summary.filed + " filed · " + summary.comments +
-          (summary.comments === 1 ? " comment" : " comments"));
-        setTextIfChanged(existingMachines, "from " + (summary.machines.join(", ") || "unknown"));
-        return;
-      }
-      head.setAttribute("data-person-actor", actorKey);
-      setHtmlIfChanged(head, '<div class="issue-person-line"><span class="actor">' + esc(actorName(person.actor)) + '</span>' +
+      setHtmlIfChanged(head, '<div class="issue-person-line">' + actorChip(person.actor) +
         '<span class="issue-person-counts">' + summary.filed + " filed · " + summary.comments +
         (summary.comments === 1 ? " comment" : " comments") + '</span></div><div class="issue-person-line">' +
-        '<span class="issue-person-machines">from ' + esc(summary.machines.join(", ") || "unknown") + '</span>' +
-        '<button type="button" class="btn" data-action="leave-person" title="Back to all issues (Esc)"><kbd>Esc</kbd> All</button></div>');
+        '<span class="issue-person-machines">from ' + esc(summary.machines.join(", ") || "unknown") + "</span>" +
+        '<button type="button" class="btn btn-sm" data-action="leave-person" title="Back to all issues (Esc)"><kbd>Esc</kbd>All</button></div>');
     }
+
+    // ---- the queue ----
     function renderQueue(rows, renderOptions) {
       renderOptions = renderOptions || {};
       var list = document.getElementById("issue-q-list");
@@ -358,7 +360,7 @@
       if (!rows.length) {
         setHtmlIfChanged(list, '<div class="issue-q-empty">' + esc(emptyMessage()) + "</div>");
       } else {
-        if (list.querySelector(".issue-q-empty")) {
+        if (list.__issueViewHtml !== undefined) {
           while (list.firstChild) list.removeChild(list.firstChild);
           delete list.__issueViewHtml;
         }
@@ -394,24 +396,42 @@
         if (selectedRow) selectedRow.scrollIntoView({ block: "nearest" });
       }
     }
+    function queueThumb(issue) {
+      var media = mediaOf(issue);
+      if (!media.length) return '<span class="issue-q-thumb none"></span>';
+      var item = logic.rowMedia(media);
+      var still = logic.stillOf(item);
+      var photos = media.filter(function (m) { return m.kind !== "video"; }).length;
+      var videos = media.length - photos;
+      var label = [photos ? photos + (photos === 1 ? " photo" : " photos") : "", videos ? videos + (videos === 1 ? " video" : " videos") : ""]
+        .filter(Boolean).join(" and ");
+      return '<span class="issue-q-thumb" title="' + esc(label) + '">' +
+        (still ? '<img loading="lazy" decoding="async" src="' + esc(mediaUrl(still)) + '" alt="">' : "") +
+        (item.kind === "video" ? '<span class="issue-q-badge issue-q-video">▶ ' +
+          esc(logic.formatDuration(typeof item.duration_ms === "number" ? item.duration_ms / 1000 : null)) + "</span>" : "") +
+        (media.length > 1 ? '<span class="issue-q-badge issue-q-count-badge">' + media.length + "</span>" : "") + "</span>";
+    }
     function queueRowMarkup(issue, selected) {
-      var rowMedia = mediaOf(issue);
-      var first = rowMedia.find(function (media) { return media.kind === "video"; }) || rowMedia[0];
-      var thumbnail = first && first.url ? '<img loading="lazy" decoding="async" src="' + esc(root.apiUrl(options.basePath, first.url)) + '" alt="">' : "";
-      var tag = tagFor(issue);
       var commentCount = Number(issue.comment_count || 0);
-      var mediaCount = rowMedia.length;
-      var thumb = !mediaCount ? '<span class="issue-q-thumb none"></span>' :
-        '<span class="issue-q-thumb">' + thumbnail +
-        (first.kind === "video" ? '<span class="issue-q-badge issue-q-video">▶ ' + esc(formatDuration((first.duration_ms || 0) / 1000)) + "</span>" : "") +
-        (mediaCount > 1 ? '<span class="issue-q-badge issue-q-count-badge">' + mediaCount + "</span>" : "") + "</span>";
       return '<div class="issue-q-row' + (selected ? " cursor" : "") + '" data-issue-id="' + esc(issue.id) +
         '" role="option" aria-selected="' + (selected ? "true" : "false") + '"><div class="issue-q-main"><div class="issue-q-top">' +
-        '<span class="issue-id">' + esc(issue.short_id || issue.id) + '</span><span class="issue-q-tag">' + tag + '</span>' +
+        '<span class="issue-iid">' + esc(issue.short_id || issue.id) + '</span><span class="issue-q-tag">' + tagHtml(issue) + "</span>" +
         '<span class="issue-q-comments" title="' + commentCount + (commentCount === 1 ? " comment" : " comments") + '">' +
-        (commentCount ? '&#9679; ' + commentCount : "") + '</span><span class="issue-q-age" title="' + esc(displayTime(issue.filed_at)) + '">' +
+        (commentCount ? BUBBLE + commentCount : "") + '</span><span class="issue-q-age" title="' + esc(displayTime(issue.filed_at)) + '">' +
         esc(relativeTime(issue.filed_at)) + '</span></div><div class="issue-q-text" title="' + esc(issue.title || "") + '">' +
-        esc(issue.title || "Untitled issue") + "</div></div>" + thumb + "</div>";
+        esc(issue.title || "Untitled issue") + "</div></div>" + queueThumb(issue) + "</div>";
+    }
+    function tagHtml(issue) {
+      var tag = logic.rowTag(issue, person ? person.actor : null);
+      var why = tag.commented ? '<span class="issue-q-why">commented</span> · ' : "";
+      if (tag.kind === "actor") {
+        var full = actorText(tag.actor);
+        return why + '<span class="issue-q-actor" data-actor="' + esc(full) + '">' + esc(full || "unknown") + "</span>";
+      }
+      if (tag.kind === "duplicate") return why + "duplicate of " + esc(tag.of);
+      if (tag.kind === "dismissed") return why + "dismissed";
+      if (tag.kind === "state") return why + esc(tag.text);
+      return why + '<span class="issue-tid">' + esc(tag.task) + "</span>" + (tag.more ? " +" + tag.more : "") + " " + esc(tag.status);
     }
     function updateQueueAges(rows) {
       var list = document.getElementById("issue-q-list");
@@ -420,26 +440,15 @@
         var issue = rows.find(function (item) { return item.id === row.getAttribute("data-issue-id"); });
         var age = row.querySelector(".issue-q-age");
         if (!issue || !age) return;
-        var relative = relativeTime(issue.filed_at);
-        if (age.textContent !== relative) age.textContent = relative;
-        var title = displayTime(issue.filed_at);
-        if (age.title !== title) age.title = title;
+        setTextIfChanged(age, relativeTime(issue.filed_at));
       });
     }
-    function tagFor(issue) {
-      var why = person && issue.filed_by !== person.actor ? '<span class="issue-q-why">commented</span> · ' : "";
-      if (queue === "open") return why + actorHtml(issue.filed_by, issue.filed_origin);
-      if (queue === "closed") {
-        var closure = issue.closure || {};
-        return why + (closure.kind === "duplicate" ? "duplicate of " + esc(closure.duplicate_of || "unknown") : "dismissed");
-      }
-      var tasks = issue.tasks || [];
-      var first = tasks.find(function (task) { return !task.archived && !task.erased; }) || tasks[0];
-      if (!first) return why + esc(queue === "resolved" ? "resolved" : "has story");
-      return why + '<span class="task-id">' + esc(first.short_id || first.id) + "</span> " + esc(String(first.status || "unknown").replace(/_/g, " ")) +
-        (tasks.length > 1 ? " +" + (tasks.length - 1) : "");
+    function emptyMessage() {
+      if (person && queue === "all") return logic.EMPTY.person;
+      return logic.EMPTY[queue] || "No issues are in this queue.";
     }
-    function mediaOf(issue) { return Array.isArray(issue && issue.media) ? issue.media.filter(function (item) { return !item.removed && !item.missing && item.url; }) : []; }
+
+    // ---- the selected issue ----
     function currentDetail() {
       var issue = current();
       if (!issue) return null;
@@ -459,9 +468,10 @@
         } else {
           details[id] = detail;
           delete detailsStale[id];
-          if (current() && current().id === id) renderDetail(current());
+          if (active && current() && current().id === id) renderDetail(current());
         }
       } catch (error) {
+        if (logic.isUnavailable(error)) { markUnavailable(); return; }
         var body = document.getElementById("issue-d-body");
         if (body && !details[id] && current() && current().id === id) {
           mediaKey = null;
@@ -472,9 +482,8 @@
       }
       if (retry && !destroyed) ensureDetail(issue);
     }
-    function stateBadge(state) {
-      var color = state === "resolved" ? "#22c55e" : state === "open" ? "#f59e0b" : "#8b8fa3";
-      return '<span class="badge" style="background:' + color + ';color:#fff">' + esc(state || "open") + "</span>";
+    function stateChip(state) {
+      return '<span class="issue-state issue-state-' + esc(state) + '">' + esc(state) + "</span>";
     }
     function factsHtml(issue) {
       var bits = [actorHtml(issue.filed_by, issue.filed_origin), '<span title="' + esc(displayTime(issue.filed_at)) + '">' +
@@ -487,48 +496,58 @@
     function detailShell() {
       return '<h1 class="issue-d-title" id="issue-d-title"></h1><div class="issue-d-desc" id="issue-d-desc"></div>' +
         '<div class="issue-d-media" id="issue-d-media"></div><div class="issue-outcome" id="issue-outcome"></div>' +
-        '<div class="issue-meta" id="issue-meta"></div><div class="issue-comments" id="issue-comments"></div>' +
+        '<div class="issue-comments" id="issue-comments"></div>' +
         '<div class="issue-compose" id="issue-compose"><textarea id="issue-comment-box" rows="1" placeholder="Comment, or ask an agent: @claude-opus-impl ..."></textarea>' +
         '<button type="button" class="btn btn-sm" id="issue-comment-post" title="Post (⌘ Enter)">Post</button></div><div id="issue-history"></div>';
     }
+    function wireCompose() {
+      var box = document.getElementById("issue-comment-box");
+      var wrap = document.getElementById("issue-compose");
+      var post = document.getElementById("issue-comment-post");
+      box.addEventListener("focus", function () { wrap.classList.add("active"); });
+      box.addEventListener("blur", function () { if (!box.value.trim()) wrap.classList.remove("active"); });
+      box.addEventListener("keydown", function (event) {
+        if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); postComment(); }
+        else if (event.key === "Escape") { event.preventDefault(); box.blur(); }
+      });
+      post.addEventListener("mousedown", function (event) { event.preventDefault(); }); // keep focus in the box
+      post.addEventListener("click", postComment);
+    }
     function renderDetail(issue) {
       var body = document.getElementById("issue-d-body");
+      if (!body) return;
       var id = issue ? issue.id : "none:" + queue;
       var changed = id !== shownId;
       shownId = id;
       var copy = document.getElementById("issue-id-copy");
       setTextIfChanged(copy, issue ? issue.short_id || issue.id : "");
       copy.disabled = !issue;
-      setHtmlIfChanged(document.getElementById("issue-d-state"), issue ? stateBadge(logic.stateOf(issue)) : "");
-      setHtmlIfChanged(document.getElementById("issue-d-facts"), issue ? factsHtml(issue) : "");
+      var detail = issue ? details[issue.id] || issue : null;
+      setHtmlIfChanged(document.getElementById("issue-d-state"), issue ? stateChip(logic.stateOf(detail)) : "");
+      setHtmlIfChanged(document.getElementById("issue-d-facts"), issue ? factsHtml(detail) : "");
       var status = document.getElementById("issue-copy-status");
       if (changed && !status.classList.contains("done")) setTextIfChanged(status, issue ? "copy" : "");
       if (!issue) {
         mediaKey = null;
-        var message = emptyMessage();
-        setHtmlIfChanged(body, '<div class="issue-quiet"><h2>' + esc(message.split(".")[0]) + "</h2>" + esc(message) + "</div>");
+        setHtmlIfChanged(body, person && queue === "all" ? '<div class="issue-quiet">' + esc(logic.EMPTY.person) + "</div>" :
+          queue === "open" ? '<div class="issue-quiet"><h2>' + esc(logic.EMPTY.open) + "</h2>" + esc(logic.OPEN_DETAIL) + "</div>" :
+          '<div class="issue-quiet">' + esc(emptyMessage()) + "</div>");
         return;
       }
-      if (!document.getElementById("issue-d-title")) {
-        mediaKey = null;
-        setHtmlIfChanged(body, detailShell());
-        document.getElementById("issue-comment-post").addEventListener("mousedown", function (event) { event.preventDefault(); });
-        document.getElementById("issue-comment-post").addEventListener("click", postComment);
-        var commentBox = document.getElementById("issue-comment-box");
-        commentBox.addEventListener("focus", function () { document.getElementById("issue-compose").classList.add("active"); });
-        commentBox.addEventListener("blur", function () { if (!commentBox.value.trim()) document.getElementById("issue-compose").classList.remove("active"); });
-        commentBox.addEventListener("keydown", function (event) { if (event.key === "Escape") { event.preventDefault(); commentBox.blur(); } });
-      }
-      var detail = details[issue.id];
-      if (!detail) {
+      if (!details[issue.id]) {
         mediaKey = null;
         setHtmlIfChanged(body, '<div class="issue-quiet">Loading issue…</div>');
         ensureDetail(issue);
         return;
       }
+      if (!document.getElementById("issue-d-title")) {
+        mediaKey = null;
+        setHtmlIfChanged(body, detailShell());
+        wireCompose();
+      }
       if (detailsStale[issue.id]) ensureDetail(issue);
       var scrollTop = changed ? 0 : body.scrollTop;
-      setTextIfChanged(document.getElementById("issue-d-title"), detail.title || issue.title || "Untitled issue");
+      setTextIfChanged(document.getElementById("issue-d-title"), detail.title || "Untitled issue");
       setTextIfChanged(document.getElementById("issue-d-desc"), detail.description || "");
       setHtmlIfChanged(document.getElementById("issue-comments"), commentsHtml(detail));
       if (changed) {
@@ -537,52 +556,44 @@
       }
       renderMedia(detail);
       setHtmlIfChanged(document.getElementById("issue-outcome"), outcomeHtml(detail));
-      setHtmlIfChanged(document.getElementById("issue-meta"), metaHtml(detail));
       renderHistory(detail);
       if (body.scrollTop !== scrollTop) body.scrollTop = scrollTop;
     }
-    function emptyMessage() {
-      if (person && queue === "all") return "This person has not filed or commented on any issues.";
-      return logic.EMPTY[queue] || "No issues are in this queue.";
-    }
-    function metaHtml(issue) {
-      var bits = [];
-      if (issue.filed_at) bits.push("Filed " + displayTime(issue.filed_at));
-      if (issue.updated_at) bits.push("Updated " + displayTime(issue.updated_at));
-      return bits.length ? '<div class="issue-meta-line">' + bits.map(esc).join(" · ") + "</div>" : "";
-    }
+    // What came of it: its stories with their live status, or why it was closed.
     function outcomeHtml(issue) {
       if (issue.closure) {
         var closure = issue.closure;
         if (closure.kind === "duplicate") {
           var duplicate = closure.duplicate_of || "unknown";
-          var target = (issues || []).find(function (item) { return item.short_id === duplicate || item.id === duplicate; });
+          var target = issues.find(function (item) { return item.short_id === duplicate || item.id === duplicate; });
+          var line = target ? String(target.title || "").split("\n")[0] : "";
+          if (line.length > 100) line = line.slice(0, 97) + "...";
           return '<div class="issue-closure"><b>Duplicate of <a href="#" data-goto="' + esc(target ? target.id : duplicate) + '">' + esc(duplicate) +
-            "</a>.</b> " + esc(target ? target.title : "") + "</div>";
+            "</a>.</b> " + esc(line) + "</div>";
         }
         return '<div class="issue-closure"><b>Dismissed.</b> ' + esc(closure.reason || "") + "</div>";
       }
-      var tasks = issue.tasks || [];
-      if (!tasks.length) return '<div class="issue-no-story">No story is linked. An agent can create one from this issue.</div>';
-      return tasks.map(function (task) {
+      return (issue.tasks || []).map(function (task) {
         var title = task.title || (task.erased ? "Erased task" : "Task unavailable");
-        return '<div class="issue-story' + (task.status === "cancelled" || task.erased ? " dead" : "") + '"><span class="task-id">' +
-          esc(task.short_id || task.id) + '</span><span class="badge">' + esc(String(task.status || "unknown").replace(/_/g, " ")) +
+        var statusKey = String(task.status || "unknown");
+        return '<div class="issue-story' + (statusKey === "cancelled" || task.erased ? " dead" : "") + '"><span class="issue-tid">' +
+          esc(task.short_id || task.id) + '</span><span class="issue-tstatus issue-tstatus-' + esc(statusKey) + '">' + esc(statusKey.replace(/_/g, " ")) +
           '</span><span class="issue-story-title" title="' + esc(title) + '">' + esc(title) + "</span></div>";
       }).join("");
     }
+    // @mentions stand out, and story and issue IDs read as IDs.
     function commentBody(text) {
       return esc(text).replace(/(^|\s)(@[\w:.-]+)/g, '$1<span class="mention">$2</span>')
-        .replace(/\bLAT-I\d+\b/g, function (value) { return '<span class="iid">' + value + "</span>"; })
-        .replace(/\bLAT-\d+\b/g, function (value) { return '<span class="tid">' + value + "</span>"; });
+        .replace(/\b[A-Z][A-Z0-9]*-I\d+\b/g, function (value) { return '<span class="issue-iid">' + value + "</span>"; })
+        .replace(/\b[A-Z][A-Z0-9]*-\d+\b/g, function (value) { return '<span class="issue-tid">' + value + "</span>"; });
     }
     function commentsHtml(issue) {
       var comments = logic.flattenComments(issue.comments || []);
       if (!comments.length) return "";
       return '<div class="issue-comments-head">Comments (' + comments.length + ")</div>" + comments.map(function (comment) {
-        var author = comment.author || comment.by || comment.actor || "unknown";
-        var time = comment.created_at || comment.at || comment.ts;
-        var kind = String(author).indexOf("human:") === 0 ? "human" : "agent";
+        var author = logic.commentActor(comment) || "unknown";
+        var time = logic.commentTime(comment);
+        var kind = actorText(author).indexOf("human:") === 0 ? "human" : "agent";
         return '<div class="issue-comment issue-comment-' + kind + '"><div class="issue-comment-meta">' + actorHtml(author, comment.origin) +
           '<span title="' + esc(displayTime(time)) + '">' + esc(relativeTime(time)) + '</span></div><div class="issue-comment-body">' +
           commentBody(comment.body || "") + "</div></div>";
@@ -596,95 +607,95 @@
       apiPost("/api/issues/" + encodeURIComponent(issue.id) + "/comment", { body: body }).then(function () {
         box.value = "";
         box.focus();
+        markDetailStale(issue.id);
+        ensureDetail(issue);
         refresh();
       }).catch(function (error) { options.showToast(error.message || String(error), "error"); });
+    }
+    function mediaCountText(photos, videos) {
+      var parts = [];
+      if (photos) parts.push(photos + (photos === 1 ? " photo" : " photos"));
+      if (videos) parts.push(videos + (videos === 1 ? " video" : " videos"));
+      return parts.join(" and ");
     }
     function eventHistoryLine(event) {
       var data = event.data || {};
       var what;
       switch (event.type) {
-        case "issue_filed": what = "filed"; break;
-        case "issue_linked": what = (data.promoted ? "made story " : "linked to ") + (data.task_id || "task"); break;
-        case "issue_unlinked": what = "unlinked from " + (data.task_id || "task"); break;
-        case "issue_dismissed": what = "dismissed: " + (data.reason || ""); break;
-        case "issue_marked_duplicate": what = "marked a duplicate of " + (data.duplicate_of || "issue"); break;
+        case "issue_filed": {
+          var filedMedia = Array.isArray(data.media) ? data.media : [];
+          var videos = filedMedia.filter(function (item) { return item && item.kind === "video"; }).length;
+          var count = mediaCountText(filedMedia.length - videos, videos);
+          what = "filed" + (count ? " with " + esc(count) : "");
+          break;
+        }
+        case "issue_linked": what = (data.promoted ? "made story " : "linked to ") + '<span class="issue-tid">' + esc(data.task_id || "task") + "</span>"; break;
+        case "issue_unlinked": what = 'unlinked from <span class="issue-tid">' + esc(data.task_id || "task") + "</span>"; break;
+        case "issue_dismissed": what = "dismissed: " + esc(data.reason || ""); break;
+        case "issue_marked_duplicate": what = 'marked a duplicate of <span class="issue-iid">' + esc(data.duplicate_of || "issue") + "</span>"; break;
         case "issue_reopened": what = "reopened"; break;
-        case "issue_media_added": what = "added a " + (data.kind || "file"); break;
+        case "issue_media_added": what = "added a " + esc((data.media && data.media.kind) || data.kind || "file"); break;
         case "issue_comment_added": what = "commented"; break;
-        case "issue_media_removed": what = "removed a " + (data.kind || "file") + (data.reason ? ": " + data.reason : ""); break;
-        default: what = event.type || "changed";
+        case "issue_media_removed": what = "removed a " + esc(data.kind || "file") + (data.reason ? ": " + esc(data.reason) : ""); break;
+        default: what = esc(event.type || "changed");
       }
       var actor = event.actor || event.by || "unknown";
-      return '<div><span class="issue-history-at" title="' + esc(displayTime(event.ts || event.at)) + '">' + esc(relativeTime(event.ts || event.at)) +
-        '</span><span class="issue-history-what">' + actorHtml(actor, event.origin ? event.origin : data.origin) + " " + esc(what) + "</span></div>";
+      var at = event.ts || event.at;
+      return '<div><span class="issue-history-at" title="' + esc(displayTime(at)) + '">' + esc(relativeTime(at)) +
+        '</span><span class="issue-history-what">' + actorHtml(actor, event.origin || data.origin) + " " + what + "</span></div>";
     }
     function renderHistory(issue) {
       var history = Array.isArray(issue.events) ? issue.events : [];
       var box = document.getElementById("issue-history");
       if (!box) return;
-      var toggle = box.querySelector(".issue-history-toggle");
-      if (!toggle) {
-        toggle = document.createElement("button");
-        toggle.type = "button";
-        toggle.className = "issue-history-toggle";
-        box.appendChild(toggle);
-      }
-      toggle.setAttribute("aria-expanded", historyOpen ? "true" : "false");
-      setHtmlIfChanged(toggle, '<span class="caret">' + (historyOpen ? "▾" : "▸") +
-        "</span>History (" + history.length + ")");
-      var historyBox = box.querySelector(".issue-history");
-      if (!historyOpen) {
-        if (historyBox) historyBox.remove();
-        return;
-      }
-      if (!historyBox) {
-        historyBox = document.createElement("div");
-        historyBox.className = "issue-history";
-        box.appendChild(historyBox);
-      }
-      setHtmlIfChanged(historyBox, history.map(eventHistoryLine).join(""));
+      setHtmlIfChanged(box, '<button type="button" class="issue-history-toggle" aria-expanded="' + historyOpen + '"><span class="caret">' +
+        (historyOpen ? "▾" : "▸") + "</span>History (" + history.length + ")</button>" +
+        (historyOpen ? '<div class="issue-history">' + history.map(eventHistoryLine).join("") + "</div>" : ""));
     }
-    function thumbSource(media) { return media.kind === "video" ? (media.poster_url || media.url) : media.url; }
+
+    // ---- media inline ----
     function frameSeconds(frame) { return Number(frame.t_ms || 0) / 1000; }
     function renderMedia(issue) {
       var box = document.getElementById("issue-d-media");
       if (!box) return;
       var media = mediaOf(issue);
-      var markup = media.map(function (item, index) {
-        var src = root.apiUrl(options.basePath, item.url);
-        var name = item.original_name || item.name || "attached media";
-        var width = item.width || 1280;
-        var height = item.height || 800;
-        var content = item.kind === "video" ? '<video src="' + esc(src) + '" muted playsinline preload="metadata" title="' + esc(name) + '"></video>' +
-          '<button type="button" class="issue-media-play" data-play="' + index + '" title="Play (muted)">▶</button>' :
-          '<img src="' + esc(src) + '" alt="photo attached to ' + esc(issue.short_id || issue.id) + '" title="' + esc(name) + '">';
-        var frames = item.kind === "video" ? (item.frames || []).map(function (frame, frameIndex) {
-          return '<button type="button" class="issue-af-frame" data-frame="' + frameIndex + '" data-item="' + index + '"><img src="' +
-            esc(root.apiUrl(options.basePath, frame.url)) + '" alt="frame at ' + esc(formatDuration(frameSeconds(frame), true)) + '" loading="lazy"><span>' +
-            esc(formatDuration(frameSeconds(frame), true)) + "</span></button>";
-        }).join("") : "";
-        var agentFrames = item.kind === "video" ? '<div class="issue-af">' + (frames ?
-          '<div class="issue-af-label">What an agent sees: these frames, taken when it was filed. Click one to see that moment.</div><div class="issue-af-row">' + frames + "</div>" :
-          '<div class="issue-af-none">Frames are made when this is filed.</div>') + "</div>" : "";
-        return '<figure class="issue-media-item" data-item="' + index + '"><div class="issue-media-frame ' + esc(item.kind || "photo") + '" data-w="' +
-          esc(width) + '" data-h="' + esc(height) + '">' + content + "</div>" + agentFrames + "</figure>";
-      }).join("");
-      var key = issue.id + "|" + markup;
+      var key = logic.mediaKey(issue.id, media);
       if (key === mediaKey) return;
       mediaKey = key;
       focusMedia = 0;
-      setHtmlIfChanged(box, markup);
+      setHtmlIfChanged(box, media.map(function (item, index) {
+        var src = mediaUrl(item.url);
+        var name = item.original_name || item.name || "attached media";
+        var poster = item.kind === "video" ? logic.stillOf(item) : null;
+        var content = item.kind === "video" ? '<video src="' + esc(src) + '"' + (poster ? ' poster="' + esc(mediaUrl(poster)) + '"' : "") +
+          ' muted playsinline preload="metadata" title="' + esc(name) + '"></video>' +
+          '<button type="button" class="issue-media-play" data-play="' + index + '" title="Play (muted)">▶</button>' :
+          '<img src="' + esc(src) + '" alt="photo attached to ' + esc(issue.short_id || issue.id) + '" title="' + esc(name) + '">';
+        var frames = item.kind === "video" ? (item.frames || []).filter(function (frame) { return frame.url; }) : [];
+        var agentFrames = item.kind === "video" ? '<div class="issue-af">' + (frames.length ?
+          '<div class="issue-af-label">What an agent sees: these frames, taken when it was filed. Click one to see that moment.</div><div class="issue-af-row">' +
+          frames.map(function (frame, frameIndex) {
+            var at = logic.formatDuration(frameSeconds(frame), true);
+            return '<button type="button" class="issue-af-frame" data-frame="' + frameIndex + '" data-item="' + index + '"><img src="' +
+              esc(mediaUrl(frame.url)) + '" alt="frame at ' + esc(at) + '" loading="lazy"><span>' + esc(at) + "</span></button>";
+          }).join("") + "</div>" :
+          '<div class="issue-af-none">Frames are made when this is filed.</div>') + "</div>" : "";
+        return '<figure class="issue-media-item" data-item="' + index + '"><div class="issue-media-frame ' + (item.kind === "video" ? "video" : "photo") +
+          '" data-w="' + esc(item.width || 1280) + '" data-h="' + esc(item.height || 800) + '">' + content + "</div>" + agentFrames + "</figure>";
+      }).join(""));
       box.querySelectorAll("video").forEach(function (video) {
         var figure = video.closest(".issue-media-item");
         var item = media[Number(figure.getAttribute("data-item"))];
+        var frames = (item.frames || []).filter(function (frame) { return frame.url; });
         video.addEventListener("timeupdate", function () {
           var currentFrame = -1;
-          (item.frames || []).forEach(function (frame, index) { if (frameSeconds(frame) <= video.currentTime + 0.05) currentFrame = index; });
+          frames.forEach(function (frame, index) { if (frameSeconds(frame) <= video.currentTime + 0.05) currentFrame = index; });
           figure.querySelectorAll(".issue-af-frame").forEach(function (frame, index) { frame.classList.toggle("on", index === currentFrame); });
         });
       });
       sizeMedia();
     }
+    // Each item is shown at its own pixel size, shrunk only to fit the pane and 72% of the window height.
     function sizeMedia() {
       var box = document.getElementById("issue-d-media");
       if (!box) return;
@@ -693,7 +704,7 @@
       box.querySelectorAll(".issue-media-frame").forEach(function (frame) {
         var width = Number(frame.getAttribute("data-w")) || 1280;
         var height = Number(frame.getAttribute("data-h")) || 800;
-        var scale = Math.min(1, maxWidth / width, maxHeight / height);
+        var scale = Math.max(0, Math.min(1, maxWidth / width, maxHeight / height));
         frame.style.width = Math.round(width * scale) + 2 + "px";
         frame.style.height = Math.round(height * scale) + 2 + "px";
       });
@@ -711,18 +722,21 @@
       var figure = document.querySelector('.issue-media-item[data-item="' + itemIndex + '"]');
       var video = figure && figure.querySelector("video");
       var media = mediaOf(currentDetail())[itemIndex];
-      if (!video || !media || !media.frames || !media.frames[frameIndex]) return;
+      var frames = media ? (media.frames || []).filter(function (frame) { return frame.url; }) : [];
+      if (!video || !frames[frameIndex]) return;
       video.pause();
       video.controls = true;
       figure.querySelector(".issue-media-frame").classList.add("playing");
-      video.currentTime = frameSeconds(media.frames[frameIndex]);
+      video.currentTime = frameSeconds(frames[frameIndex]);
       figure.querySelectorAll(".issue-af-frame").forEach(function (frame, index) { frame.classList.toggle("on", index === frameIndex); });
       focusMedia = itemIndex;
     }
+
+    // ---- look closer ----
     function openCloser(index) {
       var issue = currentDetail();
       var media = mediaOf(issue);
-      if (!media.length) return;
+      if (!media.length) { closeCloser(); return; }
       index = Math.max(0, Math.min(media.length - 1, Number(index) || 0));
       var item = media[index];
       var inline = document.querySelector('.issue-media-item[data-item="' + index + '"] video');
@@ -736,20 +750,21 @@
         overlay.className = "issue-closer";
         document.body.appendChild(overlay);
       }
-      var src = root.apiUrl(options.basePath, item.url);
-      var title = issue.title || "Issue";
-      overlay.innerHTML = '<div class="issue-closer-bar"><span class="issue-id">' + esc(issue.short_id || issue.id) +
-        '</span><span class="issue-closer-title">' + esc(title) + '</span><span class="issue-closer-pos">' +
+      var src = mediaUrl(item.url);
+      var poster = item.kind === "video" ? logic.stillOf(item) : null;
+      overlay.innerHTML = '<div class="issue-closer-bar"><span class="issue-iid">' + esc(issue.short_id || issue.id) +
+        '</span><span class="issue-closer-title">' + esc(issue.title || "Issue") + '</span><span class="issue-closer-pos">' +
         (media.length > 1 ? (index + 1) + " of " + media.length : "") + '</span><span class="issue-closer-keys">' +
         (media.length > 1 ? "<kbd>←</kbd> <kbd>→</kbd> item &nbsp; " : "") + "<kbd>j</kbd> <kbd>k</kbd> issue &nbsp; <kbd>f</kbd> or <kbd>Esc</kbd> closes</span></div>" +
-        '<div class="issue-closer-media" data-close>' + (item.kind === "video" ? '<video src="' + esc(src) + '" muted playsinline controls></video>' :
+        '<div class="issue-closer-media" data-close>' + (item.kind === "video" ? '<video src="' + esc(src) + '"' +
+          (poster ? ' poster="' + esc(mediaUrl(poster)) + '"' : "") + ' muted playsinline controls></video>' :
           '<img src="' + esc(src) + '" alt="">') + "</div>";
       var video = overlay.querySelector("video");
       if (video) {
         video.currentTime = start;
         if (wasPlaying) { var play = video.play(); if (play && play.catch) play.catch(function () {}); }
       }
-      closer = { index: index, issue: issue.id };
+      closer = { index: index, issue: current().id };
     }
     function closeCloser() {
       var overlay = document.getElementById("issue-closer");
@@ -765,10 +780,11 @@
       var actor = event.target.closest("[data-actor]");
       if (actor) { enterPerson(actor.getAttribute("data-actor")); return; }
       var play = event.target.closest("[data-play]");
-      if (play) { playInline(Number(play.getAttribute("data-play"))); return; }
+      if (play) { play.blur(); playInline(Number(play.getAttribute("data-play"))); return; }
       var frame = event.target.closest("[data-frame]");
-      if (frame) { seekFrame(Number(frame.getAttribute("data-item")), Number(frame.getAttribute("data-frame"))); return; }
-      if (event.target.closest(".issue-history-toggle")) { historyOpen = !historyOpen; renderHistory(currentDetail()); return; }
+      if (frame) { frame.blur(); seekFrame(Number(frame.getAttribute("data-item")), Number(frame.getAttribute("data-frame"))); return; }
+      var toggle = event.target.closest(".issue-history-toggle");
+      if (toggle) { toggle.blur(); historyOpen = !historyOpen; renderHistory(currentDetail()); return; }
       var goto = event.target.closest("[data-goto]");
       if (goto) {
         event.preventDefault();
@@ -784,39 +800,47 @@
         if (event.target.closest(".issue-media-frame.photo")) openCloser(index);
         else if (event.target.closest(".issue-media-frame.video:not(.playing)")) playInline(index);
       }
-      if (event.target.closest("[data-action=leave-person]")) leavePerson();
+    }
+
+    // ---- keyboard: moving and looking only; decisions are made by telling an agent ----
+    // The dashboard's own drawers and dialogs take the keyboard while they are open.
+    function sharedPanelOpen() {
+      if (document.querySelector("#settings-panel.open, #filter-panel.open, #detail-panel.open, #web-detail-pane.open")) return true;
+      var modal = document.getElementById("create-task-modal");
+      return !!(modal && modal.style.display && modal.style.display !== "none");
     }
     function onKeydown(event) {
-      if (destroyed || hosted) return;
-      if (event.metaKey || event.ctrlKey || event.altKey) return;
-      var tag = (event.target.tagName || "").toLowerCase();
-      var dialog = document.getElementById("issue-file-dialog");
-      if (dialog) {
-        if (event.key === "Escape") {
-          closeFileDialog();
-          event.preventDefault();
-        }
+      if (destroyed) return;
+      if (panel) {
+        if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closeFileDialog(); }
+        else if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); event.stopPropagation(); panel.go(); }
         return;
       }
-      if (document.body.classList.contains("issue-view-active") === false) return;
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      if (sharedPanelOpen()) return;
+      var tag = (event.target.tagName || "").toLowerCase();
       if (tag === "input" || tag === "textarea" || tag === "select" || event.target.isContentEditable) return;
       var key = event.key;
+      if (key === "i") {
+        if (hosted) return;
+        event.preventDefault();
+        openFileDialog();
+        return;
+      }
+      if (!active || unavailable || hosted || !document.body.classList.contains("issue-view-active")) return;
       var handled = true;
       if (key === "j" || key === "ArrowDown") move(1);
       else if (key === "k" || key === "ArrowUp") move(-1);
       else if (key === "c") copyId();
-      else if (key === "i") openFileDialog();
       else if (key === "f") { if (closer) closeCloser(); else if (mediaOf(currentDetail()).length) openCloser(focusMedia); }
       else if (key === "Escape") { if (closer) closeCloser(); else if (person) leavePerson(); else handled = false; }
       else if (closer && key === "ArrowRight") openCloser(closer.index + 1);
       else if (closer && key === "ArrowLeft") openCloser(closer.index - 1);
       else if (key === " ") {
-        var inline = document.querySelector("#issue-d-media video");
-        var large = document.querySelector("#issue-closer video");
-        var video = large || inline;
-        if (!video) handled = false;
+        var video = closer ? document.querySelector("#issue-closer video") : document.querySelector("#issue-d-media video");
+        if (!video) handled = !!closer;
         else if (video.paused) {
-          if (!large) playInline(Number(video.closest(".issue-media-item").getAttribute("data-item")));
+          if (!closer) playInline(Number(video.closest(".issue-media-item").getAttribute("data-item")));
           else { var play = video.play(); if (play && play.catch) play.catch(function () {}); }
         } else video.pause();
       } else if (/^[1-4]$/.test(key)) switchQueue(queues[Number(key) - 1].key);
@@ -828,18 +852,27 @@
       if (!rows.length) return;
       var key = currentKey();
       var index = rows.findIndex(function (issue) { return issue.id === cursors[key]; });
-      index = Math.max(0, Math.min(rows.length - 1, (index < 0 ? 0 : index) + delta));
+      index = Math.max(0, Math.min(rows.length - 1, (index < 0 ? cursors[key + ":index"] || 0 : index) + delta));
       cursors[key] = rows[index].id;
       cursors[key + ":index"] = index;
       render();
     }
+    // In the person view a tab narrows that person's list; pressing it again shows all of it.
     function switchQueue(key) {
-      queue = person && queue === key ? "all" : key;
+      if (person) queue = queue === key ? "all" : key;
+      else if (queue === key) return;
+      else queue = key;
       render();
     }
     function goTo(id) {
       var issue = issueById(id, issues);
       if (!issue) return;
+      if (person && personRows.some(function (item) { return item.id === id; })) {
+        if (queue !== "all" && logic.queueOf(issue) !== queue) queue = "all";
+        cursors[currentKey()] = id;
+        render();
+        return;
+      }
       person = null;
       personRows = [];
       queue = logic.queueOf(issue);
@@ -848,21 +881,27 @@
     }
     function enterPerson(actor) {
       if (!actor || person && person.actor === actor) return;
-      if (!person) personBack = { queue: queue, id: cursors[currentKey()] };
+      var keepId = cursors[currentKey()];
+      if (!person) personBack = { queue: queue, id: keepId };
       person = { actor: actor };
       queue = "all";
       personRows = [];
+      var list = document.getElementById("issue-q-list");
+      if (list) list.scrollTop = 0;
       render();
       var generation = ++requestGeneration;
       loadPersonIssues(actor, generation).then(function () {
         if (person && person.actor === actor && generation === requestGeneration) {
           var rows = rowsForQueue(queue);
-          var currentId = personBack && personBack.id;
-          if (currentId && rows.some(function (item) { return item.id === currentId; })) cursors[currentKey()] = currentId;
+          if (keepId && rows.some(function (item) { return item.id === keepId; })) cursors[currentKey()] = keepId;
           else if (rows[0]) cursors[currentKey()] = rows[0].id;
+          cursors[currentKey() + ":index"] = 0;
           render();
         }
-      }).catch(function (error) { showLoadError(error); });
+      }).catch(function (error) {
+        if (logic.isUnavailable(error)) markUnavailable();
+        else showLoadError(error);
+      });
     }
     function leavePerson() {
       if (!person) return;
@@ -876,6 +915,7 @@
     function copyId() {
       var issue = current();
       if (!issue) return;
+      var text = issue.short_id || issue.id;
       var status = document.getElementById("issue-copy-status");
       function show(ok) {
         status.textContent = ok ? "Copied" : "Not copied";
@@ -885,7 +925,7 @@
       }
       function fallback() {
         var area = document.createElement("textarea");
-        area.value = issue.short_id || issue.id;
+        area.value = text;
         area.setAttribute("readonly", ""); area.style.position = "fixed"; area.style.opacity = "0";
         document.body.appendChild(area); area.select();
         var copied = false;
@@ -894,108 +934,226 @@
         return copied;
       }
       if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(issue.short_id || issue.id).then(function () { show(true); }, function () { show(fallback()); });
+        navigator.clipboard.writeText(text).then(function () { show(true); }, function () { show(fallback()); });
       } else show(fallback());
     }
 
-    function openFileDialog() {
-      if (hosted || document.getElementById("issue-file-dialog")) return;
-      fileState = { files: [], previewUrls: [], busy: false, status: "", camera: false };
+    // ---- the quick-file panel ----
+    // One field is required: the title. Photos and video are first-class but optional.
+    function readMedia(file) {
+      return new Promise(function (resolve) {
+        var kind = logic.kindOf(file);
+        var item = { kind: kind, bytes: file.size || 0, duration: null, src: null, poster: null, broken: false };
+        try { item.src = URL.createObjectURL(file); } catch (_error) { item.broken = true; resolve(item); return; }
+        var settled = false;
+        var timer = setTimeout(function () { finish(); }, 6000);
+        function finish() { if (!settled) { settled = true; clearTimeout(timer); resolve(item); } }
+        if (kind === "photo") {
+          var image = new Image();
+          image.onload = finish;
+          image.onerror = function () { item.broken = true; finish(); };
+          image.src = item.src;
+          return;
+        }
+        var video = document.createElement("video");
+        video.muted = true; video.preload = "auto"; video.playsInline = true;
+        video.onloadedmetadata = function () {
+          var seconds = isFinite(video.duration) ? video.duration : null;
+          item.duration = seconds ? Math.round(seconds * 10) / 10 : null;
+          try { video.currentTime = seconds ? Math.min(1, seconds / 4) : 0.2; } catch (_error) { finish(); }
+        };
+        video.onseeked = function () {
+          try {
+            var width = video.videoWidth || 640;
+            var height = video.videoHeight || 400;
+            var scale = Math.min(1, 640 / width);
+            var canvas = document.createElement("canvas");
+            canvas.width = Math.round(width * scale); canvas.height = Math.round(height * scale);
+            canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+            item.poster = canvas.toDataURL("image/jpeg", 0.8);
+          } catch (_error) { /* no poster: the tile shows the kind instead */ }
+          finish();
+        };
+        video.onerror = function () { item.broken = true; finish(); };
+        video.src = item.src;
+      });
+    }
+    function clipFiles(data) {
+      var out = [];
+      if (!data) return out;
+      if (data.items && data.items.length) {
+        Array.prototype.forEach.call(data.items, function (entry) {
+          if (entry.kind === "file") { var file = entry.getAsFile(); if (file) out.push(file); }
+        });
+      }
+      if (!out.length && data.files) Array.prototype.forEach.call(data.files, function (file) { if (file) out.push(file); });
+      return out;
+    }
+    function hasType(transfer, type) { return !!(transfer && transfer.types && Array.prototype.indexOf.call(transfer.types, type) >= 0); }
+    function limits() { return options.mediaLimits ? options.mediaLimits() : logic.DEFAULT_LIMITS; }
+
+    function openFileDialog(prefill) {
+      prefill = prefill || {};
+      if (hosted || destroyed) return;
+      if (panel) {
+        if (prefill.files) panel.addFiles(prefill.files);
+        return;
+      }
       var overlay = document.createElement("div");
       overlay.className = "issue-file-overlay";
       overlay.id = "issue-file-dialog";
-      overlay.innerHTML = '<section class="issue-file-dialog" role="dialog" aria-modal="true" aria-labelledby="issue-file-title">' +
-        '<header class="issue-file-head"><h2 id="issue-file-title">File an issue</h2><button type="button" class="btn issue-file-close" data-file-action="close" aria-label="Close">×</button></header>' +
-        '<div class="issue-file-body"><label>Title<input id="issue-file-title-input" type="text" maxlength="120" placeholder="One clear sentence" autocomplete="off"></label>' +
-        '<label>Description (optional)<textarea id="issue-file-description" placeholder="What happened? What did you expect?"></textarea></label>' +
-        '<div class="issue-file-tools"><button type="button" class="btn" data-file-action="choose">Choose files</button>' +
-        '<button type="button" class="btn" data-file-action="record">Record video</button><input id="issue-file-input" type="file" accept="image/png,image/jpeg,image/gif,image/webp,video/mp4,video/quicktime,video/webm" multiple>' +
-        '<span class="issue-file-hint">Paste or drop photos and videos here. Videos get frames an agent can read.</span></div>' +
-        '<div class="issue-file-tray" id="issue-file-tray"></div></div><footer class="issue-file-foot"><span class="issue-file-status" id="issue-file-status">Paste, drop, choose or record.</span>' +
-        '<button type="button" class="btn issue-file-submit" data-file-action="submit">File issue</button></footer></section>';
+      overlay.innerHTML = '<div class="issue-dialog issue-dialog-file" role="dialog" tabindex="-1" aria-label="File an issue">' +
+        '<div class="issue-dialog-head"><span>File an issue</span><button type="button" class="btn btn-sm" data-file-action="close" title="Close (Esc)">Esc</button></div>' +
+        '<div class="issue-dialog-body">' +
+          '<label for="issue-fi-text">Title</label>' +
+          '<input type="text" id="issue-fi-text" autocomplete="off" placeholder="Footer overlaps the Complete button at 400px">' +
+          '<label for="issue-fi-desc">Description <span class="issue-muted">(optional)</span></label>' +
+          '<textarea id="issue-fi-desc" placeholder="Steps, what you expected, what happened"></textarea>' +
+          '<div class="issue-fi-err" id="issue-fi-err"></div>' +
+          '<div class="issue-fi-media-head"><label>Photos and video <span class="issue-muted">(optional)</span></label><span class="issue-fi-total" id="issue-fi-total"></span></div>' +
+          '<div class="issue-tray" id="issue-fi-tray"></div>' +
+          '<div class="issue-fi-media-actions">' +
+            '<button type="button" class="btn issue-fi-choose" data-file-action="choose">Choose a file</button>' +
+            '<button type="button" class="btn issue-fi-record" data-file-action="record">Record video</button>' +
+            '<input type="file" id="issue-fi-input" accept="image/*,video/*" multiple hidden>' +
+          "</div>" +
+        "</div>" +
+        '<div class="issue-dialog-foot"><span class="issue-hint"><kbd>⌘</kbd> <kbd>V</kbd> pastes a screenshot. <kbd>⌘</kbd> <kbd>Enter</kbd> files it. No story is made.</span>' +
+          '<button type="button" class="btn btn-primary issue-fi-go" data-file-action="submit">File issue</button></div>' +
+        "</div>";
       document.body.appendChild(overlay);
-      overlay.addEventListener("click", onFileClick);
-      overlay.addEventListener("change", onFileChange);
-      overlay.addEventListener("dragover", function (event) { event.preventDefault(); });
-      overlay.addEventListener("drop", function (event) { event.preventDefault(); addFiles(event.dataTransfer.files); });
-      overlay.addEventListener("paste", function (event) { addFiles(event.clipboardData && event.clipboardData.files); });
-      document.getElementById("issue-file-title-input").focus();
-      renderFileTray();
-    }
-    function onFileClick(event) {
-      var action = event.target.closest("[data-file-action]");
-      if (!action) return;
-      var name = action.getAttribute("data-file-action");
-      if (name === "close") closeFileDialog();
-      else if (name === "choose") document.getElementById("issue-file-input").click();
-      else if (name === "record") toggleRecording();
-      else if (name === "submit") submitFile();
-      else if (name === "remove") removeFile(Number(action.getAttribute("data-index")));
-    }
-    function onFileChange(event) {
-      if (event.target.id === "issue-file-input") addFiles(event.target.files);
-    }
-    function addFiles(list) {
-      if (!fileState || !list) return;
-      Array.prototype.forEach.call(list, function (file) {
-        if (file && typeof file.arrayBuffer === "function") fileState.files.push(file);
-      });
-      var input = document.getElementById("issue-file-input");
-      if (input) input.value = "";
-      renderFileTray();
-    }
-    function removeFile(index) {
-      if (!fileState) return;
-      fileState.files.splice(index, 1);
-      renderFileTray();
-    }
-    function renderFileTray() {
-      var tray = document.getElementById("issue-file-tray");
-      if (!tray || !fileState) return;
-      fileState.previewUrls.forEach(function (url) { URL.revokeObjectURL(url); });
-      fileState.previewUrls = [];
-      tray.innerHTML = fileState.files.map(function (file, index) {
-        var preview = "";
-        if (file.type && (file.type.indexOf("image/") === 0 || file.type.indexOf("video/") === 0)) {
-          var previewUrl = URL.createObjectURL(file);
-          fileState.previewUrls.push(previewUrl);
-          preview = file.type.indexOf("image/") === 0 ? '<img src="' + esc(previewUrl) + '" alt="">' :
-            '<video src="' + esc(previewUrl) + '" muted></video>';
+      var text = document.getElementById("issue-fi-text");
+      var descriptionField = document.getElementById("issue-fi-desc");
+      var err = document.getElementById("issue-fi-err");
+      var trayEl = document.getElementById("issue-fi-tray");
+      var input = document.getElementById("issue-fi-input");
+      var tray = []; // { state: "reading" | "ok" | "refused", file, item, reason, name, bytes }
+      var busy = false;
+
+      function accepted() { return tray.filter(function (entry) { return entry.state === "ok"; }); }
+      function acceptedBytes() { return accepted().reduce(function (total, entry) { return total + entry.bytes; }, 0); }
+      function drawTray() {
+        setTextIfChanged(document.getElementById("issue-fi-total"), logic.trayTotal(acceptedBytes(), limits()));
+        if (!tray.length) {
+          trayEl.innerHTML = '<div class="issue-tray-empty"><b>Paste, drop or choose a photo or video</b><span>A screenshot on the clipboard goes in with <kbd>⌘</kbd> <kbd>V</kbd>.</span></div>';
+          return;
         }
-        return '<div class="issue-file-item">' + preview + '<button type="button" class="issue-file-remove" data-file-action="remove" data-index="' +
-          index + '" aria-label="Remove file">×</button><div class="issue-file-item-name" title="' + esc(file.name) + '">' + esc(file.name) + '</div>' +
-          esc(formatFileSize(file.size)) + "</div>";
-      }).join("");
-      var status = document.getElementById("issue-file-status");
-      if (status) status.textContent = fileState.status || (fileState.files.length ? fileState.files.length + (fileState.files.length === 1 ? " file" : " files") + " ready." : "Paste, drop, choose or record.");
-    }
-    function formatFileSize(bytes) {
-      if (bytes < 1024) return bytes + " B";
-      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
-      return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+        trayEl.innerHTML = tray.map(function (entry, index) {
+          var item = entry.item || {};
+          var thumb = entry.state === "refused" ? '<div class="issue-tile-thumb refused">Not attached</div>' :
+            entry.state === "reading" ? '<div class="issue-tile-thumb">Reading...</div>' :
+            item.kind === "photo" && item.src ? '<div class="issue-tile-thumb"><img src="' + esc(item.src) + '" alt=""></div>' :
+            item.poster ? '<div class="issue-tile-thumb"><img src="' + esc(item.poster) + '" alt=""><span class="play">▶</span></div>' :
+            '<div class="issue-tile-thumb">' + (item.kind === "video" ? "video" : "photo") + "</div>";
+          var meta = entry.state === "refused" ? '<span class="issue-tile-why">' + esc(entry.reason) + "</span>" :
+            '<span class="issue-tile-kind">' + (item.kind === "video" ? "video " + esc(logic.formatDuration(item.duration)) : "photo") +
+            '</span><span class="issue-tile-size">' + esc(logic.formatBytes(entry.bytes)) + "</span>";
+          return '<div class="issue-tile' + (entry.state === "refused" ? " issue-tile-refused" : "") + '" title="' + esc(entry.name) + '">' + thumb +
+            '<div class="issue-tile-meta">' + meta + '</div><button type="button" class="issue-tile-x" data-file-action="remove" data-index="' + index + '" title="Remove">×</button></div>';
+        }).join("");
+      }
+      function addFiles(files) {
+        err.textContent = "";
+        Array.prototype.forEach.call(files || [], function (file) {
+          if (!file) return;
+          var kind = logic.kindOf(file);
+          var entry = { state: "reading", file: file, name: file.name || "file", bytes: file.size || 0, item: { kind: kind } };
+          var why = logic.mediaProblem(acceptedBytes() + tray.filter(function (t) { return t.state === "reading"; })
+            .reduce(function (total, t) { return total + t.bytes; }, 0), { kind: kind, bytes: entry.bytes }, limits());
+          if (why) { entry.state = "refused"; entry.reason = why; tray.push(entry); return; }
+          tray.push(entry);
+          readMedia(file).then(function (item) {
+            entry.item = item;
+            if (item.broken) { entry.state = "refused"; entry.reason = "This file could not be read as a " + (item.kind === "video" ? "video" : "photo") + "."; }
+            else entry.state = "ok";
+            if (panel && panel.tray === tray) drawTray();
+          });
+        });
+        drawTray();
+      }
+      function removeAt(index) {
+        var entry = tray[index];
+        if (entry && entry.item && entry.item.src) { try { URL.revokeObjectURL(entry.item.src); } catch (_error) { /* ignore */ } }
+        tray.splice(index, 1);
+        drawTray();
+      }
+      async function go() {
+        if (busy) return;
+        err.textContent = "";
+        var ok = accepted();
+        var problem = logic.filingProblem(text.value, {
+          reading: tray.filter(function (entry) { return entry.state === "reading"; }).length,
+          accepted: ok.length,
+          firstKind: ok.length ? ok[0].item.kind : null
+        });
+        if (problem) { err.textContent = problem; text.focus(); return; }
+        busy = true;
+        var button = overlay.querySelector("[data-file-action=submit]");
+        button.disabled = true;
+        try {
+          var title = text.value.trim();
+          var description = descriptionField.value;
+          var media = [];
+          for (var i = 0; i < ok.length; i++) media.push(await mediaFromFile(ok[i].file));
+          if (panel !== state) return;
+          var result = await apiPost("/api/issues", { title: title, description: description, media: media });
+          closeFileDialog();
+          if (options.showToast) options.showToast("Filed " + ((result && (result.short_id || result.id)) || "the issue") + ": " + title);
+          if (active) refresh();
+          else { loaded = false; refreshCount(); }
+        } catch (error) {
+          busy = false;
+          button.disabled = false;
+          err.textContent = error.message || "Could not file the issue.";
+          text.focus();
+        }
+      }
+      var state = { overlay: overlay, addFiles: addFiles, go: go, tray: tray };
+      panel = state;
+      overlay.addEventListener("mousedown", function (event) { if (event.target === overlay) closeFileDialog(); });
+      overlay.addEventListener("click", function (event) {
+        var action = event.target.closest("[data-file-action]");
+        if (!action) return;
+        var name = action.getAttribute("data-file-action");
+        if (name === "close") closeFileDialog();
+        else if (name === "choose") input.click();
+        else if (name === "record") toggleRecording(action);
+        else if (name === "submit") go();
+        else if (name === "remove") removeAt(Number(action.getAttribute("data-index")));
+      });
+      input.addEventListener("change", function () { addFiles(input.files); input.value = ""; text.focus(); });
+      text.addEventListener("keydown", function (event) {
+        if (event.key === "Enter" && !event.metaKey && !event.ctrlKey) { event.preventDefault(); descriptionField.focus(); }
+      });
+      drawTray();
+      if (prefill.files) addFiles(prefill.files);
+      text.focus();
     }
     function closeFileDialog() {
-      var overlay = document.getElementById("issue-file-dialog");
-      if (recorder && recorder.state !== "inactive") recorder.stop();
+      if (recorder && recorder.state !== "inactive") { recorder.onstop = null; recorder.stop(); }
       if (recorderStream) recorderStream.getTracks().forEach(function (track) { track.stop(); });
       recorder = null;
       recorderStream = null;
-      if (overlay) overlay.remove();
-      if (fileState) fileState.previewUrls.forEach(function (url) { URL.revokeObjectURL(url); });
-      fileState = null;
+      if (!panel) return;
+      var closing = panel;
+      panel = null;
+      closing.tray.forEach(function (entry) {
+        if (entry.item && entry.item.src) { try { URL.revokeObjectURL(entry.item.src); } catch (_error) { /* ignore */ } }
+      });
+      closing.overlay.remove();
     }
-    async function toggleRecording() {
-      if (!fileState) return;
-      if (recorder && recorder.state !== "inactive") {
-        recorder.stop();
+    async function toggleRecording(button) {
+      if (!panel) return;
+      var err = document.getElementById("issue-fi-err");
+      if (recorder && recorder.state !== "inactive") { recorder.stop(); return; }
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || typeof MediaRecorder === "undefined") {
+        err.textContent = "Video recording is not available in this browser.";
         return;
       }
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || typeof MediaRecorder === "undefined") {
-        fileState.status = "Video recording is not available in this browser."; renderFileTray(); return;
-      }
+      var owner = panel;
       try {
         recorderStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-        if (!fileState) {
+        if (panel !== owner) {
           recorderStream.getTracks().forEach(function (track) { track.stop(); });
           recorderStream = null;
           return;
@@ -1005,20 +1163,18 @@
         var chunks = [];
         recorder.ondataavailable = function (event) { if (event.data && event.data.size) chunks.push(event.data); };
         recorder.onstop = function () {
-          if (chunks.length && fileState) {
-            var extension = mime.indexOf("mp4") >= 0 ? "mp4" : "webm";
-            addFiles([new File(chunks, "Issue recording." + extension, { type: mime })]);
-          }
           if (recorderStream) recorderStream.getTracks().forEach(function (track) { track.stop(); });
-          recorder = null; recorderStream = null;
-          if (fileState) { fileState.status = "Recording added."; renderFileTray(); }
+          recorder = null;
+          recorderStream = null;
+          button.textContent = "Record video";
+          if (chunks.length && panel === owner) {
+            owner.addFiles([new File(chunks, "Recording." + (mime.indexOf("mp4") >= 0 ? "mp4" : "webm"), { type: mime })]);
+          }
         };
         recorder.start();
-        fileState.status = "Recording… select Record video again to stop.";
-        renderFileTray();
+        button.textContent = "Stop recording";
       } catch (error) {
-        fileState.status = error.message || "Could not start recording.";
-        renderFileTray();
+        err.textContent = error.message || "Could not start recording.";
       }
     }
     function bytesToBase64(buffer) {
@@ -1036,135 +1192,178 @@
       var digest = Array.prototype.map.call(new Uint8Array(hash), function (byte) { return byte.toString(16).padStart(2, "0"); }).join("");
       return { filename: filename, content_b64: bytesToBase64(buffer), sha256: digest };
     }
-    function waitFor(target, name) {
+    function waitFor(target, name, timeoutMs) {
       return new Promise(function (resolve, reject) {
+        var timer = null;
         function cleanup() {
+          if (timer) clearTimeout(timer);
           target.removeEventListener(name, ready);
           target.removeEventListener("error", failed);
         }
         function ready(event) { cleanup(); resolve(event); }
-        function failed() { cleanup(); reject(new Error("Could not read video metadata")); }
+        function failed() { cleanup(); reject(new Error("Could not read the video.")); }
         target.addEventListener(name, ready, { once: true });
         target.addEventListener("error", failed, { once: true });
+        if (timeoutMs) timer = setTimeout(function () { cleanup(); resolve(null); }, timeoutMs);
       });
     }
-    async function videoFrames(file, duration) {
-      var objectUrl = URL.createObjectURL(file);
-      var video = document.createElement("video");
-      video.muted = true; video.playsInline = true; video.preload = "auto";
-      try {
-        var metadata = waitFor(video, "loadedmetadata");
-        var firstFrame = waitFor(video, "loadeddata");
-        video.src = objectUrl;
-        await Promise.all([metadata, firstFrame]);
-        var frames = [];
-        var sampleTimes = logic.frameTimes(Math.round(duration * 1000));
-        for (var i = 0; i < sampleTimes.length; i++) {
-          var tMs = sampleTimes[i];
-          var seconds = tMs / 1000;
-          if (frames.length && frames[frames.length - 1].t_ms === tMs) continue;
-          if (Math.abs(video.currentTime - seconds) > 0.001) {
-            var seeked = waitFor(video, "seeked");
-            video.currentTime = seconds;
-            await seeked;
-          }
-          var scale = Math.min(1, 1568 / Math.max(video.videoWidth, video.videoHeight));
-          var canvas = document.createElement("canvas");
-          canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
-          canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
-          canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
-          var frameBlob = await new Promise(function (resolve) { canvas.toBlob(resolve, "image/jpeg", 0.82); });
-          if (frameBlob) frames.push({ t_ms: tMs, payload: await payloadFromBlob(frameBlob, "frame.jpg") });
+    // A recorded WebM can report an Infinity duration until it is seeked: seeking
+    // far past the end makes the browser work the real duration out.
+    async function knownDuration(video) {
+      if (isFinite(video.duration) && video.duration > 0) return video.duration;
+      var changed = waitFor(video, "durationchange", 3000);
+      try { video.currentTime = 1e101; } catch (_error) { return null; }
+      await changed;
+      var seconds = isFinite(video.duration) && video.duration > 0 ? video.duration : null;
+      var back = waitFor(video, "seeked", 3000);
+      video.currentTime = 0;
+      await back;
+      return seconds;
+    }
+    async function videoFrames(video, durationMsValue) {
+      var frames = [];
+      var sampleTimes = logic.frameTimes(durationMsValue);
+      for (var i = 0; i < sampleTimes.length; i++) {
+        var tMs = sampleTimes[i];
+        if (frames.length && frames[frames.length - 1].t_ms === tMs) continue;
+        if (Math.abs(video.currentTime - tMs / 1000) > 0.001) {
+          var seeked = waitFor(video, "seeked", 5000);
+          video.currentTime = tMs / 1000;
+          await seeked;
         }
-        return frames;
-      } finally {
-        video.removeAttribute("src");
-        URL.revokeObjectURL(objectUrl);
+        var scale = Math.min(1, 1568 / Math.max(video.videoWidth || 1, video.videoHeight || 1));
+        var canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round((video.videoWidth || 1) * scale));
+        canvas.height = Math.max(1, Math.round((video.videoHeight || 1) * scale));
+        canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+        var frameBlob = await new Promise(function (resolve) { canvas.toBlob(resolve, "image/jpeg", 0.82); });
+        if (frameBlob) frames.push({ t_ms: tMs, payload: await payloadFromBlob(frameBlob, "frame.jpg") });
       }
+      return frames;
     }
     async function mediaFromFile(file) {
       var payload = await payloadFromBlob(file, file.name || "attachment");
-      if (!file.type || file.type.indexOf("video/") !== 0) return { payload: payload };
+      if (logic.kindOf(file) !== "video") return { payload: payload };
       var objectUrl = URL.createObjectURL(file);
       var video = document.createElement("video");
-      video.preload = "metadata"; video.muted = true;
+      video.preload = "auto"; video.muted = true; video.playsInline = true;
       try {
         var metadata = waitFor(video, "loadedmetadata");
+        var firstFrame = waitFor(video, "loadeddata", 5000);
         video.src = objectUrl;
         await metadata;
-        var width = video.videoWidth || 0;
-        var height = video.videoHeight || 0;
-        var durationMs = Math.max(0, Math.round((video.duration || 0) * 1000));
-        var frames = await videoFrames(file, video.duration || 0);
-        return { payload: payload, video: { width: width, height: height, duration_ms: durationMs }, frames: frames };
+        await firstFrame;
+        var duration = logic.durationMs(await knownDuration(video));
+        var frames = await videoFrames(video, duration);
+        return { payload: payload, video: { width: video.videoWidth || 0, height: video.videoHeight || 0, duration_ms: duration }, frames: frames };
       } finally {
         video.removeAttribute("src");
         URL.revokeObjectURL(objectUrl);
       }
     }
-    async function submitFile() {
-      if (!fileState || fileState.busy) return;
-      var title = document.getElementById("issue-file-title-input").value.trim();
-      var description = document.getElementById("issue-file-description").value;
-      if (!title) { document.getElementById("issue-file-title-input").focus(); return; }
-      fileState.busy = true;
-      fileState.status = "Preparing media…";
-      renderFileTray();
-      var submit = document.querySelector("[data-file-action=submit]");
-      if (submit) submit.disabled = true;
-      try {
-        var media = [];
-        for (var i = 0; i < fileState.files.length; i++) media.push(await mediaFromFile(fileState.files[i]));
-        var result = await apiPost("/api/issues", { title: title, description: description, media: media });
-        closeFileDialog();
-        if (!active && options.onFiled) {
-          loaded = false;
-          options.onFiled(result);
-          return;
-        }
-        await refresh();
-        if (result && result.id) goTo(result.id);
-      } catch (error) {
-        if (fileState) {
-          fileState.busy = false;
-          fileState.status = error.message || "Could not file issue.";
-          renderFileTray();
-          var button = document.querySelector("[data-file-action=submit]");
-          if (button) button.disabled = false;
-        }
-      }
+
+    // ---- paste and drop, page-wide ----
+    function onPaste(event) {
+      if (destroyed || hosted) return;
+      var files = clipFiles(event.clipboardData);
+      if (!files.length) return; // plain text: the browser pastes it as usual
+      var textToo = hasType(event.clipboardData, "text/plain"); // a file copied in Finder also carries its name as text
+      var tag = (event.target && event.target.tagName || "").toLowerCase();
+      if (!(textToo && (tag === "input" || tag === "textarea"))) event.preventDefault();
+      if (panel) { panel.addFiles(files); return; }
+      if (sharedPanelOpen()) return;
+      openFileDialog({ files: files });
     }
+    function dropLabel() { return panel ? "Drop to attach" : "Drop to file a new issue with this attached"; }
+    function showDrop() {
+      if (!dropHint) {
+        dropHint = document.createElement("div");
+        dropHint.className = "issue-drop-hint";
+        dropHint.innerHTML = '<span class="issue-drop-label"></span>';
+        document.body.appendChild(dropHint);
+      }
+      setTextIfChanged(dropHint.querySelector(".issue-drop-label"), dropLabel());
+      document.body.classList.add("issue-dragging-files");
+    }
+    function hideDrop() {
+      dragDepth = 0;
+      document.body.classList.remove("issue-dragging-files");
+      if (dropHint) dropHint.remove();
+      dropHint = null;
+    }
+    function onDragEnter(event) {
+      if (destroyed || hosted || !hasType(event.dataTransfer, "Files")) return;
+      dragDepth++;
+      showDrop();
+    }
+    function onDragOver(event) {
+      if (destroyed || hosted || !hasType(event.dataTransfer, "Files")) return;
+      event.preventDefault();
+      try { event.dataTransfer.dropEffect = "copy"; } catch (_error) { /* ignore */ }
+      showDrop();
+    }
+    function onDragLeave(event) {
+      if (destroyed || hosted || !hasType(event.dataTransfer, "Files")) return;
+      dragDepth = Math.max(0, dragDepth - 1);
+      if (!dragDepth) hideDrop();
+    }
+    function onDrop(event) {
+      if (destroyed || hosted) return;
+      var transfer = event.dataTransfer;
+      if (!hasType(transfer, "Files") && !(transfer && transfer.files && transfer.files.length)) return;
+      event.preventDefault();
+      hideDrop();
+      var files = Array.prototype.filter.call(transfer.files || [], Boolean);
+      if (!files.length) return;
+      if (panel) { panel.addFiles(files); return; }
+      if (sharedPanelOpen()) { if (options.showToast) options.showToast("Close the open panel first, then drop again.", "info"); return; }
+      openFileDialog({ files: files });
+    }
+    function onWindowBlur() { if (dragDepth) hideDrop(); }
 
     function onGlobalClick(event) {
-      if (event.target.closest("[data-issue-file]") || event.target.closest("#issue-new-button")) openFileDialog();
+      if (event.target.closest("#issue-new-button")) openFileDialog();
       if (event.target.closest("[data-action=leave-person]")) leavePerson();
       if (event.target.closest("[data-close]") && !event.target.closest("video")) closeCloser();
     }
+    function onResize() { sizeMedia(); }
     function deactivate() {
       active = false;
       requestGeneration++;
       loading = false;
       closeCloser();
-      if (fileState) closeFileDialog();
       setActive(false);
     }
     function destroy() {
       destroyed = true;
       document.removeEventListener("keydown", onKeydown, true);
       document.removeEventListener("click", onGlobalClick, true);
-      window.removeEventListener("resize", sizeMedia);
+      document.removeEventListener("paste", onPaste);
+      document.removeEventListener("dragenter", onDragEnter);
+      document.removeEventListener("dragover", onDragOver);
+      document.removeEventListener("dragleave", onDragLeave);
+      document.removeEventListener("drop", onDrop);
+      window.removeEventListener("resize", onResize);
+      window.removeEventListener("blur", onWindowBlur);
+      hideDrop();
       closeFileDialog();
-      closeCloser();
       deactivate();
     }
 
     document.addEventListener("click", onGlobalClick, true);
     document.addEventListener("keydown", onKeydown, true);
-    window.addEventListener("resize", sizeMedia);
-    if (hosted) showHostedUnavailable();
+    document.addEventListener("paste", onPaste);
+    document.addEventListener("dragenter", onDragEnter);
+    document.addEventListener("dragover", onDragOver);
+    document.addEventListener("dragleave", onDragLeave);
+    document.addEventListener("drop", onDrop);
+    window.addEventListener("resize", onResize);
+    window.addEventListener("blur", onWindowBlur);
     return {
-      render: function () { if (hosted) showHostedUnavailable(); else render(); },
+      render: function () { render(); },
       refresh: refresh,
+      refreshCount: refreshCount,
+      openFile: openFileDialog,
       deactivate: deactivate,
       destroy: destroy
     };

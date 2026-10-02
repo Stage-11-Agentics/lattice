@@ -2333,7 +2333,7 @@ async function _prepareIssueDashboard() {
     oldTab = document.createElement("span");
     oldTab.className = "nav-tab";
     oldTab.dataset.view = "issues";
-    oldTab.textContent = "Issues";
+    oldTab.innerHTML = '<span class="nav-tab-label">Issues</span><span class="issue-nav-count" id="issue-nav-count"></span>';
     oldTab.addEventListener("click", function() { location.hash = "#/issues"; });
     var activityTab = document.querySelector('.nav-tab[data-view="activity"]');
     activityTab.parentNode.insertBefore(oldTab, activityTab);
@@ -2342,7 +2342,8 @@ async function _prepareIssueDashboard() {
     oldButton = document.createElement("button");
     oldButton.type = "button";
     oldButton.id = "issue-new-button";
-    oldButton.className = "btn";
+    oldButton.className = "btn btn-issue";
+    oldButton.title = "File an issue (i)";
     oldButton.textContent = "+ Issue";
     var right = document.querySelector(".nav-right");
     right.insertBefore(oldButton, document.getElementById("new-task-btn"));
@@ -2362,9 +2363,10 @@ async function _prepareIssueDashboard() {
       _issueDashboard = window.IssueDashboard.mount({
         app: document.getElementById("app"), api: api, apiPost: apiPost, esc: esc,
         hosted: !!HOSTED_SLUG, basePath: BASE_PATH, showToast: showToast,
-        onFiled: function() { location.hash = "#/issues"; }
+        mediaLimits: function() { return window.IssueViewLogic.mediaLimits(config); }
       });
     }
+    if (currentView !== "issues") _issueDashboard.refreshCount();
   } catch(error) {
     _issueAssetError = error.message || String(error);
   }
@@ -2374,7 +2376,11 @@ async function _prepareIssueDashboard() {
 async function api(path, opts) {
   var r = await fetch(apiUrl(BASE_PATH, path), opts);
   var body = await r.json();
-  if (!body.ok) throw new Error(body.error ? body.error.message : "API error");
+  if (!body.ok) {
+    var apiError = new Error(body.error ? body.error.message : "API error");
+    apiError.code = body.error ? body.error.code : null;
+    throw apiError;
+  }
   return body.data;
 }
 
@@ -7598,8 +7604,18 @@ function stopPolling() {
 async function refreshCurrentView() {
     if (currentView === "issues") {
       if (_issueDashboard) await _issueDashboard.refresh();
+      // Issues turned off while this view is open: leave it on this refresh.
+      try {
+        var issueConfig = await api("/api/config");
+        if (currentView === "issues" && !(issueConfig && issueConfig.issues && issueConfig.issues.enabled === true)) {
+          config.issues = issueConfig.issues;
+          await _prepareIssueDashboard();
+          location.hash = "#/board";
+        }
+      } catch (e) { /* server may be restarting */ }
       return;
     }
+    if (_issueDashboard) _issueDashboard.refreshCount();
     if (currentView !== "board" && currentView !== "list" && currentView !== "activity" && currentView !== "stats" && currentView !== "cube" && currentView !== "cube2" && currentView !== "web" && currentView !== "structure") return;
 
     // Structure: fetch structure.json + events.jsonl tail, re-render frame.
