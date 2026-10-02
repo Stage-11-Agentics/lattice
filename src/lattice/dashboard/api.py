@@ -181,39 +181,6 @@ def get_config(ld: Path) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _issue_origin(event: dict | None) -> dict | None:
-    """Return the public user/machine pair from an event's recorded origin."""
-    if not event or not isinstance(event.get("origin"), dict):
-        return None
-    from lattice.core.origin import _user_and_machine
-
-    user, machine = _user_and_machine(event["origin"])
-    if user is None and machine is None:
-        return None
-    return {"user": user, "machine": machine}
-
-
-def _issue_comments(events: list[dict]) -> list[dict]:
-    """Materialize LAT-371 issue comments without changing the shared comment core.
-
-    Once LAT-371 lands, its public ``core.issues.issue_comments`` helper is the
-    source. The fallback only adapts its planned event names to the existing
-    task-comment materializer; it never writes or invents comment events.
-    """
-    try:
-        from lattice.core.issues import issue_comments
-    except ImportError:
-        from lattice.core.comments import materialize_comments
-
-        adapted = [
-            {**event, "type": event["type"].replace("issue_comment_", "comment_")}
-            for event in events
-            if event.get("type", "").startswith("issue_comment_")
-        ]
-        return materialize_comments(adapted)
-    return issue_comments(events)
-
-
 def _flatten_issue_comments(comments: list[dict]) -> list[dict]:
     """Flatten the task-comment-shaped thread for actor filtering and counts."""
     flattened = []
@@ -228,88 +195,23 @@ def _flatten_issue_comments(comments: list[dict]) -> list[dict]:
 
 
 def _issue_detail_adapter(ld: Path, raw_id: str) -> dict | None:
-    """LAT-371 compatibility boundary for the stable dashboard issue shape.
-
-    LAT-371 owns title derivation, comment materialization and event redaction
-    in ``storage.issues.issue_detail``. The LAT-366 branch does not have that
-    reader yet, so the fallback composes its current view and log in one place.
-    """
-    from lattice.core.issues import redact_removed_media_names
-    from lattice.storage.issues import (
-        issue_views,
-        read_issue_events,
-        read_issue_snapshot,
-        resolve_issue,
-    )
+    """The page's issue detail: LAT-371's ``issue_detail`` plus media URLs."""
+    from lattice.storage.issues import issue_detail
 
     try:
-        issue_id = resolve_issue(ld, raw_id)
+        detail = issue_detail(ld, raw_id)
     except OpError as exc:
         raise ApiError.from_op_error(exc) from exc
-
-    try:
-        from lattice.storage.issues import issue_detail
-    except ImportError:
-        issue_detail = None
-    if issue_detail is not None:
-        try:
-            detail = issue_detail(ld, issue_id)
-        except OpError as exc:
-            raise ApiError.from_op_error(exc) from exc
-        if detail is None:
-            return None
-        return _normalize_issue_detail(detail)
-
-    snapshot = read_issue_snapshot(ld, issue_id)
-    if snapshot is None:
-        return None
-    events = read_issue_events(ld, issue_id)
-    view = issue_views(ld, [snapshot])[0]
-    return _normalize_issue_detail(
-        {
-            **view,
-            "comments": _issue_comments(events),
-            "events": redact_removed_media_names(events, snapshot),
-        }
-    )
+    return None if detail is None else _normalize_issue_detail(detail)
 
 
 def _normalize_issue_detail(detail: dict) -> dict:
-    """Keep current and LAT-371 readers behind one page contract."""
+    """Give media entries dashboard URLs and hide board-local file paths."""
     from lattice.core.issue_media import parse_frame_name
 
     issue = dict(detail)
-    if "title" not in issue:
-        # LAT-371 adds split_title. Its exact derivation is used when available;
-        # the current LAT-366 branch keeps the legacy text intact as the title.
-        try:
-            from lattice.core.issues import split_title
-
-            title, description, _shortened = split_title(issue.get("text", ""))
-        except ImportError:
-            legacy_text = issue.get("text", "")
-            title, separator, description = legacy_text.partition("\n")
-            description = description.lstrip("\r\n") if separator else ""
-        issue["title"] = title
-        issue["description"] = description
-    issue.setdefault("description", "")
     issue.setdefault("comments", [])
-    issue.setdefault("comment_count", len(_flatten_issue_comments(issue["comments"])))
     issue.setdefault("events", [])
-    issue.setdefault("filed_origin", None)
-
-    filed_event = next(
-        (event for event in issue["events"] if event.get("type") == "issue_filed"), None
-    )
-    if issue["filed_origin"] is None:
-        issue["filed_origin"] = _issue_origin(filed_event)
-    comments_by_id = {}
-    for event in issue["events"]:
-        if event.get("type") == "issue_comment_added":
-            comments_by_id[event.get("id")] = _issue_origin(event)
-    for comment in _flatten_issue_comments(issue["comments"]):
-        if comment.get("origin") is None:
-            comment["origin"] = comments_by_id.get(comment.get("id"))
     media = []
     for entry in issue.get("media", []):
         item = dict(entry)
@@ -350,49 +252,41 @@ def _normalize_issue_detail(detail: dict) -> dict:
 
 
 def _issue_list_adapter(ld: Path, actor: str | None = None) -> list[dict]:
-    """Return every issue, with LAT-371's all-state ``--by`` match semantics."""
-    from lattice.core.issues import redact_removed_media_names
-    from lattice.storage.issues import issue_views, list_issue_snapshots, read_issue_events
+    """Every issue, or with *actor* those it filed or commented on (any state).
 
-    snapshots = list_issue_snapshots(ld)
-    views = issue_views(ld, snapshots)
+    Membership is LAT-371's ``issues_by``: a full key (``human:Atin-1``) matches
+    that session exactly, a legacy key (``human:Atin``) spans the person's
+    sessions. Each matched row adds the actor's own comment stats for the person
+    page: ``matched_by``, ``actor_comment_count``, ``actor_comment_origins`` and
+    ``actor_activity_at``.
+    """
+    from lattice.core.issues import actor_matches, issue_comments
+    from lattice.storage.issues import (
+        issue_views,
+        issues_by,
+        list_issue_snapshots,
+        read_issue_events,
+    )
+
+    if actor is None:
+        views = issue_views(ld, list_issue_snapshots(ld))
+        return [_normalize_issue_detail(view) for view in views]
     rows = []
-    for snapshot, view in zip(snapshots, views):
-        events = read_issue_events(ld, view["id"])
-        detail = _normalize_issue_detail(
+    for view in issues_by(ld, actor):
+        comments = _flatten_issue_comments(issue_comments(read_issue_events(ld, view["id"])))
+        mine = [c for c in comments if actor_matches(c.get("author"), actor)]
+        times = [c.get("created_at") or "" for c in mine]
+        if view["activity"] == "filed":
+            times.append(view.get("filed_at") or "")
+        rows.append(
             {
-                **view,
-                "comments": _issue_comments(events),
-                "events": redact_removed_media_names(events, snapshot),
+                **_normalize_issue_detail(view),
+                "matched_by": view["activity"],
+                "actor_comment_count": len(mine),
+                "actor_comment_origins": [c.get("origin") for c in mine],
+                "actor_activity_at": max(times, default=""),
             }
         )
-        comments = _flatten_issue_comments(detail["comments"])
-        filed = detail.get("filed_by") == actor if actor is not None else False
-        commented = any(comment.get("author", comment.get("by")) == actor for comment in comments)
-        if actor is not None and not (filed or commented):
-            continue
-        if actor is not None:
-            detail["matched_by"] = "filed" if filed else "commented"
-            actor_times = [
-                comment.get("created_at", comment.get("at", ""))
-                for comment in comments
-                if comment.get("author", comment.get("by")) == actor
-            ]
-            if filed:
-                actor_times.append(detail.get("filed_at") or "")
-            detail["actor_activity_at"] = max(actor_times, default="")
-            matching_comments = [
-                comment
-                for comment in comments
-                if comment.get("author", comment.get("by")) == actor
-            ]
-            detail["actor_comment_count"] = len(matching_comments)
-            detail["actor_comment_origins"] = [
-                comment.get("origin") for comment in matching_comments
-            ]
-        detail.pop("comments", None)
-        detail.pop("events", None)
-        rows.append(detail)
     return rows
 
 
@@ -1137,20 +1031,6 @@ def translate_post(path: str, body: Any) -> WriteRequest:
             raise _invalid("'media' must be an array of objects")
 
         params = {"title": title, "description": description, "media": tuple(media)}
-        # Until LAT-371 lands, LAT-366's registered operation still takes
-        # ``text``. This is the sole operation-signature compatibility branch.
-        try:
-            from lattice.ops.base import get_operation
-
-            fields = get_operation("issue.file").Params.__dataclass_fields__
-        except (ImportError, OpError):
-            fields = {"title": None}
-        if "title" not in fields:
-            params = {
-                "text": title.strip()
-                + ("\n\n" + description.strip() if description.strip() else ""),
-                "media": tuple(media),
-            }
 
         def render_issue(result: Any) -> tuple[int, Any]:
             value = dict(result.value)

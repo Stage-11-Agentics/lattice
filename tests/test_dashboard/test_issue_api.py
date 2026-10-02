@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -104,42 +103,32 @@ def test_by_filter_includes_nested_comments_and_unknown_origins(issue_board) -> 
     board, lattice_dir, config = issue_board
     enable_issues(lattice_dir, config)
     issue = file_issue(board, "Commented issue", actor="agent:reporter")
-    event_path = lattice_dir / "issues" / "events" / f"{issue['id']}.jsonl"
-    events = [
-        {
-            "id": "event-comment-root",
-            "type": "issue_comment_added",
-            "ts": "2026-01-02T00:00:00Z",
-            "actor": "human:atin",
-            "origin": {"reported": {"os_user": "atin", "host": "Atlas"}},
-            "data": {"body": "Top level"},
-        },
-        {
-            "id": "event-comment-reply",
-            "type": "issue_comment_added",
-            "ts": "2026-01-03T00:00:00Z",
-            "actor": "human:atin",
-            "data": {"body": "Nested reply", "parent_id": "event-comment-root"},
-        },
-    ]
-    with event_path.open("a", encoding="utf-8") as handle:
-        handle.writelines(json.dumps(event, separators=(",", ":")) + "\n" for event in events)
+    board.execute(
+        "issue.comment",
+        {"issue": issue["id"], "text": "Top level"},
+        Caller(actor="human:atin", origin={"reported": {"os_user": "atin", "host": "Atlas"}}),
+    )
+    root_id = data(api.route_get(lattice_dir, f"/api/issues/{issue['id']}"))["comments"][0]["id"]
+    board.execute(
+        "issue.comment",
+        {"issue": issue["id"], "text": "Nested reply", "reply_to": root_id},
+        Caller(actor="human:atin"),
+    )
 
     rows = data(api.route_get(lattice_dir, "/api/issues", urlencode({"by": "human:atin"})))
     assert len(rows) == 1
     assert rows[0]["id"] == issue["id"]
     assert rows[0]["matched_by"] == "commented"
     assert rows[0]["actor_comment_count"] == 2
-    assert rows[0]["actor_activity_at"] == "2026-01-03T00:00:00Z"
-    assert rows[0]["actor_comment_origins"] == [
-        {"user": "atin", "machine": "Atlas"},
-        None,
-    ]
+    stored = data(api.route_get(lattice_dir, f"/api/issues/{issue['id']}"))["comments"][0]
+    assert rows[0]["actor_activity_at"] == stored["replies"][0]["created_at"]
+    assert len(rows[0]["actor_comment_origins"]) == 2
+    assert rows[0]["actor_comment_origins"][0] == {"user": "atin", "machine": "Atlas"}
     assert rows[0]["comment_count"] == 2
 
     detail = data(api.route_get(lattice_dir, f"/api/issues/{issue['id']}"))
     assert detail["comments"][0]["replies"][0]["body"] == "Nested reply"
-    assert detail["comments"][0]["replies"][0]["origin"] is None
+    assert detail["comments"][0]["origin"] == {"user": "atin", "machine": "Atlas"}
 
 
 def test_detail_media_uses_the_shared_media_route_and_hides_local_paths(issue_board) -> None:  # noqa: ANN001
