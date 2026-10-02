@@ -304,7 +304,7 @@ When you discover something important about how this project works — a pattern
 
 ### Grouping Work
 
-New boards allow `task`, `bug`, and `chore`. Create and update accept only types listed in `.lattice/config.json` `task_types`; add custom types there while preserving existing values. On a hosted board, an admin replaces the list with `lattice server project config <slug> --set 'task_types=[...]'` and keeps `task`. Use a parent task only when it has its own deliverable. Otherwise, group related work with a shared tag (`--tags auth,v2` on `create` or `update`; find it with `lattice list --tag auth`) and order it with `lattice link <later> depends_on <earlier>`.
+**No built-in epic or spike type, and never a fake epic.** New boards allow `task`, `bug`, and `chore`, and custom task types can be configured per board. Never create an umbrella task to stand in for an epic, even if the board has a custom `epic` type. On a local board, add a custom type to `.lattice/config.json` `task_types` while preserving its existing values. On a hosted board, ask an admin to replace the list with `lattice server project config <slug> --set 'task_types=[...]'` and keep `task`. Group related work with a shared tag (`--tags auth,v2` on `create` or `update`; find it with `lattice list --tag auth`) and order it with `lattice link <later> depends_on <earlier>`.
 
 ### Finishing Work Without a PR
 
@@ -337,6 +337,6 @@ lattice list
 - `--quiet` — prints only the task ID (scripting: `TASK=$(lattice create "..." --quiet)`)
 - `--json` — structured output: `{"ok": true, "data": ...}` or `{"ok": false, "error": ...}`
 - `lattice list --status in_progress` / `--assigned agent:<id>` / `--tag <tag>` — filters
-- `lattice link <task> depends_on|blocks|subtask_of <target>` — task relationships
+- `lattice link <task> depends_on|blocks|subtask_of <target>` — task relationships (group with tags, never a fake umbrella task)
 
 For the full CLI reference, see the `/lattice` skill.

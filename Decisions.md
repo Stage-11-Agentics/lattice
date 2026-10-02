@@ -1405,3 +1405,11 @@ Additionally, `lattice advance N` processed multiple tasks in a single context w
   register behind its POST route; the route itself belongs to LAT-365. No
   schema version changes, old logs are not migrated, and task event logs and
   task views stay isolated from issue events.
+
+---
+
+## 2026-10-02: New boards default to task, bug, and chore
+
+- Decision: New boards offer `task`, `bug`, and `chore` by default; projects may configure additional types in `task_types`. Agents must never create an umbrella task to stand in for an epic.
+- Rationale: Atin ruled, "I really hate epic and spike. I know spike is a normal research or agile word, but not here. If people really want it, they can have their agent edit their local Lattice board." This keeps defaults free of those suggestions while preserving per-board configuration.
+- Consequence: Create and update reject types absent from the board's list. Existing configs and tasks keep working, and hosted administrators change the list with `lattice server project config`.

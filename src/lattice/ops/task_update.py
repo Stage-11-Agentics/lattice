@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from lattice.core.config import (
     VALID_COMPLEXITIES,
@@ -14,6 +15,7 @@ from lattice.core.config import (
 from lattice.core.events import create_event, utc_now
 from lattice.core.tasks import apply_event_to_snapshot
 from lattice.ops.base import CommonParams, OpContext, OpError, OpResult, operation
+from lattice.ops.plan_gate import _hosted_hint
 from lattice.storage.operations import TaskMutationDecision
 
 UPDATABLE_FIELDS = frozenset(
@@ -26,7 +28,9 @@ REDIRECT_FIELDS = {
 }
 
 
-def _normalize_pairs(pairs: tuple[str, ...], config: dict) -> list[tuple[str, object]]:
+def _normalize_pairs(
+    pairs: tuple[str, ...], config: dict, lattice_dir: Path
+) -> list[tuple[str, object]]:
     """Parse and validate ``field=value`` pairs in today's order."""
     if not pairs:
         raise OpError("VALIDATION_ERROR", "No field=value pairs provided.")
@@ -40,10 +44,10 @@ def _normalize_pairs(pairs: tuple[str, ...], config: dict) -> list[tuple[str, ob
             )
         field, value = pair.split("=", 1)
         parsed.append((field, value))
-    return _normalize_values(parsed, config)
+    return _normalize_values(parsed, config, lattice_dir)
 
 
-def _normalize_fields(fields: dict, config: dict) -> list[tuple[str, object]]:
+def _normalize_fields(fields: dict, config: dict, lattice_dir: Path) -> list[tuple[str, object]]:
     """Validate a ``fields`` mapping: the same rules, with JSON values kept as given.
 
     A custom field holds any JSON value (``custom_fields`` is an open object);
@@ -51,10 +55,12 @@ def _normalize_fields(fields: dict, config: dict) -> list[tuple[str, object]]:
     """
     if not fields:
         raise OpError("VALIDATION_ERROR", "No fields provided to update.")
-    return _normalize_values(list(fields.items()), config)
+    return _normalize_values(list(fields.items()), config, lattice_dir)
 
 
-def _normalize_values(parsed: list[tuple[str, object]], config: dict) -> list[tuple[str, object]]:
+def _normalize_values(
+    parsed: list[tuple[str, object]], config: dict, lattice_dir: Path
+) -> list[tuple[str, object]]:
     normalized: list[tuple[str, object]] = []
     for field, value in parsed:
         if field in REDIRECT_FIELDS:
@@ -94,7 +100,14 @@ def _normalize_values(parsed: list[tuple[str, object]], config: dict) -> list[tu
                 f"Invalid complexity: '{value}'. Valid complexities: {valid}.",
             )
         if field == "type" and not validate_task_type(config, value):
-            raise OpError("VALIDATION_ERROR", invalid_task_type_message(config, value))
+            raise OpError(
+                "VALIDATION_ERROR",
+                invalid_task_type_message(
+                    config,
+                    value,
+                    hosted_hint=_hosted_hint(lattice_dir, None, config=config, task_type=value),
+                ),
+            )
 
         if field == "tags" and isinstance(value, str):
             new_value: object = [t.strip() for t in value.split(",") if t.strip()]
@@ -133,9 +146,9 @@ class Update:
     def run(self, ctx: OpContext, p: UpdateParams) -> OpResult:
         task_id = ctx.resolve_task(p.task)
         if p.fields is not None:
-            normalized = _normalize_fields(p.fields, ctx.config)
+            normalized = _normalize_fields(p.fields, ctx.config, ctx.lattice_dir)
         else:
-            normalized = _normalize_pairs(p.pairs, ctx.config)
+            normalized = _normalize_pairs(p.pairs, ctx.config, ctx.lattice_dir)
         shared_ts = utc_now()
 
         def decide(context):  # noqa: ANN001, ANN202

@@ -1124,7 +1124,7 @@
       "exit_code": 1,
       "stderr": {
         "lines": [
-          "Error: Invalid task type: 'epic'. Valid types: task, bug, chore. On a local board, add the type to `.lattice/config.json` `task_types`. On a hosted board, run `lattice server project config <slug> --set 'task_types=[\"task\",\"bug\",\"chore\",\"epic\"]'`; this replaces the list, so include the existing values when adding a type."
+          "Error: Invalid task type: 'epic'. Valid types: task, bug, chore. On a local board, add the type to `.lattice/config.json` `task_types`."
         ]
       },
       "stdout": {

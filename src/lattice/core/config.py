@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import re
-import shlex
 from pathlib import Path
 from typing import Literal, TypedDict
 
@@ -609,26 +608,20 @@ def validate_task_type(config: dict, task_type: object) -> bool:
     return isinstance(task_type, str) and task_type in config.get("task_types", [])
 
 
-def invalid_task_type_message(config: dict, task_type: object) -> str:
-    """Explain why a type was refused and how to add it to a board's config.
+def invalid_task_type_message(
+    config: dict, task_type: object, *, hosted_hint: str | None = None
+) -> str:
+    """Explain why a type was refused and how to add it to this board's config.
 
-    The message deliberately does not inspect whether the caller is local or
-    hosted, so the same operation has identical wording on both transports.
+    ``hosted_hint`` is supplied by the operation layer only for a server-owned
+    board. Core formatting stays pure and defaults to local-board guidance.
     """
     configured = config.get("task_types", [])
     valid = ", ".join(configured)
-    replacement = list(configured)
-    if isinstance(task_type, str) and task_type not in replacement:
-        replacement.append(task_type)
-    replacement_json = json.dumps(replacement, separators=(",", ":"))
-    hosted_assignment = shlex.quote(f"task_types={replacement_json}")
-    return (
-        f"Invalid task type: '{task_type}'. Valid types: {valid}. "
-        "On a local board, add the type to `.lattice/config.json` `task_types`. "
-        "On a hosted board, run `lattice server project config <slug> "
-        f"--set {hosted_assignment}`; this replaces the list, so include "
-        "the existing values when adding a type."
+    guidance = hosted_hint or (
+        "On a local board, add the type to `.lattice/config.json` `task_types`."
     )
+    return f"Invalid task type: '{task_type}'. Valid types: {valid}. {guidance}"
 
 
 def get_wip_limit(config: dict, status: str) -> int | None:

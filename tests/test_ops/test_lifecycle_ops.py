@@ -116,10 +116,7 @@ class TestTaskTypes:
     ) -> None:
         expected = (
             "Invalid task type: 'epic'. Valid types: task, bug, chore. "
-            "On a local board, add the type to `.lattice/config.json` `task_types`. "
-            "On a hosted board, run `lattice server project config <slug> "
-            '--set \'task_types=["task","bug","chore","epic"]\'`; this replaces '
-            "the list, so include the existing values when adding a type."
+            "On a local board, add the type to `.lattice/config.json` `task_types`."
         )
         with pytest.raises(OpError) as create_error:
             _run(board, "task.create", {"title": "Bad", "type": "epic"})
@@ -131,6 +128,7 @@ class TestTaskTypes:
             assert error.code == "VALIDATION_ERROR"
             assert error.message == expected
             assert error.message.startswith("Invalid task type: 'epic'.")
+            assert "host" not in error.message.lower()
 
     def test_custom_type_succeeds_after_board_config_adds_it(self, board: LocalBoard) -> None:
         config_path = board.lattice_dir / "config.json"

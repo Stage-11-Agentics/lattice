@@ -457,7 +457,7 @@ The CLI is Lattice's write interface — the primary way agents interact with th
 - `--json` — structured output (all commands)
 - `--quiet` — just the ID (all commands)
 - `--actor` — who is performing the action (all write commands)
-- `--type` — task type (create/update); filters by type (list). New boards allow task, bug, chore.
+- `--type` — set the task type on create; set `type=<value>` on update; filter by type on list. New boards allow task, bug, and chore.
 - `--priority` — critical, high, medium, low (create/list)
 - `--assigned` / `--assigned-to` — filter/set assignee (list/create)
 - `--tag` — filter by tag (list); set one tag, repeatable (create)

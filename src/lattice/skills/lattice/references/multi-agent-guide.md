@@ -19,14 +19,14 @@ lattice init --project-code PROJ
 The orchestrator agent creates and assigns work:
 
 ```bash
-lattice create "Implement user auth" --actor agent:orchestrator --priority high
-lattice create "Build login endpoint" --actor agent:orchestrator --assign agent:worker-1
-lattice create "Build signup endpoint" --actor agent:orchestrator --assign agent:worker-2
-lattice link PROJ-2 subtask_of PROJ-1 --actor agent:orchestrator
-lattice link PROJ-3 subtask_of PROJ-1 --actor agent:orchestrator
+lattice create "Add users table migration" --actor agent:orchestrator --priority high --tags auth
+lattice create "Build login endpoint" --actor agent:orchestrator --assign agent:worker-1 --tags auth
+lattice create "Build signup endpoint" --actor agent:orchestrator --assign agent:worker-2 --tags auth
+lattice link PROJ-2 depends_on PROJ-1 --actor agent:orchestrator
+lattice link PROJ-3 depends_on PROJ-1 --actor agent:orchestrator
 ```
 
-New boards allow `task`, `bug`, and `chore`. Add custom types to the local board's `.lattice/config.json` `task_types` list; a hosted board admin can replace it with `lattice server project config <slug> --set 'task_types=[...]'` and must keep `task`. Use a parent task only when it has its own deliverable.
+Never create an umbrella task to stand in for an epic, even if a board has a custom `epic` type. New boards allow `task`, `bug`, and `chore`; on a local board, add custom types to `.lattice/config.json` `task_types` while preserving existing values. On a hosted board, ask an admin to replace the list with `lattice server project config <slug> --set 'task_types=[...]'` and keep `task`. The endpoints are peer tasks grouped by the `auth` tag and both depend on the users table migration.
 
 ### 3. Workers Claim and Execute
 

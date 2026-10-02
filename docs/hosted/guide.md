@@ -21,7 +21,7 @@ A person can run every block by hand too.
 4. [Quick start on one machine](#4-quick-start-on-one-machine)
 5. [Install](#5-install)
 6. [The server root and server.json](#6-the-server-root-and-serverjson)
-7. [Projects and their review workflow](#7-projects-and-their-review-workflow)
+7. [Projects and their configuration](#7-projects-and-their-configuration)
 8. [Tokens](#8-tokens)
 9. [Running the server as a service](#9-running-the-server-as-a-service)
 10. [Reverse proxies](#10-reverse-proxies)
@@ -658,7 +658,7 @@ Everything you and your agents do locally works the same: `create`, `status`, `c
 - **Maintenance commands** (`init`, `rebuild`, `doctor --fix`, `backfill-ids`, `migrate`) refuse with `LOCAL_ONLY`; they run on the server host (section 7). `lattice doctor` without `--fix` runs on the cache and also compares every file with the server's copy.
 - **Hooks** configured on the board run on your machine only if your remote sets `run_board_hooks: true`. The server runs no hooks and spawns no agents.
 - **Plugins.** An operation from a plugin package runs on a hosted board only if the plugin is installed on the server (section 19).
-- **Grouping work.** New boards allow `task`, `bug`, and `chore`; a custom type must be added to the board's `task_types` list. Group related tasks with a shared tag (`--tags`) and order them with `depends_on` links. Create a parent task only when it has its own deliverable:
+- **Grouping work.** New boards allow `task`, `bug`, and `chore`, and custom types can be configured per board. An agent must never create an umbrella task to stand in for an epic, even if the board has a custom `epic` type. Group related tasks with a shared tag (`--tags`) and order them with `depends_on` links. On a hosted board, an admin changes types with `lattice server project config <slug> --set 'task_types=[...]'`, including `task` and every type the project should keep:
 
   ```bash
   lattice create "Hosted trial: write the runbook" --tags hosted-trial --actor human:alice

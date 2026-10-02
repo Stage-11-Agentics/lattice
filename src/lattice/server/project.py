@@ -1054,7 +1054,7 @@ class Project:
     # -- server-started transactions -----------------------------------------
 
     def set_config(self, changes: dict[str, Any]) -> dict:
-        """Apply an allowlisted review-workflow change (SPEC §8.2) as a transaction.
+        """Apply an allowlisted project-configuration change (SPEC §8.2) as a transaction.
 
         ``server.set_config`` with a server-minted ``op_id`` and ``token_id: null``;
         its undo log is ``hosted/undo/server--<op_id>.jsonl``.
