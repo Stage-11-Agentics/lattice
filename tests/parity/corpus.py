@@ -623,10 +623,14 @@ CLAIMS = Scenario(
         c("create", "Orphan in progress", *H),
         c("status", "PAR-5", "in_progress", "--force", "--reason", "nobody owns it", *H),
         plan("PAR-5"),
-        c("assign", "PAR-5", "none", *H),
+        c("assign", "PAR-5", "agent:fourth", *H),
         c("next", "--status", "in_progress", "--claim", "--actor", "agent:fourth"),
         c("next", "--status", "nowhere", *B),
         c("next", "--claim", "--name", "Ghost"),
+        # A repeat in-progress claim stays an idempotent resume; the final
+        # planned/scaffold claim records the explicit PLAN_REQUIRED refusal.
+        c("next", "--status", "in_progress", "--claim", "--actor", "agent:fourth"),
+        c("next", "--status", "planned", "--claim", "--actor", "agent:fifth"),
     ),
 )
 

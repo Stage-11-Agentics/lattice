@@ -251,21 +251,9 @@
           "actor": "agent:worker",
           "data": {
             "from": "backlog",
-            "to": "planned"
+            "to": "in_planning"
           },
           "id": "<ID-17>",
-          "schema_version": 1,
-          "task_id": "<ID-1>",
-          "ts": "<TS>",
-          "type": "status_changed"
-        },
-        {
-          "actor": "agent:worker",
-          "data": {
-            "from": "planned",
-            "to": "in_progress"
-          },
-          "id": "<ID-18>",
           "schema_version": 1,
           "task_id": "<ID-1>",
           "ts": "<TS>",
@@ -296,7 +284,7 @@
             "from": null,
             "to": "agent:other"
           },
-          "id": "<ID-19>",
+          "id": "<ID-18>",
           "schema_version": 1,
           "task_id": "<ID-2>",
           "ts": "<TS>",
@@ -306,21 +294,9 @@
           "actor": "agent:other",
           "data": {
             "from": "backlog",
-            "to": "planned"
+            "to": "in_planning"
           },
-          "id": "<ID-20>",
-          "schema_version": 1,
-          "task_id": "<ID-2>",
-          "ts": "<TS>",
-          "type": "status_changed"
-        },
-        {
-          "actor": "agent:other",
-          "data": {
-            "from": "planned",
-            "to": "in_progress"
-          },
-          "id": "<ID-21>",
+          "id": "<ID-19>",
           "schema_version": 1,
           "task_id": "<ID-2>",
           "ts": "<TS>",
@@ -369,21 +345,9 @@
           "actor": "agent:third",
           "data": {
             "from": "backlog",
-            "to": "planned"
+            "to": "in_planning"
           },
-          "id": "<ID-22>",
-          "schema_version": 1,
-          "task_id": "<ID-4>",
-          "ts": "<TS>",
-          "type": "status_changed"
-        },
-        {
-          "actor": "agent:third",
-          "data": {
-            "from": "planned",
-            "to": "in_progress"
-          },
-          "id": "<ID-23>",
+          "id": "<ID-20>",
           "schema_version": 1,
           "task_id": "<ID-4>",
           "ts": "<TS>",
@@ -414,7 +378,7 @@
             "from": null,
             "to": "human:parity"
           },
-          "id": "<ID-24>",
+          "id": "<ID-21>",
           "schema_version": 1,
           "task_id": "<ID-5>",
           "ts": "<TS>",
@@ -428,7 +392,7 @@
             "reason": "nobody owns it",
             "to": "in_progress"
           },
-          "id": "<ID-25>",
+          "id": "<ID-22>",
           "provenance": {
             "reason": "nobody owns it"
           },
@@ -441,9 +405,9 @@
           "actor": "human:parity",
           "data": {
             "from": "human:parity",
-            "to": null
+            "to": "agent:fourth"
           },
-          "id": "<ID-26>",
+          "id": "<ID-23>",
           "schema_version": 1,
           "task_id": "<ID-5>",
           "ts": "<TS>",
@@ -603,7 +567,7 @@
         "done_at": null,
         "evidence_refs": [],
         "id": "<ID-1>",
-        "last_event_id": "<ID-18>",
+        "last_event_id": "<ID-17>",
         "last_status_changed_at": "<TS>",
         "linked_files": [],
         "priority": "high",
@@ -611,7 +575,7 @@
         "reopened_count": 0,
         "schema_version": 1,
         "short_id": "PAR-1",
-        "status": "in_progress",
+        "status": "in_planning",
         "tags": null,
         "title": "High one",
         "type": "task",
@@ -633,7 +597,7 @@
         "done_at": null,
         "evidence_refs": [],
         "id": "<ID-2>",
-        "last_event_id": "<ID-21>",
+        "last_event_id": "<ID-19>",
         "last_status_changed_at": "<TS>",
         "linked_files": [],
         "priority": "medium",
@@ -641,7 +605,7 @@
         "reopened_count": 0,
         "schema_version": 1,
         "short_id": "PAR-2",
-        "status": "in_progress",
+        "status": "in_planning",
         "tags": null,
         "title": "Medium one",
         "type": "task",
@@ -693,7 +657,7 @@
         "done_at": null,
         "evidence_refs": [],
         "id": "<ID-4>",
-        "last_event_id": "<ID-23>",
+        "last_event_id": "<ID-20>",
         "last_status_changed_at": "<TS>",
         "linked_files": [],
         "priority": "medium",
@@ -701,7 +665,7 @@
         "reopened_count": 0,
         "schema_version": 1,
         "short_id": "PAR-4",
-        "status": "in_progress",
+        "status": "in_planning",
         "tags": null,
         "title": "Assigned elsewhere",
         "type": "task",
@@ -712,7 +676,7 @@
     "tasks/<ID-5>.json": {
       "json": {
         "acceptance_criteria": [],
-        "assigned_to": null,
+        "assigned_to": "agent:fourth",
         "branch_links": [],
         "comment_count": 0,
         "complexity": null,
@@ -723,7 +687,7 @@
         "done_at": null,
         "evidence_refs": [],
         "id": "<ID-5>",
-        "last_event_id": "<ID-26>",
+        "last_event_id": "<ID-23>",
         "last_status_changed_at": "<TS>",
         "linked_files": [],
         "priority": "medium",
@@ -956,14 +920,17 @@
         "--actor",
         "agent:worker"
       ],
-      "exit_code": 1,
+      "exit_code": 0,
       "stderr": {
-        "lines": [
-          "Error: Plan for <ID-1> is still scaffold. Write the plan (even one line) before moving to in_progress. Override with --force --reason."
-        ]
+        "lines": []
       },
       "stdout": {
-        "lines": []
+        "lines": [
+          "PAR-1  in_planning  high  \"High one\"",
+          "Assigned to agent:worker.",
+          "Next: write the plan in plans/<ID-1>.md, then move to planned.",
+          "Next: run 'lattice status PAR-1 planned' after writing the plan."
+        ]
       }
     },
     {
@@ -982,7 +949,9 @@
       },
       "stdout": {
         "lines": [
-          "PAR-1  in_progress  high  \"High one\""
+          "PAR-1  in_planning  high  \"High one\"",
+          "Assigned to agent:worker.",
+          "Next: run 'lattice status PAR-1 planned' to enter planned and follow its review hint."
         ]
       }
     },
@@ -999,7 +968,9 @@
       },
       "stdout": {
         "lines": [
-          "PAR-1  in_progress  high  \"High one\""
+          "PAR-1  in_planning  high  \"High one\"",
+          "Assigned to agent:worker.",
+          "Next: run 'lattice status PAR-1 planned' to enter planned and follow its review hint."
         ]
       }
     },
@@ -1037,7 +1008,9 @@
       },
       "stdout": {
         "lines": [
-          "PAR-2  in_progress  medium  \"Medium one\""
+          "PAR-2  in_planning  medium  \"Medium one\"",
+          "Assigned to agent:other.",
+          "Next: run 'lattice status PAR-2 planned' to enter planned and follow its review hint."
         ]
       }
     },
@@ -1055,7 +1028,7 @@
       },
       "stdout": {
         "lines": [
-          "PAR-2  in_progress  medium  \"Medium one\""
+          "PAR-2  in_planning  medium  \"Medium one\""
         ]
       }
     },
@@ -1097,7 +1070,9 @@
       },
       "stdout": {
         "lines": [
-          "PAR-4  in_progress  medium  \"Assigned elsewhere\""
+          "PAR-4  in_planning  medium  \"Assigned elsewhere\"",
+          "Assigned to agent:third.",
+          "Next: run 'lattice status PAR-4 planned' to enter planned and follow its review hint."
         ]
       }
     },
@@ -1148,7 +1123,7 @@
       "args": [
         "assign",
         "PAR-5",
-        "none",
+        "agent:fourth",
         "--actor",
         "human:parity"
       ],
@@ -1158,7 +1133,7 @@
       },
       "stdout": {
         "lines": [
-          "Assigned: human:parity -> unassigned"
+          "Assigned: human:parity -> agent:fourth"
         ]
       }
     },
@@ -1171,14 +1146,14 @@
         "--actor",
         "agent:fourth"
       ],
-      "exit_code": 1,
+      "exit_code": 0,
       "stderr": {
-        "lines": [
-          "Error: Task already in in_progress."
-        ]
+        "lines": []
       },
       "stdout": {
-        "lines": []
+        "lines": [
+          "PAR-5  in_progress  medium  \"Orphan in progress\""
+        ]
       }
     },
     {
@@ -1195,7 +1170,7 @@
       },
       "stdout": {
         "lines": [
-          "PAR-2  in_progress  medium  \"Medium one\""
+          "PAR-2  in_planning  medium  \"Medium one\""
         ]
       }
     },
@@ -1210,6 +1185,44 @@
       "stderr": {
         "lines": [
           "Error: No active session named 'Ghost'. Start one with 'lattice session start'."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "next",
+        "--status",
+        "in_progress",
+        "--claim",
+        "--actor",
+        "agent:fourth"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "PAR-5  in_progress  medium  \"Orphan in progress\""
+        ]
+      }
+    },
+    {
+      "args": [
+        "next",
+        "--status",
+        "planned",
+        "--claim",
+        "--actor",
+        "agent:fifth"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Plan for <ID-3> is still scaffold. Write the plan (even one line) before moving to in_progress. Override with --force --reason. No assignment or status change was made."
         ]
       },
       "stdout": {

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import json
 from pathlib import Path
 
 import pytest
@@ -22,7 +23,7 @@ def _run(board: LocalBoard, op: str, params: dict, actor: str = "agent:t"):  # n
 
 
 def _ready(board: LocalBoard, title: str = "T", **fields) -> str:  # noqa: ANN003
-    """A backlog task with a real plan, so the plan gate lets it through."""
+    """A backlog task with a substantive plan."""
     task_id = _run(board, "task.create", {"title": title, **fields}).value["id"]
     (board.lattice_dir / "plans" / f"{task_id}.md").write_text(f"# {title}\n\nDo the thing.\n")
     return task_id
@@ -35,10 +36,10 @@ class TestNextClaim:
         result = _run(board, "board.next_claim", {}, actor="agent:a")
         assert result.value["id"] == top
         assert result.value["assigned_to"] == "agent:a"
-        assert result.value["status"] == "in_progress"
+        assert result.value["status"] == "in_planning"
         types = [(e["type"], e["data"].get("to")) for e in result.events]
         assert types[0] == ("assignment_changed", "agent:a")
-        assert types[-1] == ("status_changed", "in_progress")
+        assert types[-1] == ("status_changed", "in_planning")
         assert all(e["actor"] == "agent:a" for e in result.events)
         assert all(e["origin"]["op"] == "board.next_claim" for e in result.events)
 
@@ -58,10 +59,42 @@ class TestNextClaim:
 
     def test_plan_gate(self, board: LocalBoard) -> None:
         task_id = _run(board, "task.create", {"title": "T"}).value["id"]
+        _run(board, "task.status", {"task": task_id, "new_status": "in_planning"})
+        _run(board, "task.status", {"task": task_id, "new_status": "planned"})
+        _run(board, "task.assign", {"task": task_id, "actor_id": "none"})
         with pytest.raises(OpError) as exc:
-            _run(board, "board.next_claim", {}, actor="agent:a")
+            _run(board, "board.next_claim", {"status": "planned"}, actor="agent:a")
         assert exc.value.code == "PLAN_REQUIRED"
         assert exc.value.details["snapshot"]["id"] == task_id
+        assert exc.value.message.endswith("No assignment or status change was made.")
+
+    def test_missing_plan_backlog_claim_stops_in_planning(self, board: LocalBoard) -> None:
+        task_id = _run(board, "task.create", {"title": "Unplanned"}).value["id"]
+        (board.lattice_dir / "plans" / f"{task_id}.md").unlink()
+        result = _run(board, "board.next_claim", {}, actor="agent:a")
+        assert result.value["status"] == "in_planning"
+        assert [event["type"] for event in result.events] == [
+            "assignment_changed",
+            "status_changed",
+        ]
+        assert result.events[-1]["data"] == {"from": "backlog", "to": "in_planning"}
+
+    @pytest.mark.parametrize("write_plan", [False, True], ids=["missing-plan", "existing-plan"])
+    def test_in_planning_pickup_assigns_without_status_event(
+        self, board: LocalBoard, write_plan: bool
+    ) -> None:
+        task_id = (
+            _ready(board) if write_plan else _run(board, "task.create", {"title": "T"}).value["id"]
+        )
+        if not write_plan:
+            (board.lattice_dir / "plans" / f"{task_id}.md").unlink()
+        _run(board, "task.status", {"task": task_id, "new_status": "in_planning"})
+        _run(board, "task.assign", {"task": task_id, "actor_id": "none"})
+        result = _run(board, "board.next_claim", {"status": "in_planning"}, actor="agent:a")
+        assert result.value["status"] == "in_planning"
+        assert result.value["assigned_to"] == "agent:a"
+        assert len(result.events) == 1
+        assert result.events[0]["type"] == "assignment_changed"
 
     def test_no_path_to_in_progress(self, board: LocalBoard) -> None:
         task_id = _ready(board)
@@ -76,6 +109,91 @@ class TestNextClaim:
         assert board.execute(
             "task.update", {"task": task_id, "pairs": ["title=T"]}, Caller(actor="agent:a")
         ).idempotent
+
+    @pytest.mark.parametrize("missing", ["status", "backlog-edge", "planning-edge"])
+    def test_incomplete_plan_route_keeps_in_progress_target(
+        self, board: LocalBoard, missing: str
+    ) -> None:
+        task_id = _ready(board)
+        config = board.load_config()
+        workflow = config["workflow"]
+        if missing == "status":
+            workflow["statuses"].remove("in_planning")
+        elif missing == "backlog-edge":
+            workflow["transitions"]["backlog"].remove("in_planning")
+        else:
+            workflow["transitions"]["in_planning"].remove("planned")
+        result = board.execute("board.next_claim", {}, Caller(actor="agent:a"), config=config)
+        assert result.value["id"] == task_id
+        assert result.value["status"] == "in_progress"
+
+    def test_divergent_plan_files_refuse_before_any_claim_write(self, board: LocalBoard) -> None:
+        task_id = _run(board, "task.create", {"title": "Divergent"}).value["id"]
+        archived_plan = board.lattice_dir / "archive" / "plans" / f"{task_id}.md"
+        archived_plan.parent.mkdir(parents=True, exist_ok=True)
+        archived_plan.write_text("# Different plan\n")
+        event_path = board.lattice_dir / "events" / f"{task_id}.jsonl"
+        before = event_path.read_bytes()
+
+        with pytest.raises(OpError) as exc:
+            _run(board, "board.next_claim", {}, actor="agent:a")
+        assert exc.value.code == "INTEGRITY_ERROR"
+        assert str(archived_plan) in exc.value.message
+        assert exc.value.message.endswith(
+            "active and archived plan files diverge; manual recovery required"
+        )
+        assert event_path.read_bytes() == before
+
+    def test_unreadable_plan_keeps_existing_nonblocking_behavior(
+        self, board: LocalBoard, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        task_id = _run(board, "task.create", {"title": "Unreadable"}).value["id"]
+        _run(board, "task.status", {"task": task_id, "new_status": "in_planning"})
+        _run(board, "task.status", {"task": task_id, "new_status": "planned"})
+        _run(board, "task.assign", {"task": task_id, "actor_id": "none"})
+        plan_path = board.lattice_dir / "plans" / f"{task_id}.md"
+        original_read_text = Path.read_text
+
+        def unreadable(path: Path, *args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+            if path == plan_path:
+                raise OSError("permission denied")
+            return original_read_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", unreadable)
+        result = _run(board, "board.next_claim", {"status": "planned"}, actor="agent:a")
+        assert result.value["status"] == "in_progress"
+        assert result.value["assigned_to"] == "agent:a"
+
+    def test_plan_required_precedes_already_claimed_after_stale_selection(
+        self, board: LocalBoard, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        task_id = _run(board, "task.create", {"title": "Stale selection"}).value["id"]
+        import lattice.ops.board_next_claim as claim_module
+
+        original_select = claim_module.select_next
+        changed_event_ids: list[str] = []
+
+        def select_then_change(snapshots, **kwargs):  # noqa: ANN003, ANN202
+            selected = original_select(snapshots, **kwargs)
+            if selected is not None:
+                _run(board, "task.status", {"task": task_id, "new_status": "in_planning"})
+                _run(board, "task.status", {"task": task_id, "new_status": "planned"})
+                _run(
+                    board,
+                    "task.assign",
+                    {"task": task_id, "actor_id": "agent:other"},
+                    actor="agent:other",
+                )
+                changed_event_ids.extend(event["id"] for event in _events(board, task_id))
+            return selected
+
+        monkeypatch.setattr(claim_module, "select_next", select_then_change)
+        with pytest.raises(OpError) as exc:
+            _run(board, "board.next_claim", {}, actor="agent:a")
+        assert exc.value.code == "PLAN_REQUIRED"
+        assert exc.value.details["snapshot"]["status"] == "planned"
+        assert exc.value.details["snapshot"]["assigned_to"] == "agent:other"
+        assert [event["id"] for event in _events(board, task_id)] == changed_event_ids
 
     def test_requires_an_actor(self, board: LocalBoard) -> None:
         with pytest.raises(OpError) as exc:
@@ -131,3 +249,14 @@ class TestConcurrentClaims:
         results = self._race(board, ["agent:a", "agent:b"])
         winners = [r for r in results if r is not None]
         assert [w["id"] for w in winners] == [task_id]
+        assert winners[0]["status"] == "in_planning"
+        events = _events(board, task_id)
+        assert [event["type"] for event in events].count("assignment_changed") == 1
+        assert [event["data"] for event in events if event["type"] == "status_changed"] == [
+            {"from": "backlog", "to": "in_planning"}
+        ]
+
+
+def _events(board: LocalBoard, task_id: str) -> list[dict]:
+    path = board.lattice_dir / "events" / f"{task_id}.jsonl"
+    return [json.loads(line) for line in path.read_text().splitlines()]

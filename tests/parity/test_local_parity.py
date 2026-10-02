@@ -41,6 +41,69 @@ def test_scenario_matches_golden(scenario, mode, tmp_path: Path) -> None:
         pytest.fail(f"parity drift in {scenario.name} ({mode}):\n{diff}")
 
 
+@pytest.mark.parametrize("mode", MODES)
+def test_claims_golden_records_the_explicit_plan_review_gate(mode: str) -> None:
+    """Both output modes preserve claim routing, guidance, and refusal semantics."""
+    golden = json.loads(golden_path("claims", mode).read_text(encoding="utf-8"))
+    steps = golden["steps"]
+
+    def claims_for(actor: str) -> list[dict]:
+        return [
+            step
+            for step in steps
+            if step.get("args", [])[:1] == ["next"]
+            and "--claim" in step["args"]
+            and actor in step["args"]
+        ]
+
+    worker_claims = claims_for("agent:worker")
+    assert len(worker_claims) >= 2
+    if mode == "json":
+        first = worker_claims[0]["stdout"]["json"]["data"]
+        reclaim = worker_claims[1]["stdout"]["json"]["data"]
+        assert first["status"] == reclaim["status"] == "in_planning"
+        assert first["next_steps"] == {
+            "action": "write_plan",
+            "command": "lattice status PAR-1 planned",
+            "plan_path": "plans/<ID-1>.md",
+            "then": "planned",
+        }
+        assert reclaim["next_steps"]["action"] == "move_to_planned"
+        substantive = claims_for("agent:other")[0]["stdout"]["json"]["data"]
+        assert substantive["status"] == "in_planning"
+        assert substantive["next_steps"]["action"] == "move_to_planned"
+        assert substantive["next_steps"]["command"] == "lattice status PAR-2 planned"
+    else:
+        first = worker_claims[0]["stdout"]["lines"]
+        reclaim = worker_claims[1]["stdout"]["lines"]
+        assert first[0].startswith("PAR-1  in_planning")
+        assert first[1] == "Assigned to agent:worker."
+        assert first[2] == "Next: write the plan in plans/<ID-1>.md, then move to planned."
+        assert first[3] == "Next: run 'lattice status PAR-1 planned' after writing the plan."
+        assert reclaim[-1] == (
+            "Next: run 'lattice status PAR-1 planned' to enter planned and follow its review hint."
+        )
+        substantive = claims_for("agent:other")[0]["stdout"]["lines"]
+        assert substantive[0].startswith("PAR-2  in_planning")
+        assert substantive[-1] == (
+            "Next: run 'lattice status PAR-2 planned' to enter planned and follow its review hint."
+        )
+
+    refusal = next(
+        step
+        for step in steps
+        if step.get("args", [])[:3] == ["next", "--status", "planned"]
+        and "--claim" in step["args"]
+    )
+    assert refusal["exit_code"] == 1
+    if mode == "json":
+        error = refusal["stdout"]["json"]["error"]
+        assert error["code"] == "PLAN_REQUIRED"
+        assert error["message"].endswith("No assignment or status change was made.")
+    else:
+        assert refusal["stderr"]["lines"][0].endswith("No assignment or status change was made.")
+
+
 def test_no_orphan_goldens() -> None:
     expected = {golden_path(s.name, m).name for s, m in CASES}
     present = {p.name for p in GOLDEN_DIR.glob("*.json")}

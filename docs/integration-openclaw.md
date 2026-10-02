@@ -137,18 +137,19 @@ Your dashboard now shows four tasks in the Backlog column. You've defined *what*
 
 In your OpenClaw conversation:
 
-> "Advance the project. Claim the next highest-priority task, do the work, and report back."
+> "Advance the project. Claim the next highest-priority task, follow its plan-review gate if the claim returns `in_planning`, do the work, and report back."
 
-Or more concisely: "Use `lattice next --actor agent:openclaw --claim` to pick a task, then work it."
+Or more concisely: "Use `lattice next --actor agent:openclaw --claim` to pick a task, pass its plan-review gate if needed, then work it."
 
 Here's what happens:
 
-1. The agent runs `lattice next --actor agent:openclaw --claim` — finds the highest-priority ready task and assigns it
-2. The agent reads the task details and any notes from previous sessions
-3. The agent does the work — writes code, runs tests, iterates
-4. The agent leaves a comment: `lattice comment APP-2 "Set up OAuth with Google provider. Config in .env.example." --actor agent:openclaw`
-5. The agent moves the task: `lattice status APP-2 review --actor agent:openclaw`
-6. The agent reports what it did
+1. The agent runs `lattice next --actor agent:openclaw --claim` — finds the highest-priority ready task and assigns it.
+2. On the complete plan-review route, the claim stops in `in_planning`, even when a substantive plan exists. Read the task details and linked context, then use the returned `lattice status <task> planned` command with the same `--actor` or `--name` used for the claim. Write a missing or scaffold plan first; otherwise run the command directly. Follow its output about review, then explicitly move to `in_progress` before work. Do not re-claim to advance a task already in planning.
+3. The agent reads the task details and any notes from previous sessions
+4. The agent does the work — writes code, runs tests, iterates
+5. The agent leaves a comment: `lattice comment APP-2 "Set up OAuth with Google provider. Config in .env.example." --actor agent:openclaw`
+6. The agent moves the task: `lattice status APP-2 review --actor agent:openclaw`
+7. The agent reports what it did
 
 ### Step 3: Come back to a sorted inbox
 
@@ -242,7 +243,7 @@ During `lattice init`, you were asked whether to enable **heartbeat mode**. If y
 
 With heartbeat enabled, the agent loops:
 
-1. Claims the highest-priority task and works it
+1. Claims the highest-priority task; if it returns `in_planning`, it follows the plan-review gate before working
 2. Hands the task off (`review`, `done`, `blocked`, or raises the `needs-human` flag)
 3. If the task needs you (flagged `needs-human` or moved to `blocked`), **stops and reports**
 4. Otherwise, claims the next task and keeps going

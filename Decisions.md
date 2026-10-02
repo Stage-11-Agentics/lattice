@@ -1413,3 +1413,19 @@ Additionally, `lattice advance N` processed multiple tasks in a single context w
 - Decision: New boards offer `task`, `bug`, and `chore` by default; projects may configure additional types in `task_types`. Agents must never create an umbrella task to stand in for an epic.
 - Rationale: Atin ruled, "I really hate epic and spike. I know spike is a normal research or agile word, but not here. If people really want it, they can have their agent edit their local Lattice board." This keeps defaults free of those suggestions while preserving per-board configuration.
 - Consequence: Create and update reject types absent from the board's list. Existing configs and tasks keep working, and hosted administrators change the list with `lattice server project config`.
+
+---
+
+## 2026-10-02: `next --claim` preserves the plan-review gate (LAT-344)
+
+- On workflows with `in_planning` and `planned` statuses plus the direct edges
+  `backlog -> in_planning` and `in_planning -> planned`, every backlog claim
+  enters `in_planning`, even when a substantive plan already exists. A claim
+  that resumes `in_planning` stays there, regardless of plan content. This
+  makes `lattice status <task> planned` the explicit transition that can fire
+  configured plan review; a convenience claim must never skip that gate.
+- The route is structural and does not inspect auto-review toggles. The claim
+  names the next command in human output and `data.next_steps.command`; callers
+  add the same `--actor` or `--name` used for the claim. Follow the status
+  output about review, then explicitly move to `in_progress`. Other workflow
+  configurations and claim statuses keep their existing behavior.

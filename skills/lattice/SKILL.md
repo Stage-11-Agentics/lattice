@@ -136,6 +136,17 @@ lattice next --actor agent:openclaw          # Suggest next task
 lattice next --actor agent:openclaw --claim  # Suggest and auto-assign
 ```
 
+On a workflow with the complete plan-review route (both direct edges
+`backlog → in_planning` and `in_planning → planned`), every backlog claim stops
+in `in_planning`, even when a substantive plan already exists; reclaiming an
+`in_planning` task keeps it there. Use the returned
+`lattice status <task> planned` command with the same `--actor` or `--name` used
+for the claim. Write a missing or scaffold plan first, then run it; with an
+existing plan, run it directly. Follow its output about review, then explicitly run
+`lattice status <task> in_progress` before work. Do not re-claim a task already
+held in `in_planning` or `planned`. Other workflow configurations keep their
+existing claim behavior.
+
 ### Project health
 
 ```bash

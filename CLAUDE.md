@@ -249,6 +249,8 @@ This is the **planning sub-agent's** job. Spawn a sub-agent whose sole purpose i
 
 **The test:** If you moved to `planned` and the plan file is still empty scaffold, you didn't plan. Every task gets a plan — even trivial tasks get a one-line plan. The CLI enforces this: transitioning to `in_progress` is blocked when the plan is still scaffold.
 
+On the complete plan-review route, every `lattice next --claim` for a backlog task stops in `in_planning`, even when a substantive plan already exists; write the plan if needed, then run `lattice status <task> planned` with the same `--actor` or `--name` used for the claim, follow its review hint, and only then run `lattice status <task> in_progress`—never re-claim to advance it.
+
 **Plan review (default: single, fires automatically).** Moving the task to `planned` automatically spawns a detached `lattice plan-review <task>` in the background. The artifact lands when complete; tail progress with `lattice review-status <task>` or follow `.lattice/.daemon/auto-plan-review-<task>.log`. Disable per-call with `--no-auto-review` on `lattice status`, or project-wide with `auto_plan_review_on_transition: false` in `.lattice/config.json`. **If you opt into `plan_review_mode: triple`, every transition into `planned` spends three agent runs plus a merge by default — disable auto-fire or use `--no-auto-review` when cost matters.**
 
 The mode still controls *how* the review runs:

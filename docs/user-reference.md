@@ -264,7 +264,7 @@ Output modes: human-readable (default), `--json` (structured), `--verbose` (full
 
 The pattern that turns a prioritized backlog into completed work — one task at a time:
 
-1. **`lattice next --claim`** — atomically grab the top task and move it to `in_progress`
+1. **`lattice next --claim`** — atomically grab and assign the top task. On the complete plan-review route, it stops in `in_planning` even when a substantive plan exists; run the returned `lattice status <task> planned` command, follow its review hint, then explicitly move to `in_progress`.
 2. **Work** — implement, test, iterate
 3. **Hand off** — move to `review` (done) or `blocked` (external dependency), or raise the `needs-human` flag (stuck on a human decision; the task keeps its status)
 4. **Comment** — record what was done, what was chosen, what's left

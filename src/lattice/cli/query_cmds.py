@@ -425,7 +425,11 @@ def _worktree_candidates(raw: str) -> frozenset[str]:
     default=None,
     help="Comma-separated statuses to consider (default: backlog,planned).",
 )
-@click.option("--claim", is_flag=True, help="Atomically assign + move to in_progress.")
+@click.option(
+    "--claim",
+    is_flag=True,
+    help="Atomically assign; on the plan-review route, stop in in_planning.",
+)
 @click.option("--json", "output_json", is_flag=True, help="Output structured JSON.")
 @click.option("--quiet", is_flag=True, help="Print only the task ID.")
 def next_cmd(
@@ -438,7 +442,8 @@ def next_cmd(
 
     Returns the top task from the ready pool (backlog/planned by default).
     If --actor/--name is specified, resumes in-progress work first.
-    Use --claim to atomically assign and start the task.
+    Use --claim to atomically assign the task. On the complete plan-review
+    route, backlog claims stop in in_planning for an explicit planned transition.
     """
     is_json = output_json
 
@@ -486,15 +491,47 @@ def next_cmd(
     task_id = selected["id"]
     display_id = selected.get("short_id") or task_id
     result_data = selected
+    planning_claim = claim and selected.get("status") == "in_planning"
+    claim_plan_content: str | None = None
+    claim_next_steps: dict | None = None
+    claim_hint: str | None = None
+    if planning_claim and (is_json or not quiet):
+        claim_plan_content = _read_plan_content_for_claim(
+            lattice_dir, task_id, selected.get("description")
+        )
+        claim_next_steps = _planning_claim_next_steps(task_id, display_id, claim_plan_content)
+        if not is_json and claim_plan_content is None:
+            from lattice.cli.task_cmds import compute_next_steps
+
+            scaffold_hint, _ = compute_next_steps(
+                "in_planning",
+                load_project_config(lattice_dir),
+                task_id,
+                lattice_dir,
+                display_id=display_id,
+            )
+            status_command = claim_next_steps["command"]
+            claim_hint = f"{scaffold_hint}\nNext: run '{status_command}' after writing the plan."
+        elif not is_json:
+            claim_hint = f"Next: run '{claim_next_steps['command']}' to enter planned and follow its review hint."
     if is_json:
         result_data = dict(selected)
-        result_data["plan_content"] = _read_plan_content_for_next(lattice_dir, task_id)
+        if planning_claim:
+            result_data["plan_content"] = claim_plan_content
+            result_data["next_steps"] = claim_next_steps
+        else:
+            result_data["plan_content"] = _read_plan_content_for_next(lattice_dir, task_id)
+    human_message = (
+        f"{display_id}  {selected.get('status', '?')}  "
+        f'{selected.get("priority", "?")}  "{selected.get("title", "?")}"'
+    )
+    if planning_claim and not quiet:
+        assigned_to = selected.get("assigned_to")
+        assignee = get_actor_display(assigned_to) if assigned_to is not None else "unknown"
+        human_message += f"\nAssigned to {assignee}.\n{claim_hint}"
     output_result(
         data=result_data,
-        human_message=(
-            f"{display_id}  {selected.get('status', '?')}  "
-            f'{selected.get("priority", "?")}  "{selected.get("title", "?")}"'
-        ),
+        human_message=human_message,
         quiet_value=display_id,
         is_json=is_json,
         is_quiet=quiet,
@@ -516,6 +553,41 @@ def _read_plan_content_for_next(lattice_dir: Path, task_id: str) -> str | None:
     if not stripped:
         return None
     return content
+
+
+def _read_plan_content_for_claim(
+    lattice_dir: Path,
+    task_id: str,
+    description: str | None,
+) -> str | None:
+    """Return substantive plan markdown for an in-planning claim only."""
+    from lattice.core.plans import is_scaffold_plan
+
+    plan_path, _authority = resolve_task_prose_path(lattice_dir, task_id, "plan")
+    if plan_path is None:
+        return None
+    try:
+        content = plan_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    if not content.strip() or is_scaffold_plan(content, description=description):
+        return None
+    return content
+
+
+def _planning_claim_next_steps(
+    task_id: str,
+    display_id: str,
+    plan_content: str | None,
+) -> dict:
+    """Build the claim-only status command and its plan-specific action."""
+    command = f"{program_name()} status {display_id} planned"
+    return {
+        "action": "write_plan" if plan_content is None else "move_to_planned",
+        "command": command,
+        "plan_path": f"plans/{task_id}.md",
+        "then": "planned",
+    }
 
 
 def _plan_written(plan_path: Path, snapshot: dict, events: list[dict]) -> bool:

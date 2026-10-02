@@ -176,3 +176,31 @@ def compute_claim_transitions(
             queue.append((next_state, new_path))
 
     return None
+
+
+def has_plan_review_claim_route(workflow: dict) -> bool:
+    """Whether claims can enter planning and explicitly transition to planned.
+
+    This is deliberately a structural check of the two direct workflow edges;
+    intermediate paths do not count as the plan-review route.
+    """
+    statuses = workflow.get("statuses", [])
+    transitions = workflow.get("transitions", {})
+    return (
+        "in_planning" in statuses
+        and "planned" in statuses
+        and "in_planning" in transitions.get("backlog", [])
+        and "planned" in transitions.get("in_planning", [])
+    )
+
+
+def claim_target_status(current_status: str, workflow: dict) -> str:
+    """Return the destination for ``next --claim`` under *workflow*.
+
+    On the complete plan-review route, backlog claims and in-planning resumes
+    stop in planning so the caller can explicitly run ``status ... planned``.
+    Every other status and workflow keeps the traditional in-progress target.
+    """
+    if has_plan_review_claim_route(workflow) and current_status in {"backlog", "in_planning"}:
+        return "in_planning"
+    return "in_progress"

@@ -21,7 +21,7 @@ From this point on, when you run Codex in a project with `.lattice/` initialized
 The skill file teaches Codex the same workflow that Claude Code and OpenClaw follow:
 
 1. **Claim** the highest-priority available task (`lattice next --claim`)
-2. **Plan** if needed (write to `.lattice/plans/<task_id>.md`)
+2. **Pass the plan-review gate** when the workflow has the complete route. The claim enters `in_planning` even when a substantive plan already exists. Read the task details, write a missing or scaffold plan, then run `lattice status <task> planned`; if the plan already exists, run that command directly. Add the same `--actor` or `--name` used for the claim, follow the status output about review, and explicitly run `lattice status <task> in_progress` before implementation. Do not re-claim to advance a task already in planning.
 3. **Implement** the work, committing as you go
 4. **Complete** with a review (`lattice complete <task_id> --review "..."`)
 
@@ -49,6 +49,10 @@ lattice list --status in_progress --json
 ```bash
 # 1. Claim the next task
 lattice next --claim --actor agent:codex --json
+
+# If the result status is in_planning, use data.next_steps.command; write the
+# plan first when action is write_plan. Follow the status output, then explicitly
+# move to in_progress before implementation.
 
 # 2. Read the task details and plan
 lattice show LAT-22
