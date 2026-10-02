@@ -131,17 +131,94 @@ def test_shorter_log_after_reset_does_not_suppress_later_events(tmp_path, stream
 def test_log_replaced_by_a_reset_this_process_did_not_announce(tmp_path, stream_stub) -> None:
     """A shorter log without a reset seen (another process applied it) restarts
     at its size, so its next line is printed and its history is not."""
-    from lattice.remote.hosted_watch import _scan
+    from lattice.remote.hosted_watch import _scan, _snapshot_offsets
 
     events_dir = tmp_path / "events"
     events_dir.mkdir()
     log = events_dir / "T1.jsonl"
     log.write_bytes(b"".join(_line(n) for n in range(1, 6)))
-    offsets = {log: log.stat().st_size}
+    offsets, last_paths = _snapshot_offsets(events_dir)
     log.write_bytes(_line(60))
-    assert _scan(events_dir, offsets) == []
+    assert _scan(events_dir, offsets, last_paths) == []
     log.write_bytes(_line(60) + _line(61))
-    assert [e["id"] for e in _scan(events_dir, offsets)] == ["ev_61"]
+    assert [e["id"] for e in _scan(events_dir, offsets, last_paths)] == ["ev_61"]
+
+
+def test_scanner_finds_archive_directory_created_after_start(tmp_path) -> None:
+    from lattice.remote.hosted_watch import _scan, _snapshot_offsets
+
+    lattice_dir = tmp_path / LATTICE_DIR
+    events_dir = lattice_dir / "events"
+    events_dir.mkdir(parents=True)
+    offsets, last_paths = _snapshot_offsets(lattice_dir)
+    assert not (lattice_dir / "archive" / "events").exists()
+
+    archived = lattice_dir / "archive" / "events" / "T2.jsonl"
+    archived.parent.mkdir(parents=True)
+    archived.write_bytes(_line(1, "task_archived"))
+
+    assert [
+        (event["id"], event["task_id"]) for event in _scan(lattice_dir, offsets, last_paths)
+    ] == [("ev_1", "T2")]
+
+
+def test_cache_scanner_carries_offsets_across_moves_and_deduplicates_lifecycle(
+    tmp_path,
+) -> None:
+    import shutil
+
+    from lattice.core.event_stream import _filtered_unique
+    from lattice.remote.hosted_watch import _scan, _snapshot_offsets
+
+    lattice_dir = tmp_path / LATTICE_DIR
+    active_dir = lattice_dir / "events"
+    active_dir.mkdir(parents=True)
+    active = active_dir / "T1.jsonl"
+    lifecycle = active_dir / "_lifecycle.jsonl"
+    first = (
+        json.dumps(
+            {"id": "ev_1", "task_id": "SERIALIZED", "type": "task_created", "ts": "1"}
+        ).encode()
+        + b"\n"
+    )
+    active.write_bytes(first)
+    lifecycle.write_bytes(first)
+    offsets, last_paths = _snapshot_offsets(lattice_dir)
+
+    next_event = (
+        json.dumps(
+            {"id": "ev_2", "task_id": "SERIALIZED", "type": "task_archived", "ts": "2"}
+        ).encode()
+        + b"\n"
+    )
+    active.write_bytes(active.read_bytes() + next_event)
+    lifecycle.write_bytes(lifecycle.read_bytes() + next_event)
+    batch = _scan(lattice_dir, offsets, last_paths)
+    unique = list(_filtered_unique(batch, ["SERIALIZED"], ["task_archived"], set()))
+    assert [(event["id"], event["task_id"]) for event in unique] == [("ev_2", "SERIALIZED")]
+
+    archived = lattice_dir / "archive" / "events" / active.name
+    archived.parent.mkdir(parents=True)
+    shutil.move(active, archived)
+    third = (
+        json.dumps(
+            {"id": "ev_3", "task_id": "SERIALIZED", "type": "task_archived", "ts": "3"}
+        ).encode()
+        + b"\n"
+    )
+    archived.write_bytes(archived.read_bytes() + third)
+    assert [event["id"] for event in _scan(lattice_dir, offsets, last_paths)] == ["ev_3"]
+
+    active.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(archived, active)
+    fourth = (
+        json.dumps(
+            {"id": "ev_4", "task_id": "SERIALIZED", "type": "task_archived", "ts": "4"}
+        ).encode()
+        + b"\n"
+    )
+    active.write_bytes(active.read_bytes() + fourth)
+    assert [event["id"] for event in _scan(lattice_dir, offsets, last_paths)] == ["ev_4"]
 
 
 def test_unannounced_reset_while_polling_with_a_longer_log(tmp_path, stream_stub) -> None:

@@ -71,8 +71,10 @@ def test_short_id_floors_follow_creates(server: ServerHandle, root: Path) -> Non
         create_task(server, token)
     floors = server.project("alpha").floors
     assert floors.max_observed == {"ALP": 3} and floors.floor_for("ALP") == 4
+    assert floors.event_short_ids == {"ALP-1", "ALP-2", "ALP-3"}
     rescanned = ShortIdFloors.from_board(root / "projects" / "alpha" / ".lattice")
     assert rescanned.max_observed == {"ALP": 3}
+    assert rescanned.event_short_ids == floors.event_short_ids
     assert rescanned.floor_for("NEW") == 1
 
 
@@ -80,18 +82,17 @@ def test_allocation_uses_the_in_memory_floor(
     server: ServerHandle, root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import lattice.storage.operations as operations
-    import lattice.storage.short_ids as short_ids
 
     token = mint(root)
     create_task(server, token)
     calls = []
-    real = short_ids.max_observed_short_ids
+    real = operations.short_id_inventory
 
-    def counting(board):  # noqa: ANN001, ANN202
-        calls.append(board)
-        return real(board)
+    def counting(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        calls.append(args[0])
+        return real(*args, **kwargs)
 
-    monkeypatch.setattr(operations, "max_observed_short_ids", counting)
+    monkeypatch.setattr(operations, "short_id_inventory", counting)
     task = create_task(server, token)
     assert task["short_id"] == "ALP-2"
     assert calls == []  # the server's floor, never a rescan
@@ -110,6 +111,23 @@ def test_a_regressed_ids_json_never_reissues_a_logged_id(root: Path) -> None:
         assert server.project("alpha").floors.max_observed == {"ALP": 3}
         fresh = create_task(server, token)["short_id"]
     assert fresh not in issued and fresh == "ALP-4"
+
+
+def test_server_startup_floor_includes_map_only_reservations(root: Path) -> None:
+    token = mint(root)
+    with running_server(root) as server:
+        existing = create_task(server, token)
+    board = root / "projects" / "alpha" / ".lattice"
+    index = json.loads((board / "ids.json").read_text())
+    index["next_seqs"]["ALP"] = 2
+    index["map"]["ALP-8"] = existing["id"]
+    (board / "ids.json").write_text(json.dumps(index))
+
+    with running_server(root) as server:
+        floors = server.project("alpha").floors
+        assert floors.max_observed == {"ALP": 8}
+        assert floors.event_short_ids == {"ALP-1"}
+        assert create_task(server, token)["short_id"] == "ALP-9"
 
 
 def test_the_write_seam_passes_one_fresh_config(

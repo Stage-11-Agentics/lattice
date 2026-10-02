@@ -30,6 +30,7 @@ from lattice.storage.short_ids import (
     SHORT_ID_EVENT_TYPES,
     max_observed_short_ids,
     save_id_index,
+    short_id_inventory,
     split_short_id,
 )
 
@@ -315,51 +316,86 @@ def _moved_off_by_supersedes(authority: ResolvedTaskAuthority, short_id: str) ->
 
 def _historical_short_id_duplicates(
     authorities: dict[str, ResolvedTaskAuthority],
+    lattice_dir: Path,
+    *,
+    include_id_map: bool = True,
 ) -> list[tuple[str, str]]:
-    """Report every short ID an issuing event gave to two tasks at any point.
+    """Report duplicate assignments across task logs, lifecycle, and ids.json.
 
-    An assignment overwrites the effective alias, so a duplicate can vanish
-    from the replayed snapshots while the history still issued it twice. IDs
-    that are also effective duplicates are left to the effective check.
-
-    Returns ``(level, message)``: ``info`` for a duplicate history repair
-    resolved (at most one task still holds it, and every other holder moved
-    off it through a ``supersedes`` assignment, SPEC §11), else ``error``.
+    A lifecycle record mirrors its task-log event. Coalesce those copies by
+    event ID and owner, while retaining separate assignment events that reuse
+    an ID, including repeated assignments by one task. Map-only reservations
+    are not duplicates; once an event assigned that ID, a map entry for a
+    different task is.
     """
     effective: dict[str, set[str]] = {}
-    issued: dict[str, dict[str, tuple[Path, int]]] = {}
     for task_id, authority in authorities.items():
-        # Only well-formed aliases are indexed; any other replayable value
-        # (a list, an object) is reported by the effective-alias check.
         effective_id = authority.snapshot.get("short_id")
         if split_short_id(effective_id) is not None:
             effective.setdefault(effective_id, set()).add(task_id)
-        path = (
-            authority.active_event_path
-            if authority.active_event_path.exists()
-            else authority.archived_event_path
-        )
-        for line, event in enumerate(authority.events, 1):
-            data = event.get("data")
-            if event.get("type") not in SHORT_ID_EVENT_TYPES or not isinstance(data, dict):
-                continue
-            short_id = data.get("short_id")
-            if split_short_id(short_id) is not None:
-                issued.setdefault(short_id, {}).setdefault(task_id, (path, line))
-    results: list[tuple[str, str]] = []
-    for short_id in sorted(issued):
-        holders = issued[short_id]
-        current = effective.get(short_id, set())
-        if len(holders) < 2 or len(current) > 1:
+
+    inventory = short_id_inventory(lattice_dir)
+    issued: dict[str, list[tuple[str, Path, int, str]]] = {}
+    seen_events: set[tuple[str, str, str]] = set()
+    map_owners: dict[str, str] = {}
+    for occurrence in inventory.occurrences:
+        if occurrence.source == "ids.json":
+            if include_id_map and occurrence.task_id is not None:
+                map_owners[occurrence.short_id] = occurrence.task_id
             continue
-        where = " and ".join(
-            f"{task_id} at {path}:{line}" for task_id, (path, line) in sorted(holders.items())
+        if occurrence.event_type not in SHORT_ID_EVENT_TYPES or occurrence.task_id is None:
+            continue
+        event_key = (
+            occurrence.short_id,
+            occurrence.task_id,
+            occurrence.event_id or f"{occurrence.path}:{occurrence.line}",
         )
-        if all(
-            _moved_off_by_supersedes(authorities[task_id], short_id)
-            for task_id in holders
-            if task_id not in current
+        if event_key in seen_events:
+            continue
+        seen_events.add(event_key)
+        issued.setdefault(occurrence.short_id, []).append(
+            (occurrence.task_id, occurrence.path, occurrence.line, event_key[2])
+        )
+
+    results: list[tuple[str, str]] = []
+    for short_id in sorted(set(issued) | set(map_owners)):
+        assignments = issued.get(short_id, [])
+        holders = {task_id for task_id, _path, _line, _event_key in assignments}
+        map_owner = map_owners.get(short_id)
+        if assignments and map_owner is not None:
+            holders.add(map_owner)
+        current = effective.get(short_id, set())
+        assignments_per_task: dict[str, int] = {}
+        for task_id, _path, _line, _event_key in assignments:
+            assignments_per_task[task_id] = assignments_per_task.get(task_id, 0) + 1
+        repeated = any(count > 1 for count in assignments_per_task.values())
+        if len(holders) < 2 and not repeated:
+            continue
+        if len(current) > 1:
+            continue
+        where_parts = [
+            f"{task_id} at {path}:{line}" for task_id, path, line, _event_key in assignments
+        ]
+        if (
+            map_owner is not None
+            and assignments
+            and map_owner not in {task_id for task_id, _path, _line, _event_key in assignments}
         ):
+            where_parts.append(f"{map_owner} in {lattice_dir / 'ids.json'}")
+        where = " and ".join(where_parts)
+        event_holders = {task_id for task_id, _path, _line, _event_key in assignments}
+        map_conflict = assignments and map_owner is not None and map_owner not in event_holders
+        repaired = (
+            len(holders) > 1
+            and not repeated
+            and not map_conflict
+            and all(
+                task_id in authorities and _moved_off_by_supersedes(authorities[task_id], short_id)
+                for task_id in event_holders
+                if task_id not in current
+            )
+        )
+        if repaired:
             keeper = f"; {next(iter(current))} keeps it" if current else ""
             results.append(
                 (
@@ -369,13 +405,11 @@ def _historical_short_id_duplicates(
                 )
             )
             continue
-        results.append(
-            (
-                "error",
-                f"short ID {short_id} was issued to more than one task: {where}; "
-                "manual immutable-log recovery required",
-            )
-        )
+        if repeated and len(holders) == 1:
+            detail = f"short ID {short_id} was assigned more than once: {where}"
+        else:
+            detail = f"short ID {short_id} was issued to more than one task: {where}"
+        results.append(("error", f"{detail}; manual immutable-log recovery required"))
     return results
 
 
@@ -1082,7 +1116,7 @@ def check_board(lattice_dir: Path, *, fix: bool = False) -> DoctorReport:
                     "repair": getattr(problem, "kind", None),
                 }
             )
-        for level, message in _historical_short_id_duplicates(authorities):
+        for level, message in _historical_short_id_duplicates(authorities, lattice_dir):
             if level == "info":
                 findings.append(
                     {
@@ -1167,10 +1201,9 @@ def check_board(lattice_dir: Path, *, fix: bool = False) -> DoctorReport:
                     }
                 )
 
-        # Check: per-prefix next_seqs > max short-ID sequence in any task log
-        # (the allocation floor), then > max assigned in the map.
+        # Check: per-prefix next_seqs stays above every event and map assignment.
         log_max = max_observed_short_ids(lattice_dir)
-        # Every prefix seen in the logs is checked: one missing from next_seqs
+        # Every prefix seen in the inventory is checked: one missing from next_seqs
         # has the implicit counter 1.
         counter_behind_logs: set[str] = set()
         for prefix in sorted(log_max):
@@ -1185,7 +1218,7 @@ def check_board(lattice_dir: Path, *, fix: bool = False) -> DoctorReport:
                         "check": "alias_integrity",
                         "message": (
                             f"next_seqs['{prefix}'] ({shown}) is at or below the max "
-                            f"short-ID seq in the event logs ({log_max[prefix]}); "
+                            f"short-ID seq in recorded assignments ({log_max[prefix]}); "
                             "run lattice rebuild --all"
                         ),
                         "task_id": None,

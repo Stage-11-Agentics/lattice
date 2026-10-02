@@ -455,6 +455,8 @@ def _preflight(
     if prefix is not None:
         refused.extend(
             message
-            for level, message in _historical_short_id_duplicates(planned)
+            for level, message in _historical_short_id_duplicates(
+                planned, lattice_dir, include_id_map=False
+            )
             if level == "error"
         )

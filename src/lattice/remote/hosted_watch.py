@@ -4,12 +4,10 @@ On a hosted checkout nothing writes the cache's event logs but the syncer, so
 watching the files would only ever see this machine's own syncs. Instead
 :func:`hosted_stream_events` runs a :class:`~lattice.remote.follower.Follower`
 (which holds the stream, or polls when it cannot) and, after each sync that
-applied a delta, reads what that sync appended to ``events/*.jsonl`` under the
-cache's shared read lock. The events are the same dicts local
-:func:`lattice.core.event_stream.stream_events` yields (parsed lines with
-``task_id`` from the file name), so ``watch`` and ``wait`` print the same
-output as local, whether the stream delivered the entry, a heartbeat announced
-it, or a poll found it.
+applied a delta, reads what that sync appended to active or archived task logs
+and the lifecycle log under the cache's shared read lock. The events use the
+same parser, archive-offset continuity, serialized task IDs, and mirror
+deduplication as local :func:`lattice.core.event_stream.stream_events`.
 """
 
 from __future__ import annotations
@@ -22,7 +20,11 @@ import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
-from lattice.core.event_stream import _matches_filters, _parse_jsonl_file
+from lattice.core.event_stream import (
+    _filtered_unique,
+    _scan_event_logs,
+    _snapshot_event_offsets,
+)
 from lattice.remote import cache
 from lattice.remote.cache import SyncOutcome
 from lattice.remote.http import Remote
@@ -39,15 +41,18 @@ from lattice.storage.fs import LATTICE_DIR
 FollowerFactory = Callable[..., Follower]
 
 
-def _snapshot_offsets(events_dir: Path) -> dict[Path, int]:
-    offsets: dict[Path, int] = {}
-    if events_dir.is_dir():
-        for path in events_dir.glob("*.jsonl"):
-            try:
-                offsets[path] = path.stat().st_size
-            except OSError:
-                offsets[path] = 0
-    return offsets
+def _board_dir_for_events(events_dir: Path) -> Path:
+    """Accept an events directory or board directory for scanner helpers."""
+    if events_dir.name == "events" and events_dir.parent.name == "archive":
+        return events_dir.parent.parent
+    if events_dir.name == "events":
+        return events_dir.parent
+    return events_dir
+
+
+def _snapshot_offsets(events_dir: Path) -> tuple[dict[str, int], dict[str, Path]]:
+    """Seed offsets for active, archived, and lifecycle logs."""
+    return _snapshot_event_offsets(_board_dir_for_events(events_dir))
 
 
 def _cache_epoch(root: Path) -> str | None:
@@ -60,32 +65,14 @@ def _cache_epoch(root: Path) -> str | None:
     return epoch if isinstance(epoch, str) else None
 
 
-def _scan(events_dir: Path, offsets: dict[Path, int]) -> list[dict]:
-    """Every event appended to ``events/*.jsonl`` since *offsets*, advancing them.
-
-    A log shorter than its offset was replaced, not appended to (a reset this
-    process did not see announced, for example one another process applied):
-    its offset restarts at its current size, so its history is not replayed
-    and its next appended line is.
-    """
-    batch: list[dict] = []
-    if not events_dir.is_dir():
-        return batch
-    for path in sorted(events_dir.glob("*.jsonl")):
-        try:
-            size = path.stat().st_size
-        except OSError:
-            continue
-        offset = offsets.get(path, 0)
-        if size < offset:
-            offsets[path] = size
-            continue
-        if size == offset:
-            continue
-        new_events, offsets[path] = _parse_jsonl_file(path, offset)
-        batch.extend(new_events)
-    batch.sort(key=lambda event: str(event.get("ts", "")))
-    return batch
+def _scan(
+    events_dir: Path,
+    offsets: dict[str, int],
+    last_paths: dict[str, Path] | None = None,
+) -> list[dict]:
+    """Scan appended event lines with offsets keyed by task across moves."""
+    last_paths = {} if last_paths is None else last_paths
+    return _scan_event_logs(_board_dir_for_events(events_dir), offsets, last_paths)
 
 
 def hosted_stream_events(
@@ -120,12 +107,12 @@ def hosted_stream_events(
     a full resync is not new events.
     """
     root = Path(hosted_root)
-    events_dir = root / LATTICE_DIR / "events"
+    lattice_dir = root / LATTICE_DIR
     start = time.monotonic()
 
     catch_up(root, bulk=True)
     with read_lock(root):
-        offsets = _snapshot_offsets(events_dir)
+        offsets, last_paths = _snapshot_offsets(lattice_dir)
         epoch = _cache_epoch(root)
     if ready is not None and ready():
         return
@@ -133,6 +120,7 @@ def hosted_stream_events(
     # (reset seen since the previous successful sync?) per successful sync.
     synced: queue.Queue[bool] = queue.Queue()
     reset_pending = False
+    seen_event_ids: set[str] = set()
 
     # Both callbacks run in the follower's control loop, in order.
     def on_reset() -> None:
@@ -189,13 +177,11 @@ def hosted_stream_events(
                 current = _cache_epoch(root)
                 if reset or current != epoch:
                     epoch = current
-                    offsets = _snapshot_offsets(events_dir)
+                    offsets, last_paths = _snapshot_offsets(lattice_dir)
                     batch: list[dict] = []
                 else:
-                    batch = _scan(events_dir, offsets)
-            for event in batch:
-                if _matches_filters(event, task_filter, type_filter):
-                    yield event
+                    batch = _scan(lattice_dir, offsets, last_paths)
+            yield from _filtered_unique(batch, task_filter, type_filter, seen_event_ids)
     finally:
         follower.stop()
         thread.join(timeout=5)
