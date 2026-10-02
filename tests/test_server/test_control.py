@@ -39,6 +39,7 @@ def test_project_config_through_a_running_server(root: Path) -> None:
                 "auto_code_review_on_transition=false",
                 "--set",
                 'task_types=["task","bug","chore","research"]',
+                "--set",
                 "review_integration_branches=v2,release/next",
                 "--root",
                 str(root),
