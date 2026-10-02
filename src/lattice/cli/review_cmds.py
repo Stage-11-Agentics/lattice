@@ -1586,6 +1586,7 @@ def _spawn_triple_pane(
         diff_content=diff_content,
         raw_diff_lines=raw_diff_lines,
         raw_diff_chars=raw_diff_chars,
+        warning=warning,
         truncated=truncated,
         claim=claim,
         program=program_name(),

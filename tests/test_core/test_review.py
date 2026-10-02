@@ -791,6 +791,7 @@ class TestTripleReviewSpawn:
             "lattice.integrations.c11.spawn_one_in_current_workspace",
             _fake_spawn,
         )
+        warning = "Configured review_integration_branches entry 'v3' did not resolve."
 
         ok, msg = review_mod.run_triple_review(
             lattice_dir=lattice_dir,
@@ -800,6 +801,7 @@ class TestTripleReviewSpawn:
             short_id="LAT-218",
             base="main",
             worktree=tmp_path,
+            warning=warning,
         )
         assert ok is True
         assert "surface:42" in msg
@@ -807,6 +809,7 @@ class TestTripleReviewSpawn:
         assert "/trident-code-review LAT-218" in captured["prompt"]
         assert "pr_open" in captured["prompt"]
         assert "lattice needs-human LAT-218" in captured["prompt"]
+        assert f"Lattice-Review-Warning: {warning}" in captured["prompt"]
         # review_state marker landed.
         state = review_mod.read_review_state(lattice_dir, "task_01ABC")
         assert state is not None

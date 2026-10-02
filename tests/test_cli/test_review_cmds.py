@@ -780,9 +780,13 @@ class TestCodeReviewTriple:
         root = _make_board(tmp_path, {"review_mode": "triple"})
         runner = CliRunner()
         task_id = _create_task(runner, root)
+        warning = "Configured review_integration_branches entry 'v3' did not resolve."
 
         with (
-            patch("lattice.cli.review_cmds.resolve_diff", return_value=_resolution()),
+            patch(
+                "lattice.cli.review_cmds.resolve_diff",
+                return_value=_resolution(warning=warning),
+            ),
             patch(
                 "lattice.cli.review_cmds.run_triple_review",
                 return_value=(True, "Triple review running in surface:99."),
@@ -799,6 +803,7 @@ class TestCodeReviewTriple:
         assert kwargs["base"] == "origin/main"
         assert kwargs["head"] == "feat/branch"
         assert kwargs["head_sha"] == "b" * 40
+        assert kwargs["warning"] == warning
 
     def test_triple_mode_outside_c11_errors(self, tmp_path):
         """Triple mode outside c11 must fail cleanly with a non-zero exit and

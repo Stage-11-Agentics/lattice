@@ -1693,6 +1693,7 @@ def build_trident_handoff_prompt(
     diff_content: str | None = None,
     raw_diff_lines: int | None = None,
     raw_diff_chars: int | None = None,
+    warning: str | None = None,
     truncated: bool = False,
 ) -> str:
     """Build the prompt handed to the claude session running inside the c11 pane.
@@ -1712,6 +1713,7 @@ def build_trident_handoff_prompt(
     if head_sha:
         head_line = f"{head_line} ({head_sha})"
     range_line = f"{base_line}...{head_ref}" if head_ref else f"{base_line}...HEAD"
+    warning_header = f"Lattice-Review-Warning: {warning}\n" if warning else ""
     diff_metadata = ""
     if review_type == "code-review":
         diff_metadata = (
@@ -1725,6 +1727,7 @@ def build_trident_handoff_prompt(
             f"Lattice-Reviewed-Head: {head_line}\n"
             f"Lattice-Reviewed-Diff: raw-lines={raw_diff_lines or 0}, "
             f"raw-chars={raw_diff_chars or 0}, truncated={str(truncated).lower()}\n"
+            f"{warning_header}"
             "```\n"
         )
     resolved_diff = ""
@@ -1825,6 +1828,7 @@ def run_triple_review(
     diff_content: str | None = None,
     raw_diff_lines: int | None = None,
     raw_diff_chars: int | None = None,
+    warning: str | None = None,
     truncated: bool = False,
     claim: str | None = None,
     program: str = "lattice",
@@ -1864,6 +1868,7 @@ def run_triple_review(
         diff_content=diff_content,
         raw_diff_lines=raw_diff_lines,
         raw_diff_chars=raw_diff_chars,
+        warning=warning,
         truncated=truncated,
     )
     tab_title = f"{display_id} :: trident {review_type}"
