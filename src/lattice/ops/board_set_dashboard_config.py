@@ -60,6 +60,7 @@ BOARD_CONFIG_KEYS = frozenset(
         "project_type",
         "resources",
         "review_base_branch",
+        "review_integration_branches",
         "review_cycle_limit",
         "review_max_diff_chars",
         "review_max_diff_lines",

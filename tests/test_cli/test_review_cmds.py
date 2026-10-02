@@ -1165,7 +1165,13 @@ class TestDiffResolution:
             patch("lattice.core.review._ref_exists", return_value=True),
             patch(
                 "lattice.core.review._resolve_base_ref",
-                return_value=("origin/main", "a" * 40, None, "inferred_nearest_merge_base"),
+                return_value=(
+                    "origin/main",
+                    "a" * 40,
+                    None,
+                    "inferred_nearest_merge_base",
+                    None,
+                ),
             ),
             patch("lattice.core.review._rev_parse", return_value="b" * 40),
             patch("lattice.core.review._git_diff", return_value="branch diff"),
@@ -1200,7 +1206,13 @@ class TestDiffResolution:
             patch("lattice.core.review._find_git_root", return_value=tmp_path),
             patch(
                 "lattice.core.review._resolve_base_ref",
-                return_value=("origin/main", None, None, "inferred_nearest_merge_base"),
+                return_value=(
+                    "origin/main",
+                    None,
+                    None,
+                    "inferred_nearest_merge_base",
+                    None,
+                ),
             ),
             patch("lattice.core.review._rev_parse", return_value=None),
             patch("lattice.core.review._git_diff", return_value=None),
@@ -1341,6 +1353,7 @@ class TestFailedReviewIsVisible:
         timeout_remedy = _timeout_guidance({}, lattice_dir)["next_step"]
 
         assert "server project config lattice --set review_base_branch=<branch>" in base_remedy
+        assert "--set review_integration_branches=<branch>[,<branch>...]" in base_remedy
         assert "on the server host" in base_remedy
         assert "server project config lattice" in timeout_remedy
         assert "--set review_timeout_seconds=<seconds>" in timeout_remedy

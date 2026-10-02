@@ -141,6 +141,10 @@ def test_project_config_refuses_before_writing(root: Path) -> None:
         {"task_types": ["bug", "chore"]},
         {"review_base_branch": "  "},
         {"review_base_branch": True},
+        {"review_integration_branches": ""},
+        {"review_integration_branches": "v2,,release/next"},
+        {"review_integration_branches": ["v2", ""]},
+        {"review_integration_branches": ["v2", "v2"]},
         {"review_timeout_seconds": "0"},
         {"review_max_diff_lines": "-1"},
         {"review_max_diff_chars": "many"},
@@ -231,6 +235,8 @@ def test_project_config_sets_review_base_and_numeric_budgets(root: Path) -> None
         "--set",
         "review_base_branch=v2",
         "--set",
+        "review_integration_branches=v2,release/next",
+        "--set",
         "review_timeout_seconds=720",
         "--set",
         "review_max_diff_lines=5000",
@@ -243,6 +249,7 @@ def test_project_config_sets_review_base_and_numeric_budgets(root: Path) -> None
     assert result.exit_code == 0, result.output
     config = json.loads((root / "projects" / "p" / ".lattice" / "config.json").read_text())
     assert config["review_base_branch"] == "v2"
+    assert config["review_integration_branches"] == ["v2", "release/next"]
     assert config["review_timeout_seconds"] == 720
     assert config["review_max_diff_lines"] == 5000
     assert config["review_max_diff_chars"] == 120000

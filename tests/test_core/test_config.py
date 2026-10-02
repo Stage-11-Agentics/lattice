@@ -45,6 +45,10 @@ class TestDefaultConfig:
         config = default_config()
         assert "review_base_branch" not in config
 
+    def test_review_integration_branches_is_optional(self) -> None:
+        config = default_config()
+        assert "review_integration_branches" not in config
+
     def test_has_task_types(self) -> None:
         config = default_config()
         assert config["task_types"] == ["task", "bug", "chore"]

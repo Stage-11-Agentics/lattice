@@ -293,9 +293,13 @@ def _review_base_config_remedy(lattice_dir: Path) -> str:
     if project is not None:
         return (
             f"configure it on the server host with `{program_name()} server project config "
-            f"{project} --set review_base_branch=<branch>`"
+            f"{project} --set review_base_branch=<branch>` or `{program_name()} server project "
+            f"config {project} --set review_integration_branches=<branch>[,<branch>...]`"
         )
-    return "set review_base_branch in `.lattice/config.json`"
+    return (
+        "set `review_base_branch` or the ordered `review_integration_branches` list "
+        "in `.lattice/config.json`"
+    )
 
 
 def _task_events(lattice_dir: Path, task_id: str) -> list[dict]:
@@ -536,23 +540,37 @@ def code_review(
         head=head,
         worktree=reviewed_worktree,
         review_base_branch=config.get("review_base_branch"),
+        review_integration_branches=config.get("review_integration_branches"),
     )
     if not resolution.success:
         assert resolution.error is not None
+        resolution_error = resolution.error
+        if resolution.error_code in {
+            "BASE_INFERENCE_NO_CANDIDATES",
+            "INVALID_REVIEW_INTEGRATION_BRANCHES",
+            "INVALID_REVIEW_BASE_BRANCH",
+        }:
+            resolution_error += (
+                f" To configure base candidates, {_review_base_config_remedy(lattice_dir)}."
+            )
         if not dry_run:
             assert actor is not None
             _record_resolution_failure(
                 lattice_dir,
                 task_id,
                 mode=mode,
-                message=resolution.error,
+                message=resolution_error,
                 error_code=resolution.error_code or "DIFF_RESOLUTION_FAILED",
                 actor=actor,
                 config=config,
                 auto_fired=triggered_by is not None,
                 claim=claim,
             )
-        output_error(resolution.error, resolution.error_code or "DIFF_RESOLUTION_FAILED", is_json)
+        output_error(
+            resolution_error,
+            resolution.error_code or "DIFF_RESOLUTION_FAILED",
+            is_json,
+        )
 
     if resolution.base_ref and not dry_run and not quiet and not is_json:
         click.echo(

@@ -137,7 +137,16 @@ def test_review_gate_v2_changes_are_declared_in_compatibility_docs() -> None:
     readme = (REPO / "README.md").read_text()
     user_reference = (REPO / "docs" / "user-reference.md").read_text()
     g6 = next(line for line in spec.splitlines() if line.startswith("| G-6 |"))
-    required = ("gh", "Review base:", "--dry-run", "three times", "raw diff")
+    required = (
+        "gh",
+        "Review base:",
+        "--dry-run",
+        "three times",
+        "raw diff",
+        "review_integration_branches",
+        "configured order",
+        "arbitrary remote branches",
+    )
 
     for name, text in (
         ("SPEC G-6", g6),

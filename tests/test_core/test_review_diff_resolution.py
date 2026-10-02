@@ -91,16 +91,17 @@ class TestBaseResolution:
         assert "feature.py" in res.diff
         assert "local_only.txt" not in res.diff
 
-    def test_no_remote_falls_back_to_local_main(self, worktree_repo):
+    def test_no_remote_does_not_fall_back_to_local_main(self, worktree_repo):
         main = worktree_repo.main
         git(main, "remote", "remove", "origin")
         git(main, "update-ref", "-d", "refs/remotes/origin/main")
         res = review_mod.resolve_diff(
             worktree_repo.lattice_dir, "task_01", _snapshot(worktree_repo.branch)
         )
-        assert res.base_ref == "main"
-        assert res.success is True, res.error
-        assert "feature.py" in res.diff
+        assert res.base_ref is None
+        assert res.success is False
+        assert res.error_code == "BASE_INFERENCE_NO_CANDIDATES"
+        assert "review_integration_branches" in (res.error or "")
 
     def test_stale_remote_warns_without_failing(self, worktree_repo):
         """origin/main behind local main is a fetch-overdue signal, not an error."""

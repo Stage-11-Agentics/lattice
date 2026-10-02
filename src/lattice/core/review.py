@@ -745,6 +745,7 @@ def resolve_diff(
     head: str | None = None,
     worktree: Path | None = None,
     review_base_branch: str | None = None,
+    review_integration_branches: list[str] | None = None,
 ) -> DiffResolution:
     """Resolve the git diff for a task, naming exactly what was diffed.
 
@@ -769,14 +770,12 @@ def resolve_diff(
     code nobody read; the error message is the feature.
 
     **Base selection** is explicit ``--base``, the open PR's base from ``gh``,
-    ``review_base_branch`` from board config, then local inference. Inference
-    considers the remote default and remote branches with a merge-base against
-    the head, even when those branches advanced after the feature fork. Remote
-    copies of the head branch are excluded. It picks the smallest commit
-    distance from merge-base to head, with the remote default and then lexical
-    ref order breaking ties. Local ``main``/``master`` are a final
-    compatibility fallback only when no remote candidate resolves. No
-    ``git fetch`` is ever run — a review must not mutate refs or block on Git
+    ``review_base_branch`` from board config, then inference. Inference considers
+    only the remote default and the ordered remote integration branches in
+    ``review_integration_branches``. It picks the smallest commit distance from
+    merge-base to head; ties follow configured order, then the remote default.
+    No arbitrary remote branches or local ``main``/``master`` refs are scanned.
+    No ``git fetch`` is ever run — a review must not mutate refs or block on Git
     network access.
 
     An **empty** diff is never accepted as success.
@@ -832,13 +831,49 @@ def resolve_diff(
         head_ref, source = "HEAD", "head"
 
     # --- base ----------------------------------------------------------------
-    base_ref, base_sha, warning, base_selection_rule = _resolve_base_ref(
+    base_ref, base_sha, warning, base_selection_rule, base_error = _resolve_base_ref(
         repo_root,
         head_ref,
         explicit_base=explicit_base_ref,
         review_base_branch=review_base_branch,
+        review_integration_branches=review_integration_branches,
     )
     head_sha = _rev_parse(repo_root, head_ref)
+
+    if base_error:
+        base_error_code = (
+            "INVALID_REVIEW_BASE_BRANCH"
+            if base_selection_rule == "invalid_base_config"
+            else "INVALID_REVIEW_INTEGRATION_BRANCHES"
+        )
+        return DiffResolution(
+            success=False,
+            error=base_error,
+            error_code=base_error_code,
+            head_ref=head_ref,
+            head_sha=head_sha,
+            worktree=repo_root,
+            source=source,
+            warning=warning,
+            base_selection_rule=base_selection_rule,
+        )
+
+    if base_ref is None:
+        return DiffResolution(
+            success=False,
+            error=(
+                "Could not infer a review base: no remote default or configured remote "
+                "integration branch resolves. Pass --base <ref>, configure "
+                "review_base_branch, or configure review_integration_branches."
+            ),
+            error_code="BASE_INFERENCE_NO_CANDIDATES",
+            head_ref=head_ref,
+            head_sha=head_sha,
+            worktree=repo_root,
+            source=source,
+            warning=warning,
+            base_selection_rule=base_selection_rule,
+        )
 
     ref_range = f"{base_ref}...{head_ref}"
     common = {
@@ -897,56 +932,64 @@ def _resolve_base_ref(
     head_ref: str,
     explicit_base: str | None = None,
     review_base_branch: str | None = None,
-) -> tuple[str, str | None, str | None, str]:
+    review_integration_branches: object = None,
+) -> tuple[str | None, str | None, str | None, str, str | None]:
     """Pick the base ref for ``<base>...<head_ref>``.
 
-    Returns ``(base_ref, base_sha, warning, selection_rule)`` where
+    Returns ``(base_ref, base_sha, warning, selection_rule, error)`` where
     ``base_sha`` is the SHA of the merge-base actually used. Selection order:
     explicit CLI ref, open PR base, board config, then nearest inferred base.
+    Inference has a bounded candidate set: configured integration refs in
+    their declared order, followed by the remote default.
     """
     if explicit_base is not None:
         base_ref = _normalize_explicit_base_ref(repo_root, explicit_base)
-        return base_ref, _merge_base(repo_root, base_ref, head_ref), None, "explicit"
+        return base_ref, _merge_base(repo_root, base_ref, head_ref), None, "explicit", None
 
     warning = _stale_remote_warning(repo_root)
     pr_base = _open_pr_base_branch(repo_root, head_ref)
     if pr_base:
         base_ref = _remote_ref_for_branch(repo_root, pr_base)
-        return base_ref, _merge_base(repo_root, base_ref, head_ref), warning, "open_pr"
+        return base_ref, _merge_base(repo_root, base_ref, head_ref), warning, "open_pr", None
 
-    if review_base_branch:
-        base_ref = _remote_ref_for_branch(repo_root, review_base_branch)
-        return base_ref, _merge_base(repo_root, base_ref, head_ref), warning, "board_config"
+    if review_base_branch is not None:
+        if (
+            not isinstance(review_base_branch, str)
+            or not review_base_branch.strip()
+            or any(ord(char) < 32 or ord(char) == 127 for char in review_base_branch)
+        ):
+            return (
+                None,
+                None,
+                warning,
+                "invalid_base_config",
+                "Invalid review_base_branch configuration: expected a non-empty branch name.",
+            )
+        base_ref = _remote_ref_for_branch(repo_root, review_base_branch.strip())
+        return base_ref, _merge_base(repo_root, base_ref, head_ref), warning, "board_config", None
+
+    integration_branches, integration_error = _normalize_integration_branches(
+        review_integration_branches
+    )
+    if integration_error:
+        return None, None, warning, "invalid_integration_config", integration_error
 
     remote_default = _origin_head_ref(repo_root)
-    head_sha = _rev_parse(repo_root, head_ref)
-    remote_candidates = _remote_branch_refs(repo_root)
-    candidates: set[str] = set(remote_candidates)
-    if remote_default:
-        candidates.add(remote_default)
+    configured_refs: list[tuple[str, int]] = []
+    for order, branch in enumerate(integration_branches):
+        candidate = _remote_tracking_ref_for_branch(repo_root, branch)
+        if candidate is not None and all(ref != candidate for ref, _ in configured_refs):
+            configured_refs.append((candidate, order))
 
-    head_branch = _branch_name_for_ref(repo_root, head_ref)
-    head_upstream = _upstream_ref_for_branch(repo_root, head_branch) if head_branch else None
-    # A pushed copy of the reviewed feature is not a meaningful base. In a
-    # rework cycle it commonly sits one commit behind HEAD and would make the
-    # review cover only that latest fix. Exclude every remote copy with the
-    # same branch name (including non-origin remotes), including its upstream
-    # when that points to the head copy. A feature can instead track an
-    # integration branch (for example origin/main or origin/v2); keep it.
-    head_remote_copies = {
-        candidate
-        for candidate in candidates
-        if head_branch and candidate.endswith("/" + head_branch)
-    }
-    if head_branch and head_upstream and head_upstream.endswith("/" + head_branch):
-        head_remote_copies.add(head_upstream)
-    candidates.difference_update(head_remote_copies)
+    # Configured integration branches keep their declared order. The remote
+    # default is last for ties unless it was already named in the config.
+    candidate_ranks = {ref: order for ref, order in configured_refs}
+    if remote_default and remote_default not in candidate_ranks:
+        candidate_ranks[remote_default] = len(integration_branches)
 
     scored: list[tuple[int, int, str, str]] = []
-    for candidate in candidates:
+    for candidate, configured_rank in candidate_ranks.items():
         if not _ref_exists(repo_root, candidate):
-            continue
-        if _rev_parse(repo_root, candidate) == head_sha:
             continue
         merge_base = _merge_base(repo_root, candidate, head_ref)
         if merge_base is None:
@@ -954,38 +997,43 @@ def _resolve_base_ref(
         distance = _commit_distance_from_merge_base(repo_root, merge_base, head_ref)
         if distance is None:
             continue
-        default_rank = 0 if candidate == remote_default else 1
-        scored.append((distance, default_rank, candidate, merge_base))
+        scored.append((distance, configured_rank, candidate, merge_base))
 
     if scored:
         distance, _default_rank, base_ref, base_sha = min(scored)
         del distance
-        return base_ref, base_sha, warning, "inferred_nearest_merge_base"
+        return base_ref, base_sha, warning, "inferred_nearest_merge_base", None
 
-    # Repositories without remote-tracking refs (notably new/local boards) keep
-    # working from their local integration branch. Prefer main on a deterministic
-    # tie, then master.
-    local_candidates = [
-        candidate for candidate in ("main", "master") if _ref_exists(repo_root, candidate)
-    ]
-    local_scored: list[tuple[int, int, str, str]] = []
-    for candidate in local_candidates:
-        if _rev_parse(repo_root, candidate) == head_sha:
-            continue
-        merge_base = _merge_base(repo_root, candidate, head_ref)
-        if merge_base is None:
-            continue
-        distance = _commit_distance_from_merge_base(repo_root, merge_base, head_ref)
-        if distance is not None:
-            local_scored.append(
-                (distance, local_candidates.index(candidate), candidate, merge_base)
+    return None, None, warning, "inferred_no_candidate", None
+
+
+def _normalize_integration_branches(
+    value: object,
+) -> tuple[list[str], str | None]:
+    """Validate the local config's ordered list without letting bad JSON crash review."""
+    if value is None:
+        return [], None
+    if not isinstance(value, list):
+        return [], (
+            "Invalid review_integration_branches configuration: expected a JSON array "
+            "of non-empty branch names."
+        )
+    branches: list[str] = []
+    for item in value:
+        if (
+            not isinstance(item, str)
+            or not item.strip()
+            or "," in item
+            or any(ord(char) < 32 or ord(char) == 127 for char in item)
+        ):
+            return [], (
+                "Invalid review_integration_branches configuration: expected a JSON array "
+                "of non-empty branch names."
             )
-    if local_scored:
-        _distance, _rank, base_ref, base_sha = min(local_scored)
-        return base_ref, base_sha, warning, "inferred_local_default"
-
-    fallback = _find_base_branch(repo_root)
-    return fallback, _merge_base(repo_root, fallback, head_ref), warning, "inferred_local_default"
+        branch = item.strip()
+        if branch not in branches:
+            branches.append(branch)
+    return branches, None
 
 
 def _open_pr_base_branch(repo_root: Path, head_ref: str) -> str | None:
@@ -1068,12 +1116,34 @@ def _branch_name_for_ref(repo_root: Path, ref: str) -> str | None:
 
 def _remote_ref_for_branch(repo_root: Path, branch: str) -> str:
     """Prefer an origin tracking ref for a short branch name when available."""
-    if branch.startswith(("refs/", "origin/")):
+    if branch.startswith("refs/"):
+        return branch
+    if _exact_ref_exists(repo_root, f"refs/remotes/{branch}"):
         return branch
     origin_ref = f"origin/{branch}"
-    if _ref_exists(repo_root, origin_ref):
+    if _exact_ref_exists(repo_root, f"refs/remotes/{origin_ref}"):
         return origin_ref
     return branch
+
+
+def _remote_tracking_ref_for_branch(repo_root: Path, branch: str) -> str | None:
+    """Resolve one configured integration branch without falling back locally."""
+    if branch.startswith("refs/remotes/"):
+        short_ref = branch.removeprefix("refs/remotes/")
+        return short_ref if _exact_ref_exists(repo_root, f"refs/remotes/{short_ref}") else None
+
+    if branch.startswith("origin/"):
+        return branch if _exact_ref_exists(repo_root, f"refs/remotes/{branch}") else None
+
+    origin_ref = f"origin/{branch}"
+    if _exact_ref_exists(repo_root, f"refs/remotes/{origin_ref}"):
+        return origin_ref
+    # A short remote-qualified name such as ``fork/v2`` is accepted when that
+    # exact remote-tracking ref exists. Fully qualified refs above disambiguate
+    # names that also exist under origin.
+    if "/" in branch and _exact_ref_exists(repo_root, f"refs/remotes/{branch}"):
+        return branch
+    return None
 
 
 def _normalize_explicit_base_ref(repo_root: Path, base: str) -> str:
@@ -1112,42 +1182,6 @@ def _exact_ref_exists(repo_root: Path, full_ref: str) -> bool:
         ).returncode
         == 0
     )
-
-
-def _remote_branch_refs(repo_root: Path) -> list[str]:
-    """List current remote-tracking branch refs without fetching."""
-    result = subprocess.run(
-        ["git", "for-each-ref", "--format=%(refname:short)", "refs/remotes/"],
-        cwd=str(repo_root),
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        return []
-    return sorted(
-        ref
-        for ref in result.stdout.splitlines()
-        if ref.strip() and not ref.rstrip().endswith("/HEAD")
-    )
-
-
-def _upstream_ref_for_branch(repo_root: Path, branch: str) -> str | None:
-    """Return a local branch's configured upstream in short-ref form."""
-    result = subprocess.run(
-        [
-            "git",
-            "for-each-ref",
-            "--format=%(upstream:short)",
-            f"refs/heads/{branch}",
-        ],
-        cwd=str(repo_root),
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        return None
-    ref = result.stdout.strip()
-    return ref or None
 
 
 def _commit_distance_from_merge_base(
@@ -1355,14 +1389,6 @@ def _find_git_root(lattice_dir: Path) -> Path | None:
             return None
         current = parent
     return None
-
-
-def _find_base_branch(repo_root: Path) -> str:
-    """Return the likely base branch (main or master)."""
-    for branch in ("main", "master"):
-        if _ref_exists(repo_root, branch):
-            return branch
-    return "main"
 
 
 def _ref_exists(repo_root: Path, ref: str) -> bool:

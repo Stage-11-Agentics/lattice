@@ -68,6 +68,7 @@ CONFIG_CHOICES: dict[str, tuple[str, ...]] = {
 }
 _BOOL_KEYS = ("auto_code_review_on_transition", "auto_plan_review_on_transition")
 _STRING_CONFIG_KEYS = {"review_base_branch"}
+_LIST_CONFIG_KEYS = {"review_integration_branches"}
 _INTEGER_CONFIG_MINIMUMS = {
     "review_timeout_seconds": 1,
     "review_max_diff_lines": 0,
@@ -541,7 +542,11 @@ def validate_config_changes(raw: Any) -> dict[str, Any]:
         raise OpError("VALIDATION_ERROR", "Give at least one --set KEY=VALUE.")
     typed: dict[str, Any] = {}
     allowed_keys = (
-        set(CONFIG_CHOICES) | _STRING_CONFIG_KEYS | set(_INTEGER_CONFIG_MINIMUMS) | {"task_types"}
+        set(CONFIG_CHOICES)
+        | _STRING_CONFIG_KEYS
+        | _LIST_CONFIG_KEYS
+        | set(_INTEGER_CONFIG_MINIMUMS)
+        | {"task_types"}
     )
     for key, value in raw.items():
         if key == "task_types":
@@ -566,6 +571,32 @@ def validate_config_changes(raw: Any) -> dict[str, Any]:
                     {"key": key},
                 )
             typed[key] = value.strip()
+            continue
+        if key in _LIST_CONFIG_KEYS:
+            if isinstance(value, str):
+                if not value.strip() or any(char in value for char in "\0\r\n"):
+                    branches = []
+                else:
+                    branches = [branch.strip() for branch in value.split(",")]
+            elif isinstance(value, list) and all(isinstance(item, str) for item in value):
+                branches = [item.strip() for item in value]
+            else:
+                branches = []
+            if not branches or any(
+                not branch or any(char in branch for char in "\0\r\n,") for branch in branches
+            ):
+                raise OpError(
+                    "VALIDATION_ERROR",
+                    f"Invalid value {value!r} for {key}; provide comma-separated non-empty branch names.",
+                    {"key": key},
+                )
+            if any(not branch for branch in branches) or len(set(branches)) != len(branches):
+                raise OpError(
+                    "VALIDATION_ERROR",
+                    f"Invalid value {value!r} for {key}; provide comma-separated non-empty, unique branch names in precedence order.",
+                    {"key": key},
+                )
+            typed[key] = branches
             continue
         if key in _INTEGER_CONFIG_MINIMUMS:
             if isinstance(value, bool):
