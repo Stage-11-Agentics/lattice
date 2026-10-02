@@ -559,7 +559,7 @@ def issue_list(
     summary = ", ".join(f"{counts[s]} {s}" for s in ISSUE_STATES if s in wanted)
     footer = f"{len(shown)} issue{'s' if len(shown) != 1 else ''} ({summary})"
     hidden = len(views) - len(shown)
-    if hidden and not show_all:
+    if hidden and not show_all and by_actor is None:
         footer += f"; {hidden} other{'s' if hidden != 1 else ''} hidden (--all to show)"
     click.echo(footer)
 

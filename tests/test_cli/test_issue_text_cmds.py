@@ -235,7 +235,9 @@ def test_list_by_linked_task_and_promote_description(initialized_root: Path) -> 
     ]
     commented = runner.invoke(cli, ["issue", "list", "--by", "agent:other", "--json"])
     assert json.loads(commented.output)["data"][0]["activity"] == "commented"
-    assert "commented" in runner.invoke(cli, ["issue", "list", "--by", "agent:other"]).output
+    commented_human = runner.invoke(cli, ["issue", "list", "--by", "agent:other"]).output
+    assert "commented" in commented_human
+    assert "--all to show" not in commented_human
 
     runner.invoke(cli, ["create", "Target task", *ACTOR])
     runner.invoke(cli, ["issue", "link", "LAT-I1", "LAT-1", *ACTOR])
