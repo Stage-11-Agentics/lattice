@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import http.client
+import json
 import os
+import queue
 import shutil
 import signal
 import socket
@@ -10,7 +13,9 @@ import subprocess
 import sys
 import threading
 import time
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
+from socketserver import ThreadingMixIn
 from types import SimpleNamespace
 
 import pytest
@@ -18,6 +23,8 @@ from click.testing import CliRunner
 
 from lattice.cli import dashboard_cmd as dashboard_module
 from lattice.cli.main import cli
+from lattice.dashboard.api import get_task_comments
+from lattice.dashboard import server as dashboard_server_module
 
 
 def test_sighup_restart_execs_after_dashboard_target_closes(tmp_path: Path, monkeypatch) -> None:
@@ -82,6 +89,166 @@ def test_dashboard_start_installs_the_normal_sighup_handler(
 
     assert result.exit_code == 0, result.output
     assert signal_calls == [(signal.SIGHUP, dashboard_module._handle_sighup)]
+
+
+def test_restart_aborts_when_inflight_requests_miss_the_drain_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class TimedOutServer:
+        server_address = ("127.0.0.1", 8800)
+
+        def serve_forever(self) -> None:
+            dashboard_module._restart_requested = True
+
+        def wait_for_inflight_requests(self, timeout: float) -> int:
+            assert timeout == 0.01
+            return 2
+
+        def server_close(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        dashboard_server_module, "create_server", lambda *_a, **_kw: TimedOutServer()
+    )
+    monkeypatch.setattr(dashboard_module, "_RESTART_DRAIN_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setenv(dashboard_module._RESTART_ENV, "1")
+    dashboard_module._restart_requested = False
+
+    with pytest.raises(SystemExit) as exc:
+        dashboard_module._serve(tmp_path / ".lattice", "127.0.0.1", 8800, False, False, None)
+
+    assert exc.value.code == 1
+    assert "2 request(s) are still in flight" in capsys.readouterr().err
+
+
+def test_parsed_request_is_registered_before_stdlib_parse_returns(
+    initialized_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A drain cannot close a socket in the post-parse registration gap."""
+    parse_returned = threading.Event()
+    release_parse = threading.Event()
+    response_result: dict[str, object] = {}
+    original_parse_request = BaseHTTPRequestHandler.parse_request
+
+    def pause_after_stdlib_parse(handler) -> bool:  # noqa: ANN001
+        parsed = original_parse_request(handler)
+        parse_returned.set()
+        if not release_parse.wait(timeout=5):
+            raise TimeoutError("test did not release the parsed request")
+        return parsed
+
+    monkeypatch.setattr(BaseHTTPRequestHandler, "parse_request", pause_after_stdlib_parse)
+    server = dashboard_server_module.create_server(initialized_root / ".lattice", "127.0.0.1", 0)
+    port = server.server_address[1]
+    serving = threading.Thread(target=server.serve_forever, daemon=True)
+    serving.start()
+
+    def get_boot() -> None:
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        try:
+            connection.request("GET", "/api/boot")
+            response = connection.getresponse()
+            response_result["status"] = response.status
+            response_result["body"] = json.loads(response.read())
+        except BaseException as exc:
+            response_result["error"] = exc
+        finally:
+            connection.close()
+
+    request = threading.Thread(target=get_boot, daemon=True)
+    request.start()
+    try:
+        assert parse_returned.wait(timeout=3), "stdlib parser did not reach the barrier"
+        remaining = server.wait_for_inflight_requests(timeout=0.05)
+        release_parse.set()
+        request.join(timeout=3)
+        assert not request.is_alive(), "parsed request did not finish"
+        assert remaining == 1
+        assert response_result.get("status") == 200, response_result
+    finally:
+        release_parse.set()
+        server.shutdown()
+        server.server_close()
+        serving.join(timeout=3)
+
+
+def test_accepted_request_is_tracked_before_handler_thread_starts(
+    initialized_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The drain sees a connection accepted before its handler thread starts."""
+    accepted_before_thread = threading.Event()
+    release_dispatch = threading.Event()
+    drain_waiting = threading.Event()
+    response_result: dict[str, object] = {}
+    drain_result: dict[str, int] = {}
+    server = dashboard_server_module.create_server(initialized_root / ".lattice", "127.0.0.1", 0)
+    port = server.server_address[1]
+    serving = threading.Thread(target=server.serve_forever, daemon=True)
+    serving.start()
+    original_dispatch = ThreadingMixIn.process_request
+
+    def pause_before_handler_thread(instance, request, client_address) -> None:  # noqa: ANN001
+        if instance is server:
+            accepted_before_thread.set()
+            if not release_dispatch.wait(timeout=5):
+                raise TimeoutError("test did not release the accepted request")
+        original_dispatch(instance, request, client_address)
+
+    monkeypatch.setattr(ThreadingMixIn, "process_request", pause_before_handler_thread)
+
+    def get_boot() -> None:
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        try:
+            connection.request("GET", "/api/boot")
+            response = connection.getresponse()
+            response_result["status"] = response.status
+            response_result["body"] = json.loads(response.read())
+        except BaseException as exc:
+            response_result["error"] = exc
+        finally:
+            connection.close()
+
+    request = threading.Thread(target=get_boot, daemon=True)
+    request.start()
+    drain = None
+    try:
+        assert accepted_before_thread.wait(timeout=3), "request was not accepted"
+        with server._request_condition:
+            assert len(server._pending_connections) == 1
+
+        original_condition_wait = server._request_condition.wait
+
+        def report_wait(timeout: float | None = None) -> bool:
+            drain_waiting.set()
+            return original_condition_wait(timeout)
+
+        monkeypatch.setattr(server._request_condition, "wait", report_wait)
+        drain = threading.Thread(
+            target=lambda: drain_result.setdefault(
+                "remaining", server.wait_for_inflight_requests(timeout=5)
+            ),
+            daemon=True,
+        )
+        drain.start()
+        assert server._restart_drain_started.wait(timeout=3)
+        assert drain_waiting.wait(timeout=3), "drain did not wait for the accepted request"
+
+        release_dispatch.set()
+        request.join(timeout=3)
+        drain.join(timeout=3)
+        assert not request.is_alive(), "accepted request did not finish"
+        assert drain is not None and not drain.is_alive(), "drain did not finish"
+        assert response_result.get("status") == 200, response_result
+        assert drain_result == {"remaining": 0}
+    finally:
+        release_dispatch.set()
+        if request.is_alive():
+            request.join(timeout=1)
+        if drain is not None and drain.is_alive():
+            drain.join(timeout=1)
+        server.shutdown()
+        server.server_close()
+        serving.join(timeout=3)
 
 
 def test_second_sighup_is_ignored_during_the_exec_window(tmp_path: Path) -> None:
@@ -158,6 +325,7 @@ def _stub_lsof(
         return SimpleNamespace(stdout=response)
 
     monkeypatch.setattr(dashboard_module.subprocess, "run", run)
+    monkeypatch.setattr(dashboard_module, "_listening_bind_addresses", lambda _port: ["127.0.0.1"])
     return calls
 
 
@@ -212,26 +380,120 @@ def test_restart_reports_failure_when_boot_id_does_not_change(
     assert result.exit_code == 1
     assert (
         f"Error: dashboard on port {port} did not restart within 0.1 seconds "
-        "(boot identity unchanged)." in result.stderr
+        "(boot identity unchanged; a request may have exceeded the 10-second drain deadline)."
+        in result.stderr
     )
 
 
-def test_restart_does_not_signal_a_dashboard_without_boot_identity(
+def test_restart_falls_back_to_listener_cycle_for_legacy_dashboard(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     port = 8805
     _stub_lsof(monkeypatch, port, ["1234\n"])
+    _fake_clock(monkeypatch)
     signalled: list[int] = []
     monkeypatch.setattr(dashboard_module.os, "kill", lambda pid, _sig: signalled.append(pid))
     monkeypatch.setattr(
         dashboard_module, "_read_dashboard_boot_id", lambda *_args, **_kwargs: None
     )
+    monkeypatch.setattr(dashboard_module, "_dashboard_responds", lambda *_args, **_kwargs: True)
+    listener_states = iter([True, False, True])
+    monkeypatch.setattr(
+        dashboard_module,
+        "_tcp_listener_accepting",
+        lambda *_args, **_kwargs: next(listener_states),
+    )
+
+    result = CliRunner().invoke(cli, ["restart", "--port", str(port)])
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout == f"Dashboard restarted and is listening on port {port}.\n"
+    assert signalled == [1234]
+
+
+def test_restart_ignores_legacy_http_timeout_while_listener_stays_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    port = 8806
+    _stub_lsof(monkeypatch, port, ["1234\n"])
+    _fake_clock(monkeypatch)
+    monkeypatch.setattr(dashboard_module, "_RESTART_TIMEOUT_SECONDS", 0.1)
+    signalled: list[int] = []
+    http_results = iter([True, False, True])
+    http_calls: list[bool] = []
+    tcp_calls: list[bool | None] = []
+
+    def http_responds(*_args, **_kwargs):  # noqa: ANN002, ANN003
+        result = next(http_results)
+        http_calls.append(result)
+        return result
+
+    def listener_stays_up(*_args, **_kwargs):  # noqa: ANN002, ANN003
+        tcp_calls.append(True)
+        return True
+
+    monkeypatch.setattr(dashboard_module.os, "kill", lambda pid, _sig: signalled.append(pid))
+    monkeypatch.setattr(
+        dashboard_module, "_read_dashboard_boot_id", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(dashboard_module, "_dashboard_responds", http_responds)
+    monkeypatch.setattr(dashboard_module, "_tcp_listener_accepting", listener_stays_up)
 
     result = CliRunner().invoke(cli, ["restart", "--port", str(port)])
 
     assert result.exit_code == 1
-    assert "did not provide a boot identity" in result.stderr
-    assert signalled == []
+    assert "listener never completed a verified restart cycle" in result.stderr
+    assert signalled == [1234]
+    assert http_calls == [True]
+    assert tcp_calls and all(tcp_calls)
+
+
+def test_restart_uses_the_specific_non_loopback_listen_address(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    port = 8807
+    _stub_lsof(monkeypatch, port, ["1234\n"])
+    monkeypatch.setattr(dashboard_module, "_listening_bind_addresses", lambda _port: ["192.0.2.7"])
+    _fake_clock(monkeypatch)
+    hosts: list[str] = []
+    boot_ids = iter(["before", "after"])
+
+    def read_boot_id(_port: int, *, host: str, **_kwargs: object) -> str:
+        hosts.append(host)
+        return next(boot_ids)
+
+    monkeypatch.setattr(dashboard_module, "_read_dashboard_boot_id", read_boot_id)
+    monkeypatch.setattr(dashboard_module.os, "kill", lambda *_args: None)
+
+    result = CliRunner().invoke(cli, ["restart", "--port", str(port)])
+
+    assert result.exit_code == 0, result.output
+    assert hosts == ["192.0.2.7", "192.0.2.7"]
+
+
+def test_listening_bind_addresses_parse_numeric_lsof_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    port = 8808
+
+    def run(args: list[str], **_kwargs: object) -> SimpleNamespace:
+        assert args == ["lsof", "-nP", "-Fpn", f"-iTCP:{port}", "-sTCP:LISTEN"]
+        return SimpleNamespace(
+            stdout=f"p1234\nn192.0.2.7:{port}\np2345\nn[2001:db8::4]:{port}\np3456\nn*:{port}\n"
+        )
+
+    monkeypatch.setattr(dashboard_module.subprocess, "run", run)
+
+    assert dashboard_module._listening_bind_addresses(port) == [
+        "192.0.2.7",
+        "2001:db8::4",
+        "*",
+    ]
+
+
+def test_wildcard_listen_addresses_probe_loopback() -> None:
+    assert dashboard_module._probe_hosts(["*"]) == ["127.0.0.1", "::1"]
+    assert dashboard_module._probe_hosts(["0.0.0.0", "::", "*"]) == ["127.0.0.1", "::1"]
 
 
 def test_connected_client_survives_restart_and_only_listener_is_signalled(
@@ -403,6 +665,182 @@ def test_live_restart_is_not_blocked_by_an_idle_nc_client(initialized_root: Path
             client.wait(timeout=2)
         dashboard.terminate()
         dashboard.wait(timeout=3)
+
+
+def test_live_restart_drains_lock_blocked_comment_across_real_exec(initialized_root: Path) -> None:
+    """The held comment returns and persists across the dashboard's real exec."""
+    script = Path(sys.executable).with_name("lattice")
+    if not script.exists():
+        pytest.skip("the active virtualenv has no lattice console script")
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+
+    env = {**os.environ, "LATTICE_ROOT": str(initialized_root)}
+    created = subprocess.run(
+        [str(script), "create", "Real restart drain task", "--actor", "human:test", "--quiet"],
+        cwd=initialized_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert created.returncode == 0, created.stdout + created.stderr
+    task_id = created.stdout.strip()
+    lock_path = initialized_root / ".lattice" / "locks" / f"events_{task_id}.lock"
+    lock_code = """
+import sys
+from filelock import FileLock
+lock = FileLock(sys.argv[1])
+lock.acquire()
+print('locked', flush=True)
+sys.stdin.readline()
+lock.release()
+"""
+    lock_holder = subprocess.Popen(
+        [sys.executable, "-c", lock_code, str(lock_path)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    wrapper = r"""
+import contextlib
+import sys
+from lattice.cli.main import cli
+from lattice.dashboard.server import _RestartAwareHTTPServer
+from lattice.storage import locks
+
+script, task_id, port = sys.argv[1:]
+original_multi_lock = locks.multi_lock
+@contextlib.contextmanager
+def report_task_lock(locks_dir, keys, timeout=10):
+    if f'events_{task_id}' in keys:
+        print('LOCK_ATTEMPT', flush=True)
+    with original_multi_lock(locks_dir, keys, timeout):
+        yield
+locks.multi_lock = report_task_lock
+
+original_wait = _RestartAwareHTTPServer.wait_for_inflight_requests
+def report_drain_started(self, timeout):
+    self._restart_draining.set()
+    self._restart_drain_started.set()
+    print('DRAIN_STARTED', flush=True)
+    return original_wait(self, timeout)
+_RestartAwareHTTPServer.wait_for_inflight_requests = report_drain_started
+sys.argv = [script, 'dashboard', '--port', port, '--json']
+cli()
+"""
+    dashboard = subprocess.Popen(
+        [sys.executable, "-c", wrapper, str(script), task_id, str(port)],
+        cwd=initialized_root,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    output_lines: queue.Queue[tuple[str, str]] = queue.Queue()
+
+    def capture_output(name: str, stream) -> None:  # noqa: ANN001
+        for line in iter(stream.readline, ""):
+            output_lines.put((name, line.rstrip()))
+
+    assert dashboard.stdout is not None and dashboard.stderr is not None
+    readers = [
+        threading.Thread(target=capture_output, args=("stdout", dashboard.stdout), daemon=True),
+        threading.Thread(target=capture_output, args=("stderr", dashboard.stderr), daemon=True),
+    ]
+    for reader in readers:
+        reader.start()
+
+    def wait_for_line(predicate, timeout: float = 5.0) -> str:  # noqa: ANN001
+        deadline = time.monotonic() + timeout
+        observed: list[tuple[str, str]] = []
+        while time.monotonic() < deadline:
+            try:
+                item = output_lines.get(timeout=max(deadline - time.monotonic(), 0.001))
+            except queue.Empty:
+                break
+            observed.append(item)
+            if predicate(*item):
+                return item[1]
+            if dashboard.poll() is not None:
+                break
+        raise AssertionError(f"dashboard output did not reach expected line: {observed}")
+
+    post_result: dict[str, object] = {}
+    post_thread = None
+    try:
+        assert lock_holder.stdout is not None
+        assert lock_holder.stdout.readline().strip() == "locked"
+        _wait_for_dashboard_http(port, dashboard)
+        boot_before = dashboard_module._read_dashboard_boot_id(port)
+        assert boot_before
+
+        def post_comment() -> None:
+            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+            try:
+                payload = json.dumps(
+                    {"body": "persists across real restart", "actor": "human:test"}
+                )
+                connection.request(
+                    "POST",
+                    f"/api/tasks/{task_id}/comment",
+                    body=payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Origin": f"http://127.0.0.1:{port}",
+                    },
+                )
+                response = connection.getresponse()
+                post_result["status"] = response.status
+                post_result["body"] = json.loads(response.read())
+            except BaseException as exc:
+                post_result["error"] = exc
+            finally:
+                connection.close()
+
+        post_thread = threading.Thread(target=post_comment, daemon=True)
+        post_thread.start()
+        wait_for_line(lambda _name, line: "LOCK_ATTEMPT" in line)
+        os.kill(dashboard.pid, signal.SIGHUP)
+        wait_for_line(lambda name, line: name == "stderr" and line == "Restarting dashboard...")
+        wait_for_line(lambda name, line: name == "stdout" and "DRAIN_STARTED" in line)
+
+        assert lock_holder.stdin is not None
+        lock_holder.stdin.write("release\n")
+        lock_holder.stdin.flush()
+        lock_holder.wait(timeout=3)
+        assert post_thread is not None
+        post_thread.join(timeout=5)
+        assert not post_thread.is_alive(), "comment response did not finish during restart drain"
+        assert post_result.get("status") == 200, post_result
+        assert dashboard_module._wait_for_dashboard_restart(port, boot_before, host="127.0.0.1")
+        assert dashboard.poll() is None
+        assert any(
+            comment["body"] == "persists across real restart"
+            for comment in get_task_comments(initialized_root / ".lattice", task_id)
+        )
+        wait_for_line(
+            lambda name, line: name == "stderr" and "Lattice dashboard restarted:" in line
+        )
+    finally:
+        if lock_holder.poll() is None:
+            if lock_holder.stdin is not None:
+                lock_holder.stdin.write("release\n")
+                lock_holder.stdin.flush()
+            try:
+                lock_holder.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                lock_holder.terminate()
+                lock_holder.wait(timeout=3)
+        if post_thread is not None and post_thread.is_alive():
+            post_thread.join(timeout=1)
+        dashboard.terminate()
+        dashboard.wait(timeout=3)
+        for reader in readers:
+            reader.join(timeout=1)
 
 
 def _wait_for_process_connection(port: int, client: subprocess.Popen) -> None:

@@ -18,9 +18,12 @@ import ipaddress
 import json
 import platform
 import secrets
+import select
+import socket
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Callable
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
@@ -46,6 +49,123 @@ _LOOPBACK_NAMES = frozenset({"localhost", "127.0.0.1", "::1"})
 #: Held around every request but issue media GETs: the board sees one request
 #: at a time, as it did before the server was threaded.
 _BOARD_LOCK = threading.Lock()
+_REQUEST_LINE_TIMEOUT_SECONDS = 1.0
+
+
+class _RestartAwareHTTPServer(ThreadingHTTPServer):
+    """Track request handlers so SIGHUP drains work without waiting on idle sockets."""
+
+    daemon_threads = True
+    block_on_close = False
+
+    def __init__(self, server_address, RequestHandlerClass):  # noqa: ANN001, N803
+        super().__init__(server_address, RequestHandlerClass)
+        self._request_condition = threading.Condition()
+        self._pending_connections: set[socket.socket] = set()
+        self._idle_connections: set[socket.socket] = set()
+        self._active_connections: set[socket.socket] = set()
+        self._request_line_waiting: set[socket.socket] = set()
+        self._restart_draining = threading.Event()
+        # Exposed to the live regression test as a deterministic barrier.
+        self._restart_drain_started = threading.Event()
+
+    def process_request(self, request: socket.socket, client_address) -> None:  # noqa: ANN001
+        # TCPServer calls this synchronously after accept and before the worker
+        # thread starts. Track that gap so SIGHUP cannot drain past an accepted
+        # request before its handler has had a chance to register it.
+        with self._request_condition:
+            self._pending_connections.add(request)
+            self._request_condition.notify_all()
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self.connection_closed(request)
+            raise
+
+    def shutdown_request(self, request: socket.socket) -> None:
+        self.connection_closed(request)
+        super().shutdown_request(request)
+
+    def request_started(self, connection: socket.socket) -> None:
+        with self._request_condition:
+            self._pending_connections.discard(connection)
+            self._idle_connections.discard(connection)
+            self._active_connections.add(connection)
+            self._request_line_waiting.add(connection)
+            self._request_condition.notify_all()
+
+    def request_line_received(self, connection: socket.socket) -> None:
+        with self._request_condition:
+            self._request_line_waiting.discard(connection)
+            self._request_condition.notify_all()
+
+    def request_finished(self, connection: socket.socket) -> bool:
+        """Mark a completed request; return whether its keep-alive should close."""
+        with self._request_condition:
+            self._active_connections.discard(connection)
+            self._request_line_waiting.discard(connection)
+            close = self._restart_draining.is_set()
+            if not close:
+                self._idle_connections.add(connection)
+            self._request_condition.notify_all()
+            return close
+
+    def connection_closed(self, connection: socket.socket) -> None:
+        with self._request_condition:
+            self._pending_connections.discard(connection)
+            self._idle_connections.discard(connection)
+            self._active_connections.discard(connection)
+            self._request_line_waiting.discard(connection)
+            self._request_condition.notify_all()
+
+    def wait_for_inflight_requests(self, timeout: float) -> int:
+        """Close idle sockets and wait at most *timeout* for active handlers."""
+        self._restart_draining.set()
+        self._restart_drain_started.set()
+        to_close: list[socket.socket] = []
+        with self._request_condition:
+            idle = tuple(self._idle_connections)
+            self._idle_connections.clear()
+            for connection in idle:
+                try:
+                    readable, _, _ = select.select([connection], [], [], 0)
+                except (OSError, ValueError):
+                    readable = []
+                if readable:
+                    # A keep-alive socket with another request already waiting
+                    # is active work, not an idle connection to discard.
+                    self._active_connections.add(connection)
+                    self._request_line_waiting.add(connection)
+                    try:
+                        connection.settimeout(_REQUEST_LINE_TIMEOUT_SECONDS)
+                    except OSError:
+                        pass
+                else:
+                    to_close.append(connection)
+            for connection in tuple(self._request_line_waiting):
+                try:
+                    connection.settimeout(_REQUEST_LINE_TIMEOUT_SECONDS)
+                except OSError:
+                    pass
+        for connection in to_close:
+            try:
+                connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                connection.close()
+            except OSError:
+                pass
+
+        deadline = time.monotonic() + timeout
+        with self._request_condition:
+            while self._active_connections or self._pending_connections:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return len(self._active_connections) + len(self._pending_connections)
+                self._request_condition.wait(remaining)
+            return 0
+
 
 _STATIC_TYPES = {
     ".js": "application/javascript",
@@ -158,6 +278,32 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False, boot_
         _target: DashboardBoard = target
         _readonly: bool = readonly
         _boot_id = boot_id
+
+        def parse_request(self) -> bool:
+            # Request-line reads are bounded so idle connections cannot hold a
+            # drain. Restore the normal timeout before headers and bodies so
+            # an in-flight write can finish intact.
+            self.server.request_line_received(self.connection)
+            self.connection.settimeout(self.timeout)
+            return super().parse_request()
+
+        def handle_one_request(self) -> None:
+            self.server.request_started(self.connection)
+            self._lattice_request_active = True
+            self.connection.settimeout(_REQUEST_LINE_TIMEOUT_SECONDS)
+            try:
+                super().handle_one_request()
+            finally:
+                if self._lattice_request_active:
+                    if self.server.request_finished(self.connection):
+                        self.close_connection = True
+                    self._lattice_request_active = False
+
+        def finish(self) -> None:
+            try:
+                super().finish()
+            finally:
+                self.server.connection_closed(self.connection)
 
         # Suppress default access logging to stdout; send to stderr instead
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
@@ -522,10 +668,4 @@ def create_server(
         root = Path(lattice_dir).parent
         board = DashboardBoard(LocalBoard(root=root, start=root))
     handler_cls = _make_handler_class(board, readonly=readonly, boot_id=secrets.token_urlsafe(18))
-    server = ThreadingHTTPServer((host, port), handler_cls)
-    # A dashboard restart must not wait for a worker blocked on an idle client.
-    # The default HTTP/1.0 response closes completed requests; detached workers
-    # let the serving loop proceed even if a client never sends a request line.
-    server.daemon_threads = True
-    server.block_on_close = False
-    return server
+    return _RestartAwareHTTPServer((host, port), handler_cls)

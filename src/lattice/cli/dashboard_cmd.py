@@ -28,9 +28,10 @@ from lattice.core.errors import OpError
 from lattice.cli.main import cli
 
 _DEFAULT_PORT = 8799
-_RESTART_TIMEOUT_SECONDS = 5.0
+_RESTART_TIMEOUT_SECONDS = 15.0
 _RESTART_POLL_INTERVAL_SECONDS = 0.01
 _BOOT_ID_REQUEST_TIMEOUT_SECONDS = 0.25
+_RESTART_DRAIN_TIMEOUT_SECONDS = 10.0
 
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
@@ -209,13 +210,27 @@ def _serve(lattice_dir, host, port, readonly, output_json, target):  # noqa: ANN
             _active_server = None
             sys.exit(0)
 
+        if _restart_requested:
+            click.echo("Restarting dashboard...", err=True)
+            remaining = server.wait_for_inflight_requests(_RESTART_DRAIN_TIMEOUT_SECONDS)
+            if remaining:
+                click.echo(
+                    "Error: dashboard restart did not drain within "
+                    f"{_RESTART_DRAIN_TIMEOUT_SECONDS:g} seconds; "
+                    f"{remaining} request(s) are still in flight. "
+                    "The dashboard was not restarted.",
+                    err=True,
+                )
+                server.server_close()
+                _active_server = None
+                raise SystemExit(1)
+
         server.server_close()
         _active_server = None
 
         if not _restart_requested:
             break
 
-        click.echo("Restarting dashboard...", err=True)
         return True
 
     return False
@@ -250,14 +265,36 @@ def restart_cmd(port: int | None) -> None:
         click.echo(f"No process found on port {port}.", err=True)
         raise SystemExit(1)
 
-    previous_boot_id = _read_dashboard_boot_id(port)
-    if previous_boot_id is None:
+    bind_addresses = _listening_bind_addresses(port)
+    probe_hosts = _probe_hosts(bind_addresses)
+    if not probe_hosts:
         click.echo(
-            f"Error: dashboard on port {port} did not provide a boot identity; "
+            f"Error: could not determine the listening address for port {port}; "
             "restart was not requested.",
             err=True,
         )
         raise SystemExit(1)
+
+    identity_host = None
+    previous_boot_id = None
+    for host in probe_hosts:
+        previous_boot_id = _read_dashboard_boot_id(port, host=host)
+        if previous_boot_id is not None:
+            identity_host = host
+            break
+
+    legacy_host = None
+    if identity_host is None:
+        legacy_host = next(
+            (host for host in probe_hosts if _dashboard_responds(port, host=host)), None
+        )
+        if legacy_host is None:
+            click.echo(
+                f"Error: dashboard on port {port} did not respond on its listening address; "
+                "restart was not requested.",
+                err=True,
+            )
+            raise SystemExit(1)
 
     for pid in pids:
         try:
@@ -266,10 +303,21 @@ def restart_cmd(port: int | None) -> None:
             click.echo(f"Error: could not signal dashboard PID {pid}: {exc}", err=True)
             raise SystemExit(1) from exc
 
-    if not _wait_for_dashboard_restart(port, previous_boot_id):
+    if identity_host is not None:
+        if not _wait_for_dashboard_restart(port, previous_boot_id, host=identity_host):
+            click.echo(
+                f"Error: dashboard on port {port} did not restart within "
+                f"{_RESTART_TIMEOUT_SECONDS:g} seconds (boot identity unchanged; "
+                f"a request may have exceeded the {_RESTART_DRAIN_TIMEOUT_SECONDS:g}-second "
+                "drain deadline).",
+                err=True,
+            )
+            raise SystemExit(1)
+    elif not _wait_for_legacy_dashboard_restart(port, host=legacy_host):
         click.echo(
-            f"Error: dashboard on port {port} did not restart within "
-            f"{_RESTART_TIMEOUT_SECONDS:g} seconds (boot identity unchanged).",
+            f"Error: legacy dashboard on port {port} did not close and reopen within "
+            f"{_RESTART_TIMEOUT_SECONDS:g} seconds; its listener never completed a "
+            "verified restart cycle.",
             err=True,
         )
         raise SystemExit(1)
@@ -287,11 +335,53 @@ def _listening_pids(port: int) -> list[str]:
     return sorted(set(pid.strip() for pid in result.stdout.splitlines() if pid.strip()))
 
 
+def _listening_bind_addresses(port: int) -> list[str]:
+    """Return numeric local addresses from lsof's LISTEN-only rows for *port*."""
+    result = subprocess.run(
+        ["lsof", "-nP", "-Fpn", f"-iTCP:{port}", "-sTCP:LISTEN"],
+        capture_output=True,
+        text=True,
+    )
+    addresses: list[str] = []
+    for line in result.stdout.splitlines():
+        if not line.startswith("n"):
+            continue
+        endpoint = line[1:].split("->", 1)[0].removeprefix("TCP ").removesuffix(" (LISTEN)")
+        if endpoint.startswith("[") and "]" in endpoint:
+            address = endpoint[1 : endpoint.index("]")]
+        elif ":" in endpoint:
+            address = endpoint.rsplit(":", 1)[0]
+        else:
+            continue
+        if address not in addresses:
+            addresses.append(address)
+    return addresses
+
+
+def _probe_hosts(bind_addresses: list[str]) -> list[str]:
+    """Use each specific bind address and loopback for wildcard listeners."""
+    hosts: list[str] = []
+    for address in bind_addresses:
+        if address in ("*", "0.0.0.0"):
+            candidates = ["127.0.0.1", "::1"]
+        elif address == "::":
+            candidates = ["::1"]
+        else:
+            candidates = [address]
+        for host in candidates:
+            if host not in hosts:
+                hosts.append(host)
+    return hosts
+
+
 def _read_dashboard_boot_id(
-    port: int, *, timeout: float = _BOOT_ID_REQUEST_TIMEOUT_SECONDS
+    port: int,
+    *,
+    host: str = "127.0.0.1",
+    timeout: float = _BOOT_ID_REQUEST_TIMEOUT_SECONDS,
 ) -> str | None:
     """Read the live dashboard's uncached boot identity, if it is responding."""
-    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+    connection = http.client.HTTPConnection(host, port, timeout=timeout)
     try:
         connection.request("GET", "/api/boot")
         response = connection.getresponse()
@@ -309,15 +399,70 @@ def _read_dashboard_boot_id(
         connection.close()
 
 
-def _wait_for_dashboard_restart(port: int, previous_boot_id: str) -> bool:
-    """Wait for a responding dashboard on *port* to expose a different boot ID."""
+def _dashboard_responds(
+    port: int, *, host: str, timeout: float = _BOOT_ID_REQUEST_TIMEOUT_SECONDS
+) -> bool:
+    """Check a small, static dashboard response without relying on /api/boot."""
+    connection = http.client.HTTPConnection(host, port, timeout=timeout)
+    try:
+        connection.request("GET", "/favicon.ico")
+        response = connection.getresponse()
+        response.read()
+        return response.status == 200
+    except (http.client.HTTPException, OSError):
+        return False
+    finally:
+        connection.close()
+
+
+def _tcp_listener_accepting(
+    port: int, *, host: str, timeout: float = _BOOT_ID_REQUEST_TIMEOUT_SECONDS
+) -> bool | None:
+    """Probe the TCP listener without waiting for an HTTP handler to respond.
+
+    ``False`` means the kernel refused the connection because no listener is
+    bound. A timeout or other network error is inconclusive and returns
+    ``None``; only an actual refusal can prove the old listener went away.
+    """
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError as exc:
+        if exc.errno == errno.ECONNREFUSED:
+            return False
+        return None
+
+
+def _wait_for_dashboard_restart(port: int, previous_boot_id: str, *, host: str) -> bool:
+    """Wait for a responding dashboard on *host*:*port* to expose a different boot ID."""
     deadline = time.monotonic() + _RESTART_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
         remaining = deadline - time.monotonic()
         boot_id = _read_dashboard_boot_id(
-            port, timeout=min(_BOOT_ID_REQUEST_TIMEOUT_SECONDS, max(remaining, 0.001))
+            port,
+            host=host,
+            timeout=min(_BOOT_ID_REQUEST_TIMEOUT_SECONDS, max(remaining, 0.001)),
         )
         if boot_id is not None and boot_id != previous_boot_id:
+            return True
+        time.sleep(min(_RESTART_POLL_INTERVAL_SECONDS, max(deadline - time.monotonic(), 0)))
+    return False
+
+
+def _wait_for_legacy_dashboard_restart(port: int, *, host: str) -> bool:
+    """Require an old dashboard's TCP listener to disappear and accept again."""
+    deadline = time.monotonic() + _RESTART_TIMEOUT_SECONDS
+    saw_listener_down = False
+    while time.monotonic() < deadline:
+        remaining = deadline - time.monotonic()
+        listening = _tcp_listener_accepting(
+            port,
+            host=host,
+            timeout=min(_BOOT_ID_REQUEST_TIMEOUT_SECONDS, max(remaining, 0.001)),
+        )
+        if listening is False:
+            saw_listener_down = True
+        elif listening is True and saw_listener_down:
             return True
         time.sleep(min(_RESTART_POLL_INTERVAL_SECONDS, max(deadline - time.monotonic(), 0)))
     return False
