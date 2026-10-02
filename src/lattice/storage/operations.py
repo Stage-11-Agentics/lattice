@@ -902,7 +902,6 @@ def _reserve_or_reconcile_short_id(
             lattice_dir,
             index,
             include_occurrences=False,
-            persist_cache=True,
         )
     if max_observed is None:
         max_observed = inventory.max_observed

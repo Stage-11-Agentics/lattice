@@ -82,7 +82,6 @@ RAW_WRITERS: dict[str, str] = {
     "lattice.storage.agent_spawn": "the headless agent's prompt and log files (tmp-prompts/)",
     "lattice.storage.locks": "the task gate locks/task_gate.lock (runtime, SPEC §6.1)",
     "lattice.storage.ownership": "the owner lease file hosted/owner.lock (server control)",
-    "lattice.storage.short_ids": "the board-scoped disposable contribution index in the user's private temp cache dir",
     "lattice.update_check": "the update-check cache in the user's cache dir",
 }
 

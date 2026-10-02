@@ -83,6 +83,19 @@ def _regress_ids(root: Path, index: dict) -> None:
     save_id_index(root / LATTICE_DIR, index)
 
 
+def _rewrite_log_with_assignment(lattice_dir: Path, task: dict, short_id: str) -> None:
+    """Replace a task log in place with an earlier assignment and a longer tail."""
+    log = lattice_dir / "events" / f"{task['id']}.jsonl"
+    before = log.stat()
+    assigned = create_event("x_custom", task["id"], "human:test", {"short_id": short_id})
+    replacement = serialize_event(assigned).encode("utf-8")
+    padding = b'{"type":"comment_added","data":{"body":"' + b"x" * before.st_size + b'"}}\n'
+    log.write_bytes(replacement + padding)
+    after = log.stat()
+    assert after.st_ino == before.st_ino
+    assert after.st_size > before.st_size
+
+
 class TestLocalFloor:
     def test_regressed_ids_json_never_reissues_a_logged_id(self, board: Path) -> None:
         tasks = [_create(board, f"Task {n}") for n in range(1, 4)]
@@ -224,139 +237,41 @@ class TestFloorPrimitives:
 
         assert [line for line, _event in short_id_events_in_log(raw)] == [2, 3]
 
+    def test_server_floor_reload_scans_an_in_place_log_rewrite(self, board: Path) -> None:
+        from lattice.server.floors import ShortIdFloors
+
+        tasks = [_create(board, f"Task {n}") for n in range(1, 3)]
+        lattice_dir = board / LATTICE_DIR
+        assert dict(ShortIdFloors.from_board(lattice_dir).max_observed) == {"LAT": 2}
+
+        _rewrite_log_with_assignment(lattice_dir, tasks[0], "LAT-3")
+
+        reloaded = ShortIdFloors.from_board(lattice_dir)
+        assert dict(reloaded.max_observed) == {"LAT": 3}
+
+    def test_allocation_scans_an_in_place_log_rewrite_before_issuing(self, board: Path) -> None:
+        tasks = [_create(board, f"Task {n}") for n in range(1, 3)]
+        lattice_dir = board / LATTICE_DIR
+        _rewrite_log_with_assignment(lattice_dir, tasks[0], "LAT-3")
+
+        short_id, _index = allocate_short_id(lattice_dir, "LAT", "task_01KYYYYYYYYYYYYYYYYYYYYYYY")
+
+        assert short_id == "LAT-4"
+
     def test_append_after_an_incomplete_final_line_rebuilds_that_contribution(
         self, board: Path
     ) -> None:
-        import lattice.storage.short_ids as short_ids
-
         lattice_dir = board / LATTICE_DIR
         log = lattice_dir / "events" / "task_partial.jsonl"
         first = create_event("x_custom", "task_partial", "human:test", {"short_id": "LAT-1"})
         log.write_bytes(serialize_event(first).encode("utf-8").rstrip(b"\n"))
-        cache_path, _board_key = short_ids._persistent_cache_location(lattice_dir)
+        assert max_observed_short_ids(lattice_dir) == {"LAT": 1}
 
-        try:
-            assert max_observed_short_ids(lattice_dir) == {"LAT": 1}
-            assert short_ids.short_id_inventory(
-                lattice_dir, include_occurrences=False, persist_cache=True
-            ).max_observed == {"LAT": 1}
+        second = create_event("x_custom", "task_partial", "human:test", {"short_id": "LAT-2"})
+        with log.open("ab") as handle:
+            handle.write(serialize_event(second).encode("utf-8"))
 
-            second = create_event("x_custom", "task_partial", "human:test", {"short_id": "LAT-2"})
-            with log.open("ab") as handle:
-                handle.write(serialize_event(second).encode("utf-8"))
-
-            assert max_observed_short_ids(lattice_dir) == {}
-            assert (
-                short_ids.short_id_inventory(
-                    lattice_dir, include_occurrences=False, persist_cache=True
-                ).max_observed
-                == {}
-            )
-        finally:
-            short_ids._EVENT_INVENTORY_CACHE.clear()
-            cache_path.unlink(missing_ok=True)
-
-    def test_unchanged_log_contributions_are_cached_and_appends_invalidate_them(
-        self, board: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        import lattice.storage.short_ids as short_ids
-
-        task = _create(board, "Task 1")
-        lattice_dir = board / LATTICE_DIR
-        lifecycle = lattice_dir / "events" / "_lifecycle.jsonl"
-        cache_path, _board_key = short_ids._persistent_cache_location(lattice_dir)
-        original = short_ids.short_id_events_in_log
-        parsed_chunks: list[tuple[int, int]] = []
-
-        def counting(raw: bytes, *, line_number_offset: int = 0) -> list[tuple[int, dict]]:
-            parsed_chunks.append((len(raw), line_number_offset))
-            return original(raw, line_number_offset=line_number_offset)
-
-        monkeypatch.setattr(short_ids, "short_id_events_in_log", counting)
-        index = load_id_index(lattice_dir)
-        try:
-            initial = short_ids.short_id_inventory(
-                lattice_dir, index, include_occurrences=False, persist_cache=True
-            )
-            assert initial.max_observed == {"LAT": 1}
-            assert len(parsed_chunks) == 2  # one task log and the lifecycle projection
-
-            # Clearing the process cache simulates the next `lattice create` CLI.
-            short_ids._EVENT_INVENTORY_CACHE.clear()
-            fresh_process = short_ids.short_id_inventory(
-                lattice_dir, index, include_occurrences=False, persist_cache=True
-            )
-            assert fresh_process.max_observed == {"LAT": 1}
-            assert len(parsed_chunks) == 2
-
-            # The map is read anew on every allocation; it is not part of the
-            # persistent event-log cache.
-            changed_index = {
-                "schema_version": 2,
-                "next_seqs": {"LAT": 2},
-                "map": {"LAT-50": "task_01KZZZZZZZZZZZZZZZZZZZZZZZ"},
-            }
-            with_changed_map = short_ids.short_id_inventory(
-                lattice_dir, changed_index, include_occurrences=False, persist_cache=True
-            )
-            assert with_changed_map.max_observed == {"LAT": 50}
-            assert len(parsed_chunks) == 2
-
-            parsed_chunks.clear()
-            appended = create_event("x_custom", task["id"], "human:test", {"short_id": "LAT-2"})
-            appended_line = serialize_event(appended).encode("utf-8")
-            with lifecycle.open("ab") as handle:
-                handle.write(appended_line)
-            refreshed = short_ids.short_id_inventory(
-                lattice_dir, changed_index, include_occurrences=False, persist_cache=True
-            )
-            assert refreshed.max_observed == {"LAT": 50}
-            assert refreshed.max_in_events == {"LAT": 2}
-            assert "LAT-2" in refreshed.event_short_ids
-            assert parsed_chunks == [(len(appended_line), 1)]
-        finally:
-            short_ids._EVENT_INVENTORY_CACHE.clear()
-            cache_path.unlink(missing_ok=True)
-
-    def test_corrupt_persistent_cache_is_rebuilt_from_authoritative_logs(
-        self, board: Path
-    ) -> None:
-        import lattice.storage.short_ids as short_ids
-
-        task = _create(board, "Task 1")
-        lattice_dir = board / LATTICE_DIR
-        cache_path, _board_key = short_ids._persistent_cache_location(lattice_dir)
-        try:
-            first = short_ids.short_id_inventory(
-                lattice_dir, include_occurrences=False, persist_cache=True
-            )
-            assert first.max_observed == {"LAT": 1}
-
-            cache_path.write_bytes(b"not a sqlite database")
-            short_ids._EVENT_INVENTORY_CACHE.clear()
-            rebuilt = short_ids.short_id_inventory(
-                lattice_dir, include_occurrences=False, persist_cache=True
-            )
-            assert rebuilt.max_observed == {"LAT": 1}
-            assert task["short_id"] in rebuilt.event_short_ids
-            assert cache_path.stat().st_mode & 0o777 == 0o600
-            assert cache_path.parent.stat().st_mode & 0o777 == 0o700
-        finally:
-            short_ids._EVENT_INVENTORY_CACHE.clear()
-            cache_path.unlink(missing_ok=True)
-
-    def test_read_only_inventory_does_not_write_persistent_cache(self, board: Path) -> None:
-        import lattice.storage.short_ids as short_ids
-
-        _create(board, "Task 1")
-        lattice_dir = board / LATTICE_DIR
-        cache_path, _board_key = short_ids._persistent_cache_location(lattice_dir)
-        cache_path.unlink(missing_ok=True)
-
-        inventory = short_ids.short_id_inventory(lattice_dir)
-
-        assert inventory.max_observed == {"LAT": 1}
-        assert not cache_path.exists()
+        assert max_observed_short_ids(lattice_dir) == {}
 
     def test_max_observed_counts_every_direct_data_short_id(self, board: Path) -> None:
         task = _create(board, "Task 1")

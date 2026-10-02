@@ -3,12 +3,7 @@
 from __future__ import annotations
 
 import json
-import hashlib
 import os
-import sqlite3
-import tempfile
-import threading
-from collections import OrderedDict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -97,24 +92,6 @@ class ShortIdInventory:
     occurrences: tuple[ShortIdOccurrence, ...]
 
 
-@dataclass(frozen=True)
-class _EventFileInventory:
-    """Contribution from one event log, cached against its file metadata."""
-
-    signature: tuple[int, int]
-    identity: tuple[int, int]
-    complete_offset: int
-    line_count: int
-    max_observed: Mapping[str, int]
-    event_short_ids: frozenset[str]
-    occurrences: tuple[ShortIdOccurrence, ...] | None
-
-
-_EVENT_INVENTORY_CACHE: OrderedDict[Path, _EventFileInventory] = OrderedDict()
-_EVENT_INVENTORY_CACHE_LOCK = threading.Lock()
-_EVENT_INVENTORY_CACHE_LIMIT = 4096
-
-
 def split_short_id(short_id: object) -> tuple[str, int] | None:
     """Return ``(prefix, seq)`` for a short ID matching the grammar, else ``None``."""
     if not isinstance(short_id, str) or not SHORT_ID_RE.match(short_id):
@@ -194,242 +171,16 @@ def _short_id_event_paths(lattice_dir: Path) -> Iterable[Path]:
         yield lifecycle
 
 
-def _persistent_cache_location(lattice_dir: Path) -> tuple[Path, str]:
-    """Return a user-private, board-scoped cache path and its board identity."""
-    board = str(lattice_dir.resolve())
-    user_id = getattr(os, "getuid", lambda: "user")()
-    directory = Path(tempfile.gettempdir()) / f"lattice-short-id-floor-{user_id}"
-    digest = hashlib.sha256(os.fsencode(board)).hexdigest()
-    return directory / f"{digest}.sqlite3", board
-
-
-def _full_event_inventory(lattice_dir: Path) -> tuple[dict[str, int], frozenset[str]]:
-    """Correctly scan the event sources when the disposable cache is unavailable."""
-    max_observed: dict[str, int] = {}
-    event_short_ids: set[str] = set()
-    for path in _short_id_event_paths(lattice_dir):
-        try:
-            raw = path.read_bytes()
-        except FileNotFoundError:
-            continue
-        for _line, event in short_id_events_in_log(raw):
-            short_id = event["data"]["short_id"]
-            parsed = split_short_id(short_id)
-            if parsed is None:
-                continue
-            event_short_ids.add(short_id)
-            prefix, seq = parsed
-            max_observed[prefix] = max(max_observed.get(prefix, 0), seq)
-    return max_observed, frozenset(event_short_ids)
-
-
-def _open_persistent_inventory_db(cache_path: Path, board: str) -> sqlite3.Connection:
-    """Open a private SQLite cache whose updates are transactionally atomic."""
-    directory = cache_path.parent
-    if directory.is_symlink():
-        raise OSError("short-ID cache directory cannot be a symlink")
-    directory.mkdir(parents=True, mode=0o700, exist_ok=True)
-    os.chmod(directory, 0o700)
-    if cache_path.is_symlink():
-        raise OSError("short-ID cache file cannot be a symlink")
-    if not cache_path.exists():
-        try:
-            fd = os.open(cache_path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
-        except FileExistsError:
-            pass
-        else:
-            os.close(fd)
-    elif not cache_path.is_file():
-        raise OSError("short-ID cache path is not a file")
-    os.chmod(cache_path, 0o600)
-
-    connection = sqlite3.connect(cache_path, timeout=5)
-    try:
-        connection.execute("PRAGMA journal_mode=DELETE")
-        connection.execute("PRAGMA foreign_keys=ON")
-        connection.execute(
-            "CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
-        )
-        connection.execute(
-            """CREATE TABLE IF NOT EXISTS files (
-                path TEXT PRIMARY KEY,
-                size INTEGER NOT NULL,
-                mtime_ns INTEGER NOT NULL,
-                device INTEGER NOT NULL,
-                inode INTEGER NOT NULL,
-                complete_offset INTEGER NOT NULL,
-                line_count INTEGER NOT NULL
-            )"""
-        )
-        connection.execute(
-            """CREATE TABLE IF NOT EXISTS assignments (
-                path TEXT NOT NULL REFERENCES files(path) ON DELETE CASCADE,
-                short_id TEXT NOT NULL,
-                prefix TEXT NOT NULL,
-                seq INTEGER NOT NULL,
-                PRIMARY KEY (path, short_id)
-            )"""
-        )
-        connection.execute(
-            "CREATE INDEX IF NOT EXISTS assignments_by_short_id ON assignments(short_id)"
-        )
-        row = connection.execute("SELECT value FROM metadata WHERE key = 'board'").fetchone()
-        if row is not None and row[0] != board:
-            with connection:
-                connection.execute("DELETE FROM assignments")
-                connection.execute("DELETE FROM files")
-                connection.execute("DELETE FROM metadata")
-        with connection:
-            connection.execute(
-                "INSERT OR REPLACE INTO metadata(key, value) VALUES ('board', ?)", (board,)
-            )
-        return connection
-    except BaseException:
-        connection.close()
-        raise
-
-
-def _discard_persistent_inventory_db(cache_path: Path) -> None:
-    """Remove a broken disposable cache so the next writer can rebuild it."""
-    for suffix in ("", "-journal", "-wal", "-shm"):
-        try:
-            Path(f"{cache_path}{suffix}").unlink(missing_ok=True)
-        except OSError:
-            pass
-
-
-def _persistent_event_inventory(lattice_dir: Path) -> tuple[dict[str, int], frozenset[str]]:
-    """Incrementally index per-file contributions in a user-private SQLite cache."""
-    cache_path, board = _persistent_cache_location(lattice_dir)
-    try:
-        connection = _open_persistent_inventory_db(cache_path, board)
-    except sqlite3.DatabaseError:
-        _discard_persistent_inventory_db(cache_path)
-        try:
-            connection = _open_persistent_inventory_db(cache_path, board)
-        except (OSError, sqlite3.Error):
-            return _full_event_inventory(lattice_dir)
-    except (OSError, sqlite3.Error):
-        return _full_event_inventory(lattice_dir)
-
-    try:
-        old_files = {
-            row[0]: row[1:]
-            for row in connection.execute(
-                "SELECT path, size, mtime_ns, device, inode, complete_offset, line_count FROM files"
-            )
-        }
-        current_paths: set[str] = set()
-        with connection:
-            for path in _short_id_event_paths(lattice_dir):
-                try:
-                    stat = path.stat()
-                except FileNotFoundError:
-                    continue
-                key = str(path.resolve())
-                current_paths.add(key)
-                signature = (stat.st_size, stat.st_mtime_ns, stat.st_dev, stat.st_ino)
-                old = old_files.get(key)
-                if old is not None and tuple(old[:4]) == signature:
-                    continue
-
-                can_read_tail = (
-                    old is not None
-                    and old[2:4] == signature[2:4]
-                    and old[0] < signature[0]
-                    and old[4] == old[0]
-                )
-                if can_read_tail:
-                    base_offset = old[4]
-                    line_offset = old[5]
-                    try:
-                        with path.open("rb") as handle:
-                            handle.seek(base_offset)
-                            raw = handle.read()
-                    except FileNotFoundError:
-                        current_paths.discard(key)
-                        continue
-                else:
-                    base_offset = 0
-                    line_offset = 0
-                    try:
-                        raw = path.read_bytes()
-                    except FileNotFoundError:
-                        current_paths.discard(key)
-                        continue
-                    connection.execute("DELETE FROM assignments WHERE path = ?", (key,))
-
-                new_ids: set[tuple[str, str, int]] = set()
-                for _line, event in short_id_events_in_log(raw, line_number_offset=line_offset):
-                    short_id = event["data"]["short_id"]
-                    parsed = split_short_id(short_id)
-                    if parsed is None:
-                        continue
-                    prefix, seq = parsed
-                    new_ids.add((short_id, prefix, seq))
-                last_newline = raw.rfind(b"\n")
-                complete_offset = (
-                    base_offset + last_newline + 1 if last_newline >= 0 else base_offset
-                )
-                line_count = line_offset + raw.count(b"\n")
-                connection.execute(
-                    """INSERT INTO files(
-                        path, size, mtime_ns, device, inode, complete_offset, line_count
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(path) DO UPDATE SET
-                        size = excluded.size,
-                        mtime_ns = excluded.mtime_ns,
-                        device = excluded.device,
-                        inode = excluded.inode,
-                        complete_offset = excluded.complete_offset,
-                        line_count = excluded.line_count""",
-                    (key, *signature, complete_offset, line_count),
-                )
-                connection.executemany(
-                    "INSERT OR IGNORE INTO assignments(path, short_id, prefix, seq) VALUES (?, ?, ?, ?)",
-                    ((key, short_id, prefix, seq) for short_id, prefix, seq in new_ids),
-                )
-
-            stale_paths = set(old_files).difference(current_paths)
-            if stale_paths:
-                connection.executemany(
-                    "DELETE FROM files WHERE path = ?", ((path,) for path in stale_paths)
-                )
-
-        event_short_ids = frozenset(
-            row[0] for row in connection.execute("SELECT DISTINCT short_id FROM assignments")
-        )
-        max_observed = {
-            row[0]: row[1]
-            for row in connection.execute(
-                "SELECT prefix, MAX(seq) FROM assignments GROUP BY prefix"
-            )
-        }
-        return max_observed, event_short_ids
-    except sqlite3.DatabaseError:
-        connection.close()
-        _discard_persistent_inventory_db(cache_path)
-        return _full_event_inventory(lattice_dir)
-    finally:
-        try:
-            connection.close()
-        except sqlite3.Error:
-            pass
-
-
 def _parse_event_file(
     path: Path,
     raw: bytes,
     *,
     include_occurrences: bool,
-    line_number_offset: int = 0,
-    base_max_observed: Mapping[str, int] | None = None,
-    base_event_short_ids: Iterable[str] = (),
 ) -> tuple[dict[str, int], frozenset[str], tuple[ShortIdOccurrence, ...] | None]:
-    max_observed = dict(base_max_observed or {})
-    event_short_ids = set(base_event_short_ids)
+    max_observed: dict[str, int] = {}
+    event_short_ids: set[str] = set()
     occurrences: list[ShortIdOccurrence] = []
-    for line, event in short_id_events_in_log(raw, line_number_offset=line_number_offset):
+    for line, event in short_id_events_in_log(raw):
         short_id = event["data"]["short_id"]
         parsed = split_short_id(short_id)
         if parsed is None:
@@ -461,127 +212,38 @@ def _parse_event_file(
     )
 
 
-def _event_file_inventory(
-    path: Path,
-    *,
-    include_occurrences: bool,
-    persistent_prior: _EventFileInventory | None = None,
-) -> _EventFileInventory | None:
-    """Read or reuse one log's contribution, including safe append-only tails."""
-    try:
-        stat = path.stat()
-    except FileNotFoundError:
-        return None
-    signature = (stat.st_size, stat.st_mtime_ns)
-    identity = (stat.st_dev, stat.st_ino)
-    key = path.resolve()
-    with _EVENT_INVENTORY_CACHE_LOCK:
-        cached = _EVENT_INVENTORY_CACHE.get(key)
-        if cached is not None and cached.signature == signature and cached.identity == identity:
-            if not include_occurrences or cached.occurrences is not None:
-                _EVENT_INVENTORY_CACHE.move_to_end(key)
-                return cached
-    if (
-        persistent_prior is not None
-        and persistent_prior.signature == signature
-        and persistent_prior.identity == identity
-    ):
-        if not include_occurrences:
-            with _EVENT_INVENTORY_CACHE_LOCK:
-                _EVENT_INVENTORY_CACHE[key] = persistent_prior
-                _EVENT_INVENTORY_CACHE.move_to_end(key)
-            return persistent_prior
-    prior_candidates = [
-        candidate
-        for candidate in (cached, persistent_prior)
-        if candidate is not None
-        and candidate.identity == identity
-        and candidate.signature[0] <= signature[0]
-    ]
-    prior = max(prior_candidates, key=lambda item: item.signature[0], default=None)
-    can_read_tail = (
-        not include_occurrences
-        and prior is not None
-        and prior.signature[0] < signature[0]
-        and prior.complete_offset == prior.signature[0]
-    )
-
-    try:
-        with path.open("rb") as handle:
-            if can_read_tail:
-                handle.seek(prior.complete_offset)
-            raw = handle.read()
-    except FileNotFoundError:
-        return None
-    if can_read_tail:
-        base_max = prior.max_observed
-        base_ids = prior.event_short_ids
-        line_offset = prior.line_count
-        offset = prior.complete_offset
-    else:
-        base_max = None
-        base_ids = ()
-        line_offset = 0
-        offset = 0
-    max_observed, event_short_ids, occurrences = _parse_event_file(
-        path,
-        raw,
-        include_occurrences=include_occurrences,
-        line_number_offset=line_offset,
-        base_max_observed=base_max,
-        base_event_short_ids=base_ids,
-    )
-    last_newline = raw.rfind(b"\n")
-    contribution = _EventFileInventory(
-        signature=signature,
-        identity=identity,
-        complete_offset=offset + last_newline + 1 if last_newline >= 0 else offset,
-        line_count=line_offset + raw.count(b"\n"),
-        max_observed=max_observed,
-        event_short_ids=event_short_ids,
-        occurrences=occurrences,
-    )
-    with _EVENT_INVENTORY_CACHE_LOCK:
-        _EVENT_INVENTORY_CACHE[key] = contribution
-        _EVENT_INVENTORY_CACHE.move_to_end(key)
-        while len(_EVENT_INVENTORY_CACHE) > _EVENT_INVENTORY_CACHE_LIMIT:
-            _EVENT_INVENTORY_CACHE.popitem(last=False)
-    return contribution
-
-
 def short_id_inventory(
     lattice_dir: Path,
     index: Mapping[str, object] | None = None,
     *,
     include_occurrences: bool = True,
-    persist_cache: bool = False,
 ) -> ShortIdInventory:
-    """Collect valid IDs from task logs, lifecycle projections, and ``ids.json``.
+    """Scan task logs, lifecycle projections, and ``ids.json`` for valid IDs.
 
     A same-task ID reservation in the map is an allocation floor, but it is not
     event history. Keeping those two sets separate lets an interrupted create
     retry its own map-only reservation while every historical assignment stays
-    burned.
+    burned. Event logs are read in full on every call; the server holds its
+    loaded floor in project memory and advances it from committed writes.
     """
     max_observed: dict[str, int] = {}
     max_in_events: dict[str, int] = {}
     event_short_ids: set[str] = set()
     occurrences: list[ShortIdOccurrence] = []
-    if persist_cache and not include_occurrences:
-        max_in_events, cached_event_short_ids = _persistent_event_inventory(lattice_dir)
-        event_short_ids.update(cached_event_short_ids)
-        max_observed.update(max_in_events)
-    else:
-        for path in _short_id_event_paths(lattice_dir):
-            contribution = _event_file_inventory(path, include_occurrences=include_occurrences)
-            if contribution is None:
-                continue
-            for prefix, seq in contribution.max_observed.items():
-                max_in_events[prefix] = max(max_in_events.get(prefix, 0), seq)
-                max_observed[prefix] = max(max_observed.get(prefix, 0), seq)
-            event_short_ids.update(contribution.event_short_ids)
-            if include_occurrences and contribution.occurrences is not None:
-                occurrences.extend(contribution.occurrences)
+    for path in _short_id_event_paths(lattice_dir):
+        try:
+            raw = path.read_bytes()
+        except FileNotFoundError:
+            continue
+        file_max, file_ids, file_occurrences = _parse_event_file(
+            path, raw, include_occurrences=include_occurrences
+        )
+        for prefix, seq in file_max.items():
+            max_in_events[prefix] = max(max_in_events.get(prefix, 0), seq)
+            max_observed[prefix] = max(max_observed.get(prefix, 0), seq)
+        event_short_ids.update(file_ids)
+        if file_occurrences is not None:
+            occurrences.extend(file_occurrences)
 
     if index is None:
         index = load_id_index(lattice_dir)
@@ -714,12 +376,7 @@ def allocate_short_id(
             index,
             prefix,
             task_ulid or "",
-            short_id_inventory(
-                lattice_dir,
-                index,
-                include_occurrences=False,
-                persist_cache=True,
-            ).max_observed,
+            short_id_inventory(lattice_dir, index, include_occurrences=False).max_observed,
         )
         if task_ulid is None:
             del index["map"][short_id]
