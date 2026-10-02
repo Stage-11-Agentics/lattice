@@ -317,3 +317,44 @@ def test_an_old_server_is_named_instead_of_a_command_it_refuses(
     assert error["code"] == "ISSUES_DISABLED"
     assert "runs Lattice 0.2.1" in error["message"] and "Upgrade the server" in error["message"]
     assert "--set issues.enabled=true" not in error["message"]
+
+
+# ---------------------------------------------------------------------------
+# Round 2: media against an old server, and a quota refusal's details
+# ---------------------------------------------------------------------------
+
+
+def test_media_against_a_server_without_the_upload_route_says_to_upgrade(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def no_route(*_args: Any, **_kwargs: Any) -> Any:
+        raise http.ServerError(
+            "NOT_FOUND",
+            "no route PUT /v1/projects/demo/issues/media/staging/abc",
+            {},
+            status=404,
+        )
+
+    monkeypatch.setattr(client.http, "request", no_route)
+    remote = http.Remote(alias="team", url="http://127.0.0.1:1", token="t", retry_seconds=1.0)
+    with pytest.raises(OpError) as caught:
+        client._upload(remote, "/v1/projects/demo/issues/media/staging/abc", b"x", offline=False)
+    assert "upgrade the server to 0.2.2" in caught.value.message
+    assert "no route" not in caught.value.message
+
+
+def test_a_media_quota_refusal_keeps_its_limit_and_used_bytes_in_json(
+    hosted_env: HostedEnv, repo: Path, tmp_path: Path
+) -> None:
+    config = json.loads((hosted_env.server_root / "server.json").read_text())
+    config.setdefault("limits", {})["max_issue_media_project_bytes"] = 1000
+    (hosted_env.server_root / "server.json").write_text(json.dumps(config))
+    hosted_env.stop()
+    hosted_env.start()
+    photo = tmp_path / "big.png"
+    photo.write_bytes(png() + b"\x00" * 4000)
+    result = run_cli(repo, "issue", "file", "too big", "--evidence", str(photo), *ACTOR, "--json")
+    assert result.exit_code == 1, result.output
+    error = json.loads(result.stdout)["error"]
+    assert error["code"] == "MEDIA_QUOTA_EXCEEDED"
+    assert error["details"]["limit_bytes"] == 1000 and "used_bytes" in error["details"]

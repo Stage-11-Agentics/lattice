@@ -438,6 +438,18 @@ def _upload(remote: http.Remote, path: str, content: bytes, *, offline: bool) ->
             if first and offline and not exc.sent:
                 raise write_unreachable(remote, detail, _now() - started) from None
         except http.ServerError as exc:
+            if (
+                exc.status == 404
+                and exc.code == "NOT_FOUND"
+                and exc.message.startswith("no route")
+            ):
+                # A server older than the media routes: say what to do, as the
+                # operations do for an issue operation it does not have.
+                raise OpError(
+                    "UNKNOWN_OP",
+                    "this server does not support issue media; upgrade the server to 0.2.2.",
+                    {"path": path},
+                ) from None
             refusal = OpError(exc.code, exc.message, exc.details)
             if not _retryable(exc):
                 raise refusal from None
