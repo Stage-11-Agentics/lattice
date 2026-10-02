@@ -16,7 +16,7 @@ import pytest
 from lattice.boards import resolve_board
 from lattice.core.config import default_config, serialize_config
 from lattice.dashboard.media import RANGE_CAP, UNSATISFIABLE, parse_range
-from lattice.dashboard.server import DashboardBoard, create_server, host_allowed
+from lattice.dashboard.server import DashboardBoard, create_server
 from lattice.ops import Caller
 from lattice.ops.task_attach import encode_payload
 from lattice.storage.fs import atomic_write, ensure_lattice_dirs
@@ -94,8 +94,12 @@ def served(tmp_path: Path):  # noqa: ANN201
     server.server_close()
 
 
-def get_raw(server, path: str, **headers: str) -> tuple[int, list[tuple[str, str]], bytes]:  # noqa: ANN001
-    conn = http.client.HTTPConnection(*server.server_address, timeout=5)
+def get_raw(
+    server, path: str, *, connect_host: str | None = None, **headers: str
+) -> tuple[int, list[tuple[str, str]], bytes]:  # noqa: ANN001
+    conn = http.client.HTTPConnection(
+        connect_host or server.server_address[0], server.server_address[1], timeout=5
+    )
     conn.request("GET", path, headers=headers)
     response = conn.getresponse()
     body = response.read()
@@ -219,31 +223,38 @@ def test_get_rejects_non_loopback_host_for_media_and_task_routes(served) -> None
     assert get(server, "/api/tasks", Host=hostile_host)[0] == 403
 
 
-def test_non_loopback_dashboard_host_allows_configured_or_bound_host(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import lattice.dashboard.server as dashboard_server
+@pytest.mark.parametrize("bad_snapshot", [[], {"media": [1]}, {"media": [{"content_type": []}]}])
+def test_malformed_issue_snapshot_returns_structured_http_error(
+    served, bad_snapshot: object
+) -> None:  # noqa: ANN001
+    server, issue, ld, _config = served
+    atomic_write(ld / "issues" / f"{issue['id']}.json", json.dumps(bad_snapshot) + "\n")
+    (ld / "issues" / "events" / f"{issue['id']}.jsonl").unlink()
 
-    class FakeHTTPServer:
-        def __init__(self, address, handler_class):  # noqa: ANN001
-            self.server_address = ("192.0.2.7", address[1])
-            self.RequestHandlerClass = handler_class
+    status, headers, body = get(server, url(issue, 0))
 
-    monkeypatch.setattr(dashboard_server, "ThreadingHTTPServer", FakeHTTPServer)
-    server = dashboard_server.create_server(tmp_path / ".lattice", "board.example", 8000)
-    assert server._lattice_configured_host == "board.example"
-    assert host_allowed(
-        "127.0.0.1:8000", server.server_address[0], server._lattice_configured_host
-    )
-    assert host_allowed(
-        "BOARD.EXAMPLE:8000", server.server_address[0], server._lattice_configured_host
-    )
-    assert host_allowed(
-        "192.0.2.7:8000", server.server_address[0], server._lattice_configured_host
-    )
-    assert not host_allowed(
-        "attacker.example:8000", server.server_address[0], server._lattice_configured_host
-    )
+    assert status == 500
+    assert headers["content-type"].startswith("application/json")
+    envelope = json.loads(body)
+    assert envelope["ok"] is False
+    assert envelope["error"]["code"] == "INTEGRITY_ERROR"
+
+
+def test_network_bind_allows_lan_host_for_api_and_media_gets(served) -> None:  # noqa: ANN001
+    _local_server, issue, ld, _config = served
+    server = create_server(ld, "0.0.0.0", 0)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01})
+    thread.daemon = True
+    thread.start()
+    try:
+        assert server.server_address[0] == "0.0.0.0"
+        host = f"box.lan:{server.server_address[1]}"
+        for path in ("/api/tasks", url(issue, 0)):
+            status, _headers, _body = get_raw(server, path, connect_host="127.0.0.1", Host=host)
+            assert status == 200
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_ranges_work_without_pread(served, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: ANN001

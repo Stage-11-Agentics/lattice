@@ -400,7 +400,7 @@ class PreparedVideo:
     """What the CLI sends for one video, and what to tell the filer.
 
     ``notes``: ``(reason, detail)`` pairs: ``transcoded`` / ``not_transcoded``
-    (``ffmpeg_failed`` or ``kept_smaller_original``), ``no_frames``
+    (``ffmpeg_failed``), ``remuxed`` (``metadata_stripped``), ``no_frames``
     (``ffmpeg_not_found`` or ``ffmpeg_failed``), ``one_frame`` (``no_duration``).
     """
 
@@ -447,7 +447,7 @@ def prepare_video(src: Path, content: bytes, content_type: str, sha256: str) -> 
                     prepared.content = stripped_data
                     prepared.content_type = stripped_type
                     stored = stripped
-                    prepared.notes.append(("not_transcoded", "kept_smaller_original"))
+                    prepared.notes.append(("remuxed", "metadata_stripped"))
                 else:
                     prepared.converted_from = {
                         "content_type": content_type,

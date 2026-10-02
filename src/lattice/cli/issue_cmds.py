@@ -338,8 +338,10 @@ def _media_notes(
                 )
             elif reason == "converted":
                 lines.append(f"{name}: converted from HEIC to JPEG")
-            elif reason == "not_transcoded" and detail == "kept_smaller_original":
-                lines.append(f"{name}: stored as it is (already H.264, smaller than re-encoded)")
+            elif reason == "remuxed" and detail == "metadata_stripped":
+                lines.append(
+                    f"{name}: remuxed without metadata (already H.264, smaller than re-encoded)"
+                )
             elif reason == "not_transcoded":
                 lines.append(f"{name}: stored as it is; ffmpeg could not transcode it")
             elif reason == "one_frame":

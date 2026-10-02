@@ -274,6 +274,9 @@ def check_media_items(items: tuple[dict, ...]) -> None:
 def _decode_one(item: dict, per_file: int, nothing: str) -> DecodedMedia:
     filename = item["payload"].get("filename")
     name = clean_original_name(filename) if isinstance(filename, str) else "?"
+    source = item.get("converted_from")
+    if source is not None and source["size_bytes"] > per_file:
+        raise _too_large_file(name, source["size_bytes"], per_file, nothing)
     if _b64_size(item["payload"]) > per_file + 2:
         size = _b64_size(item["payload"])
         raise _too_large_file(name, size, per_file, nothing)
@@ -320,9 +323,13 @@ def _decode_one(item: dict, per_file: int, nothing: str) -> DecodedMedia:
 
 
 def _too_large_file(name: str, size: int, limit: int, nothing: str) -> OpError:
+    if size.bit_length() > 1024:
+        message = f"{name} exceeds the per-file limit of {format_size(limit)}. {nothing}"
+    else:
+        message = file_too_large_message(name, size, limit, nothing=nothing)
     return OpError(
         "PAYLOAD_TOO_LARGE",
-        file_too_large_message(name, size, limit, nothing=nothing),
+        message,
         {"reason": MEDIA_FILE_TOO_LARGE, "size_bytes": size, "limit_bytes": limit},
     )
 

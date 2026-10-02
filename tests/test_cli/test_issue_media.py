@@ -21,6 +21,7 @@ from tests.issue_media_helpers import (
     heic,
     jpeg,
     mov,
+    mp4,
     png,
     use_fake_ffmpeg,
     webm,
@@ -225,7 +226,7 @@ def test_fifo_evidence_is_refused_without_blocking(root: Path, tmp_path: Path) -
     assert view["evidence"] == [str(fifo)]
 
 
-def test_oversized_media_is_refused_before_payload_open(
+def test_oversized_unreadable_media_is_refused_before_any_payload_read(
     root: Path, invoke, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config = json.loads((root / ".lattice" / "config.json").read_text())
@@ -233,33 +234,138 @@ def test_oversized_media_is_refused_before_payload_open(
     big = tmp_path / "large.png"
     with big.open("wb") as fh:
         fh.truncate(2 * 1024 * 1024)
+    big.chmod(0)
 
     monkeypatch.setattr(
         "lattice.cli.issue_cmds._classify",
         lambda _arg: ("media", big, "image/png"),
     )
     real_open = open
-    payload_opens: list[Path] = []
+    real_path_open = Path.open
+    real_os_open = os.open
+    payload_reads: list[str] = []
+
+    def is_payload(file) -> bool:  # noqa: ANN001
+        try:
+            return Path(file) == big
+        except (TypeError, ValueError):
+            return False
 
     def observe_open(file, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
-        if Path(file) == big:
-            payload_opens.append(big)
-            raise AssertionError("oversized media payload was opened")
+        if is_payload(file):
+            payload_reads.append("builtins.open")
+            raise AssertionError("oversized media payload was read")
         return real_open(file, *args, **kwargs)
 
+    def observe_path_open(path, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+        if path == big:
+            payload_reads.append("Path.open")
+            raise AssertionError("oversized media payload was read")
+        return real_path_open(path, *args, **kwargs)
+
+    def observe_os_open(file, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+        if is_payload(file):
+            payload_reads.append("os.open")
+            raise AssertionError("oversized media payload was read")
+        return real_os_open(file, *args, **kwargs)
+
     monkeypatch.setattr("builtins.open", observe_open)
-    error = err(
-        invoke,
-        "issue",
-        "file",
-        "large media",
-        "--evidence",
-        str(big),
-        *A,
-    )
+    monkeypatch.setattr(Path, "open", observe_path_open)
+    monkeypatch.setattr(os, "open", observe_os_open)
+    try:
+        error = err(
+            invoke,
+            "issue",
+            "file",
+            "large media",
+            "--evidence",
+            str(big),
+            *A,
+        )
+    finally:
+        big.chmod(0o600)
     assert error["code"] == "PAYLOAD_TOO_LARGE"
-    assert payload_opens == []
+    assert payload_reads == []
     assert not (root / ".lattice" / "issues").exists()
+
+
+def test_accepted_media_read_is_limited_to_limit_plus_one(
+    root: Path, invoke, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = json.loads((root / ".lattice" / "config.json").read_text())
+    _set_config(root, issues={**config["issues"], "max_media_mb": 1})
+    media = tmp_path / "small.png"
+    media.write_bytes(png())
+    limit = 1024 * 1024
+    real_open = open
+    read_sizes: list[int] = []
+
+    class ReadBound:
+        def __init__(self, handle):  # noqa: ANN001
+            self.handle = handle
+
+        def __enter__(self):  # noqa: ANN204
+            self.handle.__enter__()
+            return self
+
+        def __exit__(self, *args):  # noqa: ANN002
+            return self.handle.__exit__(*args)
+
+        def read(self, size: int = -1) -> bytes:
+            read_sizes.append(size)
+            assert 0 <= size <= limit + 1
+            return self.handle.read(size)
+
+        def __getattr__(self, name: str):  # noqa: ANN204
+            return getattr(self.handle, name)
+
+    def observe_open(file, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+        handle = real_open(file, *args, **kwargs)
+        return ReadBound(handle) if Path(file) == media else handle
+
+    monkeypatch.setattr("builtins.open", observe_open)
+    result = invoke("issue", "file", "bounded read", "--evidence", str(media), *A)
+    assert result.exit_code == 0, result.output
+    assert read_sizes and limit + 1 in read_sizes
+    assert all(0 <= size <= limit + 1 for size in read_sizes)
+
+
+def test_remuxed_video_note_says_metadata_was_stripped(
+    root: Path, invoke, files: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lattice.integrations.ffmpeg import PreparedVideo
+
+    def remux(_src, content, content_type, sha256):  # noqa: ANN001
+        return PreparedVideo(
+            content=mp4(),
+            content_type="video/mp4",
+            video={"width": 64, "height": 48, "duration_ms": 1000},
+            converted_from={
+                "content_type": content_type,
+                "size_bytes": len(content),
+                "sha256": sha256,
+            },
+            notes=[("remuxed", "metadata_stripped")],
+        )
+
+    monkeypatch.setattr("lattice.integrations.ffmpeg.prepare_video", remux)
+    result = invoke("issue", "file", "remux note", "--evidence", str(files / "repro.mov"), *A)
+
+    assert result.exit_code == 0, result.output
+    assert "repro.mov: remuxed without metadata" in result.output
+    assert "stored as it is" not in result.output
+
+    json_result = invoke(
+        "issue", "file", "remux note", "--evidence", str(files / "repro.mov"), "--json", *A
+    )
+    assert json_result.exit_code == 0, json_result.output
+    note = json.loads(json_result.stdout)["data"]["notes"][0]
+    assert note == {
+        "evidence": str(files / "repro.mov"),
+        "media_n": 1,
+        "reason": "remuxed",
+        "detail": "metadata_stripped",
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -359,7 +359,11 @@ def issue_seq_reservation(
 
 def current_issue(lattice_dir: Path, issue_id: str) -> dict | None:
     """The issue replayed from its log (the snapshot file may be stale)."""
-    return replay_issue(read_issue_events(lattice_dir, issue_id))
+    path = _events_path(lattice_dir, issue_id)
+    try:
+        return replay_issue(read_issue_events(lattice_dir, issue_id))
+    except (ValueError, KeyError) as exc:
+        raise OpError("INTEGRITY_ERROR", f"Cannot replay {path}: {exc}.") from exc
 
 
 @dataclass

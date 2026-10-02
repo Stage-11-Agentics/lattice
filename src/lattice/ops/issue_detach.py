@@ -42,7 +42,9 @@ def _media_ref(raw: str) -> int | str | None:
     """The ordinal or ``med_`` ID *raw* names, or ``None``."""
     text = raw.strip()
     if text.isascii() and text.isdigit():
-        return int(text)
+        # Media ordinals are small, and int() rejects very long decimals on
+        # recent Python versions. Keep overlong numbers as unmatched strings.
+        return int(text) if len(text) <= 6 else text
     if text.lower().startswith("med_"):
         candidate = "med_" + text[4:].upper()
         if validate_id(candidate, "med"):

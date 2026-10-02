@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import http.client
+import re
 import socket
 import threading
 from pathlib import Path
@@ -310,3 +313,39 @@ class TestGraphETagMismatch:
         assert body["ok"] is True
         assert len(body["data"]["nodes"]) == 3
         assert "ETag" in hdrs
+
+
+def test_graph_etag_hashes_crlf_bearing_event_timestamp(dashboard_server) -> None:  # noqa: ANN001
+    """A task event timestamp cannot split response headers through the graph ETag."""
+    base_url, ld, ids = dashboard_server
+    task_id = ids["backlog"]
+    event_path = ld / "events" / f"{task_id}.jsonl"
+    events = [json.loads(line) for line in event_path.read_text().splitlines()]
+    injected_ts = '9999"\r\nX-Injected: yes\r\n\r\n<script>bad()</script>'
+    events[-1]["ts"] = injected_ts
+    event_path.write_text(
+        "".join(
+            json.dumps(event, sort_keys=True, separators=(",", ":")) + "\n" for event in events
+        ),
+        encoding="utf-8",
+    )
+
+    host = base_url.removeprefix("http://").split(":", 1)[0]
+    port = int(base_url.rsplit(":", 1)[1])
+    conn = http.client.HTTPConnection(host, port, timeout=5)
+    conn.request("GET", "/api/graph")
+    response = conn.getresponse()
+    raw_headers = response.getheaders()
+    raw_body = response.read()
+    conn.close()
+
+    assert response.status == 200
+    header_text = "\n".join(f"{name}: {value}" for name, value in raw_headers).lower()
+    assert "x-injected" not in header_text
+    assert "<script>" not in header_text
+    etag = dict(raw_headers)["ETag"]
+    body = json.loads(raw_body)
+    revision = body["data"]["revision"]
+    digest = hashlib.sha256(revision.encode("utf-8", errors="surrogatepass")).hexdigest()
+    assert re.fullmatch(r'"[0-9a-f]{64}"', etag)
+    assert etag == f'"{digest}"'

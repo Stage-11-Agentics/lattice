@@ -168,16 +168,22 @@ def _valid_media_sha256(value: object) -> bool:
 
 
 def validate_issue_media_hashes(snapshot: Mapping) -> None:
-    """Reject malformed content hashes in persisted media entries."""
+    """Reject malformed persisted issue and media snapshot shapes or hashes."""
+    if not isinstance(snapshot, Mapping):
+        raise ValueError("issue snapshot must be an object")
     entries = snapshot.get("media", [])
     if not isinstance(entries, list):
-        return
+        raise ValueError("issue media must be a list")
     for entry in entries:
         if not isinstance(entry, Mapping):
-            continue
+            raise ValueError("issue media entry must be an object")
+        if "content_type" in entry and not isinstance(entry["content_type"], str):
+            raise ValueError("issue media content_type must be a string")
         if "sha256" in entry and not _valid_media_sha256(entry["sha256"]):
             raise ValueError("issue media sha256 must be 64 lowercase hexadecimal characters")
         source = entry.get("converted_from")
+        if source is not None and not isinstance(source, Mapping):
+            raise ValueError("converted issue media metadata must be an object")
         if isinstance(source, Mapping) and "sha256" in source:
             if not _valid_media_sha256(source["sha256"]):
                 raise ValueError(

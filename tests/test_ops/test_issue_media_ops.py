@@ -149,6 +149,82 @@ def test_attach_dedupes_and_skips_duplicates(board: LocalBoard) -> None:
     assert again.idempotent
 
 
+def test_converted_source_size_at_the_configured_limit_is_accepted(board: LocalBoard) -> None:
+    _set_limits(board, max_media_mb=1)
+    limit = 1024 * 1024
+    source = {"content_type": "image/heic", "size_bytes": limit, "sha256": "a" * 64}
+
+    result = run(
+        board,
+        "issue.file",
+        text="t",
+        media=(item(jpeg(), "small.jpg", converted_from=source),),
+    )
+
+    assert result.value["media"][0]["converted_from"]["size_bytes"] == limit
+    assert len(media_files(board)) == 2  # the issue directory and the staged file
+
+
+@pytest.mark.parametrize(
+    "source_size",
+    [pytest.param(1024 * 1024 + 1, id="over-limit"), pytest.param(10**4000, id="4001-digit")],
+)
+def test_converted_source_size_over_limit_is_rejected_before_staging(
+    board: LocalBoard, source_size: int
+) -> None:
+    _set_limits(board, max_media_mb=1)
+    source = {
+        "content_type": "image/heic",
+        "size_bytes": source_size,
+        "sha256": "a" * 64,
+    }
+
+    exc = refused(
+        board,
+        "issue.file",
+        text="t",
+        media=(item(jpeg(), "small.jpg", converted_from=source),),
+    )
+
+    assert exc.code == "PAYLOAD_TOO_LARGE"
+    assert exc.details["size_bytes"] == source_size
+    assert exc.details["limit_bytes"] == 1024 * 1024
+    assert media_files(board) == []
+    assert not (board.lattice_dir / "issues").exists()
+
+
+@pytest.mark.parametrize("operation", ["issue.attach", "issue.dismiss", "issue.detach"])
+def test_write_ops_report_integrity_error_for_malformed_replayed_hash(
+    board: LocalBoard, operation: str
+) -> None:
+    issue = run(board, "issue.file", text="t", media=(item(png()),)).value
+    log = board.lattice_dir / "issues" / "events" / f"{issue['id']}.jsonl"
+    events = [json.loads(line) for line in log.read_text().splitlines()]
+    media_event = next(event for event in events if event["type"] == "issue_media_added")
+    media_event["data"]["sha256"] = "A" * 64
+    log.write_text(
+        "".join(
+            json.dumps(event, sort_keys=True, separators=(",", ":")) + "\n" for event in events
+        )
+    )
+    snapshot_path = board.lattice_dir / "issues" / f"{issue['id']}.json"
+    before_log = log.read_bytes()
+    before_snapshot = snapshot_path.read_bytes()
+    before_media = media_files(board)
+
+    params = {
+        "issue.attach": {"media": (item(png(2, 2)),)},
+        "issue.dismiss": {"reason": "malformed source log"},
+        "issue.detach": {"media": "1", "reason": "malformed source log"},
+    }
+    exc = refused(board, operation, issue=issue["short_id"], **params[operation])
+
+    assert exc.code == "INTEGRITY_ERROR"
+    assert log.read_bytes() == before_log
+    assert snapshot_path.read_bytes() == before_snapshot
+    assert media_files(board) == before_media
+
+
 def test_attach_event_write_failure_cleans_staged_media(
     board: LocalBoard, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -163,7 +239,8 @@ def test_attach_event_write_failure_cleans_staged_media(
         run(board, "issue.attach", issue=issue["short_id"], media=(item(png()),))
 
     assert media_files(board) == []
-    assert not (board.lattice_dir / "issues" / "media").exists()
+    assert not (board.lattice_dir / "issues" / "media" / issue["id"]).exists()
+    assert (board.lattice_dir / "issues" / "media").is_dir()
     assert current_issue(board.lattice_dir, issue["id"]).get("media", []) == []
 
 
@@ -207,7 +284,7 @@ def test_file_second_item_failure_cleans_everything_without_reserving_number(
         run(board, "issue.file", text="failed", media=(item(png()), item(png(2, 2))))
 
     assert media_files(board) == []
-    assert not (board.lattice_dir / "issues" / "media").exists()
+    assert (board.lattice_dir / "issues" / "media").is_dir()
     assert not (board.lattice_dir / "issues" / "ids.json").exists()
     monkeypatch.undo()
     filed = run(board, "issue.file", text="succeeds").value
@@ -257,7 +334,18 @@ def test_detach_records_removal_before_deleting_bytes(
         board, "issue.detach", issue=name, media=issue["media"][1]["id"].lower(), reason="r"
     )
     assert again.idempotent and not restored.exists()
+    before_issue = current_issue(board.lattice_dir, issue["id"])
+    before_events = log.read_bytes()
+    before_media = media_files(board)
     assert refused(board, "issue.detach", issue=name, media="9", reason="r").code == "NOT_FOUND"
+    assert (
+        refused(board, "issue.detach", issue=name, media="9" * 5000, reason="r").code
+        == "NOT_FOUND"
+    )
+    assert current_issue(board.lattice_dir, issue["id"]) == before_issue
+    assert log.read_bytes() == before_events
+    assert media_files(board) == before_media
+    assert (board.lattice_dir / "issues" / "media").is_dir()
 
 
 def test_detach_event_write_failure_keeps_bytes(
@@ -297,6 +385,19 @@ def test_detach_retries_cleanup_after_unlink_failure(
     monkeypatch.undo()
     retry = run(board, "issue.detach", issue=issue["short_id"], media="1", reason="private")
     assert retry.idempotent and not path.exists()
+
+
+def test_detach_leaves_shared_media_root_for_other_issue_filers(board: LocalBoard) -> None:
+    issue = run(board, "issue.file", text="t", media=(item(png()),)).value
+    media_root = board.lattice_dir / "issues" / "media"
+    assert media_root.is_dir()
+
+    run(board, "issue.detach", issue=issue["short_id"], media="1", reason="r")
+
+    assert media_root.is_dir()
+    assert list(media_root.iterdir()) == []
+    assert (board.lattice_dir / "issues" / "events").is_dir()
+    assert (board.lattice_dir / "issues").is_dir()
 
 
 def test_detach_never_follows_a_planted_symlink(board: LocalBoard, tmp_path: Path) -> None:

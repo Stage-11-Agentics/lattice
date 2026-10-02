@@ -327,7 +327,7 @@ def test_smaller_h264_original_is_remuxed_without_metadata(
     monkeypatch.setattr(ffmpeg, "transcode", larger_transcode)
     content = source.read_bytes()
     prepared = ffmpeg.prepare_video(source, content, "video/mp4", "a" * 64)
-    assert ("not_transcoded", "kept_smaller_original") in prepared.notes
+    assert ("remuxed", "metadata_stripped") in prepared.notes
     assert prepared.converted_from == {
         "content_type": "video/mp4",
         "size_bytes": len(content),

@@ -93,17 +93,18 @@ def origin_allowed(origin: str | None, host_header: str | None, bound_host: str)
     return True
 
 
-def host_allowed(
-    host_header: str | None, bound_host: str, configured_host: str | None = None
-) -> bool:
-    """Whether a request names loopback, the bound host, or configured host."""
+def host_allowed(host_header: str | None, bound_host: str) -> bool:
+    """Apply the dashboard's Host check only to loopback-bound servers.
+
+    A network bind is deliberately reachable through the address or hostname
+    the client uses. For a loopback bind, the Host must still name loopback to
+    block DNS rebinding to the local dashboard.
+    """
+    if not _is_loopback(bound_host):
+        return True
     if not host_header:
         return False
-    host_name = _host_name(host_header)
-    allowed_hosts = {bound_host.strip("[]").casefold()}
-    if configured_host:
-        allowed_hosts.add(configured_host.strip("[]").casefold())
-    return _is_loopback(host_name) or host_name.casefold() in allowed_hosts
+    return _is_loopback(_host_name(host_header))
 
 
 # ---------------------------------------------------------------------------
@@ -162,11 +163,7 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
 
         def do_GET(self) -> None:  # noqa: N802
             path = urlparse(self.path).path.rstrip("/") or "/"
-            if not host_allowed(
-                self.headers.get("Host"),
-                self.server.server_address[0],
-                getattr(self.server, "_lattice_configured_host", None),
-            ):
+            if not host_allowed(self.headers.get("Host"), self.server.server_address[0]):
                 self._send_error(403, "FORBIDDEN", "Non-loopback Host refused")
                 return
             if media.MEDIA_ROUTE.fullmatch(path):
@@ -516,6 +513,4 @@ def create_server(
         root = Path(lattice_dir).parent
         board = DashboardBoard(LocalBoard(root=root, start=root))
     handler_cls = _make_handler_class(board, readonly=readonly)
-    server = ThreadingHTTPServer((host, port), handler_cls)
-    server._lattice_configured_host = host
-    return server
+    return ThreadingHTTPServer((host, port), handler_cls)

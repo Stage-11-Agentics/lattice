@@ -14,6 +14,7 @@ Nothing here writes a board: writes run through ``board.execute``.
 from __future__ import annotations
 
 import json
+import hashlib
 import posixpath
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -110,7 +111,8 @@ def error(status: int, code: str, message: str) -> ApiResponse:
 
 
 def _etagged(data: Any, etag_value: str, if_none_match: str | None, **headers: str) -> ApiResponse:
-    etag = f'"{etag_value}"'  # ETags must be quoted per RFC 7232
+    digest = hashlib.sha256(etag_value.encode("utf-8", errors="surrogatepass")).hexdigest()
+    etag = f'"{digest}"'  # ETags must be quoted per RFC 7232
     if if_none_match and if_none_match == etag:
         return ApiResponse(304, None, {"ETag": etag})
     return ok(data, headers={"ETag": etag, **headers})

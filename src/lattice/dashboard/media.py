@@ -257,7 +257,19 @@ def serve_issue_media(handler: Any, target: Any, path: str) -> None:
     except OpError as exc:
         _refuse(handler, 500, exc.code, exc.message)
         return
-    entry = next((m for m in (snapshot or {}).get("media", []) if m.get("id") == media_id), None)
+    if snapshot is not None and not isinstance(snapshot, dict):
+        _refuse(handler, 500, "INTEGRITY_ERROR", "Issue snapshot must be an object")
+        return
+    entries = (snapshot or {}).get("media", [])
+    if not isinstance(entries, list) or any(not isinstance(m, dict) for m in entries):
+        _refuse(handler, 500, "INTEGRITY_ERROR", "Issue media entries must be objects")
+        return
+    for media_entry in entries:
+        content_type = media_entry.get("content_type")
+        if content_type is not None and not isinstance(content_type, str):
+            _refuse(handler, 500, "INTEGRITY_ERROR", "Issue media content_type must be a string")
+            return
+    entry = next((m for m in entries if m.get("id") == media_id), None)
     if entry is None or entry.get("removed") or entry.get("content_type") not in MEDIA_TYPES:
         _refuse(handler, 404, "NOT_FOUND", "No such media")
         return
