@@ -1,0 +1,252 @@
+/* The issue Inbox (round four, take A), scoped so the other dashboard views keep their layout.
+   Sizes are fixed where the prototype fixes them, so nothing moves while reading. */
+:root{
+  --st-open:#F59E0B;--st-open-bg:rgba(245,158,11,.14);--st-open-border:rgba(245,158,11,.4);
+  --st-linked:#60A5FA;--st-linked-bg:rgba(96,165,250,.14);--st-linked-border:rgba(96,165,250,.4);
+  --st-resolved:#4ADE80;--st-resolved-bg:rgba(74,222,128,.12);--st-resolved-border:rgba(74,222,128,.35);
+  --st-closed:#9A9A9A;--st-closed-bg:rgba(154,154,154,.12);--st-closed-border:rgba(154,154,154,.35);
+}
+
+/* The view fills the window below the nav, however many rows the nav wraps to. */
+body.issue-view-active{display:flex;flex-direction:column;height:100vh;height:100dvh;overflow:hidden}
+body.issue-view-active>.nav{flex:0 0 auto}
+body.issue-view-active #app{flex:1 1 auto;min-height:0;width:100%;max-width:none;padding:0;margin:0}
+
+/* nav: the open count on the Issues tab, and the amber "+ Issue" button */
+.nav-tab .issue-nav-count{display:inline-block;min-width:1.75rem;text-align:center;margin-left:.375rem;padding:0 .3rem;border-radius:10px;font-size:.72rem;font-weight:700;letter-spacing:0;
+  line-height:1.3;vertical-align:.05em;background:var(--st-open-bg);color:var(--st-open);border:1px solid var(--st-open-border);font-variant-numeric:tabular-nums}
+.nav-tab .issue-nav-count:empty{display:none}
+.nav-tab.active .issue-nav-count{background:rgba(0,0,0,.25);color:#fff;border-color:rgba(255,255,255,.35)}
+/* "+ Issue" widens the nav's right group; it wraps rather than run off a narrow window. Same on every view. */
+.nav-right{flex-wrap:wrap;justify-content:flex-end;row-gap:.375rem;min-width:0}
+.nav-right .btn-issue{white-space:nowrap;background:transparent;color:var(--st-open);border-color:var(--st-open-border);font-weight:600}
+.nav-right .btn-issue:hover{background:var(--st-open-bg)}
+/* The Issues tab and "+ Issue" add about 200px to the nav. Below 1600px the nav buys that
+   back so it stays one row wherever it was one row without issues: Settings and Help show
+   only their icons (their titles still name them), the count badge, the tabs and the
+   nav's gaps are a little tighter. Keyed to the window width only, so the nav is
+   identical on every view at any one width. */
+@media(max-width:1599px){
+  .nav{column-gap:.5rem}
+  .nav .nav-right{column-gap:.375rem}
+  .nav-right #filters-clear-btn{margin-left:-.375rem} /* still flush against Filters */
+  .nav .nav-tab{padding-left:.5rem;padding-right:.5rem}
+  .nav-tab .issue-nav-count{min-width:1.35rem;margin-left:.3rem;padding:0 .25rem}
+  .nav-right #settings-btn,.nav-right #help-btn{font-size:0;gap:0;padding-left:.5rem;padding-right:.5rem;align-self:stretch}
+}
+
+.issue-inbox kbd,.issue-closer kbd,.issue-file-overlay kbd{font-family:var(--font-mono);font-size:.75rem;padding:0 .35rem;border:1px solid var(--border);border-bottom-width:2px;border-radius:var(--radius-sm);
+  background:var(--surface-raised);color:var(--text-secondary);min-width:1.4rem;display:inline-block;text-align:center;line-height:1.5}
+.issue-inbox button,.issue-closer button,.issue-dialog button{font-family:inherit}
+.issue-iid,.issue-tid{font-family:var(--font-mono);font-weight:700;white-space:nowrap}
+.issue-iid{color:var(--text-primary)}
+.issue-tid{color:var(--accent-primary)}
+.issue-muted{color:var(--text-muted)}
+.issue-actor{display:inline-block;padding:0 .4rem;border-radius:10px;font-size:.72rem;border:1px solid;white-space:nowrap;cursor:pointer;line-height:1.5}
+.issue-actor-human{background:var(--chip-human-bg);color:var(--chip-human-text);border-color:var(--chip-human-border)}
+.issue-actor-agent{background:var(--chip-agent-bg);color:var(--chip-agent-text);border-color:var(--chip-agent-border)}
+.issue-actor:hover{filter:brightness(1.3);text-decoration:underline}
+.issue-state{display:inline-block;width:6.25rem;text-align:center;padding:.0625rem 0;border-radius:10px;font-size:.72rem;font-weight:700;letter-spacing:.03em;text-transform:uppercase;border:1px solid;flex-shrink:0;line-height:1.5}
+.issue-state-open{color:var(--st-open);background:var(--st-open-bg);border-color:var(--st-open-border)}
+.issue-state-linked{color:var(--st-linked);background:var(--st-linked-bg);border-color:var(--st-linked-border)}
+.issue-state-resolved{color:var(--st-resolved);background:var(--st-resolved-bg);border-color:var(--st-resolved-border)}
+.issue-state-dismissed,.issue-state-duplicate{color:var(--st-closed);background:var(--st-closed-bg);border-color:var(--st-closed-border)}
+.issue-tstatus{display:inline-block;width:7.25rem;text-align:center;padding:.0625rem 0;border-radius:var(--radius-sm);font-size:.72rem;font-weight:600;border:1px solid var(--border);color:var(--text-secondary);background:var(--surface-raised);flex-shrink:0}
+.issue-tstatus-done{color:var(--st-resolved);border-color:var(--st-resolved-border);background:var(--st-resolved-bg)}
+.issue-tstatus-cancelled{color:var(--st-closed);text-decoration:line-through}
+.issue-tstatus-in_progress,.issue-tstatus-review,.issue-tstatus-in_validation,.issue-tstatus-pr_open{color:var(--st-linked);border-color:var(--st-linked-border);background:var(--st-linked-bg)}
+
+.issue-inbox{--issue-queue-width:clamp(25rem,24vw,34rem);--issue-row-height:4.5rem;display:grid;grid-template-columns:var(--issue-queue-width) minmax(0,1fr);height:100%;min-width:0;font-variant-numeric:tabular-nums;letter-spacing:normal}
+
+/* ---------- left: the queue ---------- */
+.issue-q-pane{display:flex;flex-direction:column;min-height:0;min-width:0;border-right:1px solid var(--border);background:var(--surface-card)}
+.issue-q-tabs{display:grid;grid-template-columns:1.45fr 1.3fr 1fr .85fr;gap:.375rem;padding:.75rem;border-bottom:1px solid var(--border-subtle)}
+.issue-q-tab{position:relative;height:3.25rem;text-align:left;padding:.3rem .55rem;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);color:var(--text-secondary);cursor:pointer;font-family:inherit;font-size:.7rem;line-height:1.2;overflow:hidden}
+.issue-q-tab:hover{background:var(--surface-hover)}
+.issue-q-tab .issue-q-label{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.issue-q-tab .issue-q-count{display:block;font-size:1.2rem;font-weight:700;color:var(--text-primary);margin-top:.1rem}
+.issue-q-tab kbd{position:absolute;bottom:.35rem;right:.35rem;font-size:.62rem;min-width:1rem;padding:0 .2rem;line-height:1.3}
+.issue-q-tab[aria-pressed=true]{border-color:var(--accent-primary);background:var(--surface-raised);color:var(--text-primary);box-shadow:inset 0 -2px 0 var(--accent-primary)}
+.issue-q-tab[data-q=open] .issue-q-count{color:var(--st-open)}
+.issue-q-list{flex:1;overflow-y:auto;min-height:0}
+.issue-q-row{display:flex;gap:.625rem;height:var(--issue-row-height);padding:.5rem .75rem;border-bottom:1px solid var(--border-row);border-left:3px solid transparent;cursor:pointer}
+.issue-q-row:hover{background:var(--surface-hover)}
+.issue-q-row.cursor{background:var(--surface-raised);border-left-color:var(--accent-primary)}
+.issue-q-main{flex:1;min-width:0}
+.issue-q-top{display:flex;align-items:center;gap:.5rem;font-size:.78rem;height:1.3rem}
+.issue-q-top .issue-iid{font-size:.82rem;width:5.25rem;flex-shrink:0}
+.issue-q-tag{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-muted)}
+.issue-q-age{flex-shrink:0;width:4.25rem;text-align:right;color:var(--text-muted)}
+.issue-q-text{font-size:.9rem;line-height:1.35;color:var(--text-secondary);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-top:.1rem}
+.issue-q-row.cursor .issue-q-text{color:var(--text-primary)}
+/* The thumbnail slot is reserved on every row, at the right, so text always starts at the same x. */
+.issue-q-thumb{position:relative;flex:0 0 5rem;height:3.25rem;align-self:center;border-radius:var(--radius-sm);overflow:hidden;background:#0A0A0A;border:1px solid var(--border)}
+.issue-q-thumb.none{background:transparent;border-color:transparent}
+.issue-q-thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.issue-q-badge{position:absolute;font-size:.64rem;line-height:1;padding:.15rem .25rem;border-radius:2px;background:rgba(0,0,0,.78);color:#fff;font-weight:700}
+.issue-q-video{left:.2rem;bottom:.2rem}
+.issue-q-count-badge{right:.2rem;top:.2rem;background:var(--accent-primary)}
+.issue-q-comments{flex-shrink:0;width:2.25rem;display:inline-flex;align-items:center;gap:.2rem;justify-content:flex-end;color:var(--text-muted);font-size:.72rem}
+.issue-q-comments svg{width:.8rem;height:.8rem}
+/* person view: a reserved slot above the queue, so entering and leaving it moves nothing */
+.issue-person-head{height:3.9rem;flex-shrink:0;display:flex;flex-direction:column;justify-content:center;gap:.2rem;padding:0 .875rem;border-bottom:1px solid var(--border-subtle);font-size:.78rem;color:var(--text-muted)}
+.issue-person-head.on{background:var(--surface-raised)}
+.issue-person-line{display:flex;align-items:center;gap:.5rem;white-space:nowrap;min-width:0}
+.issue-person-counts{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--text-secondary)}
+.issue-person-machines{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.issue-person-head .btn{width:5.5rem;height:1.5rem;flex-shrink:0;display:inline-flex;gap:.35rem;align-items:center;justify-content:center;padding:.125rem .5rem;font-size:.8rem}
+.issue-q-why{color:var(--text-secondary);font-style:italic}
+.issue-q-actor{cursor:pointer}
+.issue-q-actor:hover{color:var(--text-primary);text-decoration:underline}
+.issue-origin{color:var(--text-muted);font-size:.72rem;white-space:nowrap}
+.issue-q-empty{padding:2.5rem 1.25rem;color:var(--text-muted);font-size:.9rem;line-height:1.6}
+.issue-q-foot{height:2rem;flex-shrink:0;display:flex;align-items:center;gap:.4rem;padding:0 .875rem;border-top:1px solid var(--border-subtle);font-size:.74rem;color:var(--text-muted);white-space:nowrap;overflow:hidden}
+.issue-q-foot .sep{width:.5rem}
+
+/* ---------- right: the issue ---------- */
+.issue-d-pane{display:flex;flex-direction:column;min-width:0;min-height:0}
+.issue-d-head{height:3rem;flex-shrink:0;display:flex;align-items:center;gap:.75rem;padding:0 2rem;border-bottom:1px solid var(--border-subtle);font-size:.8rem;color:var(--text-muted);white-space:nowrap}
+.issue-id-copy{font-family:var(--font-mono);font-size:1.15rem;font-weight:700;color:var(--text-primary);background:transparent;border:1px solid transparent;border-radius:var(--radius-sm);padding:.05rem .35rem;margin-left:-.35rem;cursor:copy;width:6.75rem;height:2rem;text-align:left;flex-shrink:0}
+.issue-id-copy:hover{border-color:var(--border);background:var(--surface-hover)}
+.issue-id-copy:disabled{cursor:default}
+.issue-copy-status{width:4.25rem;height:1.2rem;line-height:1.2rem;flex-shrink:0;font-size:.74rem;color:var(--text-muted)}
+.issue-copy-status.done{color:var(--accent-primary);font-weight:700}
+.issue-d-facts{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.issue-d-facts .issue-actor{font-size:.7rem}
+.issue-d-body{position:relative;flex:1;overflow-y:auto;min-height:0;padding:1.5rem 2rem 3rem}
+.issue-d-title{max-width:62rem;font-size:1.4rem;line-height:1.4;font-weight:700;color:var(--text-primary);word-break:break-word;margin:0 0 .75rem}
+.issue-d-desc{max-width:52rem;font-size:1rem;line-height:1.65;color:var(--text-primary);white-space:pre-wrap;word-break:break-word;margin:0 0 1.5rem}
+.issue-d-desc:empty{display:none}
+.issue-d-desc:empty+.issue-d-media{margin-top:1.25rem}
+/* media inline, in the reading flow; each item at its own size up to the pane width, never upscaled */
+.issue-media-item{margin:0 0 1.75rem}
+.issue-media-frame{display:block;background:#050505;border:1px solid var(--border);border-radius:var(--radius-md);overflow:hidden;max-width:100%}
+.issue-media-frame img,.issue-media-frame video{display:block;width:100%;height:100%;object-fit:contain}
+.issue-media-frame.photo{cursor:zoom-in}
+.issue-media-frame.video{position:relative;cursor:pointer}
+.issue-media-play{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:4.5rem;height:4.5rem;border-radius:50%;border:2px solid rgba(255,255,255,.85);background:rgba(0,0,0,.6);color:#fff;font-size:1.6rem;line-height:1;cursor:pointer;padding:0 0 0 .3rem}
+.issue-media-play:hover{background:var(--accent-primary);border-color:var(--accent-primary)}
+.issue-media-frame.playing .issue-media-play{display:none}
+.issue-af{margin-top:.5rem}
+.issue-af-label{font-size:.74rem;color:var(--text-muted);margin-bottom:.3rem}
+.issue-af-row{display:flex;gap:.375rem;overflow-x:auto}
+.issue-af-frame{display:flex;flex-direction:column;width:7rem;flex:0 0 7rem;padding:0;background:#050505;border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer;overflow:hidden;color:var(--text-muted);font-family:inherit}
+.issue-af-frame img{width:100%;height:4.4rem;object-fit:contain;display:block;opacity:.85}
+.issue-af-frame span{font-size:.7rem;padding:.1rem 0;text-align:center}
+.issue-af-frame:hover img,.issue-af-frame.on img{opacity:1}
+.issue-af-frame.on{border-color:var(--accent-primary)}
+.issue-af-frame.on span{color:var(--text-primary)}
+.issue-af-none{height:5.6rem;display:flex;align-items:center;padding:0 .875rem;border:1px dashed var(--border);border-radius:var(--radius-sm);color:var(--text-muted);font-size:.8rem;width:36.5rem;max-width:100%}
+.issue-outcome{max-width:62rem;margin:0 0 1.25rem}
+.issue-story{display:flex;align-items:center;gap:.75rem;padding:.45rem 0;border-top:1px solid var(--border-row);font-size:.9rem}
+.issue-story:last-of-type{border-bottom:1px solid var(--border-row)}
+.issue-story .issue-tid{width:5.25rem}
+.issue-story-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.issue-story.dead .issue-story-title{color:var(--text-muted)}
+.issue-closure{font-size:.9rem;color:var(--text-secondary)}
+.issue-closure b{color:var(--text-primary)}
+/* comments: who said it is the point, so the author chip leads and the rule on the left says human or agent */
+.issue-comments{max-width:52rem;margin:1.5rem 0 1rem}
+.issue-comments-head{font-size:.74rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);margin:0 0 .5rem}
+.issue-comment{padding:.35rem 0 .35rem .75rem;border-left:2px solid var(--border);margin-bottom:.75rem}
+.issue-comment-human{border-left-color:var(--chip-human-border)}
+.issue-comment-agent{border-left-color:var(--chip-agent-border)}
+.issue-comment-meta{font-size:.75rem;color:var(--text-muted);display:flex;gap:.5rem;align-items:center}
+.issue-comment-body{font-size:.95rem;line-height:1.55;color:var(--text-primary);white-space:pre-wrap;word-break:break-word;margin-top:.2rem}
+.issue-comment-body .mention{color:var(--text-primary);font-weight:700}
+.issue-comment-body .issue-iid,.issue-comment-body .issue-tid{font-weight:600}
+.issue-compose{max-width:52rem;display:flex;gap:.5rem;align-items:flex-start;margin:0 0 1.5rem}
+.issue-compose textarea{flex:1;min-width:0;height:2.1rem;resize:none;background:transparent;color:var(--text-primary);border:1px solid var(--border-subtle);border-radius:var(--radius-sm);padding:.35rem .6rem;font-family:inherit;font-size:.9rem;line-height:1.4;transition:height .12s ease}
+.issue-compose textarea::placeholder{color:var(--text-muted)}
+.issue-compose textarea:focus{outline:none;height:5rem;border-color:var(--accent-primary);background:var(--bg-base)}
+.issue-compose .btn{width:4.5rem;height:2.1rem;color:var(--text-muted)}
+.issue-compose.active .btn{background:var(--accent-primary);border-color:var(--accent-primary);color:#fff;font-weight:600}
+.issue-history-toggle{background:transparent;border:0;padding:0;color:var(--text-muted);font-family:inherit;font-size:.8rem;cursor:pointer}
+.issue-history-toggle:hover{color:var(--text-primary)}
+.issue-history-toggle .caret{display:inline-block;width:1rem}
+.issue-history{max-width:62rem;font-size:.8rem;border-left:2px solid var(--border);padding-left:.875rem;margin:.5rem 0 0 .3rem}
+.issue-history>div{display:flex;gap:.75rem;padding:.2rem 0}
+.issue-history-at{width:5.5rem;flex-shrink:0;color:var(--text-muted)}
+.issue-history-what{flex:1;min-width:0;color:var(--text-secondary);word-break:break-word}
+.issue-quiet{max-width:34rem;margin:5rem auto 0;color:var(--text-muted);font-size:1rem;line-height:1.6;text-align:center}
+.issue-quiet h2{color:var(--st-resolved);font-size:1.4rem;margin:0 0 .5rem}
+
+/* look closer: the current item as large as the window allows */
+.issue-closer{position:fixed;inset:0;z-index:35;background:#000;display:flex;flex-direction:column;letter-spacing:normal}
+.issue-closer-bar{flex-shrink:0;height:3rem;display:flex;align-items:center;gap:1rem;padding:0 1.25rem;background:rgba(23,23,23,.92);border-bottom:1px solid var(--border);font-size:.9rem}
+.issue-closer-bar .issue-iid{font-size:1.05rem;width:6.5rem}
+.issue-closer-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-secondary)}
+.issue-closer-pos{width:5rem;text-align:right;color:var(--text-muted)}
+.issue-closer-keys{color:var(--text-muted);font-size:.8rem;white-space:nowrap}
+.issue-closer-media{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;cursor:zoom-out}
+.issue-closer-media img,.issue-closer-media video{max-width:100%;max-height:100%;width:100%;height:100%;object-fit:contain;display:block}
+.issue-unavailable{max-width:40rem;margin:15vh auto;padding:2rem;text-align:center;color:var(--text-secondary);background:var(--surface-card);border:1px solid var(--border-subtle);border-radius:var(--radius-md)}
+.issue-unavailable h1{color:var(--text-primary);font-size:1.35rem;margin-bottom:.5rem}
+.issue-unavailable p{line-height:1.6}
+
+/* ---------- the quick-file panel ---------- */
+.issue-file-overlay{position:fixed;inset:0;background:var(--overlay-bg);z-index:60;display:flex;align-items:flex-start;justify-content:center;padding-top:8vh}
+.issue-dialog{width:min(48rem,calc(100vw - 2rem));background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);box-shadow:var(--shadow-modal);color:var(--text-primary);letter-spacing:normal}
+.issue-dialog-head{display:flex;align-items:center;justify-content:space-between;padding:.625rem .875rem;border-bottom:1px solid var(--border);font-weight:700}
+.issue-dialog-body{padding:.75rem .875rem .875rem}
+.issue-dialog-foot{display:flex;align-items:center;gap:.5rem;padding:.625rem .875rem;border-top:1px solid var(--border)}
+.issue-dialog .btn-sm{padding:.125rem .5rem;font-size:.8rem}
+.issue-hint{margin-right:auto;font-size:.78rem;color:var(--text-muted)}
+.issue-dialog label{display:block;font-size:.78rem;color:var(--text-secondary);margin:.625rem 0 .25rem}
+.issue-dialog label:first-child{margin-top:0}
+.issue-dialog textarea,.issue-dialog input[type=text]{width:100%;background:var(--bg-base);color:var(--text-primary);border:1px solid var(--border);border-radius:var(--radius-sm);padding:.5rem .625rem;font-family:inherit;font-size:.95rem;line-height:1.45}
+.issue-dialog textarea:focus,.issue-dialog input[type=text]:focus{outline:none;border-color:var(--accent-primary);box-shadow:0 0 0 2px var(--accent-glow,rgba(234,88,12,.18))}
+.issue-dialog textarea{resize:vertical;min-height:4.5rem}
+.issue-dialog #issue-fi-text{font-size:1.05rem}
+.issue-fi-err{min-height:1.25rem;font-size:.8rem;color:#F87171;margin-top:.375rem}
+.issue-fi-media-head{display:flex;align-items:baseline;justify-content:space-between;margin-top:.375rem}
+.issue-fi-media-head label{margin:0 0 .25rem}
+.issue-fi-total{font-size:.75rem;color:var(--text-muted);width:9rem;text-align:right;font-variant-numeric:tabular-nums}
+.issue-tray{height:8.25rem;border:1px dashed var(--border);border-radius:var(--radius-md);background:var(--bg-base);display:flex;gap:.5rem;padding:.5rem;overflow-x:auto;overflow-y:hidden}
+.issue-tray-empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:.3rem;color:var(--text-secondary);font-size:.9rem;text-align:center}
+.issue-tray-empty span{font-size:.75rem;color:var(--text-muted)}
+.issue-tile{position:relative;flex:0 0 9.5rem;height:7.25rem;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);display:flex;flex-direction:column;overflow:hidden}
+.issue-tile-thumb{position:relative;height:4.75rem;background:#0C0C0C;display:flex;align-items:center;justify-content:center;font-size:.72rem;color:var(--text-muted)}
+.issue-tile-thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.issue-tile-thumb .play{position:absolute;left:.3rem;bottom:.25rem;font-size:.65rem;color:#fff;background:rgba(0,0,0,.65);padding:0 .3rem;border-radius:2px}
+.issue-tile-thumb.refused{color:#F87171}
+.issue-tile-meta{flex:1;display:flex;justify-content:space-between;align-items:center;gap:.25rem;padding:0 .4rem;font-size:.72rem;color:var(--text-secondary);min-width:0}
+.issue-tile-kind{white-space:nowrap}
+.issue-tile-size{white-space:nowrap;color:var(--text-muted)}
+.issue-tile-refused{border-color:rgba(220,38,38,.55)}
+.issue-tile-refused .issue-tile-thumb{height:1.6rem}
+.issue-tile-why{font-size:.68rem;line-height:1.3;color:#FCA5A5;white-space:normal}
+.issue-tile-x{position:absolute;top:.2rem;right:.2rem;width:1.35rem;height:1.35rem;border-radius:50%;border:1px solid var(--border);background:rgba(0,0,0,.7);color:#fff;cursor:pointer;font-size:.85rem;line-height:1;padding:0}
+.issue-tile-x:hover{background:var(--color-danger,#DC2626)}
+.issue-fi-media-actions{display:flex;align-items:center;gap:.5rem;margin-top:.5rem;height:2rem}
+.issue-fi-choose,.issue-fi-record{width:9.5rem}
+.issue-fi-go{min-width:7rem}
+.issue-fi-go:disabled{opacity:.4;cursor:not-allowed}
+
+/* dragging files anywhere on the page */
+body.issue-dragging-files::after{content:"";position:fixed;inset:.375rem;border:3px dashed var(--accent-primary);border-radius:var(--radius-lg);pointer-events:none;z-index:70}
+/* top is a fallback: while dragging, the view sets it just below the nav's measured bottom */
+.issue-drop-hint{position:fixed;left:0;right:0;top:3.75rem;z-index:71;display:flex;justify-content:center;pointer-events:none}
+.issue-drop-label{background:var(--accent-primary);color:#fff;font-weight:700;padding:.4rem .9rem;border-radius:var(--radius-md);box-shadow:0 2px 10px rgba(0,0,0,.5);font-size:.95rem}
+
+/* Narrow widths change only the Inbox content area, never the nav.
+   At or below 760px the queue stacks over the issue, with a rule between them. */
+@media(max-width:760px){
+  .issue-inbox{display:flex;flex-direction:column}
+  .issue-q-pane{flex:0 0 auto;height:42%;min-height:13rem;border-right:0;border-bottom:1px solid var(--border)}
+  .issue-d-pane{flex:1;min-height:0}
+  .issue-q-foot{display:none}
+  .issue-d-head{padding:0 1rem}
+  .issue-d-body{padding:1.25rem 1rem 2rem}
+}
+@media(max-width:520px){
+  .issue-q-tabs{gap:.2rem;padding:.4rem}
+  .issue-q-tab{height:2.8rem;padding:.2rem .35rem}
+  .issue-q-thumb{height:2.8rem;flex-basis:4rem}
+  .issue-q-age{width:3.5rem}
+  .issue-d-head{gap:.35rem;padding:0 .5rem;font-size:.7rem}
+  .issue-id-copy{width:5.5rem;font-size:.95rem}
+  .issue-copy-status{width:2.75rem}
+  .issue-d-title{font-size:1.15rem;overflow-wrap:anywhere}
+  .issue-d-desc{overflow-wrap:anywhere}
+}

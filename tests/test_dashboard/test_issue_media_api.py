@@ -134,7 +134,10 @@ def test_media_bytes_headers_and_etag(served) -> None:  # noqa: ANN001
     assert (status, headers["content-type"], body) == (200, "image/jpeg", jpeg())
 
 
-@pytest.mark.parametrize("bad_sha", ['x"\r\nSet-Cookie: injected=1\r\n\r\n<script>', "€"])
+@pytest.mark.parametrize(
+    "bad_sha",
+    ['x"\r\nSet-Cookie: injected=1\r\n\r\n<script>', "€", "a" * 63 + "G\r\nX-Injected: yes"],
+)
 def test_malformed_snapshot_hash_is_omitted_at_header_boundary(
     served, monkeypatch: pytest.MonkeyPatch, bad_sha: str
 ) -> None:  # noqa: ANN001
@@ -249,7 +252,7 @@ def test_network_bind_allows_lan_host_for_api_and_media_gets(served) -> None:  #
     try:
         assert server.server_address[0] == "0.0.0.0"
         host = f"box.lan:{server.server_address[1]}"
-        for path in ("/api/tasks", url(issue, 0)):
+        for path in ("/api/tasks", "/api/issues", url(issue, 0)):
             status, _headers, _body = get_raw(server, path, connect_host="127.0.0.1", Host=host)
             assert status == 200
     finally:
@@ -397,6 +400,24 @@ def test_bound_checkout_is_local_only(served) -> None:  # noqa: ANN001
     try:
         status, _headers, body = get(server, url(issue, 0))
         assert status == 400 and json.loads(body)["error"]["code"] == "LOCAL_ONLY"
+        # The list and detail routes answer the same state, not ISSUES_DISABLED.
+        for path in ("/api/issues", f"/api/issues/{issue['id']}", "/api/issues?by=agent:qa"):
+            status, _headers, body = get(server, path)
+            assert status == 400, path
+            assert json.loads(body)["error"]["code"] == "LOCAL_ONLY", path
+        for path in ("/api/issues", f"/api/issues/{issue['id']}/comment"):
+            conn = http.client.HTTPConnection(*server.server_address, timeout=5)
+            host = f"127.0.0.1:{server.server_address[1]}"
+            conn.request(
+                "POST",
+                path,
+                json.dumps({"title": "x", "body": "x"}),
+                {"Content-Type": "application/json", "Origin": f"http://{host}", "Host": host},
+            )
+            response = conn.getresponse()
+            assert response.status == 400, path
+            assert json.loads(response.read())["error"]["code"] == "LOCAL_ONLY", path
+            conn.close()
     finally:
         server.shutdown()
         server.server_close()

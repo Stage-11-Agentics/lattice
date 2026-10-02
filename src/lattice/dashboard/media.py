@@ -35,7 +35,7 @@ from lattice.storage.issues import issues_dir, read_issue_snapshot
 
 #: The two media routes; the groups are checked below, so a malformed ID is a 400.
 MEDIA_ROUTE = re.compile(r"^/api/issues/([^/]*)/media/([^/]*)(?:/frames/([^/]*))?$")
-_FRAME_RE = re.compile(r"^t[0-9]{4,}\.[0-9]{3}s\.jpg$")
+_FRAME_RE = re.compile(r"t[0-9]{4,}\.[0-9]{3}s\.jpg\Z")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _SAFE_FILENAME_RE = re.compile(r"[A-Za-z0-9._-]+\Z")
 

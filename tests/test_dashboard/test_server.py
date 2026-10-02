@@ -1435,6 +1435,120 @@ class TestPostRouting:
 
 
 class TestPayloadSizeLimit:
+    def test_negative_content_length_is_rejected_before_reading_issue_body(self, dashboard_server):
+        """Negative Content-Length must not reach read(-1) and bypass the cap."""
+        import http.client
+
+        from lattice.core.config import serialize_config
+        from lattice.dashboard import api
+        from lattice.storage.fs import atomic_write
+
+        base_url, ld, _ids = dashboard_server
+        config = api.get_config(ld)
+        config["issues"] = {"enabled": True}
+        atomic_write(ld / "config.json", serialize_config(config))
+        host = base_url.replace("http://", "")
+
+        conn = http.client.HTTPConnection(host)
+        conn.putrequest("POST", "/api/issues")
+        conn.putheader("Content-Type", "application/json")
+        conn.putheader("Origin", base_url)
+        conn.putheader("Content-Length", "-1")
+        conn.endheaders()
+        response = conn.getresponse()
+        assert response.status == 400
+        error = json.loads(response.read())["error"]
+        assert error["code"] == "BAD_REQUEST"
+        assert "Content-Length" in error["message"]
+        conn.close()
+
+    def test_issue_file_has_a_larger_hard_bounded_route_limit(self, dashboard_server):
+        """Quick-file JSON may exceed 1 MiB, while its route still has a hard ceiling."""
+        import http.client
+
+        from lattice.core.config import serialize_config
+        from lattice.dashboard import api
+        from lattice.dashboard.server import (
+            MAX_ISSUE_FILE_BODY_BYTES,
+            MAX_REQUEST_BODY_BYTES,
+            issue_file_body_limit,
+        )
+        from lattice.storage.fs import atomic_write
+
+        base_url, ld, _ids = dashboard_server
+        config = api.get_config(ld)
+        config["issues"] = {"enabled": True}
+        atomic_write(ld / "config.json", serialize_config(config))
+        host = base_url.replace("http://", "")
+
+        # A valid JSON body just over the ordinary cap reaches issue.file.
+        prefix = b'{"title":"x","padding":"'
+        suffix = b'"}'
+        body = prefix + b"x" * (MAX_REQUEST_BODY_BYTES + 1 - len(prefix) - len(suffix)) + suffix
+        conn = http.client.HTTPConnection(host)
+        conn.request(
+            "POST",
+            "/api/issues",
+            body=body,
+            headers={"Content-Type": "application/json", "Origin": base_url},
+        )
+        response = conn.getresponse()
+        assert response.status == 201
+        assert json.loads(response.read())["data"]["title"] == "x"
+        conn.close()
+
+        # The issue route's configured allowance is still capped, and checks
+        # Content-Length before attempting to read the declared body.
+        route_limit = issue_file_body_limit(ld)
+        assert MAX_REQUEST_BODY_BYTES < route_limit <= MAX_ISSUE_FILE_BODY_BYTES
+        conn = http.client.HTTPConnection(host)
+        conn.putrequest("POST", "/api/issues")
+        conn.putheader("Content-Type", "application/json")
+        conn.putheader("Origin", base_url)
+        conn.putheader("Content-Length", str(route_limit + 1))
+        conn.endheaders()
+        response = conn.getresponse()
+        assert response.status == 413
+        error = json.loads(response.read())["error"]
+        assert error["code"] == "PAYLOAD_TOO_LARGE"
+        assert str(route_limit) in error["message"]
+        conn.close()
+
+    def test_stalled_upload_does_not_block_other_requests(self, dashboard_server, monkeypatch):
+        """A client that declares a body and then stalls holds only its own connection."""
+        import http.client
+        import socket
+
+        from lattice.core.config import serialize_config
+        from lattice.dashboard import api, media
+        from lattice.storage.fs import atomic_write
+
+        monkeypatch.setattr(media, "SOCKET_TIMEOUT", 1)
+        base_url, ld, _ids = dashboard_server
+        config = api.get_config(ld)
+        config["issues"] = {"enabled": True}
+        atomic_write(ld / "config.json", serialize_config(config))
+        host, port = base_url.replace("http://", "").split(":")
+
+        stalled = socket.create_connection((host, int(port)))
+        try:
+            stalled.sendall(
+                (
+                    f"POST /api/issues HTTP/1.1\r\nHost: {host}:{port}\r\n"
+                    f"Origin: {base_url}\r\nContent-Type: application/json\r\n"
+                    'Content-Length: 1000\r\n\r\n{"title"'
+                ).encode()
+            )
+            conn = http.client.HTTPConnection(host, int(port), timeout=0.5)
+            conn.request("GET", "/api/tasks")
+            assert conn.getresponse().status == 200
+            conn.close()
+            # The stalled body times out with an error instead of hanging forever.
+            stalled.settimeout(5)
+            assert stalled.recv(64).startswith(b"HTTP/1.0 408")
+        finally:
+            stalled.close()
+
     def test_oversized_content_length_rejected_with_413(self, dashboard_server):
         """A Content-Length exceeding MAX_REQUEST_BODY_BYTES should return 413."""
         import http.client
@@ -1552,3 +1666,245 @@ class TestReadonlyMode:
         status, body = _get(base_url, "/api/config")
         assert status == 200
         assert body["ok"] is True
+
+
+class TestIssueHostGuard:
+    """Issue routes follow the dashboard's one Host rule: loopback hosts only on a
+    loopback bind, any Host on a network bind (as ``origin_allowed`` for POSTs)."""
+
+    @staticmethod
+    def _serve(tmp_path, bind):
+        import threading
+
+        from lattice.core.config import default_config, serialize_config
+        from lattice.dashboard.server import create_server
+        from lattice.storage.fs import atomic_write, ensure_lattice_dirs
+
+        ensure_lattice_dirs(tmp_path)
+        lattice_dir = tmp_path / ".lattice"
+        atomic_write(lattice_dir / "config.json", serialize_config(default_config()))
+        server = create_server(lattice_dir, bind, 0)
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        return server, worker
+
+    @staticmethod
+    def _request(port, method, path, host, body=None):
+        import http.client
+
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        headers = {"Host": host}
+        payload = None
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+            headers["Origin"] = f"http://{host}"
+            payload = json.dumps(body)
+        conn.request(method, path, payload, headers)
+        response = conn.getresponse()
+        status = response.status
+        envelope = json.loads(response.read())
+        conn.close()
+        return status, envelope
+
+    def test_loopback_bind_refuses_hostile_hosts_on_issue_routes(self, tmp_path):
+        server, worker = self._serve(tmp_path, "127.0.0.1")
+        port = server.server_address[1]
+        try:
+            hostile = f"evil.example:{port}"
+            assert self._request(port, "GET", "/api/issues", hostile)[0] == 403
+            assert self._request(port, "POST", "/api/issues", hostile, {"title": "x"})[0] == 403
+            media_path = (
+                "/api/issues/iss_01ARZ3NDEKTSV4RRFFQ69G5FAV/media/med_01ARZ3NDEKTSV4RRFFQ69G5FAV"
+            )
+            assert self._request(port, "GET", media_path, hostile)[0] == 403
+            assert self._request(port, "GET", "/api/issues", f"localhost:{port}")[0] == 409
+            assert self._request(port, "GET", "/api/issues", f"127.0.0.1:{port}")[0] == 409
+        finally:
+            server.shutdown()
+            server.server_close()
+            worker.join(timeout=5)
+
+    def test_network_bind_serves_issue_routes_to_any_host(self, tmp_path):
+        server, worker = self._serve(tmp_path, "0.0.0.0")
+        port = server.server_address[1]
+        try:
+            for host in (f"box.lan:{port}", f"198.51.100.9:{port}", f"0.0.0.0:{port}"):
+                # 409: issues are off on this board, which means the Host was accepted.
+                assert self._request(port, "GET", "/api/issues", host)[0] == 409
+                assert self._request(
+                    port, "GET", "/api/issues/iss_01ARZ3NDEKTSV4RRFFQ69G5FAV", host
+                )[0] in (404, 409)
+        finally:
+            server.shutdown()
+            server.server_close()
+            worker.join(timeout=5)
+
+
+class TestIssueWritesOverHttp:
+    """What the dashboard does to an issue filing or comment between the socket and the board."""
+
+    @staticmethod
+    def _board(tmp_path, *, default_actor=None):
+        import threading
+
+        from lattice.core.config import default_config, serialize_config
+        from lattice.dashboard.server import create_server
+        from lattice.storage.fs import atomic_write, ensure_lattice_dirs
+
+        ensure_lattice_dirs(tmp_path)
+        lattice_dir = tmp_path / ".lattice"
+        config = default_config()
+        config["issues"] = {"enabled": True}
+        if default_actor is None:
+            config.pop("default_actor", None)
+        else:
+            config["default_actor"] = default_actor
+        atomic_write(lattice_dir / "config.json", serialize_config(config))
+        server = create_server(lattice_dir, "127.0.0.1", 0)
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        return server, worker, lattice_dir
+
+    @staticmethod
+    def _post(server, path, body):
+        import http.client
+
+        host = f"127.0.0.1:{server.server_address[1]}"
+        conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=30)
+        conn.request(
+            "POST",
+            path,
+            json.dumps(body),
+            {"Content-Type": "application/json", "Origin": f"http://{host}", "Host": host},
+        )
+        response = conn.getresponse()
+        status, envelope = response.status, json.loads(response.read())
+        conn.close()
+        return status, envelope
+
+    @staticmethod
+    def _stop(server, worker):
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=5)
+
+    def test_a_geo_tagged_video_filed_over_http_is_stored_without_its_location(
+        self, tmp_path, monkeypatch
+    ):
+        """The media step is wired into POST /api/issues: delete the call and this goes red."""
+        import shutil
+        import subprocess
+
+        import pytest
+
+        from lattice.ops.task_attach import encode_payload
+
+        if shutil.which("ffmpeg") is None:
+            pytest.skip("needs ffmpeg")
+        monkeypatch.delenv("LATTICE_FFMPEG")  # the suite turns ffmpeg off; this test needs it
+        src = tmp_path / "geo.mp4"
+        subprocess.run(
+            [
+                "ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc=duration=1:size=64x48:rate=5",
+                "-pix_fmt", "yuv420p", "-metadata", "location=+37.7749-122.4194/",
+                "-metadata", "title=home", str(src),
+            ],
+            check=True,
+        )  # fmt: skip
+        server, worker, lattice_dir = self._board(tmp_path / "board")
+        try:
+            status, envelope = self._post(
+                server,
+                "/api/issues",
+                {
+                    "title": "geo",
+                    "media": [{"payload": encode_payload("geo.mp4", src.read_bytes())}],
+                },
+            )
+            assert status == 201, envelope
+            stored = next((lattice_dir / "issues" / "media").rglob("*.mp4"))
+            tags = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_format", str(stored)],
+                capture_output=True,
+                text=True,
+            ).stdout.lower()
+            assert "location" not in tags and "37.7749" not in tags
+            assert envelope["data"]["media"][0]["frames"], "ffmpeg's frames are stored"
+        finally:
+            self._stop(server, worker)
+
+    def test_a_failing_media_step_answers_an_envelope_not_a_reset(self, tmp_path, monkeypatch):
+        from lattice.dashboard import media_prep
+        from lattice.ops.task_attach import encode_payload
+
+        def boom(items):  # noqa: ANN001, ANN202
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr(media_prep, "prepare_issue_media", boom)
+        server, worker, _ld = self._board(tmp_path)
+        try:
+            status, envelope = self._post(
+                server,
+                "/api/issues",
+                {"title": "x", "media": [{"payload": encode_payload("a.png", b"png")}]},
+            )
+            assert status == 500
+            assert envelope["error"]["code"] == "WRITE_ERROR"
+        finally:
+            self._stop(server, worker)
+
+    def test_a_request_that_will_be_refused_never_reaches_the_media_step(
+        self, tmp_path, monkeypatch
+    ):
+        from lattice.dashboard import media_prep
+        from lattice.ops.task_attach import encode_payload
+
+        calls = []
+        monkeypatch.setattr(
+            media_prep, "prepare_issue_media", lambda items: calls.append(items) or items
+        )
+        server, worker, _ld = self._board(tmp_path)
+        try:
+            media = [{"payload": encode_payload("a.png", b"png")}]
+            assert self._post(server, "/api/issues", {"title": "  ", "media": media})[0] == 400
+            too_many = media * 65
+            assert self._post(server, "/api/issues", {"title": "x", "media": too_many})[0] == 400
+            assert calls == []
+        finally:
+            self._stop(server, worker)
+
+    def test_issues_and_comments_are_written_by_the_configured_human(self, tmp_path):
+        server, worker, _ld = self._board(tmp_path, default_actor="human:atin")
+        try:
+            status, filed = self._post(server, "/api/issues", {"title": "From the dashboard"})
+            assert status == 201 and filed["data"]["filed_by"] == "human:atin"
+            status, commented = self._post(
+                server, f"/api/issues/{filed['data']['id']}/comment", {"body": "A note"}
+            )
+            assert status == 200
+            assert commented["ok"]
+            import http.client
+
+            conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+            conn.request("GET", f"/api/issues/{filed['data']['id']}")
+            detail = json.loads(conn.getresponse().read())["data"]
+            conn.close()
+            assert detail["comments"][0]["author"] == "human:atin"
+            # An actor the page sends is still honoured, as it is for task writes.
+            _status, explicit = self._post(
+                server, "/api/issues", {"title": "By an agent", "actor": "agent:qa"}
+            )
+            assert explicit["data"]["filed_by"] == "agent:qa"
+        finally:
+            self._stop(server, worker)
+
+    def test_without_a_configured_human_the_dashboard_files_as_itself(self, tmp_path):
+        for default_actor in (None, "agent:cairn"):
+            server, worker, _ld = self._board(
+                tmp_path / str(default_actor), default_actor=default_actor
+            )
+            try:
+                _status, filed = self._post(server, "/api/issues", {"title": "x"})
+                assert filed["data"]["filed_by"] == "dashboard:web"
+            finally:
+                self._stop(server, worker)

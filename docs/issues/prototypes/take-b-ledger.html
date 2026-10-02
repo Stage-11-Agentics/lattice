@@ -1,0 +1,922 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Issues (Take B: Ledger)</title>
+<link rel="stylesheet" href="shared/shell.css">
+<style>
+/* Take B: Ledger. Every issue on one line, every issue accounted for. */
+:root{--tb-h:6rem;--nav-h:3rem;color-scheme:dark}
+.page{max-width:var(--page-cap);margin:0;padding:1rem .75rem 3rem}
+/* Fixed columns + a ~110 character text measure + page padding. The source column raises the cap. */
+:root{--page-cap:106rem}
+body.wide{--page-cap:118rem}
+
+/* Header */
+.head{display:flex;align-items:center;gap:1rem;margin-bottom:.875rem}
+.head h1{font-size:1.4rem;margin:0;font-weight:700}
+.head .lede{color:var(--text-secondary);font-size:.9rem}
+.head .right{margin-left:auto;display:flex;gap:.625rem;align-items:center}
+.seg.view button{width:7.5rem}
+#copy-btn{width:9.5rem}
+
+/* Summary strip: five tiles that always add up to the total */
+.strip{display:flex;align-items:stretch;gap:.5rem}
+.tile{width:12rem;flex:0 0 12rem;background:var(--surface-card);border:1px solid var(--border);border-top:3px solid var(--tc);border-radius:var(--radius-md);
+  padding:.5rem .75rem .5625rem;cursor:pointer;text-align:left;color:var(--text-primary);font:inherit;position:relative}
+.tile:hover{background:var(--surface-hover)}
+.tile:focus-visible,.total button:focus-visible{outline:2px solid var(--accent-primary);outline-offset:1px}
+.tile .lab{display:block;font-size:.75rem;text-transform:uppercase;letter-spacing:.07em;font-weight:700;color:var(--tc)}
+.tile .n{display:block;font-size:2.1rem;font-weight:700;line-height:1.15}
+.tile .sub{display:block;font-size:.78rem;color:var(--text-secondary);white-space:nowrap}
+.tile .inview{position:absolute;top:.5rem;right:.625rem;font-size:.68rem;color:var(--text-muted);width:3.75rem;text-align:right}
+.tile.in{background:var(--surface-raised);border-color:var(--tc)}
+.tile.in .inview{color:var(--text-secondary)}
+.tile.out .n{color:var(--text-secondary)}
+.t-open{--tc:var(--st-open)}.t-linked{--tc:var(--st-linked)}.t-resolved{--tc:var(--st-resolved)}.t-dismissed,.t-duplicate{--tc:var(--st-closed)}
+.eq{align-self:center;font-size:1.6rem;color:var(--text-muted);width:1.5rem;text-align:center}
+.total{flex:0 0 14.5rem;width:14.5rem;border:1px solid var(--border);border-radius:var(--radius-md);padding:.5rem .75rem;background:var(--surface)}
+.total .lab{display:block;font-size:.75rem;text-transform:uppercase;letter-spacing:.07em;font-weight:700;color:var(--text-secondary)}
+.total .n{display:block;font-size:2.1rem;font-weight:700;line-height:1.15}
+.total .seg button{width:6.4rem;font-size:.78rem}
+.acct{display:flex;height:6px;width:calc(5 * 12rem + 4 * .5rem);margin:.5rem 0 1rem;border-radius:3px;overflow:hidden;background:var(--border-subtle)}
+.acct span{display:block;height:100%}
+.acct .a-open{background:var(--st-open)}.acct .a-linked{background:var(--st-linked)}.acct .a-resolved{background:var(--st-resolved)}
+.acct .a-dismissed{background:#6B6B6B}.acct .a-duplicate{background:#4A4A4A}
+
+/* Sticky toolbar: filters, then the reserved selection bar */
+.toolbar{position:sticky;top:var(--nav-h);z-index:6;background:var(--bg-base);height:var(--tb-h);padding-top:.625rem;border-bottom:1px solid var(--border)}
+.filters{display:flex;align-items:center;gap:.625rem;height:2.25rem}
+.filters input[type=text],.filters select{height:2.1rem;background:var(--surface);color:var(--text-primary);border:1px solid var(--border);border-radius:var(--radius-sm);
+  font-family:inherit;font-size:.9rem;padding:0 .625rem}
+.filters input[type=text]{width:20rem}
+.filters input[type=text]:focus,.filters select:focus{outline:none;border-color:var(--accent-primary);box-shadow:0 0 0 2px var(--accent-glow)}
+.filters select{width:13.5rem}
+.filters label{font-size:.8rem;color:var(--text-secondary);display:flex;align-items:center;gap:.4rem;white-space:nowrap}
+.filters .count{margin-left:auto;min-width:12rem;text-align:right;color:var(--text-secondary);font-size:.85rem;white-space:nowrap}
+.filters .count b{color:var(--text-primary)}
+.qwrap{position:relative}
+.qwrap kbd{position:absolute;right:.5rem;top:50%;transform:translateY(-50%);pointer-events:none}
+#clear-btn{width:8.5rem}
+.selbar{display:flex;align-items:center;gap:.625rem;height:2.25rem;margin-top:.5rem;font-size:.82rem;color:var(--text-muted);overflow:hidden}
+.selbar.on{color:var(--text-primary)}
+.selbar .n{min-width:7rem;font-weight:700}
+.selbar .ids{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-secondary)}
+.selbar #sel-make{min-width:13.5rem}
+.selbar .keys kbd{margin:0 .15rem}
+.selbar .keys span{margin-right:1rem;white-space:nowrap}
+
+/* The ledger table */
+table.ledger{width:100%;border-collapse:separate;border-spacing:0;table-layout:fixed;font-size:.9rem}
+.ledger thead th{position:sticky;top:calc(var(--nav-h) + var(--tb-h));z-index:5;background:var(--surface);text-align:left;font-weight:600;font-size:.75rem;
+  text-transform:uppercase;letter-spacing:.05em;color:var(--text-secondary);padding:.45rem .4rem;border-bottom:1px solid var(--border);white-space:nowrap;user-select:none}
+.ledger thead th.sortable{cursor:pointer}
+.ledger thead th.sortable:hover{color:var(--text-primary)}
+.ledger thead th.sorted{color:var(--text-primary)}
+.sm{display:inline-block;width:1ch;margin-left:.35rem;color:var(--accent-primary)}
+.ledger td{padding:.4rem .4rem;border-bottom:1px solid var(--border-row);vertical-align:middle;overflow:hidden}
+tr.row{cursor:pointer;scroll-margin-top:calc(var(--nav-h) + var(--tb-h) + 2.5rem);scroll-margin-bottom:3rem}
+tr.row:hover td{background:rgba(255,255,255,.025)}
+tr.row.cursor td{background:var(--surface-hover)}
+tr.row.cursor td:first-child{box-shadow:inset 3px 0 0 var(--accent-primary)}
+tr.row.sel td{background:rgba(234,88,12,.08)}
+tr.row.sel.cursor td{background:rgba(234,88,12,.14)}
+tr.row.expanded td{border-bottom-color:transparent}
+tr.row.kept td{opacity:.62}
+.c-sel{text-align:center}
+.c-sel input{width:1rem;height:1rem;accent-color:var(--accent-primary);cursor:pointer;margin:0}
+.c-sel input:disabled{cursor:not-allowed;opacity:.3}
+.trunc{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* Issue text: up to two lines, clamped on purpose. The full text is in the tooltip and the open row. */
+.clamp2{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;overflow:hidden;white-space:normal;overflow-wrap:anywhere;line-height:1.4}
+.c-text{color:var(--text-primary)}
+.c-at{color:var(--text-secondary);white-space:nowrap}
+.c-src{color:var(--text-secondary);font-size:.8rem}
+.c-by .actor{max-width:100%;overflow:hidden;text-overflow:ellipsis;vertical-align:middle;cursor:pointer}
+.c-by .actor:hover{filter:brightness(1.25)}
+
+/* Story column */
+.sl{display:flex;align-items:center;gap:.5rem;min-height:1.55rem}
+.sl .slot{display:inline-block;width:4.25rem;flex:0 0 4.25rem;white-space:nowrap}
+.c-story .tstatus{width:6.25rem}
+.c-conf .conf{width:auto}
+.sl .gone{color:var(--text-muted);text-decoration:line-through;font-weight:700}
+.sl .slot.see{width:auto;flex:0 0 auto;font-size:.8rem}
+.sl .tid{cursor:pointer}
+.sl .tid:hover{text-decoration:underline}
+.sl.dim{opacity:.4}
+.mk{display:inline-block;width:11rem;flex:0 0 11rem;padding:.0625rem .5rem;border-radius:var(--radius-sm);font-size:.72rem;font-weight:700;
+  letter-spacing:.04em;text-transform:uppercase;white-space:nowrap}
+.mk-need{color:var(--st-open);border:1px dashed var(--st-open-border);background:transparent}
+.mk.mk-short{width:6.25rem;flex:0 0 6.25rem;padding:.0625rem 0;text-align:center;letter-spacing:0}
+.why{color:var(--text-muted);font-style:italic;font-size:.82rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
+.see{color:var(--text-secondary);cursor:pointer}
+.see .iid{color:var(--text-secondary)}
+.see:hover .iid{color:var(--text-primary);text-decoration:underline}
+
+/* By-story block headers */
+tr.blk td{background:var(--surface-card);border-top:1px solid var(--border);border-bottom:1px solid var(--border);padding:.55rem .5rem .5rem}
+tr.blk + tr.row td{border-top:0}
+tr.gap td{height:.625rem;border:0;padding:0;background:transparent}
+.bh{display:flex;align-items:center;gap:.625rem;min-width:0}
+.bh .tid{font-size:1rem}
+.bh .bt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+.bh .bn{color:var(--text-secondary);font-size:.82rem;white-space:nowrap;width:8rem;text-align:right}
+.bh .note{color:var(--text-muted);font-size:.8rem;white-space:nowrap}
+.bh .ba{width:15rem;text-align:right}
+
+/* Empty and good states */
+tr.empty td{padding:2.25rem 1rem;text-align:center;color:var(--text-secondary);font-size:.95rem}
+tr.empty .big{display:block;font-size:1.05rem;color:var(--text-primary);margin-bottom:.625rem}
+tr.empty.good .big{color:var(--st-resolved)}
+
+/* Expanded row: the detail, in place */
+tr.detail td{background:var(--surface);border-bottom:1px solid var(--border);padding:0;cursor:default}
+tr.detail.cursorish td{box-shadow:inset 3px 0 0 var(--accent-primary)}
+.dg{display:grid;grid-template-columns:minmax(0,1fr) minmax(20rem,30rem);gap:1.5rem;padding:.875rem 1rem 1rem 2.75rem}
+.d-actions{display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:.875rem}
+.d-actions .btn{width:10rem}
+.d-text{font-size:1rem;line-height:1.55;white-space:pre-wrap;word-wrap:break-word;max-width:60rem;margin-bottom:.875rem}
+.d-meta{display:grid;grid-template-columns:7.5rem minmax(0,1fr);gap:.3rem .75rem;font-size:.85rem;margin:0 0 .875rem;max-width:60rem}
+.d-meta dt{color:var(--text-muted)}
+.d-meta dd{margin:0;min-width:0}
+.d-meta .lnk{color:var(--text-primary);cursor:pointer;border-bottom:1px dotted var(--text-muted)}
+.d-meta .lnk:hover{color:var(--accent-primary)}
+.d-h{font-size:.72rem;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);margin:0 0 .4rem;font-weight:700}
+.d-stories{border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:.75rem;max-width:60rem}
+.d-story{display:flex;flex-wrap:wrap;align-items:center;gap:.4rem .625rem;padding:.4rem .625rem;border-bottom:1px solid var(--border-row);font-size:.85rem}
+.d-story:last-child{border-bottom:0}
+.d-story .title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.d-story .tid{width:5.25rem;flex:0 0 5.25rem}
+.d-story .unl{width:5.5rem}
+.d-story .ago{white-space:nowrap;width:7.5rem;text-align:right}
+.d-story .pline{flex:0 0 100%;padding-left:5.875rem}
+.d-none{padding:.5rem .625rem;color:var(--st-open);font-size:.85rem}
+.d-none.d-closed{color:var(--text-muted)}
+.proto-ctl{display:inline-flex;align-items:center;gap:.4rem;background:#3B0764;border:1px solid #C084FC;color:#F3E8FF;border-radius:var(--radius-sm);padding:.0625rem .4rem;font-size:.72rem;white-space:nowrap}
+.proto-ctl select{background:#1E0333;color:#F3E8FF;border:1px solid #C084FC;border-radius:2px;font-family:inherit;font-size:.72rem;width:7.5rem}
+.d-close{font-size:.85rem;color:var(--text-secondary);margin-bottom:.625rem;max-width:60rem}
+.d-close b{color:var(--text-primary)}
+.d-hist ol{list-style:none;margin:0;padding:0;border-left:1px solid var(--border);font-size:.82rem}
+.d-hist li{padding:.2rem 0 .45rem .75rem;position:relative}
+.d-hist li::before{content:"";position:absolute;left:-4px;top:.6rem;width:7px;height:7px;border-radius:50%;background:var(--border)}
+.d-hist li.now::before{background:var(--accent-primary)}
+.d-hist .when{color:var(--text-muted);display:block;font-size:.75rem}
+.d-hist .what{color:var(--text-primary)}
+
+#selftest{white-space:pre-wrap;font-size:.8rem;color:var(--text-secondary);border:1px solid #C084FC;padding:.5rem;margin-top:1rem}
+#selftest:empty{display:none}
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="head">
+    <h1>Issues</h1>
+    <span class="lede">Every issue on one line, and what happened to it.</span>
+    <div class="right">
+      <div class="seg view" id="view-seg" role="group" aria-label="View">
+        <button type="button" data-v="issue" aria-pressed="true">By issue</button><button type="button" data-v="story" aria-pressed="false">By story</button>
+      </div>
+      <button type="button" class="btn" id="copy-btn" title="Copy the current view as plain text">Copy as text</button>
+    </div>
+  </div>
+
+  <div class="strip" id="strip"></div>
+  <div class="acct" id="acct" title="Every issue, by state"></div>
+
+  <div class="toolbar">
+    <div class="filters">
+      <span class="qwrap"><input type="text" id="q" placeholder="Filter by ID, text or story ID" autocomplete="off" spellcheck="false"><kbd id="q-kbd">/</kbd></span>
+      <label>Filed by <select id="f-by"></select></label>
+      <label>Source <select id="f-src"></select></label>
+      <button type="button" class="btn" id="clear-btn">Clear filters</button>
+      <span class="count" id="count"></span>
+    </div>
+    <div class="selbar" id="selbar"></div>
+  </div>
+
+  <table class="ledger" id="ledger"></table>
+  <pre id="selftest"></pre>
+</div>
+
+<script src="shared/mock-data.js"></script>
+<script src="shared/store.js"></script>
+<script src="shared/shell.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  var S = window.IssueStore, F = Shell.fmt, esc = F.esc;
+  Shell.mount({ active: "issues", page: "b" });
+
+  var STATES = S.STATES;
+  var TILES = {
+    open: { label: "Open", sub: "needs a story", zero: "nothing needs a story" },
+    linked: { label: "Linked", sub: "story in flight", zero: "no story in flight" },
+    resolved: { label: "Resolved", sub: "every story done", zero: "none resolved yet" },
+    dismissed: { label: "Dismissed", sub: "closed with a reason", zero: "none dismissed" },
+    duplicate: { label: "Duplicate", sub: "same as another issue", zero: "no duplicates" }
+  };
+  var SCOPE_NAME = { unfinished: "not finished", all: "all states" };
+  // Order stories move through, used for sorting and block order.
+  var STATUS_RANK = { backlog: 0, in_planning: 1, planned: 2, blocked: 3, in_progress: 4, review: 5, in_validation: 6, pr_open: 7, done: 8, cancelled: 9 };
+
+  var ui = {
+    view: "issue", scope: "unfinished", q: "", filer: "", source: "",
+    sort: { key: "state", dir: 1 },
+    sel: {},            // selected issue ids
+    cursorKey: null,    // row key under the keyboard cursor
+    expandedKey: null,  // row key whose detail is open
+    kept: {}            // ids acted on since the filter last changed; they stay in view
+  };
+  var visible = [];     // rows currently drawn, in order: {key, issue, block}
+
+  var $ = function (id) { return document.getElementById(id); };
+  var qInput = $("q");
+
+  function showSource() { return window.innerWidth >= 1680; }
+
+  // ---------- filtering and sorting ----------
+  function inScope(st, scope) {
+    if (scope === "all") { return true; }
+    if (scope === "unfinished") { return st === "open" || st === "linked"; }
+    return st === scope;
+  }
+  function storyIds(i) { return i.links.map(function (l) { return l.task_id; }); }
+  function matchesFilters(i) {
+    if (ui.filer && i.filed_by !== ui.filer) { return false; }
+    if (ui.source) {
+      if (ui.source === "(none)") { if (i.source) { return false; } }
+      else if (i.source !== ui.source) { return false; }
+    }
+    if (ui.q) {
+      var hay = (i.id + " " + i.text + " " + storyIds(i).join(" ")).toLowerCase();
+      var words = ui.q.toLowerCase().split(/\s+/).filter(Boolean);
+      for (var n = 0; n < words.length; n++) { if (hay.indexOf(words[n]) < 0) { return false; } }
+    }
+    return true;
+  }
+  function matches(i) { return inScope(S.state(i), ui.scope) && matchesFilters(i); }
+  function shown(i) { return matches(i) || !!ui.kept[i.id]; }
+  function anyFilter() { return !!(ui.q || ui.filer || ui.source); }
+
+  function firstStoryKey(i) {
+    var live = S.liveLinks(i);
+    if (!live.length) { return "~"; }
+    return live.map(function (l) { return l.task_id; }).sort()[0];
+  }
+  var CONF_RANK = { definite: 0, possible: 1 };
+  var SORTERS = {
+    id: function (a, b) { return a.seq - b.seq; },
+    state: function (a, b) { return STATES.indexOf(S.state(a)) - STATES.indexOf(S.state(b)); },
+    text: function (a, b) { return a.text.toLowerCase() < b.text.toLowerCase() ? -1 : a.text.toLowerCase() > b.text.toLowerCase() ? 1 : 0; },
+    story: function (a, b) { var x = firstStoryKey(a), y = firstStoryKey(b); return x < y ? -1 : x > y ? 1 : 0; },
+    conf: function (a, b) { return (a.confidence in CONF_RANK ? CONF_RANK[a.confidence] : 2) - (b.confidence in CONF_RANK ? CONF_RANK[b.confidence] : 2); },
+    source: function (a, b) { var x = a.source || "~", y = b.source || "~"; return x < y ? -1 : x > y ? 1 : 0; },
+    filer: function (a, b) { return a.filed_by < b.filed_by ? -1 : a.filed_by > b.filed_by ? 1 : 0; },
+    filed: function (a, b) { return a.filed_at < b.filed_at ? -1 : a.filed_at > b.filed_at ? 1 : 0; }
+  };
+  var DEFAULT_DIR = { filed: -1 };
+  function sortIssues(list) {
+    var f = SORTERS[ui.sort.key], d = ui.sort.dir;
+    return list.slice().sort(function (a, b) { return (f(a, b) * d) || (b.seq - a.seq); });
+  }
+
+  // ---------- rows for each view ----------
+  function storyBlocks() {
+    var tasks = S.tasks().filter(function (t) { return S.issuesFor(t.id).length; });
+    function group(t) { return t.status === "cancelled" ? 2 : t.status === "done" ? 1 : 0; }
+    tasks.sort(function (a, b) {
+      return (group(a) - group(b)) || (STATUS_RANK[b.status] - STATUS_RANK[a.status]) || (a.id < b.id ? 1 : -1);
+    });
+    var blocks = tasks.map(function (t) {
+      return { key: t.id, task: t, issues: sortIssues(S.issuesFor(t.id).filter(shown)) };
+    });
+    var all = S.issues();
+    blocks.push({ key: "nostory", issues: sortIssues(all.filter(function (i) { return S.state(i) === "open" && shown(i); })) });
+    blocks.push({ key: "closed", issues: sortIssues(all.filter(function (i) { var s = S.state(i); return (s === "dismissed" || s === "duplicate") && shown(i); })) });
+    return blocks;
+  }
+  function computeRows() {
+    var rows = [];
+    if (ui.view === "issue") {
+      sortIssues(S.issues().filter(shown)).forEach(function (i) { rows.push({ key: "i:" + i.id, issue: i, block: null }); });
+      return { rows: rows, blocks: null };
+    }
+    var blocks = storyBlocks();
+    blocks.forEach(function (b) {
+      b.rows = b.issues.map(function (i) { var r = { key: b.key + ":" + i.id, issue: i, block: b.key }; rows.push(r); return r; });
+    });
+    return { rows: rows, blocks: blocks };
+  }
+
+  // ---------- cells ----------
+  function storyCell(i, dimTask) {
+    var st = S.state(i);
+    if (st === "dismissed") {
+      return '<div class="sl"><span class="why" title="' + esc(i.closure.reason) + '">Dismissed: ' + esc(i.closure.reason) + "</span></div>";
+    }
+    if (st === "duplicate") {
+      var t = S.get(i.closure.duplicate_of);
+      return '<div class="sl"><span class="slot see" data-goto="' + esc(t.id) + '" title="Go to ' + esc(t.id) + '">see ' + F.iid(t.id) + "</span>" +
+        F.state(S.state(t)) + "</div>";
+    }
+    if (st === "open" && !i.links.length) { return '<div class="sl"><span class="mk mk-need">needs a story</span></div>'; }
+    return i.links.map(function (l, n) {
+      var t2 = S.task(l.task_id), last = n === i.links.length - 1;
+      var tip = esc(t2.title) + (t2.status === "cancelled" ? " (cancelled, does not count)" : "") + " (click to filter to this story)";
+      var idHtml = '<span class="slot"><span class="tid' + (t2.status === "cancelled" ? " gone" : "") + '" data-story="' + esc(t2.id) + '" title="' + tip + '">' + esc(t2.id) + "</span></span>";
+      var right = st === "open" && last ? '<span class="mk mk-need mk-short" title="Its only story was cancelled">needs a story</span>' : F.tstatus(t2.status);
+      return '<div class="sl' + (l.task_id === dimTask ? " dim" : "") + '">' + idHtml + right + "</div>";
+    }).join("");
+  }
+
+  function colCount() { return showSource() ? 9 : 8; }
+  function syncWide() { document.body.classList.toggle("wide", showSource()); }
+
+  function rowHtml(r) {
+    var i = r.issue, st = S.state(i), closed = st === "dismissed" || st === "duplicate";
+    var cls = "row" + (r.key === ui.cursorKey ? " cursor" : "") + (r.key === ui.expandedKey ? " expanded" : "") +
+      (ui.sel[i.id] ? " sel" : "") + (!matches(i) && ui.kept[i.id] ? " kept" : "");
+    var dimTask = r.block && r.block !== "nostory" && r.block !== "closed" ? r.block : null;
+    return '<tr class="' + cls + '" data-key="' + esc(r.key) + '" data-id="' + esc(i.id) + '"' + (cls.indexOf("kept") >= 0 ? ' title="Outside the current filter. Kept in view after your change."' : "") + ">" +
+      '<td class="c-sel"><input type="checkbox" tabindex="-1" aria-label="Select ' + esc(i.id) + '"' + (ui.sel[i.id] ? " checked" : "") +
+        (closed ? ' disabled title="Closed issues cannot be made into a story. Reopen it first."' : "") + "></td>" +
+      '<td class="c-id">' + F.iid(i.id) + "</td>" +
+      '<td class="c-state">' + F.state(st) + "</td>" +
+      '<td class="c-text" title="' + esc(i.text.length > 400 ? i.text.slice(0, 400) + "..." : i.text) + '"><div class="clamp2">' + esc(i.text.replace(/\s*\n+\s*/g, " ")) + "</div></td>" +
+      '<td class="c-story">' + storyCell(i, dimTask) + "</td>" +
+      '<td class="c-conf">' + F.conf(i.confidence) + "</td>" +
+      (showSource() ? '<td class="c-src"><div class="trunc">' + (i.source ? esc(i.source) : '<span class="muted">—</span>') + "</div></td>" : "") +
+      '<td class="c-by"><span data-filer="' + esc(i.filed_by) + '" title="Show only issues filed by ' + esc(i.filed_by) + '">' + F.actor(i.filed_by) + "</span></td>" +
+      '<td class="c-at" title="' + esc(F.abs(i.filed_at)) + '">' + esc(F.rel(i.filed_at)) + "</td></tr>" +
+      (r.key === ui.expandedKey ? detailHtml(i) : "");
+  }
+
+  function histLine(h) {
+    var d = h.data || {}, what;
+    switch (h.type) {
+      case "issue_filed": what = "Filed"; break;
+      case "issue_linked": what = (d.promoted ? "Made story " : "Linked to ") + F.tid(d.task_id); break;
+      case "issue_unlinked": what = "Unlinked from " + F.tid(d.task_id); break;
+      case "issue_dismissed": what = "Dismissed: " + esc(d.reason); break;
+      case "issue_marked_duplicate": what = "Marked a duplicate of " + F.iid(d.duplicate_of); break;
+      case "issue_reopened": what = "Reopened"; break;
+      default: what = esc(h.type);
+    }
+    return '<li><span class="when">' + esc(F.abs(h.at)) + " (" + esc(F.rel(h.at)) + ")</span><span class=\"what\">" + what + "</span> " +
+      '<span class="muted">by</span> ' + F.actor(h.by) + "</li>";
+  }
+
+  function detailHtml(i) {
+    var st = S.state(i), closed = st === "dismissed" || st === "duplicate";
+    function btn(act, label, enabled, why, extra) {
+      return '<button type="button" class="btn' + (extra || "") + '" data-act="' + act + '"' + (enabled ? "" : ' disabled title="' + esc(why) + '"') + ">" + label + "</button>";
+    }
+    var closedWhy = "Closed. Reopen it first.";
+    var actions = '<div class="d-actions">' +
+      btn("promote", "Make a story", !closed, closedWhy, " btn-primary") +
+      btn("link", "Link to a story", !closed, closedWhy) +
+      btn("dismiss", "Dismiss", !closed, closedWhy, " btn-danger") +
+      btn("duplicate", "Mark duplicate", !closed, closedWhy) +
+      btn("reopen", "Reopen", closed, "Only a dismissed or duplicate issue can be reopened.") + "</div>";
+
+    var stories = '<div class="d-h">Stories</div><div class="d-stories">' + (i.links.length ? i.links.map(function (l) {
+      var t = S.task(l.task_id);
+      var opts = S.TASK_STATUSES.map(function (s) { return '<option value="' + s + '"' + (s === t.status ? " selected" : "") + ">" + s.replace(/_/g, " ") + "</option>"; }).join("");
+      return '<div class="d-story">' + F.tid(t.id) + F.tstatus(t.status) + '<span class="title" title="' + esc(t.title) + '">' + esc(t.title) + "</span>" +
+        '<span class="muted ago" title="' + esc(F.abs(l.linked_at)) + '">linked ' + esc(F.rel(l.linked_at)) + "</span>" +
+        '<button type="button" class="btn btn-sm unl" data-unlink="' + esc(t.id) + '">Unlink</button>' +
+        '<div class="pline"><label class="proto-ctl" title="Prototype only. Not part of the design.">prototype only: move this story to <select data-move="' + esc(t.id) + '">' + opts + "</select></label></div></div>";
+    }).join("") : "") + (st === "open" ? '<div class="d-none">' + (i.links.length ? "No live story. A cancelled story does not count, so this issue needs a story again." : "No story yet. Make one, or link a story that already exists.") + "</div>" : "") +
+      (closed && !i.links.length ? '<div class="d-none d-closed">No story. Closed without one.</div>' : "") + "</div>";
+
+    var close = "";
+    if (i.closure) {
+      close = '<div class="d-close">' + (i.closure.kind === "dismissed" ?
+        "<b>Dismissed</b> by " + F.actor(i.closure.by) + " " + esc(F.rel(i.closure.at)) + ": " + esc(i.closure.reason) :
+        "<b>Duplicate</b> of " + '<span class="see" data-goto="' + esc(i.closure.duplicate_of) + '">' + F.iid(i.closure.duplicate_of) + "</span> " +
+        F.state(S.state(S.get(i.closure.duplicate_of))) + ", marked by " + F.actor(i.closure.by) + " " + esc(F.rel(i.closure.at))) + "</div>";
+    }
+    var dups = S.duplicatesOf(i.id);
+    if (dups.length) {
+      close += '<div class="d-close">Duplicates of this issue: ' + dups.map(function (d) {
+        return '<span class="see" data-goto="' + esc(d.id) + '">' + F.iid(d.id) + "</span>";
+      }).join(", ") + "</div>";
+    }
+
+    var meta = '<dl class="d-meta">' +
+      "<dt>Filed</dt><dd>" + esc(F.abs(i.filed_at)) + " (" + esc(F.rel(i.filed_at)) + ") by " + F.actor(i.filed_by) + "</dd>" +
+      "<dt>Confidence</dt><dd>" + F.conf(i.confidence) + "</dd>" +
+      "<dt>Source</dt><dd>" + (i.source ? '<span class="lnk" data-src="' + esc(i.source) + '" title="Show only issues from this source">' + esc(i.source) + "</span>" : '<span class="muted">none given</span>') + "</dd>" +
+      "<dt>Evidence</dt><dd>" + (i.evidence.length ? i.evidence.map(function (e) { return '<div class="evidence">' + esc(e) + "</div>"; }).join("") : '<span class="muted">none attached</span>') + "</dd></dl>";
+
+    var hist = S.history(i.id);
+    var histHtml = '<div class="d-hist"><div class="d-h">History</div><ol>' + hist.map(histLine).join("") +
+      '<li class="now"><span class="when">now</span><span class="what">' + F.state(st) + "</span></li></ol></div>";
+
+    return '<tr class="detail"><td colspan="' + colCount() + '"><div class="dg"><div class="d-main">' + actions +
+      '<div class="d-text">' + esc(i.text) + "</div>" + meta + stories + close + "</div>" + histHtml + "</div></td></tr>";
+  }
+
+  function blockHead(b) {
+    var n = b.issues.length, cnt = n + (n === 1 ? " issue" : " issues");
+    var inner;
+    if (b.key === "nostory") {
+      inner = '<span class="mk mk-need">needs a story</span><span class="bt">No story yet</span><span class="bn">' + cnt + '</span><span class="ba"></span>';
+    } else if (b.key === "closed") {
+      inner = '<span class="state state-dismissed">closed</span><span class="bt">Closed without a story</span><span class="bn">' + cnt + '</span><span class="ba"></span>';
+    } else {
+      var t = b.task;
+      inner = F.tid(t.id) + F.tstatus(t.status) + '<span class="bt" title="' + esc(t.title) + '">' + esc(t.title) + "</span>" +
+        (t.status === "cancelled" ? '<span class="note">cancelled, so it does not count</span>' : "") +
+        '<span class="bn">' + cnt + '</span><span class="ba">' + F.actor(t.assigned) + "</span>";
+    }
+    return '<tr class="blk" data-block="' + esc(b.key) + '"><td colspan="' + colCount() + '"><div class="bh">' + inner + "</div></td></tr>";
+  }
+
+  function emptyRow() {
+    var c = S.counts(), parts = [];
+    if (!anyFilter()) {
+      if (ui.scope === "open") {
+        return '<tr class="empty good"><td colspan="' + colCount() + '"><span class="big">Nothing needs a story.</span>' +
+          "Every issue has a story or has been closed. " + '<button type="button" class="btn btn-sm" data-empty="all">Show all ' + c.total + "</button></td></tr>";
+      }
+      if (ui.scope === "unfinished") {
+        return '<tr class="empty good"><td colspan="' + colCount() + '"><span class="big">Everything reported is finished.</span>' +
+          "Every story is done or every issue is closed. " + '<button type="button" class="btn btn-sm" data-empty="all">Show all ' + c.total + "</button></td></tr>";
+      }
+      return '<tr class="empty"><td colspan="' + colCount() + '"><span class="big">No ' + esc(ui.scope) + " issues.</span>" +
+        '<button type="button" class="btn btn-sm" data-empty="all">Show all ' + c.total + "</button></td></tr>";
+    }
+    if (ui.q) { parts.push("text “" + esc(ui.q) + "”"); }
+    if (ui.filer) { parts.push("filed by " + esc(ui.filer)); }
+    if (ui.source) { parts.push("source " + esc(ui.source === "(none)" ? "none" : ui.source)); }
+    return '<tr class="empty"><td colspan="' + colCount() + '"><span class="big">No issue matches ' + parts.join(", ") + " in " + esc(SCOPE_NAME[ui.scope] || ui.scope) + ".</span>" +
+      (ui.scope !== "all" ? '<button type="button" class="btn btn-sm" data-empty="all">Search all states</button> ' : "") +
+      '<button type="button" class="btn btn-sm" data-empty="clear">Clear filters</button></td></tr>';
+  }
+
+  // ---------- render ----------
+  function renderStrip() {
+    var c = S.counts();
+    $("strip").innerHTML = STATES.map(function (s) {
+      var inView = inScope(s, ui.scope), only = ui.scope === s;
+      return '<button type="button" class="tile t-' + s + (inView ? " in" : " out") + '" data-tile="' + s + '" title="' +
+        (only ? "Showing only " + s + ". Click to show all." : "Show only " + s) + '" aria-pressed="' + only + '">' +
+        '<span class="lab">' + TILES[s].label + '</span><span class="inview">' + (only ? "only" : inView ? "in view" : "") + "</span>" +
+        '<span class="n">' + c[s] + '</span><span class="sub">' + (c[s] ? TILES[s].sub : TILES[s].zero) + "</span></button>";
+    }).join("") + '<span class="eq">=</span><div class="total"><span class="lab">Total</span><span class="n">' + c.total + "</span>" +
+      '<div class="seg" role="group" aria-label="Scope"><button type="button" data-scope="unfinished" aria-pressed="' + (ui.scope === "unfinished") + '" title="Open and linked">Not finished</button>' +
+      '<button type="button" data-scope="all" aria-pressed="' + (ui.scope === "all") + '">All</button></div></div>';
+    $("acct").innerHTML = STATES.map(function (s) {
+      return '<span class="a-' + s + '" style="width:' + (c.total ? (100 * c[s] / c.total) : 0) + '%" title="' + s + ": " + c[s] + '"></span>';
+    }).join("");
+  }
+
+  function renderSelects() {
+    var all = S.issues(), by = {}, src = {}, none = 0;
+    all.forEach(function (i) {
+      by[i.filed_by] = (by[i.filed_by] || 0) + 1;
+      if (i.source) { src[i.source] = (src[i.source] || 0) + 1; } else { none++; }
+    });
+    $("f-by").innerHTML = '<option value="">anyone (' + all.length + ")</option>" + Object.keys(by).sort().map(function (k) {
+      return '<option value="' + esc(k) + '"' + (k === ui.filer ? " selected" : "") + ">" + esc(k) + " (" + by[k] + ")</option>";
+    }).join("");
+    $("f-src").innerHTML = '<option value="">any source (' + all.length + ")</option>" + Object.keys(src).sort().reverse().map(function (k) {
+      return '<option value="' + esc(k) + '"' + (k === ui.source ? " selected" : "") + ">" + esc(k) + " (" + src[k] + ")</option>";
+    }).join("") + '<option value="(none)"' + (ui.source === "(none)" ? " selected" : "") + ">no source (" + none + ")</option>";
+  }
+
+  function renderSelbar() {
+    var ids = Object.keys(ui.sel).sort(function (a, b) { return S.get(a).seq - S.get(b).seq; });
+    var bar = $("selbar");
+    if (!ids.length) {
+      bar.className = "selbar";
+      bar.innerHTML = '<span class="keys"><span><kbd>/</kbd> filter</span><span><kbd>j</kbd><kbd>k</kbd> or <kbd>↑</kbd><kbd>↓</kbd> move</span>' +
+        '<span><kbd>Enter</kbd> open</span><span><kbd>x</kbd> select</span><span><kbd>Esc</kbd> clear</span><span><kbd>i</kbd> file an issue</span></span>' +
+        '<span class="ids">Select rows to make one story from several.</span>';
+      return;
+    }
+    var hidden = ids.filter(function (id) { return !shown(S.get(id)); }).length;
+    bar.className = "selbar on";
+    bar.innerHTML = '<span class="n">' + ids.length + " selected</span>" +
+      '<span class="ids">' + ids.map(esc).join(", ") + (hidden ? " (" + hidden + " hidden by the filter)" : "") + "</span>" +
+      '<button type="button" class="btn btn-primary btn-sm" id="sel-make">' + (ids.length === 1 ? "Make a story" : "Make one story from " + ids.length) + "</button>" +
+      '<button type="button" class="btn btn-sm" id="sel-clear">Clear selection</button>';
+  }
+
+  function renderCount(n) {
+    var c = S.counts(), keptN = visibleIds().filter(function (id) { return !matches(S.get(id)); }).length;
+    $("count").innerHTML = "<b>" + (n - keptN) + "</b> of " + c.total + " shown" + (keptN ? ", +" + keptN + " kept" : "");
+    $("clear-btn").disabled = !anyFilter();
+  }
+  function visibleIds() {
+    var seen = {}, out = [];
+    visible.forEach(function (r) { if (!seen[r.issue.id]) { seen[r.issue.id] = 1; out.push(r.issue.id); } });
+    return out;
+  }
+
+  function header() {
+    var cols = [["", "sel", "1.75rem"], ["ID", "id", "4.75rem"], ["State", "state", "7.1rem"], ["Issue", "text", ""], ["Story", "story", "12rem"],
+      ["Conf.", "conf", "4.75rem"]];
+    if (showSource()) { cols.push(["Source", "source", "12rem"]); }
+    cols.push(["Filed by", "filer", "8.5rem"], ["Filed", "filed", "5rem"]);
+    return "<colgroup>" + cols.map(function (c) { return "<col" + (c[2] ? ' style="width:' + c[2] + '"' : "") + ">"; }).join("") + "</colgroup>" +
+      "<thead><tr>" + cols.map(function (c) {
+        if (c[1] === "sel") { return "<th></th>"; }
+        var on = ui.sort.key === c[1];
+        return '<th class="sortable' + (on ? " sorted" : "") + '" data-sort="' + c[1] + '" aria-sort="' + (on ? (ui.sort.dir > 0 ? "ascending" : "descending") : "none") + '">' +
+          (c[1] === "story" && ui.view === "story" ? "Stories" : c[0]) + '<span class="sm">' + (on ? (ui.sort.dir > 0 ? "▲" : "▼") : "") + "</span></th>";
+      }).join("") + "</tr></thead>";
+  }
+
+  function render() {
+    var out = computeRows();
+    visible = out.rows;
+    // Keep the cursor and the open row on the same issue when the view changes under them.
+    function fix(key) {
+      if (!key) { return null; }
+      for (var n = 0; n < visible.length; n++) { if (visible[n].key === key) { return key; } }
+      var id = key.split(":").slice(1).join(":");
+      for (n = 0; n < visible.length; n++) { if (visible[n].issue.id === id) { return visible[n].key; } }
+      return null;
+    }
+    ui.cursorKey = fix(ui.cursorKey);
+    ui.expandedKey = fix(ui.expandedKey);
+
+    var body = "";
+    if (out.blocks) {
+      var drawn = 0;
+      out.blocks.forEach(function (b) {
+        if (!b.rows.length) { return; }
+        if (drawn++) { body += '<tr class="gap"><td colspan="' + colCount() + '"></td></tr>'; }
+        body += blockHead(b) + b.rows.map(rowHtml).join("");
+      });
+      if (!drawn) { body = emptyRow(); }
+    } else {
+      body = visible.length ? visible.map(rowHtml).join("") : emptyRow();
+    }
+    syncWide();
+    $("ledger").innerHTML = header() + "<tbody>" + body + "</tbody>";
+    renderStrip();
+    renderSelects();
+    renderSelbar();
+    renderCount(visibleIds().length);
+    document.querySelectorAll("#view-seg button").forEach(function (b) { b.setAttribute("aria-pressed", String(b.getAttribute("data-v") === ui.view)); });
+  }
+
+  function filterChanged() { ui.kept = {}; render(); }
+  function scrollToCursor() {
+    var r = document.querySelector('tr.row[data-key="' + cssEsc(ui.cursorKey) + '"]');
+    if (r) { r.scrollIntoView({ block: "nearest" }); }
+  }
+  function cssEsc(s) { return String(s || "").replace(/"/g, '\\"'); }
+
+  // ---------- actions ----------
+  function keep(ids) { ids.forEach(function (id) { ui.kept[id] = 1; }); }
+  function act(kind, id, taskId) {
+    keep([id]);
+    if (kind === "promote") { return Shell.promoteDialog([id]); }
+    if (kind === "link") { return Shell.linkDialog(id); }
+    if (kind === "dismiss") { return Shell.dismissDialog(id).then(function (ok) { if (ok) { delete ui.sel[id]; render(); } return ok; }); }
+    if (kind === "duplicate") { return Shell.duplicateDialog(id).then(function (v) { if (v) { delete ui.sel[id]; render(); } return v; }); }
+    if (kind === "reopen") { Shell.reopen(id); return Promise.resolve(true); }
+    if (kind === "unlink") { Shell.unlink(id, taskId); return Promise.resolve(true); }
+    return Promise.resolve(null);
+  }
+  function makeFromSelection() {
+    var ids = Object.keys(ui.sel).sort(function (a, b) { return S.get(a).seq - S.get(b).seq; });
+    if (!ids.length) { return Promise.resolve(null); }
+    keep(ids);
+    return Shell.promoteDialog(ids).then(function (t) { if (t) { ui.sel = {}; render(); } return t; });
+  }
+  function moveStory(taskId, status) {
+    keep(S.issuesFor(taskId).map(function (i) { return i.id; }));
+    S.setTaskStatus(taskId, status);
+    Shell.toast("Prototype: moved " + F.tid(taskId) + " to " + F.tstatus(status) + ". Its issues follow.", "info");
+  }
+  function gotoIssue(id) {
+    var i = S.get(id);
+    if (!i) { return; }
+    if (!shown(i)) { ui.kept[id] = 1; }
+    render();
+    for (var n = 0; n < visible.length; n++) {
+      if (visible[n].issue.id === id) { ui.cursorKey = ui.expandedKey = visible[n].key; break; }
+    }
+    render(); scrollToCursor();
+  }
+  function toggleSel(id) {
+    var st = S.state(S.get(id));
+    if (st === "dismissed" || st === "duplicate") { Shell.toast(esc(id) + " is closed. Reopen it before making a story from it.", "info"); return; }
+    if (ui.sel[id]) { delete ui.sel[id]; } else { ui.sel[id] = 1; }
+    render();
+  }
+
+  // ---------- copy as text ----------
+  function pad(s, n) { s = String(s); return s.length >= n ? s : s + new Array(n - s.length + 1).join(" "); }
+  function cut(s, n) { s = String(s).split("\n")[0]; return s.length > n ? s.slice(0, n - 3) + "..." : s; }
+  function storyText(i) {
+    var st = S.state(i);
+    if (st === "dismissed") { return "dismissed: " + cut(i.closure.reason, 40); }
+    if (st === "duplicate") { return "see " + i.closure.duplicate_of + " (" + S.state(S.get(i.closure.duplicate_of)) + ")"; }
+    var parts = i.links.map(function (l) { var t = S.task(l.task_id); return t.id + " " + t.status.replace(/_/g, " "); });
+    if (st === "open") { parts.push("NEEDS A STORY"); }
+    return parts.join(", ");
+  }
+  function buildText() {
+    var c = S.counts(), lines = [], ids = visibleIds();
+    var scopeName = SCOPE_NAME[ui.scope] || ("only " + ui.scope);
+    var filt = [];
+    if (ui.q) { filt.push('text "' + ui.q + '"'); }
+    if (ui.filer) { filt.push("filed by " + ui.filer); }
+    if (ui.source) { filt.push("source " + (ui.source === "(none)" ? "none" : ui.source)); }
+    lines.push(S.projectCode + " issues, " + scopeName + (filt.length ? ", " + filt.join(", ") : "") + ": " + ids.length + " of " + c.total +
+      " (as of " + F.abs(new Date(S.now()).toISOString().replace(/\.\d+Z$/, "Z")) + ")");
+    lines.push(STATES.map(function (s) { return s + " " + c[s]; }).join("  ") + "  = total " + c.total);
+    lines.push("");
+    if (ui.view === "issue") {
+      var rows = visible.map(function (r) { return r.issue; });
+      var w = Math.min(44, Math.max(7, rows.reduce(function (m, i) { return Math.max(m, storyText(i).length); }, 0)));
+      lines.push(pad("ID", 9) + pad("STATE", 11) + pad("STORY", w + 2) + "ISSUE");
+      rows.forEach(function (i) {
+        lines.push(pad(i.id, 9) + pad(S.state(i), 11) + pad(cut(storyText(i), w), w + 2) + cut(i.text, 90));
+      });
+    } else {
+      computeRows().blocks.forEach(function (b) {
+        if (!b.rows.length) { return; }
+        if (b.key === "nostory") { lines.push("NO STORY YET (" + b.rows.length + ")"); }
+        else if (b.key === "closed") { lines.push("CLOSED WITHOUT A STORY (" + b.rows.length + ")"); }
+        else { lines.push(pad(b.task.id, 9) + pad(b.task.status.replace(/_/g, " "), 14) + cut(b.task.title, 80) + "  (" + b.rows.length + (b.rows.length === 1 ? " issue)" : " issues)")); }
+        b.rows.forEach(function (r) {
+          var i = r.issue, extra = b.key === "closed" ? pad(cut(storyText(i), 34), 36) : "";
+          lines.push("    " + pad(i.id, 9) + pad(S.state(i), 11) + extra + cut(i.text, 90));
+        });
+        lines.push("");
+      });
+    }
+    return lines.join("\n").replace(/\s+$/, "") + "\n";
+  }
+  function copyText() {
+    var txt = buildText(), n = visibleIds().length;
+    function done() { Shell.toast("Copied " + n + (n === 1 ? " issue" : " issues") + " as text, " + (ui.view === "issue" ? "one per line." : "grouped by story.")); }
+    function fallback() {
+      var ta = document.createElement("textarea");
+      ta.value = txt; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      var ok = false;
+      try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+      document.body.removeChild(ta);
+      if (ok) { done(); } else { Shell.toast("Could not reach the clipboard from this page.", "error"); }
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(txt).then(done, fallback); } else { fallback(); }
+    return txt;
+  }
+
+  // ---------- events ----------
+  $("strip").addEventListener("click", function (e) {
+    var t = e.target.closest("[data-tile]"), sc = e.target.closest("[data-scope]");
+    if (t) { var s = t.getAttribute("data-tile"); ui.scope = ui.scope === s ? "all" : s; filterChanged(); }
+    else if (sc) { ui.scope = sc.getAttribute("data-scope"); filterChanged(); }
+  });
+  $("view-seg").addEventListener("click", function (e) {
+    var b = e.target.closest("button[data-v]");
+    if (b && b.getAttribute("data-v") !== ui.view) { ui.view = b.getAttribute("data-v"); render(); scrollToCursor(); }
+  });
+  $("copy-btn").onclick = copyText;
+  qInput.addEventListener("input", function () { ui.q = qInput.value.trim(); $("q-kbd").style.visibility = qInput.value ? "hidden" : "visible"; filterChanged(); });
+  $("f-by").onchange = function () { ui.filer = this.value; filterChanged(); };
+  $("f-src").onchange = function () { ui.source = this.value; filterChanged(); };
+  function clearFilters() { ui.q = ""; ui.filer = ""; ui.source = ""; qInput.value = ""; $("q-kbd").style.visibility = "visible"; filterChanged(); }
+  $("clear-btn").onclick = clearFilters;
+  $("selbar").addEventListener("click", function (e) {
+    if (e.target.id === "sel-make") { makeFromSelection(); }
+    if (e.target.id === "sel-clear") { ui.sel = {}; render(); }
+  });
+
+  $("ledger").addEventListener("click", function (e) {
+    var t = e.target, x;
+    if ((x = t.closest("th[data-sort]"))) {
+      var k = x.getAttribute("data-sort");
+      if (ui.sort.key === k) { ui.sort.dir = -ui.sort.dir; } else { ui.sort = { key: k, dir: DEFAULT_DIR[k] || 1 }; }
+      render(); return;
+    }
+    if ((x = t.closest("[data-empty]"))) {
+      if (x.getAttribute("data-empty") === "all") { ui.scope = "all"; filterChanged(); } else { clearFilters(); }
+      return;
+    }
+    if ((x = t.closest("[data-goto]"))) { e.stopPropagation(); gotoIssue(x.getAttribute("data-goto")); return; }
+    if ((x = t.closest("[data-story]"))) { qInput.value = x.getAttribute("data-story"); ui.q = qInput.value; $("q-kbd").style.visibility = "hidden"; filterChanged(); return; }
+    if ((x = t.closest("[data-filer]"))) { ui.filer = x.getAttribute("data-filer"); filterChanged(); return; }
+    if ((x = t.closest("[data-src]"))) { ui.source = x.getAttribute("data-src"); filterChanged(); return; }
+    var row = t.closest("tr.row"), det = t.closest("tr.detail");
+    if (det) {
+      var id = det.previousElementSibling.getAttribute("data-id");
+      if ((x = t.closest("[data-act]")) && !x.disabled) { act(x.getAttribute("data-act"), id); }
+      else if ((x = t.closest("[data-unlink]"))) { act("unlink", id, x.getAttribute("data-unlink")); }
+      return;
+    }
+    if (!row) { return; }
+    var key = row.getAttribute("data-key");
+    if (t.matches(".c-sel input") || t.closest(".c-sel")) {
+      if (t.tagName !== "INPUT") { var cb = row.querySelector(".c-sel input"); if (cb.disabled) { return; } }
+      ui.cursorKey = key; toggleSel(row.getAttribute("data-id")); return;
+    }
+    ui.cursorKey = key;
+    ui.expandedKey = ui.expandedKey === key ? null : key;
+    render();
+  });
+  $("ledger").addEventListener("change", function (e) {
+    var s = e.target.closest("select[data-move]");
+    if (s) { moveStory(s.getAttribute("data-move"), s.value); }
+  });
+
+  function moveCursor(d) {
+    if (!visible.length) { return; }
+    var n = -1;
+    for (var k = 0; k < visible.length; k++) { if (visible[k].key === ui.cursorKey) { n = k; break; } }
+    n = n < 0 ? (d > 0 ? 0 : visible.length - 1) : Math.max(0, Math.min(visible.length - 1, n + d));
+    ui.cursorKey = visible[n].key;
+    render(); scrollToCursor();
+  }
+  function cursorRow() {
+    for (var k = 0; k < visible.length; k++) { if (visible[k].key === ui.cursorKey) { return visible[k]; } }
+    return null;
+  }
+
+  document.addEventListener("keydown", function (e) {
+    if (Shell.dialogOpen() || e.metaKey || e.ctrlKey || e.altKey) { return; }
+    if (e.target === qInput) {
+      if (e.key === "Escape") { e.preventDefault(); if (qInput.value) { qInput.value = ""; ui.q = ""; $("q-kbd").style.visibility = "visible"; filterChanged(); } else { qInput.blur(); } }
+      else if (e.key === "Enter" || e.key === "ArrowDown") { e.preventDefault(); qInput.blur(); ui.cursorKey = null; moveCursor(1); }
+      return;
+    }
+    var tag = (e.target.tagName || "").toLowerCase();
+    if (tag === "textarea" || tag === "select" || (tag === "input" && e.target.type !== "checkbox")) { return; }
+    var k = e.key;
+    if (k === "/") { e.preventDefault(); qInput.focus(); qInput.select(); }
+    else if (k === "j" || k === "ArrowDown") { e.preventDefault(); moveCursor(1); }
+    else if (k === "k" || k === "ArrowUp") { e.preventDefault(); moveCursor(-1); }
+    else if (k === "Enter") {
+      if (tag === "button") { return; }
+      var r = cursorRow(); if (!r) { return; }
+      e.preventDefault(); ui.expandedKey = ui.expandedKey === r.key ? null : r.key; render(); scrollToCursor();
+    }
+    else if (k === "x") { var r2 = cursorRow(); if (r2) { e.preventDefault(); toggleSel(r2.issue.id); } }
+    else if (k === "Escape") {
+      if (Object.keys(ui.sel).length) { ui.sel = {}; render(); }
+      else if (anyFilter()) { clearFilters(); }
+      else if (ui.expandedKey) { ui.expandedKey = null; render(); }
+    }
+  });
+
+  var lastWide = showSource();
+  window.addEventListener("resize", function () { if (showSource() !== lastWide) { lastWide = showSource(); render(); } });
+
+  S.subscribe(render);
+  render();
+
+  // Deep links: ?view=story opens the story view, ?open=LAT-I18 opens that entry in place.
+  var qv = /[?&]view=(issue|story)/.exec(location.search), qo = /[?&]open=([A-Za-z0-9-]+)/.exec(location.search);
+  if (qv) { ui.view = qv[1]; render(); }
+  if (qo) { gotoIssue(qo[1]); }
+
+  // ---------- self test: ?selftest=1 ----------
+  // Drives the real buttons and the shell dialogs, then writes PASS/FAIL lines into #selftest.
+  if (/[?&]selftest=1/.test(location.search)) {
+    var out = [], fails = 0;
+    var check = function (name, ok, info) { out.push((ok ? "PASS " : "FAIL ") + name + (info ? "  [" + info + "]" : "")); if (!ok) { fails++; } };
+    var key = function (k, target) { (target || document.body).dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true })); };
+    var open = function (id) { gotoIssue(id); };
+    var click = function (sel) { var b = document.querySelector(sel); if (!b) { throw new Error("missing " + sel); } b.click(); };
+    var ov = function () { return document.querySelector(".overlay"); };
+    var pick = function (q) {
+      var inp = ov().querySelector("#pk-q"); inp.value = q; inp.dispatchEvent(new Event("input", { bubbles: true })); key("Enter", inp);
+    };
+    var rowsShown = function () { return document.querySelectorAll("#ledger tr.row").length; };
+    var st = function (id) { return S.state(S.get(id)); };
+    var rowH = function (id) { var r = document.querySelector('tr.row[data-id="' + id + '"]'); return r ? r.getBoundingClientRect().height : -1; };
+    var measure = function () {
+      var cell = document.querySelector("#ledger tr.row td.c-text"), probe = document.createElement("span");
+      probe.textContent = new Array(101).join("x"); probe.style.whiteSpace = "nowrap";
+      cell.firstChild.appendChild(probe);
+      var cw = probe.getBoundingClientRect().width / 100; probe.parentNode.removeChild(probe);
+      var cs = getComputedStyle(cell);
+      return Math.floor((cell.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight)) / cw);
+    };
+    var sumOK = function () { var c = S.counts(); return c.open + c.linked + c.resolved + c.dismissed + c.duplicate === c.total; };
+
+    Promise.resolve().then(function () {
+      var c = S.counts();
+      check("tiles: five, and they add up", document.querySelectorAll(".tile").length === 5 && sumOK(), JSON.stringify(c));
+      check("default view is open + linked", rowsShown() === c.open + c.linked, rowsShown() + " rows");
+      check("open rows come first", document.querySelector("#ledger tr.row .state").textContent === "open");
+      check("every open row shows the needs-a-story marker", document.querySelectorAll("#ledger .mk-need").length === c.open);
+      var chars = measure(), w = window.innerWidth, want = w >= 2000 ? [100, 115] : w >= 1440 ? [80, 999] : [60, 999];
+      check("text measure at " + w + "px: " + chars + " characters per line", chars >= want[0] && chars <= want[1]);
+      check("LAT-I18 shows two stories", document.querySelectorAll('tr.row[data-id="LAT-I18"] .sl .tid').length === 2);
+
+      qInput.value = "zzqq"; qInput.dispatchEvent(new Event("input"));
+      check("filter that hides everything says so", !!document.querySelector("tr.empty") && /No issue matches/.test(document.querySelector("tr.empty").textContent));
+      clearFilters();
+      ui.scope = "all"; ui.source = "qa-sweep-2026-09-28"; filterChanged();
+      check("source filter: qa-sweep-2026-09-28 has 5", rowsShown() === 5, rowsShown());
+      ui.scope = "unfinished"; clearFilters();
+
+      click('.tile[data-tile="open"]');
+      check("tile click shows only open", ui.scope === "open" && rowsShown() === S.counts().open);
+      click('.tile[data-tile="open"]');
+      check("tile click again shows all", ui.scope === "all" && rowsShown() === S.counts().total);
+      click('[data-scope="unfinished"]');
+
+      ui.cursorKey = null; key("j"); key("Enter");
+      check("j + Enter opens a row in place", !!document.querySelector("tr.detail") && ui.expandedKey === visible[0].key);
+      key("x");
+      check("x selects the cursor row", Object.keys(ui.sel).length === 1);
+      key("Escape");
+      check("Esc clears the selection", Object.keys(ui.sel).length === 0);
+      key("Enter");
+      check("Enter closes the row", !document.querySelector("tr.detail"));
+
+      open("LAT-I21"); click('tr.detail [data-act="promote"]');
+      ov().querySelector("#pr-title").value = "Card titles: show enough to tell tickets apart";
+      click('.overlay [data-go]');
+      return Promise.resolve();
+    }).then(function () {
+      var t = S.task("LAT-384");
+      check("promote one: LAT-I21 linked to new LAT-384", st("LAT-I21") === "linked" && !!t && S.get("LAT-I21").links[0].task_id === "LAT-384");
+
+      ui.sel = { "LAT-I22": 1, "LAT-I30": 1 }; render();
+      check("selection bar shows 2", /2 selected/.test($("selbar").textContent));
+      click("#sel-make"); click(".overlay [data-go]");
+      return Promise.resolve();
+    }).then(function () {
+      check("promote many: I22 + I30 share LAT-385", st("LAT-I22") === "linked" && st("LAT-I30") === "linked" &&
+        S.get("LAT-I22").links[0].task_id === "LAT-385" && S.get("LAT-I30").links[0].task_id === "LAT-385");
+      check("selection cleared after promote", Object.keys(ui.sel).length === 0);
+
+      open("LAT-I23"); click('tr.detail [data-act="link"]'); pick("LAT-377");
+      return new Promise(function (r) { setTimeout(r, 0); });
+    }).then(function () {
+      check("link: LAT-I23 to LAT-377", st("LAT-I23") === "linked" && S.issuesFor("LAT-377").some(function (i) { return i.id === "LAT-I23"; }));
+      click('tr.detail [data-unlink="LAT-377"]');
+      check("unlink: LAT-I23 back to open", st("LAT-I23") === "open");
+
+      open("LAT-I24"); click('tr.detail [data-act="dismiss"]');
+      ov().querySelector("#ds-r").value = "Completion policy is intentional on drag.";
+      click(".overlay [data-go]");
+      return new Promise(function (r) { setTimeout(r, 0); });
+    }).then(function () {
+      check("dismiss: LAT-I24 dismissed", st("LAT-I24") === "dismissed");
+      check("dismissed row kept in view, marked", !!document.querySelector('tr.row.kept[data-id="LAT-I24"]'));
+      check("closed row: actions disabled, reopen enabled", document.querySelector('tr.detail [data-act="promote"]').disabled && !document.querySelector('tr.detail [data-act="reopen"]').disabled);
+
+      window.__h38 = rowH("LAT-I38");
+      open("LAT-I38"); click('tr.detail [data-act="duplicate"]'); pick("LAT-I11");
+      return new Promise(function (r) { setTimeout(r, 0); });
+    }).then(function () {
+      check("duplicate: LAT-I38 of LAT-I11", st("LAT-I38") === "duplicate" && S.get("LAT-I38").closure.duplicate_of === "LAT-I11");
+      check("duplicate row points at the original", /see LAT-I11/.test(document.querySelector('tr.row[data-id="LAT-I38"] .c-story').textContent));
+      var hDup = rowH("LAT-I38");
+      click('tr.detail [data-act="reopen"]');
+      check("reopen: LAT-I38 open again", st("LAT-I38") === "open");
+      check("LAT-I38 row height holds: open, duplicate, open", hDup === window.__h38 && rowH("LAT-I38") === window.__h38, window.__h38 + "/" + hDup + "/" + rowH("LAT-I38"));
+
+      open("LAT-I9");
+      var sel = document.querySelector('tr.detail select[data-move="LAT-377"]'); sel.value = "done"; sel.dispatchEvent(new Event("change", { bubbles: true }));
+      check("story done: LAT-I9 and LAT-I10 resolved", st("LAT-I9") === "resolved" && st("LAT-I10") === "resolved");
+      check("resolved rows stay in view after the change", !!document.querySelector('tr.row[data-id="LAT-I10"]'));
+      ui.expandedKey = null; render(); var h1 = rowH("LAT-I1");
+      S.setTaskStatus("LAT-370", "cancelled");
+      check("LAT-I1 row height holds when its story is cancelled", rowH("LAT-I1") === h1, h1 + "/" + rowH("LAT-I1"));
+      check("story cancelled: LAT-I1 back to open", st("LAT-I1") === "open" && st("LAT-I2") === "open");
+      check("counts still add up", sumOK());
+      S.setTaskStatus("LAT-370", "in_progress"); S.setTaskStatus("LAT-377", "in_progress");
+
+      ui.kept = {}; ui.expandedKey = null;
+      click('#view-seg [data-v="story"]');
+      var blk = document.querySelector('tr.blk[data-block="nostory"]');
+      var nostory = document.querySelectorAll('tr.row[data-key^="nostory:"]').length;
+      check("by story: No story yet holds every open issue", !!blk && nostory === S.counts().open, nostory + " vs " + S.counts().open);
+      check("by story: LAT-383 block holds I16, I17, I18", document.querySelectorAll('tr.row[data-key^="LAT-383:"]').length === 3);
+      check("by story: I18 also under LAT-375", !!document.querySelector('tr.row[data-key="LAT-375:LAT-I18"]'));
+      var txt = buildText();
+      check("copy text (by story) has blocks", /NO STORY YET/.test(txt) && /LAT-383/.test(txt));
+      click('#view-seg [data-v="issue"]');
+      txt = buildText();
+      var body = txt.split("\n").filter(function (l) { return /^LAT-I\d+ /.test(l); });
+      check("copy text (by issue): one line per visible issue", body.length === visibleIds().length, body.length + " lines");
+      check("copy text marks open issues", /NEEDS A STORY/.test(txt));
+      out.push("", "--- sample of Copy as text ---", txt.split("\n").slice(0, 8).join("\n"));
+    }).catch(function (err) {
+      check("selftest ran to the end", false, err && err.message);
+    }).then(function () {
+      out.unshift((fails ? "SELFTEST FAIL (" + fails + ")" : "SELFTEST PASS"));
+      $("selftest").textContent = out.join("\n");
+    });
+  }
+})();
+</script>
+</body>
+</html>

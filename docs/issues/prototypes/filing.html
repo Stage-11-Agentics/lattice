@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Filing an issue</title>
+<link rel="stylesheet" href="shared/shell.css">
+<style>
+.page{max-width:82rem;margin:0 auto;padding:1.5rem 1.25rem 3rem}
+h1{font-size:1.5rem;margin:0 0 .25rem}
+h2{font-size:1.1rem;margin:0 0 .25rem}
+.lede{color:var(--text-secondary);max-width:60rem;margin:0 0 1.5rem}
+.cols{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:1.25rem;align-items:start}
+@media (max-width:1100px){.cols{grid-template-columns:1fr}}
+.panel{min-width:0;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:1rem 1.125rem}
+.panel > p{color:var(--text-secondary);margin:.25rem 0 .875rem;font-size:.9rem}
+.who{display:inline-block;font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted);margin-bottom:.25rem}
+.term{background:#0C0C0C;border:1px solid var(--border);border-radius:var(--radius-md);font-size:.86rem;line-height:1.55;overflow:auto}
+.term-bar{display:flex;gap:.375rem;align-items:center;padding:.375rem .625rem;border-bottom:1px solid var(--border);color:var(--text-muted);font-size:.75rem}
+.term-bar i{width:.625rem;height:.625rem;border-radius:50%;background:#3A3A3A;display:inline-block}
+.term pre{margin:0;padding:.75rem .875rem;white-space:pre-wrap;word-break:break-word}
+.term.tight{font-size:.78rem}
+/* media listing: a wrapped path hangs under the path column, not under "video" */
+.term .hang{display:block;padding-left:23ch;text-indent:-23ch}
+.term .p{color:#7A7A7A;user-select:none}
+.term .c{color:#F5F5F5}
+.term .o{color:#B8B8B8}
+.term .ok{color:var(--st-resolved)}
+.term .er{color:#F87171}
+.term .n{color:#7A7A7A;font-style:italic}
+.term + .term{margin-top:.75rem}
+.cap{font-size:.8rem;color:var(--text-muted);margin:.375rem 0 1rem}
+.cap:last-child{margin-bottom:0}
+/* Four tabs of equal, fixed share: nothing moves when one is pressed. */
+.tabs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden;margin-bottom:.75rem}
+.tabs button{padding:.3rem 0;background:var(--surface);color:var(--text-secondary);border:0;border-right:1px solid var(--border);font-size:.82rem;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tabs button:last-child{border-right:0}
+.tabs button[aria-pressed=true]{background:var(--surface-hover);color:var(--text-primary);font-weight:700}
+/* Every tab sits in the same grid cell, so the stage is always as tall as the tallest tab. */
+.stage{display:grid}
+.stage > [data-stage]{grid-area:1 / 1;min-width:0}
+.stage > .is-off{visibility:hidden}
+.proposed{display:flex;gap:.625rem;align-items:center;margin:0 0 .625rem;font-size:.8rem;color:var(--text-secondary)}
+.badge{display:inline-block;width:11.5rem;text-align:center;flex-shrink:0;padding:.0625rem 0;border-radius:var(--radius-sm);border:1px solid var(--color-warning);background:var(--color-warning-bg);color:var(--color-warning);font-size:.72rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase}
+.frames{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:.5rem;margin-top:.75rem}
+.frame{display:block;color:inherit;min-width:0}
+.frame:hover{text-decoration:none}
+.frame .img{aspect-ratio:16 / 10;background:#0C0C0C;border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden}
+.frame:hover .img{border-color:var(--accent-primary)}
+.frame img{display:block;width:100%;height:100%;object-fit:contain}
+.frame .lbl{display:flex;justify-content:space-between;font-size:.74rem;color:var(--text-muted);margin-top:.2rem}
+.frame .lbl b{color:var(--text-primary);font-weight:700}
+.try{display:flex;gap:.75rem;align-items:center;flex-wrap:wrap;margin:.25rem 0 1rem}
+.ways{display:grid;grid-template-columns:5.5rem minmax(0,1fr);gap:.375rem .75rem;margin:0 0 .875rem;padding:.625rem .75rem;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface-card);font-size:.86rem}
+.ways b{color:var(--text-primary)}
+.ways span{color:var(--text-secondary)}
+.recent{border:1px solid var(--border);border-radius:var(--radius-md);min-height:12.5rem}
+.recent-head{padding:.375rem .75rem;border-bottom:1px solid var(--border);font-size:.78rem;color:var(--text-muted);display:flex;justify-content:space-between}
+.recent-row{display:flex;gap:.625rem;align-items:baseline;padding:.375rem .75rem;border-bottom:1px solid var(--border-row);font-size:.86rem}
+.recent-row:last-child{border-bottom:0}
+.recent-row .iid{width:4.5rem;flex-shrink:0}
+.recent-row .mk{width:5.25rem;flex-shrink:0;font-size:.76rem;color:var(--text-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.recent-row .grow{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.recent-row .when{width:4.75rem;text-align:right;color:var(--text-muted);font-size:.78rem;flex-shrink:0}
+.recent-row.new{background:var(--st-open-bg)}
+.seam{margin-top:1.25rem}
+.seam-grid{display:grid;grid-template-columns:minmax(0,1fr) 3rem minmax(0,1.1fr) 3rem minmax(0,1fr);gap:0;align-items:stretch;margin-top:.75rem}
+@media (max-width:1100px){.seam-grid{grid-template-columns:1fr}.seam-arrow{transform:rotate(90deg);padding:.5rem 0}}
+.seam-col{border:1px solid var(--border);border-radius:var(--radius-md);padding:.75rem .875rem;background:var(--surface-card)}
+.seam-col h3{margin:0 0 .5rem;font-size:.78rem;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted)}
+.seam-col ul{margin:0;padding:0;list-style:none}
+.seam-col li{padding:.3rem 0;border-bottom:1px solid var(--border-row);font-size:.86rem}
+.seam-col li:last-child{border-bottom:0}
+.seam-col li span{display:block;color:var(--text-muted);font-size:.78rem}
+.seam-arrow{display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:1.4rem}
+.seam-col.core{border-color:var(--st-open-border)}
+.seam-col code,.panel code,.lede code{background:var(--surface-raised);border:1px solid var(--border);border-radius:var(--radius-sm);padding:0 .3rem;font-size:.85em}
+.rules{display:grid;grid-template-columns:repeat(3,1fr);gap:.75rem;margin-top:.75rem}
+@media (max-width:1100px){.rules{grid-template-columns:1fr}}
+.rule{border:1px solid var(--border);border-radius:var(--radius-md);padding:.625rem .75rem;background:var(--surface-card);font-size:.86rem}
+.rule b{display:block;margin-bottom:.125rem}
+.rule span{color:var(--text-secondary)}
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>Filing an issue</h1>
+  <p class="lede">Filing is settled: one line of text, a photo or video when there is one, and nothing else required. No story is made and nothing is planned. An agent files from the command line. A human files from the dashboard. Both land in the same issue log.</p>
+
+  <div class="cols">
+    <section class="panel">
+      <span class="who">What an agent sees</span>
+      <h2>The command line</h2>
+      <p>The output below is from the CLI built in LAT-361, with this board's IDs. Photos and video are proposed. Pick a moment.</p>
+      <div class="tabs" id="cli-tabs">
+        <button type="button" data-k="file" aria-pressed="true">File</button>
+        <button type="button" data-k="media" aria-pressed="false">Photo and video</button>
+        <button type="button" data-k="after" aria-pressed="false">What happened</button>
+        <button type="button" data-k="off" aria-pressed="false">Feature off</button>
+      </div>
+      <div class="stage">
+        <div data-stage="file">
+          <div class="term"><div class="term-bar"><i></i><i></i><i></i>&nbsp; agent:qa-browser, mid-sweep</div>
+<pre><span class="p">$ </span><span class="c">lattice issue file "Reaction picker opens under the detail panel footer" --actor agent:qa-browser</span>
+<span class="ok">Filed LAT-I42: Reaction picker opens under the detail panel footer</span></pre></div>
+          <p class="cap">The whole job. The agent goes back to what it was doing.</p>
+          <div class="term"><div class="term-bar"><i></i><i></i><i></i>&nbsp; with the optional extras</div>
+<pre><span class="p">$ </span><span class="c">lattice issue file \
+    "Footer overlaps the Complete button at 400px" \
+    --confidence definite \
+    --evidence dp-footer-400.png \
+    --source qa-sweep-2026-09-29 \
+    --actor agent:qa-browser</span>
+<span class="ok">Filed LAT-I43: Footer overlaps the Complete button at 400px (1 photo)</span>
+
+<span class="n"># text with backticks or several lines: pipe it in</span>
+<span class="p">$ </span><span class="c">lattice issue file - --actor agent:qa-cli &lt; note.txt</span>
+<span class="ok">Filed LAT-I44: The `make test` target prints $(HOME) literally</span>
+
+<span class="n"># for scripts</span>
+<span class="p">$ </span><span class="c">lattice issue file "Search misses lower-case IDs" --actor agent:qa-cli --quiet</span>
+<span class="o">LAT-I45</span></pre></div>
+        </div>
+        <div data-stage="media" class="is-off">
+          <p class="proposed"><span class="badge">Proposed, not built</span><span>The planning for photos and video starts from this shape.</span></p>
+          <div class="term tight"><div class="term-bar"><i></i><i></i><i></i>&nbsp; agent:qa-browser, with a screenshot and a recording</div>
+<pre id="media-term"></pre></div>
+          <div class="frames" id="frames"></div>
+          <p class="cap">An agent cannot watch a recording, but it can open these frame paths and see the problem. Frames are made when the recording is filed, one every 1.5 seconds. These five are the real frames of this recording.</p>
+        </div>
+        <div data-stage="after" class="is-off">
+          <div class="term"><div class="term-bar"><i></i><i></i><i></i>&nbsp; anyone, later</div>
+<pre><span class="p">$ </span><span class="c">lattice issue list</span>
+<span class="o">LAT-I21  open    definite  Card titles clamp at three lines, so two tickets that differ...
+LAT-I22  open    possible  lattice list --tag with an unknown tag prints nothing and exits 0...
+LAT-I1   linked  definite  Footer overlaps the Complete button in the detail panel... -> LAT-370 (in_progress)
+LAT-I9   linked  definite  review-status said claude running (41m) for a review whose... -> LAT-377 (in_progress)
+LAT-I10  linked  definite  review-status still reports running after the reviewer... -> LAT-377 (in_progress)
+...
+33 issues (20 open, 13 linked); resolved and closed hidden, --all to show</span>
+
+<span class="p">$ </span><span class="c">lattice show LAT-377</span>
+<span class="o">LAT-377  "review-status reports running after the reviewer process died"
+Status: in_progress  Priority: critical  Type: bug
+...
+Issues:
+  LAT-I9   linked  review-status said claude running (41m) for a review whose process was gone...
+  LAT-I10  linked  review-status still reports running after the reviewer subprocess was killed...</span></pre></div>
+          <p class="cap">The story column is the answer to "has this had a story made, and where does it stand". A story shows the issues behind it. Column alignment as drawn here is a change I am asking for; the first build prints the columns unpadded.</p>
+        </div>
+        <div data-stage="off" class="is-off">
+          <div class="term"><div class="term-bar"><i></i><i></i><i></i>&nbsp; a board where the issue log is off (the default)</div>
+<pre><span class="p">$ </span><span class="c">lattice issue file "Footer overlaps the CTA at 400px" --actor agent:qa-browser</span>
+<span class="er">Error: The issue log is off for this project. The board owner turns it on by
+adding "issues": {"enabled": true} to .lattice/config.json.</span>
+<span class="n">[exit 1]</span></pre></div>
+          <p class="cap">Nothing is created on disk. The message speaks to the board owner, and the skill tells agents not to turn the feature on themselves: they leave a comment on the story they are working, or tell the human.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <span class="who">What a human sees</span>
+      <h2>The dashboard</h2>
+      <p>A <b>+ Issue</b> button sits beside <b>+ New Task</b> on every tab, and the <kbd>i</kbd> key opens the same panel. It works here. A photo or video goes in four ways:</p>
+      <div class="ways">
+        <b>Paste</b><span>a screenshot on the clipboard with <kbd>⌘</kbd> <kbd>V</kbd>. On a Mac, <kbd>⌘</kbd> <kbd>⌃</kbd> <kbd>⇧</kbd> <kbd>4</kbd> takes one straight to the clipboard.</span>
+        <b>Drop</b><span>a photo or video on the panel, or anywhere on the page to open the panel with it attached.</span>
+        <b>Choose</b><span>a file from disk.</span>
+        <b>Record</b><span>the screen, with the microphone on if you want to talk it through.</span>
+      </div>
+      <p>The text is still required. A queue of untitled screenshots cannot be scanned or searched, by a person or an agent.</p>
+      <div class="try">
+        <button type="button" class="btn btn-issue" id="try-file">+ Issue</button>
+        <span class="muted">or press <kbd>i</kbd></span>
+      </div>
+      <div class="recent">
+        <div class="recent-head"><span>Most recent issues</span><span id="recent-count"></span></div>
+        <div id="recent-rows"></div>
+      </div>
+      <p class="cap">File one and it appears at the top, with its photos and video counted. <b>File and add another</b> keeps the panel open, for writing down five things in a row after a walkthrough.</p>
+    </section>
+  </div>
+
+  <section class="panel seam">
+    <span class="who">Where it goes</span>
+    <h2>One log, two doors in, two ways to read</h2>
+    <div class="seam-grid">
+      <div class="seam-col">
+        <h3>Who files</h3>
+        <ul>
+          <li>QA and research agents<span><code>lattice issue file "..."</code>, with <code>--evidence</code> for a screenshot or recording</span></li>
+          <li>Build and review agents, in passing<span>the same command</span></li>
+          <li>A human at the dashboard<span>+ Issue, or the <kbd>i</kbd> key; paste, drop, choose or record</span></li>
+          <li class="muted">External users<span>not in this build; what they send stays in the client app</span></li>
+        </ul>
+      </div>
+      <div class="seam-arrow">&rarr;</div>
+      <div class="seam-col core">
+        <h3>The issue log</h3>
+        <ul>
+          <li><code>.lattice/issues/</code><span>one event log per issue, beside the board, never mixed into it</span></li>
+          <li>Photos and video beside it<span>a recording also gets frames, which an agent can read</span></li>
+          <li>Its own numbers: <code>LAT-I42</code><span>filing never uses up a story number</span></li>
+          <li>State is computed from the stories<span>open, linked, resolved, dismissed, duplicate</span></li>
+          <li>Off by default<span>one line in <code>.lattice/config.json</code></span></li>
+        </ul>
+      </div>
+      <div class="seam-arrow">&rarr;</div>
+      <div class="seam-col">
+        <h3>Who reads and decides</h3>
+        <ul>
+          <li>A human, triaging<span>make a story, link, dismiss, mark duplicate</span></li>
+          <li>Any agent, reading<span><code>lattice issue list</code>, <code>lattice issue media</code>, <code>lattice show LAT-377</code></span></li>
+          <li>The board<span>never shows issues in <code>list</code>, <code>next</code> or work-in-progress counts</span></li>
+          <li class="muted">A triage agent<span>later; by hand to start</span></li>
+        </ul>
+      </div>
+    </div>
+    <div class="rules">
+      <div class="rule"><b>An issue is an observation.</b><span>It can be vague, wrong or a repeat. Filing one commits nobody to anything.</span></div>
+      <div class="rule"><b>A story is a commitment.</b><span>It is planned and reviewed. Several issues can become one story.</span></div>
+      <div class="rule"><b>Nothing is deleted.</b><span>Dismissed and duplicate issues keep their history, photos and video, and can be reopened.</span></div>
+    </div>
+  </section>
+</div>
+
+<script src="shared/mock-media.js"></script>
+<script src="shared/mock-data.js"></script>
+<script src="shared/store.js"></script>
+<script src="shared/shell.js"></script>
+<script>
+(function () {
+  "use strict";
+  var S = window.IssueStore, Sh = window.Shell, F = Sh.fmt;
+  Sh.mount({ active: "none", page: "filing", title: "Filing an issue" });
+
+  // ---- most recent: always six rows, so the list never changes height ----
+  var seen = {};
+  S.issues().forEach(function (i) { seen[i.id] = true; });
+  // A short marker of fixed width: "1 video", "2 photos", "1 video +1" (a video and a photo), or blank.
+  function mark(list) {
+    var p = 0, v = 0;
+    (list || []).forEach(function (m) { if (m.kind === "video") { v++; } else { p++; } });
+    if (v && p) { return v + (v === 1 ? " video" : " videos") + " +" + p; }
+    if (v) { return v + (v === 1 ? " video" : " videos"); }
+    return p ? p + (p === 1 ? " photo" : " photos") : "";
+  }
+  function draw() {
+    var rows = S.issues().reverse().slice(0, 6);
+    document.getElementById("recent-count").textContent = S.counts().total + " in the issue log";
+    document.getElementById("recent-rows").innerHTML = rows.map(function (i) {
+      var m = mark(i.media);
+      return '<div class="recent-row' + (seen[i.id] ? "" : " new") + '">' + F.iid(i.id) + F.state(S.state(i)) +
+        '<span class="mk"' + (m ? ' title="' + F.esc(F.mediaCount(i.media)) + '"' : "") + ">" + F.esc(m) + "</span>" +
+        '<span class="grow">' + F.esc(F.firstLine(i.text, 200)) + '</span><span class="when">' + F.rel(i.filed_at) + "</span></div>";
+    }).join("");
+  }
+  S.subscribe(draw); draw();
+  document.getElementById("try-file").onclick = function () { Sh.openFile(); };
+
+  // ---- photos and video: the proposed CLI, with numbers from the real mock recording ----
+  var clip = (window.MOCK_MEDIA || {})["drag-done-snapback"] || { duration: 7.5, bytes: 18734112, w: 1280, h: 800, frames: [] };
+  var dir = ".lattice/issues/media/iss_01M3.../";
+  function pad(s, n) { s = String(s); while (s.length < n) { s += " "; } return s; }
+  function secs(t) { return Number(t).toFixed(1) + "s"; }
+  function mb(n) { return (n / 1e6).toFixed(1) + " MB"; } // decimal megabytes, as the command prints them
+  function frameName(src) { return String(src).split("/").pop(); }
+  var cmd = '<span class="p">$ </span><span class="c">';
+  var out = [
+    '<span class="n"># a screenshot</span>',
+    cmd + 'lattice issue file \\\n    "Footer overlaps the Complete button at 400px" \\\n    --evidence dp-footer-400.png --actor agent:qa-browser</span>',
+    '<span class="ok">Filed LAT-I43: Footer overlaps the Complete button at 400px (1 photo)</span>',
+    "",
+    '<span class="n"># a recording</span>',
+    cmd + 'lattice issue file \\\n    "Dragging a card to Done snaps back with no message" \\\n    --evidence drag-done-snapback.mov --actor agent:qa-browser</span>',
+    '<span class="ok">Filed LAT-I42: Dragging a card to Done snaps back with no message (1 video, ' + clip.frames.length + " frames)</span>",
+    "",
+    cmd + "lattice issue media LAT-I42</span>"
+  ];
+  // The listing is block lines with a hanging indent, so a wrapped path sits under the path column.
+  var list = ['<span class="o hang">' + pad("video", 8) + pad(secs(clip.duration), 6) + pad(F.esc(mb(clip.bytes)), 9) + dir + "drag-done-snapback.mov</span>"]
+    .concat(clip.frames.map(function (f) { return '<span class="o hang">' + pad("frame", 8) + pad(secs(f.t), 6) + pad("", 9) + dir + "frames/" + F.esc(frameName(f.src)) + "</span>"; }));
+  document.getElementById("media-term").innerHTML = out.join("\n") + "\n" + list.join("");
+  document.getElementById("frames").innerHTML = clip.frames.map(function (f) {
+    return '<a class="frame" href="' + F.esc(f.src) + '" target="_blank" rel="noopener" title="Open ' + F.esc(frameName(f.src)) + ' at full size">' +
+      '<div class="img"><img src="' + F.esc(f.src) + '" alt="Frame at ' + secs(f.t) + '" width="' + (clip.w || 1280) + '" height="' + (clip.h || 800) + '"></div>' +
+      '<div class="lbl"><b>' + secs(f.t) + "</b><span>" + F.esc(frameName(f.src)) + "</span></div></a>";
+  }).join("");
+
+  // ---- tabs; ?tab=media (or file, after, off) preselects one ----
+  var tabs = document.querySelectorAll("#cli-tabs button");
+  function pick(k) {
+    tabs.forEach(function (x) { x.setAttribute("aria-pressed", x.getAttribute("data-k") === k ? "true" : "false"); });
+    document.querySelectorAll("[data-stage]").forEach(function (s) {
+      var on = s.getAttribute("data-stage") === k;
+      s.classList.toggle("is-off", !on);
+      s.setAttribute("aria-hidden", on ? "false" : "true");
+    });
+  }
+  tabs.forEach(function (b) { b.onclick = function () { pick(b.getAttribute("data-k")); }; });
+  var want = /[?&]tab=(file|media|after|off)(&|$)/.exec(location.search);
+  pick(want ? want[1] : "file");
+})();
+</script>
+</body>
+</html>

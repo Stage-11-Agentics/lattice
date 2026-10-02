@@ -85,6 +85,14 @@ class TestPage:
         script = web.get("/p/alpha/static/escape.js")
         assert script.status == 200
         assert script.headers["content-type"].startswith("application/javascript")
+        issue_script = web.get("/p/alpha/static/issue-view.js")
+        issue_style = web.get("/p/alpha/static/issue-view.css")
+        assert issue_script.status == 200 and issue_script.headers["content-type"].startswith(
+            "application/javascript"
+        )
+        assert issue_style.status == 200 and issue_style.headers["content-type"].startswith(
+            "text/css"
+        )
         assert web.get("/p/alpha/favicon.ico").status == 200
         assert web.get("/p/alpha/static/../server.py").status in (403, 404)
         for src in re.findall(r'src="(static/vendor/[^"]+)"', page.text):
@@ -96,6 +104,17 @@ class TestPage:
         response = web.get("/p/alpha")
         assert response.status in (301, 307, 308)
         assert response.headers["location"] == "/p/alpha/"
+
+    def test_issue_reads_say_not_available_on_any_host(self, web: WebClient) -> None:
+        """Issues are not on hosted boards yet (LAT-368): reads answer what writes do, on
+        any Host; the session credential is the gate, as for every other route."""
+        for host in ("evil.example", "atlas.tailnet:8443"):
+            for path in ("/p/alpha/api/issues", "/p/alpha/api/issues/ALP-I1"):
+                response = web.get(path, Host=host)
+                assert response.status == 400, (host, path)
+                assert response.json["error"]["code"] == "LOCAL_ONLY"
+        anonymous = WebClient(web.server)
+        assert anonymous.get("/p/alpha/api/issues").status == 401
 
     def test_other_project_is_403_and_missing_is_404(self, server: ServerHandle, root) -> None:
         web = _logged_in(server, mint(root, projects=["alpha"]))

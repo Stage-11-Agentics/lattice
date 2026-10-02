@@ -1,0 +1,960 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Issues (Take A: Inbox)</title>
+<link rel="stylesheet" href="shared/shell.css">
+<style>
+/* Take A: Inbox, round 2. A viewer, not a place to decide: a quiet queue on the left, the selected issue
+   on the right with its photos and video inline. Decisions are made by telling an agent, so the ID is
+   prominent and one click copies it. Fixed sizes below exist so nothing moves while reading. */
+:root{
+  --qw:clamp(25rem,24vw,34rem);
+  --row-h:4.5rem;
+  --proto:#C084FC;--proto-bg:#3B0764;--proto-text:#F3E8FF;
+}
+body{overflow:hidden}
+.inbox{display:grid;grid-template-columns:var(--qw) 1fr;height:calc(100vh - 3rem - var(--proto-bar-h));min-width:0}
+
+/* ---------- left: the queue ---------- */
+.q-pane{display:flex;flex-direction:column;min-height:0;border-right:1px solid var(--border);background:var(--surface-card)}
+.q-tabs{display:grid;grid-template-columns:1.45fr 1.3fr 1fr .85fr;gap:.375rem;padding:.75rem .75rem;border-bottom:1px solid var(--border-subtle)}
+.q-tab{position:relative;height:3.25rem;text-align:left;padding:.3rem .55rem;border:1px solid var(--border);border-radius:var(--radius-sm);
+  background:var(--surface);color:var(--text-secondary);cursor:pointer;font-size:.7rem;line-height:1.2;overflow:hidden}
+.q-tab:hover{background:var(--surface-hover)}
+.q-tab .q-tab-label{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.q-tab .q-tab-count{display:block;font-size:1.2rem;font-weight:700;color:var(--text-primary);margin-top:.1rem}
+.q-tab kbd{position:absolute;bottom:.35rem;right:.35rem;font-size:.62rem;min-width:1rem;padding:0 .2rem;line-height:1.3}
+.q-tab[aria-pressed=true]{border-color:var(--accent-primary);background:var(--surface-raised);color:var(--text-primary);box-shadow:inset 0 -2px 0 var(--accent-primary)}
+.q-tab[data-q=open] .q-tab-count{color:var(--st-open)}
+
+.q-list{flex:1;overflow-y:auto;min-height:0}
+.q-row{display:flex;gap:.625rem;height:var(--row-h);padding:.5rem .75rem;border-bottom:1px solid var(--border-row);border-left:3px solid transparent;cursor:pointer}
+.q-row:hover{background:var(--surface-hover)}
+.q-row.cursor{background:var(--surface-raised);border-left-color:var(--accent-primary)}
+.q-main{flex:1;min-width:0}
+.q-top{display:flex;align-items:center;gap:.5rem;font-size:.78rem;height:1.3rem}
+.q-top .iid{font-size:.82rem;width:5.25rem;flex-shrink:0}
+.q-tag{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-muted)}
+.q-age{flex-shrink:0;width:4.25rem;text-align:right;color:var(--text-muted)}
+.q-text{font-size:.9rem;line-height:1.35;color:var(--text-secondary);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-top:.1rem}
+.q-row.cursor .q-text{color:var(--text-primary)}
+/* The thumbnail slot is reserved on every row, at the right, so text always starts at the same x and a
+   row never reflows when media arrives. Empty, it is invisible: ragged-right text hides it. */
+.q-thumb{position:relative;flex:0 0 5rem;height:3.25rem;align-self:center;border-radius:var(--radius-sm);overflow:hidden;background:#0A0A0A;border:1px solid var(--border)}
+.q-thumb.none{background:transparent;border-color:transparent}
+.q-thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.q-badge{position:absolute;font-size:.64rem;line-height:1;padding:.15rem .25rem;border-radius:2px;background:rgba(0,0,0,.78);color:#fff;font-weight:700}
+.q-vid{left:.2rem;bottom:.2rem}
+.q-count{right:.2rem;top:.2rem;background:var(--accent-primary)}
+/* person view: a reserved slot above the queue, so entering and leaving it moves nothing */
+.p-head{height:3.9rem;flex-shrink:0;display:flex;flex-direction:column;justify-content:center;gap:.2rem;padding:0 .875rem;border-bottom:1px solid var(--border-subtle);font-size:.78rem;color:var(--text-muted)}
+.p-head.on{background:var(--surface-raised)}
+.p-line{display:flex;align-items:center;gap:.5rem;white-space:nowrap;min-width:0}
+.p-line .p-counts{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--text-secondary)}
+.p-line .btn{width:5.5rem;height:1.5rem;flex-shrink:0;display:inline-flex;gap:.35rem;align-items:center;justify-content:center}
+.p-machines{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.q-why{color:var(--text-secondary);font-style:italic}
+.q-actor{cursor:pointer}
+.q-actor:hover{color:var(--text-primary);text-decoration:underline}
+[data-actor].actor{cursor:pointer}
+[data-actor].actor:hover{filter:brightness(1.3);text-decoration:underline}
+.origin{color:var(--text-muted);font-size:.72rem;white-space:nowrap}
+.q-empty{padding:2.5rem 1.25rem;color:var(--text-muted);font-size:.9rem;line-height:1.6}
+.q-foot{height:2rem;display:flex;align-items:center;gap:.4rem;padding:0 .875rem;border-top:1px solid var(--border-subtle);font-size:.74rem;color:var(--text-muted);white-space:nowrap;overflow:hidden}
+.q-foot .sep{width:.5rem}
+
+/* ---------- right: the issue ---------- */
+.d-pane{display:flex;flex-direction:column;min-width:0;min-height:0}
+.d-head{height:3rem;flex-shrink:0;display:flex;align-items:center;gap:.75rem;padding:0 2rem;border-bottom:1px solid var(--border-subtle);font-size:.8rem;color:var(--text-muted);white-space:nowrap}
+.id-copy{font-family:var(--font-mono);font-size:1.15rem;font-weight:700;color:var(--text-primary);background:transparent;border:1px solid transparent;border-radius:var(--radius-sm);
+  padding:.05rem .35rem;margin-left:-.35rem;cursor:copy;width:6.75rem;height:2rem;text-align:left;flex-shrink:0}
+.id-copy:hover{border-color:var(--border);background:var(--surface-hover)}
+.copy-status{width:4.25rem;height:1.2rem;line-height:1.2rem;flex-shrink:0;font-size:.74rem;color:var(--text-muted)}
+.copy-status.done{color:var(--accent-primary);font-weight:700}
+.d-facts{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.d-facts .actor{font-size:.7rem}
+
+.d-body{position:relative;flex:1;overflow-y:auto;min-height:0;padding:1.5rem 2rem 3rem}
+.d-title{max-width:62rem;font-size:1.4rem;line-height:1.4;font-weight:700;color:var(--text-primary);word-break:break-word;margin:0 0 .75rem}
+.d-desc{max-width:52rem;font-size:1rem;line-height:1.65;color:#CFCFCF;white-space:pre-wrap;word-break:break-word;margin:0 0 1.5rem}
+.d-desc:empty{display:none}
+#d-title + .d-desc:empty + #d-media{margin-top:1.25rem}
+
+/* media inline, in the reading flow; each item at its own size up to the pane width, never upscaled */
+.m-item{margin:0 0 1.75rem}
+.m-frame{display:block;background:#050505;border:1px solid var(--border);border-radius:var(--radius-md);overflow:hidden;max-width:100%}
+.m-frame img,.m-frame video{display:block;width:100%;height:100%;object-fit:contain}
+.m-frame.photo{cursor:zoom-in}
+.m-frame.video{position:relative;cursor:pointer}
+.m-play{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:4.5rem;height:4.5rem;border-radius:50%;border:2px solid rgba(255,255,255,.85);
+  background:rgba(0,0,0,.6);color:#fff;font-size:1.6rem;line-height:1;cursor:pointer;padding:0 0 0 .3rem}
+.m-play:hover{background:var(--accent-primary);border-color:var(--accent-primary)}
+.m-frame.playing .m-play{display:none}
+.af{margin-top:.5rem}
+.af-label{font-size:.74rem;color:var(--text-muted);margin-bottom:.3rem}
+.af-row{display:flex;gap:.375rem}
+.af-f{display:flex;flex-direction:column;width:7rem;padding:0;background:#050505;border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer;overflow:hidden;color:var(--text-muted)}
+.af-f img{width:100%;height:4.4rem;object-fit:contain;display:block;opacity:.85}
+.af-f span{font-size:.7rem;padding:.1rem 0;text-align:center}
+.af-f:hover img,.af-f.on img{opacity:1}
+.af-f.on{border-color:var(--accent-primary)}
+.af-f.on span{color:var(--text-primary)}
+.af-none{height:5.6rem;display:flex;align-items:center;padding:0 .875rem;border:1px dashed var(--border);border-radius:var(--radius-sm);color:var(--text-muted);font-size:.8rem;width:36.5rem;max-width:100%}
+
+.outcome{max-width:62rem;margin:0 0 1.25rem}
+.story{display:flex;align-items:center;gap:.75rem;padding:.45rem 0;border-top:1px solid var(--border-row);font-size:.9rem}
+.story:last-of-type{border-bottom:1px solid var(--border-row)}
+.story .tid{width:5.25rem}
+.story .s-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.story.dead .s-title{color:var(--text-muted)}
+.proto-ctl{display:inline-flex;align-items:center;gap:.4rem;flex-shrink:0;background:var(--proto-bg);border:1px dashed var(--proto);color:var(--proto-text);border-radius:var(--radius-sm);padding:.1rem .4rem;font-size:.7rem}
+.proto-ctl select{background:#1E0333;color:var(--proto-text);border:1px solid var(--proto);border-radius:var(--radius-sm);font-family:inherit;font-size:.7rem;width:7.5rem}
+.no-story{font-size:.88rem;color:var(--text-secondary);margin:.5rem 0 0}
+.no-story code{font-family:var(--font-mono);color:var(--text-primary);background:var(--surface-raised);border:1px solid var(--border);border-radius:var(--radius-sm);padding:0 .3rem}
+.closure{font-size:.9rem;color:var(--text-secondary)}
+.closure b{color:var(--text-primary)}
+
+.meta{max-width:62rem;font-size:.8rem;color:var(--text-muted);line-height:1.7;margin:0 0 1rem}
+.meta .actor{font-size:.7rem}
+.meta .evidence{display:inline;margin-left:.25rem}
+
+/* comments: who said it is the point, so the author chip leads and the rule on the left says human or agent */
+.comments{max-width:52rem;margin:1.5rem 0 1rem}
+.c-head{font-size:.74rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);margin:0 0 .5rem}
+.cm{padding:.35rem 0 .35rem .75rem;border-left:2px solid var(--border);margin-bottom:.75rem}
+.cm-human{border-left-color:var(--chip-human-border)}
+.cm-agent{border-left-color:var(--chip-agent-border)}
+.cm-meta{font-size:.75rem;color:var(--text-muted);display:flex;gap:.5rem;align-items:center}
+.cm-body{font-size:.95rem;line-height:1.55;color:var(--text-primary);white-space:pre-wrap;word-break:break-word;margin-top:.2rem}
+.cm-body .mention{color:var(--text-primary);font-weight:700}
+.cm-body .iid,.cm-body .tid{font-weight:600}
+.compose{max-width:52rem;display:flex;gap:.5rem;align-items:flex-start;margin:0 0 1.5rem}
+.compose textarea{flex:1;min-width:0;height:2.1rem;resize:none;background:transparent;color:var(--text-primary);border:1px solid var(--border-subtle);border-radius:var(--radius-sm);
+  padding:.35rem .6rem;font-family:inherit;font-size:.9rem;line-height:1.4;transition:height .12s ease}
+.compose textarea::placeholder{color:var(--text-muted)}
+.compose textarea:focus{outline:none;height:5rem;border-color:var(--accent-primary);background:var(--bg-base)}
+.compose .btn{width:4.5rem;height:2.1rem;color:var(--text-muted)}
+.compose.active .btn{background:var(--accent-primary);border-color:var(--accent-primary);color:#fff;font-weight:600}
+.q-com{flex-shrink:0;width:2.25rem;display:inline-flex;align-items:center;gap:.2rem;justify-content:flex-end;color:var(--text-muted);font-size:.72rem}
+.q-com svg{width:.8rem;height:.8rem}
+
+.hist-toggle{background:transparent;border:0;padding:0;color:var(--text-muted);font-family:inherit;font-size:.8rem;cursor:pointer}
+.hist-toggle:hover{color:var(--text-primary)}
+.hist-toggle .caret{display:inline-block;width:1rem}
+.hist{max-width:62rem;font-size:.8rem;border-left:2px solid var(--border);padding-left:.875rem;margin:.5rem 0 0 .3rem}
+.hist div{display:flex;gap:.75rem;padding:.2rem 0}
+.hist .h-at{width:5.5rem;flex-shrink:0;color:var(--text-muted)}
+.hist .h-what{flex:1;min-width:0;color:var(--text-secondary);word-break:break-word}
+
+.quiet{max-width:34rem;margin:5rem auto 0;color:var(--text-muted);font-size:1rem;line-height:1.6;text-align:center}
+.quiet h2{color:var(--st-resolved);font-size:1.4rem;margin:0 0 .5rem}
+
+/* look closer: the current item as large as the window allows; the purple bar stays */
+.closer{position:fixed;inset:0 0 var(--proto-bar-h) 0;z-index:35;background:#000;display:flex;flex-direction:column}
+.closer-bar{flex-shrink:0;height:3rem;display:flex;align-items:center;gap:1rem;padding:0 1.25rem;background:rgba(23,23,23,.92);border-bottom:1px solid var(--border);font-size:.9rem}
+.closer-bar .iid{font-size:1.05rem;width:6.5rem}
+.closer-bar .cb-text{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-secondary)}
+.closer-bar .cb-pos{width:5rem;text-align:right;color:var(--text-muted)}
+.closer-bar .cb-keys{color:var(--text-muted);font-size:.8rem;white-space:nowrap}
+.closer-media{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;cursor:zoom-out}
+.closer-media img,.closer-media video{max-width:100%;max-height:100%;width:100%;height:100%;object-fit:contain;display:block}
+#selftest{display:none}
+</style>
+</head>
+<body>
+<div class="inbox">
+  <section class="q-pane" aria-label="Queue">
+    <div class="q-tabs" id="q-tabs"></div>
+    <div class="p-head" id="p-head"></div>
+    <div class="q-list" id="q-list" role="listbox" aria-label="Issues"></div>
+    <div class="q-foot"><kbd>j</kbd><kbd>k</kbd> move<span class="sep"></span><kbd>c</kbd> copy ID<span class="sep"></span><kbd>f</kbd> look closer<span class="sep"></span><kbd>i</kbd> file</div>
+  </section>
+  <section class="d-pane" aria-label="Selected issue">
+    <div class="d-head" id="d-head">
+      <button class="id-copy" id="id-copy" title="Copy the ID (c), to tell an agent what to do with it"></button>
+      <span class="copy-status" id="copy-status"></span>
+      <span id="d-state"></span>
+      <span class="d-facts" id="d-facts"></span>
+    </div>
+    <div class="d-body" id="d-body"></div>
+  </section>
+</div>
+<pre id="selftest"></pre>
+
+<script src="shared/mock-media.js"></script>
+<script src="shared/mock-data.js"></script>
+<script src="shared/store.js"></script>
+<script src="shared/shell.js"></script>
+<script>
+(function () {
+  "use strict";
+  var S = window.IssueStore, F = Shell.fmt, esc = F.esc;
+
+  Shell.mount({ active: "issues", page: "a", title: "Issues (Take A: Inbox)" });
+
+  var QUEUES = [
+    { key: "open", label: "No story", states: ["open"] },
+    { key: "linked", label: "Has story", states: ["linked"] },
+    { key: "resolved", label: "Resolved", states: ["resolved"] },
+    { key: "closed", label: "Closed", states: ["dismissed", "duplicate"] }
+  ];
+  var EMPTY = {
+    linked: "No issue has a story in progress.",
+    resolved: "Nothing is resolved yet. An issue is resolved when every story linked to it is done.",
+    closed: "Nothing has been dismissed or marked a duplicate."
+  };
+
+  // ---- UI state ----
+  var view = "open";
+  var cursorBy = {};  // cursor id per queue; keys are the queue, or "p:" + queue in the person view
+  var cursorIdx = {};
+  var person = null;  // { actor, back: { view, cursor } } while looking at everything from one person
+  var shownId = null;     // issue in the right pane, to keep or reset its scroll
+  var mediaKey = null;    // what the media section shows; rebuilt only when this changes, so video keeps playing
+  var focusIdx = 0;       // which item look closer opens: the last one clicked, else the first
+  var closer = null;      // { idx, issue } while look closer is open
+  var histOpen = false;   // history is collapsed until asked for; the choice holds while moving between issues
+
+  function queueOf(issue) {
+    var st = S.state(issue);
+    for (var n = 0; n < QUEUES.length; n++) { if (QUEUES[n].states.indexOf(st) >= 0) { return QUEUES[n].key; } }
+    return "open";
+  }
+  function vk() { return (person ? "p:" : "") + view; }
+  function listFor(key) {
+    if (person) { return personList(person.actor).filter(function (i) { return key === "all" || queueOf(i) === key; }); }
+    return S.issues().filter(function (i) { return queueOf(i) === key; }); // oldest first
+  }
+  function current() { var id = cursorBy[vk()]; return id ? S.get(id) : null; }
+
+  // ---- everything from one person: what they filed and what they commented on, newest activity first ----
+  function byActor(i, actor) { return (i.comments || []).filter(function (c) { return c.by === actor; }); }
+  function lastActivity(i, actor) {
+    var t = i.filed_by === actor ? i.filed_at : "";
+    byActor(i, actor).forEach(function (c) { if (c.at > t) { t = c.at; } });
+    return t;
+  }
+  function personList(actor) {
+    return S.issues().filter(function (i) { return i.filed_by === actor || byActor(i, actor).length; })
+      .sort(function (a, b) { var x = lastActivity(a, actor), y = lastActivity(b, actor); return x < y ? 1 : x > y ? -1 : b.seq - a.seq; });
+  }
+  // "agent:qa-browser · atin@Atlas"; for a human who is the machine's own user, just the machine.
+  function originLabel(actor, o) {
+    if (!o) { return ""; }
+    return actor === "human:" + o.user ? o.machine : o.user + "@" + o.machine;
+  }
+  function originHtml(actor, o) { var t = originLabel(actor, o); return t ? ' <span class="origin">· ' + esc(t) + "</span>" : ""; }
+  function enterPerson(actor) {
+    if (person && person.actor === actor) { return; }
+    var cur = current();
+    var back = person ? person.back : { view: view, cursor: cursorBy[view] };
+    person = { actor: actor, back: back };
+    view = "all";
+    var list = personList(actor), keep = cur && list.some(function (x) { return x.id === cur.id; });
+    cursorBy["p:all"] = keep ? cur.id : (list[0] && list[0].id); cursorIdx["p:all"] = 0;
+    document.getElementById("q-list").scrollTop = 0;
+    render();
+  }
+  function leavePerson() {
+    if (!person) { return; }
+    view = person.back.view; cursorBy[view] = person.back.cursor;
+    person = null;
+    render();
+  }
+  function renderPersonHead() {
+    var h = document.getElementById("p-head");
+    h.classList.toggle("on", !!person);
+    if (!person) { h.innerHTML = '<span>Click a name to see everything from that person.</span>'; return; }
+    var a = person.actor, filed = 0, comments = 0, seen = {}, order = [];
+    function note(o) { var t = originLabel(a, o); if (!t) { return; } if (!seen[t]) { seen[t] = 0; order.push(t); } seen[t]++; }
+    S.issues().forEach(function (i) {
+      if (i.filed_by === a) { filed++; note(i.origin); }
+      byActor(i, a).forEach(function (c) { comments++; note(c.origin); });
+    });
+    order.sort(function (x, y) { return seen[y] - seen[x]; });
+    h.innerHTML = '<div class="p-line">' + F.actor(a) + '<span class="p-counts">' + filed + " filed · " + comments + (comments === 1 ? " comment" : " comments") + "</span></div>" +
+      '<div class="p-line"><span class="p-machines">from ' + esc(order.join(", ") || "unknown") + "</span>" +
+      '<button class="btn btn-sm" id="p-leave" title="Back to all issues (Esc)"><kbd>Esc</kbd>All</button></div>';
+    document.getElementById("p-leave").onclick = leavePerson;
+  }
+  function itemsOf(i) { return (i && i.media) || []; }
+
+  // Keep the cursor on the same issue if it is still in this queue; otherwise take whatever now sits at its old position.
+  function settleCursor(list) {
+    var k = vk(), id = cursorBy[k], idx = -1;
+    for (var n = 0; n < list.length; n++) { if (list[n].id === id) { idx = n; } }
+    if (idx < 0) { idx = Math.min(cursorIdx[k] || 0, list.length - 1); }
+    cursorIdx[k] = Math.max(0, idx);
+    cursorBy[k] = list.length ? list[Math.max(0, idx)].id : null;
+  }
+  function move(delta) {
+    var list = listFor(view); if (!list.length) { return; }
+    var k = vk(), idx = Math.max(0, Math.min(list.length - 1, (cursorIdx[k] || 0) + delta));
+    cursorIdx[k] = idx; cursorBy[k] = list[idx].id;
+    render();
+  }
+  // In the person view a tab narrows that person's list; pressing it again shows all of it.
+  function switchQueue(key) {
+    if (person) { view = view === key ? "all" : key; render(); return; }
+    if (view !== key) { view = key; render(); }
+  }
+  // Show an issue wherever it now lives (used when a story's status moves it, and by the ?at= hook).
+  function goTo(id) {
+    var i = S.get(id); if (!i) { return; }
+    if (person && personList(person.actor).some(function (x) { return x.id === id; })) {
+      if (view !== "all" && queueOf(i) !== view) { view = "all"; }
+      cursorBy[vk()] = id; render(); return;
+    }
+    person = null;
+    view = queueOf(i); cursorBy[view] = id;
+    render();
+  }
+
+  // ---- copy the ID: the way to act on an issue is to tell an agent about it ----
+  var copyTimer = null;
+  function copyId() {
+    var i = current(); if (!i) { return; }
+    var st = document.getElementById("copy-status");
+    function show(ok) {
+      st.textContent = ok ? "Copied" : "Not copied";
+      st.classList.toggle("done", ok);
+      clearTimeout(copyTimer);
+      copyTimer = setTimeout(function () { st.textContent = current() ? "copy" : ""; st.classList.remove("done"); }, 1600);
+    }
+    function fallback() {
+      var ta = document.createElement("textarea");
+      ta.value = i.id; ta.setAttribute("readonly", ""); ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      var ok = false; try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+      document.body.removeChild(ta);
+      return ok;
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(i.id).then(function () { show(true); }, function () { show(fallback()); });
+    } else { show(fallback()); }
+  }
+
+  // ---- media inline ----
+  function thumbSrc(m) { return m.kind === "video" ? m.poster : m.src; }
+  function queueThumb(i) {
+    var ms = itemsOf(i);
+    if (!ms.length) { return '<span class="q-thumb none"></span>'; }
+    var m = ms.filter(function (x) { return x.kind === "video"; })[0] || ms[0], src = thumbSrc(m);
+    return '<span class="q-thumb" title="' + esc(F.mediaCount(ms)) + '">' +
+      (src ? '<img loading="lazy" decoding="async" src="' + esc(src) + '" alt="">' : "") +
+      (m.kind === "video" ? '<span class="q-badge q-vid">▶ ' + F.dur(m.duration) + "</span>" : "") +
+      (ms.length > 1 ? '<span class="q-badge q-count">' + ms.length + "</span>" : "") + "</span>";
+  }
+  function frameAt(frames, t) { var n = -1; frames.forEach(function (f, k) { if (f.t <= t + 0.05) { n = k; } }); return n; }
+
+  function renderMedia(i) {
+    var box = document.getElementById("d-media"); if (!box) { return; }
+    var ms = itemsOf(i), key = i.id + "|" + ms.map(function (m) { return m.id; }).join(",");
+    if (key === mediaKey) { return; }
+    mediaKey = key;
+    focusIdx = 0;
+    box.innerHTML = ms.map(function (m, k) {
+      var frame = m.kind === "video"
+        ? '<video src="' + esc(m.src) + '"' + (m.poster ? ' poster="' + esc(m.poster) + '"' : "") + ' muted playsinline preload="metadata" title="' + esc(m.name) + '"></video>' +
+          '<button class="m-play" data-play="' + k + '" title="Play (muted)">▶</button>'
+        : '<img src="' + esc(m.src) + '" alt="photo attached to ' + esc(i.id) + '" title="' + esc(m.name) + '">';
+      var agent = "";
+      if (m.kind === "video") {
+        agent = '<div class="af">' + (m.frames && m.frames.length
+          ? '<div class="af-label">What an agent sees: these frames, taken when it was filed. Click one to see that moment.</div><div class="af-row">' +
+            m.frames.map(function (f, n) {
+              return '<button class="af-f" data-frame="' + n + '" data-item="' + k + '"><img src="' + esc(f.src) + '" alt="frame at ' + F.dur(f.t, true) + '" loading="lazy"><span>' + F.dur(f.t, true) + "</span></button>";
+            }).join("") + "</div>"
+          : '<div class="af-none">Frames are made when this is filed.</div>') + "</div>";
+      }
+      return '<figure class="m-item" data-item="' + k + '"><div class="m-frame ' + m.kind + '" data-w="' + (m.w || 1280) + '" data-h="' + (m.h || 800) + '">' + frame + "</div>" + agent + "</figure>";
+    }).join("");
+    box.querySelectorAll("video").forEach(function (v) {
+      var fig = v.closest(".m-item"), m = ms[+fig.getAttribute("data-item")];
+      v.addEventListener("timeupdate", function () {
+        var n = frameAt(m.frames || [], v.currentTime);
+        fig.querySelectorAll(".af-f").forEach(function (f, k) { f.classList.toggle("on", k === n); });
+      });
+    });
+    sizeMedia();
+  }
+  // Each item is shown at its own pixel size, shrunk only to fit the pane and 72% of the window height.
+  // Sizes are set before the file loads, so nothing below jumps when it arrives.
+  function sizeMedia() {
+    var box = document.getElementById("d-media"); if (!box) { return; }
+    var maxW = box.clientWidth - 2, maxH = Math.round(window.innerHeight * 0.72);
+    box.querySelectorAll(".m-frame").forEach(function (f) {
+      var w = +f.getAttribute("data-w"), h = +f.getAttribute("data-h");
+      var s = Math.min(1, maxW / w, maxH / h);
+      f.style.width = Math.round(w * s) + 2 + "px";
+      f.style.height = Math.round(h * s) + 2 + "px";
+    });
+  }
+  window.addEventListener("resize", sizeMedia);
+
+  // Video is click to play: a poster and a play button until asked, then native controls.
+  function playInline(itemIdx) {
+    var fig = document.querySelector('.m-item[data-item="' + itemIdx + '"]'), v = fig && fig.querySelector("video");
+    if (!v) { return; }
+    v.controls = true;
+    fig.querySelector(".m-frame").classList.add("playing");
+    var p = v.play(); if (p && p.catch) { p.catch(function () {}); }
+  }
+  function seekFrame(itemIdx, frameIdx) {
+    var fig = document.querySelector('.m-item[data-item="' + itemIdx + '"]'), v = fig && fig.querySelector("video");
+    var m = itemsOf(current())[itemIdx]; if (!v || !m) { return; }
+    v.pause();
+    v.controls = true;
+    fig.querySelector(".m-frame").classList.add("playing");
+    v.currentTime = m.frames[frameIdx].t;
+    fig.querySelectorAll(".af-f").forEach(function (f, k) { f.classList.toggle("on", k === frameIdx); });
+    focusIdx = itemIdx;
+  }
+
+  // ---- look closer ----
+  function openCloser(idx) {
+    var i = current(), ms = itemsOf(i);
+    if (!ms.length) { closeCloser(); return; }
+    idx = Math.max(0, Math.min(ms.length - 1, idx || 0));
+    var m = ms[idx], inline = document.querySelector('.m-item[data-item="' + idx + '"] video');
+    var start = inline ? inline.currentTime : 0, wasPlaying = inline && !inline.paused;
+    if (inline) { inline.pause(); }
+    var el = document.getElementById("closer");
+    if (!el) { el = document.createElement("div"); el.id = "closer"; el.className = "closer"; document.body.appendChild(el); }
+    el.innerHTML = '<div class="closer-bar">' + F.iid(i.id) + '<span class="cb-text">' + esc(i.title) + '</span><span class="cb-pos">' +
+      (ms.length > 1 ? (idx + 1) + " of " + ms.length : "") + '</span><span class="cb-keys">' + (ms.length > 1 ? "<kbd>←</kbd> <kbd>→</kbd> item &nbsp; " : "") +
+      "<kbd>j</kbd> <kbd>k</kbd> issue &nbsp; <kbd>f</kbd> or <kbd>Esc</kbd> closes</span></div>" +
+      '<div class="closer-media" data-close>' + (m.kind === "video"
+        ? '<video src="' + esc(m.src) + '"' + (m.poster ? ' poster="' + esc(m.poster) + '"' : "") + ' muted playsinline controls></video>'
+        : '<img src="' + esc(m.src) + '" alt="">') + "</div>";
+    var v = el.querySelector("video");
+    if (v) { v.currentTime = start; if (wasPlaying) { var p = v.play(); if (p && p.catch) { p.catch(function () {}); } } }
+    closer = { idx: idx, issue: i.id };
+  }
+  function closeCloser() {
+    var el = document.getElementById("closer");
+    if (el) {
+      var v = el.querySelector("video"), inline = closer && document.querySelector('.m-item[data-item="' + closer.idx + '"] video');
+      if (v && inline) { inline.currentTime = v.currentTime; }
+      el.parentNode.removeChild(el);
+    }
+    closer = null;
+  }
+  document.addEventListener("click", function (e) {
+    if (e.target.closest && e.target.closest("[data-close]") && !e.target.closest("video")) { closeCloser(); }
+  });
+
+  // ---- keyboard: moving and looking only; decisions are made by telling an agent ----
+  document.addEventListener("keydown", function (e) {
+    if (Shell.dialogOpen() || e.metaKey || e.ctrlKey || e.altKey) { return; }
+    var tag = (e.target.tagName || "").toLowerCase();
+    if (tag === "input" || tag === "textarea" || tag === "select") { return; }
+    var k = e.key, handled = true;
+    if (k === "j" || k === "ArrowDown") { move(1); }
+    else if (k === "k" || k === "ArrowUp") { move(-1); }
+    else if (k === "c") { copyId(); }
+    else if (k === "f") { if (closer) { closeCloser(); } else if (itemsOf(current()).length) { openCloser(focusIdx); } }
+    else if (k === "Escape") { if (closer) { closeCloser(); } else if (person) { leavePerson(); } else { handled = false; } }
+    else if (closer && k === "ArrowRight") { openCloser(closer.idx + 1); }
+    else if (closer && k === "ArrowLeft") { openCloser(closer.idx - 1); }
+    else if (k === " " && !closer) { var iv = document.querySelector("#d-media video"); if (iv) { if (iv.paused) { playInline(+iv.closest(".m-item").getAttribute("data-item")); } else { iv.pause(); } } else { handled = false; } }
+    else if (closer && k === " ") { var v = document.querySelector("#closer video"); if (v) { if (v.paused) { v.play(); } else { v.pause(); } } }
+    else if (/^[1-4]$/.test(k)) { switchQueue(QUEUES[+k - 1].key); }
+    else { handled = false; }
+    if (handled) { e.preventDefault(); }
+  }, true);
+
+  // ---- rendering ----
+  var tabsEl = document.getElementById("q-tabs");
+  tabsEl.innerHTML = QUEUES.map(function (q, n) {
+    return '<button class="q-tab" data-q="' + q.key + '" aria-pressed="false"><kbd>' + (n + 1) + '</kbd><span class="q-tab-label">' + q.label +
+      '</span><span class="q-tab-count" id="qc-' + q.key + '">0</span></button>';
+  }).join("");
+  tabsEl.addEventListener("click", function (e) { var b = e.target.closest(".q-tab"); if (b) { b.blur(); switchQueue(b.getAttribute("data-q")); } });
+  document.getElementById("q-list").addEventListener("click", function (e) {
+    var who = e.target.closest("[data-actor]"); if (who) { enterPerson(who.getAttribute("data-actor")); return; }
+    var row = e.target.closest(".q-row"); if (!row) { return; }
+    cursorBy[vk()] = row.getAttribute("data-id");
+    render();
+  });
+  document.getElementById("id-copy").onclick = function () { this.blur(); copyId(); };
+  document.getElementById("d-head").addEventListener("click", function (e) {
+    var who = e.target.closest("[data-actor]"); if (who) { enterPerson(who.getAttribute("data-actor")); }
+  });
+  document.getElementById("d-body").addEventListener("click", function (e) {
+    var who = e.target.closest("[data-actor]"); if (who) { enterPerson(who.getAttribute("data-actor")); return; }
+    var pl = e.target.closest("[data-play]");
+    if (pl) { pl.blur(); playInline(+pl.getAttribute("data-play")); return; }
+    var fr = e.target.closest("[data-frame]");
+    if (fr) { fr.blur(); seekFrame(+fr.getAttribute("data-item"), +fr.getAttribute("data-frame")); return; }
+    var tog = e.target.closest(".hist-toggle");
+    if (tog) { tog.blur(); histOpen = !histOpen; renderHistory(current()); return; }
+    var g = e.target.closest("[data-goto]");
+    if (g) { e.preventDefault(); goTo(g.getAttribute("data-goto")); return; }
+    var fig = e.target.closest(".m-item");
+    if (fig) {
+      focusIdx = +fig.getAttribute("data-item");
+      if (e.target.closest(".m-frame.photo")) { openCloser(focusIdx); }
+      else if (e.target.closest(".m-frame.video:not(.playing)")) { playInline(focusIdx); }
+    }
+  });
+  document.getElementById("d-body").addEventListener("dblclick", function (e) {
+    var fig = e.target.closest(".m-item"); if (fig && e.target.closest(".m-frame")) { openCloser(+fig.getAttribute("data-item")); }
+  });
+  document.getElementById("d-body").addEventListener("change", function (e) {
+    var sel = e.target.closest("select[data-task]"); if (!sel) { return; }
+    var taskId = sel.getAttribute("data-task"), issueId = sel.getAttribute("data-issue");
+    var before = S.state(S.get(issueId));
+    S.setTaskStatus(taskId, sel.value);
+    var after = S.state(S.get(issueId));
+    Shell.toast("Prototype: " + esc(taskId) + " moved to " + esc(sel.value.replace(/_/g, " ")) + ". " + F.iid(issueId) +
+      (before === after ? " stays " + after + "." : " went from " + before + " to " + after + "."), "info");
+    goTo(issueId); // follow the issue to its new queue
+    sel.blur();
+  });
+
+  function tagFor(i) {
+    var q = queueOf(i);
+    var why = person && i.filed_by !== person.actor ? '<span class="q-why">commented</span> · ' : "";
+    return why + tagText(i, q);
+  }
+  function tagText(i, q) {
+    if (q === "open") { return '<span class="q-actor" data-actor="' + esc(i.filed_by) + '">' + esc(i.filed_by) + "</span>"; }
+    if (q === "closed") { return i.closure.kind === "duplicate" ? "duplicate of " + esc(i.closure.duplicate_of) : "dismissed"; }
+    var live = S.liveLinks(i).map(function (l) { return l.task_id; });
+    return '<span class="tid">' + esc(live[0]) + "</span>" + (live.length > 1 ? " +" + (live.length - 1) : "") + " " + esc(S.task(live[0]).status.replace(/_/g, " "));
+  }
+
+  function renderQueue(list) {
+    var el = document.getElementById("q-list"), curId = cursorBy[vk()];
+    if (!list.length) { el.innerHTML = '<div class="q-empty">' + esc(view === "open" ? "Nothing needs a story." : EMPTY[view]) + "</div>"; return; }
+    el.innerHTML = list.map(function (i) {
+      return '<div class="q-row' + (i.id === curId ? " cursor" : "") + '" data-id="' + i.id + '" role="option" aria-selected="' + (i.id === curId) + '">' +
+        '<div class="q-main"><div class="q-top">' + F.iid(i.id) + '<span class="q-tag">' + tagFor(i) + "</span>" + comCount(i) + '<span class="q-age">' + F.rel(i.filed_at) + "</span></div>" +
+        '<div class="q-text" title="' + esc(i.title) + '">' + esc(i.title) + "</div></div>" + queueThumb(i) + "</div>";
+    }).join("");
+    var c = el.querySelector(".cursor"); if (c) { c.scrollIntoView({ block: "nearest" }); }
+  }
+
+  // What came of it: its stories with their live status, or why it was closed, or how to get a story made.
+  function outcomeHtml(i) {
+    if (i.closure) {
+      var c = i.closure;
+      return '<div class="closure">' + (c.kind === "dismissed" ? "<b>Dismissed.</b> " + esc(c.reason)
+        : '<b>Duplicate of <a href="#" data-goto="' + esc(c.duplicate_of) + '">' + esc(c.duplicate_of) + "</a>.</b> " + esc(F.firstLine(S.get(c.duplicate_of).text, 100))) + "</div>";
+    }
+    var stories = i.links.map(function (l) {
+      var t = S.task(l.task_id);
+      return '<div class="story' + (t.status === "cancelled" ? " dead" : "") + '">' + F.tid(t.id) + F.tstatus(t.status) +
+        '<span class="s-title" title="' + esc(t.title) + '">' + esc(t.title) + "</span>" +
+        '<label class="proto-ctl">prototype only: move this story to <select data-task="' + t.id + '" data-issue="' + i.id + '">' +
+        S.TASK_STATUSES.map(function (s) { return '<option value="' + s + '"' + (s === t.status ? " selected" : "") + ">" + s.replace(/_/g, " ") + "</option>"; }).join("") +
+        "</select></label></div>";
+    }).join("");
+    return stories;
+  }
+
+  // filed by, when, source, how sure: one small line in the header
+  function factsHtml(i) {
+    var bits = [F.actor(i.filed_by) + originHtml(i.filed_by, i.origin), '<span title="' + esc(F.abs(i.filed_at)) + '">' + F.rel(i.filed_at) + "</span>"];
+    if (i.source) { bits.push(esc(i.source)); }
+    if (i.confidence) { bits.push(esc(i.confidence)); }
+    i.evidence.forEach(function (e) { bits.push(esc(e)); });
+    return bits.join(" · ");
+  }
+
+  function histLine(h) {
+    var d = h.data, what;
+    switch (h.type) {
+      case "issue_filed": what = "filed" + (d.photos || d.videos ? " with " + F.mediaCount(Array(d.photos || 0).fill({ kind: "photo" }).concat(Array(d.videos || 0).fill({ kind: "video" }))) : ""); break;
+      case "issue_linked": what = (d.promoted ? "made story " : "linked to ") + F.tid(d.task_id); break;
+      case "issue_unlinked": what = "unlinked from " + F.tid(d.task_id); break;
+      case "issue_dismissed": what = "dismissed: " + esc(d.reason); break;
+      case "issue_marked_duplicate": what = "marked a duplicate of " + F.iid(d.duplicate_of); break;
+      case "issue_reopened": what = "reopened"; break;
+      case "issue_media_added": what = "added a " + esc(d.kind); break;
+      case "issue_comment_added": what = "commented"; break;
+      case "issue_media_removed": what = "removed a " + esc(d.kind) + ": " + esc(d.reason); break;
+      default: what = esc(h.type);
+    }
+    return '<div><span class="h-at" title="' + esc(F.abs(h.at)) + '">' + F.rel(h.at) + '</span><span class="h-what">' + F.actor(h.by) + (d.origin ? originHtml(h.by, d.origin) : "") + " " + what + "</span></div>";
+  }
+  var BUBBLE = '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M2 2h12a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H7l-3.5 3v-3H2a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z"/></svg>';
+  function comCount(i) {
+    var n = (i.comments || []).length;
+    return '<span class="q-com" title="' + n + (n === 1 ? " comment" : " comments") + '">' + (n ? BUBBLE + n : "") + "</span>";
+  }
+  // @mentions stand out, and story and issue IDs read as IDs, so a request and its answer are easy to follow.
+  function commentBody(t) {
+    return esc(t).replace(/(^|\s)(@[\w:.-]+)/g, '$1<span class="mention">$2</span>')
+      .replace(/\bLAT-I\d+\b/g, function (x) { return '<span class="iid">' + x + "</span>"; })
+      .replace(/\bLAT-\d+\b/g, function (x) { return '<span class="tid">' + x + "</span>"; });
+  }
+  function commentsHtml(i) {
+    var cs = i.comments || [];
+    if (!cs.length) { return ""; }
+    return '<div class="c-head">Comments (' + cs.length + ")</div>" + cs.map(function (c) {
+      var kind = c.by.indexOf("human:") === 0 ? "human" : "agent";
+      return '<div class="cm cm-' + kind + '"><div class="cm-meta">' + F.actor(c.by) + originHtml(c.by, c.origin) + '<span title="' + esc(F.abs(c.at)) + '">' + F.rel(c.at) + "</span></div>" +
+        '<div class="cm-body">' + commentBody(c.body) + "</div></div>";
+    }).join("");
+  }
+  function postComment() {
+    var i = current(), box = document.getElementById("cm-box"); if (!i || !box) { return; }
+    var c = Shell.guard(function () { return S.comment(i.id, box.value); });
+    if (c) { box.value = ""; box.focus(); }
+  }
+  function wireCompose() {
+    var box = document.getElementById("cm-box"), wrap = document.getElementById("d-compose");
+    box.addEventListener("focus", function () { wrap.classList.add("active"); });
+    box.addEventListener("blur", function () { if (!box.value.trim()) { wrap.classList.remove("active"); } });
+    box.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); postComment(); }
+      else if (e.key === "Escape") { e.preventDefault(); box.blur(); }
+    });
+    document.getElementById("cm-post").addEventListener("mousedown", function (e) { e.preventDefault(); }); // keep focus in the box
+    document.getElementById("cm-post").onclick = postComment;
+  }
+
+  function renderHistory(i) {
+    var box = document.getElementById("d-hist"); if (!box || !i) { return; }
+    var h = S.history(i.id);
+    box.innerHTML = '<button class="hist-toggle" aria-expanded="' + histOpen + '"><span class="caret">' + (histOpen ? "▾" : "▸") + "</span>History (" + h.length + ")</button>" +
+      (histOpen ? '<div class="hist">' + h.map(histLine).join("") + "</div>" : "");
+  }
+
+  function renderDetail(i) {
+    var body = document.getElementById("d-body");
+    var changed = (i ? i.id : "none:" + view) !== shownId;
+    shownId = i ? i.id : "none:" + view;
+    document.getElementById("id-copy").textContent = i ? i.id : "";
+    document.getElementById("id-copy").disabled = !i;
+    document.getElementById("d-state").innerHTML = i ? F.state(S.state(i)) : "";
+    document.getElementById("d-facts").innerHTML = i ? factsHtml(i) : "";
+    var cs = document.getElementById("copy-status");
+    if (changed && !cs.classList.contains("done")) { cs.textContent = i ? "copy" : ""; }
+    if (!i) {
+      mediaKey = null;
+      body.innerHTML = view === "open"
+        ? '<div class="quiet"><h2>Nothing needs a story.</h2>Every issue has a story, a link to one, or a reason it was closed. New issues arrive here as they are filed.</div>'
+        : '<div class="quiet">' + esc(EMPTY[view]) + "</div>";
+      return;
+    }
+    if (!document.getElementById("d-media")) {
+      body.innerHTML = '<h1 class="d-title" id="d-title"></h1><div class="d-desc" id="d-desc"></div><div id="d-media"></div><div class="outcome" id="d-outcome"></div>' +
+        '<div class="comments" id="d-comments"></div><div class="compose" id="d-compose"><textarea id="cm-box" rows="1" placeholder="Comment, or ask an agent: @claude-opus-impl ..."></textarea>' +
+        '<button class="btn btn-sm" id="cm-post" title="Post (⌘ Enter)">Post</button></div><div id="d-hist"></div>';
+      wireCompose();
+      mediaKey = null;
+    }
+    var keep = changed ? 0 : body.scrollTop;
+    document.getElementById("d-title").textContent = i.title;
+    document.getElementById("d-desc").textContent = i.description || "";
+    document.getElementById("d-comments").innerHTML = commentsHtml(i);
+    if (changed) { document.getElementById("cm-box").value = ""; document.getElementById("d-compose").classList.remove("active"); }
+    renderMedia(i);
+    document.getElementById("d-outcome").innerHTML = outcomeHtml(i);
+    renderHistory(i);
+    body.scrollTop = keep;
+  }
+
+  function render() {
+    var counts = S.counts(), mine = person ? personList(person.actor) : null;
+    QUEUES.forEach(function (q) {
+      document.getElementById("qc-" + q.key).textContent = mine
+        ? mine.filter(function (i) { return queueOf(i) === q.key; }).length
+        : q.states.reduce(function (a, s) { return a + counts[s]; }, 0);
+      tabsEl.querySelector('[data-q="' + q.key + '"]').setAttribute("aria-pressed", q.key === view ? "true" : "false");
+    });
+    var list = listFor(view);
+    settleCursor(list);
+    var i = current();
+    renderPersonHead();
+    renderQueue(list);
+    renderDetail(i);
+    // Look closer follows the cursor while it has something to show, and steps aside when it does not.
+    if (closer && (!i || closer.issue !== i.id)) { if (i && itemsOf(i).length) { openCloser(0); } else { closeCloser(); } }
+  }
+
+  S.subscribe(render);
+  render();
+
+  // ---- test hooks ----
+  // ?at=LAT-I24   selects that issue on load, in whichever queue it lives.
+  // ?keys=jf      replays keystrokes after load (for headless screenshots of a given state).
+  // ?hist=1       opens the history.
+  // ?tray=1       opens the file panel with a photo and a video in the tray.
+  // ?selftest=1   checks the viewer, the media, the store and filing; PASS/FAIL lines go into <pre id="selftest">.
+  var params = new URLSearchParams(location.search);
+  function key(k, target) { (target || document).dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true })); }
+  function wait(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  function until(fn, ms) {
+    var end = Date.now() + (ms || 4000);
+    return new Promise(function (resolve) { (function poll() { var v = fn(); if (v || Date.now() > end) { resolve(v); } else { setTimeout(poll, 50); } })(); });
+  }
+  function fetchFile(url, name, type) { return fetch(url).then(function (r) { return r.blob(); }).then(function (b) { return new File([b], name, { type: type }); }); }
+  if (params.get("hist") === "1") { histOpen = true; render(); }
+  if (params.get("at")) { goTo(params.get("at")); }
+  // ?person=agent:qa-browser   opens the person view.
+  if (params.get("person")) { enterPerson(params.get("person")); }
+  // ?to=comments   scrolls the detail pane to the comment thread.
+  if (params.get("to") === "comments") { setTimeout(function () { var c = document.getElementById("d-comments"); if (c) { c.scrollIntoView({ block: "start" }); } }, 200); }
+  var keysDone = Promise.resolve();
+  if (params.get("keys")) { keysDone = wait(300).then(function () { params.get("keys").split("").forEach(function (k) { key(k); }); }); }
+  if (params.get("tray") === "1") {
+    Shell.openFile({ text: "Dragging a card to Done snaps back; the lane header also wraps" });
+    Promise.all([fetchFile("media/lane-wrap.jpg", "Screenshot 2026-09-29 at 09.14.02.png", "image/jpeg"),
+      fetchFile("media/drag-done-snapback.mp4", "drag-done-snapback.mov", "video/mp4")]).then(function (fs) {
+      var p = Shell.filePanel(); if (p) { p.addFiles(fs, "choose"); }
+    });
+  }
+
+  if (params.get("selftest") === "1") {
+    var out = [], pass = 0, failN = 0;
+    var check = function (name, cond) { out.push((cond ? "PASS " : "FAIL ") + name); if (cond) { pass++; } else { failN++; } };
+    var st = function (id) { return S.state(S.get(id)); };
+    var top = function (sel) { var n = document.querySelector(sel); return n ? Math.round(n.getBoundingClientRect().top) + "," + Math.round(n.getBoundingClientRect().left) : "none"; };
+    var fixed = function () { return [top("#id-copy"), top("#copy-status"), top("#d-title"), top(".q-tab")].join(" "); };
+    var f0;
+    var finish = function () {
+      out.push((failN ? "FAIL" : "PASS") + " total " + pass + " passed, " + failN + " failed");
+      document.getElementById("selftest").textContent = out.join("\n");
+    };
+    window.__selftest = keysDone.then(function () {
+      var open0 = listFor("open");
+      f0 = fixed();
+      check("default queue is Needs a story, oldest first (" + open0.length + ", LAT-I8 first because its only story was cancelled)",
+        view === "open" && open0.length === S.counts().open && open0[0].id === "LAT-I8" && cursorBy.open === "LAT-I8");
+      key("j"); check("j moves to the next", cursorBy.open === open0[1].id);
+      key("k"); check("k moves back", cursorBy.open === open0[0].id);
+      key("2"); check("2 switches to Has a story", view === "linked"); key("1");
+
+      // a viewer: nothing to decide with
+      check("no decision controls in the view", !document.querySelector("[data-act], .q-check, #undo, .sim-list, [data-unlink], [data-dupof]"));
+      var before = JSON.stringify(S.counts());
+      ["s", "l", "d", "u", "x", "o", "z"].forEach(function (k) { key(k); });
+      check("the old decision keys do nothing", JSON.stringify(S.counts()) === before && !Shell.dialogOpen());
+      check("no Similar issues section", !/Similar/.test(document.getElementById("d-body").textContent));
+
+      // history collapsed; opening it moves nothing above it
+      goTo("LAT-I1");
+      var h = S.history("LAT-I1").length, above = function () { return [top("#d-title"), top("#d-media"), top("#d-outcome"), top("#d-comments"), top("#d-compose"), top(".hist-toggle")].join(" "); };
+      var beforeOpen = above();
+      check("history is collapsed by default and says how many", !document.querySelector(".hist") && document.querySelector(".hist-toggle").textContent === "▸History (" + h + ")");
+      document.querySelector(".hist-toggle").click();
+      check("History opens in place with every event", document.querySelectorAll(".hist > div").length === h);
+      check("opening History moves nothing above it", above() === beforeOpen);
+      document.querySelector(".hist-toggle").click();
+
+      // the ID is prominent and copies
+      goTo("LAT-I21");
+      document.getElementById("id-copy").click();
+      return until(function () { return document.getElementById("copy-status").textContent !== "copy"; }, 2000);
+    }).then(function () {
+      var cs = document.getElementById("copy-status").textContent;
+      check("clicking the ID shows a copy result in its fixed slot (" + cs + ")", cs === "Copied" || cs === "Not copied");
+      check("the ID is the largest text in the header", parseFloat(getComputedStyle(document.getElementById("id-copy")).fontSize) > parseFloat(getComputedStyle(document.getElementById("d-facts")).fontSize));
+      check("the header line carries filed by, when, source and how sure", /agent:qa-browser/.test(document.getElementById("d-facts").textContent) && /qa-sweep-2026-09-27/.test(document.getElementById("d-facts").textContent) && /definite/.test(document.getElementById("d-facts").textContent));
+      check("nothing else below: title, description, media, stories, comments, history", !document.getElementById("d-meta") && !document.querySelector(".no-story"));
+
+      // round 3: title and description
+      goTo("LAT-I24");
+      var i24 = S.get("LAT-I24");
+      check("LAT-I24: the title is large and the description keeps its paragraphs", document.getElementById("d-title").textContent === i24.title &&
+        document.getElementById("d-desc").textContent === i24.description && /\n\n/.test(i24.description) &&
+        getComputedStyle(document.getElementById("d-desc")).whiteSpace === "pre-wrap" &&
+        parseFloat(getComputedStyle(document.getElementById("d-title")).fontSize) > parseFloat(getComputedStyle(document.getElementById("d-desc")).fontSize));
+      check("the queue row shows the title", document.querySelector('.q-row[data-id="LAT-I24"] .q-text').textContent === i24.title);
+      goTo("LAT-I26");
+      check("LAT-I26 has no description and shows nothing in its place", S.get("LAT-I26").description === "" && document.getElementById("d-desc").offsetHeight === 0);
+
+      // round 3: comments
+      goTo("LAT-I24");
+      check("LAT-I24 shows its five comments, oldest first", document.querySelectorAll("#d-comments .cm").length === 5 &&
+        document.querySelector("#d-comments .cm .cm-body").textContent.indexOf("Reproduced at 1280x800") === 0);
+      check("attribution: 2 human and 3 agent comments, each with its chip", document.querySelectorAll("#d-comments .cm-human .actor-human").length === 2 &&
+        document.querySelectorAll("#d-comments .cm-agent .actor-agent").length === 3);
+      var slotW = function (id) { return Math.round(document.querySelector('.q-row[data-id="' + id + '"] .q-com').getBoundingClientRect().width); };
+      check("queue: LAT-I24 shows 5 comments; LAT-I22 keeps an empty slot of the same width",
+        document.querySelector('.q-row[data-id="LAT-I24"] .q-com').textContent === "5" && document.querySelector('.q-row[data-id="LAT-I22"] .q-com').textContent === "" && slotW("LAT-I24") === slotW("LAT-I22"));
+      goTo("LAT-I22");
+      var box = document.getElementById("cm-box");
+      box.focus(); box.value = "@claude-opus-impl check whether this also happens with --status";
+      document.getElementById("cm-post").click();
+      var i22 = S.get("LAT-I22"), hh22 = S.history("LAT-I22");
+      check("posting a comment adds it as human:atin and to the history", i22.comments.length === 1 && i22.comments[0].by === "human:atin" &&
+        hh22[hh22.length - 1].type === "issue_comment_added" && document.querySelectorAll("#d-comments .cm-human").length === 1 && box.value === "");
+      check("the queue count follows the new comment", document.querySelector('.q-row[data-id="LAT-I22"] .q-com').textContent === "1" && slotW("LAT-I22") === slotW("LAT-I24"));
+      var blank = false; try { S.comment("LAT-I22", "   "); } catch (e) { blank = e.code === "VALIDATION_ERROR"; }
+      check("an empty comment is refused", blank && S.get("LAT-I22").comments.length === 1);
+      box.blur();
+
+      // round 4: everything from one person, and the machine each filing and comment came from
+      goTo("LAT-I24");
+      check("the top line shows where it was filed from: agent:qa-browser · atin@Atlas", /agent:qa-browser · atin@Atlas/.test(document.getElementById("d-facts").textContent));
+      var metas = Array.prototype.map.call(document.querySelectorAll("#d-comments .cm-meta"), function (n) { return n.textContent; });
+      check("comments show their machine: opus from atin@lattice-prime-1, the human from Hyperion only",
+        metas.some(function (t) { return /claude-opus-impl · atin@lattice-prime-1/.test(t); }) && metas.some(function (t) { return /human:atin · Hyperion/.test(t); }) &&
+        !metas.some(function (t) { return /human:atin · atin@/.test(t); }));
+      var rowBox = function (id) { var r = document.querySelector('.q-row[data-id="' + id + '"]'); return r ? [Math.round(r.offsetHeight), Math.round(r.querySelector(".q-text").getBoundingClientRect().left)].join(",") : "none"; };
+      var row0 = rowBox("LAT-I24"), listTop0 = top("#q-list"), backView = view, backCur = cursorBy[view];
+      document.querySelector("#d-facts [data-actor]").click();
+      var qa = "agent:qa-browser";
+      var mine = S.issues().filter(function (i) { return i.filed_by === qa || i.comments.some(function (c) { return c.by === qa; }); });
+      var nF = S.issues().filter(function (i) { return i.filed_by === qa; }).length, nC = 0;
+      S.issues().forEach(function (i) { i.comments.forEach(function (c) { if (c.by === qa) { nC++; } }); });
+      var rows = Array.prototype.map.call(document.querySelectorAll("#q-list .q-row"), function (r) { return r.getAttribute("data-id"); });
+      check("clicking the filer opens the person view: every issue they filed or commented on (" + mine.length + ")", !!person && person.actor === qa && rows.length === mine.length);
+      var head = document.getElementById("p-head").textContent;
+      check("the header shows " + nF + " filed · " + nC + " comments and both machines", head.indexOf(nF + " filed · " + nC + " comments") >= 0 && /atin@Atlas/.test(head) && /atin@Hyperion/.test(head));
+      var tabSum = QUEUES.reduce(function (a, q) { return a + (+document.getElementById("qc-" + q.key).textContent); }, 0);
+      check("tabs count this person only, and none is pressed", tabSum === mine.length && !document.querySelector('.q-tab[aria-pressed="true"]'));
+      check("newest activity first", rows.every(function (id, n) { return n === 0 || lastActivity(S.get(rows[n - 1]), qa) >= lastActivity(S.get(id), qa); }));
+      check("the detail pane keeps the selected issue", document.getElementById("id-copy").textContent === "LAT-I24");
+      check("queue rows keep their layout, and the list does not move", rowBox("LAT-I24") === row0 && top("#q-list") === listTop0);
+      key("2");
+      check("a tab narrows the person view to that state", view === "linked" && Array.prototype.every.call(document.querySelectorAll("#q-list .q-row"), function (r) { return S.state(S.get(r.getAttribute("data-id"))) === "linked"; }));
+      key("2"); check("pressing it again shows all of theirs", view === "all");
+      key("Escape");
+      check("Escape leaves it and restores the tab and selection", !person && view === backView && cursorBy[view] === backCur && document.getElementById("id-copy").textContent === backCur);
+      var human = document.querySelector("#d-comments .cm-human [data-actor]"); human.click();
+      var whyRow = document.querySelector('#q-list .q-row[data-id="LAT-I24"] .q-why'), ownRow = document.querySelector('#q-list .q-row[data-id="LAT-I5"] .q-why');
+      check("rows a person only commented on are marked; rows they filed are not", person.actor === "human:atin" && !!whyRow && whyRow.textContent === "commented" &&
+        !!document.querySelector('#q-list .q-row[data-id="LAT-I5"]') && !ownRow);
+      document.getElementById("p-leave").click();
+      check("the All button leaves the person view too", !person && view === backView);
+
+      // steady layout with and without media
+      goTo("LAT-I22"); var a = fixed(); goTo("LAT-I24"); var b = fixed(); goTo("LAT-I31"); var c = fixed(); goTo("LAT-I35"); var d = fixed();
+      check("ID, copy slot, text and tabs stay put across no media, video, vertical video, photo", a === f0 && b === f0 && c === f0 && d === f0);
+      goTo("LAT-I22");
+      check("no media: nothing is drawn for it", document.getElementById("d-media").children.length === 0);
+
+      // queue
+      var lefts = Array.prototype.map.call(document.querySelectorAll(".q-row .q-text"), function (n) { return Math.round(n.getBoundingClientRect().left); });
+      check("queue text starts at the same x on rows with and without thumbnails", lefts.length > 5 && lefts.every(function (x) { return x === lefts[0]; }));
+      var row24 = document.querySelector('.q-row[data-id="LAT-I24"]');
+      check("LAT-I24 row: video badge with duration, count 2", /▶ 0:07/.test(row24.querySelector(".q-vid").textContent) && row24.querySelector(".q-count").textContent === "2");
+      check("a row without media keeps an empty thumbnail slot", !!document.querySelector('.q-row[data-id="LAT-I28"] .q-thumb.none'));
+      check("queue thumbnails are posters, never video", !document.querySelector("#q-list video") && /poster/.test(row24.querySelector("img").getAttribute("src")));
+      check("no per-row controls in the queue", !document.querySelector("#q-list button, #q-list input"));
+
+      // photos inline, legible
+      goTo("LAT-I35");
+      var ph = document.querySelector("#d-media .m-frame.photo"), paneW = document.getElementById("d-media").clientWidth;
+      var want = Math.min(1600, paneW - 2, window.innerHeight * 0.72 * 1600 / 688);
+      check("LAT-I35: the photo is inline as large as its own size, the pane and 72% of the window allow (" + ph.offsetWidth + " of " + paneW + ")", ph && Math.abs(ph.offsetWidth - 2 - want) <= 2);
+      goTo("LAT-I2");
+      check("LAT-I2: both photos inline, one under the other", document.querySelectorAll("#d-media .m-frame.photo").length === 2);
+      var small = document.querySelectorAll("#d-media .m-frame.photo")[1];
+      check("a small screenshot is not upscaled (400 wide stays 400)", small.offsetWidth <= 402);
+
+      // video inline, frames under it
+      goTo("LAT-I24");
+      var v = document.querySelector("#d-media video");
+      check("LAT-I24: video inline, muted, not playing until asked, with a play button", v && v.muted && v.paused && !v.autoplay && !!document.querySelector(".m-play"));
+      check("five agent frames under it, with timestamps", document.querySelectorAll(".af-f").length === 5 && document.querySelectorAll(".af-f span")[1].textContent === "0:01.5");
+      check("its photo follows inline", !!document.querySelector('.m-item[data-item="1"] .m-frame.photo'));
+      return until(function () { var x = document.querySelector("#d-media video"); return x && x.readyState >= 1; }, 5000);
+    }).then(function () {
+      var v = document.querySelector("#d-media video");
+      check("the video loaded (duration " + (v && v.duration) + ")", v && v.readyState >= 1);
+      document.querySelector(".m-play").click();
+      check("clicking play plays it inline with native controls", !v.paused && v.controls && !document.querySelector(".m-play").offsetParent);
+      document.querySelectorAll(".af-f")[3].click();
+      check("clicking the 4.5s frame seeks the video there and pauses", Math.abs(v.currentTime - 4.5) < 0.01 && v.paused && document.querySelectorAll(".af-f")[3].classList.contains("on"));
+      goTo("LAT-I31");
+      var vv = document.querySelector("#d-media .m-frame.video");
+      check("LAT-I31: the vertical video is capped in height, not absurdly tall (" + vv.offsetHeight + "px)", vv.offsetHeight <= window.innerHeight * 0.72 + 3);
+
+      // look closer
+      goTo("LAT-I24");
+      key("f"); var cl = document.getElementById("closer");
+      check("f opens look closer over everything", cl && getComputedStyle(cl).position === "fixed" && !!cl.querySelector("video"));
+      key("ArrowRight"); check("→ moves to the next item (the photo)", !!document.querySelector("#closer img") && /2 of 2/.test(document.querySelector(".cb-pos").textContent));
+      key("Escape"); check("Escape closes look closer", !document.getElementById("closer"));
+      key("f"); key("f"); check("f closes it too", !document.getElementById("closer"));
+      document.querySelector("#d-media .m-frame.photo").click();
+      check("clicking a photo opens look closer on it", !!document.querySelector("#closer img")); key("Escape");
+
+      // prototype story control: the issue follows its story
+      goTo("LAT-I1");
+      var sel = document.querySelector('select[data-task="LAT-370"]');
+      sel.value = "done"; sel.dispatchEvent(new Event("change", { bubbles: true }));
+      check("prototype control: LAT-370 done makes LAT-I1 resolved, and the view follows it", st("LAT-I1") === "resolved" && view === "resolved" && cursorBy.resolved === "LAT-I1");
+      S.setTaskStatus("LAT-370", "in_progress");
+
+      // the store
+      var n = S.counts().total;
+      var filed = S.file({ text: "Store test with a photo", media: [{ kind: "photo", src: "media/lane-wrap.jpg", bytes: 94454, w: 1100, h: 700, name: "lane.png" }] });
+      check("file() takes media; history says filed with 1 photo", filed.media.length === 1 && S.counts().total === n + 1 && S.history(filed.id)[0].data.photos === 1);
+      var added = S.addMedia(filed.id, { kind: "video", src: "media/begin-noop.mp4", bytes: 12044870, duration: 8, name: "IMG_0001.MOV", frames: [] });
+      var hh = S.history(filed.id);
+      check("addMedia records issue_media_added", S.get(filed.id).media.length === 2 && hh[hh.length - 1].type === "issue_media_added");
+      var noReason = false; try { S.removeMedia(filed.id, added.id, " "); } catch (e) { noReason = e.code === "VALIDATION_ERROR"; }
+      check("removeMedia refuses without a reason", noReason);
+      S.removeMedia(filed.id, added.id, "Shows a token");
+      hh = S.history(filed.id); var last = hh[hh.length - 1];
+      check("removeMedia records who and why, and keeps neither file nor name", last.type === "issue_media_removed" && last.data.reason === "Shows a token" &&
+        last.by === S.me && JSON.stringify(last).indexOf("IMG_0001") < 0 && JSON.stringify(last).indexOf("begin-noop") < 0);
+      check("an 8 s phone recording (31.2 MB) is accepted under the 100 MB limit", !S.mediaProblem([], { kind: "video", bytes: 31209455 }));
+      check("oversized: 101 MB is refused against 100 MB", /Too large: 101 MB\. The limit is 100 MB/.test(S.mediaProblem([], { kind: "video", bytes: 101 * 1000 * 1000 }) || ""));
+
+      // filing, lean: text, tray, file button
+      Shell.openFile();
+      var p = Shell.filePanel();
+      check("the file panel is lean: title, description, tray, one file button",
+        !document.getElementById("fi-conf") && !document.getElementById("fi-ev") && document.querySelectorAll(".dialog-file .dialog-foot .btn").length === 1 &&
+        !!document.getElementById("fi-tray") && document.getElementById("fi-text").tagName === "INPUT" && !!document.getElementById("fi-desc"));
+      var n0 = S.counts().total;
+      document.querySelector(".dialog-file [data-go]").click();
+      check("the title is required", S.counts().total === n0 && /An issue needs a title/.test(document.getElementById("fi-err").textContent));
+      // A small limit for this check, so the test does not allocate 100 MB in the browser.
+      var savedLimit = S.LIMITS.file; S.LIMITS.file = 25 * 1000 * 1000;
+      // a file one MB over the per-file limit; refused on its size before anything is read, so a stand-in object is enough
+      var over = S.LIMITS.file + 1000 * 1000;
+      p.addFiles([{ name: "IMG_9999.MOV", size: over, type: "video/quicktime" }], "choose");
+      check("the tray refuses a file over the limit and says why", p.tray()[0].state === "refused" &&
+        document.getElementById("fi-tray").textContent.indexOf("Too large: " + S.mb(over) + ". The limit is " + S.mb(S.LIMITS.file) + " a file.") >= 0);
+      S.LIMITS.file = savedLimit;
+      var cv = document.createElement("canvas"); cv.width = 320; cv.height = 200;
+      cv.getContext("2d").fillRect(0, 0, 320, 200);
+      return new Promise(function (r) { cv.toBlob(r, "image/png"); }).then(function (blob) {
+        var png = new File([blob], "Screenshot 2026-09-29 at 09.30.00.png", { type: "image/png" });
+        var dt = new DataTransfer(); dt.items.add(png);
+        document.getElementById("fi-text").dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+        return until(function () { return p.tray().some(function (t) { return t.state === "ok"; }); }, 4000).then(function () { return png; });
+      });
+    }).then(function (png) {
+      var p = Shell.filePanel();
+      check("a synthetic paste of an image attaches it", p.tray().filter(function (t) { return t.state === "ok"; }).length === 1);
+      var n = S.counts().total;
+      document.querySelector(".dialog-file [data-go]").click();
+      check("empty text with a photo attached is refused, kindly and specifically", S.counts().total === n && /Add a title saying what the photo shows/.test(document.getElementById("fi-err").textContent));
+      document.getElementById("fi-text").value = "Pasted screenshot, a black block";
+      document.getElementById("fi-desc").value = "Steps: paste.\n\nExpected: a photo. Got: a black block.";
+      document.querySelector(".dialog-file [data-go]").click();
+      var newest = S.issues()[S.issues().length - 1];
+      check("with a title it files with the photo, not the refused file", S.counts().total === n + 1 && newest.media.length === 1 && !Shell.dialogOpen());
+      check("filing keeps the title and the description", newest.title === "Pasted screenshot, a black block" && newest.description === "Steps: paste.\n\nExpected: a photo. Got: a black block.");
+      var dt = new DataTransfer(); dt.items.add(png);
+      document.getElementById("d-body").dispatchEvent(new DragEvent("drop", { dataTransfer: dt, bubbles: true, cancelable: true }));
+      return until(function () { var q = Shell.filePanel(); return q && q.tray().some(function (t) { return t.state === "ok"; }); }, 4000);
+    }).then(function () {
+      check("a synthetic drop anywhere opens the file panel with the photo in the tray", !!Shell.filePanel() && Shell.filePanel().tray().length === 1);
+      Shell.closeDialog();
+
+      // empty queue
+      key("1");
+      listFor("open").forEach(function (i) { S.dismiss(i.id, "selftest"); });
+      check("an empty Needs a story is calm and plain", /Nothing needs a story/.test(document.getElementById("d-body").textContent) && document.getElementById("id-copy").textContent === "");
+      check("header and tabs stay put in the empty state", top("#copy-status") === f0.split(" ")[1] && top(".q-tab") === f0.split(" ")[3]);
+      check("no text overflows its row", Array.prototype.every.call(document.querySelectorAll(".q-row"), function (r) { return r.scrollWidth <= r.clientWidth + 1; }));
+    }).catch(function (e) { check("no exception: " + (e && e.stack || e), false); }).then(finish);
+  }
+})();
+</script>
+</body>
+</html>

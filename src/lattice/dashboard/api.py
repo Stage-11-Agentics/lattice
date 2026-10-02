@@ -23,7 +23,7 @@ from typing import Any
 from urllib.parse import parse_qs, unquote
 
 from lattice.core.comments import materialize_comments
-from lattice.core.config import get_project_type
+from lattice.core.config import get_project_type, issues_enabled
 from lattice.core.errors import HTTP_STATUS, OpError
 from lattice.core.ids import validate_id
 from lattice.core.origin import format_origin_line, origin_matches
@@ -39,8 +39,24 @@ from lattice.storage.operations import (
 #: The actor a local dashboard write uses when the request names none.
 DEFAULT_ACTOR = "dashboard:web"
 
+#: Operations whose author is the person at the dashboard, not the dashboard itself.
+HUMAN_AUTHORED_OPS = frozenset({"issue.file", "issue.comment"})
+
+
+def human_author(config: dict) -> str | None:
+    """The board's configured human actor (``default_actor: human:...``), else ``None``."""
+    actor = config.get("default_actor")
+    return actor if isinstance(actor, str) and actor.startswith("human:") and actor[6:] else None
+
+
 #: Maximum allowed request body size (1 MiB), to refuse oversized payloads.
 MAX_REQUEST_BODY_BYTES = 1_048_576
+
+#: A hosted board has no issue log yet (LAT-368): reads and writes answer this.
+ISSUES_UNAVAILABLE = (400, "LOCAL_ONLY", "Issues are not available on this board yet.")
+
+#: The most media items one dashboard filing may carry; it sizes the filing's body allowance.
+MAX_ISSUE_FILE_MEDIA_ITEMS = 64
 
 #: Refusals of a status change that ``lattice status --force --reason`` overrides.
 FORCEABLE_CODES = frozenset(
@@ -174,6 +190,132 @@ def _board_row(snap: dict) -> dict:
 
 def get_config(ld: Path) -> dict:
     return _read_config(ld)
+
+
+# ---------------------------------------------------------------------------
+# Issues (LAT-365)
+# ---------------------------------------------------------------------------
+
+
+def _flatten_issue_comments(comments: list[dict]) -> list[dict]:
+    """Flatten the task-comment-shaped thread for actor filtering and counts."""
+    flattened = []
+    pending = list(reversed(comments))
+    while pending:
+        comment = pending.pop()
+        flattened.append(comment)
+        replies = comment.get("replies", [])
+        if isinstance(replies, list):
+            pending.extend(reversed(replies))
+    return flattened
+
+
+def _issue_detail_adapter(ld: Path, raw_id: str) -> dict | None:
+    """The page's issue detail: LAT-371's ``issue_detail`` plus media URLs."""
+    from lattice.storage.issues import issue_detail
+
+    try:
+        detail = issue_detail(ld, raw_id)
+    except OpError as exc:
+        raise ApiError.from_op_error(exc) from exc
+    return None if detail is None else _normalize_issue_detail(detail)
+
+
+def _normalize_issue_detail(detail: dict) -> dict:
+    """Give media entries dashboard URLs and hide board-local file paths."""
+    from lattice.core.issue_media import parse_frame_name
+
+    issue = dict(detail)
+    issue.setdefault("comments", [])
+    issue.setdefault("events", [])
+    media = []
+    for entry in issue.get("media", []):
+        item = dict(entry)
+        media_id = item.get("id")
+        issue_id = issue.get("id")
+        valid_issue_id = isinstance(issue_id, str) and validate_id(issue_id, "iss")
+        valid_media_id = isinstance(media_id, str) and validate_id(media_id, "med")
+        item["url"] = (
+            f"/api/issues/{issue_id}/media/{media_id}"
+            if valid_issue_id
+            and valid_media_id
+            and item.get("path")
+            and not item.get("missing")
+            and not item.get("removed")
+            else None
+        )
+        frames = []
+        for frame in item.get("frames", []):
+            frame_item = dict(frame)
+            raw_path = frame_item.get("path")
+            frame_name = Path(raw_path).name if isinstance(raw_path, str) else ""
+            frame_item["url"] = (
+                f"/api/issues/{issue_id}/media/{media_id}/frames/{frame_name}"
+                if valid_issue_id
+                and valid_media_id
+                and parse_frame_name(frame_name) is not None
+                and not item.get("removed")
+                else None
+            )
+            frames.append(frame_item)
+        item["frames"] = frames
+        item.pop("path", None)
+        for frame in item["frames"]:
+            frame.pop("path", None)
+        media.append(item)
+    issue["media"] = media
+    return issue
+
+
+def _warn_unreadable_issue(path: Path, exc: Exception) -> None:
+    """One unreadable issue file must not take the whole Inbox down, as in the CLI."""
+    import sys
+
+    sys.stderr.write(f"warning: skipping unreadable issue file {path}: {exc}\n")
+
+
+def _issue_list_adapter(ld: Path, actor: str | None = None) -> list[dict]:
+    """Every issue, or with *actor* those it filed or commented on (any state).
+
+    Membership is LAT-371's ``issues_by``: a full key (``human:Atin-1``) matches
+    that session exactly, a legacy key (``human:Atin``) spans the person's
+    sessions. Each matched row adds the actor's own comment stats for the person
+    page: ``matched_by``, ``actor_comment_count``, ``actor_comment_origins`` and
+    ``actor_activity_at``.
+    """
+    from lattice.core.issues import actor_matches, issue_comments
+    from lattice.storage.issues import (
+        issue_views,
+        issues_by,
+        list_issue_snapshots,
+        read_issue_events,
+    )
+
+    if actor is None:
+        views = issue_views(ld, list_issue_snapshots(ld, on_unreadable=_warn_unreadable_issue))
+        return [_normalize_issue_detail(view) for view in views]
+    rows = []
+    for view in issues_by(ld, actor, on_unreadable=_warn_unreadable_issue):
+        comments = _flatten_issue_comments(issue_comments(read_issue_events(ld, view["id"])))
+        mine = [c for c in comments if actor_matches(c.get("author"), actor)]
+        times = [c.get("created_at") or "" for c in mine]
+        if view["activity"] == "filed":
+            times.append(view.get("filed_at") or "")
+        rows.append(
+            {
+                **_normalize_issue_detail(view),
+                "matched_by": view["activity"],
+                "actor_comment_count": len(mine),
+                "actor_comment_origins": [c.get("origin") for c in mine],
+                "actor_activity_at": max(times, default=""),
+            }
+        )
+    return rows
+
+
+def _require_issues_enabled(ld: Path) -> None:
+    if not issues_enabled(_read_config(ld)):
+        raise ApiError(409, "ISSUES_DISABLED", "The issue log is disabled on this board.")
 
 
 #: ``/api/tasks`` query parameters that filter by origin, as ``lattice list``
@@ -545,6 +687,36 @@ def route_get(
     try:
         if path == "/api/config":
             return ok(get_config(ld))
+        if path == "/api/issues":
+            _require_issues_enabled(ld)
+            values = query.get("by")
+            actor = values[0] if values else None
+            if actor == "":
+                actor = None
+            if actor is not None and len(actor) > 256:
+                raise ApiError(400, "VALIDATION_ERROR", "by filter is longer than 256 characters")
+            try:
+                rows = _issue_list_adapter(ld, actor)
+            except OpError as exc:
+                raise ApiError.from_op_error(exc) from exc
+            # List rows intentionally carry no comments or history; detail has
+            # one endpoint and keeps event redaction in the LAT-371 reader.
+            for row in rows:
+                row.pop("comments", None)
+                row.pop("events", None)
+            return ok(rows)
+        if path.startswith("/api/issues/"):
+            _require_issues_enabled(ld)
+            remainder = path[len("/api/issues/") :]
+            if "/" in remainder:
+                return error(404, "NOT_FOUND", f"Not found: {path}")
+            try:
+                detail = _issue_detail_adapter(ld, remainder)
+            except OpError as exc:
+                raise ApiError.from_op_error(exc) from exc
+            if detail is None:
+                return error(404, "NOT_FOUND", f"No issue {remainder}.")
+            return ok(detail)
         if path == "/api/tasks":
             return ok(get_tasks(ld, **origin_filter_params(query)))
         if path == "/api/stats":
@@ -822,6 +994,13 @@ def _task_write(task_id: str, sub: str, body: dict) -> WriteRequest:
     raise ApiError(404, "NOT_FOUND", f"Not found: /api/tasks/{task_id}/{sub}")
 
 
+def _without_unknown_video_fields(item: dict) -> dict:
+    video = item.get("video")
+    if isinstance(video, dict) and any(value is None for value in video.values()):
+        return {**item, "video": {k: v for k, v in video.items() if v is not None}}
+    return item
+
+
 def translate_post(path: str, body: Any) -> WriteRequest:
     """The operation ``POST <path>`` with JSON *body* runs.
 
@@ -829,7 +1008,13 @@ def translate_post(path: str, body: Any) -> WriteRequest:
     could never have sent (400); every rule about the change itself is the
     operation's, with the CLI's codes and messages (SPEC §10, G-6).
     """
-    if path == "/api/tasks" or path == "/api/config/dashboard" or path.startswith("/api/tasks/"):
+    if (
+        path == "/api/tasks"
+        or path == "/api/config/dashboard"
+        or path.startswith("/api/tasks/")
+        or path == "/api/issues"
+        or path.startswith("/api/issues/")
+    ):
         if not isinstance(body, dict):
             raise _invalid("Request body must be a JSON object")
     if path == "/api/config/dashboard":
@@ -864,7 +1049,63 @@ def translate_post(path: str, body: Any) -> WriteRequest:
             _require_task_id(task_id)
             return _task_write(task_id, sub, body)
         raise ApiError(404, "NOT_FOUND", f"Not found: {path}")
+    if path == "/api/issues":
+        title = body.get("title")
+        if not isinstance(title, str) or not title.strip():
+            raise _invalid("Missing or empty 'title' field")
+        description = body.get("description", "")
+        if not isinstance(description, str):
+            raise _invalid("'description' must be a string")
+        # The body allowance is sized for media; the text fields stay at the
+        # ordinary write limit.
+        if len((title + description).encode("utf-8")) > MAX_REQUEST_BODY_BYTES:
+            raise ApiError(
+                413,
+                "PAYLOAD_TOO_LARGE",
+                f"Title and description together exceed {MAX_REQUEST_BODY_BYTES} bytes",
+            )
+        media = body.get("media", [])
+        if not isinstance(media, list) or not all(isinstance(item, dict) for item in media):
+            raise _invalid("'media' must be an array of objects")
+        if len(media) > MAX_ISSUE_FILE_MEDIA_ITEMS:
+            raise _invalid(f"At most {MAX_ISSUE_FILE_MEDIA_ITEMS} media items per filing")
+        # A browser recording can report no duration (it is display data): leave
+        # an unknown dimension out rather than send null.
+        media = [_without_unknown_video_fields(item) for item in media]
+
+        params = {"title": title, "description": description, "media": tuple(media)}
+
+        def render_issue(result: Any) -> tuple[int, Any]:
+            value = dict(result.value)
+            value["events"] = result.events
+            return 201, _normalize_issue_detail(value)
+
+        return WriteRequest("issue.file", params, body.get("actor"), render_issue)
+    if path.startswith("/api/issues/"):
+        remainder = path[len("/api/issues/") :]
+        issue_id, separator, sub = remainder.partition("/")
+        if not separator or sub != "comment":
+            raise ApiError(404, "NOT_FOUND", f"Not found: {path}")
+        _require_issue_ref(issue_id)
+        for key in ("parent_id", "reply_to"):
+            if body.get(key) is not None:
+                raise _invalid("The dashboard posts top-level comments only")
+        text = body.get("body")
+        if not isinstance(text, str) or not text.strip():
+            raise _invalid("Missing or empty 'body' field")
+        params = {"issue": issue_id, "text": text}
+        return WriteRequest(
+            "issue.comment", params, body.get("actor"), lambda result: (200, result.value)
+        )
     raise ApiError(404, "NOT_FOUND", f"Unknown API endpoint: {path}")
+
+
+def _require_issue_ref(issue_id: str) -> None:
+    """Validate issue path IDs with the storage resolver's shared grammar."""
+    from lattice.core.issues import parse_issue_ref
+
+    if parse_issue_ref(issue_id) is None:
+        raise ApiError(400, "INVALID_ID", f"Invalid issue ID format: '{issue_id}'.")
 
 
 def write_error(request: WriteRequest, exc: OpError) -> ApiError:

@@ -60,6 +60,8 @@ RAW_WRITERS: dict[str, str] = {
     "lattice.cli.review_cmds": "the review text's temp file in the system temp dir",
     "lattice.core.agent_spawn": "the spawn prompt and output temp files (tmp-prompts/, runtime)",
     "lattice.core.review": "review_state/ records, failures.jsonl and temp prompts (runtime)",
+    "lattice.dashboard.media_prep": "a filed video or HEIC photo's scratch copy in the system "
+    "temp dir for ffmpeg or sips (never a board path)",
     "lattice.integrations.c11": "the c11 bridge's state file in the user's data dir, and the "
     "trident pane's prompt under <cwd>/.lattice/tmp-prompts/ (runtime; refused on a hosted "
     "checkout whose .lattice is not a real directory, SPEC §9.4)",
