@@ -865,7 +865,10 @@ class Project:
             except BaseException as exc:
                 failure = exc
                 quarantine = self._recover(txn, exc)
-                if not txn.committed:
+                # A quarantine means the outcome is unknown or the rollback did not
+                # finish; the staged media is left for reload reconciliation, which
+                # publishes it if the journal shows the operation committed.
+                if quarantine is None and not txn.committed:
                     try:
                         self.issue_media.abort_operation(op_id)
                     except Exception as cleanup_error:  # noqa: BLE001 - restart reconciliation retries

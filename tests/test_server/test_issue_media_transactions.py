@@ -474,7 +474,7 @@ def test_a_commit_whose_finalize_never_ran_is_published_when_the_project_reloads
         assert names(manifest_dir(root)) == [] and names(stage_dir(root)) == []
         status, _, body = call(server, "GET", path, token=token)
         assert (status, body) == (200, data)
-        assert server.project(SLUG).issue_media.published_sizes == {sha(data): 800}
+        assert server.project(SLUG).issue_media.published_bytes == 800
 
 
 def test_reload_aborts_an_uncommitted_manifest_and_sweeps_orphaned_media(

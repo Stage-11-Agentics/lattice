@@ -538,9 +538,10 @@ def issue_list(
         shown = _hosted_media_views(board, views)
     else:
         snapshots = list_issue_snapshots(lattice_dir, on_unreadable=unreadable)
-        views = _hosted_media_views(board, issue_views(lattice_dir, snapshots))
+        views = issue_views(lattice_dir, snapshots)
         wanted = ISSUE_STATES if show_all else (states or DEFAULT_LIST_STATES)
-        shown = [view for view in views if view["state"] in wanted]
+        # Ask the server about media only for the issues that are shown.
+        shown = _hosted_media_views(board, [v for v in views if v["state"] in wanted])
     order = {state: i for i, state in enumerate(ISSUE_STATES)}
     shown.sort(key=lambda v: (order[v["state"]], v.get("seq") or 0))
     if is_json:

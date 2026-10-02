@@ -295,21 +295,18 @@ async def issue_media(request: Request, state: ServerState) -> Response:
         media_id = request.path_params["media_id"]
         frame = request.path_params.get("frame")
 
-        def read():
+        def plan():
             from lattice.server.app import check_issue_data_version
-            from lattice.server.issue_media import read_media
+            from lattice.server.issue_media import plan_media_read
 
             check_issue_data_version(request, project)
-            return read_media(
-                project.board,
-                issue_id,
-                media_id,
-                frame_name_value=frame,
-                range_header=request.headers.get("range"),
-            )
+            return plan_media_read(project.board, issue_id, media_id, frame_name_value=frame)
 
         try:
-            value = await state.registry.run_locked(project, read)
+            from lattice.server.issue_media import serve_media
+
+            planned = await state.registry.run_locked(project, plan)
+            value = await in_worker(lambda: serve_media(planned, request.headers.get("range")))
         except OpError as exc:
             if exc.code != "RANGE_NOT_SATISFIABLE":
                 raise

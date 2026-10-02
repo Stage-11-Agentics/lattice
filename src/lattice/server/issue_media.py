@@ -202,6 +202,9 @@ class Upload:
     head: bytearray
     written: int = 0
     finished: bool = False
+    #: Set once the upload has succeeded or been aborted; a later abort is a
+    #: no-op, so a stale abort never removes a newer upload's reservation.
+    done: bool = False
 
     def write(self, chunk: bytes) -> None:
         if self.finished:
@@ -284,6 +287,7 @@ class Upload:
                 )
                 os.chmod(self.owner._metadata_path(self.sha256), 0o600)
             self.owner._reserve_path(self.sha256).unlink(missing_ok=True)
+            self.done = True
             return {
                 "sha256": self.sha256,
                 "size_bytes": self.written,
@@ -300,6 +304,9 @@ class Upload:
             self.owner._release_upload(self.sha256, self.reserved)
 
     def abort(self) -> None:
+        if self.done:
+            return
+        self.done = True
         if self.fd >= 0:
             try:
                 os.close(self.fd)
@@ -336,7 +343,8 @@ class HostedIssueMedia:
         self.lock = threading.Lock()
         self._inflight: set[str] = set()
         self._reserved: dict[str, int] = {}
-        self.published_sizes: dict[str, int] = {}
+        #: Bytes of every published object, one per stored path (not per hash).
+        self.published_bytes = 0
 
     def _make_layout(self) -> None:
         flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
@@ -391,7 +399,7 @@ class HostedIssueMedia:
         return value
 
     def _published_unique_bytes(self) -> int:
-        return sum(self.published_sizes.values())
+        return self.published_bytes
 
     def _staged_unique_bytes(self) -> int:
         sizes = dict(self._reserved)
@@ -412,7 +420,7 @@ class HostedIssueMedia:
                     sizes.setdefault(sha, int(raw["size_bytes"]))
             except (OSError, ValueError, TypeError, KeyError, OpError):
                 continue
-        return sum(size for sha, size in sizes.items() if sha not in self.published_sizes)
+        return sum(sizes.values())
 
     def begin_upload(self, sha256: str, size_bytes: int) -> Upload:
         sha256 = validate_sha256(sha256)
@@ -440,7 +448,9 @@ class HostedIssueMedia:
                     )
                 reserved = False
             else:
-                reserved = sha256 not in self.published_sizes
+                # Storage is not deduplicated: a published hash staged again is
+                # a new stored object, so it counts against the quota.
+                reserved = True
                 current = self._published_unique_bytes() + self._staged_unique_bytes()
                 if reserved and current + size_bytes > self.max_project_bytes:
                     raise OpError(
@@ -724,7 +734,7 @@ class HostedIssueMedia:
         self._remove_unreferenced_stage(
             {item.get("sha256") for item in manifest.get("objects", []) if isinstance(item, dict)}
         )
-        self.published_sizes = self.scan_published()
+        self.published_bytes = self.scan_published()
         return True
 
     def _matches(self, path: Path, sha256: str, size_bytes: int) -> bool:
@@ -749,7 +759,7 @@ class HostedIssueMedia:
                 sha = validate_sha256(value)
             except OpError:
                 continue
-            if sha in still_used:
+            if sha in still_used or sha in self._inflight:
                 continue
             self._blob_path(sha).unlink(missing_ok=True)
             self._metadata_path(sha).unlink(missing_ok=True)
@@ -759,6 +769,12 @@ class HostedIssueMedia:
     def reconcile(self, journal: Any) -> None:
         """Resolve leftover manifests using journal commit IDs and issue snapshots."""
         self._make_layout()
+        # Nothing is uploading while a project loads: dot-temp files in staging
+        # are crash leftovers and are never referenced.
+        for leftover in (*self.staging.glob(".*.part"), *self.staging.glob(".*.tmp")):
+            leftover.unlink(missing_ok=True)
+        for leftover in self.manifests.glob(".*.tmp"):
+            leftover.unlink(missing_ok=True)
         self.expire_staging()
         committed = {
             entry.get("op_id")
@@ -773,7 +789,7 @@ class HostedIssueMedia:
             else:
                 self.abort_operation(op_id)
         self.sweep_orphans()
-        self.published_sizes = self.scan_published()
+        self.published_bytes = self.scan_published()
 
     def finalize_removed(self, events: list | tuple) -> None:
         """Unlink detached media only after its removal event has committed."""
@@ -802,7 +818,10 @@ class HostedIssueMedia:
             _remove_tree(root)
             return
         active: dict[str, set[str]] = {}
-        for snapshot in list_issue_snapshots(self.board):
+        unreadable: set[str] = set()
+        for snapshot in list_issue_snapshots(
+            self.board, on_unreadable=lambda path, _exc: unreadable.add(Path(path).stem)
+        ):
             issue_id = snapshot.get("id")
             if not validate_id(issue_id, "iss"):
                 continue
@@ -812,6 +831,8 @@ class HostedIssueMedia:
                 if not entry.get("removed")
             }
         for issue_dir in list(root.iterdir()):
+            if issue_dir.name in unreadable:
+                continue  # its snapshot could not be read: keep its media for repair
             if issue_dir.name not in active or not validate_id(issue_dir.name, "iss"):
                 _remove_tree(issue_dir)
                 continue
@@ -831,23 +852,23 @@ class HostedIssueMedia:
             if not any(issue_dir.iterdir()):
                 _remove_tree(issue_dir)
 
-    def scan_published(self) -> dict[str, int]:
-        """Unique content hashes and sizes under the private LAT-366 media tree."""
+    def scan_published(self) -> int:
+        """Bytes of every regular file under the private media tree (no hashing)."""
         root = self.board / "issues" / "media"
-        out: dict[str, int] = {}
+        total = 0
         if not root.is_dir() or root.is_symlink():
-            return out
+            return total
         for directory, dirs, files in os.walk(root, followlinks=False):
             base = Path(directory)
             dirs[:] = [name for name in dirs if not (base / name).is_symlink()]
             for name in files:
-                path = base / name
                 try:
-                    digest, size, _head = _digest_file(path)
-                except (OSError, OpError):
+                    info = os.lstat(base / name)
+                except OSError:
                     continue
-                out.setdefault(digest, size)
-        return out
+                if stat.S_ISREG(info.st_mode):
+                    total += info.st_size
+        return total
 
     def issue_bytes(self, issue_id: str) -> int:
         """Actual regular-file bytes for a present issue, including frame sidecars."""
@@ -893,16 +914,66 @@ class MediaRead:
     content_range: str | None
 
 
-def read_media(
-    board: Path,
-    issue_id: str,
-    media_id: str,
-    *,
-    frame_name_value: str | None = None,
-    range_header: str | None = None,
-) -> MediaRead:
-    """Read and verify a present original or derived frame, with one bounded range."""
-    from lattice.core.issue_media import MAX_FRAME_BYTES, parse_frame_name
+@dataclass(frozen=True)
+class MediaPlan:
+    """What one read needs, decided under the project lock from the snapshot."""
+
+    board: Path
+    path: Path
+    content_type: str
+    expected_hash: str | None
+    expected_size: int | None
+    is_frame: bool
+
+
+_VERIFIED: dict[tuple[int, int, int, int], str] = {}
+_VERIFIED_LOCK = threading.Lock()
+_VERIFIED_MAX = 8192
+_CHUNK = 1024 * 1024
+
+
+def _pread_exact(fd: int, length: int, offset: int) -> bytes:
+    parts = []
+    while length > 0:
+        chunk = os.pread(fd, length, offset)
+        if not chunk:
+            break
+        parts.append(chunk)
+        offset += len(chunk)
+        length -= len(chunk)
+    return b"".join(parts)
+
+
+def _verified_digest(fd: int, info: os.stat_result) -> str:
+    """The object's SHA-256, computed once per file identity (device, inode, size,
+    mtime). Published media is only ever replaced atomically, so an unchanged
+    identity is unchanged bytes; the hash is streamed, never held in memory."""
+    key = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+    with _VERIFIED_LOCK:
+        known = _VERIFIED.get(key)
+    if known is not None:
+        return known
+    digest = hashlib.sha256()
+    offset = 0
+    while True:
+        chunk = os.pread(fd, _CHUNK, offset)
+        if not chunk:
+            break
+        digest.update(chunk)
+        offset += len(chunk)
+    value = digest.hexdigest()
+    with _VERIFIED_LOCK:
+        if len(_VERIFIED) >= _VERIFIED_MAX:
+            _VERIFIED.clear()
+        _VERIFIED[key] = value
+    return value
+
+
+def plan_media_read(
+    board: Path, issue_id: str, media_id: str, *, frame_name_value: str | None = None
+) -> MediaPlan:
+    """Resolve one read against the current snapshot (call under the project lock)."""
+    from lattice.core.issue_media import parse_frame_name
 
     if not validate_id(issue_id, "iss") or not validate_id(media_id, "med"):
         raise OpError("NOT_FOUND", "issue media not found.")
@@ -933,46 +1004,71 @@ def read_media(
         content_type = entry.get("content_type")
         if not isinstance(content_type, str) or media_ext(content_type) is None:
             raise OpError("INTEGRITY_ERROR", "issue media content type is invalid")
-        expected_hash = sha
-        expected_size = size_expected
-    else:
-        t_ms = parse_frame_name(frame_name_value)
-        if t_ms is None or t_ms > 86_400_000:
-            raise OpError("NOT_FOUND", "issue media frame not found.")
-        parent = frames_dir(board, issue_id, entry)
-        if parent is None:
-            raise OpError("INTEGRITY_ERROR", "issue media frame path is invalid")
-        path = parent / frame_name_value
-        content_type = "image/jpeg"
-        expected_hash = None
-        expected_size = None
+        return MediaPlan(board, path, content_type, sha, size_expected, False)
+    t_ms = parse_frame_name(frame_name_value)
+    if t_ms is None or t_ms > 86_400_000:
+        raise OpError("NOT_FOUND", "issue media frame not found.")
+    parent = frames_dir(board, issue_id, entry)
+    if parent is None:
+        raise OpError("INTEGRITY_ERROR", "issue media frame path is invalid")
+    return MediaPlan(board, parent / frame_name_value, "image/jpeg", None, None, True)
+
+
+def serve_media(plan: MediaPlan, range_header: str | None = None) -> MediaRead:
+    """Read and verify a planned object, with one bounded range. Takes no project
+    lock: it opens the file by descriptor, hashes it once per identity, and reads
+    only the requested range."""
+    from lattice.core.issue_media import MAX_FRAME_BYTES
 
     try:
-        actual_hash, actual_size, head, content = _read_board_file(board, path)
+        fd = _open_board_file(plan.board, plan.path)
     except FileNotFoundError:
         raise OpError("NOT_FOUND", "issue media bytes are not available on this server.") from None
-    except (OSError, OpError) as exc:
-        if isinstance(exc, OpError):
-            raise
+    except OpError:
+        raise
+    except OSError as exc:
         if getattr(exc, "errno", None) in {2, 20, 40}:  # ENOENT, ENOTDIR, ELOOP
             raise OpError(
                 "NOT_FOUND", "issue media bytes are not available on this server."
             ) from None
         raise OpError("INTEGRITY_ERROR", "issue media could not be read safely.") from exc
-    if expected_hash is not None and (
-        actual_hash != expected_hash or actual_size != expected_size
-    ):
-        raise OpError(
-            "INTEGRITY_ERROR", "issue media bytes do not match their recorded hash and size."
-        )
-    if frame_name_value is not None and (
-        actual_size > MAX_FRAME_BYTES or sniff_media(head) != "image/jpeg"
-    ):
-        raise OpError("INTEGRITY_ERROR", "issue media frame is not a supported JPEG object.")
-    start, end, status = _range_bounds(range_header, actual_size)
-    selected = content[start : end + 1] if status == 206 else content
-    content_range = f"bytes {start}-{end}/{actual_size}" if status == 206 else None
-    return MediaRead(selected, content_type, actual_hash, actual_size, status, content_range)
+    try:
+        info = os.fstat(fd)
+        actual_size = info.st_size
+        actual_hash = _verified_digest(fd, info)
+        if plan.expected_hash is not None and (
+            actual_hash != plan.expected_hash or actual_size != plan.expected_size
+        ):
+            raise OpError(
+                "INTEGRITY_ERROR", "issue media bytes do not match their recorded hash and size."
+            )
+        if plan.is_frame and (
+            actual_size > MAX_FRAME_BYTES or sniff_media(os.pread(fd, 64, 0)) != "image/jpeg"
+        ):
+            raise OpError("INTEGRITY_ERROR", "issue media frame is not a supported JPEG object.")
+        start, end, status = _range_bounds(range_header, actual_size)
+        if status == 206:
+            body = _pread_exact(fd, end - start + 1, start)
+            content_range = f"bytes {start}-{end}/{actual_size}"
+        else:
+            body = _pread_exact(fd, actual_size, 0)
+            content_range = None
+        return MediaRead(body, plan.content_type, actual_hash, actual_size, status, content_range)
+    finally:
+        os.close(fd)
+
+
+def read_media(
+    board: Path,
+    issue_id: str,
+    media_id: str,
+    *,
+    frame_name_value: str | None = None,
+    range_header: str | None = None,
+) -> MediaRead:
+    """Plan and serve one read in a single call (the routes split the two phases)."""
+    plan = plan_media_read(board, issue_id, media_id, frame_name_value=frame_name_value)
+    return serve_media(plan, range_header)
 
 
 def _range_bounds(value: str | None, size: int) -> tuple[int, int, int]:
@@ -1020,8 +1116,26 @@ def _range_bounds(value: str | None, size: int) -> tuple[int, int, int]:
     return start, end, 206
 
 
+def _facts(board: Path, path: Path, *, digest: bool) -> tuple[int, bytes, str | None]:
+    """``(size, first 64 bytes, digest or None)`` of a regular file opened by
+    descriptor. The digest is the cached once-per-identity hash; without it
+    nothing is read beyond the head."""
+    fd = _open_board_file(board, path)
+    try:
+        info = os.fstat(fd)
+        head = os.pread(fd, 64, 0)
+        return info.st_size, head, (_verified_digest(fd, info) if digest else None)
+    finally:
+        os.close(fd)
+
+
 def available_media(board: Path, issue_ids: list[str]) -> dict:
-    """Only verified object metadata for present issues; never returns media bytes."""
+    """Object metadata for present issues; never returns media bytes.
+
+    An original is reported when it is a regular file of the recorded size and
+    type; the client verifies its hash on download, and a read verifies it again.
+    A frame's hash is reported (it is derived data the snapshot does not carry),
+    computed once per file identity."""
     from lattice.storage.issue_media import list_frames
     from lattice.storage.issue_media import media_path as board_media_path
 
@@ -1038,26 +1152,24 @@ def available_media(board: Path, issue_ids: list[str]) -> dict:
                 sha = validate_sha256(entry.get("sha256"))
                 path = board_media_path(board, issue_id, entry)
                 try:
-                    actual, size, head, _content = (
-                        _read_board_file(board, path) if path is not None else ("", -1, b"", b"")
+                    size, head, _ = (
+                        _facts(board, path, digest=False) if path is not None else (-1, b"", None)
                     )
                 except (OSError, OpError):
                     continue
-                if (
-                    actual != sha
-                    or size != entry.get("size_bytes")
-                    or sniff_media(head) != entry.get("content_type")
+                if size != entry.get("size_bytes") or sniff_media(head) != entry.get(
+                    "content_type"
                 ):
                     continue
                 frames = []
                 for t_ms, frame in list_frames(board, issue_id, entry):
                     try:
-                        digest, frame_size, frame_head, _content = _read_board_file(board, frame)
+                        frame_size, frame_head, frame_digest = _facts(board, frame, digest=True)
                     except (OSError, OpError):
                         continue
                     if frame_size > 2 * 1024 * 1024 or sniff_media(frame_head) != "image/jpeg":
                         continue
-                    frames.append({"t_ms": t_ms, "sha256": digest, "size_bytes": frame_size})
+                    frames.append({"t_ms": t_ms, "sha256": frame_digest, "size_bytes": frame_size})
                 entries.append(
                     {
                         "media_id": entry["id"],
@@ -1075,7 +1187,10 @@ __all__ = [
     "HostedIssueMedia",
     "MediaRead",
     "Upload",
+    "MediaPlan",
     "available_media",
+    "plan_media_read",
     "read_media",
+    "serve_media",
     "validate_sha256",
 ]

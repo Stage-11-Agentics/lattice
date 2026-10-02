@@ -352,7 +352,7 @@ def test_repeating_an_upload_is_idempotent(server: ServerHandle, root: Path, tok
     assert (stage_dir(root) / f"{sha(data)}.blob").read_bytes() == data
 
 
-def test_the_project_quota_counts_in_flight_and_published_bytes_once_per_hash(
+def test_the_project_quota_counts_in_flight_bytes_once_per_hash_and_published_bytes_per_object(
     root: Path, token: str
 ) -> None:
     with media_server(root, max_issue_media_project_bytes=500) as server:
@@ -368,11 +368,14 @@ def test_the_project_quota_counts_in_flight_and_published_bytes_once_per_hash(
         # The same hash again is never counted twice.
         assert stage_ok(server, token, a)["size_bytes"] == 200
 
-        # Publish A: its 200 bytes now count as published, not as staged (once).
+        # Publish A: its 200 bytes now count as published, not as staged.
         filed(server, token, [item(a)])
-        assert server.project(SLUG).issue_media.published_sizes == {sha(a): 200}
-        assert stage_ok(server, token, a)["size_bytes"] == 200  # published: free to re-stage
-        status, _, body = put_stage(server, token, c)  # 200 published + 200 staged + 200
+        assert server.project(SLUG).issue_media.published_bytes == 200
+        # Storage is not deduplicated, so staging a published hash again is a
+        # second stored object: 200 published + 200 staged (B) + 200 more.
+        status, _, body = put_stage(server, token, a)
+        assert status == 413 and error_code(body) == "MEDIA_QUOTA_EXCEEDED", body
+        status, _, body = put_stage(server, token, c)
         assert status == 413 and error_code(body) == "MEDIA_QUOTA_EXCEEDED", body
 
 

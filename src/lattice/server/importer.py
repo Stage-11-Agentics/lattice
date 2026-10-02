@@ -359,7 +359,8 @@ def _preflight_media_copy(
                 "rerun with --omit-media to import metadata only if acceptable",
                 code="PAYLOAD_TOO_LARGE",
             )
-    project_bytes = sum(project_hash_sizes.values())
+    # Storage is not deduplicated, so the project total is every stored object.
+    project_bytes = sum(size for _path, _digest, size in object_sizes)
     if project_bytes > limits.max_issue_media_project_bytes:
         raise _media_refusal(
             "issues/media",

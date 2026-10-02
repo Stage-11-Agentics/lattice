@@ -656,19 +656,16 @@ def test_per_issue_limit_at_the_exact_total_passes(root: Path, source: Path) -> 
     assert importer.import_project(root, SLUG, source)["media_count"] == 7
 
 
-def _unique_bytes(board: Path) -> int:
-    unique: dict[str, int] = {}
-    for path in _objects(board):
-        data = path.read_bytes()
-        unique[hashlib.sha256(data).hexdigest()] = len(data)
-    return sum(unique.values())
+def _stored_bytes(board: Path) -> int:
+    """Storage is not deduplicated: the project quota counts every stored object."""
+    return sum(path.stat().st_size for path in _objects(board))
 
 
 def test_project_limit_refuses_naming_the_quota_and_omit_media(
     root: Path, source: Path, no_writes: None
 ) -> None:
     board = source / ".lattice"
-    _set_limits(root, max_issue_media_project_bytes=_unique_bytes(board) - 1)
+    _set_limits(root, max_issue_media_project_bytes=_stored_bytes(board) - 1)
     before = _tree(source)
 
     with pytest.raises(OpError) as exc:
@@ -681,18 +678,19 @@ def test_project_limit_refuses_naming_the_quota_and_omit_media(
     assert _tree(source) == before
 
 
-def test_project_quota_counts_identical_content_once(root: Path, source: Path) -> None:
-    """The PNG is in two issues and every video frame is the same JPEG: once each."""
+def test_project_quota_counts_every_stored_object_even_identical_content(
+    root: Path, source: Path
+) -> None:
+    """The PNG is in two issues and every video frame is the same JPEG: each copy
+    is stored, so each counts; a limit equal to the stored total passes."""
     board = source / ".lattice"
-    unique = _unique_bytes(board)
-    every_object = sum(p.stat().st_size for p in _objects(board))
-    assert unique < every_object  # the fixture really repeats content
-    _set_limits(root, max_issue_media_project_bytes=unique)
+    every_object = _stored_bytes(board)
+    _set_limits(root, max_issue_media_project_bytes=every_object)
 
     result = importer.import_project(root, SLUG, source)
 
     assert result["media_count"] == 7
-    assert result["media_bytes"] == every_object  # the report counts objects, not hashes
+    assert result["media_bytes"] == every_object
 
 
 # ---------------------------------------------------------------------------
