@@ -21,7 +21,7 @@ A person can run every block by hand too.
 4. [Quick start on one machine](#4-quick-start-on-one-machine)
 5. [Install](#5-install)
 6. [The server root and server.json](#6-the-server-root-and-serverjson)
-7. [Projects and their review workflow](#7-projects-and-their-review-workflow)
+7. [Projects and their configuration](#7-projects-and-their-configuration)
 8. [Tokens](#8-tokens)
 9. [Running the server as a service](#9-running-the-server-as-a-service)
 10. [Reverse proxies](#10-reverse-proxies)
@@ -298,7 +298,7 @@ The server logs one JSON object per line to stdout: requests, project loads, rec
 - `audit_commit` carries the audit cycle's timings (`lock_wait_ms`, `prehash_ms`, `stage_ms`, `commit_ms`). The audit history is staged by a helper process per project (a child of the server running the server's Python, `-c` in `ps`), replaced if it dies and stopped with the server.
 - `work_lock_slow` names any hold of a project's work lock of 1 second or more, and the thread that held it. Every other request of that project waited on it.
 
-## 7. Projects and their review workflow
+## 7. Projects and their configuration
 
 A project is one board. Create one with the options `lattice init` takes:
 
@@ -316,7 +316,13 @@ lattice server project config web --set auto_plan_review_on_transition=false
 lattice server project config web --set auto_code_review_on_transition=true --set review_mode=single
 ```
 
-`project config` accepts only `review_mode`, `plan_review_mode` (`inline`, `single`, `triple`), `plan_approval` (`auto`, `human`), `auto_code_review_on_transition`, and `auto_plan_review_on_transition` (`true`, `false`). With the server running, the change goes through the server and every cache receives it at its next sync. Board configuration is admin-only: from a checkout, only `set-project-code`, `set-subproject-code`, and the dashboard settings can change `config.json`.
+`project config` accepts only `review_mode`, `plan_review_mode` (`inline`, `single`, `triple`), `plan_approval` (`auto`, `human`), `auto_code_review_on_transition`, `auto_plan_review_on_transition` (`true`, `false`), and `task_types`. Replace the task type list with a JSON array containing unique, non-empty, trimmed strings; it must include `task`:
+
+```bash
+lattice server project config web --set 'task_types=["task","bug","chore","research"]'
+```
+
+The list is replaced as a whole, so include every type the project should keep. New boards allow `task`, `bug`, and `chore` by default. Existing project configs and tasks are preserved. With the server running, the change goes through the server and every cache receives it at its next sync. Board configuration is admin-only: from a checkout, only `set-project-code`, `set-subproject-code`, and dashboard settings can change `config.json`.
 
 To bring an existing local board onto the server, import it instead of creating a project: section 14.
 
@@ -652,7 +658,7 @@ Everything you and your agents do locally works the same: `create`, `status`, `c
 - **Maintenance commands** (`init`, `rebuild`, `doctor --fix`, `backfill-ids`, `migrate`) refuse with `LOCAL_ONLY`; they run on the server host (section 7). `lattice doctor` without `--fix` runs on the cache and also compares every file with the server's copy.
 - **Hooks** configured on the board run on your machine only if your remote sets `run_board_hooks: true`. The server runs no hooks and spawns no agents.
 - **Plugins.** An operation from a plugin package runs on a hosted board only if the plugin is installed on the server (section 19).
-- **Grouping work.** Lattice has no epics, hosted or local, and an agent must never create an umbrella task to stand in for one. Group related tasks with a shared tag (`--tags`) and order them with `depends_on` links:
+- **Grouping work.** New boards allow `task`, `bug`, and `chore`, and custom types can be configured per board. An agent must never create an umbrella task to stand in for an epic, even if the board has a custom `epic` type. Group related tasks with a shared tag (`--tags`) and order them with `depends_on` links. On a hosted board, an admin changes types with `lattice server project config <slug> --set 'task_types=[...]'`, including `task` and every type the project should keep:
 
   ```bash
   lattice create "Hosted trial: write the runbook" --tags hosted-trial --actor human:alice

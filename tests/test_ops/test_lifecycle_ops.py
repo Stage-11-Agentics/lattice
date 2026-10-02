@@ -6,6 +6,7 @@ snapshot where the rejection is about the task's state), and idempotent no-ops.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -107,6 +108,39 @@ class TestUpdate:
         exc = _reject(board, "task.update", {"task": task_id, "pairs": ["title=x"]})
         assert exc.code == "NOT_FOUND"
         assert exc.message == f"Task {task_id} is archived."
+
+
+class TestTaskTypes:
+    def test_create_and_update_share_actionable_invalid_type_message(
+        self, board: LocalBoard
+    ) -> None:
+        expected = (
+            "Invalid task type: 'epic'. Valid types: task, bug, chore. "
+            "On a local board, add the type to `.lattice/config.json` `task_types`."
+        )
+        with pytest.raises(OpError) as create_error:
+            _run(board, "task.create", {"title": "Bad", "type": "epic"})
+        task_id = _task(board)
+        with pytest.raises(OpError) as update_error:
+            _run(board, "task.update", {"task": task_id, "pairs": ["type=epic"]})
+
+        for error in (create_error.value, update_error.value):
+            assert error.code == "VALIDATION_ERROR"
+            assert error.message == expected
+            assert error.message.startswith("Invalid task type: 'epic'.")
+            assert "host" not in error.message.lower()
+
+    def test_custom_type_succeeds_after_board_config_adds_it(self, board: LocalBoard) -> None:
+        config_path = board.lattice_dir / "config.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config["task_types"].append("research")
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+
+        task_id = _task(board)
+        updated = _run(board, "task.update", {"task": task_id, "pairs": ["type=research"]})
+        assert updated.value["type"] == "research"
+        created = _run(board, "task.create", {"title": "Research", "type": "research"})
+        assert created.value["type"] == "research"
 
 
 class TestEditDescription:

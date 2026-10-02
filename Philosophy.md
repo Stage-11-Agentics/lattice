@@ -28,7 +28,7 @@ everything below is. why.
 
 Lattice asks you to believe six things. not features. commitments. load-bearing walls. accept them and the system works. resist them and you are fighting the grain of the universe. and the universe. is patient. but it works best when you are on the same page.
 
-**task.** work has a name before it begins. this is the uncarved block. you cannot shape what you haven't named. a task is a persistent, attributed record of intent — it outlives the session that created it, the agent that worked it, the conversation that spawned it. tasks have types (task, bug, spike, chore) and owners. if something needs doing, it gets a task. work that isn't named is work that other minds cannot see. invisible work is. a lie.
+**task.** work has a name before it begins. this is the uncarved block. you cannot shape what you haven't named. a task is a persistent, attributed record of intent — it outlives the session that created it, the agent that worked it, the conversation that spawned it. tasks default to types (task, bug, chore); boards can configure additional types. tasks have owners. if something needs doing, it gets a task. work that isn't named is work that other minds cannot see. invisible work is. a lie.
 
 **event.** every change is an immutable fact. X happened at time T. by actor A. this is the Akashic Record of your project — you cannot silently edit history. you can only append to it. systems that store only current state have chosen amnesia as architecture. they can tell you what is. but not how it came to be. state is a conclusion. events are evidence. and evidence. is what separates knowing from believing.
 

@@ -43,7 +43,7 @@ class TestDefaultConfig:
 
     def test_has_task_types(self) -> None:
         config = default_config()
-        assert config["task_types"] == ["task", "bug", "spike", "chore"]
+        assert config["task_types"] == ["task", "bug", "chore"]
 
     def test_workflow_statuses(self) -> None:
         config = default_config()
@@ -196,6 +196,11 @@ class TestLoadConfig:
     def test_empty_object(self) -> None:
         loaded = load_config("{}")
         assert loaded == {}
+
+    def test_preserves_explicit_legacy_task_types(self) -> None:
+        legacy_types = ["task", "bug", "spike", "chore", "epic"]
+        loaded = load_config(json.dumps({"schema_version": 1, "task_types": legacy_types}))
+        assert loaded["task_types"] == legacy_types
 
 
 # ---------------------------------------------------------------------------

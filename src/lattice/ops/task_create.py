@@ -9,11 +9,13 @@ from lattice.core.config import (
     VALID_PRIORITIES,
     VALID_URGENCIES,
     configured_event_prefix,
+    invalid_task_type_message,
     validate_status,
     validate_task_type,
 )
 from lattice.core.ids import generate_task_id, validate_actor, validate_id
 from lattice.ops.base import CommonParams, OpContext, OpError, OpResult, operation
+from lattice.ops.plan_gate import _hosted_hint
 from lattice.storage.operations import TaskMutationDecision, scaffold_plan
 
 # A repeated create with the same --id is idempotent when these match.
@@ -63,9 +65,15 @@ class Create:
                 "VALIDATION_ERROR", f"Invalid status: '{status}'. Valid statuses: {valid}."
             )
         if not validate_task_type(config, task_type):
-            valid = ", ".join(config.get("task_types", []))
             raise OpError(
-                "VALIDATION_ERROR", f"Invalid task type: '{task_type}'. Valid types: {valid}."
+                "VALIDATION_ERROR",
+                invalid_task_type_message(
+                    config,
+                    task_type,
+                    hosted_hint=_hosted_hint(
+                        ctx.lattice_dir, None, config=config, task_type=task_type
+                    ),
+                ),
             )
         if priority not in VALID_PRIORITIES:
             valid = ", ".join(VALID_PRIORITIES)

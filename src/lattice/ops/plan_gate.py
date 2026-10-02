@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import shlex
 from pathlib import Path
 
 from lattice.core.errors import OpError
@@ -80,10 +82,32 @@ def check_plan_gate(
         )
 
 
-def _hosted_hint(lattice_dir: Path, snapshot: dict | None) -> str:
-    """On a server-owned board, the client's cache is read-only: name the command
-    that writes a plan (SPEC §3.9). Empty for a local board."""
+def _hosted_hint(
+    lattice_dir: Path,
+    snapshot: dict | None,
+    *,
+    config: dict | None = None,
+    task_type: object = None,
+) -> str:
+    """Return an actionable hint only for a server-owned board.
+
+    The default is the plan-write hint (SPEC §3.9). When ``config`` is given,
+    format the task-type admin command; the hosted project slug is the name of
+    the server-owned project directory. Empty for a local board.
+    """
     if not (lattice_dir / "hosted" / "owner.json").exists():
         return ""
+    if config is not None:
+        configured = list(config.get("task_types", []))
+        replacement = list(configured)
+        if isinstance(task_type, str) and task_type not in replacement:
+            replacement.append(task_type)
+        assignment = shlex.quote("task_types=" + json.dumps(replacement, separators=(",", ":")))
+        slug = lattice_dir.parent.name
+        return (
+            "On a hosted board, ask an admin on the server host to run "
+            f"`lattice server project config {slug} --set {assignment}`; "
+            "this replaces the list, so include the existing values when adding a type."
+        )
     task = (snapshot or {}).get("short_id") or (snapshot or {}).get("id") or "<task>"
     return f" Write the plan with `lattice plan write {task} --file <path>`."

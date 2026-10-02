@@ -437,7 +437,6 @@ def default_config(preset: str = "classic", status_preset: str = "stage11") -> L
         "task_types": [
             "task",
             "bug",
-            "spike",
             "chore",
         ],
         "workflow": workflow,
@@ -604,9 +603,25 @@ def get_valid_transitions(config: dict, from_status: str) -> list[str]:
     return result
 
 
-def validate_task_type(config: dict, task_type: str) -> bool:
+def validate_task_type(config: dict, task_type: object) -> bool:
     """Return ``True`` if *task_type* is listed in the config's task_types."""
-    return task_type in config.get("task_types", [])
+    return isinstance(task_type, str) and task_type in config.get("task_types", [])
+
+
+def invalid_task_type_message(
+    config: dict, task_type: object, *, hosted_hint: str | None = None
+) -> str:
+    """Explain why a type was refused and how to add it to this board's config.
+
+    ``hosted_hint`` is supplied by the operation layer only for a server-owned
+    board. Core formatting stays pure and defaults to local-board guidance.
+    """
+    configured = config.get("task_types", [])
+    valid = ", ".join(configured)
+    guidance = hosted_hint or (
+        "On a local board, add the type to `.lattice/config.json` `task_types`."
+    )
+    return f"Invalid task type: '{task_type}'. Valid types: {valid}. {guidance}"
 
 
 def get_wip_limit(config: dict, status: str) -> int | None:

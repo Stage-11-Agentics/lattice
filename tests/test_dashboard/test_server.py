@@ -412,6 +412,9 @@ class TestTaskDetailEndpoint:
         assert body["ok"] is True
         assert body["data"]["archived"] is True
         assert body["data"]["title"] == "Old spike task"
+        assert body["data"]["type"] == "spike"
+        config = json.loads((_ld / "config.json").read_text())
+        assert config["task_types"] == ["task", "bug", "chore"]
 
     def test_invalid_id_format(self, dashboard_server):
         base_url, _ld, _ids = dashboard_server

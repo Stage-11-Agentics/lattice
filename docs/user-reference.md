@@ -79,6 +79,10 @@ The required reason structurally enforces the scannable-queue convention. Settin
 
 The dashboard's Web view renders these as an interactive force-directed graph.
 
+## Task types
+
+New boards configure `task_types` as `task`, `bug`, and `chore`. Create and update accept only types in the board's `.lattice/config.json` `task_types` list. Add a custom type to that list and keep the existing values. Hosted board types are changed by an admin with `lattice server project config`; see the [hosted guide](hosted/guide.md). Existing configurations are preserved, and tasks keep reading and displaying a type even if it is no longer configured.
+
 ---
 
 ## Short IDs
@@ -453,7 +457,7 @@ The CLI is Lattice's write interface — the primary way agents interact with th
 - `--json` — structured output (all commands)
 - `--quiet` — just the ID (all commands)
 - `--actor` — who is performing the action (all write commands)
-- `--type` — task, bug, spike, chore (create/list)
+- `--type` — set the task type on create; set `type=<value>` on update; filter by type on list. New boards allow task, bug, and chore.
 - `--priority` — critical, high, medium, low (create/list)
 - `--assigned` / `--assigned-to` — filter/set assignee (list/create)
 - `--tag` — filter by tag (list); set one tag, repeatable (create)

@@ -393,8 +393,8 @@ class HostedTarget(LocalTarget):
 # Declared hosted differences
 # ---------------------------------------------------------------------------
 
-# SPEC §3.9: a hosted cache is read-only, so the planning hint and PLAN_REQUIRED
-# name the command that writes a plan.
+# Hosted-only task errors name the server-host configuration command; SPEC §3.9
+# also requires the plan hint and PLAN_REQUIRED to name the plan-write command.
 _PLAN_HINT = re.compile(
     r"Next: write the plan with 'lattice plan write (?P<label>[^' ]+) --file <path>', "
     r"then move to planned\."
@@ -402,6 +402,15 @@ _PLAN_HINT = re.compile(
 _PLAN_REQUIRED_SUFFIX = re.compile(
     r"(Override with --force --reason\.) Write the plan with "
     r"`lattice plan write [^` ]+ --file <path>`\."
+)
+_HOSTED_TASK_TYPE_HINT = re.compile(
+    r"On a hosted board, ask an admin on the server host to run `lattice server project "
+    r"config (?P<slug>[^/ `]+) --set '(?P<assignment>task_types=\[[^`]*\])'`; "
+    r"this replaces the list, so include the existing values when adding a type\."
+)
+_INVALID_TASK_TYPE_PREFIX = re.compile(
+    r"(?:Error: )?Invalid task type: '(?P<rejected>[^']+)'\. "
+    r"Valid types: (?P<valid>.+)\."
 )
 
 
@@ -441,12 +450,51 @@ def declared_differences(capture: dict[str, Any], *, binding: str) -> dict[str, 
         task_id = ids.get(match.group("label"), match.group("label"))
         return f"Next: write the plan in plans/{task_id}.md, then move to planned."
 
+    def local_task_type_hint(value: str) -> str:
+        marker = " On a hosted board, "
+        if marker not in value:
+            return value
+        prefix, _, suffix = value.partition(marker)
+        hint = "On a hosted board, " + suffix
+        match = _HOSTED_TASK_TYPE_HINT.fullmatch(hint)
+        if match is None:
+            raise UndeclaredDifference(f"unexpected hosted task-type hint: {value}")
+        expected_slug = binding.rsplit("/", 1)[-1]
+        if match.group("slug") != expected_slug:
+            raise UndeclaredDifference(f"task-type hint names the wrong project: {value}")
+        prefix_match = _INVALID_TASK_TYPE_PREFIX.fullmatch(prefix)
+        if prefix_match is None:
+            raise UndeclaredDifference(f"unexpected task-type error prefix: {value}")
+        try:
+            assignment, raw_types = match.group("assignment").split("=", 1)
+            suggested = json.loads(raw_types)
+        except ValueError as exc:
+            raise UndeclaredDifference(f"invalid task-type assignment: {value}") from exc
+        rejected = prefix_match.group("rejected")
+        if (
+            assignment != "task_types"
+            or not isinstance(suggested, list)
+            or not all(isinstance(task_type, str) for task_type in suggested)
+            or not suggested
+        ):
+            raise UndeclaredDifference(f"unexpected task-type assignment: {value}")
+        if suggested[-1] != rejected or rejected in suggested[:-1]:
+            raise UndeclaredDifference(
+                f"task-type assignment does not append the rejected type: {value}"
+            )
+        if prefix_match.group("valid") != ", ".join(suggested[:-1]):
+            raise UndeclaredDifference(f"task-type assignment does not preserve the list: {value}")
+        local_guidance = "On a local board, add the type to `.lattice/config.json` `task_types`."
+        return f"{prefix} {local_guidance}"
+
     def fix(value: Any) -> Any:
         if isinstance(value, dict):
             return {k: fix(v) for k, v in value.items()}
         if isinstance(value, list):
             return [fix(v) for v in value]
         if isinstance(value, str):
+            if " On a hosted board, " in value:
+                value = local_task_type_hint(value)
             value = _PLAN_HINT.sub(local_hint, value)
             return _PLAN_REQUIRED_SUFFIX.sub(r"\1", value)
         return value

@@ -183,7 +183,7 @@ Recommended (nullable/optional):
 - `description` (string)
 - `priority` (enum: `critical`, `high`, `medium`, `low`)
 - `urgency` (enum: `immediate`, `high`, `normal`, `low`)
-- `type` (enum: `task`, `bug`, `spike`, `chore`)
+- `type` (string from the board's configured `task_types`; new boards default to `task`, `bug`, and `chore`)
 - `tags` (array of strings)
 - `assigned_to` (prefixed string: `agent:{id}` / `human:{id}` / `team:{id}`)
 - `created_by` (same format)
@@ -204,9 +204,9 @@ Recommended (nullable/optional):
 
 ### 6.3 Task types (v0)
 
+- New boards default to `task`, `bug`, and `chore`; configure additional types per board in `.lattice/config.json` `task_types`.
 - `task`: standard unit of work — assignable, branchable, reviewable
 - `bug`: defect fix
-- `spike`: research/investigation
 - `chore`: maintenance/cleanup
 
 ---

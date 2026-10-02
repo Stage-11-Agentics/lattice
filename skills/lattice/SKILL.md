@@ -45,14 +45,19 @@ lattice create "Fix the login bug" --actor agent:openclaw --priority high
 
 Options: `--priority` (critical/high/medium/low/none), `--type` (task/bug/chore), `--description "details"`, `--assign agent:openclaw`
 
-**No epics, and never a fake one.** Lattice has no `epic` or `spike`
-type by design, and you must not create an umbrella task to stand in for
-one. Group related tasks with a shared tag (`lattice create "..." --tags
-auth,v2`, then `lattice list --tag auth`), and order them with
-dependencies (`lattice link <later> depends_on <earlier>`). Exploratory
-work is a plain `task` whose deliverable is a concrete artifact (plan
-doc, prototype, decision). Every ticket is a chunk of work with a real
-output, not a bucket or an open question.
+**No built-in epic or spike type, and never a fake epic.** New boards allow `task`, `bug`, and
+`chore`, and custom task types can be configured per board. You must never
+create an umbrella task to stand in for an epic, even if a board has a custom
+`epic` type. On a local board, add a custom type to `.lattice/config.json`
+`task_types` while preserving its existing values. On a hosted board, ask an
+admin to replace the list with the command
+`lattice server project config <slug> --set 'task_types=[...]'` and keep `task`.
+Group related tasks with a shared tag
+(`lattice create "..." --tags auth,v2`, then `lattice list --tag auth`), and
+order them with dependencies (`lattice link <later> depends_on <earlier>`).
+Express exploratory work as a plain `task` whose deliverable is a concrete
+artifact (plan doc, prototype, decision). Every ticket is a chunk of work
+with a real output, not a bucket or an open question.
 
 ### List tasks
 

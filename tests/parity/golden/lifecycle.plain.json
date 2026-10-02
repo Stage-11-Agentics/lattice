@@ -34,7 +34,6 @@
         "task_types": [
           "task",
           "bug",
-          "spike",
           "chore"
         ],
         "workflow": {
@@ -1125,7 +1124,7 @@
       "exit_code": 1,
       "stderr": {
         "lines": [
-          "Error: Invalid task type: 'epic'. Valid types: task, bug, spike, chore."
+          "Error: Invalid task type: 'epic'. Valid types: task, bug, chore. On a local board, add the type to `.lattice/config.json` `task_types`."
         ]
       },
       "stdout": {

@@ -146,3 +146,28 @@ def test_hints_are_rewritten_only_in_their_exact_form() -> None:
     step = plain(["status", "PAR-1", "in_progress"], [], [required + " More."])
     out = declared_differences(capture(step), binding=BINDING)
     assert out["steps"][1]["stderr"]["lines"][0].endswith(" More.")
+
+
+def test_hosted_task_type_hint_is_rewritten_only_for_its_slug_and_exact_command() -> None:
+    local_message = (
+        "Invalid task type: 'research'. Valid types: task, bug, chore. "
+        "On a local board, add the type to `.lattice/config.json` `task_types`."
+    )
+    hosted_message = (
+        "Invalid task type: 'research'. Valid types: task, bug, chore. "
+        "On a hosted board, ask an admin on the server host to run `lattice server project "
+        'config maintenance-1 --set \'task_types=["task","bug","chore","research"]\'`; '
+        "this replaces the list, so include the existing values when adding a type."
+    )
+    step = plain(["create", "Research", "--type", "research"], [], ["Error: " + hosted_message])
+    normalized = declared_differences(capture(step), binding=BINDING)
+    assert normalized["steps"][1]["stderr"]["lines"] == ["Error: " + local_message]
+
+    for variant in (
+        hosted_message.replace("maintenance-1", "other-project"),
+        hosted_message.replace("task_types=[", 'task_types=["other",'),
+        hosted_message + " Extra.",
+    ):
+        changed = plain(["create", "Research", "--type", "research"], [], ["Error: " + variant])
+        with pytest.raises(UndeclaredDifference):
+            declared_differences(capture(changed), binding=BINDING)
