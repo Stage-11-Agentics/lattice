@@ -14,6 +14,7 @@ import re
 import stat
 import threading
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from pathlib import PurePosixPath
@@ -266,7 +267,10 @@ class Upload:
                         + "\n",
                     )
                     os.chmod(self.owner._metadata_path(self.sha256), 0o600)
-                self.temporary.unlink(missing_ok=True)
+                # These bytes were just verified against the hash; the staged copy
+                # may be damaged, so the verified upload replaces it atomically.
+                os.replace(self.temporary, target)
+                os.chmod(target, 0o600)
             else:
                 os.replace(self.temporary, target)
                 published_new_blob = True
@@ -331,7 +335,12 @@ class HostedIssueMedia:
         max_file_bytes: int = DEFAULT_FILE_BYTES,
         max_issue_bytes: int = DEFAULT_ISSUE_BYTES,
         max_project_bytes: int = DEFAULT_PROJECT_BYTES,
+        log: Any | None = None,
+        slug: str | None = None,
     ) -> None:
+        #: The project's server log (``ServerLog``); reconcile actions are logged.
+        self.log = log
+        self.slug = slug
         self.project_dir = Path(project_dir)
         self.board = Path(board)
         self.root = self.project_dir / ".runtime" / "issue-media"
@@ -345,6 +354,10 @@ class HostedIssueMedia:
         self._reserved: dict[str, int] = {}
         #: Bytes of every published object, one per stored path (not per hash).
         self.published_bytes = 0
+
+    def _log(self, level: str, event: str, **fields: Any) -> None:
+        if self.log is not None:
+            self.log.emit(level, event, project=self.slug, **fields)
 
     def _make_layout(self) -> None:
         flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
@@ -620,7 +633,9 @@ class HostedIssueMedia:
         _write_private(path, json.dumps(body, sort_keys=True, indent=2) + "\n")
         os.chmod(path, 0o600)
 
-    def abort_operation(self, op_id: str) -> None:
+    def abort_operation(self, op_id: str, *, keep: frozenset[str] = frozenset()) -> None:
+        """Drop an uncommitted operation's manifest and its now-unused stages.
+        A stage whose hash is in *keep* (bytes a snapshot still needs) stays."""
         path = self._manifest_path(op_id)
         try:
             manifest = json.loads(path.read_text(encoding="utf-8"))
@@ -630,7 +645,8 @@ class HostedIssueMedia:
             return
         path.unlink(missing_ok=True)
         self._remove_unreferenced_stage(
-            {item.get("sha256") for item in manifest.get("objects", []) if isinstance(item, dict)}
+            {item.get("sha256") for item in manifest.get("objects", []) if isinstance(item, dict)},
+            keep=keep,
         )
 
     def finalize_operation(self, op_id: str) -> bool:
@@ -744,7 +760,9 @@ class HostedIssueMedia:
             return False
         return actual == sha256 and size == size_bytes
 
-    def _remove_unreferenced_stage(self, hashes: set[object]) -> None:
+    def _remove_unreferenced_stage(
+        self, hashes: set[object], *, keep: frozenset[str] = frozenset()
+    ) -> None:
         still_used: set[str] = set()
         for path in self.manifests.glob("op_*.json"):
             try:
@@ -759,7 +777,7 @@ class HostedIssueMedia:
                 sha = validate_sha256(value)
             except OpError:
                 continue
-            if sha in still_used or sha in self._inflight:
+            if sha in still_used or sha in self._inflight or sha in keep:
                 continue
             self._blob_path(sha).unlink(missing_ok=True)
             self._metadata_path(sha).unlink(missing_ok=True)
@@ -767,29 +785,112 @@ class HostedIssueMedia:
             self._reserved.pop(sha, None)
 
     def reconcile(self, journal: Any) -> None:
-        """Resolve leftover manifests using journal commit IDs and issue snapshots."""
+        """Resolve leftover manifests once the undo logs are settled (project load).
+
+        An operation committed when its issue snapshot lists its originals
+        (media IDs are fresh per operation, and an unfinished operation has
+        already been rolled back). The current epoch's journal is a second
+        witness, never the only one: a maintenance or restore rotation between a
+        crash and this load moves the committing line into a kept journal. Staged
+        bytes a snapshot still needs are never removed. Every action is logged.
+        """
         self._make_layout()
-        # Nothing is uploading while a project loads: dot-temp files in staging
-        # are crash leftovers and are never referenced.
-        for leftover in (*self.staging.glob(".*.part"), *self.staging.glob(".*.tmp")):
-            leftover.unlink(missing_ok=True)
+        with self.lock:
+            # Crash leftovers: temp files and reservation records of uploads that
+            # are not running now (a reload can overlap a live upload).
+            for leftover in (*self.staging.glob(".*.part"), *self.staging.glob(".*.tmp")):
+                if leftover.name.split(".")[1] not in self._inflight:
+                    leftover.unlink(missing_ok=True)
+                    self._log("info", "issue_media_reconcile_sweep", path=leftover.name)
+            for record in self.staging.glob("*.reserve"):
+                sha = record.name[: -len(".reserve")]
+                if sha not in self._inflight:
+                    record.unlink(missing_ok=True)
+                    self._reserved.pop(sha, None)
+                    self._log("info", "issue_media_reconcile_sweep", path=record.name)
         for leftover in self.manifests.glob(".*.tmp"):
             leftover.unlink(missing_ok=True)
-        self.expire_staging()
+            self._log("info", "issue_media_reconcile_sweep", path=leftover.name)
+        expired = self.expire_staging()
+        if expired:
+            self._log("info", "issue_media_reconcile_expired", stages=expired)
         committed = {
             entry.get("op_id")
             for entry in journal.read_entries()
             if entry.get("op") in {"issue.file", "issue.attach"}
             and isinstance(entry.get("op_id"), str)
         }
+        needed = self._unpublished_snapshot_hashes()
         for path in sorted(self.manifests.glob("op_*.json")):
             op_id = path.stem
-            if op_id in committed:
+            verdict = op_id in committed or self._listed_by_snapshot(path)
+            if verdict is None:
+                self._log(
+                    "warning",
+                    "issue_media_reconcile_kept",
+                    op_id=op_id,
+                    reason="the manifest or its issue snapshot is unreadable",
+                )
+            elif verdict:
+                self._log("info", "issue_media_reconcile_finalize", op_id=op_id)
                 self.finalize_operation(op_id)
             else:
-                self.abort_operation(op_id)
+                self._log("info", "issue_media_reconcile_abort", op_id=op_id)
+                self.abort_operation(op_id, keep=needed)
         self.sweep_orphans()
         self.published_bytes = self.scan_published()
+
+    def _listed_by_snapshot(self, path: Path) -> bool | None:
+        """Whether the issue snapshot lists the manifest's originals (then the
+        operation committed); ``None`` when that cannot be read."""
+        try:
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        if not isinstance(manifest, dict) or not isinstance(manifest.get("objects"), list):
+            return None
+        issue_id = manifest.get("issue_id")
+        originals = {
+            (item.get("media_id"), item.get("sha256"))
+            for item in manifest["objects"]
+            if isinstance(item, dict) and item.get("t_ms") is None
+        }
+        if not validate_id(issue_id, "iss") or not originals:
+            return False
+        try:
+            snapshot = read_issue_snapshot(self.board, issue_id)
+        except OpError:
+            return None
+        listed = {
+            (entry.get("id"), entry.get("sha256"))
+            for entry in (snapshot or {}).get("media", [])
+            if not entry.get("removed")
+        }
+        return bool(originals & listed)
+
+    def _unpublished_snapshot_hashes(self) -> frozenset[str]:
+        """Hashes a present snapshot lists whose published original is missing or
+        the wrong size: a staged copy may be their only bytes (lstat only)."""
+        needed: set[str] = set()
+        for snapshot in list_issue_snapshots(self.board, on_unreadable=lambda *_: None):
+            issue_id = snapshot.get("id")
+            if not validate_id(issue_id, "iss"):
+                continue
+            for entry in snapshot.get("media", []):
+                if entry.get("removed") or not isinstance(entry.get("sha256"), str):
+                    continue
+                try:
+                    path = media_path(self.board, issue_id, entry)
+                    info = os.lstat(path) if path is not None else None
+                except (OSError, ValueError, OpError):
+                    info = None
+                if (
+                    info is None
+                    or not stat.S_ISREG(info.st_mode)
+                    or info.st_size != entry.get("size_bytes")
+                ):
+                    needed.add(entry["sha256"])
+        return frozenset(needed)
 
     def finalize_removed(self, events: list | tuple) -> None:
         """Unlink detached media only after its removal event has committed."""
@@ -807,6 +908,8 @@ class HostedIssueMedia:
             )
             if entry is not None and entry.get("removed"):
                 delete_media_files(self.board, issue_id, entry)
+        # The freed bytes leave the project quota now, not at the next reload.
+        self.published_bytes = self.scan_published()
 
     def sweep_orphans(self) -> None:
         """Delete paths no longer referenced by a present issue snapshot."""
@@ -932,18 +1035,6 @@ _VERIFIED_MAX = 8192
 _CHUNK = 1024 * 1024
 
 
-def _pread_exact(fd: int, length: int, offset: int) -> bytes:
-    parts = []
-    while length > 0:
-        chunk = os.pread(fd, length, offset)
-        if not chunk:
-            break
-        parts.append(chunk)
-        offset += len(chunk)
-        length -= len(chunk)
-    return b"".join(parts)
-
-
 def _verified_digest(fd: int, info: os.stat_result) -> str:
     """The object's SHA-256, computed once per file identity (device, inode, size,
     mtime). Published media is only ever replaced atomically, so an unchanged
@@ -1014,14 +1105,29 @@ def plan_media_read(
     return MediaPlan(board, parent / frame_name_value, "image/jpeg", None, None, True)
 
 
-def serve_media(plan: MediaPlan, range_header: str | None = None) -> MediaRead:
-    """Read and verify a planned object, with one bounded range. Takes no project
-    lock: it opens the file by descriptor, hashes it once per identity, and reads
-    only the requested range."""
-    from lattice.core.issue_media import MAX_FRAME_BYTES
+#: Bytes per disk read when a response streams an object (never the whole file).
+STREAM_CHUNK = 1024 * 1024
 
+
+@dataclass(frozen=True)
+class MediaStream:
+    """A verified object span to stream: what to send, and the file identity
+    (device, inode, size, mtime) its hash was verified at."""
+
+    plan: MediaPlan
+    identity: tuple[int, int, int, int]
+    start: int
+    length: int
+    content_type: str
+    sha256: str
+    size_bytes: int
+    status: int
+    content_range: str | None
+
+
+def _open_planned(plan: MediaPlan) -> int:
     try:
-        fd = _open_board_file(plan.board, plan.path)
+        return _open_board_file(plan.board, plan.path)
     except FileNotFoundError:
         raise OpError("NOT_FOUND", "issue media bytes are not available on this server.") from None
     except OpError:
@@ -1032,6 +1138,19 @@ def serve_media(plan: MediaPlan, range_header: str | None = None) -> MediaRead:
                 "NOT_FOUND", "issue media bytes are not available on this server."
             ) from None
         raise OpError("INTEGRITY_ERROR", "issue media could not be read safely.") from exc
+
+
+def _identity(info: os.stat_result) -> tuple[int, int, int, int]:
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+
+
+def open_media(plan: MediaPlan, range_header: str | None = None) -> MediaStream:
+    """Verify a planned object and decide its one bounded range, reading no body.
+    Takes no project lock: it opens the file by descriptor and hashes it once per
+    identity (streamed, never held in memory)."""
+    from lattice.core.issue_media import MAX_FRAME_BYTES
+
+    fd = _open_planned(plan)
     try:
         info = os.fstat(fd)
         actual_size = info.st_size
@@ -1048,14 +1167,61 @@ def serve_media(plan: MediaPlan, range_header: str | None = None) -> MediaRead:
             raise OpError("INTEGRITY_ERROR", "issue media frame is not a supported JPEG object.")
         start, end, status = _range_bounds(range_header, actual_size)
         if status == 206:
-            body = _pread_exact(fd, end - start + 1, start)
-            content_range = f"bytes {start}-{end}/{actual_size}"
+            length, content_range = end - start + 1, f"bytes {start}-{end}/{actual_size}"
         else:
-            body = _pread_exact(fd, actual_size, 0)
-            content_range = None
-        return MediaRead(body, plan.content_type, actual_hash, actual_size, status, content_range)
+            start, length, content_range = 0, actual_size, None
+        return MediaStream(
+            plan,
+            _identity(info),
+            start,
+            length,
+            plan.content_type,
+            actual_hash,
+            actual_size,
+            status,
+            content_range,
+        )
     finally:
         os.close(fd)
+
+
+def _pread_chunk(fd: int, length: int, offset: int) -> bytes:
+    return os.pread(fd, length, offset)
+
+
+def iter_media(stream: MediaStream) -> Iterator[bytes]:
+    """The span's bytes in reads of at most :data:`STREAM_CHUNK`. The file is
+    opened only when iteration starts (an unsent response holds no descriptor),
+    and a file whose identity changed since verification is refused."""
+    fd = _open_planned(stream.plan)
+    try:
+        if _identity(os.fstat(fd)) != stream.identity:
+            raise OpError("INTEGRITY_ERROR", "issue media changed while it was being served.")
+        offset, remaining = stream.start, stream.length
+        while remaining > 0:
+            chunk = _pread_chunk(fd, min(STREAM_CHUNK, remaining), offset)
+            if not chunk:
+                raise OpError("INTEGRITY_ERROR", "issue media shrank while it was being served.")
+            offset += len(chunk)
+            remaining -= len(chunk)
+            yield chunk
+    finally:
+        os.close(fd)
+
+
+def serve_media(plan: MediaPlan, range_header: str | None = None) -> MediaRead:
+    """Verify and read a planned object (or its one bounded range) into memory.
+    The HTTP routes stream with :func:`open_media` and :func:`iter_media`."""
+    stream = open_media(plan, range_header)
+    body = b"".join(iter_media(stream))
+    return MediaRead(
+        body,
+        stream.content_type,
+        stream.sha256,
+        stream.size_bytes,
+        stream.status,
+        stream.content_range,
+    )
 
 
 def read_media(
@@ -1186,9 +1352,12 @@ def available_media(board: Path, issue_ids: list[str]) -> dict:
 __all__ = [
     "HostedIssueMedia",
     "MediaRead",
+    "MediaStream",
     "Upload",
     "MediaPlan",
     "available_media",
+    "iter_media",
+    "open_media",
     "plan_media_read",
     "read_media",
     "serve_media",

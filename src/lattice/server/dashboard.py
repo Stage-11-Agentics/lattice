@@ -303,10 +303,10 @@ async def issue_media(request: Request, state: ServerState) -> Response:
             return plan_media_read(project.board, issue_id, media_id, frame_name_value=frame)
 
         try:
-            from lattice.server.issue_media import serve_media
+            from lattice.server.issue_media import open_media
 
             planned = await state.registry.run_locked(project, plan)
-            value = await in_worker(lambda: serve_media(planned, request.headers.get("range")))
+            value = await in_worker(lambda: open_media(planned, request.headers.get("range")))
         except OpError as exc:
             if exc.code != "RANGE_NOT_SATISFIABLE":
                 raise
@@ -316,17 +316,9 @@ async def issue_media(request: Request, state: ServerState) -> Response:
             response.headers["Accept-Ranges"] = "bytes"
             response.headers["Content-Range"] = f"bytes */{exc.details.get('size_bytes', 0)}"
             return response
-        headers = {
-            "Accept-Ranges": "bytes",
-            "Content-Length": str(len(value.body)),
-            "ETag": f'"{value.sha256}"',
-            "X-Content-Type-Options": "nosniff",
-        }
-        if value.content_range is not None:
-            headers["Content-Range"] = value.content_range
-        return Response(
-            value.body, status_code=value.status, headers=headers, media_type=value.content_type
-        )
+        from lattice.server.app import media_response
+
+        return media_response(value)
 
     return await _limited(state, token, run)
 

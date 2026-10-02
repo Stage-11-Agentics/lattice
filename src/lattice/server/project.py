@@ -69,7 +69,7 @@ from lattice.storage.fs import (
     unlink_path,
 )
 from lattice.storage.locks import LockTimeout
-from lattice.storage.issues import has_issue_metadata
+from lattice.storage.issues import has_synced_issue_files
 from lattice.storage.operations import AuthoritativeLogError, discover_task_authorities
 from lattice.storage.ownership import (
     board_scope,
@@ -287,6 +287,8 @@ class Project:
             max_project_bytes=getattr(
                 media_limits, "max_issue_media_project_bytes", DEFAULT_PROJECT_BYTES
             ),
+            log=log,
+            slug=slug,
         )
         self.committer: audit.AuditCommitter | None = None
         self._audit_staged: audit.Staged | None = None
@@ -400,7 +402,7 @@ class Project:
                 manifest=Manifest.build(board, journal.head_seq),
                 floors=ShortIdFloors.from_board(board),
                 watched=_watched_after(board, {}, WATCHED_FILES),
-                has_issue_metadata=has_issue_metadata(board),
+                has_issue_metadata=has_synced_issue_files(board),
             ),
         )
         self.broadcaster.announce(journal.epoch, journal.head_seq)
@@ -575,7 +577,7 @@ class Project:
 
     @property
     def has_issue_metadata(self) -> bool:
-        """Whether actual issue logs, snapshots, or IDs exist in the loaded board."""
+        """Whether any synced file exists under ``issues/`` (the 0.2.1 version gate)."""
         state = self._state
         return state.has_issue_metadata if state is not None else False
 
@@ -1012,7 +1014,7 @@ class Project:
         if any(
             path.startswith("issues/") and not path.startswith("issues/media/") for path in paths
         ):
-            issue_metadata = has_issue_metadata(self.board)
+            issue_metadata = has_synced_issue_files(self.board)
         self._state = FinalizedState(journal, manifest, floors, watched, issue_metadata)
 
     def _publish(self, line: dict) -> None:

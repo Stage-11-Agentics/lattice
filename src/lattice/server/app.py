@@ -37,8 +37,8 @@ from pathlib import Path
 from typing import Any
 
 from starlette.applications import Starlette
-from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.requests import ClientDisconnect, Request
+from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -340,8 +340,9 @@ def check_issue_data_version(request: Request, project: Project) -> None:
     """Gate issue-bearing sync and stream data for older clients.
 
     Writes already use the server-wide minimum in :func:`check_client_version`.
-    Reads stay available to old clients until this project contains actual issue
-    metadata, so an empty cache scaffold never raises the compatibility floor.
+    Reads stay available to old clients until this project holds a synced file
+    under ``issues/`` (any file, even an ID map with no entries), so an empty
+    directory scaffold never raises the compatibility floor.
     """
     version = client_version(request)
     if (
@@ -988,6 +989,115 @@ async def issue_media_upload(request: Request, state: ServerState) -> Response:
     check_protocol(request)
     token = authenticate(request, state)
     project = resolve_project(state, token, slug)
+    body = _UploadBody(request, state.log, slug, token.id)
+    try:
+        return await _stage_upload(request, state, token, project, sha256, body)
+    except OpError:
+        # Refused after authorization, usually before the body was read (quota,
+        # rate limit, size, a concurrent upload of the same object): read and
+        # discard the rest of a body of reasonable size, so the client finishes
+        # sending and reads this answer instead of a reset connection.
+        limit = REFUSED_UPLOAD_DRAIN_FACTOR * state.config.limits.max_issue_media_file_bytes
+        if body.declared is not None and body.declared <= limit:
+            await body.drain()
+        raise
+
+
+#: Seconds an upload body may go without a byte arriving. A stalled or vanished
+#: client then loses its upload, which releases the object's staging slot and
+#: its quota reservation.
+UPLOAD_CHUNK_TIMEOUT = 30.0
+#: A refused upload's body is read and discarded (so the client can read the
+#: refusal) when it declares at most this many times the per-file limit.
+REFUSED_UPLOAD_DRAIN_FACTOR = 2
+#: Seconds without a byte after which that discarding stops and the refusal is sent.
+REFUSED_UPLOAD_DRAIN_IDLE = 2.0
+
+
+class _UploadBody:
+    """An upload's request body, read with a per-chunk receive deadline."""
+
+    def __init__(self, request: Request, log: ServerLog, slug: str, token_id: str) -> None:
+        self._chunks = request.stream().__aiter__()
+        self._log = log
+        self._fields = {"project": slug, "token_id": token_id}
+        self._expect = request.headers.get("expect", "").lower()
+        declared = request.headers.get("content-length")
+        self.declared = (
+            int(declared)
+            if declared is not None
+            and len(declared) <= 20
+            and declared.isascii()
+            and declared.isdigit()
+            else None
+        )
+        self.received = 0
+        #: The body was read to its end, or can no longer be read.
+        self.ended = False
+
+    async def next(self) -> bytes | None:
+        """The next chunk, ``None`` at the end of the body."""
+        if self.ended:
+            return None
+        try:
+            chunk = await asyncio.wait_for(self._chunks.__anext__(), UPLOAD_CHUNK_TIMEOUT)
+        except StopAsyncIteration:
+            self.ended = True
+            return None
+        except TimeoutError:
+            self.ended = True
+            self._log.warning(
+                "issue_media_upload_timeout",
+                received=self.received,
+                declared=self.declared,
+                timeout_seconds=UPLOAD_CHUNK_TIMEOUT,
+                **self._fields,
+            )
+            raise OpError(
+                "UPLOAD_TIMEOUT",
+                f"no upload bytes arrived for {UPLOAD_CHUNK_TIMEOUT:g} seconds; "
+                "the upload was dropped. Run the command again.",
+            ) from None
+        except ClientDisconnect:
+            self.ended = True
+            # A client going away mid-upload is an aborted upload, not a crash.
+            self._log.info(
+                "issue_media_upload_aborted",
+                received=self.received,
+                declared=self.declared,
+                **self._fields,
+            )
+            raise OpError(
+                "VALIDATION_ERROR",
+                "the connection closed before the upload's Content-Length was received.",
+            ) from None
+        self.received += len(chunk)
+        return chunk
+
+    async def drain(self) -> None:
+        """Read and discard the rest of the body while the client keeps sending.
+
+        A client that sends nothing for :data:`REFUSED_UPLOAD_DRAIN_IDLE` seconds
+        (it waits for the answer first) gets it then. A client that asked for
+        ``100-continue`` is answered at once: reading would invite its body."""
+        if self.ended or "100-continue" in self._expect:
+            return
+        self.ended = True
+        try:
+            while True:
+                await asyncio.wait_for(self._chunks.__anext__(), REFUSED_UPLOAD_DRAIN_IDLE)
+        except (StopAsyncIteration, TimeoutError, ClientDisconnect):
+            pass
+
+
+async def _stage_upload(
+    request: Request,
+    state: ServerState,
+    token: TokenRecord,
+    project: Project,
+    sha256: str,
+    body: _UploadBody,
+) -> Response:
     check_client_version(request)
     if (
         request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
@@ -1017,11 +1127,18 @@ async def issue_media_upload(request: Request, state: ServerState) -> Response:
         state.disk.check()
         async with state.registry.admitted(project):
             project.require_loaded()
+        enabled, existing = await state.registry.run_locked(
+            project, lambda: _issue_log_state(project), admit=False
+        )
+        if not enabled:  # refused before anything is reserved
+            from lattice.core.issues import hosted_issues_disabled_message
+
+            raise OpError(
+                "ISSUES_DISABLED", hosted_issues_disabled_message(existing, project.slug)
+            )
         upload = await in_worker(lambda: project.issue_media.begin_upload(sha256, size))
-        received = 0
-        async for chunk in request.stream():
-            received += len(chunk)
-            if received > size:
+        while (chunk := await body.next()) is not None:
+            if body.received > size:
                 raise OpError("VALIDATION_ERROR", "media upload exceeded Content-Length.")
             upload.write(chunk)
         metadata = await in_worker(upload.finish)
@@ -1031,6 +1148,14 @@ async def issue_media_upload(request: Request, state: ServerState) -> Response:
         if upload is not None and not finished:
             upload.abort()
         state.limits.leave(token.id)
+
+
+def _issue_log_state(project: Project) -> tuple[bool, bool]:
+    """``(issue log on, issues exist)`` for *project* (under its work lock)."""
+    from lattice.core.config import issues_enabled
+    from lattice.storage.issues import has_issue_metadata
+
+    return issues_enabled(project.read_config()), has_issue_metadata(project.board)
 
 
 async def issue_media_availability(request: Request, state: ServerState) -> Response:
@@ -1074,10 +1199,10 @@ async def issue_media_file(request: Request, state: ServerState) -> Response:
         try:
             # The snapshot is read under the project lock; the file is read and
             # verified outside it, so a large video never stalls writers.
-            from lattice.server.issue_media import serve_media
+            from lattice.server.issue_media import open_media
 
             planned = await state.registry.run_locked(project, plan)
-            value = await in_worker(lambda: serve_media(planned, request.headers.get("range")))
+            value = await in_worker(lambda: open_media(planned, request.headers.get("range")))
         except OpError as exc:
             if exc.code != "RANGE_NOT_SATISFIABLE":
                 raise
@@ -1085,19 +1210,28 @@ async def issue_media_file(request: Request, state: ServerState) -> Response:
             response.headers["Accept-Ranges"] = "bytes"
             response.headers["Content-Range"] = f"bytes */{exc.details.get('size_bytes', 0)}"
             return response
-        headers = {
-            "Accept-Ranges": "bytes",
-            "Content-Length": str(len(value.body)),
-            "ETag": f'"{value.sha256}"',
-            "X-Content-Type-Options": "nosniff",
-        }
-        if value.content_range is not None:
-            headers["Content-Range"] = value.content_range
-        return Response(
-            value.body, status_code=value.status, headers=headers, media_type=value.content_type
-        )
+        return media_response(value)
 
     return await _with_token(request, state, run)
+
+
+def media_response(value: Any) -> StreamingResponse:
+    """Stream a verified :class:`~lattice.server.issue_media.MediaStream` from
+    disk in bounded chunks, each read in a worker thread (Starlette iterates a
+    plain iterator in its thread pool): never the whole object in memory."""
+    from lattice.server.issue_media import iter_media
+
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(value.length),
+        "ETag": f'"{value.sha256}"',
+        "X-Content-Type-Options": "nosniff",
+    }
+    if value.content_range is not None:
+        headers["Content-Range"] = value.content_range
+    return StreamingResponse(
+        iter_media(value), status_code=value.status, headers=headers, media_type=value.content_type
+    )
 
 
 # ---------------------------------------------------------------------------
