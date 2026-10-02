@@ -9,7 +9,7 @@ This project **dogfoods itself**. Two distinct things called "Lattice":
 1. **The Lattice source code** — the Python project under `src/lattice/`. This is what `git` tracks.
 2. **The `.lattice/` data directory** — a live Lattice instance for tracking dev tasks. Gitignored in this repo (heavy test/dev churn would pollute diffs).
 
-**Rule:** Never confuse changes to `src/lattice/` (source code) with changes to `.lattice/` (instance data). They are independent. Editing source code does not affect the running instance until you reinstall (`uv pip install -e ".[dev]"`).
+**Rule:** Never confuse changes to `src/lattice/` (source code) with changes to `.lattice/` (instance data). They are independent. Set up this source checkout with `uv sync --extra dev --extra server` before running its local commands.
 
 ## Global Tool — Editable Install
 
@@ -66,8 +66,7 @@ uv cache clean lattice-tracker && uv tool install -e /Users/atin/Projects/Stage1
 
 ```bash
 cd lattice
-uv venv
-uv pip install -e ".[dev]"
+uv sync --extra dev --extra server
 uv run pytest
 uv run ruff check src/ tests/
 uv run ruff format src/ tests/
