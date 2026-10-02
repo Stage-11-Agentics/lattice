@@ -6,13 +6,13 @@ import json
 
 import pytest
 
+from lattice.core.comments import format_comment_lines
 from lattice.core.events import create_issue_event
 from lattice.core.issues import (
     TaskInfo,
     actor_with_origin,
     apply_issue_event,
     check_edit_title,
-    format_comment_lines,
     issue_comment_events,
     issue_comments,
     issue_title_description,

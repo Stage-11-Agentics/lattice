@@ -643,28 +643,6 @@ def actor_with_origin(actor: str | dict | None, origin: object) -> str:
     return name
 
 
-def format_comment_lines(comments: Iterable[Mapping]) -> list[str]:
-    """Issue comment headers/bodies with task-style indentation and attribution."""
-    output: list[str] = []
-
-    def render(comment: Mapping, depth: int) -> None:
-        indent = "  " * (depth + 1)
-        if output and output[-1] != "":
-            output.append("")
-        author = actor_with_origin(comment.get("author"), comment.get("origin"))
-        created_at = comment.get("created_at") or "?"
-        output.append(f"{indent}[{comment.get('id')}] {author} ({created_at})")
-        if not comment.get("deleted"):
-            for line in str(comment.get("body") or "").splitlines():
-                output.append(f"{indent}  {line}")
-        for reply in comment.get("replies", []):
-            render(reply, depth + 1)
-
-    for comment in comments:
-        render(comment, 0)
-    return output
-
-
 def actor_matches(actor: object, requested: str) -> bool:
     """Match the actor name or stable session ID accepted by ``issue list --by``."""
     if isinstance(actor, dict):

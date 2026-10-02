@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable, Mapping
+
+from lattice.core.events import get_actor_display
 
 # Emoji validation: alphanumeric, underscores, hyphens, 1-50 chars.
 _EMOJI_RE = re.compile(r"^[a-zA-Z0-9_-]{1,50}$")
@@ -208,3 +211,32 @@ def validate_comment_for_react(events: list[dict], comment_id: str) -> None:
         raise ValueError(f"Comment {comment_id} not found.")
     if comment["deleted"]:
         raise ValueError(f"Cannot react to deleted comment {comment_id}.")
+
+
+def format_comment_lines(comments: Iterable[Mapping]) -> list[str]:
+    """Format a threaded comment list with task-style indentation and attribution."""
+    output: list[str] = []
+
+    def render(comment: Mapping, depth: int) -> None:
+        indent = "  " * (depth + 1)
+        if output and output[-1] != "":
+            output.append("")
+        author = get_actor_display(comment.get("author") or "?")
+        origin = comment.get("origin")
+        if isinstance(origin, dict):
+            user, machine = origin.get("user"), origin.get("machine")
+            if user and machine:
+                author = f"{author} · {user}@{machine}"
+            elif user or machine:
+                author = f"{author} · {user or machine}"
+        created_at = comment.get("created_at") or "?"
+        output.append(f"{indent}[{comment.get('id')}] {author} ({created_at})")
+        if not comment.get("deleted"):
+            for line in str(comment.get("body") or "").splitlines():
+                output.append(f"{indent}  {line}")
+        for reply in comment.get("replies", []):
+            render(reply, depth + 1)
+
+    for comment in comments:
+        render(comment, 0)
+    return output

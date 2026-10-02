@@ -569,10 +569,10 @@ def issue_list(
 @click.option("--json", "output_json", is_flag=True, help="Output structured JSON.")
 def issue_show(issue_id: str, output_json: bool) -> None:
     """Show one issue: its title, description, evidence, media, state, linked tasks, comments and history."""
+    from lattice.core.comments import format_comment_lines
     from lattice.core.events import get_actor_display
     from lattice.core.issues import (
         actor_with_origin,
-        format_comment_lines,
         format_task_link_line,
         id_width,
         task_status,
