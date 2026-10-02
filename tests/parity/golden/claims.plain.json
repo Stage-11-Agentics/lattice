@@ -405,9 +405,21 @@
           "actor": "human:parity",
           "data": {
             "from": "human:parity",
-            "to": "agent:fourth"
+            "to": null
           },
           "id": "<ID-23>",
+          "schema_version": 1,
+          "task_id": "<ID-5>",
+          "ts": "<TS>",
+          "type": "assignment_changed"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "from": null,
+            "to": "agent:fourth"
+          },
+          "id": "<ID-24>",
           "schema_version": 1,
           "task_id": "<ID-5>",
           "ts": "<TS>",
@@ -687,7 +699,7 @@
         "done_at": null,
         "evidence_refs": [],
         "id": "<ID-5>",
-        "last_event_id": "<ID-23>",
+        "last_event_id": "<ID-24>",
         "last_status_changed_at": "<TS>",
         "linked_files": [],
         "priority": "medium",
@@ -1123,6 +1135,43 @@
       "args": [
         "assign",
         "PAR-5",
+        "none",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Assigned: human:parity -> unassigned"
+        ]
+      }
+    },
+    {
+      "args": [
+        "next",
+        "--status",
+        "in_progress",
+        "--claim",
+        "--actor",
+        "agent:fourth"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Task already in in_progress."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "assign",
+        "PAR-5",
         "agent:fourth",
         "--actor",
         "human:parity"
@@ -1133,7 +1182,7 @@
       },
       "stdout": {
         "lines": [
-          "Assigned: human:parity -> agent:fourth"
+          "Assigned: unassigned -> agent:fourth"
         ]
       }
     },

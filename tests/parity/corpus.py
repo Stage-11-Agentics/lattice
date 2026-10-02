@@ -623,6 +623,9 @@ CLAIMS = Scenario(
         c("create", "Orphan in progress", *H),
         c("status", "PAR-5", "in_progress", "--force", "--reason", "nobody owns it", *H),
         plan("PAR-5"),
+        # An unassigned in-progress task still refuses a claim.
+        c("assign", "PAR-5", "none", *H),
+        c("next", "--status", "in_progress", "--claim", "--actor", "agent:fourth"),
         c("assign", "PAR-5", "agent:fourth", *H),
         c("next", "--status", "in_progress", "--claim", "--actor", "agent:fourth"),
         c("next", "--status", "nowhere", *B),

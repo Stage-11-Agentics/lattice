@@ -21,7 +21,7 @@
         "default_priority": "medium",
         "default_status": "backlog",
         "done_display": "grouped",
-        "instance_id": "<ID-17>",
+        "instance_id": "<ID-18>",
         "plan_approval": "auto",
         "plan_review_mode": "single",
         "project_code": "PAR",
@@ -229,7 +229,7 @@
             "from": null,
             "to": "human:parity"
           },
-          "id": "<ID-23>",
+          "id": "<ID-24>",
           "schema_version": 1,
           "task_id": "<ID-13>",
           "ts": "<TS>",
@@ -256,9 +256,21 @@
           "actor": "human:parity",
           "data": {
             "from": "human:parity",
-            "to": "agent:fourth"
+            "to": null
           },
           "id": "<ID-16>",
+          "schema_version": 1,
+          "task_id": "<ID-13>",
+          "ts": "<TS>",
+          "type": "assignment_changed"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "from": null,
+            "to": "agent:fourth"
+          },
+          "id": "<ID-17>",
           "schema_version": 1,
           "task_id": "<ID-13>",
           "ts": "<TS>",
@@ -288,17 +300,6 @@
           "data": {
             "surface": "surface:7"
           },
-          "id": "<ID-18>",
-          "schema_version": 1,
-          "task_id": "<ID-1>",
-          "ts": "<TS>",
-          "type": "surface_bound"
-        },
-        {
-          "actor": "agent:worker",
-          "data": {
-            "surface": "surface:8"
-          },
           "id": "<ID-19>",
           "schema_version": 1,
           "task_id": "<ID-1>",
@@ -311,6 +312,17 @@
             "surface": "surface:8"
           },
           "id": "<ID-20>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "surface_bound"
+        },
+        {
+          "actor": "agent:worker",
+          "data": {
+            "surface": "surface:8"
+          },
+          "id": "<ID-21>",
           "schema_version": 1,
           "task_id": "<ID-1>",
           "ts": "<TS>",
@@ -333,7 +345,7 @@
             "from": null,
             "to": "agent:worker"
           },
-          "id": "<ID-21>",
+          "id": "<ID-22>",
           "schema_version": 1,
           "task_id": "<ID-1>",
           "ts": "<TS>",
@@ -376,7 +388,7 @@
             "from": null,
             "to": "agent:other"
           },
-          "id": "<ID-22>",
+          "id": "<ID-23>",
           "schema_version": 1,
           "task_id": "<ID-3>",
           "ts": "<TS>",
@@ -595,7 +607,7 @@
         "done_at": null,
         "evidence_refs": [],
         "id": "<ID-13>",
-        "last_event_id": "<ID-16>",
+        "last_event_id": "<ID-17>",
         "last_status_changed_at": "<TS>",
         "linked_files": [],
         "priority": "medium",
@@ -1570,6 +1582,77 @@
       "args": [
         "assign",
         "PAR-5",
+        "none",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "acceptance_criteria": [],
+            "assigned_to": null,
+            "branch_links": [],
+            "comment_count": 0,
+            "complexity": null,
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "custom_fields": {},
+            "description": null,
+            "done_at": null,
+            "evidence_refs": [],
+            "id": "<ID-13>",
+            "last_event_id": "<ID-16>",
+            "last_status_changed_at": "<TS>",
+            "linked_files": [],
+            "priority": "medium",
+            "relationships_out": [],
+            "reopened_count": 0,
+            "schema_version": 1,
+            "short_id": "PAR-5",
+            "status": "in_progress",
+            "tags": null,
+            "title": "Orphan in progress",
+            "type": "task",
+            "updated_at": "<TS>",
+            "urgency": null
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "args": [
+        "next",
+        "--status",
+        "in_progress",
+        "--claim",
+        "--actor",
+        "agent:fourth",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "ALREADY_CLAIMED",
+            "message": "Task already in in_progress."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "assign",
+        "PAR-5",
         "agent:fourth",
         "--actor",
         "human:parity",
@@ -1594,7 +1677,7 @@
             "done_at": null,
             "evidence_refs": [],
             "id": "<ID-13>",
-            "last_event_id": "<ID-16>",
+            "last_event_id": "<ID-17>",
             "last_status_changed_at": "<TS>",
             "linked_files": [],
             "priority": "medium",
@@ -1642,7 +1725,7 @@
             "done_at": null,
             "evidence_refs": [],
             "id": "<ID-13>",
-            "last_event_id": "<ID-16>",
+            "last_event_id": "<ID-17>",
             "last_status_changed_at": "<TS>",
             "linked_files": [],
             "plan_content": "# Plan\n\n## Approach\n\n- Do the work in one careful pass.\n",
@@ -1761,7 +1844,7 @@
             "done_at": null,
             "evidence_refs": [],
             "id": "<ID-13>",
-            "last_event_id": "<ID-16>",
+            "last_event_id": "<ID-17>",
             "last_status_changed_at": "<TS>",
             "linked_files": [],
             "plan_content": "# Plan\n\n## Approach\n\n- Do the work in one careful pass.\n",
