@@ -134,6 +134,13 @@ CACHE_OWNERS: dict[str, str] = {
 #: (operator ruling on PR #82): the converting ticket deletes its own entry.
 AWAITING_CONVERSION: dict[str, str] = {}
 
+# Review state is transient runtime data (SPEC §6.1), not task board data. Its
+# owning core module may persist it only through this storage helper; all other
+# calls to transitive storage writers remain behind operations.
+RUNTIME_STORAGE_WRITERS: dict[str, frozenset[str]] = {
+    "lattice.core.review": frozenset({"lattice.storage.review_state.write_review_state_file"}),
+}
+
 #: Methods that change the filesystem when the receiver is a path whose type the
 #: scan cannot see (``p.unlink()`` on a local variable).
 RAW_METHODS = frozenset(
@@ -665,6 +672,7 @@ def test_board_writers_are_called_only_behind_operations() -> None:
         for module in modules().values()
         if not module.inside_boundary and module.name not in allowed
         for hit in board_writer_calls(module)
+        if hit.partition(": ")[2] not in RUNTIME_STORAGE_WRITERS.get(module.name, frozenset())
     ]
     assert offenders == [], (
         "outside lattice.ops and lattice.storage, write a board through an operation "
@@ -721,6 +729,10 @@ def test_every_listed_module_still_needs_its_entry() -> None:
         assert name in modules(), f"missing module {name}"
         assert board_writer_calls(modules()[name]), f"{name} no longer writes a board; remove it"
         assert not modules()[name].inside_boundary
+    for name, expected in RUNTIME_STORAGE_WRITERS.items():
+        assert name in modules(), f"RUNTIME_STORAGE_WRITERS names a missing module {name}"
+        actual = {hit.partition(": ")[2] for hit in board_writer_calls(modules()[name])}
+        assert actual == expected, f"{name} runtime storage writer exception changed: {actual}"
     assert not set(BOARD_OWNERS) & set(AWAITING_CONVERSION)
     for name in CACHE_OWNERS:
         assert name in modules(), f"CACHE_OWNERS names a missing module {name}"

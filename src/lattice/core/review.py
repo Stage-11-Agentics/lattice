@@ -35,7 +35,7 @@ from lattice.core.agent_spawn import (
     SpawnResult,
     spawn_one,
 )
-from lattice.storage.fs import atomic_write
+from lattice.storage.review_state import write_review_state_file
 
 
 # ---------------------------------------------------------------------------
@@ -168,10 +168,8 @@ def _state_path(lattice_dir: Path, task_id: str) -> Path:
 def write_review_state(lattice_dir: Path, state: dict) -> None:
     """Persist in-flight review state atomically."""
     _require_safe_board(lattice_dir)
-    state_dir = lattice_dir / REVIEW_STATE_DIR
-    state_dir.mkdir(exist_ok=True)
     path = _state_path(lattice_dir, state["task_id"])
-    atomic_write(path, json.dumps(state, indent=2) + "\n")
+    write_review_state_file(path, json.dumps(state, indent=2) + "\n")
 
 
 def read_review_state(lattice_dir: Path, task_id: str) -> dict | None:
