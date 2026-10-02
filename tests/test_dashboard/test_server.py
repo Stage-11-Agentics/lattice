@@ -1728,7 +1728,7 @@ class TestIssueHostGuard:
         server, worker = self._serve(tmp_path, "0.0.0.0")
         port = server.server_address[1]
         try:
-            for host in (f"box.lan:{port}", f"100.64.0.9:{port}", f"0.0.0.0:{port}"):
+            for host in (f"box.lan:{port}", f"198.51.100.9:{port}", f"0.0.0.0:{port}"):
                 # 409: issues are off on this board, which means the Host was accepted.
                 assert self._request(port, "GET", "/api/issues", host)[0] == 409
                 assert self._request(

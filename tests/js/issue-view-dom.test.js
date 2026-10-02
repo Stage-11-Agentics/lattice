@@ -91,6 +91,16 @@ async function flush(rounds = 6) {
   for (let i = 0; i < rounds; i++) await new Promise((resolve) => setImmediate(resolve));
 }
 
+// Wait for a condition driven by real async work (file reads, hashing) rather than
+// guess a number of event-loop turns: a slow runner needs more of them.
+async function until(condition, what, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() > deadline) assert.fail(`timed out waiting for ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 function boot(server, extra) {
   const win = createWindow();
   const restore = install(win);
@@ -356,7 +366,7 @@ test("pasting or dropping a file anywhere opens the panel with it attached", asy
 
     $("#issue-fi-text").value = "Footer overlaps";
     key($("#issue-fi-text"), "Enter", { ctrlKey: true });
-    await flush(20);
+    await until(() => view.posts.length > 0, "the filing to be posted");
     assert.equal(view.posts.length, 1);
     const media = view.posts[0].body.media;
     assert.equal(media.length, 1, "the refused PDF is not sent");
