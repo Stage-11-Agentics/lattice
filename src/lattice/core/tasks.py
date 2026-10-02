@@ -9,6 +9,7 @@ import sys
 from contextlib import contextmanager
 from collections.abc import Callable
 from collections.abc import Iterator
+from dataclasses import dataclass, field
 
 from lattice.core.acceptance_criteria import (
     find_criterion,
@@ -784,8 +785,18 @@ def _print_unknown_type(etype: str) -> None:
 
 
 _unknown_type_reporter: Callable[[str], None] | None = None
-_unknown_type_capture: contextvars.ContextVar[set[tuple[str, str]] | None] = (
-    contextvars.ContextVar("lattice_unknown_type_capture", default=None)
+
+
+@dataclass
+class UnknownEventCapture:
+    """Unknown task events seen during one CLI invocation."""
+
+    events: set[tuple[str, str]] = field(default_factory=set)
+    materializing_write: bool = False
+
+
+_unknown_type_capture: contextvars.ContextVar[UnknownEventCapture | None] = contextvars.ContextVar(
+    "lattice_unknown_type_capture", default=None
 )
 
 
@@ -800,14 +811,21 @@ def set_unknown_type_reporter(reporter: Callable[[str], None] | None) -> None:
 
 
 @contextmanager
-def capture_unknown_event_types() -> Iterator[set[tuple[str, str]]]:
-    """Collect unknown ``(task_id, event_type)`` pairs replayed in this context."""
-    captured: set[tuple[str, str]] = set()
+def capture_unknown_event_types() -> Iterator[UnknownEventCapture]:
+    """Collect unknown pairs and write intent for this CLI invocation."""
+    captured = UnknownEventCapture()
     token = _unknown_type_capture.set(captured)
     try:
         yield captured
     finally:
         _unknown_type_capture.reset(token)
+
+
+def mark_materializing_write() -> None:
+    """Mark that this invocation entered the shared event-materializing write path."""
+    captured = _unknown_type_capture.get()
+    if captured is not None:
+        captured.materializing_write = True
 
 
 def is_known_event_type(etype: object) -> bool:
@@ -841,6 +859,6 @@ def _apply_mutation(snap: dict, etype: str, event: dict) -> None:
         captured = _unknown_type_capture.get()
         if captured is not None and _unknown_type_reporter is None:
             task_id = event.get("task_id")
-            captured.add((task_id if isinstance(task_id, str) else "<unknown>", etype))
+            captured.events.add((task_id if isinstance(task_id, str) else "<unknown>", etype))
         if _unknown_type_reporter is not None:
             _unknown_type_reporter(etype)

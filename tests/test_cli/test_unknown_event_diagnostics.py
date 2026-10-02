@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from lattice.cli import dashboard_cmd as dashboard_module
+from lattice.dashboard import api as dashboard_api
 from lattice.core.events import create_event, serialize_event
 from lattice.core.tasks import apply_event_to_snapshot, serialize_snapshot
 from lattice.storage.fs import LATTICE_DIR
@@ -38,6 +40,15 @@ def test_unknown_event_is_quiet_for_show_and_list_but_reported_by_doctor(
     assert shown.exit_code == listed.exit_code == 0
     assert shown.stderr == listed.stderr == ""
 
+    reads = (
+        invoke("next"),
+        invoke("stats"),
+        invoke("weather"),
+        invoke("plan", "show", task_id),
+    )
+    assert all(result.exit_code == 0 for result in reads)
+    assert all(result.stderr == "" for result in reads)
+
     doctor = invoke("doctor", "--json")
     findings = json.loads(doctor.output)["data"]["findings"]
     unknown = [finding for finding in findings if finding["check"] == "unknown_event_type"]
@@ -49,6 +60,25 @@ def test_unknown_event_is_quiet_for_show_and_list_but_reported_by_doctor(
     doctor_plain = invoke("doctor")
     assert doctor_plain.exit_code == 0
     assert "unknown event type 'process_started'" in doctor_plain.output
+
+
+def test_dashboard_read_does_not_warn_when_the_command_exits(
+    initialized_root, create_task, invoke, monkeypatch
+) -> None:
+    task_id = create_task("Dashboard read with future event")["id"]
+    lattice_dir = initialized_root / LATTICE_DIR
+    _append_unknown_event(lattice_dir, task_id, "process_started")
+
+    def serve(lattice_path, *_args):
+        response = dashboard_api.route_get(lattice_path, "/api/tasks")
+        assert response.status == 200
+        return False
+
+    monkeypatch.setattr(dashboard_module, "_serve", serve)
+    exited = invoke("dashboard", "--port", "8879", "--json")
+
+    assert exited.exit_code == 0, exited.output
+    assert "Warning:" not in exited.stderr
 
 
 def test_materializing_write_warns_and_keeps_forward_compatible_mutation(
@@ -74,6 +104,26 @@ def test_materializing_write_warns_and_keeps_forward_compatible_mutation(
     assert shown.exit_code == 0, shown.output
     assert shown.stderr == ""
     assert json.loads(shown.output)["data"]["title"] == "Updated after unknown event"
+
+
+def test_archived_foreign_event_can_be_unarchived_with_one_warning(
+    initialized_root, create_task, invoke
+) -> None:
+    task_id = create_task("Archived foreign event")["id"]
+    archived = invoke("archive", task_id, "--actor", "human:test")
+    assert archived.exit_code == 0, archived.output
+
+    lattice_dir = initialized_root / LATTICE_DIR
+    _append_unknown_event(lattice_dir, task_id, "future_archived_event", archived=True)
+    unarchived = invoke("unarchive", task_id, "--actor", "human:test")
+
+    assert unarchived.exit_code == 0, unarchived.output
+    assert unarchived.stderr.count("Warning:") == 1
+    assert task_id in unarchived.stderr
+    assert "future_archived_event" in unarchived.stderr
+    shown = invoke("show", task_id, "--json")
+    assert shown.exit_code == 0, shown.output
+    assert shown.stderr == ""
 
 
 def test_rebuild_aggregates_unknown_task_and_type_pairs_including_archived_tasks(

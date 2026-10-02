@@ -294,8 +294,8 @@ class _LatticeGroup(click.Group):
                     raise
                 _render(ctx, mapped, hosted=True)
             finally:
-                if unknown_events and ctx.invoked_subcommand not in {"show", "list", "doctor"}:
-                    _report_unknown_event_types(unknown_events)
+                if unknown_events.events and unknown_events.materializing_write:
+                    _report_unknown_event_types(unknown_events.events)
 
 
 def _report_unknown_event_types(unknown_events: set[tuple[str, str]]) -> None:

@@ -23,6 +23,7 @@ from lattice.core.tasks import (
     FromMismatchError,
     apply_event_to_snapshot,
     is_stale_from,
+    mark_materializing_write,
     reconciled_event_ids,
     serialize_snapshot,
 )
@@ -1001,6 +1002,7 @@ def mutate_task(
     callback runs unless this is set (``unerase``, and ``rebuild``, which
     appends nothing); even then, any event but ``task_untombstoned`` raises it.
     """
+    mark_materializing_write()
     locks_dir = lattice_dir / "locks"
     extra_lock_keys = []
     if may_emit_lifecycle:

@@ -9,6 +9,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -170,14 +171,20 @@ def _fake_clock(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def test_restart_reports_success_only_after_listener_returns(
+def test_restart_reports_success_only_after_boot_id_changes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     port = 8803
-    calls = _stub_lsof(monkeypatch, port, ["1234\n", "", "1234\n"])
+    calls = _stub_lsof(monkeypatch, port, ["1234\n"])
     _fake_clock(monkeypatch)
     signalled: list[tuple[int, int]] = []
+    boot_ids = iter(["boot-before", "boot-before", "boot-after"])
     monkeypatch.setattr(dashboard_module.os, "kill", lambda pid, sig: signalled.append((pid, sig)))
+    monkeypatch.setattr(
+        dashboard_module,
+        "_read_dashboard_boot_id",
+        lambda _port, **_kwargs: next(boot_ids),
+    )
 
     result = CliRunner().invoke(cli, ["restart", "--port", str(port)])
 
@@ -185,25 +192,46 @@ def test_restart_reports_success_only_after_listener_returns(
     assert result.stdout == f"Dashboard restarted and is listening on port {port}.\n"
     assert result.stderr == ""
     assert signalled == [(1234, signal.SIGHUP)]
-    assert len(calls) == 3
+    assert len(calls) == 1
 
 
-def test_restart_reports_failure_when_listener_does_not_return(
+def test_restart_reports_failure_when_boot_id_does_not_change(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     port = 8804
-    _stub_lsof(monkeypatch, port, ["1234\n", "1234\n"])
+    _stub_lsof(monkeypatch, port, ["1234\n"])
     _fake_clock(monkeypatch)
     monkeypatch.setattr(dashboard_module, "_RESTART_TIMEOUT_SECONDS", 0.1)
     monkeypatch.setattr(dashboard_module.os, "kill", lambda *_args: None)
+    monkeypatch.setattr(
+        dashboard_module, "_read_dashboard_boot_id", lambda _port, **_kwargs: "boot-same"
+    )
 
     result = CliRunner().invoke(cli, ["restart", "--port", str(port)])
 
     assert result.exit_code == 1
     assert (
-        f"Error: dashboard on port {port} did not resume listening within 0.1 seconds."
-        in result.stderr
+        f"Error: dashboard on port {port} did not restart within 0.1 seconds "
+        "(boot identity unchanged)." in result.stderr
     )
+
+
+def test_restart_does_not_signal_a_dashboard_without_boot_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    port = 8805
+    _stub_lsof(monkeypatch, port, ["1234\n"])
+    signalled: list[int] = []
+    monkeypatch.setattr(dashboard_module.os, "kill", lambda pid, _sig: signalled.append(pid))
+    monkeypatch.setattr(
+        dashboard_module, "_read_dashboard_boot_id", lambda *_args, **_kwargs: None
+    )
+
+    result = CliRunner().invoke(cli, ["restart", "--port", str(port)])
+
+    assert result.exit_code == 1
+    assert "did not provide a boot identity" in result.stderr
+    assert signalled == []
 
 
 def test_connected_client_survives_restart_and_only_listener_is_signalled(
@@ -244,12 +272,18 @@ for line in sys.stdin:
         assert client.stdout is not None and client.stdin is not None
         assert client.stdout.readline().strip() == "connected"
         signalled: list[tuple[int, int]] = []
+        boot_ids = iter(["boot-before", "boot-after"])
         with monkeypatch.context() as restart_patch:
-            _stub_lsof(restart_patch, port, [f"{os.getpid()}\n", "", f"{os.getpid()}\n"])
+            _stub_lsof(restart_patch, port, [f"{os.getpid()}\n"])
             restart_patch.setattr(
                 dashboard_module.os,
                 "kill",
                 lambda pid, sig: signalled.append((pid, sig)),
+            )
+            restart_patch.setattr(
+                dashboard_module,
+                "_read_dashboard_boot_id",
+                lambda *_args, **_kwargs: next(boot_ids),
             )
             result = CliRunner().invoke(cli, ["restart", "--port", str(port)])
 
@@ -267,10 +301,10 @@ for line in sys.stdin:
 
 
 @pytest.mark.skipif(shutil.which("lsof") is None, reason="lsof is required for the live restart")
-def test_live_restart_execs_a_fresh_dashboard_image_on_the_same_port(
+def test_live_restart_changes_boot_id_on_the_same_port(
     initialized_root: Path,
 ) -> None:
-    """execv starts a fresh dashboard image in place; the OS PID stays stable."""
+    """A restart reports success only after a new dashboard boot ID answers."""
     script = Path(sys.executable).with_name("lattice")
     if not script.exists():
         pytest.skip("the active virtualenv has no lattice console script")
@@ -290,6 +324,8 @@ def test_live_restart_execs_a_fresh_dashboard_image_on_the_same_port(
     pid_before = dashboard.pid
     try:
         _wait_for_dashboard_http(port, dashboard)
+        boot_before = dashboard_module._read_dashboard_boot_id(port)
+        assert boot_before
         restarted = subprocess.run(
             [str(script), "restart", "--port", str(port)],
             cwd=initialized_root,
@@ -302,11 +338,85 @@ def test_live_restart_execs_a_fresh_dashboard_image_on_the_same_port(
         assert "Dashboard restarted and is listening" in restarted.stdout
 
         _wait_for_dashboard_http(port, dashboard)
+        boot_after = dashboard_module._read_dashboard_boot_id(port)
+        assert boot_after
+        assert boot_after != boot_before
         assert dashboard.pid == pid_before  # execv replaces the image without forking.
         assert _read_restart_banner(dashboard.stderr)
     finally:
         dashboard.terminate()
         dashboard.wait(timeout=3)
+
+
+@pytest.mark.skipif(
+    shutil.which("lsof") is None or shutil.which("nc") is None,
+    reason="lsof and nc are required for the idle-client restart regression",
+)
+def test_live_restart_is_not_blocked_by_an_idle_nc_client(initialized_root: Path) -> None:
+    """An accepted client that sends no request cannot hold SIGHUP shutdown."""
+    script = Path(sys.executable).with_name("lattice")
+    if not script.exists():
+        pytest.skip("the active virtualenv has no lattice console script")
+    nc = shutil.which("nc")
+    assert nc is not None
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+
+    env = {**os.environ, "LATTICE_ROOT": str(initialized_root)}
+    dashboard = subprocess.Popen(
+        [str(script), "dashboard", "--port", str(port), "--json"],
+        cwd=initialized_root,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    client = None
+    try:
+        _wait_for_dashboard_http(port, dashboard)
+        boot_before = dashboard_module._read_dashboard_boot_id(port)
+        assert boot_before
+        client = subprocess.Popen(
+            [nc, "127.0.0.1", str(port)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        _wait_for_process_connection(port, client)
+
+        restarted = subprocess.run(
+            [str(script), "restart", "--port", str(port)],
+            cwd=initialized_root,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        assert restarted.returncode == 0, restarted.stdout + restarted.stderr
+        boot_after = dashboard_module._read_dashboard_boot_id(port)
+        assert boot_after and boot_after != boot_before
+    finally:
+        if client is not None:
+            client.terminate()
+            client.wait(timeout=2)
+        dashboard.terminate()
+        dashboard.wait(timeout=3)
+
+
+def _wait_for_process_connection(port: int, client: subprocess.Popen) -> None:
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        result = subprocess.run(
+            ["lsof", "-ti", f"tcp:{port}"], capture_output=True, text=True, check=False
+        )
+        if str(client.pid) in result.stdout.splitlines():
+            return
+        if client.poll() is not None:
+            raise AssertionError(f"nc exited before connecting: {client.returncode}")
+        time.sleep(0.02)
+    raise AssertionError("nc did not establish its idle dashboard connection")
 
 
 def _wait_for_dashboard_http(port: int, dashboard: subprocess.Popen[str]) -> None:

@@ -25,6 +25,7 @@ from lattice.cli.maintenance import (
 from lattice.core.config import configured_event_prefix, issues_enabled
 from lattice.core.errors import OpError
 from lattice.core.events import LIFECYCLE_EVENT_TYPES, serialize_event
+from lattice.core.tasks import mark_materializing_write
 from lattice.storage.fs import atomic_write, ensure_dir
 from lattice.storage.integrity import (
     _build_rebuilt_id_index,
@@ -540,6 +541,9 @@ def rebuild(
             "VALIDATION_ERROR",
             is_json,
         )
+
+    # rebuild --all replays authority directly instead of using mutate_task.
+    mark_materializing_write()
 
     if rebuild_all:
         try:

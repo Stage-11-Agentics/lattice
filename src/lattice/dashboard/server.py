@@ -17,13 +17,14 @@ from __future__ import annotations
 import ipaddress
 import json
 import platform
+import secrets
 import subprocess
 import sys
 import threading
 from collections.abc import Callable
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
-from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -150,12 +151,13 @@ class DashboardBoard:
 # ---------------------------------------------------------------------------
 
 
-def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> type:
+def _make_handler_class(target: DashboardBoard, *, readonly: bool = False, boot_id: str) -> type:
     """Create a handler class bound to one dashboard board."""
 
     class LatticeHandler(BaseHTTPRequestHandler):
         _target: DashboardBoard = target
         _readonly: bool = readonly
+        _boot_id = boot_id
 
         # Suppress default access logging to stdout; send to stderr instead
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
@@ -189,6 +191,13 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
                 self._serve_notes_file("stats-demo/demo.html", "text/html")
             elif path == "/api/head":
                 self._send_head()
+            elif path == "/api/boot":
+                self._send(
+                    api.ok(
+                        {"boot_id": self._boot_id},
+                        headers={"Cache-Control": "no-store"},
+                    )
+                )
             elif path == "/api/git" or path.startswith("/api/git/"):
                 # git only (SPEC §9.4): it reads no board file, so it runs
                 # without the cache's read lock and never under it.
@@ -492,7 +501,7 @@ def create_server(
     *,
     readonly: bool = False,
     board: DashboardBoard | None = None,
-) -> HTTPServer:
+) -> ThreadingHTTPServer:
     """Create an HTTP server bound to *host*:*port* serving the Lattice dashboard.
 
     Parameters
@@ -512,5 +521,11 @@ def create_server(
     if board is None:
         root = Path(lattice_dir).parent
         board = DashboardBoard(LocalBoard(root=root, start=root))
-    handler_cls = _make_handler_class(board, readonly=readonly)
-    return ThreadingHTTPServer((host, port), handler_cls)
+    handler_cls = _make_handler_class(board, readonly=readonly, boot_id=secrets.token_urlsafe(18))
+    server = ThreadingHTTPServer((host, port), handler_cls)
+    # A dashboard restart must not wait for a worker blocked on an idle client.
+    # The default HTTP/1.0 response closes completed requests; detached workers
+    # let the serving loop proceed even if a client never sends a request line.
+    server.daemon_threads = True
+    server.block_on_close = False
+    return server

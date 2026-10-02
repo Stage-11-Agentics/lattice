@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import contextlib
 import errno
+import http.client
+import json
 import os
 import signal
 import shutil
@@ -28,6 +30,7 @@ from lattice.cli.main import cli
 _DEFAULT_PORT = 8799
 _RESTART_TIMEOUT_SECONDS = 5.0
 _RESTART_POLL_INTERVAL_SECONDS = 0.01
+_BOOT_ID_REQUEST_TIMEOUT_SECONDS = 0.25
 
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
@@ -247,6 +250,15 @@ def restart_cmd(port: int | None) -> None:
         click.echo(f"No process found on port {port}.", err=True)
         raise SystemExit(1)
 
+    previous_boot_id = _read_dashboard_boot_id(port)
+    if previous_boot_id is None:
+        click.echo(
+            f"Error: dashboard on port {port} did not provide a boot identity; "
+            "restart was not requested.",
+            err=True,
+        )
+        raise SystemExit(1)
+
     for pid in pids:
         try:
             os.kill(int(pid), signal.SIGHUP)
@@ -254,10 +266,10 @@ def restart_cmd(port: int | None) -> None:
             click.echo(f"Error: could not signal dashboard PID {pid}: {exc}", err=True)
             raise SystemExit(1) from exc
 
-    if not _wait_for_dashboard_listener_restart(port, set(pids)):
+    if not _wait_for_dashboard_restart(port, previous_boot_id):
         click.echo(
-            f"Error: dashboard on port {port} did not resume listening within "
-            f"{_RESTART_TIMEOUT_SECONDS:g} seconds.",
+            f"Error: dashboard on port {port} did not restart within "
+            f"{_RESTART_TIMEOUT_SECONDS:g} seconds (boot identity unchanged).",
             err=True,
         )
         raise SystemExit(1)
@@ -275,15 +287,37 @@ def _listening_pids(port: int) -> list[str]:
     return sorted(set(pid.strip() for pid in result.stdout.splitlines() if pid.strip()))
 
 
-def _wait_for_dashboard_listener_restart(port: int, initial_pids: set[str]) -> bool:
-    """Wait until the old listener disappears and a dashboard listener returns."""
+def _read_dashboard_boot_id(
+    port: int, *, timeout: float = _BOOT_ID_REQUEST_TIMEOUT_SECONDS
+) -> str | None:
+    """Read the live dashboard's uncached boot identity, if it is responding."""
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+    try:
+        connection.request("GET", "/api/boot")
+        response = connection.getresponse()
+        body = response.read()
+        if response.status != 200:
+            return None
+        payload = json.loads(body)
+        if not isinstance(payload, dict) or not isinstance(payload.get("data"), dict):
+            return None
+        boot_id = payload["data"].get("boot_id")
+        return boot_id if isinstance(boot_id, str) and boot_id else None
+    except (http.client.HTTPException, OSError, TypeError, ValueError):
+        return None
+    finally:
+        connection.close()
+
+
+def _wait_for_dashboard_restart(port: int, previous_boot_id: str) -> bool:
+    """Wait for a responding dashboard on *port* to expose a different boot ID."""
     deadline = time.monotonic() + _RESTART_TIMEOUT_SECONDS
-    saw_listener_exit = False
     while time.monotonic() < deadline:
-        pids = _listening_pids(port)
-        if not pids:
-            saw_listener_exit = True
-        elif saw_listener_exit or set(pids) != initial_pids:
+        remaining = deadline - time.monotonic()
+        boot_id = _read_dashboard_boot_id(
+            port, timeout=min(_BOOT_ID_REQUEST_TIMEOUT_SECONDS, max(remaining, 0.001))
+        )
+        if boot_id is not None and boot_id != previous_boot_id:
             return True
-        time.sleep(_RESTART_POLL_INTERVAL_SECONDS)
+        time.sleep(min(_RESTART_POLL_INTERVAL_SECONDS, max(deadline - time.monotonic(), 0)))
     return False
