@@ -130,6 +130,52 @@
     return rows.filter(function (issue) { return queueOf(issue) === queue; });
   }
 
+  function refreshDelta(previousRows, nextRows, selectedId) {
+    var previous = Object.create(null);
+    var next = Object.create(null);
+    var changed = Object.create(null);
+    var beforeOrder = [];
+    var afterOrder = [];
+
+    (previousRows || []).forEach(function (issue) {
+      if (!issue || typeof issue.id !== "string") return;
+      var key = "$" + issue.id;
+      previous[key] = JSON.stringify(issue);
+      beforeOrder.push(issue.id);
+    });
+    (nextRows || []).forEach(function (issue) {
+      if (!issue || typeof issue.id !== "string") return;
+      var key = "$" + issue.id;
+      next[key] = JSON.stringify(issue);
+      afterOrder.push(issue.id);
+      if (previous[key] !== next[key]) changed[key] = issue.id;
+    });
+    Object.keys(previous).forEach(function (key) {
+      if (!Object.prototype.hasOwnProperty.call(next, key)) changed[key] = key.slice(1);
+    });
+    var orderChanged = beforeOrder.length !== afterOrder.length || beforeOrder.some(function (id, index) {
+      return id !== afterOrder[index];
+    });
+    var changedIds = Object.keys(changed).map(function (key) { return changed[key]; });
+    var selectedKey = "$" + selectedId;
+    var selectedWasVisible = Object.prototype.hasOwnProperty.call(previous, selectedKey);
+    return {
+      changedIds: changedIds,
+      listChanged: orderChanged || changedIds.length > 0,
+      selectedChanged: selectedId != null && selectedWasVisible && (
+        !Object.prototype.hasOwnProperty.call(next, selectedKey) ||
+        Object.prototype.hasOwnProperty.call(changed, selectedKey)
+      )
+    };
+  }
+
+  function applyRefreshDelta(previousRows, nextRows, selectedId, effects) {
+    var delta = refreshDelta(previousRows, nextRows, selectedId);
+    if (delta.listChanged && effects && typeof effects.updateList === "function") effects.updateList(delta);
+    if (delta.selectedChanged && effects && typeof effects.updateSelected === "function") effects.updateSelected(delta);
+    return delta;
+  }
+
   function matchedBy(issue, actor) {
     if (issue.matched_by) return issue.matched_by;
     if (issue.filed_by === actor) return "filed";
@@ -148,6 +194,8 @@
     personSummary: personSummary,
     flattenComments: flattenComments,
     rowsForQueue: rowsForQueue,
+    refreshDelta: refreshDelta,
+    applyRefreshDelta: applyRefreshDelta,
     matchedBy: matchedBy,
     commentActor: commentActor,
     commentTime: commentTime

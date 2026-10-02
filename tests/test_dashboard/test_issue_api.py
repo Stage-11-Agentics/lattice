@@ -88,6 +88,18 @@ def test_by_filter_marks_file_activity_across_the_issue_list(issue_board) -> Non
     assert rows[0]["actor_activity_at"] == own["filed_at"]
 
 
+def test_by_filter_keeps_full_human_session_keys_exact(issue_board) -> None:  # noqa: ANN001
+    board, lattice_dir, config = issue_board
+    enable_issues(lattice_dir, config)
+    session_one = file_issue(board, "Atin session one", actor="human:Atin-1")
+    file_issue(board, "Atin session two", actor="human:Atin-2")
+
+    rows = data(api.route_get(lattice_dir, "/api/issues", urlencode({"by": "human:Atin-1"})))
+
+    assert [row["id"] for row in rows] == [session_one["id"]]
+    assert rows[0]["matched_by"] == "filed"
+
+
 def test_by_filter_includes_nested_comments_and_unknown_origins(issue_board) -> None:  # noqa: ANN001
     board, lattice_dir, config = issue_board
     enable_issues(lattice_dir, config)

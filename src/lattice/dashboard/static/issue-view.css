@@ -118,4 +118,53 @@ body.issue-view-active #app{width:100%;max-width:none;height:calc(100vh - var(--
 .issue-file-foot{display:flex;align-items:center;gap:.75rem;padding:1rem 1.25rem;border-top:1px solid var(--border-subtle)}
 .issue-file-status{flex:1;min-width:0;color:var(--text-muted);font-size:.8rem}.issue-file-submit{min-width:7rem}
 @media(max-width:900px){.issue-inbox{--issue-queue-width:40vw}.issue-d-head{padding:0 1rem}.issue-d-body{padding:1.25rem 1rem 2rem}.issue-q-age{width:3.2rem}}
-@media(max-width:650px){.issue-inbox{display:flex;flex-direction:column}.issue-q-pane{height:42%;min-height:13rem;border-right:0;border-bottom:1px solid var(--border)}.issue-q-tabs{gap:.2rem;padding:.4rem}.issue-q-tab{height:2.8rem;padding:.2rem .35rem}.issue-person-head{height:3.2rem}.issue-q-row{height:3.8rem}.issue-q-thumb{height:2.8rem;flex-basis:4rem}.issue-q-foot{display:none}.issue-d-pane{flex:1;min-height:0}.issue-d-head{height:2.7rem;font-size:.7rem;gap:.35rem}.issue-id-copy{width:5.5rem;font-size:.95rem}.issue-copy-status{width:2.5rem}.issue-d-body{padding:.9rem}.issue-file-dialog{width:100%}}
+@media(max-width:650px){
+  body.issue-view-active .nav{flex-wrap:nowrap;gap:.2rem;padding:.35rem .5rem;overflow:hidden;white-space:nowrap}
+  body.issue-view-active .nav-brand{flex:0 1 7rem;min-width:0;max-width:7rem;margin-right:.15rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.85rem}
+  body.issue-view-active .nav-search,
+  body.issue-view-active .nav-tab[data-view="activity"],
+  body.issue-view-active .nav-tab[data-view="stats"],
+  body.issue-view-active .nav-tab[data-view="cube"],
+  body.issue-view-active .nav-tab[data-view="cube2"],
+  body.issue-view-active .nav-tab[data-view="web"],
+  body.issue-view-active .nav-tab-structure{display:none!important}
+  body.issue-view-active .nav-tab{flex:0 0 auto;padding:.2rem .35rem;font-size:.72rem}
+  body.issue-view-active .nav-right{flex:0 0 auto;min-width:0;gap:.2rem;margin-left:auto}
+  body.issue-view-active #stats-badges{display:none}
+  body.issue-view-active .nav-right .btn-with-icon,
+  body.issue-view-active #issue-new-button,
+  body.issue-view-active #new-task-btn{width:2rem;height:2rem;min-width:2rem;padding:0;overflow:hidden;white-space:nowrap}
+  body.issue-view-active .nav-right .btn-with-icon{justify-content:center;font-size:0}
+  body.issue-view-active #issue-new-button,
+  body.issue-view-active #new-task-btn{font-size:0}
+  body.issue-view-active #issue-new-button::before,
+  body.issue-view-active #new-task-btn::before{content:"+";font-size:1.1rem;line-height:1}
+  .issue-inbox{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(14rem,1fr)}
+  .issue-q-pane{min-width:0;border-right:1px solid var(--border);border-bottom:0}
+  .issue-q-tabs{gap:.2rem;padding:.4rem}
+  .issue-q-tab{height:2.8rem;padding:.2rem .35rem}
+  .issue-person-head{height:3.2rem}
+  .issue-q-row{height:3.8rem}
+  .issue-q-thumb{height:2.8rem;flex-basis:4rem}
+  .issue-q-foot{display:none}
+  .issue-d-pane{min-width:0;min-height:0}
+  .issue-d-head{height:2.7rem;font-size:.7rem;gap:.35rem;padding:0 .5rem}
+  .issue-id-copy{width:5.5rem;font-size:.95rem}
+  .issue-copy-status{width:2.5rem}
+  .issue-d-body{padding:.9rem}
+  .issue-d-title{font-size:1.15rem;overflow-wrap:anywhere}
+  .issue-d-desc{font-size:.9rem;overflow-wrap:anywhere}
+  .issue-file-dialog{width:100%}
+}
+@media(max-width:520px){
+  body.issue-view-active .nav-brand{flex-basis:5.5rem;max-width:5.5rem}
+  body.issue-view-active .nav-right #settings-btn,
+  body.issue-view-active .nav-right #help-btn,
+  body.issue-view-active .nav-right #filters-btn{display:none!important}
+  .issue-inbox{grid-template-columns:minmax(0,1fr) minmax(12rem,.9fr)}
+}
+@media(max-width:480px){
+  .issue-inbox{display:flex;flex-direction:column}
+  .issue-q-pane{height:42%;min-height:13rem;border-right:0;border-bottom:1px solid var(--border)}
+  .issue-d-pane{flex:1;min-height:0}
+}

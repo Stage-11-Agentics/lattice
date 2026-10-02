@@ -13,6 +13,9 @@
     var issues = [];
     var personRows = [];
     var details = Object.create(null);
+    var detailsStale = Object.create(null);
+    var detailsLoading = Object.create(null);
+    var detailEpochs = Object.create(null);
     var queue = "open";
     var person = null;
     var cursors = Object.create(null);
@@ -33,7 +36,9 @@
     var destroyed = false;
 
     function actorText(actor) {
-      return typeof actor === "string" ? actor : (root.actorTooltip ? root.actorTooltip(actor) : String(actor || ""));
+      if (typeof actor === "string") return actor;
+      var normalized = root.normalizeActor ? root.normalizeActor(actor) : null;
+      return normalized || (root.actorTooltip ? root.actorTooltip(actor) : String(actor || ""));
     }
     function actorName(actor) {
       return root.actorDisplayName ? root.actorDisplayName(actor) : actorText(actor);
@@ -86,9 +91,10 @@
     function visibleRows() {
       return person ? personRows : issues;
     }
-    function rowsForQueue(key) {
-      if (person && key === "all") return logic.sortPersonIssues(personRows, person.actor);
-      return logic.rowsForQueue(visibleRows(), key, person ? person.actor : null)
+    function rowsForQueue(key, sourceRows) {
+      var source = sourceRows || visibleRows();
+      if (person && key === "all") return logic.sortPersonIssues(source, person.actor);
+      return logic.rowsForQueue(source, key, person ? person.actor : null)
         .sort(function (a, b) {
           if (person) return logic.latestActorActivity(b, person.actor).localeCompare(logic.latestActorActivity(a, person.actor)) ||
             (a.seq || 0) - (b.seq || 0);
@@ -172,22 +178,67 @@
     }
     async function loadIssues() {
       if (hosted || destroyed) return;
+      var wasLoaded = loaded;
+      var previousIssues = issues;
+      var previousPersonRows = personRows;
+      var previousVisibleRows = rowsForQueue(queue, person ? previousPersonRows : previousIssues);
+      var previousSelected = current();
+      var previousSelectedId = previousSelected && previousSelected.id;
       loading = true;
       var generation = ++requestGeneration;
       try {
         var rows = await api("/api/issues");
         if (destroyed || generation !== requestGeneration) return;
         issues = Array.isArray(rows) ? rows : [];
-        details = Object.create(null);
         if (person) await loadPersonIssues(person.actor, generation);
+        if (destroyed || generation !== requestGeneration) return;
         loading = false;
         loaded = true;
-        render();
+        if (!wasLoaded) {
+          render();
+          return;
+        }
+
+        var allDelta = logic.refreshDelta(previousIssues, issues, null);
+        allDelta.changedIds.forEach(markDetailStale);
+        var personDelta = logic.refreshDelta(previousPersonRows, personRows, null);
+        personDelta.changedIds.forEach(markDetailStale);
+        renderQueueCounts();
+        if (personDelta.listChanged) renderPersonHead();
+
+        var nextVisibleRows = rowsForQueue(queue);
+        var selectedChanged = false;
+        logic.applyRefreshDelta(previousVisibleRows, nextVisibleRows, previousSelectedId, {
+          updateList: function () {
+            var selectedStillVisible = nextVisibleRows.some(function (issue) { return issue.id === previousSelectedId; });
+            var keepIssueInteraction = previousSelectedId && hasActiveIssueInteraction(previousSelectedId) &&
+              issues.some(function (issue) { return issue.id === previousSelectedId; });
+            if (!selectedStillVisible && !keepIssueInteraction) settleCursor(nextVisibleRows);
+            else if (selectedStillVisible) {
+              cursors[currentKey() + ":index"] = nextVisibleRows.findIndex(function (issue) {
+                return issue.id === previousSelectedId;
+              });
+            }
+            renderQueue(nextVisibleRows, { preserveScroll: true });
+          },
+          updateSelected: function () { selectedChanged = true; }
+        });
+        updateQueueAges(nextVisibleRows);
+
+        var nextSelected = current();
+        var nextSelectedId = nextSelected && nextSelected.id;
+        if (previousSelectedId !== nextSelectedId) {
+          renderDetail(nextSelected);
+        } else if (selectedChanged && nextSelected) {
+          markDetailStale(nextSelected.id);
+          ensureDetail(nextSelected);
+        }
+        syncCloser();
       } catch (error) {
         if (generation === requestGeneration) {
           loading = false;
           loaded = true;
-          showLoadError(error);
+          if (!wasLoaded) showLoadError(error);
         }
       }
     }
@@ -199,18 +250,21 @@
     }
     function showLoadError(error) {
       var list = document.getElementById("issue-q-list");
-      if (list) list.innerHTML = '<div class="issue-q-empty">Could not load issues: ' + esc(error.message || error) + "</div>";
+      if (list) setHtmlIfChanged(list, '<div class="issue-q-empty">Could not load issues: ' + esc(error.message || error) + "</div>");
       var body = document.getElementById("issue-d-body");
-      if (body) body.innerHTML = '<div class="issue-quiet">Refresh to try again.</div>';
+      if (body) {
+        mediaKey = null;
+        setHtmlIfChanged(body, '<div class="issue-quiet">Refresh to try again.</div>');
+      }
     }
     function refresh() {
       if (hosted) { showHostedUnavailable(); return Promise.resolve(); }
       active = true;
       setActive(true);
-      loaded = false;
       return loadIssues();
     }
-    function render() {
+    function render(renderOptions) {
+      renderOptions = renderOptions || {};
       if (destroyed) return;
       if (hosted) { showHostedUnavailable(); return; }
       active = true;
@@ -221,68 +275,156 @@
         tabs = document.getElementById("issue-q-tabs");
       }
       if (!loaded && !loading) loadIssues();
-      queues.forEach(function (item) {
-        var count = person ? logic.rowsForQueue(personRows, item.key, person.actor).length :
-          issues.filter(function (issue) { return logic.queueOf(issue) === item.key; }).length;
-        var countEl = document.getElementById("issue-qc-" + item.key);
-        if (countEl) countEl.textContent = String(count);
-        var tab = tabs.querySelector('[data-q="' + item.key + '"]');
-        if (tab) tab.setAttribute("aria-pressed", queue === item.key ? "true" : "false");
-      });
+      renderQueueCounts();
       var rows = rowsForQueue(queue);
       settleCursor(rows);
       renderPersonHead();
       if (loading && !issues.length && !personRows.length) {
-        document.getElementById("issue-q-list").innerHTML = '<div class="issue-q-empty">Loading issues…</div>';
-      } else renderQueue(rows);
-      renderDetail(current());
+        setHtmlIfChanged(document.getElementById("issue-q-list"), '<div class="issue-q-empty">Loading issues…</div>');
+      } else renderQueue(rows, { preserveScroll: !!renderOptions.preserveScroll });
+      if (!renderOptions.skipDetail) renderDetail(current());
+      syncCloser();
+    }
+    function renderQueueCounts() {
+      var tabs = document.getElementById("issue-q-tabs");
+      if (!tabs) return;
+      queues.forEach(function (item) {
+        var count = person ? logic.rowsForQueue(personRows, item.key, person.actor).length :
+          issues.filter(function (issue) { return logic.queueOf(issue) === item.key; }).length;
+        var countEl = document.getElementById("issue-qc-" + item.key);
+        if (countEl && countEl.textContent !== String(count)) countEl.textContent = String(count);
+        var tab = tabs.querySelector('[data-q="' + item.key + '"]');
+        var pressed = queue === item.key ? "true" : "false";
+        if (tab && tab.getAttribute("aria-pressed") !== pressed) tab.setAttribute("aria-pressed", pressed);
+      });
+    }
+    function syncCloser() {
       if (closer && (!current() || closer.issue !== current().id)) {
         if (current() && mediaOf(current()).length) openCloser(0);
         else closeCloser();
       }
     }
+    function markDetailStale(id) {
+      if (!id) return;
+      detailsStale[id] = true;
+      detailEpochs[id] = (detailEpochs[id] || 0) + 1;
+    }
+    function hasActiveIssueInteraction(issueId) {
+      var inline = document.querySelector("#issue-d-media video");
+      if (shownId === issueId && inline && !inline.paused && !inline.ended) return true;
+      var overlay = document.querySelector("#issue-closer video");
+      if (closer && closer.issue === issueId && overlay && !overlay.paused && !overlay.ended) return true;
+      var commentBox = document.getElementById("issue-comment-box");
+      return !!(shownId === issueId && commentBox &&
+        (document.activeElement === commentBox || commentBox.value.length > 0));
+    }
+    function setHtmlIfChanged(element, html) {
+      if (!element || element.__issueViewHtml === html) return;
+      element.innerHTML = html;
+      element.__issueViewHtml = html;
+    }
+    function setTextIfChanged(element, text) {
+      if (element && element.textContent !== text) element.textContent = text;
+    }
     function renderPersonHead() {
       var head = document.getElementById("issue-person-head");
       head.classList.toggle("on", !!person);
       if (!person) {
-        head.innerHTML = '<span>Click a name to see everything from that person.</span>';
+        head.removeAttribute("data-person-actor");
+        setHtmlIfChanged(head, '<span>Click a name to see everything from that person.</span>');
         return;
       }
       var summary = logic.personSummary(personRows, person.actor);
-      head.innerHTML = '<div class="issue-person-line"><span class="actor">' + esc(actorName(person.actor)) + '</span>' +
+      var actorKey = String(person.actor);
+      var existingCounts = head.querySelector(".issue-person-counts");
+      var existingMachines = head.querySelector(".issue-person-machines");
+      if (head.getAttribute("data-person-actor") === actorKey && existingCounts && existingMachines) {
+        setTextIfChanged(existingCounts, summary.filed + " filed · " + summary.comments +
+          (summary.comments === 1 ? " comment" : " comments"));
+        setTextIfChanged(existingMachines, "from " + (summary.machines.join(", ") || "unknown"));
+        return;
+      }
+      head.setAttribute("data-person-actor", actorKey);
+      setHtmlIfChanged(head, '<div class="issue-person-line"><span class="actor">' + esc(actorName(person.actor)) + '</span>' +
         '<span class="issue-person-counts">' + summary.filed + " filed · " + summary.comments +
         (summary.comments === 1 ? " comment" : " comments") + '</span></div><div class="issue-person-line">' +
         '<span class="issue-person-machines">from ' + esc(summary.machines.join(", ") || "unknown") + '</span>' +
-        '<button type="button" class="btn" data-action="leave-person" title="Back to all issues (Esc)"><kbd>Esc</kbd> All</button></div>';
+        '<button type="button" class="btn" data-action="leave-person" title="Back to all issues (Esc)"><kbd>Esc</kbd> All</button></div>');
     }
-    function renderQueue(rows) {
+    function renderQueue(rows, renderOptions) {
+      renderOptions = renderOptions || {};
       var list = document.getElementById("issue-q-list");
+      var scrollTop = list.scrollTop;
       if (!rows.length) {
-        list.innerHTML = '<div class="issue-q-empty">' + esc(emptyMessage()) + "</div>";
-        return;
+        setHtmlIfChanged(list, '<div class="issue-q-empty">' + esc(emptyMessage()) + "</div>");
+      } else {
+        if (list.querySelector(".issue-q-empty")) {
+          while (list.firstChild) list.removeChild(list.firstChild);
+          delete list.__issueViewHtml;
+        }
+        var existing = Object.create(null);
+        list.querySelectorAll(".issue-q-row[data-issue-id]").forEach(function (row) {
+          existing["$" + row.getAttribute("data-issue-id")] = row;
+        });
+        var wanted = Object.create(null);
+        var selected = cursors[currentKey()];
+        rows.forEach(function (issue, index) {
+          var key = "$" + issue.id;
+          var markup = queueRowMarkup(issue, issue.id === selected);
+          var row = existing[key];
+          if (!row || row.__issueRowMarkup !== markup) {
+            var template = document.createElement("template");
+            template.innerHTML = markup;
+            var replacement = template.content.firstElementChild;
+            replacement.__issueRowMarkup = markup;
+            if (row) row.replaceWith(replacement);
+            row = replacement;
+          }
+          wanted[key] = true;
+          var currentAtIndex = list.children[index];
+          if (currentAtIndex !== row) list.insertBefore(row, currentAtIndex || null);
+        });
+        Object.keys(existing).forEach(function (key) {
+          if (!wanted[key] && existing[key].parentNode === list) existing[key].remove();
+        });
       }
-      var selected = cursors[currentKey()];
-      list.innerHTML = rows.map(function (issue) {
-        var rowMedia = mediaOf(issue);
-        var first = rowMedia.find(function (media) { return media.kind === "video"; }) || rowMedia[0];
-        var thumbnail = first && first.url ? '<img loading="lazy" decoding="async" src="' + esc(root.apiUrl(options.basePath, first.url)) + '" alt="">' : "";
-        var tag = tagFor(issue);
-        var commentCount = Number(issue.comment_count || 0);
-        var mediaCount = rowMedia.length;
-        var thumb = !mediaCount ? '<span class="issue-q-thumb none"></span>' :
-          '<span class="issue-q-thumb">' + thumbnail +
-          (first.kind === "video" ? '<span class="issue-q-badge issue-q-video">▶ ' + esc(formatDuration((first.duration_ms || 0) / 1000)) + "</span>" : "") +
-          (mediaCount > 1 ? '<span class="issue-q-badge issue-q-count-badge">' + mediaCount + "</span>" : "") + "</span>";
-        return '<div class="issue-q-row' + (issue.id === selected ? " cursor" : "") + '" data-issue-id="' + esc(issue.id) +
-          '" role="option" aria-selected="' + (issue.id === selected ? "true" : "false") + '"><div class="issue-q-main"><div class="issue-q-top">' +
-          '<span class="issue-id">' + esc(issue.short_id || issue.id) + '</span><span class="issue-q-tag">' + tag + '</span>' +
-          '<span class="issue-q-comments" title="' + commentCount + (commentCount === 1 ? " comment" : " comments") + '">' +
-          (commentCount ? '&#9679; ' + commentCount : "") + '</span><span class="issue-q-age" title="' + esc(displayTime(issue.filed_at)) + '">' +
-          esc(relativeTime(issue.filed_at)) + '</span></div><div class="issue-q-text" title="' + esc(issue.title || "") + '">' +
-          esc(issue.title || "Untitled issue") + "</div></div>" + thumb + "</div>";
-      }).join("");
-      var selectedRow = list.querySelector(".cursor");
-      if (selectedRow) selectedRow.scrollIntoView({ block: "nearest" });
+      if (renderOptions.preserveScroll) list.scrollTop = scrollTop;
+      else {
+        var selectedRow = list.querySelector(".cursor");
+        if (selectedRow) selectedRow.scrollIntoView({ block: "nearest" });
+      }
+    }
+    function queueRowMarkup(issue, selected) {
+      var rowMedia = mediaOf(issue);
+      var first = rowMedia.find(function (media) { return media.kind === "video"; }) || rowMedia[0];
+      var thumbnail = first && first.url ? '<img loading="lazy" decoding="async" src="' + esc(root.apiUrl(options.basePath, first.url)) + '" alt="">' : "";
+      var tag = tagFor(issue);
+      var commentCount = Number(issue.comment_count || 0);
+      var mediaCount = rowMedia.length;
+      var thumb = !mediaCount ? '<span class="issue-q-thumb none"></span>' :
+        '<span class="issue-q-thumb">' + thumbnail +
+        (first.kind === "video" ? '<span class="issue-q-badge issue-q-video">▶ ' + esc(formatDuration((first.duration_ms || 0) / 1000)) + "</span>" : "") +
+        (mediaCount > 1 ? '<span class="issue-q-badge issue-q-count-badge">' + mediaCount + "</span>" : "") + "</span>";
+      return '<div class="issue-q-row' + (selected ? " cursor" : "") + '" data-issue-id="' + esc(issue.id) +
+        '" role="option" aria-selected="' + (selected ? "true" : "false") + '"><div class="issue-q-main"><div class="issue-q-top">' +
+        '<span class="issue-id">' + esc(issue.short_id || issue.id) + '</span><span class="issue-q-tag">' + tag + '</span>' +
+        '<span class="issue-q-comments" title="' + commentCount + (commentCount === 1 ? " comment" : " comments") + '">' +
+        (commentCount ? '&#9679; ' + commentCount : "") + '</span><span class="issue-q-age" title="' + esc(displayTime(issue.filed_at)) + '">' +
+        esc(relativeTime(issue.filed_at)) + '</span></div><div class="issue-q-text" title="' + esc(issue.title || "") + '">' +
+        esc(issue.title || "Untitled issue") + "</div></div>" + thumb + "</div>";
+    }
+    function updateQueueAges(rows) {
+      var list = document.getElementById("issue-q-list");
+      if (!list) return;
+      list.querySelectorAll(".issue-q-row[data-issue-id]").forEach(function (row) {
+        var issue = rows.find(function (item) { return item.id === row.getAttribute("data-issue-id"); });
+        var age = row.querySelector(".issue-q-age");
+        if (!issue || !age) return;
+        var relative = relativeTime(issue.filed_at);
+        if (age.textContent !== relative) age.textContent = relative;
+        var title = displayTime(issue.filed_at);
+        if (age.title !== title) age.title = title;
+      });
     }
     function tagFor(issue) {
       var why = person && issue.filed_by !== person.actor ? '<span class="issue-q-why">commented</span> · ' : "";
@@ -304,17 +446,31 @@
       return details[issue.id] || issue;
     }
     async function ensureDetail(issue) {
-      if (!issue || details[issue.id] || hosted) return;
+      if (!issue || hosted || detailsLoading[issue.id] || details[issue.id] && !detailsStale[issue.id]) return;
       var id = issue.id;
+      var epoch = detailEpochs[id] || 0;
+      var retry = false;
+      detailsLoading[id] = true;
       try {
         var detail = await api("/api/issues/" + encodeURIComponent(id));
-        if (destroyed || current() && current().id !== id) return;
-        details[id] = detail;
-        renderDetail(current());
+        if (destroyed) return;
+        if (epoch !== (detailEpochs[id] || 0)) {
+          retry = true;
+        } else {
+          details[id] = detail;
+          delete detailsStale[id];
+          if (current() && current().id === id) renderDetail(current());
+        }
       } catch (error) {
         var body = document.getElementById("issue-d-body");
-        if (body && current() && current().id === id) body.innerHTML = '<div class="issue-quiet">Could not load issue: ' + esc(error.message || error) + "</div>";
+        if (body && !details[id] && current() && current().id === id) {
+          mediaKey = null;
+          setHtmlIfChanged(body, '<div class="issue-quiet">Could not load issue: ' + esc(error.message || error) + "</div>");
+        }
+      } finally {
+        delete detailsLoading[id];
       }
+      if (retry && !destroyed) ensureDetail(issue);
     }
     function stateBadge(state) {
       var color = state === "resolved" ? "#22c55e" : state === "open" ? "#f59e0b" : "#8b8fa3";
@@ -341,20 +497,21 @@
       var changed = id !== shownId;
       shownId = id;
       var copy = document.getElementById("issue-id-copy");
-      copy.textContent = issue ? issue.short_id || issue.id : "";
+      setTextIfChanged(copy, issue ? issue.short_id || issue.id : "");
       copy.disabled = !issue;
-      document.getElementById("issue-d-state").innerHTML = issue ? stateBadge(logic.stateOf(issue)) : "";
-      document.getElementById("issue-d-facts").innerHTML = issue ? factsHtml(issue) : "";
+      setHtmlIfChanged(document.getElementById("issue-d-state"), issue ? stateBadge(logic.stateOf(issue)) : "");
+      setHtmlIfChanged(document.getElementById("issue-d-facts"), issue ? factsHtml(issue) : "");
       var status = document.getElementById("issue-copy-status");
-      if (changed && !status.classList.contains("done")) status.textContent = issue ? "copy" : "";
+      if (changed && !status.classList.contains("done")) setTextIfChanged(status, issue ? "copy" : "");
       if (!issue) {
         mediaKey = null;
         var message = emptyMessage();
-        body.innerHTML = '<div class="issue-quiet"><h2>' + esc(message.split(".")[0]) + "</h2>" + esc(message) + "</div>";
+        setHtmlIfChanged(body, '<div class="issue-quiet"><h2>' + esc(message.split(".")[0]) + "</h2>" + esc(message) + "</div>");
         return;
       }
       if (!document.getElementById("issue-d-title")) {
-        body.innerHTML = detailShell();
+        mediaKey = null;
+        setHtmlIfChanged(body, detailShell());
         document.getElementById("issue-comment-post").addEventListener("mousedown", function (event) { event.preventDefault(); });
         document.getElementById("issue-comment-post").addEventListener("click", postComment);
         var commentBox = document.getElementById("issue-comment-box");
@@ -364,23 +521,25 @@
       }
       var detail = details[issue.id];
       if (!detail) {
-        body.innerHTML = '<div class="issue-quiet">Loading issue…</div>';
+        mediaKey = null;
+        setHtmlIfChanged(body, '<div class="issue-quiet">Loading issue…</div>');
         ensureDetail(issue);
         return;
       }
+      if (detailsStale[issue.id]) ensureDetail(issue);
       var scrollTop = changed ? 0 : body.scrollTop;
-      document.getElementById("issue-d-title").textContent = detail.title || issue.title || "Untitled issue";
-      document.getElementById("issue-d-desc").textContent = detail.description || "";
-      document.getElementById("issue-comments").innerHTML = commentsHtml(detail);
+      setTextIfChanged(document.getElementById("issue-d-title"), detail.title || issue.title || "Untitled issue");
+      setTextIfChanged(document.getElementById("issue-d-desc"), detail.description || "");
+      setHtmlIfChanged(document.getElementById("issue-comments"), commentsHtml(detail));
       if (changed) {
         document.getElementById("issue-comment-box").value = "";
         document.getElementById("issue-compose").classList.remove("active");
       }
       renderMedia(detail);
-      document.getElementById("issue-outcome").innerHTML = outcomeHtml(detail);
-      document.getElementById("issue-meta").innerHTML = metaHtml(detail);
+      setHtmlIfChanged(document.getElementById("issue-outcome"), outcomeHtml(detail));
+      setHtmlIfChanged(document.getElementById("issue-meta"), metaHtml(detail));
       renderHistory(detail);
-      body.scrollTop = scrollTop;
+      if (body.scrollTop !== scrollTop) body.scrollTop = scrollTop;
     }
     function emptyMessage() {
       if (person && queue === "all") return "This person has not filed or commented on any issues.";
@@ -460,12 +619,30 @@
         '</span><span class="issue-history-what">' + actorHtml(actor, event.origin ? event.origin : data.origin) + " " + esc(what) + "</span></div>";
     }
     function renderHistory(issue) {
-      var history = issue.events || [];
+      var history = Array.isArray(issue.events) ? issue.events : [];
       var box = document.getElementById("issue-history");
       if (!box) return;
-      box.innerHTML = '<button type="button" class="issue-history-toggle" aria-expanded="' + historyOpen + '"><span class="caret">' +
-        (historyOpen ? "▾" : "▸") + "</span>History (" + history.length + ")</button>" +
-        (historyOpen ? '<div class="issue-history">' + history.map(eventHistoryLine).join("") + "</div>" : "");
+      var toggle = box.querySelector(".issue-history-toggle");
+      if (!toggle) {
+        toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.className = "issue-history-toggle";
+        box.appendChild(toggle);
+      }
+      toggle.setAttribute("aria-expanded", historyOpen ? "true" : "false");
+      setHtmlIfChanged(toggle, '<span class="caret">' + (historyOpen ? "▾" : "▸") +
+        "</span>History (" + history.length + ")");
+      var historyBox = box.querySelector(".issue-history");
+      if (!historyOpen) {
+        if (historyBox) historyBox.remove();
+        return;
+      }
+      if (!historyBox) {
+        historyBox = document.createElement("div");
+        historyBox.className = "issue-history";
+        box.appendChild(historyBox);
+      }
+      setHtmlIfChanged(historyBox, history.map(eventHistoryLine).join(""));
     }
     function thumbSource(media) { return media.kind === "video" ? (media.poster_url || media.url) : media.url; }
     function frameSeconds(frame) { return Number(frame.t_ms || 0) / 1000; }
@@ -473,11 +650,7 @@
       var box = document.getElementById("issue-d-media");
       if (!box) return;
       var media = mediaOf(issue);
-      var key = issue.id + "|" + media.map(function (item) { return item.id; }).join(",");
-      if (key === mediaKey) return;
-      mediaKey = key;
-      focusMedia = 0;
-      box.innerHTML = media.map(function (item, index) {
+      var markup = media.map(function (item, index) {
         var src = root.apiUrl(options.basePath, item.url);
         var name = item.original_name || item.name || "attached media";
         var width = item.width || 1280;
@@ -496,6 +669,11 @@
         return '<figure class="issue-media-item" data-item="' + index + '"><div class="issue-media-frame ' + esc(item.kind || "photo") + '" data-w="' +
           esc(width) + '" data-h="' + esc(height) + '">' + content + "</div>" + agentFrames + "</figure>";
       }).join("");
+      var key = issue.id + "|" + markup;
+      if (key === mediaKey) return;
+      mediaKey = key;
+      focusMedia = 0;
+      setHtmlIfChanged(box, markup);
       box.querySelectorAll("video").forEach(function (video) {
         var figure = video.closest(".issue-media-item");
         var item = media[Number(figure.getAttribute("data-item"))];

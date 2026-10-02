@@ -67,3 +67,60 @@ test("video frame sample times match the issue media contract", () => {
   assert.deepEqual(logic.frameTimes(10_000), [0, 1980, 3960, 5940, 7920, 9900]);
   assert.equal(logic.frameTimes(60_000).length, 8);
 });
+
+test("refresh leaves the selected media, scroll, focus and drafts alone for unchanged or unrelated rows", () => {
+  const previous = [
+    { id: "selected", title: "TMP-I1", updated_at: "t1" },
+    { id: "other", title: "TMP-I2", updated_at: "t1" },
+  ];
+  const video = { paused: false, currentTime: 9.4 };
+  const view = {
+    video,
+    scrollTop: 428,
+    focusedElement: "comment-box",
+    commentDraft: "half-typed comment",
+    filingDraft: { title: "half-filed issue" },
+    listUpdates: 0,
+    detailUpdates: 0,
+  };
+  const effects = {
+    updateList() { view.listUpdates += 1; },
+    updateSelected() {
+      view.detailUpdates += 1;
+      view.video = null;
+      view.scrollTop = 0;
+      view.focusedElement = null;
+      view.commentDraft = "";
+      view.filingDraft = null;
+    },
+  };
+
+  const unchanged = logic.applyRefreshDelta(previous, JSON.parse(JSON.stringify(previous)), "selected", effects);
+  assert.equal(unchanged.listChanged, false);
+  assert.equal(unchanged.selectedChanged, false);
+  assert.strictEqual(view.video, video);
+  assert.equal(view.video.paused, false);
+  assert.equal(view.video.currentTime, 9.4);
+  assert.equal(view.scrollTop, 428);
+  assert.equal(view.focusedElement, "comment-box");
+  assert.equal(view.commentDraft, "half-typed comment");
+  assert.deepEqual(view.filingDraft, { title: "half-filed issue" });
+
+  assert.equal(logic.refreshDelta([], [], "selected").selectedChanged, false);
+
+  const unrelated = logic.applyRefreshDelta(previous, [
+    { id: "selected", title: "TMP-I1", updated_at: "t1" },
+    { id: "other", title: "TMP-I2 updated elsewhere", updated_at: "t2" },
+  ], "selected", effects);
+  assert.equal(unrelated.listChanged, true);
+  assert.equal(unrelated.selectedChanged, false);
+  assert.equal(view.listUpdates, 1);
+  assert.equal(view.detailUpdates, 0);
+  assert.strictEqual(view.video, video);
+  assert.equal(view.video.paused, false);
+  assert.equal(view.video.currentTime, 9.4);
+  assert.equal(view.scrollTop, 428);
+  assert.equal(view.focusedElement, "comment-box");
+  assert.equal(view.commentDraft, "half-typed comment");
+  assert.deepEqual(view.filingDraft, { title: "half-filed issue" });
+});
