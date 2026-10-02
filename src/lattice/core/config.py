@@ -679,12 +679,13 @@ def validate_completion_policy(
     require_roles = policy.get("require_roles", [])
     if require_roles:
         present_roles = get_evidence_roles(snapshot)
+        review_role_existed = "review" in present_roles
         if "review" in require_roles and events is not None:
             if not _has_current_review_evidence(snapshot, events):
                 present_roles.discard("review")
         for required in require_roles:
             if required not in present_roles:
-                if required == "review" and events is not None:
+                if required == "review" and events is not None and review_role_existed:
                     failures.append(
                         "Missing current-cycle review evidence: attach or comment with role "
                         "review after the latest transition into review. Satisfy with: "
@@ -740,7 +741,7 @@ def _has_current_review_evidence(snapshot: dict, events: list[dict] | tuple[dict
         return False
 
     return any(
-        event.get("type") in {"artifact_attached", "comment_added"}
+        event.get("type") in {"artifact_attached", "comment_added", "comment_edited"}
         and (event.get("data") or {}).get("role") == "review"
         for event in events[latest_review_entry + 1 :]
     )

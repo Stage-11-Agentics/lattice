@@ -541,6 +541,39 @@ class TestValidateCompletionPolicy:
         assert ok is True
         assert failures == []
 
+    def test_current_cycle_role_edit_satisfies_done(self) -> None:
+        config = default_config()
+        snap = _snap_with_evidence(
+            [{"id": "ev_edited", "role": "review", "source_type": "comment"}]
+        )
+        events = [
+            {"type": "task_created", "data": {"status": "backlog"}},
+            {"type": "status_changed", "data": {"to": "review"}},
+            {"type": "comment_added", "data": {"role": None}},
+            {"type": "comment_edited", "data": {"role": "review"}},
+        ]
+
+        ok, failures = validate_completion_policy(config, snap, "done", events=events)
+
+        assert ok is True
+        assert failures == []
+
+    def test_missing_review_role_keeps_general_guidance(self) -> None:
+        config = default_config()
+        snap = _snap_with_evidence([])
+        events = [
+            {"type": "task_created", "data": {"status": "backlog"}},
+            {"type": "status_changed", "data": {"to": "review"}},
+        ]
+
+        ok, failures = validate_completion_policy(config, snap, "done", events=events)
+
+        assert ok is False
+        assert failures == [
+            "Missing role: review. Satisfy with: lattice attach --role review or lattice comment "
+            "--role review"
+        ]
+
     def test_has_required_role_via_comment(self) -> None:
         config = default_config()
         config["workflow"]["completion_policies"] = {
