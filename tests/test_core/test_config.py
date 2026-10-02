@@ -546,6 +546,7 @@ class TestValidateCompletionPolicy:
         snap = _snap_with_evidence(
             [{"id": "ev_edited", "role": "review", "source_type": "comment"}]
         )
+        snap["status"] = "pr_open"
         events = [
             {"type": "task_created", "data": {"status": "backlog"}},
             {"type": "status_changed", "data": {"to": "review"}},

@@ -681,7 +681,7 @@ def validate_completion_policy(
         present_roles = get_evidence_roles(snapshot)
         review_role_existed = "review" in present_roles
         if "review" in require_roles and events is not None:
-            if not _has_current_review_evidence(snapshot, events):
+            if not _has_current_review_evidence(events):
                 present_roles.discard("review")
         for required in require_roles:
             if required not in present_roles:
@@ -724,11 +724,8 @@ def validate_completion_policy(
     return (len(failures) == 0, failures)
 
 
-def _has_current_review_evidence(snapshot: dict, events: list[dict] | tuple[dict, ...]) -> bool:
-    """Whether a review-role comment or artifact was added during the current cycle."""
-    if snapshot.get("status") != "review":
-        return False
-
+def _has_current_review_evidence(events: list[dict] | tuple[dict, ...]) -> bool:
+    """Whether review evidence follows the task's latest entry into review."""
     latest_review_entry = -1
     for index, event in enumerate(events):
         event_type = event.get("type")
