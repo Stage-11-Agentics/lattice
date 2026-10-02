@@ -867,7 +867,6 @@ def resolve_diff(
             success=False,
             error=(
                 f"git diff failed for range '{ref_range}' in {repo_root}. "
-                f"Base selection rule: {base_selection_rule}. "
                 f"Pass --base/--head to name the range explicitly."
             ),
             error_code="DIFF_FAILED",
@@ -877,8 +876,7 @@ def resolve_diff(
         return DiffResolution(
             success=False,
             error=(
-                f"Diff for '{ref_range}' is empty — no changes on this range "
-                f"(base selection rule: {base_selection_rule}). "
+                f"Diff for '{ref_range}' is empty — no changes on this range. "
                 f"The head is most likely already merged into the base (or identical to it); "
                 f"pass --base <merge-base> to review it anyway. "
                 f"If the code under review lives elsewhere, pass --base/--head to name "

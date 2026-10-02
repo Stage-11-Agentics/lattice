@@ -520,11 +520,6 @@ def code_review(
         worktree=reviewed_worktree,
         review_base_branch=config.get("review_base_branch"),
     )
-    if resolution.base_ref and not dry_run and not quiet and not is_json:
-        click.echo(
-            f"Review base: {resolution.base_ref} "
-            f"(selection rule: {resolution.base_selection_rule or 'unknown'})."
-        )
     if not resolution.success:
         assert resolution.error is not None
         if not dry_run:
@@ -541,6 +536,12 @@ def code_review(
                 claim=claim,
             )
         output_error(resolution.error, resolution.error_code or "DIFF_RESOLUTION_FAILED", is_json)
+
+    if resolution.base_ref and not dry_run and not quiet and not is_json:
+        click.echo(
+            f"Review base: {resolution.base_ref} "
+            f"(selection rule: {resolution.base_selection_rule or 'unknown'})."
+        )
 
     if resolution.warning and not quiet:
         click.echo(f"Note: {resolution.warning}", err=True)
