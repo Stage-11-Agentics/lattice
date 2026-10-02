@@ -41,7 +41,11 @@ def availability(remote: http.Remote, project: str, issue_ids: list[str]) -> dic
     for offset in range(0, len(issue_ids), 100):
         batch = issue_ids[offset : offset + 100]
         query = "&".join(f"issue={urllib.parse.quote(issue_id, safe='')}" for issue_id in batch)
-        payload = get_json(remote, _endpoint(project, "availability") + "?" + query)
+        # A read's probe budget (SPEC §9.5): an unresponsive server costs
+        # seconds, not a minute, before the read serves the cache.
+        payload = get_json(
+            remote, _endpoint(project, "availability") + "?" + query, policy=http.PROBE
+        )
         issues = payload.get("issues") if isinstance(payload, dict) else None
         expected = set(batch)
         if (
@@ -323,16 +327,34 @@ def _write_frame_metadata(
 
 
 def annotate_views(root: Path, remote: http.Remote, project: str, views: list[dict]) -> list[dict]:
-    """Attach verified cache/remote availability and safe paths to issue views."""
+    """Attach verified cache/remote availability and safe paths to issue views.
+
+    ``available`` is ``local`` (a verified cached copy at ``path``), ``remote``
+    (on the server, not fetched), ``missing`` (the server does not hold it), or
+    ``unreachable`` (not cached, and the server could not be asked); ``missing``
+    is true exactly when ``available`` is ``missing``. Inside the offline window
+    (``cache/unreachable_until``) the server is not asked at all; a request
+    that cannot reach it opens the window, as a read's catch-up does (§9.5).
+    """
+    from lattice.remote import session
+    from lattice.remote.binding import Hosted
+
+    hosted = Hosted(root=root, remote=remote.alias, project=project)
     issue_ids = [row["id"] for row in views if validate_id(row.get("id"), "iss")]
     server_available = True
-    try:
-        remote_rows = availability(remote, project, issue_ids)
-    except OpError as exc:
-        if exc.code != "SERVER_UNREACHABLE":
-            raise
+    if issue_ids and session.in_unreachable_window(hosted):
         remote_rows = {}
         server_available = False
+    else:
+        since = session.sync_ticket(hosted)
+        try:
+            remote_rows = availability(remote, project, issue_ids)
+        except OpError as exc:
+            if exc.code != "SERVER_UNREACHABLE":
+                raise
+            remote_rows = {}
+            server_available = False
+            session.open_unreachable_window_after(hosted, since)
     for view in views:
         issue_id = view.get("id")
         if not validate_id(issue_id, "iss"):
@@ -378,10 +400,11 @@ def annotate_views(root: Path, remote: http.Remote, project: str, views: list[di
                 available_value = "local"
             elif remote_present:
                 available_value = "remote"
+            elif not server_available:
+                available_value = "unreachable"  # not known to be gone: keep any copy
             else:
                 available_value = "missing"
-                if server_available:
-                    _evict(root, project, issue_id, media_id)
+                _evict(root, project, issue_id, media_id)
             entry.update(
                 path=str(local_path) if local_path else None,
                 missing=available_value == "missing",
@@ -423,13 +446,14 @@ def annotate_views(root: Path, remote: http.Remote, project: str, views: list[di
                     frame_size,
                     frame=True,
                 )
-                frame_available = (
-                    "local"
-                    if path is not None
-                    else "remote"
-                    if server_available and isinstance(metadata, dict)
-                    else "missing"
-                )
+                if path is not None:
+                    frame_available = "local"
+                elif not server_available:
+                    frame_available = "unreachable"
+                elif isinstance(metadata, dict):
+                    frame_available = "remote"
+                else:
+                    frame_available = "missing"
                 frames.append(
                     {
                         "t_ms": t_ms,

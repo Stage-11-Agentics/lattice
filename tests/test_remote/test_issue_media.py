@@ -24,7 +24,7 @@ def test_availability_batches_issue_ids_at_server_limit(monkeypatch: pytest.Monk
     issue_ids = [_id("iss", value) for value in range(205)]
     calls: list[list[str]] = []
 
-    def fake_get_json(_remote: http.Remote, path: str) -> dict:
+    def fake_get_json(_remote: http.Remote, path: str, **_kwargs: object) -> dict:
         batch = parse_qs(urlsplit(path).query).get("issue", [])
         calls.append(batch)
         return {"issues": {issue_id: [] for issue_id in batch}}

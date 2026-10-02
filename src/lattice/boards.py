@@ -306,10 +306,32 @@ class HostedBoard:
         session.release_read_lock(self.root)
         session.check_protocol(self.hosted)
         since = session.sync_ticket(self.hosted)
+        staged = op_name in {"issue.file", "issue.attach"} and bool(params_wire.get("media"))
         try:
-            if op_name in {"issue.file", "issue.attach"} and params_wire.get("media"):
+            if staged:
+                body["params"] = stage_issue_media(
+                    self.remote, self.hosted.project, params_wire, offline=offline
+                )
+                offline = False  # the uploads reached it: the server is back
+            try:
+                data = post_operation(
+                    self.remote, self.hosted.project, op_name, body, offline=offline
+                )
+            except OpError as exc:
+                if not (staged and _staged_media_lost(exc)):
+                    raise
+                # The server lost the staged objects (it restarted and rolled
+                # back an unfinished filing): stage them again, then retry the
+                # same operation once. Nothing was written by the lost attempt.
+                import sys
+
+                print(
+                    f"lattice: {self.remote.alias} no longer holds the uploaded media; "
+                    "uploading it again",
+                    file=sys.stderr,
+                )
                 body["params"] = stage_issue_media(self.remote, self.hosted.project, params_wire)
-            data = post_operation(self.remote, self.hosted.project, op_name, body, offline=offline)
+                data = post_operation(self.remote, self.hosted.project, op_name, body)
         except OpError as exc:
             if exc.code == "SERVER_UNREACHABLE":
                 # Nothing was sent; the next write should not wait again (SPEC §8.6),
@@ -380,6 +402,12 @@ class HostedBoard:
                 )
             elif event.get("task_id"):
                 execute_hooks(config, self.cache_dir, event["task_id"], event)
+
+
+def _staged_media_lost(exc: OpError) -> bool:
+    """The server's answer when an operation names a staged media object it no
+    longer holds (a crash rolled back the filing that had consumed it)."""
+    return exc.code == "NOT_FOUND" and "staged media object" in exc.message
 
 
 def resolve_board(

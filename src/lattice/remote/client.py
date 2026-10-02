@@ -43,8 +43,10 @@ from lattice.remote import http
 #: (at most ``lock_timeout_seconds``) plus the work, so the read timeout sits
 #: above both and a slow admission is never mistaken for a lost request.
 OP_POLICY = http.Policy(connect_seconds=5.0, response_seconds=90.0)
+#: Media uploads: 60 s without progress (no byte sent, no answer) ends one
+#: attempt, however long the whole body takes on a slow link.
 MEDIA_UPLOAD_POLICY = http.Policy(
-    connect_seconds=10.0, response_seconds=60.0, progress="uploading issue media"
+    connect_seconds=5.0, response_seconds=60.0, progress="uploading issue media", idle=True
 )
 FIRST_BACKOFF_SECONDS = 0.5
 MAX_BACKOFF_SECONDS = 5.0
@@ -93,12 +95,24 @@ def wire_params(op_name: str, params: Any) -> dict[str, Any]:
 _MEDIA_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 
 
-def stage_issue_media(remote: http.Remote, project: str, params: dict) -> dict:
-    """Upload each LAT-366 payload as raw bytes and return hosted staged params."""
+def stage_issue_media(
+    remote: http.Remote, project: str, params: dict, *, offline: bool = False
+) -> dict:
+    """Upload each LAT-366 payload as raw bytes and return hosted staged params.
+
+    Each upload follows the operation rules (SPEC §8.6, :func:`post_operation`):
+    staging is idempotent by hash and size, so a failed upload is retried with
+    the same object for up to ``retry_seconds``, with the same progress lines;
+    *offline* (the window was open when the command started) gives up at once
+    when the first upload cannot connect. Giving up is :func:`write_unreachable`
+    (plain words, the OS error only in ``details``), or the server's own error
+    when it kept answering busy.
+    """
     import copy
 
     result = copy.deepcopy(params)
     objects: dict[str, bytes] = {}
+    first = [offline]  # only the first upload may give up at once
 
     def stage(payload: dict) -> dict:
         if set(payload) != {"filename", "content_b64", "sha256"}:
@@ -121,21 +135,8 @@ def stage_issue_media(remote: http.Remote, project: str, params: dict) -> dict:
         if actual not in objects:
             objects[actual] = content
             path = f"/v1/projects/{urllib.parse.quote(project, safe='')}/issues/media/staging/{actual}"
-            try:
-                response = http.request(
-                    remote,
-                    "PUT",
-                    path,
-                    raw_body=content,
-                    content_type="application/octet-stream",
-                    policy=MEDIA_UPLOAD_POLICY,
-                    what="issue media upload",
-                )
-            except http.Unreachable as exc:
-                raise server_unreachable(remote, exc.reason) from None
-            except http.ServerError as exc:
-                raise OpError(exc.code, exc.message, exc.details) from None
-            metadata = response.data()
+            metadata = _upload(remote, path, content, offline=first[0])
+            first[0] = False
             if (
                 not isinstance(metadata, dict)
                 or metadata.get("sha256") != actual
@@ -404,6 +405,57 @@ def _give_up(
     if reached:
         return outcome_unknown(remote, op_id, detail)
     return write_unreachable(remote, detail, waited)
+
+
+def _upload(remote: http.Remote, path: str, content: bytes, *, offline: bool) -> Any:
+    """``PUT`` one staged media object with the retries of :func:`post_operation`.
+
+    Staging writes nothing to the board and is idempotent by hash and size, so
+    a sent upload is simply sent again; giving up is never ``OUTCOME_UNKNOWN``.
+    """
+    started = _now()
+    deadline = started + remote.retry_seconds
+    progress = _Progress(remote, started, deadline)
+    backoff = FIRST_BACKOFF_SECONDS
+    first = True
+    while True:
+        wait: float | None = None
+        refusal: OpError | None = None
+        try:
+            return http.request(
+                remote,
+                "PUT",
+                path,
+                raw_body=content,
+                content_type="application/octet-stream",
+                policy=MEDIA_UPLOAD_POLICY,
+                what="issue media upload",
+            ).data()
+        except http.Unreachable as exc:
+            detail = exc.reason
+            progress.state = "not available"
+            wait = exc.retry_after
+            if first and offline and not exc.sent:
+                raise write_unreachable(remote, detail, _now() - started) from None
+        except http.ServerError as exc:
+            refusal = OpError(exc.code, exc.message, exc.details)
+            if not _retryable(exc):
+                raise refusal from None
+            detail = f"HTTP {exc.status} {exc.code}"
+            progress.state = "busy"
+            wait = exc.retry_after
+        first = False
+        now = _now()
+        latest = deadline - LAST_ATTEMPT_MARGIN_SECONDS
+        wait = min(backoff, latest - now) if wait is None else max(wait, backoff)
+        backoff = min(backoff * 2, MAX_BACKOFF_SECONDS)
+        if wait <= 0 or now + wait > latest:
+            raise refusal or write_unreachable(remote, detail, now - started)
+        progress.begin(now)
+        progress.sleep(wait)
+        now = _now()
+        if now >= deadline:
+            raise refusal or write_unreachable(remote, detail, now - started)
 
 
 def op_status(remote: http.Remote, project: str, op_id: str) -> dict:

@@ -185,9 +185,10 @@ def annotate(root: Path, *views: dict) -> list[dict]:
 
 def assert_view_fields(entry: dict) -> None:
     """The contract: ``path`` is a verified cache file or null; ``available`` is
-    local, remote or missing; ``missing`` is true exactly when it is missing."""
+    local, remote, missing or unreachable (not cached, server not reachable);
+    ``missing`` is true exactly when it is missing."""
     for item in (entry, *entry["frames"]):
-        assert item["available"] in {"local", "remote", "missing"}
+        assert item["available"] in {"local", "remote", "missing", "unreachable"}
         assert item["missing"] is (item["available"] == "missing")
         if item["available"] == "local":
             assert item["path"] is not None and Path(item["path"]).is_file()
@@ -237,7 +238,7 @@ def test_a_corrupted_cached_file_is_never_returned(
     entry = annotate(root, media.view())[0]["media"][0]
 
     assert entry["path"] is None
-    assert entry["available"] == ("remote" if reachable else "missing")
+    assert entry["available"] == ("remote" if reachable else "unreachable")
     assert_view_fields(entry)
 
 
@@ -465,9 +466,11 @@ def test_a_cached_copy_the_server_no_longer_has_is_swept_only_when_the_server_an
 
     server.unreachable = True
     offline = annotate(root, media.view())[0]["media"][0]
-    assert offline["available"] == "missing" and stale.exists()  # nothing learned: nothing swept
+    # Nothing learned: nothing swept, and the server is said to be unreachable.
+    assert offline["available"] == "unreachable" and not offline["missing"] and stale.exists()
 
     server.unreachable = False  # the server answers and does not list it
+    (root / ".lattice" / "cache" / "unreachable_until").unlink()  # past the offline window
     online = annotate(root, media.view())[0]["media"][0]
     assert online["available"] == "missing" and online["path"] is None
     assert not stale.exists()
@@ -488,7 +491,7 @@ def test_availability_batches_at_one_hundred_and_merges_every_answer(
     ids = [_id("iss", n) for n in range(count)]
     calls: list[list[str]] = []
 
-    def fake_get_json(_remote, path):  # noqa: ANN001, ANN202
+    def fake_get_json(_remote, path, **_kwargs):  # noqa: ANN001, ANN003, ANN202
         batch = parse_qs(urlsplit(path).query)["issue"]
         calls.append(batch)
         return {"issues": {i: [{"media_id": _id("med", int(i[-6:]))}] for i in batch}}
@@ -510,7 +513,7 @@ def test_annotating_two_hundred_and_fifty_issues_pairs_each_with_its_own_answer(
     by_issue = {m.issue_id: m for m in medias}
     calls: list[int] = []
 
-    def fake_get_json(_remote, path):  # noqa: ANN001, ANN202
+    def fake_get_json(_remote, path, **_kwargs):  # noqa: ANN001, ANN003, ANN202
         batch = parse_qs(urlsplit(path).query)["issue"]
         calls.append(len(batch))
         rows = {}
@@ -534,7 +537,7 @@ def test_annotating_two_hundred_and_fifty_issues_pairs_each_with_its_own_answer(
 def test_availability_refuses_an_invalid_id_before_any_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def never(*_args):  # noqa: ANN002, ANN202
+    def never(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
         raise AssertionError("no request may be made")
 
     monkeypatch.setattr(issue_media, "get_json", never)
@@ -553,7 +556,7 @@ def test_availability_refuses_an_answer_that_does_not_match_the_question(
         "extra-id": {"issues": {asked[0]: [], asked[1]: [], _id("iss", 3): []}},
         "not-a-list": {"issues": {asked[0]: [], asked[1]: {}}},
     }
-    monkeypatch.setattr(issue_media, "get_json", lambda *_a: answers[shape])
+    monkeypatch.setattr(issue_media, "get_json", lambda *_a, **_k: answers[shape])
     with pytest.raises(OpError) as raised:
         issue_media.availability(REMOTE, PROJECT, asked)
     assert raised.value.code == "INTEGRITY_ERROR"
@@ -578,7 +581,7 @@ def test_an_unreachable_server_degrades_each_entry_without_raising(
     have, lack = view["media"]
     assert have["available"] == "local" and have["missing"] is False
     assert [f["available"] for f in have["frames"]] == ["local"]
-    assert lack["available"] == "missing" and lack["missing"] and lack["path"] is None
+    assert lack["available"] == "unreachable" and not lack["missing"] and lack["path"] is None
     for entry in view["media"]:
         assert_view_fields(entry)
 
