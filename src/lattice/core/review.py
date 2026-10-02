@@ -35,6 +35,7 @@ from lattice.core.agent_spawn import (
     SpawnResult,
     spawn_one,
 )
+from lattice.storage.review_state import write_review_state_file
 
 
 # ---------------------------------------------------------------------------
@@ -167,12 +168,7 @@ def _state_path(lattice_dir: Path, task_id: str) -> Path:
 def write_review_state(lattice_dir: Path, state: dict) -> None:
     """Persist in-flight review state atomically."""
     _require_safe_board(lattice_dir)
-    state_dir = lattice_dir / REVIEW_STATE_DIR
-    state_dir.mkdir(exist_ok=True)
-    path = _state_path(lattice_dir, state["task_id"])
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
-    tmp.replace(path)
+    write_review_state_file(lattice_dir, state["task_id"], json.dumps(state, indent=2) + "\n")
 
 
 def read_review_state(lattice_dir: Path, task_id: str) -> dict | None:
@@ -377,6 +373,8 @@ def record_agent_failure(
     entry = json.dumps(record, sort_keys=True, separators=(",", ":"))
     with open(path, "a", encoding="utf-8") as f:
         f.write(entry + "\n")
+        f.flush()
+        os.fsync(f.fileno())
     return count_agent_failures(lattice_dir, agent_type)
 
 

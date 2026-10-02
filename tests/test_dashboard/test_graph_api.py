@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import http.client
 import re
 import socket
@@ -15,6 +15,7 @@ from lattice.core.config import default_config, serialize_config
 from lattice.core.events import create_event, serialize_event
 from lattice.core.ids import generate_task_id
 from lattice.core.tasks import apply_event_to_snapshot, serialize_snapshot
+from lattice.dashboard.api import get_graph
 from lattice.dashboard.server import create_server
 from lattice.storage.fs import atomic_write, ensure_lattice_dirs
 
@@ -346,6 +347,93 @@ def test_graph_etag_hashes_crlf_bearing_event_timestamp(dashboard_server) -> Non
     etag = dict(raw_headers)["ETag"]
     body = json.loads(raw_body)
     revision = body["data"]["revision"]
-    digest = hashlib.sha256(revision.encode("utf-8", errors="surrogatepass")).hexdigest()
     assert re.fullmatch(r'"[0-9a-f]{64}"', etag)
-    assert etag == f'"{digest}"'
+    assert revision == _graph_revision(body["data"])
+    assert etag == _graph_etag(revision)
+
+
+def test_graph_etag_changes_when_relationship_changes_with_same_timestamp(dashboard_server):
+    """A graph projection change invalidates its ETag even within one timestamp."""
+    _base_url, lattice_dir, ids = dashboard_server
+    source_id = ids["in_progress"]
+    target_id = ids["done"]
+    first = get_graph(lattice_dir)
+    etag = first.headers["ETag"]
+    snapshot_path = lattice_dir / "tasks" / f"{source_id}.json"
+    snapshot = json.loads(snapshot_path.read_text())
+    event = create_event(
+        "relationship_added",
+        source_id,
+        "human:test",
+        {"type": "relates_to", "target_task_id": target_id},
+        ts=snapshot["updated_at"],
+    )
+    with (lattice_dir / "events" / f"{source_id}.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(serialize_event(event))
+    snapshot_path.write_text(
+        serialize_snapshot(apply_event_to_snapshot(snapshot, event)), encoding="utf-8"
+    )
+
+    changed = get_graph(lattice_dir, if_none_match=etag)
+    assert changed.status == 200
+    assert changed.headers["ETag"] != etag
+    assert changed.envelope["data"]["revision"] != first.envelope["data"]["revision"]
+    assert changed.headers["ETag"] == _graph_etag(changed.envelope["data"]["revision"])
+    assert {link["type"] for link in changed.envelope["data"]["links"]} == {
+        "blocks",
+        "relates_to",
+    }
+
+
+def test_graph_revision_and_etag_change_for_two_same_second_edits(dashboard_server):
+    """The response revision follows content even when edit timestamps are equal."""
+    _base_url, lattice_dir, ids = dashboard_server
+    task_id = ids["in_progress"]
+    snapshot_path = lattice_dir / "tasks" / f"{task_id}.json"
+    event_path = lattice_dir / "events" / f"{task_id}.jsonl"
+    snapshot = json.loads(snapshot_path.read_text())
+    same_timestamp = snapshot["updated_at"]
+
+    first = get_graph(lattice_dir)
+    previous_revision = first.envelope["data"]["revision"]
+    previous_etag = first.headers["ETag"]
+    assert previous_revision == _graph_revision(first.envelope["data"])
+    assert previous_etag == _graph_etag(previous_revision)
+
+    for title in ("First same-second edit", "Second same-second edit"):
+        event = create_event(
+            "field_updated",
+            task_id,
+            "human:test",
+            {"field": "title", "from": snapshot["title"], "to": title},
+            ts=same_timestamp,
+        )
+        with event_path.open("a", encoding="utf-8") as handle:
+            handle.write(serialize_event(event))
+        snapshot = apply_event_to_snapshot(snapshot, event)
+        snapshot_path.write_text(serialize_snapshot(snapshot), encoding="utf-8")
+
+        changed = get_graph(lattice_dir, if_none_match=previous_etag)
+        assert changed.status == 200
+        assert changed.envelope["data"]["nodes"]
+        revision = changed.envelope["data"]["revision"]
+        etag = changed.headers["ETag"]
+        assert revision != previous_revision
+        assert etag != previous_etag
+        assert revision == _graph_revision(changed.envelope["data"])
+        assert etag == _graph_etag(revision)
+        previous_revision, previous_etag = revision, etag
+
+
+def _graph_revision(data: dict) -> str:
+    projection = json.dumps(
+        {"nodes": data["nodes"], "links": data["links"]},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(projection.encode("utf-8")).hexdigest()
+
+
+def _graph_etag(revision: str) -> str:
+    digest = hashlib.sha256(revision.encode("utf-8", errors="surrogatepass")).hexdigest()
+    return f'"{digest}"'

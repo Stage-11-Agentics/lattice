@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import copy
+import contextvars
 import json
 import sys
+from contextlib import contextmanager
 from collections.abc import Callable
+from collections.abc import Iterator
+from dataclasses import dataclass, field
 
 from lattice.core.acceptance_criteria import (
     find_criterion,
@@ -780,17 +784,58 @@ def _print_unknown_type(etype: str) -> None:
     )
 
 
-_unknown_type_reporter: Callable[[str], None] = _print_unknown_type
+_unknown_type_reporter: Callable[[str], None] | None = None
+
+
+@dataclass
+class UnknownEventCapture:
+    """Unknown task events seen during one CLI invocation."""
+
+    events: set[tuple[str, str]] = field(default_factory=set)
+    materializing_write: bool = False
+
+
+_unknown_type_capture: contextvars.ContextVar[UnknownEventCapture | None] = contextvars.ContextVar(
+    "lattice_unknown_type_capture", default=None
+)
 
 
 def set_unknown_type_reporter(reporter: Callable[[str], None] | None) -> None:
-    """Route unknown-event-type warnings to *reporter* (``None`` restores stderr).
+    """Route unknown-event-type warnings to *reporter* (``None`` disables them).
 
-    A server installs one that logs each (project, type) once instead of
-    printing on every replay (SPEC §8.7).
+    Servers install a reporter that logs each (project, type) once. Local
+    diagnostics are reported by ``lattice doctor`` rather than on every replay.
     """
     global _unknown_type_reporter
-    _unknown_type_reporter = reporter if reporter is not None else _print_unknown_type
+    _unknown_type_reporter = reporter
+
+
+@contextmanager
+def capture_unknown_event_types() -> Iterator[UnknownEventCapture]:
+    """Collect unknown pairs and write intent for this CLI invocation."""
+    captured = UnknownEventCapture()
+    token = _unknown_type_capture.set(captured)
+    try:
+        yield captured
+    finally:
+        _unknown_type_capture.reset(token)
+
+
+def mark_materializing_write() -> None:
+    """Mark that this invocation entered the shared event-materializing write path."""
+    captured = _unknown_type_capture.get()
+    if captured is not None:
+        captured.materializing_write = True
+
+
+def is_known_event_type(etype: object) -> bool:
+    """Return whether replay recognizes *etype* as built-in or custom."""
+    return isinstance(etype, str) and (
+        etype == "task_created"
+        or etype in _MUTATION_HANDLERS
+        or etype in _NOOP_EVENT_TYPES
+        or etype.startswith("x_")
+    )
 
 
 def _apply_mutation(snap: dict, etype: str, event: dict) -> None:
@@ -809,6 +854,11 @@ def _apply_mutation(snap: dict, etype: str, event: dict) -> None:
         # Custom event type -- no snapshot field changes.
         pass
     else:
-        # Unknown built-in types: warn for discoverability but don't fail,
-        # to preserve forward compatibility (section 6).
-        _unknown_type_reporter(etype)
+        # Unknown built-in types don't fail replay; only report when an
+        # application has installed a reporter (SPEC §15).
+        captured = _unknown_type_capture.get()
+        if captured is not None and _unknown_type_reporter is None:
+            task_id = event.get("task_id")
+            captured.events.add((task_id if isinstance(task_id, str) else "<unknown>", etype))
+        if _unknown_type_reporter is not None:
+            _unknown_type_reporter(etype)

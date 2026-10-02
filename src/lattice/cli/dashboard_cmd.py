@@ -221,7 +221,7 @@ def restart_cmd(port: int | None) -> None:
         raise SystemExit(1)
 
     result = subprocess.run(
-        ["lsof", "-ti", f":{port}"],
+        ["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"],
         capture_output=True,
         text=True,
     )

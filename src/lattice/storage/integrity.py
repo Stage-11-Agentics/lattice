@@ -15,9 +15,9 @@ from pathlib import Path
 from lattice.core.config import configured_event_prefix
 from lattice.core.events import LIFECYCLE_EVENT_TYPES, serialize_event
 from lattice.core.ids import parse_short_id, validate_id, validate_short_id
-from lattice.core.tasks import serialize_snapshot
+from lattice.core.tasks import is_known_event_type, serialize_snapshot
 from lattice.storage.fs import atomic_write, ensure_dir, unlink_path
-from lattice.storage.locks import all_task_locks
+from lattice.storage.locks import all_task_locks, task_locks
 from lattice.storage.operations import (
     AuthoritativeLogError,
     ResolvedTaskAuthority,
@@ -98,6 +98,16 @@ def _fix_truncated_jsonl(path: Path) -> bool:
             content += "\n"
         atomic_write(path, content)
         return True
+
+
+def _fix_truncated_jsonl_locked(lattice_dir: Path, path: Path) -> bool:
+    """Trim one JSONL tail while excluding writers of the same authoritative log."""
+    locks_dir = lattice_dir / "locks"
+    if path.name == "_lifecycle.jsonl":
+        with all_task_locks(locks_dir, ["events__lifecycle"]):
+            return _fix_truncated_jsonl(path)
+    with task_locks(locks_dir, [path.stem]):
+        return _fix_truncated_jsonl(path)
 
 
 def _collect_task_files(lattice_dir: Path) -> list[Path]:
@@ -808,7 +818,7 @@ def check_board(lattice_dir: Path, *, fix: bool = False) -> DoctorReport:
             if fix:
                 for finding in parse_findings:
                     if finding.get("is_truncated_final"):
-                        if _fix_truncated_jsonl(jf):
+                        if _fix_truncated_jsonl_locked(lattice_dir, jf):
                             finding["message"] += " (fixed)"
                             finding["level"] = "warning"
             findings.extend(parse_findings)
@@ -840,6 +850,26 @@ def check_board(lattice_dir: Path, *, fix: bool = False) -> DoctorReport:
     for task_id, authority in authorities.items():
         snapshots[task_id] = authority.snapshot
         per_task_events[task_id] = list(authority.events)
+
+    for task_id, events in per_task_events.items():
+        unknown_types = {
+            event_type
+            for event in events
+            if isinstance((event_type := event.get("type")), str)
+            and not is_known_event_type(event_type)
+        }
+        for event_type in sorted(unknown_types):
+            findings.append(
+                {
+                    "level": "warning",
+                    "check": "unknown_event_type",
+                    "message": (
+                        f"Task {task_id} contains unknown event type '{event_type}', "
+                        "skipped during snapshot materialization"
+                    ),
+                    "task_id": task_id,
+                }
+            )
 
     # A corrupt cache is replay-repairable when strict authority succeeds, and
     # so is a task that history repair can make replay (SPEC §11).

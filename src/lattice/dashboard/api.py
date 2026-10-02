@@ -13,8 +13,8 @@ Nothing here writes a board: writes run through ``board.execute``.
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import posixpath
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -330,7 +330,6 @@ def get_graph(ld: Path, if_none_match: str | None = None) -> ApiResponse:
     snapshots = visible(a.snapshot for a in discover_task_authorities(ld, include_archived=False))
     active_ids: set[str] = {s["id"] for s in snapshots if "id" in s}
     nodes: list[dict] = []
-    max_updated_at = ""
     for snap in snapshots:
         nodes.append(
             {
@@ -348,10 +347,6 @@ def get_graph(ld: Path, if_none_match: str | None = None) -> ApiResponse:
                 "description_snippet": (snap.get("description") or "")[:200],
             }
         )
-        updated = snap.get("updated_at", "")
-        if updated > max_updated_at:
-            max_updated_at = updated
-
     # Edges are directed: source is the task holding the relationship, target
     # the referenced task (only when the target is on the board).
     links: list[dict] = []
@@ -363,7 +358,10 @@ def get_graph(ld: Path, if_none_match: str | None = None) -> ApiResponse:
                     {"source": snap.get("id"), "target": target_id, "type": rel.get("type")}
                 )
 
-    revision = f"{len(nodes)}:{max_updated_at}"
+    projection = json.dumps(
+        {"nodes": nodes, "links": links}, sort_keys=True, separators=(",", ":")
+    )
+    revision = hashlib.sha256(projection.encode("utf-8")).hexdigest()
     return _etagged(
         {"nodes": nodes, "links": links, "revision": revision}, revision, if_none_match
     )

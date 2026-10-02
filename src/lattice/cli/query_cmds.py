@@ -945,7 +945,7 @@ def _scan_backward_status_transitions(
     events: list[dict],
     status_rank: dict[str, int],
 ) -> tuple[int, dict | None]:
-    """Return backward transition count and latest backward transition metadata."""
+    """Return backward transition count and latest transition out of ``done``."""
     count = 0
     latest: dict | None = None
     for event in events:
@@ -957,6 +957,8 @@ def _scan_backward_status_transitions(
         if not is_backward_status_transition(from_status, to_status, status_rank):
             continue
         count += 1
+        if from_status != "done":
+            continue
         ts = event.get("ts")
         if isinstance(ts, str):
             date = ts.split("T", 1)[0]

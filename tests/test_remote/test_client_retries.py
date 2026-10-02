@@ -16,6 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+import click
 import pytest
 
 from lattice.core.errors import OpError
@@ -115,6 +116,14 @@ def _closed_port() -> str:
     port = sock.getsockname()[1]
     sock.close()  # nothing listens here
     return f"http://127.0.0.1:{port}"
+
+
+def test_lookup_hint_uses_invoked_program_name() -> None:
+    remote = _remote("http://127.0.0.1:1")
+    with click.Context(click.Command("lattice-v2"), info_name="lattice-v2"):
+        error = client.lookup_unreachable(remote, OP_ID, "connection refused")
+    assert f"lattice-v2 remote op-status {OP_ID}" in error.message
+    assert f"lattice remote op-status {OP_ID}" not in error.message
 
 
 @pytest.mark.parametrize(
