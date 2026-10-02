@@ -118,6 +118,12 @@ body.issue-view-active #app{width:100%;max-width:none;height:calc(100vh - var(--
 .issue-file-foot{display:flex;align-items:center;gap:.75rem;padding:1rem 1.25rem;border-top:1px solid var(--border-subtle)}
 .issue-file-status{flex:1;min-width:0;color:var(--text-muted);font-size:.8rem}.issue-file-submit{min-width:7rem}
 @media(max-width:900px){.issue-inbox{--issue-queue-width:40vw}.issue-d-head{padding:0 1rem}.issue-d-body{padding:1.25rem 1rem 2rem}.issue-q-age{width:3.2rem}}
+@media(max-width:760px){
+  .issue-inbox{display:flex;flex-direction:column}
+  .issue-q-pane{flex:0 0 auto;height:42%;min-height:13rem;border-right:0;border-bottom:1px solid var(--border)}
+  .issue-d-pane{flex:1;min-height:0}
+  .issue-q-foot{display:none}
+}
 @media(max-width:650px){
   body.issue-view-active .nav{flex-wrap:nowrap;gap:.2rem;padding:.35rem .5rem;overflow:hidden;white-space:nowrap}
   body.issue-view-active .nav-brand{flex:0 1 7rem;min-width:0;max-width:7rem;margin-right:.15rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.85rem}
@@ -137,9 +143,9 @@ body.issue-view-active #app{width:100%;max-width:none;height:calc(100vh - var(--
   body.issue-view-active .nav-right .btn-with-icon{justify-content:center;font-size:0}
   body.issue-view-active #issue-new-button,
   body.issue-view-active #new-task-btn{font-size:0}
+  body.issue-view-active #refresh-btn::before{content:"\21BB";font-size:1.1rem;line-height:1}
   body.issue-view-active #issue-new-button::before,
   body.issue-view-active #new-task-btn::before{content:"+";font-size:1.1rem;line-height:1}
-  .issue-inbox{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(14rem,1fr)}
   .issue-q-pane{min-width:0;border-right:1px solid var(--border);border-bottom:0}
   .issue-q-tabs{gap:.2rem;padding:.4rem}
   .issue-q-tab{height:2.8rem;padding:.2rem .35rem}
@@ -161,10 +167,5 @@ body.issue-view-active #app{width:100%;max-width:none;height:calc(100vh - var(--
   body.issue-view-active .nav-right #settings-btn,
   body.issue-view-active .nav-right #help-btn,
   body.issue-view-active .nav-right #filters-btn{display:none!important}
-  .issue-inbox{grid-template-columns:minmax(0,1fr) minmax(12rem,.9fr)}
 }
-@media(max-width:480px){
-  .issue-inbox{display:flex;flex-direction:column}
-  .issue-q-pane{height:42%;min-height:13rem;border-right:0;border-bottom:1px solid var(--border)}
-  .issue-d-pane{flex:1;min-height:0}
-}
+
