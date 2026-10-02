@@ -36,6 +36,7 @@ from lattice.core.agent_spawn import (
     spawn_one,
 )
 from lattice.storage.review_state import write_review_state_file
+from lattice.core.config import valid_git_branch_name
 
 
 # ---------------------------------------------------------------------------
@@ -432,6 +433,121 @@ DIAGNOSTIC_TITLE_PREFIX = "Investigate"
 _DIAGNOSTIC_TITLE_SUFFIX = "review failures"
 
 
+def _recent_agent_failures(lattice_dir: Path, agent_type: str, limit: int) -> list[dict]:
+    """Return the most recent failure records for one agent, in file order."""
+    path = _failures_path(lattice_dir)
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+
+    matches: list[dict] = []
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(entry, dict) and entry.get("agent") == agent_type:
+            matches.append(entry)
+    return matches[-limit:]
+
+
+def _failure_task_title(lattice_dir: Path, task_id: str) -> str | None:
+    """Read a failure's task title from its authoritative event-sourced state."""
+    try:
+        from lattice.storage.operations import read_task_authority
+
+        authority = read_task_authority(lattice_dir, task_id, allow_missing=True)
+    except Exception:  # noqa: BLE001 - diagnostic creation must survive a bad old task log
+        return None
+    if authority is None:
+        return None
+    title = authority.snapshot.get("title")
+    return title if isinstance(title, str) and title else None
+
+
+def _failure_daemon_log(lattice_dir: Path, failure: dict) -> str:
+    """Find the auto-review log associated with a failure, or name the expected path."""
+    if failure.get("auto_fired") is False:
+        return "(not applicable; review was not auto-fired)"
+    recorded_path = failure.get("daemon_log_path")
+    task_id = failure.get("task_id")
+    review_type = failure.get("review_type")
+    if isinstance(recorded_path, str) and recorded_path:
+        return recorded_path
+    if not isinstance(task_id, str) or review_type not in ("code-review", "plan-review"):
+        return "(not recorded; this may have been a manual review)"
+
+    try:
+        from lattice.storage.readers import read_task_events
+
+        events = read_task_events(lattice_dir, task_id)
+        if not events:
+            events = read_task_events(lattice_dir, task_id, is_archived=True)
+    except (OSError, ValueError):
+        events = []
+    failure_at = failure.get("timestamp")
+    for event in reversed(events):
+        data = event.get("data") or {}
+        spawned_at = data.get("spawned_at")
+        if (
+            event.get("type") == "auto_review_spawned"
+            and data.get("review_type") == review_type
+            and isinstance(data.get("log_path"), str)
+            and (
+                not isinstance(failure_at, str)
+                or not isinstance(spawned_at, str)
+                or spawned_at <= failure_at
+            )
+        ):
+            return data["log_path"]
+
+    relative = Path(lattice_dir.name) / ".daemon" / f"auto-{review_type}-{task_id}.log"
+    full_path = lattice_dir.parent / relative
+    status = "present" if full_path.exists() else "not present at diagnostic creation"
+    return f"{relative} ({status})"
+
+
+def _failure_diagnostic_description(lattice_dir: Path, agent_type: str, failure_count: int) -> str:
+    """Summarize recent failures for the diagnostic task, keeping missing fields explicit."""
+    limit = max(1, min(FAILURE_THRESHOLD, failure_count))
+    failures = _recent_agent_failures(lattice_dir, agent_type, limit)
+    lines = [
+        f"Agent: {agent_type}",
+        f"Persistent failure threshold: {FAILURE_THRESHOLD} failures.",
+        f"Failure count recorded: {failure_count}.",
+        "Recent failures:",
+    ]
+    if not failures:
+        lines.append("- No matching failure records were available.")
+        return "\n".join(lines)
+
+    for failure in failures:
+        task_id = failure.get("task_id")
+        task_id = task_id if isinstance(task_id, str) and task_id else "(not recorded)"
+        title = _failure_task_title(lattice_dir, task_id) if task_id != "(not recorded)" else None
+        lines.extend(
+            [
+                "",
+                f"- Task ID: {task_id}",
+                f"  Title: {title or '(unavailable)'}",
+                f"  Review type: {failure.get('review_type') or '(not recorded)'}",
+                f"  Failure: {failure.get('error') or '(message not recorded)'}",
+                f"  Return code: {failure.get('returncode', '(not recorded)')}",
+                f"  Duration: {failure.get('duration_seconds', '(not recorded)')} seconds",
+                f"  Prompt characters: {failure.get('prompt_chars', '(not recorded)')}",
+                f"  Daemon log: {_failure_daemon_log(lattice_dir, failure)}",
+            ]
+        )
+        stderr_tail = failure.get("stderr_tail")
+        if isinstance(stderr_tail, str) and stderr_tail:
+            tail = stderr_tail[-500:].replace("\n", " ")
+            lines.append(f"  Stderr tail: {tail}")
+    return "\n".join(lines)
+
+
 def _open_diagnostic_task_exists(lattice_dir: Path, agent_type: str) -> bool:
     """Return True if an unresolved diagnostic task for ``agent_type`` already exists.
 
@@ -481,12 +597,15 @@ def create_failure_diagnostic_task(
         f"{DIAGNOSTIC_TITLE_PREFIX} {agent_type} {_DIAGNOSTIC_TITLE_SUFFIX} "
         f"— failed {failure_count} times"
     )
+    description = _failure_diagnostic_description(lattice_dir, agent_type, failure_count)
     try:
         result = subprocess.run(
             [
                 "lattice",
                 "create",
                 title,
+                "--description",
+                description,
                 "--actor",
                 actor,
                 "--quiet",
@@ -608,6 +727,7 @@ class DiffResolution:
     head_sha: str | None = None
     worktree: Path | None = None
     source: str | None = None
+    base_selection_rule: str | None = None
     warning: str | None = None
 
     @property
@@ -625,6 +745,8 @@ def resolve_diff(
     base: str | None = None,
     head: str | None = None,
     worktree: Path | None = None,
+    review_base_branch: str | None = None,
+    review_integration_branches: list[str] | None = None,
 ) -> DiffResolution:
     """Resolve the git diff for a task, naming exactly what was diffed.
 
@@ -648,15 +770,18 @@ def resolve_diff(
     substitutes another ticket's commits produces confident PASS verdicts on
     code nobody read; the error message is the feature.
 
-    **Base selection — the remote default branch, never a bare local branch.**
-
-    A local ``main`` nobody pulls is routinely behind ``origin/main``, and a
-    three-dot diff against it drags in every sibling ticket merged since the
-    last pull. Candidates are ``origin/HEAD`` > ``origin/main`` >
-    ``origin/master`` > local ``main``/``master``; the one whose merge-base
-    with the head is the *descendant* of the others wins, so an unfetched
-    remote degrades gracefully instead of over-including. No ``git fetch`` is
-    ever run — a review must not mutate refs or block on the network.
+    **Base selection** is explicit ``--base``, the open PR's base from ``gh``,
+    ``review_base_branch`` from board config, then inference. Inference considers
+    only configured remote integration branches and one safe default. The
+    default is the branch named by ``origin/HEAD`` if it resolves; otherwise
+    use ``origin/main``, then ``origin/master``. Local ``main`` or ``master``
+    is used only when the configured list is empty and no remote default
+    resolves. A non-empty configured list with no resolvable entry fails
+    closed.
+    It picks the smallest commit distance from merge-base to head; ties follow
+    configured order, then the default. No arbitrary remote branches are scanned.
+    No ``git fetch`` is ever run — a review must not mutate refs or block on Git
+    network access.
 
     An **empty** diff is never accepted as success.
     """
@@ -670,13 +795,16 @@ def resolve_diff(
 
     # An explicit --base/--head that doesn't resolve is a caller error worth
     # naming precisely, rather than burying it in a generic failure.
-    if base is not None and not _ref_exists(repo_root, base):
-        return DiffResolution(
-            success=False,
-            error=f"Base ref '{base}' does not resolve in {repo_root}. Check the ref name.",
-            error_code="BASE_REF_UNRESOLVABLE",
-            worktree=repo_root,
-        )
+    explicit_base_ref = None
+    if base is not None:
+        explicit_base_ref = _normalize_explicit_base_ref(repo_root, base)
+        if not _ref_exists(repo_root, explicit_base_ref):
+            return DiffResolution(
+                success=False,
+                error=(f"Base ref '{base}' does not resolve in {repo_root}. Check the ref name."),
+                error_code="BASE_REF_UNRESOLVABLE",
+                worktree=repo_root,
+            )
     if head is not None and not _ref_exists(repo_root, head):
         return DiffResolution(
             success=False,
@@ -708,11 +836,51 @@ def resolve_diff(
         head_ref, source = "HEAD", "head"
 
     # --- base ----------------------------------------------------------------
-    base_ref, base_sha, warning = _resolve_base_ref(repo_root, head_ref, base)
+    base_ref, base_sha, warning, base_selection_rule, base_error = _resolve_base_ref(
+        repo_root,
+        head_ref,
+        explicit_base=explicit_base_ref,
+        review_base_branch=review_base_branch,
+        review_integration_branches=review_integration_branches,
+    )
     head_sha = _rev_parse(repo_root, head_ref)
 
+    if base_error:
+        base_error_code = {
+            "invalid_base_config": "INVALID_REVIEW_BASE_BRANCH",
+            "invalid_integration_config": "INVALID_REVIEW_INTEGRATION_BRANCHES",
+            "unresolved_integration_config": "UNRESOLVABLE_REVIEW_INTEGRATION_BRANCHES",
+        }.get(base_selection_rule, "INVALID_REVIEW_INTEGRATION_BRANCHES")
+        return DiffResolution(
+            success=False,
+            error=base_error,
+            error_code=base_error_code,
+            head_ref=head_ref,
+            head_sha=head_sha,
+            worktree=repo_root,
+            source=source,
+            warning=warning,
+            base_selection_rule=base_selection_rule,
+        )
+
+    if base_ref is None:
+        return DiffResolution(
+            success=False,
+            error=(
+                "Could not infer a review base: no safe default or configured integration "
+                "branch shares history with the head. Pass --base <ref>, configure "
+                "review_base_branch, or configure review_integration_branches."
+            ),
+            error_code="BASE_INFERENCE_NO_CANDIDATES",
+            head_ref=head_ref,
+            head_sha=head_sha,
+            worktree=repo_root,
+            source=source,
+            warning=warning,
+            base_selection_rule=base_selection_rule,
+        )
+
     ref_range = f"{base_ref}...{head_ref}"
-    diff = _git_diff(repo_root, ref_range)
     common = {
         "base_ref": base_ref,
         "head_ref": head_ref,
@@ -720,8 +888,22 @@ def resolve_diff(
         "head_sha": head_sha,
         "worktree": repo_root,
         "source": source,
+        "base_selection_rule": base_selection_rule,
         "warning": warning,
     }
+    if not _ref_exists(repo_root, base_ref):
+        return DiffResolution(
+            success=False,
+            error=(
+                f"Selected base ref '{base_ref}' does not resolve in {repo_root} "
+                f"(selection rule: {base_selection_rule}). Fetch the base ref or pass "
+                "--base <ref> explicitly."
+            ),
+            error_code="BASE_REF_UNRESOLVABLE",
+            **common,
+        )
+
+    diff = _git_diff(repo_root, ref_range)
     if diff is None:
         return DiffResolution(
             success=False,
@@ -751,62 +933,368 @@ def resolve_diff(
 
 
 def _resolve_base_ref(
-    repo_root: Path, head_ref: str, explicit_base: str | None = None
-) -> tuple[str, str | None, str | None]:
+    repo_root: Path,
+    head_ref: str,
+    explicit_base: str | None = None,
+    review_base_branch: str | None = None,
+    review_integration_branches: object = None,
+) -> tuple[str | None, str | None, str | None, str, str | None]:
     """Pick the base ref for ``<base>...<head_ref>``.
 
-    Returns ``(base_ref, base_sha, warning)`` where ``base_sha`` is the SHA of
-    the merge-base actually used. ``explicit_base`` wins unconditionally.
+    Returns ``(base_ref, base_sha, warning, selection_rule, error)`` where
+    ``base_sha`` is the SHA of the merge-base actually used. Selection order:
+    explicit CLI ref, open PR base, board config, then nearest inferred base.
+    Inference considers configured integration refs in their declared order,
+    followed by one safe default: the branch named by ``origin/HEAD`` if it
+    resolves; otherwise ``origin/main``, then ``origin/master``. When there is
+    no remote default and the integration list is empty, local ``main`` then
+    ``master`` is the final fallback.
     """
     if explicit_base is not None:
-        return explicit_base, _merge_base(repo_root, explicit_base, head_ref), None
+        base_ref = _normalize_explicit_base_ref(repo_root, explicit_base)
+        return base_ref, _merge_base(repo_root, base_ref, head_ref), None, "explicit", None
 
-    candidates: list[str] = []
-    origin_head = _origin_head_ref(repo_root)
-    if origin_head:
-        candidates.append(origin_head)
-    for name in ("origin/main", "origin/master", "main", "master"):
-        if name not in candidates:
-            candidates.append(name)
+    pr_base = _open_pr_base_branch(repo_root, head_ref)
+    if pr_base:
+        base_ref = _remote_ref_for_branch(repo_root, pr_base)
+        return (
+            base_ref,
+            _merge_base(repo_root, base_ref, head_ref),
+            _stale_remote_warning(repo_root, base_ref),
+            "open_pr",
+            None,
+        )
 
-    best_ref: str | None = None
-    best_sha: str | None = None
-    for candidate in candidates:
+    if review_base_branch is not None:
+        if (
+            not isinstance(review_base_branch, str)
+            or not review_base_branch.strip()
+            or any(ord(char) < 32 or ord(char) == 127 for char in review_base_branch)
+        ):
+            return (
+                None,
+                None,
+                None,
+                "invalid_base_config",
+                "Invalid review_base_branch configuration: expected a non-empty branch name.",
+            )
+        base_ref = _remote_ref_for_branch(repo_root, review_base_branch.strip())
+        return (
+            base_ref,
+            _merge_base(repo_root, base_ref, head_ref),
+            _stale_remote_warning(repo_root, base_ref),
+            "board_config",
+            None,
+        )
+
+    integration_branches, integration_error = _normalize_integration_branches(
+        review_integration_branches
+    )
+    if integration_error:
+        return None, None, None, "invalid_integration_config", integration_error
+
+    configured_warnings: list[str] = []
+    configured_refs: list[tuple[str, int]] = []
+    for order, branch in enumerate(integration_branches):
+        candidate = _remote_tracking_ref_for_branch(repo_root, branch)
+        if candidate is None or not _ref_exists(repo_root, candidate):
+            configured_warnings.append(
+                f"Configured review_integration_branches entry {branch!r} did not resolve "
+                "to a remote-tracking branch."
+            )
+            continue
+        if all(ref != candidate for ref, _ in configured_refs):
+            configured_refs.append((candidate, order))
+
+    if integration_branches and not configured_refs:
+        message = (
+            "No configured review_integration_branches entry resolves to a remote-tracking "
+            "branch; refusing to fall back to a default branch. Check the configured names "
+            f"({'; '.join(configured_warnings)}) Fetch the intended branch ref."
+        )
+        warning = _combine_review_warnings(configured_warnings, None)
+        return None, None, warning, "unresolved_integration_config", message
+
+    remote_default = _remote_default_candidate(repo_root)
+
+    # Configured integration branches keep their declared order. The remote
+    # default is last for ties unless it was already named in the config.
+    candidate_ranks = {ref: order for ref, order in configured_refs}
+    if remote_default and remote_default not in candidate_ranks:
+        candidate_ranks[remote_default] = len(integration_branches)
+
+    if not candidate_ranks and not integration_branches:
+        local_default = _local_default_candidate(repo_root)
+        if local_default:
+            candidate_ranks[local_default] = 0
+
+    scored: list[tuple[int, int, str, str]] = []
+    for candidate, configured_rank in candidate_ranks.items():
         if not _ref_exists(repo_root, candidate):
             continue
         merge_base = _merge_base(repo_root, candidate, head_ref)
         if merge_base is None:
             continue
-        if best_sha is None:
-            best_ref, best_sha = candidate, merge_base
-        elif merge_base != best_sha and _is_ancestor(repo_root, best_sha, merge_base):
-            # This candidate's merge-base is a descendant of the incumbent's —
-            # a tighter, still-honest range.
-            best_ref, best_sha = candidate, merge_base
+        distance = _commit_distance_from_merge_base(repo_root, merge_base, head_ref)
+        if distance is None:
+            continue
+        scored.append((distance, configured_rank, candidate, merge_base))
 
-    warning = _stale_remote_warning(repo_root)
-    if best_ref is None:
-        # No candidate shares history with the head (or no refs at all).
-        return _find_base_branch(repo_root), None, warning
-    return best_ref, best_sha, warning
+    if scored:
+        distance, _default_rank, base_ref, base_sha = min(scored)
+        del distance
+        if base_ref in {"main", "master"}:
+            selection_rule = "inferred_local_default"
+        else:
+            selection_rule = "inferred_nearest_merge_base"
+        warning = _combine_review_warnings(
+            configured_warnings, _stale_remote_warning(repo_root, base_ref)
+        )
+        return base_ref, base_sha, warning, selection_rule, None
+
+    warning = _combine_review_warnings(configured_warnings, None)
+    return None, None, warning, "inferred_no_candidate", None
 
 
-def _stale_remote_warning(repo_root: Path) -> str | None:
-    """Report when the remote-tracking default branch has drifted from the local one.
+def _normalize_integration_branches(
+    value: object,
+) -> tuple[list[str], str | None]:
+    """Validate the local config's ordered list without letting bad JSON crash review."""
+    if value is None:
+        return [], None
+    if not isinstance(value, list):
+        return [], (
+            "Invalid review_integration_branches configuration: expected a JSON array "
+            "of non-empty branch names."
+        )
+    branches: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item or "," in item or not valid_git_branch_name(item):
+            return [], (
+                "Invalid review_integration_branches configuration: expected a JSON array "
+                "of unique, valid Git branch names."
+            )
+        branch = item
+        if branch in branches:
+            return [], (
+                "Invalid review_integration_branches configuration: expected a JSON array "
+                "of unique, valid Git branch names."
+            )
+        branches.append(branch)
+    return branches, None
 
-    Fires whenever ``origin/<default>`` is not an ancestor of local
-    ``<default>`` — behind *or* diverged. Diverged is the common shape on a
-    board checkout whose local ``main`` carries commits the remote never saw
-    while the remote moved on independently, and it is exactly where a reader
-    wants to know how old the ref is.
 
-    The base comes from the remote-tracking ref, so this states the observed
-    fact rather than prescribing a fix. ``resolve_diff`` never fetches; a
-    ``git fetch`` is what refreshes the ref the base is taken from.
+def _remote_default_candidate(repo_root: Path) -> str | None:
+    """Return the remote default, with safe origin/main then origin/master fallbacks."""
+    remote_head = _origin_head_ref(repo_root)
+    if remote_head and _ref_exists(repo_root, remote_head):
+        return remote_head
+    for branch in ("main", "master"):
+        candidate = f"origin/{branch}"
+        if _exact_ref_exists(repo_root, f"refs/remotes/{candidate}") and _ref_exists(
+            repo_root, candidate
+        ):
+            return candidate
+    return None
+
+
+def _local_default_candidate(repo_root: Path) -> str | None:
+    """Return only a local conventional default ref, never an arbitrary branch."""
+    for branch in ("main", "master"):
+        if _exact_ref_exists(repo_root, f"refs/heads/{branch}") and _ref_exists(repo_root, branch):
+            return branch
+    return None
+
+
+def _combine_review_warnings(warnings: list[str], stale_remote_warning: str | None) -> str | None:
+    combined = list(warnings)
+    if stale_remote_warning:
+        combined.append(stale_remote_warning)
+    return "; ".join(combined) or None
+
+
+def _open_pr_base_branch(repo_root: Path, head_ref: str) -> str | None:
+    """Return the open PR base branch for ``head_ref`` through ``gh``, if any.
+
+    The GitHub CLI queries PR metadata but does not update local Git refs. It is
+    skipped when gh, a GitHub repository context, or a symbolic head branch is
+    unavailable; those cases continue down the documented base precedence.
     """
-    remote = _origin_head_ref(repo_root) or "origin/main"
-    local = remote.split("/", 1)[1] if "/" in remote else "main"
-    if not _ref_exists(repo_root, remote) or not _ref_exists(repo_root, local):
+    gh = shutil.which("gh")
+    if gh is None:
+        return None
+
+    repo_url = subprocess.run(
+        ["git", "remote", "get-url", "origin"],
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+    )
+    if repo_url.returncode != 0:
+        return None
+    if "github.com" not in repo_url.stdout.lower() and not os.environ.get("GH_REPO"):
+        return None
+
+    branch = _branch_name_for_ref(repo_root, head_ref)
+    if branch is None:
+        return None
+
+    try:
+        result = subprocess.run(
+            [gh, "pr", "view", branch, "--json", "baseRefName,state"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        payload = json.loads(result.stdout)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    base_ref = payload.get("baseRefName")
+    if payload.get("state") != "OPEN" or not isinstance(base_ref, str) or not base_ref.strip():
+        return None
+    return base_ref.strip()
+
+
+def _branch_name_for_ref(repo_root: Path, ref: str) -> str | None:
+    """Map a branch ref to the short branch name understood by ``gh pr view``."""
+    candidate = ref
+    if ref == "HEAD":
+        result = subprocess.run(
+            ["git", "symbolic-ref", "--quiet", "--short", "HEAD"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            return None
+        candidate = result.stdout.strip()
+    elif ref.startswith("refs/heads/"):
+        candidate = ref.removeprefix("refs/heads/")
+    elif ref.startswith("refs/remotes/"):
+        candidate = ref.removeprefix("refs/remotes/")
+
+    if candidate.startswith("origin/"):
+        candidate = candidate.removeprefix("origin/")
+    if not candidate or _rev_parse(repo_root, candidate) is None:
+        return None
+    # A raw commit is not a branch selector even though Git resolves it.
+    if len(candidate) >= 7 and all(char in "0123456789abcdefABCDEF" for char in candidate):
+        return None
+    return candidate
+
+
+def _remote_ref_for_branch(repo_root: Path, branch: str) -> str:
+    """Prefer an origin tracking ref for a short branch name when available."""
+    if branch.startswith("refs/"):
+        return branch
+    if _exact_ref_exists(repo_root, f"refs/remotes/{branch}"):
+        return branch
+    origin_ref = f"origin/{branch}"
+    if _exact_ref_exists(repo_root, f"refs/remotes/{origin_ref}"):
+        return origin_ref
+    return branch
+
+
+def _remote_tracking_ref_for_branch(repo_root: Path, branch: str) -> str | None:
+    """Resolve one configured integration branch without falling back locally."""
+    if branch.startswith("refs/remotes/"):
+        short_ref = branch.removeprefix("refs/remotes/")
+        return short_ref if _exact_ref_exists(repo_root, f"refs/remotes/{short_ref}") else None
+
+    if branch.startswith("origin/"):
+        return branch if _exact_ref_exists(repo_root, f"refs/remotes/{branch}") else None
+
+    origin_ref = f"origin/{branch}"
+    if _exact_ref_exists(repo_root, f"refs/remotes/{origin_ref}"):
+        return origin_ref
+    # A short remote-qualified name such as ``fork/v2`` is accepted when that
+    # exact remote-tracking ref exists. Fully qualified refs above disambiguate
+    # names that also exist under origin.
+    if "/" in branch and _exact_ref_exists(repo_root, f"refs/remotes/{branch}"):
+        return branch
+    return None
+
+
+def _normalize_explicit_base_ref(repo_root: Path, base: str) -> str:
+    """Honor exact local refs, while mapping a missing short branch to origin."""
+    if (
+        base.startswith("refs/")
+        or base
+        in {
+            "HEAD",
+            "ORIG_HEAD",
+            "FETCH_HEAD",
+            "MERGE_HEAD",
+            "CHERRY_PICK_HEAD",
+        }
+        or any(token in base for token in ("..", "~", "^", ":", "@{"))
+    ):
+        return base
+
+    if _exact_ref_exists(repo_root, f"refs/heads/{base}") or _exact_ref_exists(
+        repo_root, f"refs/tags/{base}"
+    ):
+        return base
+    remote_ref = f"origin/{base}"
+    if _exact_ref_exists(repo_root, f"refs/remotes/{remote_ref}"):
+        return remote_ref
+    return base
+
+
+def _exact_ref_exists(repo_root: Path, full_ref: str) -> bool:
+    """Check a full Git ref name without DWIM resolving similarly named refs."""
+    return (
+        subprocess.run(
+            ["git", "show-ref", "--verify", "--quiet", full_ref],
+            cwd=str(repo_root),
+            capture_output=True,
+        ).returncode
+        == 0
+    )
+
+
+def _commit_distance_from_merge_base(
+    repo_root: Path, merge_base: str, head_ref: str
+) -> int | None:
+    """Count commits after ``merge_base`` up to ``head_ref``."""
+    result = subprocess.run(
+        ["git", "rev-list", "--count", f"{merge_base}..{head_ref}"],
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        return int(result.stdout.strip())
+    except ValueError:
+        return None
+
+
+def _stale_remote_warning(repo_root: Path, selected_base: str | None) -> str | None:
+    """Report drift between the selected remote base and its local branch twin."""
+    if selected_base is None:
+        return None
+    if selected_base.startswith("refs/") and not selected_base.startswith("refs/remotes/"):
+        return None
+    remote = selected_base.removeprefix("refs/remotes/")
+    if "/" not in remote:
+        return None
+    _remote_name, _, local = remote.partition("/")
+    if (
+        not local
+        or not _exact_ref_exists(repo_root, f"refs/remotes/{remote}")
+        or not _ref_exists(repo_root, remote)
+        or not _exact_ref_exists(repo_root, f"refs/heads/{local}")
+    ):
         return None
     remote_sha = _rev_parse(repo_root, remote)
     local_sha = _rev_parse(repo_root, local)
@@ -814,12 +1302,12 @@ def _stale_remote_warning(repo_root: Path) -> str | None:
         return None
     if _is_ancestor(repo_root, remote_sha, local_sha):
         return (
-            f"{remote} is behind local {local} — the base is read from {remote}, "
+            f"Selected review base {remote} is behind local {local} — the base is read from {remote}, "
             f"which review never fetches; 'git fetch' refreshes it."
         )
     if not _is_ancestor(repo_root, local_sha, remote_sha):
         return (
-            f"{remote} and local {local} have diverged — the base is read from "
+            f"Selected review base {remote} and local {local} have diverged — the base is read from "
             f"{remote}, which review never fetches; 'git fetch' refreshes it."
         )
     return None
@@ -978,14 +1466,6 @@ def _find_git_root(lattice_dir: Path) -> Path | None:
             return None
         current = parent
     return None
-
-
-def _find_base_branch(repo_root: Path) -> str:
-    """Return the likely base branch (main or master)."""
-    for branch in ("main", "master"):
-        if _ref_exists(repo_root, branch):
-            return branch
-    return "main"
 
 
 def _ref_exists(repo_root: Path, ref: str) -> bool:
@@ -1167,6 +1647,12 @@ def run_single_review(
                 "duration_seconds": round(result.duration_seconds, 1),
                 "command": result.command,
                 "prompt_chars": len(prompt_content),
+                "auto_fired": existing.get("auto_fired", False),
+                "daemon_log_path": (
+                    str(lattice_dir / ".daemon" / f"auto-{review_type}-{task_id}.log")
+                    if existing.get("auto_fired")
+                    else None
+                ),
                 "stderr_tail": result.stderr_tail,
             }
             _handle_agent_failure(lattice_dir, "claude", task_id, actor_str, detail=detail)
@@ -1199,9 +1685,16 @@ def build_trident_handoff_prompt(
     *,
     worktree: Path,
     base_branch: str | None,
+    base_selection_rule: str | None = None,
+    base_sha: str | None = None,
     head_ref: str | None = None,
     head_sha: str | None = None,
     program: str = "lattice",
+    diff_content: str | None = None,
+    raw_diff_lines: int | None = None,
+    raw_diff_chars: int | None = None,
+    warning: str | None = None,
+    truncated: bool = False,
 ) -> str:
     """Build the prompt handed to the claude session running inside the c11 pane.
 
@@ -1220,6 +1713,34 @@ def build_trident_handoff_prompt(
     if head_sha:
         head_line = f"{head_line} ({head_sha})"
     range_line = f"{base_line}...{head_ref}" if head_ref else f"{base_line}...HEAD"
+    warning_header = f"Lattice-Review-Warning: {warning}\n" if warning else ""
+    diff_metadata = ""
+    if review_type == "code-review":
+        diff_metadata = (
+            "\n## Required review artifact metadata\n\n"
+            "Prepend this exact block to the merged review artifact:\n\n"
+            "```text\n"
+            f"Lattice-Reviewed-Commit: {head_sha or '-'}\n"
+            f"Lattice-Reviewed-Worktree: {worktree}\n"
+            f"Lattice-Reviewed-Base: {base_line} ({base_sha or '-'})\n"
+            f"Lattice-Reviewed-Base-Selection: {base_selection_rule or 'unknown'}\n"
+            f"Lattice-Reviewed-Head: {head_line}\n"
+            f"Lattice-Reviewed-Diff: raw-lines={raw_diff_lines or 0}, "
+            f"raw-chars={raw_diff_chars or 0}, truncated={str(truncated).lower()}\n"
+            f"{warning_header}"
+            "```\n"
+        )
+    resolved_diff = ""
+    if review_type == "code-review" and diff_content is not None:
+        resolved_diff = (
+            "\n## Resolved diff\n\n"
+            "Use this Lattice-resolved diff as the code-review input. It has already been "
+            "bounded by the configured line and character caps when truncated; preserve its "
+            "visible truncation marker in the merged artifact. Do not recompute a broader range.\n\n"
+            "<<< LATTICE RESOLVED DIFF >>>\n"
+            f"{diff_content}\n"
+            "<<< END LATTICE RESOLVED DIFF >>>\n"
+        )
     return f"""# Triple {review_type} for {task_short_id}
 
 You're the agent running inside a c11 pane spawned by the LAT-218 review
@@ -1285,6 +1806,7 @@ or `lattice needs-human {task_short_id} "<what you need>"` for the flag rows.
 Diff exactly `{range_line}` — this range is already resolved for you. Do not
 diff the cwd's `HEAD`: on a board checkout it is not the branch under review,
 and reviewing it is how a review ends up reading the wrong tree.
+{diff_metadata}{resolved_diff}
 
 When you've advanced the task to its terminal state for this cycle, exit cleanly.
 """
@@ -1297,10 +1819,17 @@ def run_triple_review(
     actor: str | dict,
     *,
     base: str | None = None,
+    base_selection_rule: str | None = None,
+    base_sha: str | None = None,
     head: str | None = None,
     head_sha: str | None = None,
     short_id: str | None = None,
     worktree: Path | None = None,
+    diff_content: str | None = None,
+    raw_diff_lines: int | None = None,
+    raw_diff_chars: int | None = None,
+    warning: str | None = None,
+    truncated: bool = False,
     claim: str | None = None,
     program: str = "lattice",
 ) -> tuple[bool, str]:
@@ -1331,9 +1860,16 @@ def run_triple_review(
         review_type,
         worktree=wt,
         base_branch=base,
+        base_selection_rule=base_selection_rule,
+        base_sha=base_sha,
         head_ref=head,
         head_sha=head_sha,
         program=program,
+        diff_content=diff_content,
+        raw_diff_lines=raw_diff_lines,
+        raw_diff_chars=raw_diff_chars,
+        warning=warning,
+        truncated=truncated,
     )
     tab_title = f"{display_id} :: trident {review_type}"
     description = (
@@ -1361,6 +1897,11 @@ def run_triple_review(
         "started_by_pid": existing.get("started_by_pid", os.getpid()),
         "started_by_actor": _extract_actor_str(actor),
         "auto_fired": existing.get("auto_fired", False),
+        "base_ref": base,
+        "base_selection_rule": base_selection_rule,
+        "raw_diff_lines": raw_diff_lines,
+        "raw_diff_chars": raw_diff_chars,
+        "truncated": truncated,
         "pane_ref": ref,
         "agents": [
             {

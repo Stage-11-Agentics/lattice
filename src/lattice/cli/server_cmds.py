@@ -289,7 +289,9 @@ def project_unlock(slug: str, root: str | None, is_json: bool) -> None:
     required=True,
     metavar="KEY=VALUE",
     help="review_mode, plan_review_mode, plan_approval, auto_code_review_on_transition, "
-    "auto_plan_review_on_transition, task_types (JSON array; replaces list and must include task).",
+    "auto_plan_review_on_transition, review_base_branch, review_integration_branches, "
+    "review_timeout_seconds, review_max_diff_lines, review_max_diff_chars, "
+    "task_types (JSON array; replaces list and must include task).",
 )
 @_root_option
 @_json_option

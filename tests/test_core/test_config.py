@@ -41,6 +41,14 @@ class TestDefaultConfig:
         config = default_config()
         assert config["default_priority"] == "medium"
 
+    def test_review_base_branch_is_optional(self) -> None:
+        config = default_config()
+        assert "review_base_branch" not in config
+
+    def test_review_integration_branches_is_optional(self) -> None:
+        config = default_config()
+        assert "review_integration_branches" not in config
+
     def test_has_task_types(self) -> None:
         config = default_config()
         assert config["task_types"] == ["task", "bug", "chore"]
@@ -446,6 +454,7 @@ def _snap_with_evidence(evidence_refs: list, assigned_to: str | None = None) -> 
     """Build a minimal snapshot dict for policy testing."""
     return {
         "id": "task_01EXAMPLE0000000000000000",
+        "status": "review",
         "evidence_refs": evidence_refs,
         "assigned_to": assigned_to,
     }
@@ -501,6 +510,123 @@ class TestValidateCompletionPolicy:
         ok, failures = validate_completion_policy(config, snap, "done")
         assert ok is True
         assert failures == []
+
+    def test_review_artifact_from_an_earlier_cycle_does_not_satisfy_done(self) -> None:
+        config = default_config()
+        snap = _snap_with_evidence(
+            [
+                {"id": "art_old", "role": "review", "source_type": "artifact"},
+                {"id": "ev_security", "role": "security", "source_type": "comment"},
+            ]
+        )
+        events = [
+            {"type": "task_created", "data": {"status": "backlog"}},
+            {"type": "status_changed", "data": {"to": "review"}},
+            {"type": "artifact_attached", "data": {"role": "review"}},
+            {"type": "status_changed", "data": {"to": "in_progress"}},
+            {"type": "status_changed", "data": {"to": "review"}},
+        ]
+
+        ok, failures = validate_completion_policy(config, snap, "done", events=events)
+
+        assert ok is False
+        assert any("current-cycle review evidence" in failure for failure in failures)
+        assert not any("security" in failure for failure in failures)
+
+    def test_current_cycle_review_comment_satisfies_done(self) -> None:
+        config = default_config()
+        snap = _snap_with_evidence(
+            [{"id": "ev_current", "role": "review", "source_type": "comment"}]
+        )
+        events = [
+            {"type": "task_created", "data": {"status": "backlog"}},
+            {"type": "status_changed", "data": {"to": "review"}},
+            {"type": "comment_added", "data": {"role": "review"}},
+        ]
+
+        ok, failures = validate_completion_policy(config, snap, "done", events=events)
+
+        assert ok is True
+        assert failures == []
+
+    def test_custom_in_review_stage_requires_evidence_after_stage_entry(self) -> None:
+        config = default_config()
+        config["workflow"]["statuses"] = ["backlog", "in_progress", "in_review", "done"]
+        config["workflow"]["completion_policies"] = {
+            "done": {"require_roles": ["review"]},
+        }
+        snap = _snap_with_evidence(
+            [{"id": "art_before", "role": "review", "source_type": "artifact"}]
+        )
+        events = [
+            {"type": "task_created", "data": {"status": "backlog"}},
+            {"type": "artifact_attached", "data": {"role": "review"}},
+            {"type": "status_changed", "data": {"to": "in_review"}},
+        ]
+
+        ok, failures = validate_completion_policy(config, snap, "done", events=events)
+
+        assert ok is False
+        assert any("latest transition into in_review" in failure for failure in failures)
+
+        events.append({"type": "comment_added", "data": {"role": "review"}})
+        ok, failures = validate_completion_policy(config, snap, "done", events=events)
+
+        assert ok is True
+        assert failures == []
+
+    def test_workflow_without_review_stage_keeps_lifetime_review_evidence(self) -> None:
+        config = default_config()
+        config["workflow"]["statuses"] = ["backlog", "in_progress", "done"]
+        config["workflow"]["completion_policies"] = {
+            "done": {"require_roles": ["review"]},
+        }
+        snap = _snap_with_evidence(
+            [{"id": "art_lifetime", "role": "review", "source_type": "artifact"}]
+        )
+        events = [
+            {"type": "task_created", "data": {"status": "backlog"}},
+            {"type": "artifact_attached", "data": {"role": "review"}},
+        ]
+
+        ok, failures = validate_completion_policy(config, snap, "done", events=events)
+
+        assert ok is True
+        assert failures == []
+
+    def test_current_cycle_role_edit_satisfies_done(self) -> None:
+        config = default_config()
+        snap = _snap_with_evidence(
+            [{"id": "ev_edited", "role": "review", "source_type": "comment"}]
+        )
+        snap["status"] = "pr_open"
+        events = [
+            {"type": "task_created", "data": {"status": "backlog"}},
+            {"type": "status_changed", "data": {"to": "review"}},
+            {"type": "comment_added", "data": {"role": None}},
+            {"type": "comment_edited", "data": {"role": "review"}},
+        ]
+
+        ok, failures = validate_completion_policy(config, snap, "done", events=events)
+
+        assert ok is True
+        assert failures == []
+
+    def test_missing_review_role_keeps_general_guidance(self) -> None:
+        config = default_config()
+        snap = _snap_with_evidence([])
+        events = [
+            {"type": "task_created", "data": {"status": "backlog"}},
+            {"type": "status_changed", "data": {"to": "review"}},
+        ]
+
+        ok, failures = validate_completion_policy(config, snap, "done", events=events)
+
+        assert ok is False
+        assert failures == [
+            "Missing role: review. Satisfy with: lattice attach --role review or lattice comment "
+            "--role review"
+        ]
 
     def test_has_required_role_via_comment(self) -> None:
         config = default_config()

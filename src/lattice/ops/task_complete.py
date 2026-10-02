@@ -140,7 +140,11 @@ class Complete:
             # attestation must cover the payload this completion attaches.
             attested = attested_review_commits(ctx, snapshot, policy, prospective=[review_payload])
             policy_ok, policy_failures = validate_completion_policy(
-                config, working, "done", reachable_review_commits=attested
+                config,
+                working,
+                "done",
+                events=(*context.events, *events),
+                reachable_review_commits=attested,
             )
             if not policy_ok:
                 raise OpError.task_state(

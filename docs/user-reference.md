@@ -307,11 +307,13 @@ Three models surface issues no single model catches alone. The synthesis separat
 `lattice code-review` diffs `<base>...<head>`, and both ends are resolved explicitly:
 
 - **Head** — `--head` if given, else the task's last linked branch, else the ambient `HEAD`. A branch link that does not resolve in this checkout is a hard error (`HEAD_REF_UNRESOLVABLE`), never a fall-through to some other tree. Fetch the branch, pass `--worktree <path>` to diff from a checkout that has it, or name `--head` yourself.
-- **Base** — `--base` if given, else the remote default branch (`origin/HEAD`, then `origin/main`/`origin/master`), then local `main`/`master`. Among the candidates that share history with the head, the one whose merge-base is the *descendant* of the others wins, so an unfetched remote degrades gracefully instead of pulling in every sibling ticket merged since the last local pull. No `git fetch` is ever run; when the remote ref is behind the local branch, the review says so.
+- **Base** — `--base` if given, else the base branch of the head's open PR from `gh`, else the board's `review_base_branch`, else inference. The single `review_base_branch` setting overrides inference. Inference considers only the ordered remote integration branches in `review_integration_branches` plus one safe default: use the branch named by `origin/HEAD` if it resolves; otherwise use `origin/main`, then `origin/master`. When the configured list is empty and no remote default resolves, local `main` then `master` is the final fallback. A non-empty list with no resolvable entry fails closed; unresolved entries are named in a warning. Arbitrary remote branches are never candidates. Configure the list as a JSON array of branch names such as `["v2", "release/next"]`; each name resolves to an `origin/<name>` remote-tracking ref (or use a fully qualified remote-tracking ref). It chooses the candidate with the fewest commits from its merge-base to the head; ties follow configured order (the order in that list), then the remote default. Successful reviews print `Review base: <ref> (selection rule: <rule>)`, and the same provenance appears in the artifact header. Review resolution never runs `git fetch`.
 
-The review prompt and the stored artifact both carry `Lattice-Reviewed-Commit` (the SHA of the head actually diffed), `Lattice-Reviewed-Worktree`, `Lattice-Reviewed-Base`, and `Lattice-Reviewed-Head`.
+Before a single or trident code reviewer starts, Lattice measures the full resolved diff. It fails with a task comment and a `review-status` failure when raw lines exceed three times `review_max_diff_lines` or raw characters exceed three times `review_max_diff_chars`; a non-positive cap disables that dimension's threshold. This prevents a capped prefix from standing in for a small fraction of a misresolved range. The failure includes the selected base, selection rule, raw sizes, caps, and retry direction. Below that threshold, normal line and character caps still apply and leave a visible truncation marker.
 
-`lattice code-review <task> --dry-run` prints that resolution and the assembled prompt, then exits — it claims no review slot, spawns no agent, and stores no artifact. Add `--json` for a machine-readable form. Use it whenever a review's diff looks wrong (a truncation warning on a small ticket is the usual tell).
+The review prompt and stored artifact carry `Lattice-Reviewed-Commit` (the SHA of the head actually diffed), `Lattice-Reviewed-Worktree`, `Lattice-Reviewed-Base`, `Lattice-Reviewed-Base-Selection`, and `Lattice-Reviewed-Head`, plus raw diff sizes and truncation state. `lattice plan-review` reads only the task's plan file and does not construct a Git diff, so base selection and diff truncation do not apply to plan reviews.
+
+`lattice code-review <task> --dry-run` prints that resolution, raw diff line and character sizes, and the assembled prompt, then exits — it claims no review slot, spawns no agent, and stores no artifact. Add `--json` for a machine-readable form. Use it whenever a review's diff looks wrong (a truncation warning on a small ticket is the usual tell).
 
 ### Reading review artifacts
 
@@ -497,6 +499,17 @@ lattice attach TASK review-notes.md --role review --actor agent:claude
 ```
 
 Both examples add `review` role evidence that completion policies can validate.
+
+When the workflow has a `review` or `in_review` stage, the required review
+evidence must be attached or commented after the task most recently entered
+that configured stage. Evidence attached before the move into review does not
+satisfy `done`; a pre-rework review cannot satisfy a later review cycle. A
+workflow with no configured review stage retains the existing lifetime role
+rule. If either raw diff size exceeds three times its enabled
+`review_max_diff_lines` or `review_max_diff_chars` cap, code review refuses
+before spawning and reports the selected base, selection rule, sizes, and caps.
+Below that threshold the normal caps may truncate the diff, with a marker in
+the prompt and artifact.
 
 ### Optional task-local acceptance criteria
 

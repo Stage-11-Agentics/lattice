@@ -147,6 +147,7 @@ class TestAutoFireReviewHappyPath:
         assert log.exists()
         header = log.read_text()
         assert header.startswith("# auto-code-review for task_abc started ")
+        assert popen.call_args.kwargs["stdout"].name == str(log)
 
         state = read_review_state(lattice_dir, "task_abc")
         assert state is not None

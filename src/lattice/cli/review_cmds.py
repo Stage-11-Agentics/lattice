@@ -28,6 +28,7 @@ from lattice.cli.main import cli
 from lattice.core.errors import TaskErased
 from lattice.core.visibility import require_not_tombstoned
 from lattice.core.review import (
+    DEFAULT_AGENT_TIMEOUT,
     DEFAULT_MAX_DIFF_CHARS,
     DEFAULT_MAX_DIFF_LINES,
     DiffResolution,
@@ -68,7 +69,13 @@ def _normalize_worktree(worktree: Path | None) -> tuple[Path | None, str | None]
     return Path(result.stdout.strip()).resolve(), None
 
 
-def _evidence_header(resolution: DiffResolution) -> str:
+def _evidence_header(
+    resolution: DiffResolution,
+    *,
+    raw_diff_lines: int | None = None,
+    raw_diff_chars: int | None = None,
+    truncated: bool | None = None,
+) -> str:
     """Build the ``Lattice-Reviewed-*`` block describing what was diffed.
 
     ``Lattice-Reviewed-Commit`` stays line 1 with a bare 40-char SHA:
@@ -93,9 +100,18 @@ def _evidence_header(resolution: DiffResolution) -> str:
         lines.append(
             f"Lattice-Reviewed-Base: {resolution.base_ref} ({resolution.base_sha or '-'})"
         )
+        if resolution.base_selection_rule:
+            lines.append(f"Lattice-Reviewed-Base-Selection: {resolution.base_selection_rule}")
+    if resolution.warning:
+        lines.append(f"Lattice-Review-Warning: {resolution.warning}")
     if resolution.head_ref:
         lines.append(
             f"Lattice-Reviewed-Head: {resolution.head_ref} ({resolution.head_sha or '-'})"
+        )
+    if raw_diff_lines is not None and raw_diff_chars is not None and truncated is not None:
+        lines.append(
+            "Lattice-Reviewed-Diff: "
+            f"raw-lines={raw_diff_lines}, raw-chars={raw_diff_chars}, truncated={str(truncated).lower()}"
         )
     return "\n".join(lines) + "\n"
 
@@ -123,6 +139,7 @@ def _emit_dry_run(
                         "base_ref": resolution.base_ref,
                         "head_ref": resolution.head_ref,
                         "base_sha": resolution.base_sha,
+                        "base_selection_rule": resolution.base_selection_rule,
                         "head_sha": resolution.head_sha,
                         "worktree": str(resolution.worktree) if resolution.worktree else None,
                         "source": resolution.source,
@@ -141,6 +158,7 @@ def _emit_dry_run(
     click.echo("Diff resolution (dry run — nothing claimed, spawned, or stored):")
     click.echo(f"  worktree: {resolution.worktree}")
     click.echo(f"  base:     {resolution.base_ref} ({resolution.base_sha or '-'})")
+    click.echo(f"  base rule: {resolution.base_selection_rule or 'unknown'}")
     click.echo(f"  head:     {resolution.head_ref} ({resolution.head_sha or '-'})")
     click.echo(f"  source:   {resolution.source}")
     click.echo(f"  range:    {resolution.range_desc}")
@@ -257,12 +275,33 @@ def _claim_or_refuse(
 
 def _hosted(lattice_dir: Path) -> bool:
     """True when *lattice_dir* is a hosted checkout's cache (SPEC §9.3)."""
+    return _hosted_project_slug(lattice_dir) is not None
+
+
+def _hosted_project_slug(lattice_dir: Path) -> str | None:
+    """Return the hosted project slug for this cache, when one is bound."""
     from lattice.remote.binding import classify
 
     try:
-        return classify(lattice_dir.parent) is not None
+        hosted = classify(lattice_dir.parent)
     except Exception:  # noqa: BLE001 - routing already succeeded; a board read decides nothing
-        return False
+        return None
+    return hosted.project if hosted is not None else None
+
+
+def _review_base_config_remedy(lattice_dir: Path) -> str:
+    """Give the correct base-setting route for this board type."""
+    project = _hosted_project_slug(lattice_dir)
+    if project is not None:
+        return (
+            f"configure it on the server host with `{program_name()} server project config "
+            f"{project} --set review_base_branch=<branch>` or `{program_name()} server project "
+            f"config {project} --set review_integration_branches=<branch>[,<branch>...]`"
+        )
+    return (
+        "set `review_base_branch` or the ordered `review_integration_branches` list "
+        "in `.lattice/config.json`"
+    )
 
 
 def _task_events(lattice_dir: Path, task_id: str) -> list[dict]:
@@ -496,24 +535,53 @@ def code_review(
         _end_read_phase(lattice_dir)
 
     resolution = resolve_diff(
-        lattice_dir, task_id, snapshot, base=base, head=head, worktree=reviewed_worktree
+        lattice_dir,
+        task_id,
+        snapshot,
+        base=base,
+        head=head,
+        worktree=reviewed_worktree,
+        review_base_branch=config.get("review_base_branch"),
+        review_integration_branches=config.get("review_integration_branches"),
     )
     if not resolution.success:
         assert resolution.error is not None
+        resolution_error = resolution.error
+        if resolution.error_code in {
+            "BASE_INFERENCE_NO_CANDIDATES",
+            "INVALID_REVIEW_INTEGRATION_BRANCHES",
+            "UNRESOLVABLE_REVIEW_INTEGRATION_BRANCHES",
+            "INVALID_REVIEW_BASE_BRANCH",
+        }:
+            resolution_error += (
+                f" To configure base candidates, {_review_base_config_remedy(lattice_dir)}."
+            )
+        if resolution.warning:
+            resolution_error += f" Review warning: {resolution.warning}"
         if not dry_run:
             assert actor is not None
             _record_resolution_failure(
                 lattice_dir,
                 task_id,
                 mode=mode,
-                message=resolution.error,
+                message=resolution_error,
                 error_code=resolution.error_code or "DIFF_RESOLUTION_FAILED",
                 actor=actor,
                 config=config,
                 auto_fired=triggered_by is not None,
                 claim=claim,
             )
-        output_error(resolution.error, resolution.error_code or "DIFF_RESOLUTION_FAILED", is_json)
+        output_error(
+            resolution_error,
+            resolution.error_code or "DIFF_RESOLUTION_FAILED",
+            is_json,
+        )
+
+    if resolution.base_ref and not dry_run and not quiet and not is_json:
+        click.echo(
+            f"Review base: {resolution.base_ref} "
+            f"(selection rule: {resolution.base_selection_rule or 'unknown'})."
+        )
 
     if resolution.warning and not quiet:
         click.echo(f"Note: {resolution.warning}", err=True)
@@ -534,9 +602,52 @@ def code_review(
             is_json,
         )
 
+    raw_diff_lines = len(diff_content.splitlines())
+    raw_diff_chars = len(diff_content)
+
+    # A capped prefix is useful only when it still retains a meaningful share
+    # of the resolved range. If either enabled cap would discard more than two
+    # thirds, the selected base is likely wrong; fail before any reviewer is
+    # spawned and leave the reason on the task for review-status.
+    max_diff_lines = config.get("review_max_diff_lines", DEFAULT_MAX_DIFF_LINES)
+    max_diff_chars = config.get("review_max_diff_chars", DEFAULT_MAX_DIFF_CHARS)
+    unsafe_line_truncation = max_diff_lines > 0 and raw_diff_lines > 3 * max_diff_lines
+    unsafe_char_truncation = max_diff_chars > 0 and raw_diff_chars > 3 * max_diff_chars
+    if unsafe_line_truncation or unsafe_char_truncation:
+        selection_rule = resolution.base_selection_rule or "unknown"
+        failure_message = (
+            f"Refusing to review the resolved diff: selected base {resolution.base_ref} "
+            f"(selection rule: {selection_rule}); raw diff is {raw_diff_lines} lines and "
+            f"{raw_diff_chars} characters; configured caps are review_max_diff_lines="
+            f"{max_diff_lines} and review_max_diff_chars={max_diff_chars}. At least one "
+            "enabled cap would retain less than one third of the diff. Narrow the range "
+            f"with --base <ref> or {_review_base_config_remedy(lattice_dir)}, then retry."
+        )
+        if not dry_run:
+            assert actor is not None
+            _record_resolution_failure(
+                lattice_dir,
+                task_id,
+                mode=mode,
+                message=f"{failure_message} Base={resolution.base_ref}; rule={selection_rule}.",
+                error_code="DIFF_TRUNCATION_UNSAFE",
+                actor=actor,
+                config=config,
+                auto_fired=triggered_by is not None,
+                claim=claim,
+                detail={
+                    "base_ref": resolution.base_ref,
+                    "base_selection_rule": selection_rule,
+                    "raw_diff_lines": raw_diff_lines,
+                    "raw_diff_chars": raw_diff_chars,
+                    "review_max_diff_lines": max_diff_lines,
+                    "review_max_diff_chars": max_diff_chars,
+                },
+            )
+        output_error(failure_message, "DIFF_TRUNCATION_UNSAFE", is_json)
+
     # Cap a pathologically large diff before it bloats the prompt. Defense in
     # depth: a too-wide resolution range shouldn't blow up review cost.
-    max_diff_lines = config.get("review_max_diff_lines", DEFAULT_MAX_DIFF_LINES)
     diff_content, diff_capped, diff_lines = cap_diff(
         diff_content, max_diff_lines, range_desc=range_desc
     )
@@ -550,7 +661,6 @@ def code_review(
     # The line cap does not bound prompt size: 5000 lines of a wide diff runs to
     # hundreds of thousands of characters, and prompt size is what pushes a
     # review past its timeout. Cap the characters too.
-    max_diff_chars = config.get("review_max_diff_chars", DEFAULT_MAX_DIFF_CHARS)
     diff_content, chars_capped, diff_chars = cap_diff_chars(
         diff_content, max_diff_chars, range_desc=range_desc
     )
@@ -565,7 +675,12 @@ def code_review(
     # first line keeps its exact shape: core.config._REVIEW_MARKER anchors on
     # \A and a 40-char SHA, and the reachable-review-commit gate depends on it.
     try:
-        evidence_header = _evidence_header(resolution)
+        evidence_header = _evidence_header(
+            resolution,
+            raw_diff_lines=raw_diff_lines,
+            raw_diff_chars=raw_diff_chars,
+            truncated=diff_capped or chars_capped,
+        )
     except ValueError as exc:
         if not dry_run:
             assert actor is not None
@@ -600,8 +715,8 @@ def code_review(
         _emit_dry_run(
             resolution=resolution,
             prompt=prompt,
-            diff_lines=diff_lines,
-            diff_chars=diff_chars,
+            diff_lines=raw_diff_lines,
+            diff_chars=raw_diff_chars,
             truncated=diff_capped or chars_capped,
             is_json=is_json,
         )
@@ -627,6 +742,17 @@ def code_review(
             timeout=timeout,
             worktree=reviewed_worktree,
             reviewed_header=evidence_header,
+            review_metadata={
+                "base_ref": resolution.base_ref,
+                "base_selection_rule": resolution.base_selection_rule,
+                "base_sha": resolution.base_sha,
+                "head_ref": resolution.head_ref,
+                "head_sha": resolution.head_sha,
+                "diff_lines": raw_diff_lines,
+                "diff_chars": raw_diff_chars,
+                "truncated": diff_capped or chars_capped,
+                **({"warning": resolution.warning} if resolution.warning else {}),
+            },
             auto_fired=triggered_by is not None,
             claim=claim,
         )
@@ -641,9 +767,16 @@ def code_review(
             is_json=is_json,
             quiet=quiet,
             base=resolution.base_ref,
+            base_selection_rule=resolution.base_selection_rule,
+            base_sha=resolution.base_sha,
             head=resolution.head_ref,
             head_sha=resolution.head_sha,
             worktree=reviewed_worktree,
+            diff_content=diff_content,
+            raw_diff_lines=raw_diff_lines,
+            raw_diff_chars=raw_diff_chars,
+            warning=resolution.warning,
+            truncated=diff_capped or chars_capped,
             claim=claim,
         )
 
@@ -824,6 +957,7 @@ def _echo_review_failure(
     when: str | None = None,
     source: str | None = None,
     review_type: str = "code-review",
+    timeout_guidance: dict[str, Any] | None = None,
 ) -> None:
     """Print a clear, diagnosable FAILED report for a review."""
     header = f"Review FAILED for {task_id}"
@@ -839,7 +973,83 @@ def _echo_review_failure(
         click.echo(f"  duration:     {duration}s")
     if stderr_tail:
         click.echo(f"  stderr tail:  {stderr_tail}")
+    if timeout_guidance:
+        click.echo(
+            "  configured limits: "
+            f"review_timeout_seconds={timeout_guidance['review_timeout_seconds']}, "
+            f"review_max_diff_lines={timeout_guidance['review_max_diff_lines']}, "
+            f"review_max_diff_chars={timeout_guidance['review_max_diff_chars']}"
+        )
+        click.echo(f"  next step:    {timeout_guidance['next_step']}")
     click.echo(f"  Re-run with:  {program_name()} {review_type} {task_id}")
+
+
+def _timeout_guidance(config: dict, lattice_dir: Path | None = None) -> dict[str, Any]:
+    """Describe this board's review budgets and a safe next step after timeout."""
+    values: dict[str, Any] = {
+        "review_timeout_seconds": config.get("review_timeout_seconds", DEFAULT_AGENT_TIMEOUT),
+        "review_max_diff_lines": config.get("review_max_diff_lines", DEFAULT_MAX_DIFF_LINES),
+        "review_max_diff_chars": config.get("review_max_diff_chars", DEFAULT_MAX_DIFF_CHARS),
+    }
+    for name, default in (
+        ("review_timeout_seconds", DEFAULT_AGENT_TIMEOUT),
+        ("review_max_diff_lines", DEFAULT_MAX_DIFF_LINES),
+        ("review_max_diff_chars", DEFAULT_MAX_DIFF_CHARS),
+    ):
+        value = values[name]
+        if not isinstance(value, int) or isinstance(value, bool):
+            values[name] = default
+    project = _hosted_project_slug(lattice_dir) if lattice_dir is not None else None
+    if project is not None:
+        command = (
+            f"`{program_name()} server project config {project} "
+            "--set review_timeout_seconds=<seconds> "
+            "--set review_max_diff_lines=<lines> --set review_max_diff_chars=<chars>` "
+            "on the server host"
+        )
+    else:
+        command = "in .lattice/config.json"
+    values["next_step"] = (
+        "Narrow the review diff, or explicitly raise review_timeout_seconds, "
+        "review_max_diff_lines, or review_max_diff_chars "
+        f"{command} before retrying."
+    )
+    return values
+
+
+def _is_timeout(message: Any) -> bool:
+    return isinstance(message, str) and "timed out" in message.lower()
+
+
+def _review_artifacts_by_role(lattice_dir: Path, task_id: str) -> dict[str, dict[str, str | None]]:
+    """Return the newest attached review artifact event for each review role."""
+    artifacts: dict[str, dict[str, str | None]] = {}
+    for event in _task_events(lattice_dir, task_id):
+        if event.get("type") != "artifact_attached":
+            continue
+        data = event.get("data") or {}
+        role = data.get("role")
+        if not isinstance(role, str) or "review" not in role:
+            continue
+        artifact_id = data.get("artifact_id")
+        ts = event.get("ts")
+        artifacts[role] = {
+            "review_type": "code-review" if role == "review" else role,
+            "artifact_id": artifact_id if isinstance(artifact_id, str) else None,
+            "attached_at": ts if isinstance(ts, str) else None,
+        }
+    return dict(sorted(artifacts.items()))
+
+
+def _review_artifact_lines(artifacts: dict[str, dict[str, str | None]]) -> list[str]:
+    lines = ["  completed review artifacts:"]
+    for role, artifact in artifacts.items():
+        label = "code-review (role=review)" if role == "review" else role
+        details = artifact.get("artifact_id") or "(id unavailable)"
+        if artifact.get("attached_at"):
+            details += f" attached_at={artifact['attached_at']}"
+        lines.append(f"    {label}: {details}")
+    return lines
 
 
 @cli.command("review-status")
@@ -862,22 +1072,35 @@ def review_status(task_id: str, output_json: bool) -> None:
         # No in-flight record. Distinguish: a completed review (artifact exists),
         # a *failed* review whose state was cleared by an older path (surface it
         # from failures.jsonl), or genuinely nothing ever ran.
-        has_artifacts = _check_review_artifacts(lattice_dir, task_id)
+        artifacts = _review_artifacts_by_role(lattice_dir, task_id)
+        has_artifacts = bool(artifacts)
         failure = None if has_artifacts else last_failure_for_task(lattice_dir, task_id)
         if is_json:
             data: dict[str, Any] = {"task_id": task_id, "status": "none"}
             if has_artifacts:
                 data["note"] = "Review artifacts exist — review may have already completed."
+                data["artifacts"] = artifacts
             elif failure:
                 data["status"] = "failed"
                 data["last_failure"] = failure
+                if _is_timeout(failure.get("error")):
+                    data["timeout_guidance"] = _timeout_guidance(
+                        load_project_config(lattice_dir), lattice_dir
+                    )
             click.echo(json.dumps({"ok": True, "data": data}, indent=2))
         else:
             if has_artifacts:
                 click.echo(
                     f"No in-flight review for {task_id}. Review artifacts exist — review may have already completed."
                 )
+                for line in _review_artifact_lines(artifacts):
+                    click.echo(line)
             elif failure:
+                guidance = (
+                    _timeout_guidance(load_project_config(lattice_dir), lattice_dir)
+                    if _is_timeout(failure.get("error"))
+                    else None
+                )
                 _echo_review_failure(
                     task_id,
                     error=failure.get("error"),
@@ -887,6 +1110,7 @@ def review_status(task_id: str, output_json: bool) -> None:
                     when=failure.get("timestamp"),
                     source="failures.jsonl",
                     review_type=failure.get("review_type") or "code-review",
+                    timeout_guidance=guidance,
                 )
             else:
                 click.echo(
@@ -898,9 +1122,19 @@ def review_status(task_id: str, output_json: bool) -> None:
     # loudly instead of falling through to the generic in-flight render.
     if state.get("status") == "failed":
         if is_json:
-            click.echo(json.dumps({"ok": True, "data": state}, indent=2))
+            data = dict(state)
+            if _is_timeout(state.get("error")):
+                data["timeout_guidance"] = _timeout_guidance(
+                    load_project_config(lattice_dir), lattice_dir
+                )
+            click.echo(json.dumps({"ok": True, "data": data}, indent=2))
         else:
             detail = state.get("detail") or {}
+            guidance = (
+                _timeout_guidance(load_project_config(lattice_dir), lattice_dir)
+                if _is_timeout(state.get("error"))
+                else None
+            )
             _echo_review_failure(
                 task_id,
                 error=state.get("error"),
@@ -910,6 +1144,7 @@ def review_status(task_id: str, output_json: bool) -> None:
                 when=state.get("finished_at"),
                 source="in-flight review record",
                 review_type=state.get("review_type") or "code-review",
+                timeout_guidance=guidance,
             )
         return
 
@@ -1119,6 +1354,7 @@ def _record_resolution_failure(
     config: dict,
     auto_fired: bool,
     claim: str | None = None,
+    detail: dict[str, Any] | None = None,
 ) -> None:
     """Make a failed diff resolution as visible as a failed review agent.
 
@@ -1134,6 +1370,10 @@ def _record_resolution_failure(
     """
     existing = read_review_state(lattice_dir, task_id) or {}
     state: dict[str, Any] = dict(existing)
+    failure_detail = dict(existing.get("detail") or {})
+    failure_detail["error_code"] = error_code
+    if detail:
+        failure_detail.update(detail)
     state.update(
         {
             "task_id": task_id,
@@ -1142,7 +1382,7 @@ def _record_resolution_failure(
             "status": "failed",
             "error": message,
             "finished_at": _now_iso(),
-            "detail": {"error_code": error_code},
+            "detail": failure_detail,
         }
     )
     state.setdefault("started_at", state["finished_at"])
@@ -1182,6 +1422,7 @@ def _run_single_and_store(
     timeout: int = 600,
     worktree: Path | None = None,
     reviewed_header: str | None = None,
+    review_metadata: dict[str, Any] | None = None,
     auto_fired: bool = False,
     claim: str | None = None,
 ) -> str | None:
@@ -1223,6 +1464,14 @@ def _run_single_and_store(
 
     if not success:
         cleanup_temp_files(task_id)
+        if _is_timeout(message):
+            guidance = _timeout_guidance(config, lattice_dir)
+            message = (
+                f"{message}. Configured limits: review_timeout_seconds="
+                f"{guidance['review_timeout_seconds']}, review_max_diff_lines="
+                f"{guidance['review_max_diff_lines']}, review_max_diff_chars="
+                f"{guidance['review_max_diff_chars']}. {guidance['next_step']}"
+            )
         _report_review_failure(
             lattice_dir,
             task_id,
@@ -1251,9 +1500,10 @@ def _run_single_and_store(
 
     if art_id:
         if is_json:
-            click.echo(
-                json.dumps({"ok": True, "data": {"artifact_id": art_id, "role": role}}, indent=2)
-            )
+            data = {"artifact_id": art_id, "role": role}
+            if review_metadata:
+                data.update(review_metadata)
+            click.echo(json.dumps({"ok": True, "data": data}, indent=2))
         elif quiet:
             click.echo(art_id)
         else:
@@ -1297,9 +1547,16 @@ def _spawn_triple_pane(
     is_json: bool,
     quiet: bool,
     base: str | None,
+    base_selection_rule: str | None = None,
+    base_sha: str | None = None,
     head: str | None = None,
     head_sha: str | None = None,
     worktree: Path | None = None,
+    diff_content: str | None = None,
+    raw_diff_lines: int | None = None,
+    raw_diff_chars: int | None = None,
+    warning: str | None = None,
+    truncated: bool = False,
     claim: str | None = None,
 ) -> None:
     """Spawn a c11 pane that runs the trident review. Fire-and-forget.
@@ -1320,10 +1577,17 @@ def _spawn_triple_pane(
         review_type=review_type,
         actor=actor,
         base=base,
+        base_selection_rule=base_selection_rule,
+        base_sha=base_sha,
         head=head,
         head_sha=head_sha,
         short_id=short_id,
         worktree=worktree,
+        diff_content=diff_content,
+        raw_diff_lines=raw_diff_lines,
+        raw_diff_chars=raw_diff_chars,
+        warning=warning,
+        truncated=truncated,
         claim=claim,
         program=program_name(),
     )
@@ -1344,12 +1608,20 @@ def _spawn_triple_pane(
         raise click.exceptions.Exit(code=1)
 
     if is_json:
-        click.echo(
-            json.dumps(
-                {"ok": True, "data": {"mode": "triple", "task_id": task_id, "message": message}},
-                indent=2,
-            )
-        )
+        data = {
+            "mode": "triple",
+            "task_id": task_id,
+            "message": message,
+            "base_ref": base,
+            "base_sha": base_sha,
+            "base_selection_rule": base_selection_rule,
+            "diff_lines": raw_diff_lines,
+            "diff_chars": raw_diff_chars,
+            "truncated": truncated,
+        }
+        if warning:
+            data["warning"] = warning
+        click.echo(json.dumps({"ok": True, "data": data}, indent=2))
     elif quiet:
         click.echo(message)
     else:
@@ -1522,14 +1794,5 @@ def _compute_elapsed_str(
 
 
 def _check_review_artifacts(lattice_dir: Path, task_id: str) -> bool:
-    """Check if any review artifacts are attached to a task.
-
-    Read from the task's ``artifact_attached`` events: artifact metadata lives
-    under ``artifacts/meta/`` keyed by artifact ID, never per task.
-    """
-    for event in _task_events(lattice_dir, task_id):
-        if event.get("type") == "artifact_attached":
-            role = (event.get("data") or {}).get("role") or ""
-            if "review" in role:
-                return True
-    return False
+    """Check whether any review-role artifacts are attached to a task."""
+    return bool(_review_artifacts_by_role(lattice_dir, task_id))

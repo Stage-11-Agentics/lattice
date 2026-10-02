@@ -123,6 +123,45 @@ def test_accepted_completion_writes_payload_before_events(board: LocalBoard) -> 
     assert len({e["ts"] for e in result.events}) == 1
 
 
+def test_pre_rework_review_artifact_does_not_satisfy_current_cycle(board: LocalBoard) -> None:
+    task_id = _task(board, "review")
+    caller = Caller(actor="agent:t")
+    board.execute(
+        "task.attach",
+        {"task": task_id, "inline": "FAIL (implementation-level)", "role": "review"},
+        caller,
+    )
+    board.execute(
+        "task.status",
+        {
+            "task": task_id,
+            "new_status": "in_progress",
+            "force": True,
+            "reason": "begin rework",
+        },
+        caller,
+    )
+    board.execute(
+        "task.status",
+        {"task": task_id, "new_status": "review", "force": True, "reason": "re-enter review"},
+        caller,
+    )
+
+    with pytest.raises(OpError) as exc:
+        board.execute("task.status", {"task": task_id, "new_status": "done"}, caller)
+
+    assert exc.value.code == "COMPLETION_BLOCKED"
+    assert "current-cycle review evidence" in exc.value.message
+
+    board.execute(
+        "task.attach",
+        {"task": task_id, "inline": "PASS", "role": "review"},
+        caller,
+    )
+    result = board.execute("task.status", {"task": task_id, "new_status": "done"}, caller)
+    assert result.value["status"] == "done"
+
+
 def test_missing_and_archived_tasks_are_not_found(board: LocalBoard) -> None:
     missing = "task_01AAAAAAAAAAAAAAAAAAAAAAAA"
     err = _refuse(board, {"task": missing, "review": "ok"})

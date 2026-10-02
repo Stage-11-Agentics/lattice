@@ -39,6 +39,8 @@ def test_project_config_through_a_running_server(root: Path) -> None:
                 "auto_code_review_on_transition=false",
                 "--set",
                 'task_types=["task","bug","chore","research"]',
+                "--set",
+                "review_integration_branches=v2,release/next",
                 "--root",
                 str(root),
                 "--json",
@@ -55,6 +57,7 @@ def test_project_config_through_a_running_server(root: Path) -> None:
         assert config["review_mode"] == "triple"
         assert config["auto_code_review_on_transition"] is False
         assert config["task_types"] == ["task", "bug", "chore", "research"]
+        assert config["review_integration_branches"] == ["v2", "release/next"]
         assert not (
             root / "projects" / "alpha" / ".lattice" / "hosted" / "maintenance.json"
         ).exists()

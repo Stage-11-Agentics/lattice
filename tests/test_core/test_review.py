@@ -425,6 +425,99 @@ class TestEscalationDedup:
         create_call = next(c for c in calls if c[:2] == ["lattice", "create"])
         assert create_call[2].startswith("Investigate claude review failures")
 
+    def test_created_diagnostic_describes_recent_failures(
+        self, lattice_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, *args, **kwargs):  # noqa: ANN001
+            calls.append(cmd)
+            if cmd[:2] == ["lattice", "list"]:
+                return subprocess.CompletedProcess(cmd, 0, json.dumps({"data": {"tasks": []}}), "")
+            if cmd[:2] == ["lattice", "create"]:
+                return subprocess.CompletedProcess(cmd, 0, "LAT-999\n", "")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(review_mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(
+            review_mod, "_failure_task_title", lambda _lattice_dir, task_id: f"Title for {task_id}"
+        )
+        record_agent_failure(
+            lattice_dir,
+            "claude",
+            "task-timeout",
+            detail={
+                "error": "Agent 'claude' timed out after 600s",
+                "review_type": "code-review",
+                "duration_seconds": 600.1,
+                "prompt_chars": 21591,
+                "daemon_log_path": "/board/.lattice/.daemon/auto-code-review-task-timeout.log",
+            },
+        )
+        record_agent_failure(
+            lattice_dir,
+            "codex",
+            "other-agent-task",
+            detail={"error": "unrelated"},
+        )
+        record_agent_failure(
+            lattice_dir,
+            "claude",
+            "task-exit",
+            detail={
+                "error": "Agent 'claude': exited with code 1",
+                "review_type": "plan-review",
+                "returncode": 1,
+                "stderr_tail": "weekly account limit reached",
+            },
+        )
+
+        result = create_failure_diagnostic_task(lattice_dir, "claude", 2, "agent:x")
+        assert result == "LAT-999"
+        create_call = next(c for c in calls if c[:2] == ["lattice", "create"])
+        description = create_call[create_call.index("--description") + 1]
+        assert "task-timeout" in description
+        assert "Title for task-timeout" in description
+        assert "timed out after 600s" in description
+        assert "/board/.lattice/.daemon/auto-code-review-task-timeout.log" in description
+        assert "task-exit" in description
+        assert "Title for task-exit" in description
+        assert "exited with code 1" in description
+        assert ".lattice/.daemon/auto-plan-review-task-exit.log" in description
+        assert "weekly account limit reached" in description
+        assert "other-agent-task" not in description
+
+    def test_manual_failure_does_not_borrow_auto_review_log(self, lattice_dir: Path) -> None:
+        from lattice.core.review import _failure_daemon_log
+
+        task_id = "task-with-prior-auto-review"
+        events_path = lattice_dir / "events" / f"{task_id}.jsonl"
+        events_path.parent.mkdir(parents=True, exist_ok=True)
+        events_path.write_text(
+            json.dumps(
+                {
+                    "type": "auto_review_spawned",
+                    "data": {
+                        "review_type": "code-review",
+                        "log_path": ".lattice/.daemon/auto-code-review-old.log",
+                        "spawned_at": "2026-10-01T12:00:00Z",
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        # The failure is explicitly manual even though the task has historical
+        # auto-review events; do not attach unrelated daemon diagnostics.
+        failure = {
+            "task_id": task_id,
+            "review_type": "code-review",
+            "auto_fired": False,
+        }
+        assert _failure_daemon_log(lattice_dir, failure) == (
+            "(not applicable; review was not auto-fired)"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Temp file cleanup
@@ -698,6 +791,7 @@ class TestTripleReviewSpawn:
             "lattice.integrations.c11.spawn_one_in_current_workspace",
             _fake_spawn,
         )
+        warning = "Configured review_integration_branches entry 'v3' did not resolve."
 
         ok, msg = review_mod.run_triple_review(
             lattice_dir=lattice_dir,
@@ -707,6 +801,7 @@ class TestTripleReviewSpawn:
             short_id="LAT-218",
             base="main",
             worktree=tmp_path,
+            warning=warning,
         )
         assert ok is True
         assert "surface:42" in msg
@@ -714,6 +809,7 @@ class TestTripleReviewSpawn:
         assert "/trident-code-review LAT-218" in captured["prompt"]
         assert "pr_open" in captured["prompt"]
         assert "lattice needs-human LAT-218" in captured["prompt"]
+        assert f"Lattice-Review-Warning: {warning}" in captured["prompt"]
         # review_state marker landed.
         state = review_mod.read_review_state(lattice_dir, "task_01ABC")
         assert state is not None
@@ -784,6 +880,33 @@ class TestTripleReviewSpawn:
         assert f"- Head ref: `fix/LAT-42-thing ({'c' * 40})`" in prompt
         assert "Diff exactly `origin/main...fix/LAT-42-thing`" in prompt
 
+    def test_code_handoff_carries_base_rule_and_truncation_metadata(self) -> None:
+        from lattice.core.review import build_trident_handoff_prompt
+
+        diff_content = "+first line\n[diff truncated by Lattice: showing first 1 of 2 lines]\n"
+        prompt = build_trident_handoff_prompt(
+            "LAT-42",
+            "code-review",
+            worktree=Path("/tmp/wt"),
+            base_branch="origin/v2",
+            base_selection_rule="board_config",
+            base_sha="a" * 40,
+            head_ref="feat/LAT-42",
+            head_sha="b" * 40,
+            diff_content=diff_content,
+            raw_diff_lines=2,
+            raw_diff_chars=len(diff_content),
+            truncated=True,
+        )
+
+        assert "Lattice-Reviewed-Base-Selection: board_config" in prompt
+        assert f"Lattice-Reviewed-Base: origin/v2 ({'a' * 40})" in prompt
+        assert (
+            f"Lattice-Reviewed-Diff: raw-lines=2, raw-chars={len(diff_content)}, truncated=true"
+        ) in prompt
+        assert "diff truncated by Lattice" in prompt
+        assert "Do not recompute a broader range" in prompt
+
     def test_handoff_prompt_without_a_head_falls_back_to_head_symbol(self) -> None:
         from lattice.core.review import build_trident_handoff_prompt
 
@@ -832,6 +955,88 @@ def _git(cwd: Path, *args: str) -> str:
     ).stdout
 
 
+def _non_default_remote_base_repo(tmp_path: Path, feature_branch: str = "feat/LAT-367-review"):
+    """A feature cut from origin/v2 while origin/HEAD still names diverged main."""
+    repo = tmp_path / "non-default-base"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "t@t.com")
+    _git(repo, "config", "user.name", "Tester")
+    (repo / "README.md").write_text("root\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "root")
+    root_sha = _git(repo, "rev-parse", "HEAD").strip()
+
+    _git(repo, "checkout", "-b", "v2")
+    (repo / "v2.txt").write_text("v2 base\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "v2 integration work")
+    v2_sha = _git(repo, "rev-parse", "HEAD").strip()
+    _git(repo, "update-ref", "refs/remotes/origin/v2", v2_sha)
+
+    _git(repo, "checkout", "main")
+    (repo / "main.txt").write_text("main-only work\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "main integration work")
+    main_sha = _git(repo, "rev-parse", "HEAD").strip()
+    _git(repo, "update-ref", "refs/remotes/origin/main", main_sha)
+    _git(repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+
+    feature = feature_branch
+    _git(repo, "checkout", "-b", feature, "origin/v2")
+    (repo / "feature.txt").write_text("ticket change\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "LAT-367: feature change")
+    _git(repo, "update-ref", f"refs/remotes/origin/{feature}", "HEAD")
+    _git(repo, "branch", "-D", "v2")
+
+    lattice_dir = repo / ".lattice"
+    lattice_dir.mkdir()
+    return repo, lattice_dir, feature, root_sha, v2_sha, main_sha
+
+
+def _equal_distance_remote_candidates_repo(tmp_path: Path):
+    """Remote integration refs and the default all fork at one base as the head does."""
+    repo = tmp_path / "equal-distance"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "t@t.com")
+    _git(repo, "config", "user.name", "Tester")
+    (repo / "README.md").write_text("root\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "root")
+    root_sha = _git(repo, "rev-parse", "HEAD").strip()
+
+    _git(repo, "checkout", "-b", "v2")
+    (repo / "v2.txt").write_text("v2\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "v2 integration")
+    _git(repo, "update-ref", "refs/remotes/origin/v2", "HEAD")
+
+    _git(repo, "checkout", "-b", "qa", root_sha)
+    (repo / "qa.txt").write_text("qa\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "qa integration")
+    _git(repo, "update-ref", "refs/remotes/origin/qa", "HEAD")
+
+    _git(repo, "checkout", "main")
+    (repo / "main.txt").write_text("main\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "main integration")
+    _git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    _git(repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+
+    feature = "feat/LAT-99-tie"
+    _git(repo, "checkout", "-b", feature, root_sha)
+    (repo / "feature.txt").write_text("ticket change\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "LAT-99: feature")
+
+    lattice_dir = repo / ".lattice"
+    lattice_dir.mkdir()
+    return repo, lattice_dir, feature
+
+
 @pytest.fixture
 def simple_worktree_repo(tmp_path: Path):
     """A main checkout (on ``main``) plus a sibling worktree on a feature branch.
@@ -847,6 +1052,9 @@ def simple_worktree_repo(tmp_path: Path):
     (main / "file.txt").write_text("base\n")
     _git(main, "add", "-A")
     _git(main, "commit", "-m", "init")
+    main_sha = _git(main, "rev-parse", "HEAD").strip()
+    _git(main, "update-ref", "refs/remotes/origin/main", main_sha)
+    _git(main, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
 
     feature = "feat/ACE-317-thing"
     wt = tmp_path / "wt-feature"
@@ -915,11 +1123,14 @@ class TestResolveDiffWorktree:
         (main / "f.txt").write_text("x\n")
         _git(main, "add", "-A")
         _git(main, "commit", "-m", "init")
+        initial_sha = _git(main, "rev-parse", "HEAD").strip()
+        _git(main, "update-ref", "refs/remotes/origin/main", initial_sha)
+        _git(main, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
         _git(main, "branch", "feat/empty")  # identical to main
         lattice_dir = main / ".lattice"
         lattice_dir.mkdir()
         snapshot = {"branch_links": [{"branch": "feat/empty"}], "short_id": "NOPE-1"}
-        res = review_mod.resolve_diff(lattice_dir, "task_01", snapshot)
+        res = review_mod.resolve_diff(lattice_dir, "task_01", snapshot, base="main")
         assert res.success is False
         assert "empty" in (res.error or "").lower()
 
@@ -948,6 +1159,9 @@ class TestResolveDiffWorktree:
         (main / "f.txt").write_text("base\n")
         _git(main, "add", "-A")
         _git(main, "commit", "-m", "init")
+        initial_sha = _git(main, "rev-parse", "HEAD").strip()
+        _git(main, "update-ref", "refs/remotes/origin/main", initial_sha)
+        _git(main, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
         _git(main, "checkout", "-b", "feat/inline")
         (main / "f.txt").write_text("base\nmore\n")
         _git(main, "add", "-A")
@@ -969,6 +1183,470 @@ class TestResolveDiffWorktree:
         assert res.success is True
         assert "ticket change" in res.diff
         assert res.worktree == wt
+
+
+class TestReviewBaseSelection:
+    def test_infers_nearest_remote_ancestor_instead_of_origin_default(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo, lattice_dir, feature, _root_sha, v2_sha, main_sha = _non_default_remote_base_repo(
+            tmp_path
+        )
+        original_run = subprocess.run
+        git_commands: list[list[str]] = []
+
+        def recording_run(args, *positional, **kwargs):
+            if args and args[0] == "git":
+                git_commands.append(list(args[1:]))
+            return original_run(args, *positional, **kwargs)
+
+        monkeypatch.setattr(review_mod.subprocess, "run", recording_run)
+        res = review_mod.resolve_diff(
+            lattice_dir,
+            "task_01",
+            {"branch_links": [{"branch": feature}]},
+            review_integration_branches=["v2"],
+        )
+
+        assert res.success is True, res.error
+        assert res.base_ref == "origin/v2"
+        assert res.base_sha == v2_sha
+        assert res.base_selection_rule == "inferred_nearest_merge_base"
+        assert main_sha != v2_sha
+        assert _git(repo, "rev-parse", f"origin/{feature}").strip() == res.head_sha
+        assert "ticket change" in res.diff
+        assert "main-only work" not in res.diff
+        assert not any(command and command[0] == "fetch" for command in git_commands)
+        assert not any(
+            command[:2] == ["for-each-ref", "--format=%(refname:short)"]
+            and "refs/remotes/" in command
+            for command in git_commands
+        )
+
+    def test_stacked_sibling_does_not_become_the_base(self, tmp_path: Path) -> None:
+        repo, lattice_dir, feature, _root_sha, v2_sha, _main_sha = _non_default_remote_base_repo(
+            tmp_path
+        )
+        _git(repo, "checkout", "-b", "feat/LAT-365-sibling", feature)
+        (repo / "sibling.txt").write_text("sibling ticket change\n")
+        _git(repo, "add", "sibling.txt")
+        _git(repo, "commit", "-m", "LAT-365: sibling change")
+        _git(repo, "update-ref", "refs/remotes/origin/feat/LAT-365-sibling", "HEAD")
+        _git(repo, "checkout", feature)
+        (repo / "fix.txt").write_text("unpublished fix\n")
+        _git(repo, "add", "fix.txt")
+        _git(repo, "commit", "-m", "LAT-367: local review fix")
+
+        res = review_mod.resolve_diff(
+            lattice_dir,
+            "task_01",
+            {"branch_links": [{"branch": feature}]},
+            review_integration_branches=["v2"],
+        )
+
+        assert res.success is True, res.error
+        assert res.base_ref == "origin/v2"
+        assert res.base_sha == v2_sha
+        assert "ticket change" in res.diff
+        assert "unpublished fix" in res.diff
+        assert "sibling ticket change" not in res.diff
+
+    def test_unconfigured_integration_that_merged_feature_is_not_a_candidate(
+        self, tmp_path: Path
+    ) -> None:
+        repo, lattice_dir, feature, _root_sha, v2_sha, _main_sha = _non_default_remote_base_repo(
+            tmp_path
+        )
+        _git(repo, "checkout", "-b", "integration/rc", "origin/v2")
+        _git(repo, "merge", "--no-ff", feature, "-m", "merge feature into rc")
+        _git(repo, "update-ref", "refs/remotes/origin/integration/rc", "HEAD")
+        _git(repo, "checkout", feature)
+        (repo / "fix.txt").write_text("unpublished fix\n")
+        _git(repo, "add", "fix.txt")
+        _git(repo, "commit", "-m", "LAT-367: local review fix")
+
+        res = review_mod.resolve_diff(
+            lattice_dir,
+            "task_01",
+            {"branch_links": [{"branch": feature}]},
+            review_integration_branches=["v2"],
+        )
+
+        assert res.success is True, res.error
+        assert res.base_ref == "origin/v2"
+        assert res.base_sha == v2_sha
+        assert "ticket change" in res.diff and "unpublished fix" in res.diff
+        assert "already merged" not in (res.error or "")
+
+    def test_same_tip_child_is_not_a_candidate(self, tmp_path: Path) -> None:
+        repo, lattice_dir, feature, _root_sha, v2_sha, _main_sha = _non_default_remote_base_repo(
+            tmp_path
+        )
+        feature_sha = _git(repo, "rev-parse", feature).strip()
+        _git(repo, "update-ref", "refs/remotes/origin/feat/LAT-366-child", feature_sha)
+        (repo / "fix.txt").write_text("unpublished fix\n")
+        _git(repo, "add", "fix.txt")
+        _git(repo, "commit", "-m", "LAT-367: local review fix")
+
+        res = review_mod.resolve_diff(
+            lattice_dir,
+            "task_01",
+            {"branch_links": [{"branch": feature}]},
+            review_integration_branches=["v2"],
+        )
+
+        assert res.success is True, res.error
+        assert res.base_ref == "origin/v2"
+        assert res.base_sha == v2_sha
+        assert "ticket change" in res.diff and "unpublished fix" in res.diff
+
+    def test_unresolvable_configured_branch_warns_and_refuses_fallback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _repo, lattice_dir, feature, *_ = _non_default_remote_base_repo(tmp_path)
+        monkeypatch.setattr(review_mod, "_open_pr_base_branch", lambda *_args: None)
+
+        res = review_mod.resolve_diff(
+            lattice_dir,
+            "task_01",
+            {"branch_links": [{"branch": feature}]},
+            review_integration_branches=["v3"],
+        )
+
+        assert res.success is False
+        assert res.error_code == "UNRESOLVABLE_REVIEW_INTEGRATION_BRANCHES"
+        assert "v3" in (res.warning or "")
+        assert "v3" in (res.error or "")
+        assert "refusing to fall back" in (res.error or "")
+
+    def test_missing_configured_entry_warns_while_valid_integration_wins(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _repo, lattice_dir, feature, _root_sha, v2_sha, _main_sha = _non_default_remote_base_repo(
+            tmp_path
+        )
+        monkeypatch.setattr(review_mod, "_open_pr_base_branch", lambda *_args: None)
+
+        res = review_mod.resolve_diff(
+            lattice_dir,
+            "task_01",
+            {"branch_links": [{"branch": feature}]},
+            review_integration_branches=["v3", "v2"],
+        )
+
+        assert res.success is True, res.error
+        assert res.base_ref == "origin/v2"
+        assert res.base_sha == v2_sha
+        assert "v3" in (res.warning or "")
+
+    def test_stale_remote_warning_names_the_selected_integration_base(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo, lattice_dir, feature, _root_sha, _v2_sha, main_sha = _non_default_remote_base_repo(
+            tmp_path
+        )
+        _git(repo, "branch", "v2", main_sha)
+        monkeypatch.setattr(review_mod, "_open_pr_base_branch", lambda *_args: None)
+
+        res = review_mod.resolve_diff(
+            lattice_dir,
+            "task_01",
+            {"branch_links": [{"branch": feature}]},
+            review_integration_branches=["v2"],
+        )
+
+        assert res.success is True, res.error
+        assert res.base_ref == "origin/v2"
+        assert "Selected review base origin/v2" in (res.warning or "")
+        assert "local v2" in (res.warning or "")
+        assert "origin/main" not in (res.warning or "")
+
+    @pytest.mark.parametrize(
+        "branch",
+        [
+            "v 2",
+            "v2..main",
+            "v2~1",
+            "v2^",
+            "v2:x",
+            "v2?x",
+            "v2*x",
+            "v2[x",
+            "v2\\x",
+            "@{-1}",
+            "-x",
+            ".hidden",
+            "v2.lock",
+            "v2/../main",
+            "v2\tmain",
+            "v2\x01main",
+            " v2 ",
+            "v2,branch",
+            "é" * 128,
+            "x" * 5000,
+        ],
+    )
+    def test_integration_branch_names_follow_git_ref_rules(self, branch: str) -> None:
+        branches, error = review_mod._normalize_integration_branches([branch])
+        assert branches == []
+        assert "review_integration_branches" in (error or "")
+
+    def test_detached_head_uses_only_configured_and_default_candidates(
+        self, tmp_path: Path
+    ) -> None:
+        repo, lattice_dir, feature, _root_sha, v2_sha, _main_sha = _non_default_remote_base_repo(
+            tmp_path
+        )
+        (repo / "fix.txt").write_text("detached local fix\n")
+        _git(repo, "add", "fix.txt")
+        _git(repo, "commit", "-m", "LAT-367: detached review fix")
+        _git(repo, "checkout", "--detach", "HEAD")
+
+        res = review_mod.resolve_diff(
+            lattice_dir,
+            "task_01",
+            {},
+            head="HEAD",
+            review_integration_branches=["v2"],
+        )
+
+        assert res.success is True, res.error
+        assert res.base_ref == "origin/v2"
+        assert res.base_sha == v2_sha
+        assert res.head_ref == "HEAD"
+        assert "ticket change" in res.diff and "detached local fix" in res.diff
+
+    def test_lat366_siblings_with_v2_configured_review_the_full_feature(
+        self, tmp_path: Path
+    ) -> None:
+        repo, lattice_dir, feature, _root_sha, v2_sha, main_sha = _non_default_remote_base_repo(
+            tmp_path, "feat/LAT-366-issue-media"
+        )
+        feature_tip = _git(repo, "rev-parse", feature).strip()
+        for sibling in (
+            "feat/LAT-365-issue-dashboard",
+            "feat/LAT-371-issue-title-comments",
+        ):
+            _git(repo, "update-ref", f"refs/remotes/origin/{sibling}", feature_tip)
+        (repo / "fix.txt").write_text("LAT-366 review fix\n")
+        _git(repo, "add", "fix.txt")
+        _git(repo, "commit", "-m", "LAT-366: follow-up fix")
+
+        res = review_mod.resolve_diff(
+            lattice_dir,
+            "task_01",
+            {"branch_links": [{"branch": feature}]},
+            review_integration_branches=["v2"],
+        )
+
+        assert res.success is True, res.error
+        assert res.base_ref == "origin/v2"
+        assert res.base_sha == v2_sha
+        assert main_sha != v2_sha
+        assert "ticket change" in res.diff and "LAT-366 review fix" in res.diff
+        assert "main-only work" not in res.diff
+
+    def test_ties_follow_configured_order_then_remote_default(self, tmp_path: Path) -> None:
+        _repo, lattice_dir, feature = _equal_distance_remote_candidates_repo(tmp_path)
+        first = review_mod.resolve_diff(
+            lattice_dir,
+            "task_01",
+            {"branch_links": [{"branch": feature}]},
+            review_integration_branches=["qa", "v2"],
+        )
+        second = review_mod.resolve_diff(
+            lattice_dir,
+            "task_01",
+            {"branch_links": [{"branch": feature}]},
+            review_integration_branches=["v2", "qa"],
+        )
+        default = review_mod.resolve_diff(
+            lattice_dir,
+            "task_01",
+            {"branch_links": [{"branch": feature}]},
+        )
+
+        assert first.success is True and first.base_ref == "origin/qa"
+        assert second.success is True and second.base_ref == "origin/v2"
+        assert default.success is True and default.base_ref == "origin/main"
+
+    def test_prefers_integration_branch_advanced_after_feature_fork(self, tmp_path: Path) -> None:
+        repo, lattice_dir, feature, _root_sha, v2_sha, main_sha = _non_default_remote_base_repo(
+            tmp_path
+        )
+        _git(repo, "checkout", "-b", "v2", "origin/v2")
+        (repo / "later-integration.txt").write_text("landed after feature fork\n")
+        _git(repo, "add", "later-integration.txt")
+        _git(repo, "commit", "-m", "later v2 change")
+        advanced_v2_sha = _git(repo, "rev-parse", "HEAD").strip()
+        _git(repo, "update-ref", "refs/remotes/origin/v2", advanced_v2_sha)
+        _git(repo, "checkout", feature)
+
+        res = review_mod.resolve_diff(
+            lattice_dir,
+            "task_01",
+            {"branch_links": [{"branch": feature}]},
+            review_integration_branches=["v2"],
+        )
+
+        assert res.success is True, res.error
+        assert res.base_ref == "origin/v2"
+        assert res.base_sha == v2_sha
+        assert advanced_v2_sha != v2_sha
+        assert main_sha != v2_sha
+        assert "ticket change" in res.diff
+        assert "main-only work" not in res.diff
+        assert "landed after feature fork" not in res.diff
+
+    def test_explicit_base_precedes_gh_and_board_config(self, tmp_path: Path, monkeypatch) -> None:
+        _repo, lattice_dir, feature, *_ = _non_default_remote_base_repo(tmp_path)
+        monkeypatch.setattr(
+            review_mod, "_open_pr_base_branch", lambda *_args: pytest.fail("gh must not run")
+        )
+        res = review_mod.resolve_diff(
+            lattice_dir,
+            "task_01",
+            {"branch_links": [{"branch": feature}]},
+            base="origin/main",
+            review_base_branch="v2",
+            review_integration_branches="not-an-array",
+        )
+        assert res.success is True, res.error
+        assert res.base_ref == "origin/main"
+        assert res.base_selection_rule == "explicit"
+
+    def test_explicit_short_name_resolves_remote_ref_without_local_branch(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        _repo, lattice_dir, feature, *_ = _non_default_remote_base_repo(tmp_path)
+        monkeypatch.setattr(
+            review_mod, "_open_pr_base_branch", lambda *_args: pytest.fail("gh must not run")
+        )
+        res = review_mod.resolve_diff(
+            lattice_dir,
+            "task_01",
+            {"branch_links": [{"branch": feature}]},
+            base="v2",
+            review_base_branch="main",
+        )
+        assert res.success is True, res.error
+        assert res.base_ref == "origin/v2"
+        assert res.base_selection_rule == "explicit"
+
+    def test_open_pr_base_precedes_board_config(self, tmp_path: Path, monkeypatch) -> None:
+        _repo, lattice_dir, feature, *_ = _non_default_remote_base_repo(tmp_path)
+        monkeypatch.setattr(review_mod, "_open_pr_base_branch", lambda *_args: "main")
+        res = review_mod.resolve_diff(
+            lattice_dir,
+            "task_01",
+            {"branch_links": [{"branch": feature}]},
+            review_base_branch="v2",
+        )
+        assert res.success is True, res.error
+        assert res.base_ref == "origin/main"
+        assert res.base_selection_rule == "open_pr"
+
+    def test_board_config_base_precedes_inference(self, tmp_path: Path, monkeypatch) -> None:
+        _repo, lattice_dir, feature, *_ = _non_default_remote_base_repo(tmp_path)
+        monkeypatch.setattr(review_mod, "_open_pr_base_branch", lambda *_args: None)
+        res = review_mod.resolve_diff(
+            lattice_dir,
+            "task_01",
+            {"branch_links": [{"branch": feature}]},
+            review_base_branch="v2",
+        )
+        assert res.success is True, res.error
+        assert res.base_ref == "origin/v2"
+        assert res.base_selection_rule == "board_config"
+
+    def test_malformed_local_base_config_fails_without_crashing(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        _repo, lattice_dir, feature, *_ = _non_default_remote_base_repo(tmp_path)
+        monkeypatch.setattr(review_mod, "_open_pr_base_branch", lambda *_args: None)
+        res = review_mod.resolve_diff(
+            lattice_dir,
+            "task_01",
+            {"branch_links": [{"branch": feature}]},
+            review_base_branch=["v2"],
+        )
+        assert res.success is False
+        assert res.error_code == "INVALID_REVIEW_BASE_BRANCH"
+        assert "review_base_branch" in (res.error or "")
+
+    def test_malformed_local_integration_config_fails_without_crashing(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        _repo, lattice_dir, feature, *_ = _non_default_remote_base_repo(tmp_path)
+        monkeypatch.setattr(review_mod, "_open_pr_base_branch", lambda *_args: None)
+        res = review_mod.resolve_diff(
+            lattice_dir,
+            "task_01",
+            {"branch_links": [{"branch": feature}]},
+            review_integration_branches="v2",
+        )
+        assert res.success is False
+        assert res.error_code == "INVALID_REVIEW_INTEGRATION_BRANCHES"
+        assert "review_integration_branches" in (res.error or "")
+
+    def test_duplicate_local_integration_branches_are_rejected(self) -> None:
+        branches, error = review_mod._normalize_integration_branches(["v2", "v2"])
+        assert branches == []
+        assert "unique" in (error or "")
+
+    def test_gh_open_pr_lookup_uses_head_branch_and_requires_open_state(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo, lattice_dir, feature, *_ = _non_default_remote_base_repo(tmp_path)
+        _git(repo, "remote", "add", "origin", "https://github.com/Stage-11-Agentics/lattice.git")
+        monkeypatch.setenv("GH_REPO", "Stage-11-Agentics/lattice")
+        monkeypatch.setattr(
+            review_mod.shutil, "which", lambda name: "/fake/gh" if name == "gh" else None
+        )
+        original_run = subprocess.run
+        calls: list[list[str]] = []
+
+        def fake_gh(args, *positional, **kwargs):
+            if args and args[0] == "/fake/gh":
+                calls.append(list(args))
+                return subprocess.CompletedProcess(
+                    args,
+                    0,
+                    stdout=json.dumps({"baseRefName": "v2", "state": "OPEN"}),
+                    stderr="",
+                )
+            return original_run(args, *positional, **kwargs)
+
+        monkeypatch.setattr(review_mod.subprocess, "run", fake_gh)
+        assert review_mod._open_pr_base_branch(repo, feature) == "v2"
+        assert calls == [["/fake/gh", "pr", "view", feature, "--json", "baseRefName,state"]]
+
+        res = review_mod.resolve_diff(
+            lattice_dir,
+            "task_01",
+            {"branch_links": [{"branch": feature}]},
+            review_base_branch="main",
+        )
+        assert res.success is True, res.error
+        assert res.base_ref == "origin/v2"
+        assert res.base_selection_rule == "open_pr"
+
+        calls.clear()
+        monkeypatch.setattr(
+            review_mod.subprocess,
+            "run",
+            lambda args, *positional, **kwargs: (
+                subprocess.CompletedProcess(
+                    args,
+                    0,
+                    stdout=json.dumps({"baseRefName": "v2", "state": "CLOSED"}),
+                    stderr="",
+                )
+                if args and args[0] == "/fake/gh"
+                else original_run(args, *positional, **kwargs)
+            ),
+        )
+        assert review_mod._open_pr_base_branch(repo, feature) is None
 
 
 class TestDiffCharCap:

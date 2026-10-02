@@ -139,6 +139,36 @@ def test_project_config_refuses_before_writing(root: Path) -> None:
         {"auto_code_review_on_transition": "yes"},
         {"task_types": []},
         {"task_types": ["bug", "chore"]},
+        {"review_base_branch": "  "},
+        {"review_base_branch": True},
+        {"review_integration_branches": ""},
+        {"review_integration_branches": "v2,,release/next"},
+        {"review_integration_branches": "v 2"},
+        {"review_integration_branches": "v2..main"},
+        {"review_integration_branches": "v2~1"},
+        {"review_integration_branches": "v2^"},
+        {"review_integration_branches": "v2:x"},
+        {"review_integration_branches": "v2?x"},
+        {"review_integration_branches": "v2*x"},
+        {"review_integration_branches": "v2[x"},
+        {"review_integration_branches": "v2\\x"},
+        {"review_integration_branches": "@{-1}"},
+        {"review_integration_branches": "-x"},
+        {"review_integration_branches": ".hidden"},
+        {"review_integration_branches": "v2.lock"},
+        {"review_integration_branches": "v2/../main"},
+        {"review_integration_branches": "v2\tmain"},
+        {"review_integration_branches": "v2\x01main"},
+        {"review_integration_branches": "x" * 5000},
+        {"review_integration_branches": '["v2"]'},
+        {"review_integration_branches": ["v2", ""]},
+        {"review_integration_branches": ["v2", "v2"]},
+        {"review_integration_branches": [" v2 "]},
+        {"review_integration_branches": ["v2,branch"]},
+        {"review_integration_branches": ["é" * 128]},
+        {"review_timeout_seconds": "0"},
+        {"review_max_diff_lines": "-1"},
+        {"review_max_diff_chars": "many"},
         {"unallowlisted": "x"},
     ):
         with pytest.raises(OpError) as exc:
@@ -146,8 +176,48 @@ def test_project_config_refuses_before_writing(root: Path) -> None:
         assert exc.value.code == "VALIDATION_ERROR"
     assert config_path.read_bytes() == before
     assert not (root / "projects" / "p" / ".lattice" / "hosted" / "maintenance.json").exists()
-    result = _invoke("server", "project", "config", "p", "--set", "hooks=x", "--root", str(root))
+    project_root = root / "projects" / "p"
+    result = _invoke(
+        "server",
+        "project",
+        "config",
+        "p",
+        "--set",
+        "hooks=x",
+        "--root",
+        str(root),
+        env={"LATTICE_ROOT": str(project_root)},
+    )
     assert result.exit_code == 1 and "cannot be set" in result.output
+    result = _invoke(
+        "server",
+        "project",
+        "config",
+        "p",
+        "--set",
+        'review_integration_branches=["v2"]',
+        "--root",
+        str(root),
+        env={"LATTICE_ROOT": str(project_root)},
+    )
+    assert result.exit_code == 1 and "valid Git branch names" in result.output
+
+
+def test_project_config_help_lists_review_integration_branches(root: Path) -> None:
+    admin.create_project(root, "p")
+    project = root / "projects" / "p"
+    result = _invoke(
+        "server",
+        "project",
+        "config",
+        "p",
+        "--help",
+        env={"LATTICE_ROOT": str(project)},
+    )
+    assert result.exit_code == 0, result.output
+    assert "review_integration_branches" in result.output
+    assert "review_base_branch" in result.output
+    assert "review_max_diff_lines" in result.output
 
 
 @pytest.mark.parametrize(
@@ -213,6 +283,37 @@ def test_project_config_with_the_server_stopped_writes_config_and_maintenance(
     assert config["task_types"] == ["task", "bug", "chore", "research"]
     record = json.loads((board / "hosted" / "maintenance.json").read_text())
     assert record["command"] == "project config"
+
+
+def test_project_config_sets_review_base_and_numeric_budgets(root: Path) -> None:
+    admin.create_project(root, "p")
+
+    result = _invoke(
+        "server",
+        "project",
+        "config",
+        "p",
+        "--set",
+        "review_base_branch=v2",
+        "--set",
+        "review_integration_branches=v2,release/next",
+        "--set",
+        "review_timeout_seconds=720",
+        "--set",
+        "review_max_diff_lines=5000",
+        "--set",
+        "review_max_diff_chars=120000",
+        "--root",
+        str(root),
+    )
+
+    assert result.exit_code == 0, result.output
+    config = json.loads((root / "projects" / "p" / ".lattice" / "config.json").read_text())
+    assert config["review_base_branch"] == "v2"
+    assert config["review_integration_branches"] == ["v2", "release/next"]
+    assert config["review_timeout_seconds"] == 720
+    assert config["review_max_diff_lines"] == 5000
+    assert config["review_max_diff_chars"] == 120000
 
 
 def test_unlock_removes_a_stale_marker(root: Path) -> None:

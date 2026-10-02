@@ -8,6 +8,42 @@ from pathlib import Path
 from typing import Literal, TypedDict
 
 
+MAX_BRANCH_REF_BYTES = 1024
+MAX_REF_COMPONENT_BYTES = 255
+
+
+def valid_git_branch_name(name: str) -> bool:
+    """Return whether *name* is a safe, bounded Git branch ref name.
+
+    This mirrors ``git check-ref-format --branch``'s syntax without invoking
+    Git from config validation. The byte bounds keep names usable as ref paths
+    across supported filesystems; the branch-name form also rejects leading
+    dashes and the previous-checkout shorthand ``@{-n}``.
+    """
+    if not isinstance(name, str) or not name or name == "@" or name.startswith("-"):
+        return False
+    if name.startswith("/") or name.endswith("/") or "//" in name:
+        return False
+    if ".." in name or "@{" in name or name.endswith("."):
+        return False
+    if any(
+        ord(char) <= 0x20 or ord(char) == 0x7F or char in {"~", "^", ":", "?", "*", "[", "\\"}
+        for char in name
+    ):
+        return False
+    components = name.split("/")
+    if any(component.startswith(".") or component.endswith(".lock") for component in components):
+        return False
+    try:
+        raw = name.encode("utf-8")
+        component_sizes = [len(component.encode("utf-8")) for component in components]
+    except UnicodeEncodeError:
+        return False
+    return len(raw) <= MAX_BRANCH_REF_BYTES and all(
+        size <= MAX_REF_COMPONENT_BYTES for size in component_sizes
+    )
+
+
 class WipLimits(TypedDict, total=False):
     in_progress: int
     review: int
@@ -190,6 +226,8 @@ class LatticeConfig(TypedDict, total=False):
     review_timeout_seconds: int
     review_max_diff_lines: int
     review_max_diff_chars: int
+    review_base_branch: str | None
+    review_integration_branches: list[str]
     auto_code_review_on_transition: bool
     auto_plan_review_on_transition: bool
     done_display: Literal["all", "recent", "grouped"]
@@ -639,6 +677,7 @@ def validate_completion_policy(
     snapshot: dict,
     to_status: str,
     *,
+    events: list[dict] | tuple[dict, ...] | None = None,
     lattice_dir: Path | None = None,
     repo_root: Path | None = None,
     prospective_review_payloads: list[str] | None = None,
@@ -646,7 +685,9 @@ def validate_completion_policy(
 ) -> tuple[bool, list[str]]:
     """Check whether a transition into *to_status* satisfies completion policies.
 
-    ``require_reachable_review_commit`` is judged from the caller's
+    When *events* are supplied, ``review`` evidence must be attached after the
+    task's latest entry into ``review``. Other evidence roles retain their
+    lifetime semantics. ``require_reachable_review_commit`` is judged from the caller's
     ``reachable_review_commits`` attestation (SPEC §3.4) when one is given,
     else by checking *repo_root* directly.
 
@@ -676,13 +717,30 @@ def validate_completion_policy(
     require_roles = policy.get("require_roles", [])
     if require_roles:
         present_roles = get_evidence_roles(snapshot)
+        review_role_existed = "review" in present_roles
+        review_stage = _configured_review_stage(workflow)
+        if "review" in require_roles and events is not None and review_stage is not None:
+            if not _has_current_review_evidence(events, review_stage):
+                present_roles.discard("review")
         for required in require_roles:
             if required not in present_roles:
-                failures.append(
-                    f"Missing role: {required}. "
-                    f"Satisfy with: lattice attach --role {required} "
-                    f"or lattice comment --role {required}"
-                )
+                if (
+                    required == "review"
+                    and events is not None
+                    and review_role_existed
+                    and review_stage is not None
+                ):
+                    failures.append(
+                        "Missing current-cycle review evidence: attach or comment with role "
+                        f"review after the latest transition into {review_stage}. Satisfy with: "
+                        "lattice attach --role review or lattice comment --role review"
+                    )
+                else:
+                    failures.append(
+                        f"Missing role: {required}. "
+                        f"Satisfy with: lattice attach --role {required} "
+                        f"or lattice comment --role {required}"
+                    )
 
     # Check require_assigned
     if policy.get("require_assigned") and not snapshot.get("assigned_to"):
@@ -708,6 +766,43 @@ def validate_completion_policy(
             )
 
     return (len(failures) == 0, failures)
+
+
+def _configured_review_stage(workflow: dict) -> str | None:
+    """Return the configured review status slug, if the workflow has one.
+
+    ``review`` is the agentic workflow's gate; ``in_review`` is the familiar
+    linear-workflow equivalent. Workflows without either stage retain lifetime
+    role semantics because there is no review-cycle boundary to enforce.
+    """
+    statuses = workflow.get("statuses", [])
+    if not isinstance(statuses, list):
+        return None
+    if "review" in statuses:
+        return "review"
+    if "in_review" in statuses:
+        return "in_review"
+    return None
+
+
+def _has_current_review_evidence(events: list[dict] | tuple[dict, ...], review_stage: str) -> bool:
+    """Whether review evidence follows the task's latest entry into *review_stage*."""
+    latest_review_entry = -1
+    for index, event in enumerate(events):
+        event_type = event.get("type")
+        data = event.get("data") or {}
+        if event_type == "status_changed" and data.get("to") == review_stage:
+            latest_review_entry = index
+        elif event_type == "task_created" and data.get("status") == review_stage:
+            latest_review_entry = index
+    if latest_review_entry < 0:
+        return False
+
+    return any(
+        event.get("type") in {"artifact_attached", "comment_added", "comment_edited"}
+        and (event.get("data") or {}).get("role") == "review"
+        for event in events[latest_review_entry + 1 :]
+    )
 
 
 # The review marker pattern lives with the attestations; the old private name
