@@ -31,8 +31,13 @@ from urllib.parse import urlparse
 from lattice.boards import LocalBoard, browser_reported_origin
 from lattice.core.errors import OpError
 from lattice.core.ids import validate_id
-from lattice.dashboard import api, media
-from lattice.dashboard.api import MAX_REQUEST_BODY_BYTES, ApiError, ApiResponse
+from lattice.dashboard import api, media, media_prep
+from lattice.dashboard.api import (
+    MAX_ISSUE_FILE_MEDIA_ITEMS,
+    MAX_REQUEST_BODY_BYTES,
+    ApiError,
+    ApiResponse,
+)
 from lattice.core.plans import scaffold_plan_text
 from lattice.storage.operations import resolve_task_prose_path
 
@@ -42,7 +47,6 @@ __all__ = ["MAX_REQUEST_BODY_BYTES", "STATIC_DIR", "create_server", "origin_allo
 # per video. Keep its allowance separate from ordinary dashboard writes and
 # hard-bound it even when the board owner raises the media settings.
 MAX_ISSUE_FILE_BODY_BYTES = 2 * 1024 * 1024 * 1024
-MAX_ISSUE_FILE_MEDIA_ITEMS = 64
 
 
 def issue_file_body_limit(lattice_dir: Path) -> int:
@@ -126,18 +130,6 @@ def host_allowed(host_header: str | None, bound_host: str) -> bool:
     return _is_loopback(_host_name(host_header))
 
 
-def issue_host_allowed(host_header: str | None, configured_hosts: str | tuple[str, ...]) -> bool:
-    """Limit issue reads and writes to loopback or a configured dashboard host."""
-    if not host_header:
-        return False
-    if isinstance(configured_hosts, str):
-        configured_hosts = (configured_hosts,)
-    hostname = _host_name(host_header).rstrip(".").casefold()
-    if _is_loopback(hostname):
-        return True
-    return hostname in {host.rstrip(".").casefold() for host in configured_hosts if host}
-
-
 def _is_issue_api_path(path: str) -> bool:
     return path == "/api/issues" or path.startswith("/api/issues/")
 
@@ -201,12 +193,10 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
             if not host_allowed(self.headers.get("Host"), self.server.server_address[0]):
                 self._send_error(403, "FORBIDDEN", "Non-loopback Host refused")
                 return
+            if self._target.hosted and _is_issue_api_path(path):
+                self._send_error(*api.ISSUES_UNAVAILABLE)
+                return
             if media.MEDIA_ROUTE.fullmatch(path):
-                if not issue_host_allowed(
-                    self.headers.get("Host"), self.server._lattice_configured_host
-                ):
-                    self._send_error(403, "FORBIDDEN", "Issue request Host is not this dashboard.")
-                    return
                 self.connection.settimeout(media.SOCKET_TIMEOUT)
                 media.serve_issue_media(self, self._target, path)
                 return
@@ -214,18 +204,19 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
                 self._do_get()
 
         def do_POST(self) -> None:  # noqa: N802
+            # The body is read before the board lock is taken, so a client that
+            # stalls mid-upload holds only its own connection, never the board.
+            self.connection.settimeout(media.SOCKET_TIMEOUT)
+            prepared = self._prepare_post()
+            if prepared is None:
+                return  # error already sent
+            path, body = prepared
             with _BOARD_LOCK:
-                self._do_post()
+                self._do_post(path, body)
 
         def _do_get(self) -> None:
             parsed = urlparse(self.path)
             path = parsed.path.rstrip("/") or "/"
-
-            if _is_issue_api_path(path) and not issue_host_allowed(
-                self.headers.get("Host"), self.server._lattice_configured_host
-            ):
-                self._send_error(403, "FORBIDDEN", "Issue request Host is not this dashboard.")
-                return
 
             if path == "/":
                 self._serve_static("index.html", "text/html")
@@ -270,21 +261,16 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
             else:
                 self._send_error(404, "NOT_FOUND", f"Not found: {path}")
 
-        def _do_post(self) -> None:
+        def _prepare_post(self) -> tuple[str, Any] | None:
+            """Check a POST's headers and read its body; ``None`` once an error is sent."""
             path = urlparse(self.path).path.rstrip("/") or "/"
-            if _is_issue_api_path(path) and not issue_host_allowed(
-                self.headers.get("Host"), self.server._lattice_configured_host
-            ):
-                self._send_error(403, "FORBIDDEN", "Issue request Host is not this dashboard.")
-                return
-
             if self._readonly:
                 self._send_error(403, "FORBIDDEN", "Dashboard is in read-only mode")
-                return
+                return None
 
             if not path.startswith("/api/"):
                 self._send_error(404, "NOT_FOUND", f"Not found: {path}")
-                return
+                return None
 
             origin = self.headers.get("Origin")
             if not origin_allowed(origin, self.headers.get("Host"), self.server.server_address[0]):
@@ -293,28 +279,35 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
                     "FORBIDDEN",
                     f"Cross-origin request refused: Origin {origin!r} is not this dashboard.",
                 )
-                return
+                return None
             if self.headers.get_content_type() != "application/json":
                 self._send_error(
                     415, "VALIDATION_ERROR", "POST requires Content-Type: application/json"
                 )
-                return
+                return None
 
             if _is_issue_api_path(path):
                 if self._target.hosted:
-                    self._send_error(400, "LOCAL_ONLY", "Issue writes are local-only.")
-                    return
+                    self._send_error(*api.ISSUES_UNAVAILABLE)
+                    return None
                 try:
                     with self._target.read() as ld:
                         api._require_issues_enabled(ld)
                 except ApiError as exc:
                     self._send(ApiResponse(exc.status, exc.envelope()))
-                    return
+                    return None
 
             body = self._read_request_body(path)
             if body is None:
-                return  # error already sent
+                return None  # error already sent
+            if path == "/api/issues" and isinstance(body, dict):
+                media_items = body.get("media")
+                if isinstance(media_items, list) and all(isinstance(m, dict) for m in media_items):
+                    # Strip metadata and derive frames as the CLI does (can take a while).
+                    body = {**body, "media": media_prep.prepare_issue_media(media_items)}
+            return path, body
 
+        def _do_post(self, path: str, body: Any) -> None:
             if path.startswith("/api/tasks/") and path.rsplit("/", 1)[-1] in (
                 "open-notes",
                 "open-plans",
@@ -433,6 +426,10 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
                 return json.loads(self.rfile.read(content_length))
             except (json.JSONDecodeError, UnicodeDecodeError):
                 self._send_error(400, "BAD_REQUEST", "Invalid JSON in request body")
+                return None
+            except TimeoutError:
+                self.close_connection = True
+                self._send_error(408, "REQUEST_TIMEOUT", "Request body was not received in time")
                 return None
 
         def _run(self, request: api.WriteRequest, *, exists_ok: bool = False) -> Any:
@@ -588,6 +585,4 @@ def create_server(
         root = Path(lattice_dir).parent
         board = DashboardBoard(LocalBoard(root=root, start=root))
     handler_cls = _make_handler_class(board, readonly=readonly)
-    server = ThreadingHTTPServer((host, port), handler_cls)
-    server._lattice_configured_host = host
-    return server
+    return ThreadingHTTPServer((host, port), handler_cls)

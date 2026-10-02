@@ -1514,6 +1514,41 @@ class TestPayloadSizeLimit:
         assert str(route_limit) in error["message"]
         conn.close()
 
+    def test_stalled_upload_does_not_block_other_requests(self, dashboard_server, monkeypatch):
+        """A client that declares a body and then stalls holds only its own connection."""
+        import http.client
+        import socket
+
+        from lattice.core.config import serialize_config
+        from lattice.dashboard import api, media
+        from lattice.storage.fs import atomic_write
+
+        monkeypatch.setattr(media, "SOCKET_TIMEOUT", 1)
+        base_url, ld, _ids = dashboard_server
+        config = api.get_config(ld)
+        config["issues"] = {"enabled": True}
+        atomic_write(ld / "config.json", serialize_config(config))
+        host, port = base_url.replace("http://", "").split(":")
+
+        stalled = socket.create_connection((host, int(port)))
+        try:
+            stalled.sendall(
+                (
+                    f"POST /api/issues HTTP/1.1\r\nHost: {host}:{port}\r\n"
+                    f"Origin: {base_url}\r\nContent-Type: application/json\r\n"
+                    'Content-Length: 1000\r\n\r\n{"title"'
+                ).encode()
+            )
+            conn = http.client.HTTPConnection(host, int(port), timeout=0.5)
+            conn.request("GET", "/api/tasks")
+            assert conn.getresponse().status == 200
+            conn.close()
+            # The stalled body times out with an error instead of hanging forever.
+            stalled.settimeout(5)
+            assert stalled.recv(64).startswith(b"HTTP/1.0 408")
+        finally:
+            stalled.close()
+
     def test_oversized_content_length_rejected_with_413(self, dashboard_server):
         """A Content-Length exceeding MAX_REQUEST_BODY_BYTES should return 413."""
         import http.client
@@ -1634,8 +1669,11 @@ class TestReadonlyMode:
 
 
 class TestIssueHostGuard:
-    def test_issue_get_post_and_media_only_accept_loopback_or_configured_host(self, tmp_path):
-        import http.client
+    """Issue routes follow the dashboard's one Host rule: loopback hosts only on a
+    loopback bind, any Host on a network bind (as ``origin_allowed`` for POSTs)."""
+
+    @staticmethod
+    def _serve(tmp_path, bind):
         import threading
 
         from lattice.core.config import default_config, serialize_config
@@ -1645,36 +1683,57 @@ class TestIssueHostGuard:
         ensure_lattice_dirs(tmp_path)
         lattice_dir = tmp_path / ".lattice"
         atomic_write(lattice_dir / "config.json", serialize_config(default_config()))
-        server = create_server(lattice_dir, "0.0.0.0", 0)
+        server = create_server(lattice_dir, bind, 0)
         worker = threading.Thread(target=server.serve_forever, daemon=True)
         worker.start()
+        return server, worker
+
+    @staticmethod
+    def _request(port, method, path, host, body=None):
+        import http.client
+
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        headers = {"Host": host}
+        payload = None
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+            headers["Origin"] = f"http://{host}"
+            payload = json.dumps(body)
+        conn.request(method, path, payload, headers)
+        response = conn.getresponse()
+        status = response.status
+        envelope = json.loads(response.read())
+        conn.close()
+        return status, envelope
+
+    def test_loopback_bind_refuses_hostile_hosts_on_issue_routes(self, tmp_path):
+        server, worker = self._serve(tmp_path, "127.0.0.1")
         port = server.server_address[1]
-
-        def request(method, path, host, body=None):
-            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-            headers = {"Host": host}
-            payload = None
-            if body is not None:
-                headers["Content-Type"] = "application/json"
-                headers["Origin"] = f"http://{host}"
-                payload = json.dumps(body)
-            conn.request(method, path, payload, headers)
-            response = conn.getresponse()
-            status = response.status
-            envelope = json.loads(response.read())
-            conn.close()
-            return status, envelope
-
         try:
             hostile = f"evil.example:{port}"
-            assert request("GET", "/api/issues", hostile)[0] == 403
-            assert request("POST", "/api/issues", hostile, {"title": "x"})[0] == 403
+            assert self._request(port, "GET", "/api/issues", hostile)[0] == 403
+            assert self._request(port, "POST", "/api/issues", hostile, {"title": "x"})[0] == 403
             media_path = (
                 "/api/issues/iss_01ARZ3NDEKTSV4RRFFQ69G5FAV/media/med_01ARZ3NDEKTSV4RRFFQ69G5FAV"
             )
-            assert request("GET", media_path, hostile)[0] == 403
-            assert request("GET", "/api/issues", f"localhost:{port}")[0] == 409
-            assert request("GET", "/api/issues", f"0.0.0.0:{port}")[0] == 409
+            assert self._request(port, "GET", media_path, hostile)[0] == 403
+            assert self._request(port, "GET", "/api/issues", f"localhost:{port}")[0] == 409
+            assert self._request(port, "GET", "/api/issues", f"127.0.0.1:{port}")[0] == 409
+        finally:
+            server.shutdown()
+            server.server_close()
+            worker.join(timeout=5)
+
+    def test_network_bind_serves_issue_routes_to_any_host(self, tmp_path):
+        server, worker = self._serve(tmp_path, "0.0.0.0")
+        port = server.server_address[1]
+        try:
+            for host in (f"box.lan:{port}", f"100.64.0.9:{port}", f"0.0.0.0:{port}"):
+                # 409: issues are off on this board, which means the Host was accepted.
+                assert self._request(port, "GET", "/api/issues", host)[0] == 409
+                assert self._request(
+                    port, "GET", "/api/issues/iss_01ARZ3NDEKTSV4RRFFQ69G5FAV", host
+                )[0] in (404, 409)
         finally:
             server.shutdown()
             server.server_close()

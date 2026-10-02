@@ -30,7 +30,6 @@ from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlsplit
 
 from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
@@ -38,7 +37,6 @@ from starlette.responses import RedirectResponse, Response
 from lattice.core.errors import OpError
 from lattice.core.ids import generate_op_id
 from lattice.dashboard import api
-from lattice.dashboard.server import issue_host_allowed
 from lattice.ops.base import Caller, OpResult, check_op_id, get_operation, parse_params
 from lattice.server import web
 from lattice.server.journal import fingerprint
@@ -53,19 +51,6 @@ if TYPE_CHECKING:
 MEMO_ENTRIES_PER_PROJECT = 256
 OP_ID_HEADER = "lattice-op-id"
 HOSTED_GIT = {"available": False, "reason": "hosted"}
-
-
-def _issue_host_is_allowed(request: Request, state: ServerState) -> bool:
-    configured_hosts = {state.config.bind}
-    for origin in state.config.public_origins:
-        try:
-            hostname = urlsplit(origin).hostname
-        except ValueError:
-            hostname = None
-        if hostname:
-            configured_hosts.add(hostname)
-    return issue_host_allowed(request.headers.get("host"), tuple(configured_hosts))
-
 
 _STATIC_TYPES = {
     ".js": "application/javascript",
@@ -262,17 +247,15 @@ def _compute(project: Project, path: str, query: str) -> CachedRead:
 
 
 async def api_get(request: Request, state: ServerState) -> Response:
-    path = _api_path(request)
-    if (path == "/api/issues" or path.startswith("/api/issues/")) and not _issue_host_is_allowed(
-        request, state
-    ):
-        raise api.ApiError(403, "FORBIDDEN", "Issue request Host is not this dashboard.")
     token, _ = credential(request, state)
 
     async def run() -> Response:
         project = _project(request, state, token)
+        path = _api_path(request)
         if path == "/api/git" or path.startswith("/api/git/"):
             return _json_response(api.ok(HOSTED_GIT))  # never inspects the server's repo
+        if path == "/api/issues" or path.startswith("/api/issues/"):
+            return _json_response(api.error(*api.ISSUES_UNAVAILABLE))  # until LAT-368
         query = request.url.query
         memo = state.dashboard_memos.for_project(project.slug)
 
@@ -325,10 +308,6 @@ async def api_post(request: Request, state: ServerState) -> Response:
     from lattice.server.app import read_body
 
     path = _api_path(request)
-    if (path == "/api/issues" or path.startswith("/api/issues/")) and not _issue_host_is_allowed(
-        request, state
-    ):
-        raise api.ApiError(403, "FORBIDDEN", "Issue request Host is not this dashboard.")
     if request.headers.get("authorization") is None:
         web.require_origin(request, state)  # before the session is looked up
     token, _via_session = credential(request, state)
