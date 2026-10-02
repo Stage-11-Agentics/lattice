@@ -425,6 +425,99 @@ class TestEscalationDedup:
         create_call = next(c for c in calls if c[:2] == ["lattice", "create"])
         assert create_call[2].startswith("Investigate claude review failures")
 
+    def test_created_diagnostic_describes_recent_failures(
+        self, lattice_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, *args, **kwargs):  # noqa: ANN001
+            calls.append(cmd)
+            if cmd[:2] == ["lattice", "list"]:
+                return subprocess.CompletedProcess(cmd, 0, json.dumps({"data": {"tasks": []}}), "")
+            if cmd[:2] == ["lattice", "create"]:
+                return subprocess.CompletedProcess(cmd, 0, "LAT-999\n", "")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(review_mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(
+            review_mod, "_failure_task_title", lambda _lattice_dir, task_id: f"Title for {task_id}"
+        )
+        record_agent_failure(
+            lattice_dir,
+            "claude",
+            "task-timeout",
+            detail={
+                "error": "Agent 'claude' timed out after 600s",
+                "review_type": "code-review",
+                "duration_seconds": 600.1,
+                "prompt_chars": 21591,
+                "daemon_log_path": "/board/.lattice/.daemon/auto-code-review-task-timeout.log",
+            },
+        )
+        record_agent_failure(
+            lattice_dir,
+            "codex",
+            "other-agent-task",
+            detail={"error": "unrelated"},
+        )
+        record_agent_failure(
+            lattice_dir,
+            "claude",
+            "task-exit",
+            detail={
+                "error": "Agent 'claude': exited with code 1",
+                "review_type": "plan-review",
+                "returncode": 1,
+                "stderr_tail": "weekly account limit reached",
+            },
+        )
+
+        result = create_failure_diagnostic_task(lattice_dir, "claude", 2, "agent:x")
+        assert result == "LAT-999"
+        create_call = next(c for c in calls if c[:2] == ["lattice", "create"])
+        description = create_call[create_call.index("--description") + 1]
+        assert "task-timeout" in description
+        assert "Title for task-timeout" in description
+        assert "timed out after 600s" in description
+        assert "/board/.lattice/.daemon/auto-code-review-task-timeout.log" in description
+        assert "task-exit" in description
+        assert "Title for task-exit" in description
+        assert "exited with code 1" in description
+        assert ".lattice/.daemon/auto-plan-review-task-exit.log" in description
+        assert "weekly account limit reached" in description
+        assert "other-agent-task" not in description
+
+    def test_manual_failure_does_not_borrow_auto_review_log(self, lattice_dir: Path) -> None:
+        from lattice.core.review import _failure_daemon_log
+
+        task_id = "task-with-prior-auto-review"
+        events_path = lattice_dir / "events" / f"{task_id}.jsonl"
+        events_path.parent.mkdir(parents=True, exist_ok=True)
+        events_path.write_text(
+            json.dumps(
+                {
+                    "type": "auto_review_spawned",
+                    "data": {
+                        "review_type": "code-review",
+                        "log_path": ".lattice/.daemon/auto-code-review-old.log",
+                        "spawned_at": "2026-10-01T12:00:00Z",
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        # The failure is explicitly manual even though the task has historical
+        # auto-review events; do not attach unrelated daemon diagnostics.
+        failure = {
+            "task_id": task_id,
+            "review_type": "code-review",
+            "auto_fired": False,
+        }
+        assert _failure_daemon_log(lattice_dir, failure) == (
+            "(not applicable; review was not auto-fired)"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Temp file cleanup

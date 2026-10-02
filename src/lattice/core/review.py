@@ -432,6 +432,121 @@ DIAGNOSTIC_TITLE_PREFIX = "Investigate"
 _DIAGNOSTIC_TITLE_SUFFIX = "review failures"
 
 
+def _recent_agent_failures(lattice_dir: Path, agent_type: str, limit: int) -> list[dict]:
+    """Return the most recent failure records for one agent, in file order."""
+    path = _failures_path(lattice_dir)
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+
+    matches: list[dict] = []
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(entry, dict) and entry.get("agent") == agent_type:
+            matches.append(entry)
+    return matches[-limit:]
+
+
+def _failure_task_title(lattice_dir: Path, task_id: str) -> str | None:
+    """Read a failure's task title from its authoritative event-sourced state."""
+    try:
+        from lattice.storage.operations import read_task_authority
+
+        authority = read_task_authority(lattice_dir, task_id, allow_missing=True)
+    except Exception:  # noqa: BLE001 - diagnostic creation must survive a bad old task log
+        return None
+    if authority is None:
+        return None
+    title = authority.snapshot.get("title")
+    return title if isinstance(title, str) and title else None
+
+
+def _failure_daemon_log(lattice_dir: Path, failure: dict) -> str:
+    """Find the auto-review log associated with a failure, or name the expected path."""
+    if failure.get("auto_fired") is False:
+        return "(not applicable; review was not auto-fired)"
+    recorded_path = failure.get("daemon_log_path")
+    task_id = failure.get("task_id")
+    review_type = failure.get("review_type")
+    if isinstance(recorded_path, str) and recorded_path:
+        return recorded_path
+    if not isinstance(task_id, str) or review_type not in ("code-review", "plan-review"):
+        return "(not recorded; this may have been a manual review)"
+
+    try:
+        from lattice.storage.readers import read_task_events
+
+        events = read_task_events(lattice_dir, task_id)
+        if not events:
+            events = read_task_events(lattice_dir, task_id, is_archived=True)
+    except (OSError, ValueError):
+        events = []
+    failure_at = failure.get("timestamp")
+    for event in reversed(events):
+        data = event.get("data") or {}
+        spawned_at = data.get("spawned_at")
+        if (
+            event.get("type") == "auto_review_spawned"
+            and data.get("review_type") == review_type
+            and isinstance(data.get("log_path"), str)
+            and (
+                not isinstance(failure_at, str)
+                or not isinstance(spawned_at, str)
+                or spawned_at <= failure_at
+            )
+        ):
+            return data["log_path"]
+
+    relative = Path(lattice_dir.name) / ".daemon" / f"auto-{review_type}-{task_id}.log"
+    full_path = lattice_dir.parent / relative
+    status = "present" if full_path.exists() else "not present at diagnostic creation"
+    return f"{relative} ({status})"
+
+
+def _failure_diagnostic_description(lattice_dir: Path, agent_type: str, failure_count: int) -> str:
+    """Summarize recent failures for the diagnostic task, keeping missing fields explicit."""
+    limit = max(1, min(FAILURE_THRESHOLD, failure_count))
+    failures = _recent_agent_failures(lattice_dir, agent_type, limit)
+    lines = [
+        f"Agent: {agent_type}",
+        f"Persistent failure threshold: {FAILURE_THRESHOLD} failures.",
+        f"Failure count recorded: {failure_count}.",
+        "Recent failures:",
+    ]
+    if not failures:
+        lines.append("- No matching failure records were available.")
+        return "\n".join(lines)
+
+    for failure in failures:
+        task_id = failure.get("task_id")
+        task_id = task_id if isinstance(task_id, str) and task_id else "(not recorded)"
+        title = _failure_task_title(lattice_dir, task_id) if task_id != "(not recorded)" else None
+        lines.extend(
+            [
+                "",
+                f"- Task ID: {task_id}",
+                f"  Title: {title or '(unavailable)'}",
+                f"  Review type: {failure.get('review_type') or '(not recorded)'}",
+                f"  Failure: {failure.get('error') or '(message not recorded)'}",
+                f"  Return code: {failure.get('returncode', '(not recorded)')}",
+                f"  Duration: {failure.get('duration_seconds', '(not recorded)')} seconds",
+                f"  Prompt characters: {failure.get('prompt_chars', '(not recorded)')}",
+                f"  Daemon log: {_failure_daemon_log(lattice_dir, failure)}",
+            ]
+        )
+        stderr_tail = failure.get("stderr_tail")
+        if isinstance(stderr_tail, str) and stderr_tail:
+            tail = stderr_tail[-500:].replace("\n", " ")
+            lines.append(f"  Stderr tail: {tail}")
+    return "\n".join(lines)
+
+
 def _open_diagnostic_task_exists(lattice_dir: Path, agent_type: str) -> bool:
     """Return True if an unresolved diagnostic task for ``agent_type`` already exists.
 
@@ -481,12 +596,15 @@ def create_failure_diagnostic_task(
         f"{DIAGNOSTIC_TITLE_PREFIX} {agent_type} {_DIAGNOSTIC_TITLE_SUFFIX} "
         f"— failed {failure_count} times"
     )
+    description = _failure_diagnostic_description(lattice_dir, agent_type, failure_count)
     try:
         result = subprocess.run(
             [
                 "lattice",
                 "create",
                 title,
+                "--description",
+                description,
                 "--actor",
                 actor,
                 "--quiet",
@@ -1167,6 +1285,12 @@ def run_single_review(
                 "duration_seconds": round(result.duration_seconds, 1),
                 "command": result.command,
                 "prompt_chars": len(prompt_content),
+                "auto_fired": existing.get("auto_fired", False),
+                "daemon_log_path": (
+                    str(lattice_dir / ".daemon" / f"auto-{review_type}-{task_id}.log")
+                    if existing.get("auto_fired")
+                    else None
+                ),
                 "stderr_tail": result.stderr_tail,
             }
             _handle_agent_failure(lattice_dir, "claude", task_id, actor_str, detail=detail)

@@ -140,6 +140,52 @@ class TestReviewStatus:
         )
         assert "note" in json.loads(as_json.output)["data"]
 
+    def test_reports_latest_code_and_plan_review_artifacts_by_role(self, tmp_path):
+        root = _make_board(tmp_path)
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+        env = {"LATTICE_ROOT": str(root)}
+
+        for body, role in (
+            ("old code review", "review"),
+            ("latest code review", "review"),
+            ("latest plan review", "plan-review"),
+        ):
+            attached = runner.invoke(
+                cli,
+                ["attach", task_id, "--inline", body, "--role", role, "--actor", "agent:test"],
+                env=env,
+                catch_exceptions=False,
+            )
+            assert attached.exit_code == 0, attached.output
+
+        events_path = root / LATTICE_DIR / "events" / f"{task_id}.jsonl"
+        attached_events = [
+            event
+            for event in map(json.loads, events_path.read_text(encoding="utf-8").splitlines())
+            if event.get("type") == "artifact_attached"
+        ]
+        old_id, latest_code_id, plan_id = [
+            event["data"]["artifact_id"] for event in attached_events
+        ]
+
+        plain = runner.invoke(cli, ["review-status", task_id], env=env, catch_exceptions=False)
+        assert plain.exit_code == 0
+        assert "code-review (role=review)" in plain.output
+        assert "plan-review" in plain.output
+        assert latest_code_id in plain.output
+        assert plan_id in plain.output
+        assert old_id not in plain.output
+
+        as_json = runner.invoke(
+            cli, ["review-status", task_id, "--json"], env=env, catch_exceptions=False
+        )
+        data = json.loads(as_json.output)["data"]
+        assert data["artifacts"]["review"]["review_type"] == "code-review"
+        assert data["artifacts"]["review"]["artifact_id"] == latest_code_id
+        assert data["artifacts"]["plan-review"]["review_type"] == "plan-review"
+        assert data["artifacts"]["plan-review"]["artifact_id"] == plan_id
+
     def test_shows_in_flight_state(self, tmp_path):
         root = _make_board(tmp_path)
         runner = CliRunner()
@@ -1179,15 +1225,32 @@ def _comment_bodies(root: Path, task_id: str) -> list[str]:
     return bodies
 
 
-def _run_failing_code_review(runner: CliRunner, root: Path, task_id: str, *extra: str):
+def _run_failing_code_review(
+    runner: CliRunner,
+    root: Path,
+    task_id: str,
+    *extra: str,
+    failure_message: str = "Agent 'claude' timed out after 600s",
+):
+    from lattice.core.agent_spawn import SpawnResult
+
     with (
         patch(
             "lattice.cli.review_cmds.resolve_diff",
             return_value=_resolution(),
         ),
         patch(
-            "lattice.cli.review_cmds.run_single_review",
-            return_value=(False, "Agent 'claude' timed out after 600s", None),
+            "lattice.core.review.spawn_one",
+            return_value=SpawnResult(
+                agent="claude",
+                success=False,
+                output_text="",
+                error=failure_message,
+                backend="headless",
+                duration_seconds=720.0,
+                returncode=-1,
+                stderr_tail="mocked timeout",
+            ),
         ),
     ):
         return runner.invoke(
@@ -1208,6 +1271,51 @@ class TestFailedReviewIsVisible:
 
         assert result.exit_code != 0, result.output
         assert "timed out after 600s" in result.output
+
+    def test_timeout_reports_board_budgets_and_next_step(self, tmp_path):
+        settings = {
+            "review_timeout_seconds": 720,
+            "review_max_diff_lines": 1234,
+            "review_max_diff_chars": 45678,
+        }
+        root = _make_board(tmp_path, {"review_mode": "single", **settings})
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+
+        result = _run_failing_code_review(
+            runner,
+            root,
+            task_id,
+            failure_message="Agent 'claude' timed out after 720s",
+        )
+
+        assert result.exit_code != 0
+        assert "review_timeout_seconds=720" in result.output
+        assert "review_max_diff_lines=1234" in result.output
+        assert "review_max_diff_chars=45678" in result.output
+        assert "Narrow the review diff" in result.output
+        assert "in .lattice/config.json before retrying" in result.output
+
+        status = runner.invoke(
+            cli,
+            ["review-status", task_id],
+            env={"LATTICE_ROOT": str(root)},
+            catch_exceptions=False,
+        )
+        assert "configured limits" in status.output
+        assert "review_timeout_seconds=720" in status.output
+
+        status_json = runner.invoke(
+            cli,
+            ["review-status", task_id, "--json"],
+            env={"LATTICE_ROOT": str(root)},
+            catch_exceptions=False,
+        )
+        guidance = json.loads(status_json.output)["data"]["timeout_guidance"]
+        assert guidance["review_timeout_seconds"] == 720
+        assert guidance["review_max_diff_lines"] == 1234
+        assert guidance["review_max_diff_chars"] == 45678
+        assert "Narrow the review diff" in guidance["next_step"]
 
     def test_success_still_exits_zero(self, tmp_path):
         """Positive pair for the exit-code assertion above."""

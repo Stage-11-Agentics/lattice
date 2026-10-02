@@ -120,7 +120,11 @@ class Status:
             policy = config.get("workflow", {}).get("completion_policies", {}).get(new_status, {})
             attested = attested_review_commits(ctx, snapshot, policy)
             policy_ok, failures = validate_completion_policy(
-                config, snapshot, new_status, reachable_review_commits=attested
+                config,
+                snapshot,
+                new_status,
+                events=context.events,
+                reachable_review_commits=attested,
             )
             if not policy_ok:
                 if not p.force:

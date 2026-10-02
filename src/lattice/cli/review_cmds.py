@@ -28,6 +28,7 @@ from lattice.cli.main import cli
 from lattice.core.errors import TaskErased
 from lattice.core.visibility import require_not_tombstoned
 from lattice.core.review import (
+    DEFAULT_AGENT_TIMEOUT,
     DEFAULT_MAX_DIFF_CHARS,
     DEFAULT_MAX_DIFF_LINES,
     DiffResolution,
@@ -824,6 +825,7 @@ def _echo_review_failure(
     when: str | None = None,
     source: str | None = None,
     review_type: str = "code-review",
+    timeout_guidance: dict[str, Any] | None = None,
 ) -> None:
     """Print a clear, diagnosable FAILED report for a review."""
     header = f"Review FAILED for {task_id}"
@@ -839,7 +841,72 @@ def _echo_review_failure(
         click.echo(f"  duration:     {duration}s")
     if stderr_tail:
         click.echo(f"  stderr tail:  {stderr_tail}")
+    if timeout_guidance:
+        click.echo(
+            "  configured limits: "
+            f"review_timeout_seconds={timeout_guidance['review_timeout_seconds']}, "
+            f"review_max_diff_lines={timeout_guidance['review_max_diff_lines']}, "
+            f"review_max_diff_chars={timeout_guidance['review_max_diff_chars']}"
+        )
+        click.echo(f"  next step:    {timeout_guidance['next_step']}")
     click.echo(f"  Re-run with:  {program_name()} {review_type} {task_id}")
+
+
+def _timeout_guidance(config: dict) -> dict[str, Any]:
+    """Describe this board's review budgets and a safe next step after timeout."""
+    values: dict[str, Any] = {
+        "review_timeout_seconds": config.get("review_timeout_seconds", DEFAULT_AGENT_TIMEOUT),
+        "review_max_diff_lines": config.get("review_max_diff_lines", DEFAULT_MAX_DIFF_LINES),
+        "review_max_diff_chars": config.get("review_max_diff_chars", DEFAULT_MAX_DIFF_CHARS),
+    }
+    for name, default in (
+        ("review_timeout_seconds", DEFAULT_AGENT_TIMEOUT),
+        ("review_max_diff_lines", DEFAULT_MAX_DIFF_LINES),
+        ("review_max_diff_chars", DEFAULT_MAX_DIFF_CHARS),
+    ):
+        value = values[name]
+        if not isinstance(value, int) or isinstance(value, bool):
+            values[name] = default
+    values["next_step"] = (
+        "Narrow the review diff, or explicitly raise review_timeout_seconds, "
+        "review_max_diff_lines, or review_max_diff_chars in .lattice/config.json before retrying."
+    )
+    return values
+
+
+def _is_timeout(message: Any) -> bool:
+    return isinstance(message, str) and "timed out" in message.lower()
+
+
+def _review_artifacts_by_role(lattice_dir: Path, task_id: str) -> dict[str, dict[str, str | None]]:
+    """Return the newest attached review artifact event for each review role."""
+    artifacts: dict[str, dict[str, str | None]] = {}
+    for event in _task_events(lattice_dir, task_id):
+        if event.get("type") != "artifact_attached":
+            continue
+        data = event.get("data") or {}
+        role = data.get("role")
+        if not isinstance(role, str) or "review" not in role:
+            continue
+        artifact_id = data.get("artifact_id")
+        ts = event.get("ts")
+        artifacts[role] = {
+            "review_type": "code-review" if role == "review" else role,
+            "artifact_id": artifact_id if isinstance(artifact_id, str) else None,
+            "attached_at": ts if isinstance(ts, str) else None,
+        }
+    return dict(sorted(artifacts.items()))
+
+
+def _review_artifact_lines(artifacts: dict[str, dict[str, str | None]]) -> list[str]:
+    lines = ["  completed review artifacts:"]
+    for role, artifact in artifacts.items():
+        label = "code-review (role=review)" if role == "review" else role
+        details = artifact.get("artifact_id") or "(id unavailable)"
+        if artifact.get("attached_at"):
+            details += f" attached_at={artifact['attached_at']}"
+        lines.append(f"    {label}: {details}")
+    return lines
 
 
 @cli.command("review-status")
@@ -862,22 +929,33 @@ def review_status(task_id: str, output_json: bool) -> None:
         # No in-flight record. Distinguish: a completed review (artifact exists),
         # a *failed* review whose state was cleared by an older path (surface it
         # from failures.jsonl), or genuinely nothing ever ran.
-        has_artifacts = _check_review_artifacts(lattice_dir, task_id)
+        artifacts = _review_artifacts_by_role(lattice_dir, task_id)
+        has_artifacts = bool(artifacts)
         failure = None if has_artifacts else last_failure_for_task(lattice_dir, task_id)
         if is_json:
             data: dict[str, Any] = {"task_id": task_id, "status": "none"}
             if has_artifacts:
                 data["note"] = "Review artifacts exist — review may have already completed."
+                data["artifacts"] = artifacts
             elif failure:
                 data["status"] = "failed"
                 data["last_failure"] = failure
+                if _is_timeout(failure.get("error")):
+                    data["timeout_guidance"] = _timeout_guidance(load_project_config(lattice_dir))
             click.echo(json.dumps({"ok": True, "data": data}, indent=2))
         else:
             if has_artifacts:
                 click.echo(
                     f"No in-flight review for {task_id}. Review artifacts exist — review may have already completed."
                 )
+                for line in _review_artifact_lines(artifacts):
+                    click.echo(line)
             elif failure:
+                guidance = (
+                    _timeout_guidance(load_project_config(lattice_dir))
+                    if _is_timeout(failure.get("error"))
+                    else None
+                )
                 _echo_review_failure(
                     task_id,
                     error=failure.get("error"),
@@ -887,6 +965,7 @@ def review_status(task_id: str, output_json: bool) -> None:
                     when=failure.get("timestamp"),
                     source="failures.jsonl",
                     review_type=failure.get("review_type") or "code-review",
+                    timeout_guidance=guidance,
                 )
             else:
                 click.echo(
@@ -898,9 +977,17 @@ def review_status(task_id: str, output_json: bool) -> None:
     # loudly instead of falling through to the generic in-flight render.
     if state.get("status") == "failed":
         if is_json:
-            click.echo(json.dumps({"ok": True, "data": state}, indent=2))
+            data = dict(state)
+            if _is_timeout(state.get("error")):
+                data["timeout_guidance"] = _timeout_guidance(load_project_config(lattice_dir))
+            click.echo(json.dumps({"ok": True, "data": data}, indent=2))
         else:
             detail = state.get("detail") or {}
+            guidance = (
+                _timeout_guidance(load_project_config(lattice_dir))
+                if _is_timeout(state.get("error"))
+                else None
+            )
             _echo_review_failure(
                 task_id,
                 error=state.get("error"),
@@ -910,6 +997,7 @@ def review_status(task_id: str, output_json: bool) -> None:
                 when=state.get("finished_at"),
                 source="in-flight review record",
                 review_type=state.get("review_type") or "code-review",
+                timeout_guidance=guidance,
             )
         return
 
@@ -1223,6 +1311,14 @@ def _run_single_and_store(
 
     if not success:
         cleanup_temp_files(task_id)
+        if _is_timeout(message):
+            guidance = _timeout_guidance(config)
+            message = (
+                f"{message}. Configured limits: review_timeout_seconds="
+                f"{guidance['review_timeout_seconds']}, review_max_diff_lines="
+                f"{guidance['review_max_diff_lines']}, review_max_diff_chars="
+                f"{guidance['review_max_diff_chars']}. {guidance['next_step']}"
+            )
         _report_review_failure(
             lattice_dir,
             task_id,
@@ -1522,14 +1618,5 @@ def _compute_elapsed_str(
 
 
 def _check_review_artifacts(lattice_dir: Path, task_id: str) -> bool:
-    """Check if any review artifacts are attached to a task.
-
-    Read from the task's ``artifact_attached`` events: artifact metadata lives
-    under ``artifacts/meta/`` keyed by artifact ID, never per task.
-    """
-    for event in _task_events(lattice_dir, task_id):
-        if event.get("type") == "artifact_attached":
-            role = (event.get("data") or {}).get("role") or ""
-            if "review" in role:
-                return True
-    return False
+    """Check whether any review-role artifacts are attached to a task."""
+    return bool(_review_artifacts_by_role(lattice_dir, task_id))

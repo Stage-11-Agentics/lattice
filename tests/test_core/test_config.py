@@ -446,6 +446,7 @@ def _snap_with_evidence(evidence_refs: list, assigned_to: str | None = None) -> 
     """Build a minimal snapshot dict for policy testing."""
     return {
         "id": "task_01EXAMPLE0000000000000000",
+        "status": "review",
         "evidence_refs": evidence_refs,
         "assigned_to": assigned_to,
     }
@@ -499,6 +500,44 @@ class TestValidateCompletionPolicy:
             ]
         )
         ok, failures = validate_completion_policy(config, snap, "done")
+        assert ok is True
+        assert failures == []
+
+    def test_review_artifact_from_an_earlier_cycle_does_not_satisfy_done(self) -> None:
+        config = default_config()
+        snap = _snap_with_evidence(
+            [
+                {"id": "art_old", "role": "review", "source_type": "artifact"},
+                {"id": "ev_security", "role": "security", "source_type": "comment"},
+            ]
+        )
+        events = [
+            {"type": "task_created", "data": {"status": "backlog"}},
+            {"type": "status_changed", "data": {"to": "review"}},
+            {"type": "artifact_attached", "data": {"role": "review"}},
+            {"type": "status_changed", "data": {"to": "in_progress"}},
+            {"type": "status_changed", "data": {"to": "review"}},
+        ]
+
+        ok, failures = validate_completion_policy(config, snap, "done", events=events)
+
+        assert ok is False
+        assert any("current-cycle review evidence" in failure for failure in failures)
+        assert not any("security" in failure for failure in failures)
+
+    def test_current_cycle_review_comment_satisfies_done(self) -> None:
+        config = default_config()
+        snap = _snap_with_evidence(
+            [{"id": "ev_current", "role": "review", "source_type": "comment"}]
+        )
+        events = [
+            {"type": "task_created", "data": {"status": "backlog"}},
+            {"type": "status_changed", "data": {"to": "review"}},
+            {"type": "comment_added", "data": {"role": "review"}},
+        ]
+
+        ok, failures = validate_completion_policy(config, snap, "done", events=events)
+
         assert ok is True
         assert failures == []
 

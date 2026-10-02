@@ -639,6 +639,7 @@ def validate_completion_policy(
     snapshot: dict,
     to_status: str,
     *,
+    events: list[dict] | tuple[dict, ...] | None = None,
     lattice_dir: Path | None = None,
     repo_root: Path | None = None,
     prospective_review_payloads: list[str] | None = None,
@@ -646,7 +647,9 @@ def validate_completion_policy(
 ) -> tuple[bool, list[str]]:
     """Check whether a transition into *to_status* satisfies completion policies.
 
-    ``require_reachable_review_commit`` is judged from the caller's
+    When *events* are supplied, ``review`` evidence must be attached after the
+    task's latest entry into ``review``. Other evidence roles retain their
+    lifetime semantics. ``require_reachable_review_commit`` is judged from the caller's
     ``reachable_review_commits`` attestation (SPEC §3.4) when one is given,
     else by checking *repo_root* directly.
 
@@ -676,13 +679,23 @@ def validate_completion_policy(
     require_roles = policy.get("require_roles", [])
     if require_roles:
         present_roles = get_evidence_roles(snapshot)
+        if "review" in require_roles and events is not None:
+            if not _has_current_review_evidence(snapshot, events):
+                present_roles.discard("review")
         for required in require_roles:
             if required not in present_roles:
-                failures.append(
-                    f"Missing role: {required}. "
-                    f"Satisfy with: lattice attach --role {required} "
-                    f"or lattice comment --role {required}"
-                )
+                if required == "review" and events is not None:
+                    failures.append(
+                        "Missing current-cycle review evidence: attach or comment with role "
+                        "review after the latest transition into review. Satisfy with: "
+                        "lattice attach --role review or lattice comment --role review"
+                    )
+                else:
+                    failures.append(
+                        f"Missing role: {required}. "
+                        f"Satisfy with: lattice attach --role {required} "
+                        f"or lattice comment --role {required}"
+                    )
 
     # Check require_assigned
     if policy.get("require_assigned") and not snapshot.get("assigned_to"):
@@ -708,6 +721,29 @@ def validate_completion_policy(
             )
 
     return (len(failures) == 0, failures)
+
+
+def _has_current_review_evidence(snapshot: dict, events: list[dict] | tuple[dict, ...]) -> bool:
+    """Whether a review-role comment or artifact was added during the current cycle."""
+    if snapshot.get("status") != "review":
+        return False
+
+    latest_review_entry = -1
+    for index, event in enumerate(events):
+        event_type = event.get("type")
+        data = event.get("data") or {}
+        if event_type == "status_changed" and data.get("to") == "review":
+            latest_review_entry = index
+        elif event_type == "task_created" and data.get("status") == "review":
+            latest_review_entry = index
+    if latest_review_entry < 0:
+        return False
+
+    return any(
+        event.get("type") in {"artifact_attached", "comment_added"}
+        and (event.get("data") or {}).get("role") == "review"
+        for event in events[latest_review_entry + 1 :]
+    )
 
 
 # The review marker pattern lives with the attestations; the old private name
