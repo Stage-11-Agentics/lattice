@@ -194,3 +194,48 @@ def test_the_running_server_runs_the_pass_and_the_cli_prints_it(
         )
         data = json.loads(full.output)["data"]
         assert data["summary"]["media_missing"] == 1 and data["summary"]["media_hash_verified"]
+
+
+def test_the_hash_pass_does_not_hold_the_project_while_it_runs(
+    root: Path, filed_issue: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--verify-media`` hashes outside the project's admission: reads and writes
+    keep working (before, they waited and then failed BOARD_BUSY)."""
+    import threading
+
+    from lattice.server import doctor_media
+    from tests.test_server.test_issue_media_routes import call
+
+    token = mint(root, projects=[SLUG])
+    hashing = threading.Event()
+    release = threading.Event()
+    original = doctor_media._hash
+
+    def slow_hash(path):
+        hashing.set()
+        assert release.wait(timeout=15)
+        return original(path)
+
+    monkeypatch.setattr(doctor_media, "_hash", slow_hash)
+    entry = filed_issue["media"][0]
+    path = f"/v1/projects/{SLUG}/issues/media/{filed_issue['id']}/{entry['id']}"
+    with running_server(root, config={"limits": {"lock_timeout_seconds": 1}}) as server:
+        report: dict = {}
+        worker = threading.Thread(
+            target=lambda: report.update(doctor(root, verify_media=True)), daemon=True
+        )
+        worker.start()
+        try:
+            assert hashing.wait(timeout=10), "the hash pass never started"
+            started = time.monotonic()
+            status, _, _ = call(server, "GET", path, token=token)
+            assert status == 200
+            availability = (
+                f"/v1/projects/{SLUG}/issues/media/availability?issue={filed_issue['id']}"
+            )
+            assert call(server, "GET", availability, token=token)[0] == 200
+            assert time.monotonic() - started < 1.0, "reads waited for the doctor"
+        finally:
+            release.set()
+        worker.join(timeout=15)
+        assert report["summary"]["media_hash_verified"] is True

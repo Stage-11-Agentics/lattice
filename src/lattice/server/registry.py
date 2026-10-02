@@ -307,6 +307,7 @@ class ProjectRegistry:
     async def _lifecycle(
         self, project: Project, action: str, *, verify_media: bool = False
     ) -> dict:
+        scanned = None
         async with self.admission_only(project):
             if action == "unload":
                 return await in_worker(lambda: self._unload(project))
@@ -316,7 +317,12 @@ class ProjectRegistry:
                 await in_worker(lambda: self._unload(project))
                 return await in_worker(lambda: self._load(project))
             if action == "doctor":
-                return await in_worker(lambda: self._doctor(project, verify_media))
+                scanned = await in_worker(lambda: self._doctor(project))
+        if scanned is not None:
+            # The hash pass can take minutes on a large store: it runs after the
+            # project's admission is released, so reads and writes are not held.
+            data, scan = scanned
+            return await in_worker(lambda: self._doctor_finish(project, data, scan, verify_media))
         raise OpError("VALIDATION_ERROR", f"unsupported control action {action!r}")
 
     def _unload(self, project: Project) -> dict:
@@ -342,7 +348,7 @@ class ProjectRegistry:
         head = project.head()
         return {"project": project.slug, "state": project.state, **head}
 
-    def _doctor(self, project: Project, verify_media: bool = False) -> dict:
+    def _doctor(self, project: Project) -> tuple[dict, object]:
         # Existence and size of media are read under the lock; hashes are not.
         if project.holds_lease:
             with project.locked():
@@ -361,7 +367,10 @@ class ProjectRegistry:
                     scan = doctor_media.scan_media(project.board, project.directory)
             finally:
                 release_owner_flock(fd)
-        data = doctor_media.merge_media(data, doctor_media.finish_media(scan, verify=verify_media))
+        return data, scan
+
+    def _doctor_finish(self, project: Project, data: dict, scan: object, verify: bool) -> dict:
+        data = doctor_media.merge_media(data, doctor_media.finish_media(scan, verify=verify))
         return {"project": project.slug, **data}
 
     def write_status(self, *, stopped: bool = False) -> None:
