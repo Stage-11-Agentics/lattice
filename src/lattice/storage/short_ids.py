@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
 from lattice.core.ids import SHORT_ID_RE
@@ -68,6 +69,29 @@ SHORT_ID_EVENT_TYPES = frozenset({"task_created", "task_short_id_assigned"})
 _SHORT_ID_KEY = b'"short_id"'
 
 
+@dataclass(frozen=True)
+class ShortIdOccurrence:
+    """One valid short-ID occurrence and the task that recorded it, if known."""
+
+    short_id: str
+    task_id: str | None
+    path: Path
+    line: int
+    event_id: str | None
+    event_type: str | None
+    source: str
+
+
+@dataclass(frozen=True)
+class ShortIdInventory:
+    """All assigned IDs, with event-history separated from map reservations."""
+
+    max_observed: Mapping[str, int]
+    max_in_events: Mapping[str, int]
+    event_short_ids: frozenset[str]
+    occurrences: tuple[ShortIdOccurrence, ...]
+
+
 def split_short_id(short_id: object) -> tuple[str, int] | None:
     """Return ``(prefix, seq)`` for a short ID matching the grammar, else ``None``."""
     if not isinstance(short_id, str) or not SHORT_ID_RE.match(short_id):
@@ -125,38 +149,111 @@ def task_log_paths(lattice_dir: Path) -> Iterable[Path]:
             entries = list(os.scandir(events_dir))
         except FileNotFoundError:
             continue
-        for entry in entries:
+        for entry in sorted(entries, key=lambda entry: entry.name):
             if entry.name.startswith("task_") and entry.name.endswith(".jsonl"):
                 yield Path(entry.path)
 
 
-def observed_short_ids(lattice_dir: Path) -> set[str]:
-    """Return every short ID issued in any task log, active and archived."""
-    observed: set[str] = set()
-    for path in task_log_paths(lattice_dir):
+def _short_id_event_paths(lattice_dir: Path) -> Iterable[Path]:
+    """Yield task logs and the derived lifecycle log in stable source order."""
+    yield from task_log_paths(lattice_dir)
+    lifecycle = lattice_dir / "events" / "_lifecycle.jsonl"
+    if lifecycle.is_file():
+        yield lifecycle
+
+
+def short_id_inventory(
+    lattice_dir: Path, index: Mapping[str, object] | None = None
+) -> ShortIdInventory:
+    """Collect valid IDs from task logs, lifecycle projections, and ``ids.json``.
+
+    A same-task ID reservation in the map is an allocation floor, but it is not
+    event history. Keeping those two sets separate lets an interrupted create
+    retry its own map-only reservation while every historical assignment stays
+    burned.
+    """
+    max_observed: dict[str, int] = {}
+    max_in_events: dict[str, int] = {}
+    event_short_ids: set[str] = set()
+    occurrences: list[ShortIdOccurrence] = []
+
+    for path in _short_id_event_paths(lattice_dir):
         try:
             raw = path.read_bytes()
         except FileNotFoundError:
             continue
-        observed.update(short_ids_in_log(raw))
-    return observed
+        for line, event in short_id_events_in_log(raw):
+            short_id = event["data"]["short_id"]
+            parsed = split_short_id(short_id)
+            if parsed is None:
+                continue
+            event_short_ids.add(short_id)
+            prefix, seq = parsed
+            max_in_events[prefix] = max(max_in_events.get(prefix, 0), seq)
+            max_observed[prefix] = max(max_observed.get(prefix, 0), seq)
+            task_id = event.get("task_id")
+            if not isinstance(task_id, str) or not task_id:
+                task_id = path.stem if path.stem != "_lifecycle" else None
+            event_id = event.get("id")
+            event_type = event.get("type")
+            occurrences.append(
+                ShortIdOccurrence(
+                    short_id=short_id,
+                    task_id=task_id,
+                    path=path,
+                    line=line,
+                    event_id=event_id if isinstance(event_id, str) else None,
+                    event_type=event_type if isinstance(event_type, str) else None,
+                    source="event",
+                )
+            )
+
+    if index is None:
+        index = load_id_index(lattice_dir)
+    id_map = index.get("map") if isinstance(index, Mapping) else None
+    if isinstance(id_map, Mapping):
+        index_path = lattice_dir / "ids.json"
+        for short_id, task_id in id_map.items():
+            parsed = split_short_id(short_id)
+            if parsed is None:
+                continue
+            prefix, seq = parsed
+            max_observed[prefix] = max(max_observed.get(prefix, 0), seq)
+            occurrences.append(
+                ShortIdOccurrence(
+                    short_id=short_id,
+                    task_id=task_id if isinstance(task_id, str) else None,
+                    path=index_path,
+                    line=1,
+                    event_id=None,
+                    event_type=None,
+                    source="ids.json",
+                )
+            )
+
+    return ShortIdInventory(
+        max_observed=max_observed,
+        max_in_events=max_in_events,
+        event_short_ids=frozenset(event_short_ids),
+        occurrences=tuple(occurrences),
+    )
+
+
+def observed_short_ids(lattice_dir: Path) -> set[str]:
+    """Return every valid short ID recorded in logs or the ID map."""
+    return {occurrence.short_id for occurrence in short_id_inventory(lattice_dir).occurrences}
 
 
 def max_observed_short_ids(lattice_dir: Path) -> dict[str, int]:
-    """Return the highest short-ID sequence issued per prefix in any task log.
+    """Return the highest short-ID sequence assigned per prefix in any source.
 
     This is the allocation floor of SPEC §5: a sequence at or below it has
-    appeared in the event history and must never be issued again. It reads
-    every log on every call (no cache), so an event appended to an existing
-    log is always seen. A server computes it once at load and keeps it in
-    memory, passing it to :func:`next_short_id` on each allocation.
+    appeared in task history, the lifecycle projection, or ``ids.json`` and
+    must never be issued to a different task. A server computes it once at
+    load and keeps it in memory, passing it to :func:`next_short_id` on each
+    allocation.
     """
-    observed: dict[str, int] = {}
-    for short_id in observed_short_ids(lattice_dir):
-        parsed = split_short_id(short_id)
-        if parsed is not None and parsed[1] > observed.get(parsed[0], 0):
-            observed[parsed[0]] = parsed[1]
-    return observed
+    return dict(short_id_inventory(lattice_dir).max_observed)
 
 
 def next_short_id(
@@ -164,13 +261,26 @@ def next_short_id(
 ) -> str:
     """Issue the next short ID for *prefix* into *index* (pure, no I/O).
 
-    ``next = max(next_seqs[prefix], 1 + max_observed[prefix])``, then skip any
-    ID already in the map. Registers the mapping and advances the counter.
+    ``next`` is one beyond the maximum of ``next_seqs``, observed event/map
+    assignments, and valid keys in the map currently loaded under the lock.
+    Registers the mapping and advances the counter.
     The caller supplies the floor and holds the allocation lock.
     """
     next_seqs = index.setdefault("next_seqs", {})
     mapping = index.setdefault("map", {})
-    seq = max(next_seqs.get(prefix, 1), max_observed.get(prefix, 0) + 1)
+    mapped_floor = max(
+        (
+            parsed[1]
+            for short_id in mapping
+            if (parsed := split_short_id(short_id)) is not None and parsed[0] == prefix
+        ),
+        default=0,
+    )
+    seq = max(
+        next_seqs.get(prefix, 1),
+        max_observed.get(prefix, 0) + 1,
+        mapped_floor + 1,
+    )
     while f"{prefix}-{seq}" in mapping:
         seq += 1
     short_id = f"{prefix}-{seq}"
@@ -225,7 +335,10 @@ def allocate_short_id(
     with lattice_lock(locks_dir, "ids_json"):
         index = load_id_index(lattice_dir)
         short_id = next_short_id(
-            index, prefix, task_ulid or "", max_observed_short_ids(lattice_dir)
+            index,
+            prefix,
+            task_ulid or "",
+            short_id_inventory(lattice_dir, index).max_observed,
         )
         if task_ulid is None:
             del index["map"][short_id]

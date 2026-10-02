@@ -42,6 +42,16 @@ def _set_short_id(lattice_dir: Path, task_id: str, short_id: str) -> None:
     event["data"]["short_id"] = short_id
     lines[0] = serialize_event(event).rstrip("\n")
     log.write_text("\n".join(lines) + "\n")
+    lifecycle = lattice_dir / "events" / "_lifecycle.jsonl"
+    if lifecycle.exists():
+        lifecycle_lines = lifecycle.read_text().splitlines()
+        for index, raw in enumerate(lifecycle_lines):
+            mirrored = json.loads(raw)
+            if mirrored.get("id") == event.get("id"):
+                mirrored["data"]["short_id"] = short_id
+                lifecycle_lines[index] = serialize_event(mirrored).rstrip("\n")
+                lifecycle.write_text("\n".join(lifecycle_lines) + "\n")
+                break
     snapshot_path = lattice_dir / "tasks" / f"{task_id}.json"
     snapshot = json.loads(snapshot_path.read_text())
     snapshot["short_id"] = short_id
@@ -108,7 +118,7 @@ def test_doctor_reports_all_five_short_id_findings(tmp_path: Path) -> None:
 
     counter = [m for m in messages if m.startswith("next_seqs['LAT']")]
     assert counter == [
-        "next_seqs['LAT'] (3) is at or below the max short-ID seq in the event logs (6); "
+        "next_seqs['LAT'] (3) is at or below the max short-ID seq in recorded assignments (7); "
         "run lattice rebuild --all"
     ]
     assert len(messages) == 5
@@ -121,7 +131,7 @@ def test_doctor_plain_output_lists_every_finding(tmp_path: Path) -> None:
     assert result.output.count("duplicate authoritative short ID") == 2
     assert "LAT-6 but ids.json does not map it exactly" in result.output
     assert "LAT-7" in result.output
-    assert "is at or below the max short-ID seq in the event logs (6)" in result.output
+    assert "is at or below the max short-ID seq in recorded assignments (7)" in result.output
 
 
 def test_counter_behind_logs_alone_is_reported(tmp_path: Path) -> None:
@@ -142,7 +152,7 @@ def test_counter_behind_logs_alone_is_reported(tmp_path: Path) -> None:
     # The map alone would say "not greater than max assigned seq (3)"; the log
     # finding replaces it rather than doubling it.
     assert [f["message"] for f in _alias_findings(tmp_path)] == [
-        "next_seqs['LAT'] (2) is at or below the max short-ID seq in the event logs (3); "
+        "next_seqs['LAT'] (2) is at or below the max short-ID seq in recorded assignments (3); "
         "run lattice rebuild --all"
     ]
 
@@ -204,6 +214,63 @@ def test_historical_duplicate_is_reported_when_final_aliases_differ(tmp_path: Pa
     assert _invoke(tmp_path, "doctor").exit_code != 0
 
 
+def test_lifecycle_only_assignment_and_active_log_duplicate_are_reported_once(
+    tmp_path: Path,
+) -> None:
+    lattice_dir = _board(tmp_path)
+    ids = []
+    for n in range(1, 3):
+        result = _invoke(tmp_path, "create", f"Task {n}", "--actor", "human:test", "--json")
+        ids.append(json.loads(result.output)["data"]["id"])
+    # Keep task A's assignment only in the mirrored lifecycle projection.
+    (lattice_dir / "events" / f"{ids[0]}.jsonl").unlink()
+    _set_short_id(lattice_dir, ids[1], "LAT-1")
+
+    messages = [f["message"] for f in _alias_findings(tmp_path)]
+    duplicates = [message for message in messages if message.startswith("short ID LAT-1")]
+
+    assert len(duplicates) == 1
+    assert "issued to more than one task" in duplicates[0]
+    assert ids[0] in duplicates[0] and ids[1] in duplicates[0]
+
+
+def test_map_owned_by_another_task_is_a_historical_duplicate(tmp_path: Path) -> None:
+    lattice_dir = _board(tmp_path)
+    ids = []
+    for n in range(1, 3):
+        result = _invoke(tmp_path, "create", f"Task {n}", "--actor", "human:test", "--json")
+        ids.append(json.loads(result.output)["data"]["id"])
+    save_id_index(
+        lattice_dir,
+        {
+            "schema_version": 2,
+            "next_seqs": {"LAT": 3},
+            "map": {"LAT-1": ids[1], "LAT-2": ids[1]},
+        },
+    )
+
+    messages = [f["message"] for f in _alias_findings(tmp_path)]
+    duplicate = next(message for message in messages if message.startswith("short ID LAT-1"))
+
+    assert "issued to more than one task" in duplicate
+    assert ids[0] in duplicate and ids[1] in duplicate
+    assert "ids.json" in duplicate
+
+
+def test_repeated_same_task_assignment_is_reported(tmp_path: Path) -> None:
+    lattice_dir = _board(tmp_path)
+    result = _invoke(tmp_path, "create", "Task 1", "--actor", "human:test", "--json")
+    task_id = json.loads(result.output)["data"]["id"]
+    _append(lattice_dir, task_id, "task_short_id_assigned", {"short_id": "LAT-2"})
+    _append(lattice_dir, task_id, "task_short_id_assigned", {"short_id": "LAT-2"})
+
+    messages = [f["message"] for f in _alias_findings(tmp_path)]
+    repeated = [message for message in messages if message.startswith("short ID LAT-2")]
+
+    assert len(repeated) == 1
+    assert "assigned more than once" in repeated[0]
+
+
 def test_counter_for_a_prefix_only_in_the_logs_is_checked(tmp_path: Path) -> None:
     """A historical prefix missing from next_seqs has the implicit counter 1."""
     lattice_dir = _board(tmp_path)
@@ -213,7 +280,7 @@ def test_counter_for_a_prefix_only_in_the_logs_is_checked(tmp_path: Path) -> Non
 
     assert [f["message"] for f in _alias_findings(tmp_path)] == [
         "next_seqs['OLD'] (unset, implicitly 1) is at or below the max short-ID seq in "
-        "the event logs (4); run lattice rebuild --all"
+        "recorded assignments (4); run lattice rebuild --all"
     ]
 
 

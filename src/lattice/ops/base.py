@@ -73,7 +73,7 @@ import json
 import re
 import types
 import typing
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -399,9 +399,11 @@ class OpContext:
     caller: Caller
     op_name: str
     run_hooks: bool
-    #: The caller's in-memory short-ID floor (a server's ``max_observed``,
-    #: SPEC §5); ``None`` lets allocation rescan the logs.
+    #: The caller's in-memory full short-ID floor (a server's ``max_observed``,
+    #: SPEC §5); ``None`` lets allocation scan the board.
     short_id_floor: Mapping[str, int] | None = None
+    #: Exact IDs in event history, separate from map-only reservations.
+    event_short_ids: Collection[str] | None = None
     _expectation_pending: bool = True
 
     def resolve_task(self, raw_id: str) -> str:
@@ -451,6 +453,8 @@ class OpContext:
         self._expectation_pending = False
         if self.short_id_floor is not None:
             kwargs.setdefault("short_id_floor", self.short_id_floor)
+        if self.event_short_ids is not None:
+            kwargs.setdefault("event_short_ids", self.event_short_ids)
         return mutate_task(
             self.lattice_dir,
             task_id,
@@ -604,6 +608,7 @@ def execute(
     on_mutation: Callable[[Path, MutationKind], None] | None = None,
     authorize: Authorizer | None = None,
     short_id_floor: Mapping[str, int] | None = None,
+    event_short_ids: Collection[str] | None = None,
 ) -> OpResult:
     """Run one operation against the board at *board_dir* (its ``.lattice/``).
 
@@ -615,9 +620,10 @@ def execute(
     and the effects even if a hook edits ``config.json``. Loaded from the board
     when omitted. ``authorize``: the server's actor check (see
     :data:`Authorizer`); ``None`` locally.
-    ``short_id_floor``: the highest short-ID sequence per prefix
-    in the board's event history, when the caller keeps it in memory (a server,
-    SPEC §5); ``None`` lets allocation rescan the logs.
+    ``short_id_floor``: full allocation floor per prefix, including the ID map,
+    when the caller keeps it in memory (a server, SPEC §5); ``None`` scans all
+    sources. ``event_short_ids``: exact IDs in event history, separate from
+    map-only reservations; ``None`` scans event logs and lifecycle.
 
     Every storage write the operation makes is confined to this board
     (``BoardPathError``, ``VALIDATION_ERROR``).
@@ -639,6 +645,7 @@ def execute(
             config=config,
             authorize=authorize,
             short_id_floor=short_id_floor,
+            event_short_ids=event_short_ids,
         )
     return dataclasses.replace(result, paths=tuple(recorder.relative_paths(board_dir)))
 
@@ -653,6 +660,7 @@ def _execute(
     config: dict | None,
     authorize: Authorizer | None,
     short_id_floor: Mapping[str, int] | None = None,
+    event_short_ids: Collection[str] | None = None,
 ) -> OpResult:
     # 1. Only the board's owner writes it.
     check_board_writable(board_dir, caller)
@@ -692,6 +700,7 @@ def _execute(
         op_name=op_name,
         run_hooks=run_hooks,
         short_id_floor=short_id_floor,
+        event_short_ids=event_short_ids,
     )
     # 5. Run it; storage failures surface as typed errors.
     with origin_scope(origin):

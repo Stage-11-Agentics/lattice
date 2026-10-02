@@ -770,6 +770,7 @@ class Project:
                 on_mutation=txn.before_mutation,
                 authorize=request.authorize,
                 short_id_floor=self.floors.max_observed,
+                event_short_ids=self.floors.event_short_ids,
             )
 
         return self._transact(

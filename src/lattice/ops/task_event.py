@@ -65,7 +65,11 @@ class Event:
             )
             return TaskMutationDecision(events=[event], value=event)
 
-        result = ctx.mutate(task_id, decide)
+        result = ctx.mutate(
+            task_id,
+            decide,
+            may_emit_short_id="short_id" in event_data,
+        )
         return OpResult(
             task=result.snapshot,
             events=result.appended_events,

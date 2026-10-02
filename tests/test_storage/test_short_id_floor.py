@@ -25,6 +25,7 @@ from lattice.storage.short_ids import (
     max_observed_short_ids,
     next_short_id,
     save_id_index,
+    short_id_inventory,
     short_ids_in_log,
 )
 
@@ -110,6 +111,17 @@ class TestLocalFloor:
 
         assert _create(board, "After archive")["short_id"] == "LAT-4"
 
+    def test_lifecycle_log_counts_when_the_task_log_is_missing(self, board: Path) -> None:
+        task = _create(board, "Lifecycle only")
+        lattice_dir = board / LATTICE_DIR
+        (lattice_dir / "events" / f"{task['id']}.jsonl").unlink()
+        _regress_ids(board, {"schema_version": 2, "next_seqs": {}, "map": {}})
+
+        assert _create(board, "After missing task log")["short_id"] == "LAT-2"
+        inventory = short_id_inventory(lattice_dir)
+        assert "LAT-1" in inventory.event_short_ids
+        assert inventory.max_observed == {"LAT": 2}
+
     def test_appended_assignment_changes_no_directory_entry_and_is_never_reissued(
         self, board: Path
     ) -> None:
@@ -156,6 +168,18 @@ class TestLocalFloor:
         )
         assert _create(board, "Skips map")["short_id"] == "LAT-3"
 
+    def test_ids_map_only_assignment_contributes_to_the_floor(self, board: Path) -> None:
+        _regress_ids(
+            board,
+            {
+                "schema_version": 2,
+                "next_seqs": {"LAT": 1},
+                "map": {"LAT-20": "task_01RESERVEDXXXXXXXXXXXXXXXX"},
+            },
+        )
+
+        assert _create(board, "Above map floor")["short_id"] == "LAT-21"
+
     def test_reservation_already_held_by_another_log_is_not_reused(self, board: Path) -> None:
         first = _create(board, "Task 1")
         lattice_dir = board / LATTICE_DIR
@@ -165,6 +189,25 @@ class TestLocalFloor:
 
         assert first["short_id"] == "LAT-1"
         assert _reserve(lattice_dir, new_id) == "LAT-2"
+
+    def test_same_task_map_only_reservation_can_resume(self, board: Path) -> None:
+        task_id = "task_01KYYYYYYYYYYYYYYYYYYYYYYY"
+        _regress_ids(board, {"schema_version": 2, "next_seqs": {}, "map": {"LAT-7": task_id}})
+
+        assert _reserve(board / LATTICE_DIR, task_id) == "LAT-7"
+
+    def test_same_task_reservation_is_burned_by_any_event_history_occurrence(
+        self, board: Path
+    ) -> None:
+        existing = _create(board, "Existing")
+        task_id = "task_01KYYYYYYYYYYYYYYYYYYYYYYY"
+        _regress_ids(board, {"schema_version": 2, "next_seqs": {}, "map": {"LAT-7": task_id}})
+        log = board / LATTICE_DIR / "events" / f"{existing['id']}.jsonl"
+        event = create_event("x_custom", task_id, "human:test", {"short_id": "LAT-7"})
+        with log.open("a", encoding="utf-8") as handle:
+            handle.write(serialize_event(event))
+
+        assert _reserve(board / LATTICE_DIR, task_id) == "LAT-8"
 
 
 class TestFloorPrimitives:
@@ -222,10 +265,10 @@ class TestFloorPrimitives:
 
     def test_next_short_id_takes_a_caller_supplied_floor(self) -> None:
         index = {"schema_version": 2, "next_seqs": {"LAT": 3}, "map": {"LAT-9": "task_b"}}
-        assert next_short_id(index, "LAT", "task_a", {"LAT": 7}) == "LAT-8"
-        assert next_short_id(index, "LAT", "task_c", {"LAT": 7}) == "LAT-10"
-        assert index["next_seqs"]["LAT"] == 11
-        assert index["map"]["LAT-8"] == "task_a"
+        assert next_short_id(index, "LAT", "task_a", {"LAT": 7}) == "LAT-10"
+        assert next_short_id(index, "LAT", "task_c", {"LAT": 7}) == "LAT-11"
+        assert index["next_seqs"]["LAT"] == 12
+        assert index["map"]["LAT-10"] == "task_a"
         assert next_short_id(index, "NEW", "task_d", {}) == "NEW-1"
 
     def test_mutate_task_uses_the_supplied_floor_without_rescanning(
@@ -233,18 +276,29 @@ class TestFloorPrimitives:
     ) -> None:
         from lattice.storage import operations
 
-        def no_scan(_lattice_dir: Path) -> dict[str, int]:
-            raise AssertionError("a supplied floor must not rescan the logs")
+        def no_scan(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            raise AssertionError("a supplied floor and event IDs must not rescan the logs")
 
-        monkeypatch.setattr(operations, "max_observed_short_ids", no_scan)
+        monkeypatch.setattr(operations, "short_id_inventory", no_scan)
         reserved = _reserve(
-            board / LATTICE_DIR, "task_01KYYYYYYYYYYYYYYYYYYYYYYY", short_id_floor={"LAT": 41}
+            board / LATTICE_DIR,
+            "task_01KYYYYYYYYYYYYYYYYYYYYYYY",
+            short_id_floor={"LAT": 41},
+            event_short_ids=frozenset(),
         )
         assert reserved == "LAT-42"
 
-    @pytest.mark.parametrize(("reserved", "expected"), [("LAT-3", "LAT-6"), ("LAT-7", "LAT-7")])
-    def test_supplied_floor_decides_a_retry_reservation_without_reading_logs(
-        self, board: Path, monkeypatch: pytest.MonkeyPatch, reserved: str, expected: str
+    @pytest.mark.parametrize(
+        ("reserved", "event_short_ids", "expected"),
+        [("LAT-3", frozenset({"LAT-3"}), "LAT-6"), ("LAT-7", frozenset(), "LAT-7")],
+    )
+    def test_supplied_floor_and_event_ids_decide_reservation_without_reading_logs(
+        self,
+        board: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        reserved: str,
+        event_short_ids: frozenset[str],
+        expected: str,
     ) -> None:
         from lattice.storage import short_ids
 
@@ -266,8 +320,17 @@ class TestFloorPrimitives:
 
         monkeypatch.setattr(short_ids, "task_log_paths", no_log_listing)
         monkeypatch.setattr(Path, "read_bytes", no_log_read)
-        # The supplied maximum (5) burns LAT-3 and leaves LAT-7 reusable.
-        assert _reserve(board / LATTICE_DIR, task_id, short_id_floor={"LAT": 5}) == expected
+        # The exact event set burns LAT-3 and leaves LAT-7 reusable, even though
+        # both are below or above the same supplied allocation floor.
+        assert (
+            _reserve(
+                board / LATTICE_DIR,
+                task_id,
+                short_id_floor={"LAT": 5},
+                event_short_ids=event_short_ids,
+            )
+            == expected
+        )
 
     def test_allocate_short_id_respects_the_log_floor(self, board: Path) -> None:
         for n in range(1, 3):
