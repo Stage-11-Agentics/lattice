@@ -94,7 +94,7 @@ Criteria: AC-29, AC-27 (no refused-complete unlink), AC-5 (attestation rejection
 Criteria: AC-29 (including `session start`, `session end`, `set-project-code`, and `set-subproject-code` with no actor arguments), AC-5 (local `acquire --wait` released by another process), G-6. Deps: H-1. Shared: `cli/helpers.py` (`require_actor`), `storage/sessions.py`, `cli/resource_cmds.py`, `cli/main.py`.
 
 ### H-6 Short-ID floor and doctor completeness (absorbs LAT-280, LAT-269) · M
-`SPEC.md` §5, local and server-ready (`max_observed` hook for H-9). If the local floor caches anything, it keys each log's contribution on `(st_size, st_mtime_ns)`, never on a directory mtime.
+`SPEC.md` §5, local and server-ready (`max_observed` hook for H-9). Every local allocation reads all active and archived task logs, `_lifecycle.jsonl`, and `ids.json` to compute the floor. Do not cache per-log contributions: an in-place rewrite can preserve inode, size, and modification time.
 Criteria: AC-2 (local part, including the appended-assignment regression test), AC-28; the perf check of `EVALUATION.md` §1 passes for `create`. Deps: H-1 (shares `storage/operations.py`). Shared: `storage/operations.py`, `cli/integrity_cmds.py`.
 
 ### H-7 Tombstones and the no-delete rule (absorbs LAT-278) · M

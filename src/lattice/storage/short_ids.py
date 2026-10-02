@@ -87,7 +87,6 @@ class ShortIdInventory:
     """All assigned IDs, with event-history separated from map reservations."""
 
     max_observed: Mapping[str, int]
-    max_in_events: Mapping[str, int]
     event_short_ids: frozenset[str]
     occurrences: tuple[ShortIdOccurrence, ...]
 
@@ -104,8 +103,6 @@ def split_short_id(short_id: object) -> tuple[str, int] | None:
 
 def short_id_events_in_log(
     raw: bytes,
-    *,
-    line_number_offset: int = 0,
 ) -> list[tuple[int, dict]]:
     """Return ``(line, event)`` for every event in a log carrying ``data.short_id``.
 
@@ -116,7 +113,7 @@ def short_id_events_in_log(
     """
     found: list[tuple[int, dict]] = []
     start = raw.find(_SHORT_ID_KEY)
-    line_number = line_number_offset + 1
+    line_number = 1
     counted_through = 0
     while start != -1:
         line_start = raw.rfind(b"\n", 0, start) + 1
@@ -171,47 +168,6 @@ def _short_id_event_paths(lattice_dir: Path) -> Iterable[Path]:
         yield lifecycle
 
 
-def _parse_event_file(
-    path: Path,
-    raw: bytes,
-    *,
-    include_occurrences: bool,
-) -> tuple[dict[str, int], frozenset[str], tuple[ShortIdOccurrence, ...] | None]:
-    max_observed: dict[str, int] = {}
-    event_short_ids: set[str] = set()
-    occurrences: list[ShortIdOccurrence] = []
-    for line, event in short_id_events_in_log(raw):
-        short_id = event["data"]["short_id"]
-        parsed = split_short_id(short_id)
-        if parsed is None:
-            continue
-        event_short_ids.add(short_id)
-        prefix, seq = parsed
-        max_observed[prefix] = max(max_observed.get(prefix, 0), seq)
-        if include_occurrences:
-            task_id = event.get("task_id")
-            if not isinstance(task_id, str) or not task_id:
-                task_id = path.stem if path.stem != "_lifecycle" else None
-            event_id = event.get("id")
-            event_type = event.get("type")
-            occurrences.append(
-                ShortIdOccurrence(
-                    short_id=short_id,
-                    task_id=task_id,
-                    path=path,
-                    line=line,
-                    event_id=event_id if isinstance(event_id, str) else None,
-                    event_type=event_type if isinstance(event_type, str) else None,
-                    source="event",
-                )
-            )
-    return (
-        max_observed,
-        frozenset(event_short_ids),
-        tuple(occurrences) if include_occurrences else None,
-    )
-
-
 def short_id_inventory(
     lattice_dir: Path,
     index: Mapping[str, object] | None = None,
@@ -227,7 +183,6 @@ def short_id_inventory(
     loaded floor in project memory and advances it from committed writes.
     """
     max_observed: dict[str, int] = {}
-    max_in_events: dict[str, int] = {}
     event_short_ids: set[str] = set()
     occurrences: list[ShortIdOccurrence] = []
     for path in _short_id_event_paths(lattice_dir):
@@ -235,15 +190,31 @@ def short_id_inventory(
             raw = path.read_bytes()
         except FileNotFoundError:
             continue
-        file_max, file_ids, file_occurrences = _parse_event_file(
-            path, raw, include_occurrences=include_occurrences
-        )
-        for prefix, seq in file_max.items():
-            max_in_events[prefix] = max(max_in_events.get(prefix, 0), seq)
+        for line, event in short_id_events_in_log(raw):
+            short_id = event["data"]["short_id"]
+            parsed = split_short_id(short_id)
+            if parsed is None:
+                continue
+            event_short_ids.add(short_id)
+            prefix, seq = parsed
             max_observed[prefix] = max(max_observed.get(prefix, 0), seq)
-        event_short_ids.update(file_ids)
-        if file_occurrences is not None:
-            occurrences.extend(file_occurrences)
+            if include_occurrences:
+                task_id = event.get("task_id")
+                if not isinstance(task_id, str) or not task_id:
+                    task_id = path.stem if path.stem != "_lifecycle" else None
+                event_id = event.get("id")
+                event_type = event.get("type")
+                occurrences.append(
+                    ShortIdOccurrence(
+                        short_id=short_id,
+                        task_id=task_id,
+                        path=path,
+                        line=line,
+                        event_id=event_id if isinstance(event_id, str) else None,
+                        event_type=event_type if isinstance(event_type, str) else None,
+                        source="event",
+                    )
+                )
 
     if index is None:
         index = load_id_index(lattice_dir)
@@ -271,15 +242,9 @@ def short_id_inventory(
 
     return ShortIdInventory(
         max_observed=max_observed,
-        max_in_events=max_in_events,
         event_short_ids=frozenset(event_short_ids),
         occurrences=tuple(occurrences),
     )
-
-
-def observed_short_ids(lattice_dir: Path) -> set[str]:
-    """Return every valid short ID recorded in logs or the ID map."""
-    return {occurrence.short_id for occurrence in short_id_inventory(lattice_dir).occurrences}
 
 
 def max_observed_short_ids(lattice_dir: Path) -> dict[str, int]:
