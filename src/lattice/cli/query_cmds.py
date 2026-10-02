@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 from pathlib import Path
 
 import click
@@ -447,9 +448,13 @@ def next_cmd(
     """
     is_json = output_json
 
+    claim_actor: str | None = None
+    claim_actor_name: str | None = None
     if claim:
         board = board_or_exit(is_json)
         caller = caller_from_context()
+        claim_actor = caller.actor
+        claim_actor_name = caller.actor_name
         no_actor = caller.actor is None and caller.actor_name is None
         # On a hosted checkout the server defaults the actor (SPEC §9.5).
         if no_actor and not is_hosted(board):
@@ -499,7 +504,13 @@ def next_cmd(
         claim_plan_content = _read_plan_content_for_claim(
             lattice_dir, task_id, selected.get("description")
         )
-        claim_next_steps = _planning_claim_next_steps(task_id, display_id, claim_plan_content)
+        claim_next_steps = _planning_claim_next_steps(
+            task_id,
+            display_id,
+            claim_plan_content,
+            actor=claim_actor,
+            actor_name=claim_actor_name,
+        )
         if not is_json and claim_plan_content is None:
             from lattice.cli.task_cmds import compute_next_steps
 
@@ -579,9 +590,16 @@ def _planning_claim_next_steps(
     task_id: str,
     display_id: str,
     plan_content: str | None,
+    *,
+    actor: str | None,
+    actor_name: str | None,
 ) -> dict:
     """Build the claim-only status command and its plan-specific action."""
     command = f"{program_name()} status {display_id} planned"
+    if actor is not None:
+        command += f" --actor {shlex.quote(actor)}"
+    if actor_name is not None:
+        command += f" --name {shlex.quote(actor_name)}"
     return {
         "action": "write_plan" if plan_content is None else "move_to_planned",
         "command": command,

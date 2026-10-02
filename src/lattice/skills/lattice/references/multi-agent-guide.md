@@ -60,7 +60,7 @@ lattice next --actor agent:worker-1 --claim
 
 `lattice next` considers priority, dependencies, and blockers to suggest the best task.
 
-On the complete plan-review route, `next --claim` enters or stays in `in_planning`, including when a substantive plan exists. Write the plan if needed, run the returned `lattice status <task> planned` command with the same `--actor` or `--name`, follow its review output, then explicitly move to `in_progress`; do not re-claim to advance it.
+On the complete plan-review route, `next --claim` enters or stays in `in_planning`, including when a substantive plan exists. Write the plan if needed, run the returned `lattice status <task> planned` command, which includes the identity option supplied for the claim, and follow its review output, then explicitly move to `in_progress`; do not re-claim to advance it.
 
 ### 5. Handling Blocks
 

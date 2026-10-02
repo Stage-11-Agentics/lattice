@@ -1425,7 +1425,7 @@ Additionally, `lattice advance N` processed multiple tasks in a single context w
   makes `lattice status <task> planned` the explicit transition that can fire
   configured plan review; a convenience claim must never skip that gate.
 - The route is structural and does not inspect auto-review toggles. The claim
-  names the next command in human output and `data.next_steps.command`; callers
-  add the same `--actor` or `--name` used for the claim. Follow the status
-  output about review, then explicitly move to `in_progress`. Other workflow
-  configurations and claim statuses keep their existing behavior.
+  names a ready-to-run command in human output and `data.next_steps.command`,
+  including the same `--actor` or `--name` supplied for the claim when present.
+  Follow the status output about review, then explicitly move to `in_progress`.
+  Other workflow configurations and claim statuses keep their existing behavior.

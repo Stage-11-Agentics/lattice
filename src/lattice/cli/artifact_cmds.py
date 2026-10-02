@@ -143,7 +143,8 @@ def artifact_show(art_id: str, output_json: bool) -> None:
     if is_json:
         click.echo(json_envelope(True, data=data))
     else:
-        click.echo(_artifact_human_output(metadata, content, payload_path), nl=False)
+        human_output = _artifact_human_output(metadata, content, payload_path)
+        click.echo(human_output, nl=not human_output.endswith("\n"))
 
 
 def _safe_payload_parts(stored_name: object) -> tuple[str, ...] | None:

@@ -144,7 +144,7 @@ Or more concisely: "Use `lattice next --actor agent:openclaw --claim` to pick a 
 Here's what happens:
 
 1. The agent runs `lattice next --actor agent:openclaw --claim` — finds the highest-priority ready task and assigns it.
-2. On the complete plan-review route, the claim stops in `in_planning`, even when a substantive plan exists. Read the task details and linked context, then use the returned `lattice status <task> planned` command with the same `--actor` or `--name` used for the claim. Write a missing or scaffold plan first; otherwise run the command directly. Follow its output about review, then explicitly move to `in_progress` before work. Do not re-claim to advance a task already in planning.
+2. On the complete plan-review route, the claim stops in `in_planning`, even when a substantive plan exists. Read the task details and linked context, then use the returned `lattice status <task> planned` command, which includes the identity option supplied for the claim. Write a missing or scaffold plan first; otherwise run the command directly. Follow its output about review, then explicitly move to `in_progress` before work. Do not re-claim to advance a task already in planning.
 3. The agent reads the task details and any notes from previous sessions
 4. The agent does the work — writes code, runs tests, iterates
 5. The agent leaves a comment: `lattice comment APP-2 "Set up OAuth with Google provider. Config in .env.example." --actor agent:openclaw`

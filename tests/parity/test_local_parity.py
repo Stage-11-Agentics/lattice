@@ -64,7 +64,7 @@ def test_claims_golden_records_the_explicit_plan_review_gate(mode: str) -> None:
         assert first["status"] == reclaim["status"] == "in_planning"
         assert first["next_steps"] == {
             "action": "write_plan",
-            "command": "lattice status PAR-1 planned",
+            "command": "lattice status PAR-1 planned --actor agent:worker",
             "plan_path": "plans/<ID-1>.md",
             "then": "planned",
         }
@@ -72,21 +72,27 @@ def test_claims_golden_records_the_explicit_plan_review_gate(mode: str) -> None:
         substantive = claims_for("agent:other")[0]["stdout"]["json"]["data"]
         assert substantive["status"] == "in_planning"
         assert substantive["next_steps"]["action"] == "move_to_planned"
-        assert substantive["next_steps"]["command"] == "lattice status PAR-2 planned"
+        assert substantive["next_steps"]["command"] == (
+            "lattice status PAR-2 planned --actor agent:other"
+        )
     else:
         first = worker_claims[0]["stdout"]["lines"]
         reclaim = worker_claims[1]["stdout"]["lines"]
         assert first[0].startswith("PAR-1  in_planning")
         assert first[1] == "Assigned to agent:worker."
         assert first[2] == "Next: write the plan in plans/<ID-1>.md, then move to planned."
-        assert first[3] == "Next: run 'lattice status PAR-1 planned' after writing the plan."
+        assert first[3] == (
+            "Next: run 'lattice status PAR-1 planned --actor agent:worker' after writing the plan."
+        )
         assert reclaim[-1] == (
-            "Next: run 'lattice status PAR-1 planned' to enter planned and follow its review hint."
+            "Next: run 'lattice status PAR-1 planned --actor agent:worker' "
+            "to enter planned and follow its review hint."
         )
         substantive = claims_for("agent:other")[0]["stdout"]["lines"]
         assert substantive[0].startswith("PAR-2  in_planning")
         assert substantive[-1] == (
-            "Next: run 'lattice status PAR-2 planned' to enter planned and follow its review hint."
+            "Next: run 'lattice status PAR-2 planned --actor agent:other' "
+            "to enter planned and follow its review hint."
         )
 
     refusal = next(

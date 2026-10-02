@@ -182,7 +182,9 @@ class TestNextClaim:
         assert parsed["data"]["assigned_to"] == "agent:claude"
         assert parsed["data"]["status"] == "in_planning"
         label = parsed["data"].get("short_id") or task_id
-        assert parsed["data"]["next_steps"]["command"] == f"lattice status {label} planned"
+        assert parsed["data"]["next_steps"]["command"] == (
+            f"lattice status {label} planned --actor agent:claude"
+        )
 
         # Verify the task was actually updated on disk
         show_result = invoke("show", task_id, "--json")
@@ -226,7 +228,7 @@ class TestNextClaim:
         label = parsed["data"].get("short_id") or task_id
         assert parsed["data"]["next_steps"] == {
             "action": "move_to_planned",
-            "command": f"lattice status {label} planned",
+            "command": f"lattice status {label} planned --actor agent:claude",
             "plan_path": f"plans/{task_id}.md",
             "then": "planned",
         }
@@ -248,7 +250,7 @@ class TestNextClaim:
         label = parsed["data"].get("short_id") or task_id
         assert parsed["data"]["next_steps"] == {
             "action": "write_plan",
-            "command": f"lattice status {label} planned",
+            "command": f"lattice status {label} planned --actor agent:claude",
             "plan_path": f"plans/{task_id}.md",
             "then": "planned",
         }
@@ -265,7 +267,8 @@ class TestNextClaim:
         assert "Assigned to agent:claude." in result.output
         assert "Next: write the plan in plans/" in result.output
         assert (
-            f"Next: run 'lattice status {label} planned' after writing the plan." in result.output
+            f"Next: run 'lattice status {label} planned --actor agent:claude' after writing the plan."
+            in result.output
         )
 
         quiet = invoke("next", "--actor", "agent:claude", "--claim", "--quiet")
@@ -285,7 +288,7 @@ class TestNextClaim:
         assert result.output.startswith(f"{label}  in_planning")
         assert "Assigned to agent:claude." in result.output
         assert (
-            f"Next: run 'lattice status {label} planned' to enter planned and follow its review hint."
+            f"Next: run 'lattice status {label} planned --actor agent:claude' to enter planned and follow its review hint."
             in result.output
         )
         assert "Next: write the plan in plans/" not in result.output
@@ -418,8 +421,9 @@ class TestNextWithSessionName:
         assert parsed["ok"] is True
         assert parsed["data"]["status"] == "in_planning"
         label = task.get("short_id") or task["id"]
-        assert parsed["data"]["next_steps"]["command"] == f"lattice status {label} planned"
-        assert "--name" not in parsed["data"]["next_steps"]["command"]
+        assert parsed["data"]["next_steps"]["command"] == (
+            f"lattice status {label} planned --name Argus-1"
+        )
         # assigned_to should be a structured dict with name
         assigned = parsed["data"]["assigned_to"]
         assert isinstance(assigned, dict)

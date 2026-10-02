@@ -372,7 +372,7 @@ class TestArtifactShow:
                 f"  created_at: {metadata['created_at']}",
             )
         )
-        assert human.stdout == f"{expected_header}\n\nPASS\n\nNo findings."
+        assert human.stdout == f"{expected_header}\n\nPASS\n\nNo findings.\n"
 
     def test_show_binary_payload(self, invoke, initialized_root, tmp_path) -> None:
         task_id = self._task_id(invoke)
@@ -390,6 +390,7 @@ class TestArtifactShow:
         human = invoke("artifact", "show", art_id)
         assert "Binary payload (application/octet-stream, 3 bytes) at " in human.stdout
         assert data["payload_path"] in human.stdout
+        assert human.stdout.endswith("\n")
 
     def test_show_reference_with_url_and_no_payload(self, invoke, initialized_root) -> None:
         task_id = self._task_id(invoke)
@@ -407,6 +408,7 @@ class TestArtifactShow:
         human = invoke("artifact", "show", art_id)
         assert "No stored payload." in human.stdout
         assert "URL: https://example.com/review" in human.stdout
+        assert human.stdout.endswith("\n")
 
     def test_show_lowercase_id_resolves_uppercase_metadata(self, invoke, initialized_root) -> None:
         task_id = self._task_id(invoke)

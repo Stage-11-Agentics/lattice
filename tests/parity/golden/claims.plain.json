@@ -941,7 +941,7 @@
           "PAR-1  in_planning  high  \"High one\"",
           "Assigned to agent:worker.",
           "Next: write the plan in plans/<ID-1>.md, then move to planned.",
-          "Next: run 'lattice status PAR-1 planned' after writing the plan."
+          "Next: run 'lattice status PAR-1 planned --actor agent:worker' after writing the plan."
         ]
       }
     },
@@ -963,7 +963,7 @@
         "lines": [
           "PAR-1  in_planning  high  \"High one\"",
           "Assigned to agent:worker.",
-          "Next: run 'lattice status PAR-1 planned' to enter planned and follow its review hint."
+          "Next: run 'lattice status PAR-1 planned --actor agent:worker' to enter planned and follow its review hint."
         ]
       }
     },
@@ -982,7 +982,7 @@
         "lines": [
           "PAR-1  in_planning  high  \"High one\"",
           "Assigned to agent:worker.",
-          "Next: run 'lattice status PAR-1 planned' to enter planned and follow its review hint."
+          "Next: run 'lattice status PAR-1 planned --actor agent:worker' to enter planned and follow its review hint."
         ]
       }
     },
@@ -1022,7 +1022,7 @@
         "lines": [
           "PAR-2  in_planning  medium  \"Medium one\"",
           "Assigned to agent:other.",
-          "Next: run 'lattice status PAR-2 planned' to enter planned and follow its review hint."
+          "Next: run 'lattice status PAR-2 planned --actor agent:other' to enter planned and follow its review hint."
         ]
       }
     },
@@ -1084,7 +1084,7 @@
         "lines": [
           "PAR-4  in_planning  medium  \"Assigned elsewhere\"",
           "Assigned to agent:third.",
-          "Next: run 'lattice status PAR-4 planned' to enter planned and follow its review hint."
+          "Next: run 'lattice status PAR-4 planned --actor agent:third' to enter planned and follow its review hint."
         ]
       }
     },

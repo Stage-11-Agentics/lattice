@@ -107,7 +107,7 @@ Open Claude Code in your project and type:
 That's it. One command teaches the agent the full lifecycle. Here's what happens behind the scenes:
 
 1. The agent runs `lattice next --claim` — this finds the highest-priority ready task and atomically assigns it.
-2. On the complete plan-review route, the claim stops in `in_planning`, even when the plan already has substantive content. Read the task details and linked context, then use the output's `lattice status <task> planned` command (add the same `--actor` or `--name` used for the claim). Write a missing or scaffold plan first; otherwise run the command directly. Follow its output to see whether review fired, then explicitly move to `in_progress` before working. Do not re-claim to advance a task already in planning.
+2. On the complete plan-review route, the claim stops in `in_planning`, even when the plan already has substantive content. Read the task details and linked context, then use the output's `lattice status <task> planned` command, which includes the identity option supplied for the claim. Write a missing or scaffold plan first; otherwise run the command directly. Follow its output to see whether review fired, then explicitly move to `in_progress` before working. Do not re-claim to advance a task already in planning.
 3. The agent reads any remaining notes from previous sessions
 4. The agent does the work — writes code, runs tests, iterates
 5. The agent commits the changes

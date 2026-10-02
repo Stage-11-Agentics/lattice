@@ -1111,7 +1111,7 @@
             "linked_files": [],
             "next_steps": {
               "action": "write_plan",
-              "command": "lattice status PAR-1 planned",
+              "command": "lattice status PAR-1 planned --actor agent:worker",
               "plan_path": "plans/<ID-1>.md",
               "then": "planned"
             },
@@ -1169,7 +1169,7 @@
             "linked_files": [],
             "next_steps": {
               "action": "move_to_planned",
-              "command": "lattice status PAR-1 planned",
+              "command": "lattice status PAR-1 planned --actor agent:worker",
               "plan_path": "plans/<ID-1>.md",
               "then": "planned"
             },
@@ -1224,7 +1224,7 @@
             "linked_files": [],
             "next_steps": {
               "action": "move_to_planned",
-              "command": "lattice status PAR-1 planned",
+              "command": "lattice status PAR-1 planned --actor agent:worker",
               "plan_path": "plans/<ID-1>.md",
               "then": "planned"
             },
@@ -1300,7 +1300,7 @@
             "linked_files": [],
             "next_steps": {
               "action": "move_to_planned",
-              "command": "lattice status PAR-2 planned",
+              "command": "lattice status PAR-2 planned --actor agent:other",
               "plan_path": "plans/<ID-3>.md",
               "then": "planned"
             },
@@ -1454,7 +1454,7 @@
             "linked_files": [],
             "next_steps": {
               "action": "move_to_planned",
-              "command": "lattice status PAR-4 planned",
+              "command": "lattice status PAR-4 planned --actor agent:third",
               "plan_path": "plans/<ID-10>.md",
               "then": "planned"
             },
