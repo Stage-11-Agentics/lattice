@@ -100,6 +100,38 @@ def has_issue_metadata(lattice_dir: Path) -> bool:
     return isinstance(mapping, dict) and bool(mapping)
 
 
+def has_synced_issue_files(lattice_dir: Path) -> bool:
+    """Whether any synced path exists under ``issues/`` (everything except ``issues/media``).
+
+    This is the version-gate rule: a 0.2.1 client cannot accept any synced file
+    under ``issues/``, including an ``ids.json`` with an empty map. An empty
+    directory scaffold holds no file and does not count.
+    """
+    root = issues_dir(lattice_dir)
+    try:
+        if not stat.S_ISDIR(os.lstat(root).st_mode):
+            return False
+    except OSError:
+        return False
+
+    def walk(directory: Path, top: bool) -> bool:
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    if top and entry.name == "media":
+                        continue
+                    if entry.is_dir(follow_symlinks=False):
+                        if walk(Path(entry.path), False):
+                            return True
+                    else:
+                        return True
+        except OSError:
+            return False
+        return False
+
+    return walk(root, True)
+
+
 def _snapshot_path(lattice_dir: Path, issue_id: str) -> Path:
     return issues_dir(lattice_dir) / f"{issue_id}.json"
 
