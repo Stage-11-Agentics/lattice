@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -13,7 +15,7 @@ from lattice.dashboard import api
 from lattice.ops import Caller, get_operation
 from lattice.ops.task_attach import encode_payload
 from lattice.storage.fs import atomic_write, ensure_lattice_dirs
-from tests.issue_media_helpers import png
+from tests.issue_media_helpers import jpeg, mp4, png
 
 
 @pytest.fixture()
@@ -205,3 +207,117 @@ def test_issue_ref_validation_and_by_length_are_stable(issue_board) -> None:  # 
     long = api.route_get(lattice_dir, "/api/issues", urlencode({"by": "x" * 257}))
     assert long.status == 400
     assert long.envelope["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_comment_with_reply_to_is_refused_not_posted_top_level() -> None:
+    with pytest.raises(api.ApiError, match="top-level"):
+        api.translate_post("/api/issues/LAT-I1/comment", {"body": "Reply", "reply_to": "c1"})
+
+
+def test_file_text_is_held_to_the_ordinary_write_limit_and_media_count_is_bounded() -> None:
+    big = "x" * (api.MAX_REQUEST_BODY_BYTES + 1)
+    with pytest.raises(api.ApiError) as too_big:
+        api.translate_post("/api/issues", {"title": "t", "description": big})
+    assert too_big.value.status == 413
+    media = [{"payload": {}}] * (api.MAX_ISSUE_FILE_MEDIA_ITEMS + 1)
+    with pytest.raises(api.ApiError, match="At most"):
+        api.translate_post("/api/issues", {"title": "t", "media": media})
+
+
+def test_a_video_with_unknown_duration_is_filed_without_it(issue_board) -> None:  # noqa: ANN001
+    board, lattice_dir, config = issue_board
+    enable_issues(lattice_dir, config)
+    request = api.translate_post(
+        "/api/issues",
+        {
+            "title": "WebM",
+            "media": [
+                {
+                    "payload": encode_payload("rec.mp4", mp4()),
+                    "video": {"width": 640, "height": 360, "duration_ms": None},
+                }
+            ],
+        },
+    )
+    assert request.params["media"][0]["video"] == {"width": 640, "height": 360}
+    result = board.execute("issue.file", request.params, Caller(actor="human:atin"))
+    assert result.value["media"][0]["width"] == 640
+
+
+def test_one_unreadable_issue_is_skipped_not_a_500(issue_board) -> None:  # noqa: ANN001
+    board, lattice_dir, config = issue_board
+    enable_issues(lattice_dir, config)
+    good = file_issue(board, "Readable")
+    bad = file_issue(board, "Will be damaged")
+    (lattice_dir / "issues" / f"{bad['id']}.json").write_text("{not json")
+    (lattice_dir / "issues" / "events" / f"{bad['id']}.jsonl").write_text("{not json\n")
+
+    rows = data(api.route_get(lattice_dir, "/api/issues"))
+    assert [row["id"] for row in rows] == [good["id"]]
+    by = data(api.route_get(lattice_dir, "/api/issues", urlencode({"by": "agent:qa"})))
+    assert [row["id"] for row in by] == [good["id"]]
+
+
+def test_dashboard_video_goes_through_the_cli_media_step(  # noqa: ANN001
+    monkeypatch, tmp_path
+) -> None:
+    from lattice.dashboard import media_prep
+    from lattice.integrations import ffmpeg as ffmpeg_mod
+
+    seen = {}
+
+    def fake_prepare(src, content, content_type, sha256):  # noqa: ANN001, ANN202
+        seen["name"] = src.name
+        return ffmpeg_mod.PreparedVideo(
+            b"stripped-" + content[:8],
+            content_type,
+            video={"width": 2, "height": 2, "duration_ms": 1000},
+            frames=[(0, jpeg())],
+            converted_from={"content_type": content_type, "size_bytes": 1, "sha256": "a" * 64},
+            notes=[("remuxed", "metadata_stripped")],
+        )
+
+    monkeypatch.setattr(ffmpeg_mod, "prepare_video", fake_prepare)
+    item = {
+        "payload": encode_payload("clip.mp4", mp4()),
+        "video": {"width": 640, "height": 360, "duration_ms": 5},
+        "frames": [{"t_ms": 0, "payload": encode_payload("t0000.000s.jpg", jpeg())}],
+    }
+    [prepared] = media_prep.prepare_issue_media(
+        [item, {"payload": encode_payload("a.png", png())}]
+    )[:1]
+    assert seen["name"].endswith(".mp4")
+    assert prepared["video"] == {"width": 2, "height": 2, "duration_ms": 1000}
+    assert prepared["converted_from"]["sha256"] == "a" * 64
+    from lattice.ops.task_attach import decode_payload
+
+    assert decode_payload(prepared["payload"])[1].startswith(b"stripped-")
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg")
+def test_dashboard_video_loses_its_location_tags(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("LATTICE_FFMPEG")  # the suite turns ffmpeg off; this test needs it
+    from lattice.dashboard import media_prep
+    from lattice.ops.task_attach import decode_payload
+
+    src = tmp_path / "geo.mp4"
+    subprocess.run(
+        [
+            "ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc=duration=1:size=64x48:rate=5",
+            "-pix_fmt", "yuv420p", "-metadata", "location=+37.7749-122.4194/",
+            "-metadata", "title=home", str(src),
+        ],
+        check=True,
+    )  # fmt: skip
+    [prepared] = media_prep.prepare_issue_media(
+        [{"payload": encode_payload("geo.mp4", src.read_bytes())}]
+    )
+    out = tmp_path / "out.mp4"
+    out.write_bytes(decode_payload(prepared["payload"])[1])
+    tags = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_format", str(out)], capture_output=True, text=True
+    ).stdout
+    assert "location" not in tags.lower() and "37.7749" not in tags
+    assert prepared.get("frames")

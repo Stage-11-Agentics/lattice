@@ -42,6 +42,12 @@ DEFAULT_ACTOR = "dashboard:web"
 #: Maximum allowed request body size (1 MiB), to refuse oversized payloads.
 MAX_REQUEST_BODY_BYTES = 1_048_576
 
+#: A hosted board has no issue log yet (LAT-368): reads and writes answer this.
+ISSUES_UNAVAILABLE = (400, "LOCAL_ONLY", "Issues are not available on this board yet.")
+
+#: The most media items one dashboard filing may carry; it sizes the filing's body allowance.
+MAX_ISSUE_FILE_MEDIA_ITEMS = 64
+
 #: Refusals of a status change that ``lattice status --force --reason`` overrides.
 FORCEABLE_CODES = frozenset(
     {"INVALID_TRANSITION", "PLAN_REQUIRED", "COMPLETION_BLOCKED", "REVIEW_CYCLE_LIMIT"}
@@ -251,6 +257,13 @@ def _normalize_issue_detail(detail: dict) -> dict:
     return issue
 
 
+def _warn_unreadable_issue(path: Path, exc: Exception) -> None:
+    """One unreadable issue file must not take the whole Inbox down, as in the CLI."""
+    import sys
+
+    sys.stderr.write(f"warning: skipping unreadable issue file {path}: {exc}\n")
+
+
 def _issue_list_adapter(ld: Path, actor: str | None = None) -> list[dict]:
     """Every issue, or with *actor* those it filed or commented on (any state).
 
@@ -269,10 +282,10 @@ def _issue_list_adapter(ld: Path, actor: str | None = None) -> list[dict]:
     )
 
     if actor is None:
-        views = issue_views(ld, list_issue_snapshots(ld))
+        views = issue_views(ld, list_issue_snapshots(ld, on_unreadable=_warn_unreadable_issue))
         return [_normalize_issue_detail(view) for view in views]
     rows = []
-    for view in issues_by(ld, actor):
+    for view in issues_by(ld, actor, on_unreadable=_warn_unreadable_issue):
         comments = _flatten_issue_comments(issue_comments(read_issue_events(ld, view["id"])))
         mine = [c for c in comments if actor_matches(c.get("author"), actor)]
         times = [c.get("created_at") or "" for c in mine]
@@ -971,6 +984,13 @@ def _task_write(task_id: str, sub: str, body: dict) -> WriteRequest:
     raise ApiError(404, "NOT_FOUND", f"Not found: /api/tasks/{task_id}/{sub}")
 
 
+def _without_unknown_video_fields(item: dict) -> dict:
+    video = item.get("video")
+    if isinstance(video, dict) and any(value is None for value in video.values()):
+        return {**item, "video": {k: v for k, v in video.items() if v is not None}}
+    return item
+
+
 def translate_post(path: str, body: Any) -> WriteRequest:
     """The operation ``POST <path>`` with JSON *body* runs.
 
@@ -1026,9 +1046,22 @@ def translate_post(path: str, body: Any) -> WriteRequest:
         description = body.get("description", "")
         if not isinstance(description, str):
             raise _invalid("'description' must be a string")
+        # The body allowance is sized for media; the text fields stay at the
+        # ordinary write limit.
+        if len((title + description).encode("utf-8")) > MAX_REQUEST_BODY_BYTES:
+            raise ApiError(
+                413,
+                "PAYLOAD_TOO_LARGE",
+                f"Title and description together exceed {MAX_REQUEST_BODY_BYTES} bytes",
+            )
         media = body.get("media", [])
         if not isinstance(media, list) or not all(isinstance(item, dict) for item in media):
             raise _invalid("'media' must be an array of objects")
+        if len(media) > MAX_ISSUE_FILE_MEDIA_ITEMS:
+            raise _invalid(f"At most {MAX_ISSUE_FILE_MEDIA_ITEMS} media items per filing")
+        # A browser recording can report no duration (it is display data): leave
+        # an unknown dimension out rather than send null.
+        media = [_without_unknown_video_fields(item) for item in media]
 
         params = {"title": title, "description": description, "media": tuple(media)}
 
@@ -1044,8 +1077,9 @@ def translate_post(path: str, body: Any) -> WriteRequest:
         if not separator or sub != "comment":
             raise ApiError(404, "NOT_FOUND", f"Not found: {path}")
         _require_issue_ref(issue_id)
-        if body.get("parent_id") is not None:
-            raise _invalid("The dashboard posts top-level comments only")
+        for key in ("parent_id", "reply_to"):
+            if body.get(key) is not None:
+                raise _invalid("The dashboard posts top-level comments only")
         text = body.get("body")
         if not isinstance(text, str) or not text.strip():
             raise _invalid("Missing or empty 'body' field")
