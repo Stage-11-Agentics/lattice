@@ -588,4 +588,6 @@ def create_server(
         root = Path(lattice_dir).parent
         board = DashboardBoard(LocalBoard(root=root, start=root))
     handler_cls = _make_handler_class(board, readonly=readonly)
-    return ThreadingHTTPServer((host, port), handler_cls)
+    server = ThreadingHTTPServer((host, port), handler_cls)
+    server._lattice_configured_host = host
+    return server

@@ -243,7 +243,9 @@ def test_malformed_issue_snapshot_returns_structured_http_error(
     assert envelope["error"]["code"] == "INTEGRITY_ERROR"
 
 
-def test_network_bind_allows_lan_host_for_api_and_media_gets(served) -> None:  # noqa: ANN001
+def test_network_bind_issue_media_requires_configured_host_but_api_allows_lan_host(
+    served,
+) -> None:  # noqa: ANN001
     _local_server, issue, ld, _config = served
     server = create_server(ld, "0.0.0.0", 0)
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01})
@@ -252,9 +254,22 @@ def test_network_bind_allows_lan_host_for_api_and_media_gets(served) -> None:  #
     try:
         assert server.server_address[0] == "0.0.0.0"
         host = f"box.lan:{server.server_address[1]}"
-        for path in ("/api/tasks", url(issue, 0)):
-            status, _headers, _body = get_raw(server, path, connect_host="127.0.0.1", Host=host)
-            assert status == 200
+        status, _headers, _body = get_raw(
+            server, "/api/tasks", connect_host="127.0.0.1", Host=host
+        )
+        assert status == 200
+        assert get_raw(server, url(issue, 0), connect_host="127.0.0.1", Host=host)[0] == 403
+
+        configured_host = f"0.0.0.0:{server.server_address[1]}"
+        assert (
+            get_raw(
+                server,
+                url(issue, 0),
+                connect_host="127.0.0.1",
+                Host=configured_host,
+            )[0]
+            == 200
+        )
     finally:
         server.shutdown()
         server.server_close()
