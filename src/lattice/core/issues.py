@@ -395,7 +395,7 @@ def issue_view(
         "source": snapshot.get("source"),
         "filed_by": snapshot.get("filed_by"),
         "filed_at": snapshot.get("filed_at"),
-        "filed_origin": filed_origin or issue_origin(snapshot.get("filed_origin")),
+        "filed_origin": filed_origin,
         "closure": snapshot.get("closure"),
         "tasks": tasks,
         "media": [dict(m) for m in snapshot.get("media", [])],
@@ -644,14 +644,20 @@ def actor_with_origin(actor: str | dict | None, origin: object) -> str:
 
 
 def actor_matches(actor: object, requested: str) -> bool:
-    """Match the actor name or stable session ID accepted by ``issue list --by``."""
+    """Match a bare actor name/session or its canonical and legacy actor key."""
     if isinstance(actor, dict):
-        return requested in {
-            actor.get("name"),
-            actor.get("base_name"),
-            actor.get("session"),
-        }
-    return actor == requested
+        name = actor.get("name")
+        base_name = actor.get("base_name")
+        prefix = "human" if actor.get("model") == "human" else "agent"
+        aliases = {name, base_name, actor.get("session")}
+        aliases.update(f"{prefix}:{value}" for value in (name, base_name) if value)
+        return requested in aliases
+    if isinstance(actor, str):
+        prefix, separator, name = actor.partition(":")
+        return actor == requested or bool(
+            separator and prefix in {"human", "agent"} and name == requested
+        )
+    return False
 
 
 def issue_activity(events: Iterable[dict], actor: str) -> str | None:

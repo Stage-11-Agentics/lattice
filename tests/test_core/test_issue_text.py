@@ -11,6 +11,7 @@ from lattice.core.events import create_issue_event
 from lattice.core.issues import (
     TaskInfo,
     actor_with_origin,
+    actor_matches,
     apply_issue_event,
     check_edit_title,
     issue_comment_events,
@@ -55,6 +56,21 @@ def old_issue(text: str = "A short title\nMore detail") -> dict:
         None,
         event("issue_filed", {"seq": 7, "short_id": "LAT-I7", "text": text}, 1),
     )
+
+
+def test_actor_matches_full_and_bare_prefixed_keys() -> None:
+    human = {
+        "name": "Atin-1",
+        "base_name": "Atin",
+        "session": "session-at-in-1",
+        "model": "human",
+    }
+    assert actor_matches(human, "human:Atin-1")
+    assert actor_matches(human, "human:Atin")
+    assert actor_matches(human, "Atin-1")
+    assert actor_matches(human, "Atin")
+    assert actor_matches("human:Atin", "human:Atin")
+    assert actor_matches("human:Atin", "Atin")
 
 
 @pytest.mark.parametrize(

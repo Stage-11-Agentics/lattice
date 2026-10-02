@@ -399,7 +399,12 @@ def issue() -> None:
 @issue.command("file")
 @click.argument("title")
 @click.option("--description", default=None, help="A longer explanation of the issue.")
-@click.option("--description-file", default=None, help="Read the description from a file.")
+@click.option(
+    "--description-file",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="Read the description from a file.",
+)
 @click.option(
     "--confidence",
     type=click.Choice(["possible", "definite"]),
@@ -452,16 +457,7 @@ def issue_file(
         )
     if title == "-":
         title = _read_stdin_text()
-    if description is not None or description_file is not None:
-        description = resolve_body(
-            description,
-            description_file,
-            is_json,
-            what="issue description",
-            arg_label="--description",
-        )
-        if description == "-":
-            description = _read_stdin_text()
+    description = _resolve_issue_description(description, description_file, is_json)
     pointers, records, kept = _collect_evidence(evidence, checked[1], is_json)
     _lattice_dir, result = _write(
         "issue.file",
@@ -512,42 +508,25 @@ def issue_list(
     states: tuple[str, ...], show_all: bool, by_actor: str | None, output_json: bool
 ) -> None:
     """List issues: open, then linked, each oldest first."""
-    from lattice.core.issues import (
-        DEFAULT_LIST_STATES,
-        ISSUE_STATES,
-        actor_matches,
-        format_issue_row,
-        id_width,
-        issue_activity,
-    )
-    from lattice.storage.issues import issue_views, list_issue_snapshots, read_issue_events
+    from lattice.core.issues import DEFAULT_LIST_STATES, ISSUE_STATES, format_issue_row, id_width
+    from lattice.storage.issues import issue_views, issues_by, list_issue_snapshots
 
     is_json = output_json
     lattice_dir, _config = _require_issue_log(is_json)
-    snapshots = list_issue_snapshots(lattice_dir, on_unreadable=_warn_unreadable)
-    views = issue_views(lattice_dir, snapshots)
-    wanted = ISSUE_STATES if show_all or by_actor is not None else (states or DEFAULT_LIST_STATES)
+    if by_actor is not None:
+        wanted = states or ISSUE_STATES
+        shown = issues_by(
+            lattice_dir,
+            by_actor,
+            states=states or None,
+            on_unreadable=_warn_unreadable,
+        )
+    else:
+        snapshots = list_issue_snapshots(lattice_dir, on_unreadable=_warn_unreadable)
+        views = issue_views(lattice_dir, snapshots)
+        wanted = ISSUE_STATES if show_all else (states or DEFAULT_LIST_STATES)
+        shown = [view for view in views if view["state"] in wanted]
     order = {state: i for i, state in enumerate(ISSUE_STATES)}
-    shown = []
-    for view in views:
-        if view["state"] not in wanted:
-            continue
-        if by_actor is not None:
-            activity = "filed" if actor_matches(view.get("filed_by"), by_actor) else None
-            if activity is None:
-                try:
-                    activity = issue_activity(read_issue_events(lattice_dir, view["id"]), by_actor)
-                except OpError as exc:
-                    from lattice.storage.issues import issues_dir
-
-                    _warn_unreadable(
-                        issues_dir(lattice_dir) / "events" / f"{view['id']}.jsonl", exc
-                    )
-                    continue
-            if activity is None:
-                continue
-            view = {**view, "activity": activity}
-        shown.append(view)
     shown.sort(key=lambda v: (order[v["state"]], v.get("seq") or 0))
     if is_json:
         click.echo(json_envelope(True, data=shown))
@@ -558,7 +537,7 @@ def issue_list(
     counts = {state: sum(1 for v in shown if v["state"] == state) for state in ISSUE_STATES}
     summary = ", ".join(f"{counts[s]} {s}" for s in ISSUE_STATES if s in wanted)
     footer = f"{len(shown)} issue{'s' if len(shown) != 1 else ''} ({summary})"
-    hidden = len(views) - len(shown)
+    hidden = len(views) - len(shown) if by_actor is None else 0
     if hidden and not show_all and by_actor is None:
         footer += f"; {hidden} other{'s' if hidden != 1 else ''} hidden (--all to show)"
     click.echo(footer)
@@ -652,10 +631,7 @@ def issue_show(issue_id: str, output_json: bool) -> None:
     click.echo("History:")
     for event in events:
         actor = actor_with_origin(event.get("actor"), event.get("origin"))
-        click.echo(
-            f"  {event.get('ts')}  {event.get('type')}  "
-            f"{actor or get_actor_display(event.get('actor') or '?')}"
-        )
+        click.echo(f"  {event.get('ts')}  {event.get('type')}  {actor}")
 
 
 @issue.command("promote")
@@ -1059,7 +1035,12 @@ def _resolve_issue_description(
 @click.option(
     "--description", default=None, help="Replace the issue description; empty clears it."
 )
-@click.option("--description-file", default=None, help="Read the description from a file.")
+@click.option(
+    "--description-file",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="Read the description from a file.",
+)
 @common_options
 def issue_edit(
     issue_id: str,
@@ -1112,7 +1093,13 @@ def issue_edit(
 @issue.command("comment")
 @click.argument("issue_id")
 @click.argument("text", required=False)
-@click.option("--file", "file_path", default=None, help="Read the comment from a file.")
+@click.option(
+    "--file",
+    "file_path",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="Read the comment from a file.",
+)
 @click.option("--reply-to", default=None, help="Reply to a top-level comment ID.")
 @common_options
 def issue_comment(

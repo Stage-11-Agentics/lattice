@@ -22,7 +22,10 @@ from pathlib import Path
 
 from lattice.core.errors import OpError
 from lattice.core.issues import (
+    ISSUE_STATES,
     TaskInfo,
+    actor_matches,
+    issue_activity,
     issue_comments,
     issue_origin,
     issue_view,
@@ -286,6 +289,42 @@ def issue_views(lattice_dir: Path, snapshots: list[dict]) -> list[dict]:
     return views
 
 
+def issues_by(
+    lattice_dir: Path,
+    actor: str,
+    *,
+    states: Iterable[str] | None = None,
+    on_unreadable: OnUnreadable | None = None,
+) -> list[dict]:
+    """The issue views filed or commented on by *actor*.
+
+    Each result adds ``activity`` (``filed`` takes precedence). With no state
+    filter, every state is searched; ``on_unreadable`` reports and skips logs
+    that cannot be read.
+    """
+    wanted = set(ISSUE_STATES if states is None else states)
+    snapshots = list_issue_snapshots(lattice_dir, on_unreadable=on_unreadable)
+    views = issue_views(lattice_dir, snapshots)
+    order = {state: index for index, state in enumerate(ISSUE_STATES)}
+    matches = []
+    for view in views:
+        if view["state"] not in wanted:
+            continue
+        activity = "filed" if actor_matches(view.get("filed_by"), actor) else None
+        if activity is None:
+            path = _events_path(lattice_dir, view["id"])
+            try:
+                activity = issue_activity(read_issue_events(lattice_dir, view["id"]), actor)
+            except OpError as exc:
+                if on_unreadable is None:
+                    raise
+                on_unreadable(path, exc)
+                continue
+        if activity is not None:
+            matches.append({**view, "activity": activity})
+    return sorted(matches, key=lambda view: (order[view["state"]], view.get("seq") or 0))
+
+
 def issue_detail(
     lattice_dir: Path,
     issue_id: str,
@@ -457,6 +496,7 @@ __all__ = [
     "issue_views",
     "issue_detail",
     "issue_write_context",
+    "issues_by",
     "issues_dir",
     "issues_linked_to",
     "list_issue_snapshots",

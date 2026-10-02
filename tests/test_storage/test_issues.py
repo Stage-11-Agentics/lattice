@@ -11,6 +11,7 @@ from lattice.core.errors import OpError
 from lattice.core.events import create_issue_event
 from lattice.core.ids import generate_issue_id
 from lattice.core.issues import apply_issue_event, format_issue_short_id
+from lattice.storage import issues as issue_storage
 from lattice.storage.issues import (
     allocate_issue_seq,
     current_issue,
@@ -31,11 +32,17 @@ def board(initialized_root: Path) -> Path:
     return initialized_root / ".lattice"
 
 
-def file_issue(board: Path, text: str = "Footer overlaps", code: str | None = "LAT") -> dict:
+def file_issue(
+    board: Path,
+    text: str = "Footer overlaps",
+    code: str | None = "LAT",
+    *,
+    actor: str | dict = "agent:qa",
+) -> dict:
     issue_id = generate_issue_id()
     seq = allocate_issue_seq(board, issue_id)
     data = {"seq": seq, "short_id": format_issue_short_id(code, seq), "text": text}
-    event = create_issue_event("issue_filed", issue_id, "agent:qa", data)
+    event = create_issue_event("issue_filed", issue_id, actor, data)
     snapshot = apply_issue_event(None, event)
     with issue_write_context(board, issue_id):
         write_issue_events(board, issue_id, [event], snapshot)
@@ -43,11 +50,17 @@ def file_issue(board: Path, text: str = "Footer overlaps", code: str | None = "L
 
 
 def append(
-    board: Path, issue_id: str, etype: str, data: dict, *, origin: dict | None = None
+    board: Path,
+    issue_id: str,
+    etype: str,
+    data: dict,
+    *,
+    origin: dict | None = None,
+    actor: str | dict = "agent:qa",
 ) -> dict:
     with issue_write_context(board, issue_id):
         snapshot = current_issue(board, issue_id)
-        event = create_issue_event(etype, issue_id, "agent:qa", data)
+        event = create_issue_event(etype, issue_id, actor, data)
         if origin is not None:
             event["origin"] = origin
         snapshot = apply_issue_event(snapshot, event)
@@ -108,6 +121,32 @@ def test_resolve_refusals(board: Path, raw: str, code: str) -> None:
     with pytest.raises(OpError) as exc:
         resolve_issue(board, raw)
     assert exc.value.code == code
+
+
+def test_issues_by_exposes_dashboard_actor_keys_and_activity(board: Path) -> None:
+    session_actor = {
+        "name": "Atin-1",
+        "base_name": "Atin",
+        "serial": 1,
+        "session": "session-at-in-1",
+        "model": "human",
+    }
+    filed = file_issue(board, "Filed by Atin", actor=session_actor)
+    commented = file_issue(board, "Commented by someone", actor="agent:qa")
+    append(
+        board,
+        commented["id"],
+        "issue_comment_added",
+        {"body": "A comment from the session actor."},
+        actor=session_actor,
+    )
+
+    reader = getattr(issue_storage, "issues_by", None)
+    assert callable(reader), "LAT-365 needs a reusable storage reader for the person view"
+    expected = [(filed["short_id"], "filed"), (commented["short_id"], "commented")]
+    for key in ("human:Atin-1", "human:Atin", "Atin-1", "Atin", "session-at-in-1"):
+        views = reader(board, key)
+        assert [(view["short_id"], view["activity"]) for view in views] == expected
 
 
 def test_rebuild_matches_the_incremental_files(board: Path) -> None:

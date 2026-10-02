@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from lattice.cli.main import cli
@@ -101,6 +102,25 @@ def test_file_validation_writes_nothing(initialized_root: Path) -> None:
         assert result.exit_code == 1, result.output
         assert json.loads(result.output)["error"]["code"] == "VALIDATION_ERROR"
     assert not (root / ".lattice" / "issues").exists()
+
+
+@pytest.mark.parametrize("command", ["comment", "file", "edit"])
+def test_issue_text_file_options_reject_missing_paths_cleanly(
+    initialized_root: Path, command: str
+) -> None:
+    root = _board(initialized_root)
+    missing = str(root / "missing.txt")
+    args = {
+        "comment": ["issue", "comment", "LAT-I1", "--file", missing, *ACTOR, "--json"],
+        "file": ["issue", "file", "A title", "--description-file", missing, *ACTOR, "--json"],
+        "edit": ["issue", "edit", "LAT-I1", "--description-file", missing, *ACTOR, "--json"],
+    }[command]
+
+    result = BoardRunner(root).invoke(cli, args)
+
+    assert result.exit_code == 2, result.output
+    assert "does not exist" in result.output
+    assert "Traceback" not in result.output
 
 
 def test_edit_comments_quiet_reply_and_json(initialized_root: Path) -> None:
@@ -239,6 +259,12 @@ def test_list_by_linked_task_and_promote_description(initialized_root: Path) -> 
     assert "commented" in commented_human
     assert "--all to show" not in commented_human
 
+    open_only = runner.invoke(
+        cli, ["issue", "list", "--by", "agent:qa", "--state", "open", "--json"]
+    )
+    assert open_only.exit_code == 0, open_only.output
+    assert [row["title"] for row in json.loads(open_only.output)["data"]] == ["First title"]
+
     runner.invoke(cli, ["create", "Target task", *ACTOR])
     runner.invoke(cli, ["issue", "link", "LAT-I1", "LAT-1", *ACTOR])
     task = runner.invoke(cli, ["show", "LAT-1", "--json"])
@@ -253,6 +279,38 @@ def test_list_by_linked_task_and_promote_description(initialized_root: Path) -> 
     assert task["title"] == "First title"
     assert "First detail" in task["description"]
     assert "Comments: 1 (lattice issue show LAT-I1)" in task["description"]
+
+
+def test_list_by_matches_dashboard_actor_keys(initialized_root: Path) -> None:
+    root = _board(initialized_root)
+    runner = BoardRunner(root)
+    filed = runner.invoke(cli, ["issue", "file", "A title", *ACTOR, "--json"])
+    assert filed.exit_code == 0, filed.output
+    issue_id = json.loads(filed.output)["data"]["id"]
+    actor = {
+        "name": "Atin-1",
+        "base_name": "Atin",
+        "serial": 1,
+        "session": "session-at-in-1",
+        "model": "human",
+    }
+    comment = create_issue_event(
+        "issue_comment_added",
+        issue_id,
+        actor,
+        {"body": "A comment from the session actor."},
+        event_id="ev_01K00000000000000000000002",
+        ts="2026-10-02T10:00:00Z",
+    )
+    log = root / ".lattice" / "issues" / "events" / f"{issue_id}.jsonl"
+    with log.open("a", encoding="utf-8") as stream:
+        stream.write(serialize_event(comment))
+
+    for key in ("human:Atin-1", "human:Atin", "Atin-1", "Atin"):
+        found = runner.invoke(cli, ["issue", "list", "--by", key, "--json"])
+        assert found.exit_code == 0, found.output
+        rows = json.loads(found.output)["data"]
+        assert [(row["short_id"], row["activity"]) for row in rows] == [("LAT-I1", "commented")]
 
 
 def test_raw_old_text_log_reads_and_rebuilds_byte_identically(initialized_root: Path) -> None:

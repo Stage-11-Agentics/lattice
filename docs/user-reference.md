@@ -115,7 +115,7 @@ LAT-I3   dismissed  -         Tooltip flickers once on hover
 3 issues (1 open, 1 linked, 0 resolved, 1 dismissed, 0 duplicate)
 ```
 
-`lattice issue list --by <actor>` shows every state where that actor filed or commented on an issue. Each row is marked `filed` or `commented`; `--json` includes the same `activity` field.
+`lattice issue list --by <actor>` shows every state where that actor filed or commented on an issue. It accepts the full key (`human:Atin-1`), the legacy key (`human:Atin`), or a bare name/session ID; repeat `--state` to narrow results. Each row is marked `filed` or `commented`; `--json` includes the same `activity` field. The reusable storage reader is `storage.issues.issues_by(lattice_dir, actor, *, states=None, on_unreadable=None)`.
 
 **Editing and comments.** `lattice issue edit <issue> --title "..."` corrects a title, and `--description TEXT` replaces its description (`--description-file PATH` reads a file and `--description -` reads stdin). At least one field is required; editing a closed issue is allowed. `lattice issue comment <issue> TEXT` adds a comment; use `--file PATH` for long text or `-` to read stdin. Add one reply level with `--reply-to <comment-id>`. Comments are allowed on closed issues, carry the actor and origin, and appear threaded in `issue show`. `--quiet` prints the new comment ID. The comment operation's `--json` result includes the issue view and the new materialized `comment`.
 

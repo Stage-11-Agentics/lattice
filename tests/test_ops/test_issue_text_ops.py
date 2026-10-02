@@ -65,6 +65,14 @@ def test_issue_file_splits_title_and_keeps_operation_value_as_view(board: LocalB
     assert result.value["description"] == f"{raw_title}\n\nExtra detail"
 
 
+def test_issue_file_accepts_the_legacy_text_operation_parameter(board: LocalBoard) -> None:
+    result = run(board, "issue.file", text="Legacy title\nLegacy detail")
+
+    assert result.events[0]["data"]["title"] == "Legacy title"
+    assert result.events[0]["data"]["description"] == "Legacy detail"
+    assert "text" not in result.events[0]["data"]
+
+
 def test_issue_file_rejects_an_empty_title_without_allocating_a_number(board: LocalBoard) -> None:
     with pytest.raises(OpError) as exc:
         run(board, "issue.file", title="  ")

@@ -145,6 +145,7 @@ class TestIssueLogSection:
         assert "### Issue Log" in block
         assert 'lattice issue file "<short title>" --actor agent:<your-id>' in block
         assert "lattice issue comment <issue>" in block
+        assert 'lattice issue comment <issue> "<text>" --actor agent:<your-id>' in block
         assert block.index("### Issue Log") < block.index("### Quick Reference")
         without = block.replace(ISSUE_LOG_SECTION, "").replace(ISSUE_LOG_QUICK_REFERENCE, "")
         assert without == CLAUDE_MD_BLOCK

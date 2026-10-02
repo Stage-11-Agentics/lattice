@@ -216,7 +216,7 @@ lattice issue file "Footer overlaps the CTA at 400px" --description "At 400px th
 lattice issue file - --actor agent:<id> < note.md     # first line is title; remaining lines become description
 ```
 
-Observations go to `lattice issue file`; commitments go to `lattice create`. Discuss an issue with `lattice issue comment <issue> "<text>"`; `lattice issue show <issue>` displays the thread. Triage later with `lattice issue promote` (a new backlog task), `lattice issue link` (an existing task), `lattice issue dismiss --reason`, or `lattice issue duplicate --of`. An issue's state follows its linked tasks. `lattice issue list` shows what is still open; `--by <actor>` finds issues that actor filed or commented on.
+Observations go to `lattice issue file`; commitments go to `lattice create`. Discuss an issue with `lattice issue comment <issue> "<text>" --actor agent:<id>`; `lattice issue show <issue>` displays the thread. Triage later with `lattice issue promote` (a new backlog task), `lattice issue link` (an existing task), `lattice issue dismiss --reason`, or `lattice issue duplicate --of`. An issue's state follows its linked tasks. `lattice issue list` shows what is still open; `--by <actor>` finds issues that actor filed or commented on, matching full prefixed keys and bare names.
 
 Pass screenshots and recordings as `--evidence <file>`: photos and videos are copied into the issue (`lattice issue attach <issue> <file>...` adds more later). Read an issue's media with `lattice issue media <issue> --paths` (videos as still frames).
 

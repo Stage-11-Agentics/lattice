@@ -26,7 +26,9 @@ from lattice.storage.issues import issue_seq_reservation, issue_write_context, w
 
 @dataclass(frozen=True, kw_only=True)
 class IssueFileParams(CommonParams):
-    title: str
+    title: str | None = None
+    # ``text`` remains accepted for callers of the LAT-366 operation contract.
+    text: str | None = None
     description: str | None = None
     confidence: str | None = None
     evidence: tuple[str, ...] = ()
@@ -34,7 +36,10 @@ class IssueFileParams(CommonParams):
     media: tuple[dict, ...] = ()
 
     def check(self) -> None:
-        if not self.title.strip():
+        if self.title is not None and self.text is not None:
+            raise OpError("VALIDATION_ERROR", "Provide title or legacy text, not both.")
+        raw_title = self.title if self.title is not None else self.text
+        if raw_title is None or not raw_title.strip():
             raise OpError("VALIDATION_ERROR", "Issue title must not be empty.")
         if self.confidence is not None and self.confidence not in CONFIDENCE_VALUES:
             raise OpError(
@@ -53,7 +58,8 @@ class IssueFile:
         issue_common.require_issue_log(ctx)
         decoded = issue_common.decode_media(p.media, ctx.config, nothing="Nothing was filed.")
         issue_common.check_issue_total(ctx.config, "The issue", 0, decoded)
-        title, overflow, _shortened = split_title(p.title)
+        raw_title = p.title if p.title is not None else (p.text or "")
+        title, overflow, _shortened = split_title(raw_title)
         description = normalize_issue_description(p.description)
         if overflow:
             description = normalize_issue_description(
