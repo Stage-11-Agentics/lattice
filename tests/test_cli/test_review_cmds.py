@@ -30,6 +30,7 @@ def _resolution(
     error: str | None = None,
     error_code: str | None = None,
     base_ref: str = "origin/main",
+    base_selection_rule: str = "inferred_nearest_merge_base",
     head_ref: str = "feat/branch",
     head_sha: str | None = "b" * 40,
 ):
@@ -47,6 +48,7 @@ def _resolution(
         head_sha=head_sha,
         worktree=Path.cwd().resolve(),
         source="linked_branch",
+        base_selection_rule=base_selection_rule,
     )
 
 
@@ -476,7 +478,14 @@ class TestCodeReviewSingle:
         ):
             result = runner.invoke(
                 cli,
-                ["code-review", task_id, "--mode", "single", "--actor", "agent:test"],
+                [
+                    "code-review",
+                    task_id,
+                    "--mode",
+                    "single",
+                    "--actor",
+                    "agent:test",
+                ],
                 env={"LATTICE_ROOT": str(root)},
                 catch_exceptions=False,
             )
@@ -1156,7 +1165,7 @@ class TestDiffResolution:
             patch("lattice.core.review._ref_exists", return_value=True),
             patch(
                 "lattice.core.review._resolve_base_ref",
-                return_value=("origin/main", "a" * 40, None),
+                return_value=("origin/main", "a" * 40, None, "inferred_nearest_merge_base"),
             ),
             patch("lattice.core.review._rev_parse", return_value="b" * 40),
             patch("lattice.core.review._git_diff", return_value="branch diff"),
@@ -1190,7 +1199,8 @@ class TestDiffResolution:
         with (
             patch("lattice.core.review._find_git_root", return_value=tmp_path),
             patch(
-                "lattice.core.review._resolve_base_ref", return_value=("origin/main", None, None)
+                "lattice.core.review._resolve_base_ref",
+                return_value=("origin/main", None, None, "inferred_nearest_merge_base"),
             ),
             patch("lattice.core.review._rev_parse", return_value=None),
             patch("lattice.core.review._git_diff", return_value=None),
@@ -1713,7 +1723,7 @@ class TestAutoFiredProvenanceSurvivesTheHandoff:
 class TestDiffCharCap:
     def test_prompt_is_bounded_by_char_cap(self, tmp_path):
         """5000 lines of a wide diff is still a quarter-million-character prompt."""
-        root = _make_board(tmp_path, {"review_mode": "single", "review_max_diff_chars": 20_000})
+        root = _make_board(tmp_path, {"review_mode": "single", "review_max_diff_chars": 40_000})
         runner = CliRunner()
         task_id = _create_task(runner, root)
 
@@ -1735,7 +1745,7 @@ class TestDiffCharCap:
         assert result.exit_code == 0, result.output
         prompt = run_single.call_args.kwargs["prompt_content"]
         # The line cap (5000) never fires here — only the char cap can bound this.
-        assert len(prompt) < 25_000, f"prompt was {len(prompt)} chars"
+        assert len(prompt) < 45_000, f"prompt was {len(prompt)} chars"
         assert "diff truncated by Lattice" in prompt
 
     def test_small_diff_is_not_truncated(self, tmp_path):
@@ -1761,6 +1771,207 @@ class TestDiffCharCap:
         prompt = run_single.call_args.kwargs["prompt_content"]
         assert "diff truncated by Lattice" not in prompt
         assert "print('hello')" in prompt
+
+    def test_below_three_x_threshold_truncates_and_preserves_marker(self, tmp_path):
+        from lattice.core.review import read_review_state
+
+        root = _make_board(
+            tmp_path,
+            {
+                "review_mode": "single",
+                "review_base_branch": "v2",
+                "review_max_diff_lines": 2,
+                "review_max_diff_chars": 0,
+            },
+        )
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+        diff = "\n".join(f"+line {index}" for index in range(6))
+        stored: list[str] = []
+
+        with (
+            patch(
+                "lattice.cli.review_cmds.resolve_diff",
+                return_value=_resolution(
+                    diff,
+                    base_ref="origin/v2",
+                    base_selection_rule="board_config",
+                ),
+            ) as resolve,
+            patch(
+                "lattice.cli.review_cmds.run_single_review", return_value=(True, "ok", "PASS")
+            ) as run_single,
+            patch(
+                "lattice.cli.review_cmds._attach_review_artifact",
+                side_effect=lambda **kwargs: stored.append(kwargs["content"]) or "art_fake",
+            ),
+        ):
+            result = runner.invoke(
+                cli,
+                [
+                    "code-review",
+                    task_id,
+                    "--mode",
+                    "single",
+                    "--actor",
+                    "agent:test",
+                    "--triggered-by",
+                    "evt_auto",
+                ],
+                env={"LATTICE_ROOT": str(root)},
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0, result.output
+        assert resolve.call_args.kwargs["review_base_branch"] == "v2"
+        assert "Review base: origin/v2 (selection rule: board_config)." in result.output
+        assert run_single.call_count == 1
+        prompt = run_single.call_args.kwargs["prompt_content"]
+        assert "diff truncated by Lattice: showing first 2 of 6 lines" in prompt
+        assert "Lattice-Reviewed-Base-Selection: board_config" in stored[0]
+        assert "Lattice-Reviewed-Diff: raw-lines=6," in stored[0]
+        assert "truncated=true" in stored[0]
+        state = read_review_state(root / LATTICE_DIR, task_id)
+        assert state is not None
+        assert state["auto_fired"] is True
+
+    @pytest.mark.parametrize("mode", ["single", "triple"])
+    def test_more_than_three_x_cap_fails_before_reviewer_or_artifact(self, tmp_path, mode):
+        from lattice.core.review import read_review_state
+
+        root = _make_board(
+            tmp_path,
+            {
+                "review_mode": mode,
+                "review_base_branch": "v2",
+                "review_max_diff_lines": 2,
+                "review_max_diff_chars": 0,
+            },
+        )
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+        diff = "\n".join(f"+line {index}" for index in range(7))
+
+        with (
+            patch(
+                "lattice.cli.review_cmds.resolve_diff",
+                return_value=_resolution(
+                    diff,
+                    base_ref="origin/v2",
+                    base_selection_rule="board_config",
+                ),
+            ),
+            patch("lattice.cli.review_cmds.run_single_review") as run_single,
+            patch("lattice.core.review.run_triple_review") as run_triple,
+            patch("lattice.cli.review_cmds._attach_review_artifact") as attach,
+        ):
+            result = runner.invoke(
+                cli,
+                [
+                    "code-review",
+                    task_id,
+                    "--mode",
+                    mode,
+                    "--actor",
+                    "agent:test",
+                    "--triggered-by",
+                    "evt_auto",
+                ],
+                env={"LATTICE_ROOT": str(root)},
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code != 0
+        assert "origin/v2" in result.output
+        assert "board_config" in result.output
+        assert "7 lines and" in result.output
+        assert "review_max_diff_lines=2" in result.output
+        assert "review_max_diff_chars=0" in result.output
+        assert "--base <ref>" in result.output
+        run_single.assert_not_called()
+        run_triple.assert_not_called()
+        attach.assert_not_called()
+
+        state = read_review_state(root / LATTICE_DIR, task_id)
+        assert state is not None
+        assert state["status"] == "failed"
+        assert state["auto_fired"] is True
+        assert state["detail"]["error_code"] == "DIFF_TRUNCATION_UNSAFE"
+        assert state["detail"]["base_selection_rule"] == "board_config"
+        assert state["detail"]["raw_diff_lines"] == 7
+        assert not list((root / LATTICE_DIR / "artifacts" / "meta").glob("*.json"))
+
+        status = runner.invoke(
+            cli,
+            ["review-status", task_id],
+            env={"LATTICE_ROOT": str(root)},
+            catch_exceptions=False,
+        )
+        assert status.exit_code == 0
+        assert "Refusing to review the resolved diff" in status.output
+        assert "review_base_branch" in status.output
+        assert any(
+            "Refusing to review the resolved diff" in body
+            for body in _comment_bodies(root, task_id)
+        )
+        assert _snapshot(root, task_id).get("needs_human")
+
+    def test_more_than_three_x_character_cap_fails_closed(self, tmp_path):
+        from lattice.core.review import read_review_state
+
+        root = _make_board(
+            tmp_path,
+            {
+                "review_mode": "single",
+                "review_base_branch": "v2",
+                "review_max_diff_lines": 0,
+                "review_max_diff_chars": 2,
+            },
+        )
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+
+        with (
+            patch(
+                "lattice.cli.review_cmds.resolve_diff",
+                return_value=_resolution(
+                    "+123456",
+                    base_ref="origin/v2",
+                    base_selection_rule="board_config",
+                ),
+            ),
+            patch("lattice.cli.review_cmds.run_single_review") as run_single,
+            patch("lattice.cli.review_cmds._attach_review_artifact") as attach,
+        ):
+            result = runner.invoke(
+                cli,
+                [
+                    "code-review",
+                    task_id,
+                    "--mode",
+                    "single",
+                    "--actor",
+                    "agent:test",
+                    "--triggered-by",
+                    "evt_auto",
+                ],
+                env={"LATTICE_ROOT": str(root)},
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code != 0
+        assert "origin/v2" in result.output
+        assert "board_config" in result.output
+        assert "1 lines and 7 characters" in result.output
+        assert "review_max_diff_lines=0" in result.output
+        assert "review_max_diff_chars=2" in result.output
+        run_single.assert_not_called()
+        attach.assert_not_called()
+        state = read_review_state(root / LATTICE_DIR, task_id)
+        assert state is not None
+        assert state["detail"]["raw_diff_chars"] == 7
+        assert state["detail"]["review_max_diff_chars"] == 2
+        assert not list((root / LATTICE_DIR / "artifacts" / "meta").glob("*.json"))
 
 
 class TestFailureReportNamesTheRightCommand:
@@ -1917,6 +2128,7 @@ class TestReviewEvidenceHeaders:
             "prompt",
         }
         assert data["base_ref"] == "origin/main"
+        assert data["base_selection_rule"] == "inferred_nearest_merge_base"
         assert data["head_ref"] == worktree_repo.branch
         assert data["source"] == "linked_branch"
         assert data["truncated"] is False
@@ -1942,7 +2154,7 @@ class TestReviewEvidenceHeaders:
         assert "feat/does-not-exist" in result.output
 
     def test_truncation_note_names_the_range(self, worktree_repo):
-        runner, root, task_id = self._board(worktree_repo, review_max_diff_lines=1)
+        runner, root, task_id = self._board(worktree_repo, review_max_diff_lines=3)
         # --quiet: the truncation note goes to stderr, which CliRunner merges
         # into stdout and would otherwise break the JSON parse.
         result = self._dry_run(runner, root, task_id, worktree_repo, "--json", "--quiet")

@@ -726,6 +726,7 @@ class DiffResolution:
     head_sha: str | None = None
     worktree: Path | None = None
     source: str | None = None
+    base_selection_rule: str | None = None
     warning: str | None = None
 
     @property
@@ -743,6 +744,7 @@ def resolve_diff(
     base: str | None = None,
     head: str | None = None,
     worktree: Path | None = None,
+    review_base_branch: str | None = None,
 ) -> DiffResolution:
     """Resolve the git diff for a task, naming exactly what was diffed.
 
@@ -766,15 +768,14 @@ def resolve_diff(
     substitutes another ticket's commits produces confident PASS verdicts on
     code nobody read; the error message is the feature.
 
-    **Base selection — the remote default branch, never a bare local branch.**
-
-    A local ``main`` nobody pulls is routinely behind ``origin/main``, and a
-    three-dot diff against it drags in every sibling ticket merged since the
-    last pull. Candidates are ``origin/HEAD`` > ``origin/main`` >
-    ``origin/master`` > local ``main``/``master``; the one whose merge-base
-    with the head is the *descendant* of the others wins, so an unfetched
-    remote degrades gracefully instead of over-including. No ``git fetch`` is
-    ever run — a review must not mutate refs or block on the network.
+    **Base selection** is explicit ``--base``, the open PR's base from ``gh``,
+    ``review_base_branch`` from board config, then local inference. Inference
+    considers the remote default and remote branches that are ancestors of the
+    head; it picks the smallest commit distance from merge-base to head, with
+    the remote default and then lexical ref order breaking ties. Local
+    ``main``/``master`` are a final compatibility fallback only when no remote
+    candidate resolves. No ``git fetch`` is ever run — a review must not
+    mutate refs or block on Git network access.
 
     An **empty** diff is never accepted as success.
     """
@@ -788,13 +789,16 @@ def resolve_diff(
 
     # An explicit --base/--head that doesn't resolve is a caller error worth
     # naming precisely, rather than burying it in a generic failure.
-    if base is not None and not _ref_exists(repo_root, base):
-        return DiffResolution(
-            success=False,
-            error=f"Base ref '{base}' does not resolve in {repo_root}. Check the ref name.",
-            error_code="BASE_REF_UNRESOLVABLE",
-            worktree=repo_root,
-        )
+    explicit_base_ref = None
+    if base is not None:
+        explicit_base_ref = _normalize_explicit_base_ref(repo_root, base)
+        if not _ref_exists(repo_root, explicit_base_ref):
+            return DiffResolution(
+                success=False,
+                error=(f"Base ref '{base}' does not resolve in {repo_root}. Check the ref name."),
+                error_code="BASE_REF_UNRESOLVABLE",
+                worktree=repo_root,
+            )
     if head is not None and not _ref_exists(repo_root, head):
         return DiffResolution(
             success=False,
@@ -826,11 +830,15 @@ def resolve_diff(
         head_ref, source = "HEAD", "head"
 
     # --- base ----------------------------------------------------------------
-    base_ref, base_sha, warning = _resolve_base_ref(repo_root, head_ref, base)
+    base_ref, base_sha, warning, base_selection_rule = _resolve_base_ref(
+        repo_root,
+        head_ref,
+        explicit_base=explicit_base_ref,
+        review_base_branch=review_base_branch,
+    )
     head_sha = _rev_parse(repo_root, head_ref)
 
     ref_range = f"{base_ref}...{head_ref}"
-    diff = _git_diff(repo_root, ref_range)
     common = {
         "base_ref": base_ref,
         "head_ref": head_ref,
@@ -838,13 +846,28 @@ def resolve_diff(
         "head_sha": head_sha,
         "worktree": repo_root,
         "source": source,
+        "base_selection_rule": base_selection_rule,
         "warning": warning,
     }
+    if not _ref_exists(repo_root, base_ref):
+        return DiffResolution(
+            success=False,
+            error=(
+                f"Selected base ref '{base_ref}' does not resolve in {repo_root} "
+                f"(selection rule: {base_selection_rule}). Fetch the base ref or pass "
+                "--base <ref> explicitly."
+            ),
+            error_code="BASE_REF_UNRESOLVABLE",
+            **common,
+        )
+
+    diff = _git_diff(repo_root, ref_range)
     if diff is None:
         return DiffResolution(
             success=False,
             error=(
                 f"git diff failed for range '{ref_range}' in {repo_root}. "
+                f"Base selection rule: {base_selection_rule}. "
                 f"Pass --base/--head to name the range explicitly."
             ),
             error_code="DIFF_FAILED",
@@ -854,7 +877,8 @@ def resolve_diff(
         return DiffResolution(
             success=False,
             error=(
-                f"Diff for '{ref_range}' is empty — no changes on this range. "
+                f"Diff for '{ref_range}' is empty — no changes on this range "
+                f"(base selection rule: {base_selection_rule}). "
                 f"The head is most likely already merged into the base (or identical to it); "
                 f"pass --base <merge-base> to review it anyway. "
                 f"If the code under review lives elsewhere, pass --base/--head to name "
@@ -869,44 +893,249 @@ def resolve_diff(
 
 
 def _resolve_base_ref(
-    repo_root: Path, head_ref: str, explicit_base: str | None = None
-) -> tuple[str, str | None, str | None]:
+    repo_root: Path,
+    head_ref: str,
+    explicit_base: str | None = None,
+    review_base_branch: str | None = None,
+) -> tuple[str, str | None, str | None, str]:
     """Pick the base ref for ``<base>...<head_ref>``.
 
-    Returns ``(base_ref, base_sha, warning)`` where ``base_sha`` is the SHA of
-    the merge-base actually used. ``explicit_base`` wins unconditionally.
+    Returns ``(base_ref, base_sha, warning, selection_rule)`` where
+    ``base_sha`` is the SHA of the merge-base actually used. Selection order:
+    explicit CLI ref, open PR base, board config, then nearest inferred base.
     """
     if explicit_base is not None:
-        return explicit_base, _merge_base(repo_root, explicit_base, head_ref), None
+        base_ref = _normalize_explicit_base_ref(repo_root, explicit_base)
+        return base_ref, _merge_base(repo_root, base_ref, head_ref), None, "explicit"
 
-    candidates: list[str] = []
-    origin_head = _origin_head_ref(repo_root)
-    if origin_head:
-        candidates.append(origin_head)
-    for name in ("origin/main", "origin/master", "main", "master"):
-        if name not in candidates:
-            candidates.append(name)
+    warning = _stale_remote_warning(repo_root)
+    pr_base = _open_pr_base_branch(repo_root, head_ref)
+    if pr_base:
+        base_ref = _remote_ref_for_branch(repo_root, pr_base)
+        return base_ref, _merge_base(repo_root, base_ref, head_ref), warning, "open_pr"
 
-    best_ref: str | None = None
-    best_sha: str | None = None
+    if review_base_branch:
+        base_ref = _remote_ref_for_branch(repo_root, review_base_branch)
+        return base_ref, _merge_base(repo_root, base_ref, head_ref), warning, "board_config"
+
+    remote_default = _origin_head_ref(repo_root)
+    head_sha = _rev_parse(repo_root, head_ref)
+    remote_candidates = _remote_branch_refs(repo_root)
+    candidates: set[str] = set()
+    if remote_default:
+        candidates.add(remote_default)
+    candidates.update(
+        candidate
+        for candidate in remote_candidates
+        if _rev_parse(repo_root, candidate) != head_sha
+        and _is_ancestor(repo_root, candidate, head_ref)
+    )
+
+    scored: list[tuple[int, int, str, str]] = []
     for candidate in candidates:
         if not _ref_exists(repo_root, candidate):
+            continue
+        if _rev_parse(repo_root, candidate) == head_sha:
             continue
         merge_base = _merge_base(repo_root, candidate, head_ref)
         if merge_base is None:
             continue
-        if best_sha is None:
-            best_ref, best_sha = candidate, merge_base
-        elif merge_base != best_sha and _is_ancestor(repo_root, best_sha, merge_base):
-            # This candidate's merge-base is a descendant of the incumbent's —
-            # a tighter, still-honest range.
-            best_ref, best_sha = candidate, merge_base
+        distance = _commit_distance_from_merge_base(repo_root, merge_base, head_ref)
+        if distance is None:
+            continue
+        default_rank = 0 if candidate == remote_default else 1
+        scored.append((distance, default_rank, candidate, merge_base))
 
-    warning = _stale_remote_warning(repo_root)
-    if best_ref is None:
-        # No candidate shares history with the head (or no refs at all).
-        return _find_base_branch(repo_root), None, warning
-    return best_ref, best_sha, warning
+    if scored:
+        distance, _default_rank, base_ref, base_sha = min(scored)
+        del distance
+        return base_ref, base_sha, warning, "inferred_nearest_merge_base"
+
+    # Repositories without remote-tracking refs (notably new/local boards) keep
+    # working from their local integration branch. Prefer main on a deterministic
+    # tie, then master.
+    local_candidates = [
+        candidate for candidate in ("main", "master") if _ref_exists(repo_root, candidate)
+    ]
+    local_scored: list[tuple[int, int, str, str]] = []
+    for candidate in local_candidates:
+        if _rev_parse(repo_root, candidate) == head_sha:
+            continue
+        merge_base = _merge_base(repo_root, candidate, head_ref)
+        if merge_base is None:
+            continue
+        distance = _commit_distance_from_merge_base(repo_root, merge_base, head_ref)
+        if distance is not None:
+            local_scored.append(
+                (distance, local_candidates.index(candidate), candidate, merge_base)
+            )
+    if local_scored:
+        _distance, _rank, base_ref, base_sha = min(local_scored)
+        return base_ref, base_sha, warning, "inferred_local_default"
+
+    fallback = _find_base_branch(repo_root)
+    return fallback, _merge_base(repo_root, fallback, head_ref), warning, "inferred_local_default"
+
+
+def _open_pr_base_branch(repo_root: Path, head_ref: str) -> str | None:
+    """Return the open PR base branch for ``head_ref`` through ``gh``, if any.
+
+    The GitHub CLI queries PR metadata but does not update local Git refs. It is
+    skipped when gh, a GitHub repository context, or a symbolic head branch is
+    unavailable; those cases continue down the documented base precedence.
+    """
+    gh = shutil.which("gh")
+    if gh is None:
+        return None
+
+    repo_url = subprocess.run(
+        ["git", "remote", "get-url", "origin"],
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+    )
+    if repo_url.returncode != 0:
+        return None
+    if "github.com" not in repo_url.stdout.lower() and not os.environ.get("GH_REPO"):
+        return None
+
+    branch = _branch_name_for_ref(repo_root, head_ref)
+    if branch is None:
+        return None
+
+    try:
+        result = subprocess.run(
+            [gh, "pr", "view", branch, "--json", "baseRefName,state"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        payload = json.loads(result.stdout)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    base_ref = payload.get("baseRefName")
+    if payload.get("state") != "OPEN" or not isinstance(base_ref, str) or not base_ref.strip():
+        return None
+    return base_ref.strip()
+
+
+def _branch_name_for_ref(repo_root: Path, ref: str) -> str | None:
+    """Map a branch ref to the short branch name understood by ``gh pr view``."""
+    candidate = ref
+    if ref == "HEAD":
+        result = subprocess.run(
+            ["git", "symbolic-ref", "--quiet", "--short", "HEAD"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            return None
+        candidate = result.stdout.strip()
+    elif ref.startswith("refs/heads/"):
+        candidate = ref.removeprefix("refs/heads/")
+    elif ref.startswith("refs/remotes/"):
+        candidate = ref.removeprefix("refs/remotes/")
+
+    if candidate.startswith("origin/"):
+        candidate = candidate.removeprefix("origin/")
+    if not candidate or _rev_parse(repo_root, candidate) is None:
+        return None
+    # A raw commit is not a branch selector even though Git resolves it.
+    if len(candidate) >= 7 and all(char in "0123456789abcdefABCDEF" for char in candidate):
+        return None
+    return candidate
+
+
+def _remote_ref_for_branch(repo_root: Path, branch: str) -> str:
+    """Prefer an origin tracking ref for a short branch name when available."""
+    if branch.startswith(("refs/", "origin/")):
+        return branch
+    origin_ref = f"origin/{branch}"
+    if _ref_exists(repo_root, origin_ref):
+        return origin_ref
+    return branch
+
+
+def _normalize_explicit_base_ref(repo_root: Path, base: str) -> str:
+    """Honor exact local refs, while mapping a missing short branch to origin."""
+    if (
+        base.startswith("refs/")
+        or base
+        in {
+            "HEAD",
+            "ORIG_HEAD",
+            "FETCH_HEAD",
+            "MERGE_HEAD",
+            "CHERRY_PICK_HEAD",
+        }
+        or any(token in base for token in ("..", "~", "^", ":", "@{"))
+    ):
+        return base
+
+    if _exact_ref_exists(repo_root, f"refs/heads/{base}") or _exact_ref_exists(
+        repo_root, f"refs/tags/{base}"
+    ):
+        return base
+    remote_ref = f"origin/{base}"
+    if _exact_ref_exists(repo_root, f"refs/remotes/{remote_ref}"):
+        return remote_ref
+    return base
+
+
+def _exact_ref_exists(repo_root: Path, full_ref: str) -> bool:
+    """Check a full Git ref name without DWIM resolving similarly named refs."""
+    return (
+        subprocess.run(
+            ["git", "show-ref", "--verify", "--quiet", full_ref],
+            cwd=str(repo_root),
+            capture_output=True,
+        ).returncode
+        == 0
+    )
+
+
+def _remote_branch_refs(repo_root: Path) -> list[str]:
+    """List current remote-tracking branch refs without fetching."""
+    result = subprocess.run(
+        ["git", "for-each-ref", "--format=%(refname:short)", "refs/remotes/"],
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return []
+    return sorted(
+        ref
+        for ref in result.stdout.splitlines()
+        if ref.strip() and not ref.rstrip().endswith("/HEAD")
+    )
+
+
+def _commit_distance_from_merge_base(
+    repo_root: Path, merge_base: str, head_ref: str
+) -> int | None:
+    """Count commits after ``merge_base`` up to ``head_ref``."""
+    result = subprocess.run(
+        ["git", "rev-list", "--count", f"{merge_base}..{head_ref}"],
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        return int(result.stdout.strip())
+    except ValueError:
+        return None
 
 
 def _stale_remote_warning(repo_root: Path) -> str | None:
@@ -1323,9 +1552,15 @@ def build_trident_handoff_prompt(
     *,
     worktree: Path,
     base_branch: str | None,
+    base_selection_rule: str | None = None,
+    base_sha: str | None = None,
     head_ref: str | None = None,
     head_sha: str | None = None,
     program: str = "lattice",
+    diff_content: str | None = None,
+    raw_diff_lines: int | None = None,
+    raw_diff_chars: int | None = None,
+    truncated: bool = False,
 ) -> str:
     """Build the prompt handed to the claude session running inside the c11 pane.
 
@@ -1344,6 +1579,32 @@ def build_trident_handoff_prompt(
     if head_sha:
         head_line = f"{head_line} ({head_sha})"
     range_line = f"{base_line}...{head_ref}" if head_ref else f"{base_line}...HEAD"
+    diff_metadata = ""
+    if review_type == "code-review":
+        diff_metadata = (
+            "\n## Required review artifact metadata\n\n"
+            "Prepend this exact block to the merged review artifact:\n\n"
+            "```text\n"
+            f"Lattice-Reviewed-Commit: {head_sha or '-'}\n"
+            f"Lattice-Reviewed-Worktree: {worktree}\n"
+            f"Lattice-Reviewed-Base: {base_line} ({base_sha or '-'})\n"
+            f"Lattice-Reviewed-Base-Selection: {base_selection_rule or 'unknown'}\n"
+            f"Lattice-Reviewed-Head: {head_line}\n"
+            f"Lattice-Reviewed-Diff: raw-lines={raw_diff_lines or 0}, "
+            f"raw-chars={raw_diff_chars or 0}, truncated={str(truncated).lower()}\n"
+            "```\n"
+        )
+    resolved_diff = ""
+    if review_type == "code-review" and diff_content is not None:
+        resolved_diff = (
+            "\n## Resolved diff\n\n"
+            "Use this Lattice-resolved diff as the code-review input. It has already been "
+            "bounded by the configured line and character caps when truncated; preserve its "
+            "visible truncation marker in the merged artifact. Do not recompute a broader range.\n\n"
+            "<<< LATTICE RESOLVED DIFF >>>\n"
+            f"{diff_content}\n"
+            "<<< END LATTICE RESOLVED DIFF >>>\n"
+        )
     return f"""# Triple {review_type} for {task_short_id}
 
 You're the agent running inside a c11 pane spawned by the LAT-218 review
@@ -1409,6 +1670,7 @@ or `lattice needs-human {task_short_id} "<what you need>"` for the flag rows.
 Diff exactly `{range_line}` — this range is already resolved for you. Do not
 diff the cwd's `HEAD`: on a board checkout it is not the branch under review,
 and reviewing it is how a review ends up reading the wrong tree.
+{diff_metadata}{resolved_diff}
 
 When you've advanced the task to its terminal state for this cycle, exit cleanly.
 """
@@ -1421,10 +1683,16 @@ def run_triple_review(
     actor: str | dict,
     *,
     base: str | None = None,
+    base_selection_rule: str | None = None,
+    base_sha: str | None = None,
     head: str | None = None,
     head_sha: str | None = None,
     short_id: str | None = None,
     worktree: Path | None = None,
+    diff_content: str | None = None,
+    raw_diff_lines: int | None = None,
+    raw_diff_chars: int | None = None,
+    truncated: bool = False,
     claim: str | None = None,
     program: str = "lattice",
 ) -> tuple[bool, str]:
@@ -1455,9 +1723,15 @@ def run_triple_review(
         review_type,
         worktree=wt,
         base_branch=base,
+        base_selection_rule=base_selection_rule,
+        base_sha=base_sha,
         head_ref=head,
         head_sha=head_sha,
         program=program,
+        diff_content=diff_content,
+        raw_diff_lines=raw_diff_lines,
+        raw_diff_chars=raw_diff_chars,
+        truncated=truncated,
     )
     tab_title = f"{display_id} :: trident {review_type}"
     description = (
@@ -1485,6 +1759,11 @@ def run_triple_review(
         "started_by_pid": existing.get("started_by_pid", os.getpid()),
         "started_by_actor": _extract_actor_str(actor),
         "auto_fired": existing.get("auto_fired", False),
+        "base_ref": base,
+        "base_selection_rule": base_selection_rule,
+        "raw_diff_lines": raw_diff_lines,
+        "raw_diff_chars": raw_diff_chars,
+        "truncated": truncated,
         "pane_ref": ref,
         "agents": [
             {

@@ -69,7 +69,13 @@ def _normalize_worktree(worktree: Path | None) -> tuple[Path | None, str | None]
     return Path(result.stdout.strip()).resolve(), None
 
 
-def _evidence_header(resolution: DiffResolution) -> str:
+def _evidence_header(
+    resolution: DiffResolution,
+    *,
+    raw_diff_lines: int | None = None,
+    raw_diff_chars: int | None = None,
+    truncated: bool | None = None,
+) -> str:
     """Build the ``Lattice-Reviewed-*`` block describing what was diffed.
 
     ``Lattice-Reviewed-Commit`` stays line 1 with a bare 40-char SHA:
@@ -94,9 +100,16 @@ def _evidence_header(resolution: DiffResolution) -> str:
         lines.append(
             f"Lattice-Reviewed-Base: {resolution.base_ref} ({resolution.base_sha or '-'})"
         )
+        if resolution.base_selection_rule:
+            lines.append(f"Lattice-Reviewed-Base-Selection: {resolution.base_selection_rule}")
     if resolution.head_ref:
         lines.append(
             f"Lattice-Reviewed-Head: {resolution.head_ref} ({resolution.head_sha or '-'})"
+        )
+    if raw_diff_lines is not None and raw_diff_chars is not None and truncated is not None:
+        lines.append(
+            "Lattice-Reviewed-Diff: "
+            f"raw-lines={raw_diff_lines}, raw-chars={raw_diff_chars}, truncated={str(truncated).lower()}"
         )
     return "\n".join(lines) + "\n"
 
@@ -124,6 +137,7 @@ def _emit_dry_run(
                         "base_ref": resolution.base_ref,
                         "head_ref": resolution.head_ref,
                         "base_sha": resolution.base_sha,
+                        "base_selection_rule": resolution.base_selection_rule,
                         "head_sha": resolution.head_sha,
                         "worktree": str(resolution.worktree) if resolution.worktree else None,
                         "source": resolution.source,
@@ -142,6 +156,7 @@ def _emit_dry_run(
     click.echo("Diff resolution (dry run — nothing claimed, spawned, or stored):")
     click.echo(f"  worktree: {resolution.worktree}")
     click.echo(f"  base:     {resolution.base_ref} ({resolution.base_sha or '-'})")
+    click.echo(f"  base rule: {resolution.base_selection_rule or 'unknown'}")
     click.echo(f"  head:     {resolution.head_ref} ({resolution.head_sha or '-'})")
     click.echo(f"  source:   {resolution.source}")
     click.echo(f"  range:    {resolution.range_desc}")
@@ -497,8 +512,19 @@ def code_review(
         _end_read_phase(lattice_dir)
 
     resolution = resolve_diff(
-        lattice_dir, task_id, snapshot, base=base, head=head, worktree=reviewed_worktree
+        lattice_dir,
+        task_id,
+        snapshot,
+        base=base,
+        head=head,
+        worktree=reviewed_worktree,
+        review_base_branch=config.get("review_base_branch"),
     )
+    if resolution.base_ref and not dry_run and not quiet and not is_json:
+        click.echo(
+            f"Review base: {resolution.base_ref} "
+            f"(selection rule: {resolution.base_selection_rule or 'unknown'})."
+        )
     if not resolution.success:
         assert resolution.error is not None
         if not dry_run:
@@ -535,9 +561,52 @@ def code_review(
             is_json,
         )
 
+    raw_diff_lines = len(diff_content.splitlines())
+    raw_diff_chars = len(diff_content)
+
+    # A capped prefix is useful only when it still retains a meaningful share
+    # of the resolved range. If either enabled cap would discard more than two
+    # thirds, the selected base is likely wrong; fail before any reviewer is
+    # spawned and leave the reason on the task for review-status.
+    max_diff_lines = config.get("review_max_diff_lines", DEFAULT_MAX_DIFF_LINES)
+    max_diff_chars = config.get("review_max_diff_chars", DEFAULT_MAX_DIFF_CHARS)
+    unsafe_line_truncation = max_diff_lines > 0 and raw_diff_lines > 3 * max_diff_lines
+    unsafe_char_truncation = max_diff_chars > 0 and raw_diff_chars > 3 * max_diff_chars
+    if unsafe_line_truncation or unsafe_char_truncation:
+        selection_rule = resolution.base_selection_rule or "unknown"
+        failure_message = (
+            f"Refusing to review the resolved diff: selected base {resolution.base_ref} "
+            f"(selection rule: {selection_rule}); raw diff is {raw_diff_lines} lines and "
+            f"{raw_diff_chars} characters; configured caps are review_max_diff_lines="
+            f"{max_diff_lines} and review_max_diff_chars={max_diff_chars}. At least one "
+            "enabled cap would retain less than one third of the diff. Narrow the range "
+            "with --base <ref> or set review_base_branch in .lattice/config.json, then retry."
+        )
+        if not dry_run:
+            assert actor is not None
+            _record_resolution_failure(
+                lattice_dir,
+                task_id,
+                mode=mode,
+                message=f"{failure_message} Base={resolution.base_ref}; rule={selection_rule}.",
+                error_code="DIFF_TRUNCATION_UNSAFE",
+                actor=actor,
+                config=config,
+                auto_fired=triggered_by is not None,
+                claim=claim,
+                detail={
+                    "base_ref": resolution.base_ref,
+                    "base_selection_rule": selection_rule,
+                    "raw_diff_lines": raw_diff_lines,
+                    "raw_diff_chars": raw_diff_chars,
+                    "review_max_diff_lines": max_diff_lines,
+                    "review_max_diff_chars": max_diff_chars,
+                },
+            )
+        output_error(failure_message, "DIFF_TRUNCATION_UNSAFE", is_json)
+
     # Cap a pathologically large diff before it bloats the prompt. Defense in
     # depth: a too-wide resolution range shouldn't blow up review cost.
-    max_diff_lines = config.get("review_max_diff_lines", DEFAULT_MAX_DIFF_LINES)
     diff_content, diff_capped, diff_lines = cap_diff(
         diff_content, max_diff_lines, range_desc=range_desc
     )
@@ -551,7 +620,6 @@ def code_review(
     # The line cap does not bound prompt size: 5000 lines of a wide diff runs to
     # hundreds of thousands of characters, and prompt size is what pushes a
     # review past its timeout. Cap the characters too.
-    max_diff_chars = config.get("review_max_diff_chars", DEFAULT_MAX_DIFF_CHARS)
     diff_content, chars_capped, diff_chars = cap_diff_chars(
         diff_content, max_diff_chars, range_desc=range_desc
     )
@@ -566,7 +634,12 @@ def code_review(
     # first line keeps its exact shape: core.config._REVIEW_MARKER anchors on
     # \A and a 40-char SHA, and the reachable-review-commit gate depends on it.
     try:
-        evidence_header = _evidence_header(resolution)
+        evidence_header = _evidence_header(
+            resolution,
+            raw_diff_lines=raw_diff_lines,
+            raw_diff_chars=raw_diff_chars,
+            truncated=diff_capped or chars_capped,
+        )
     except ValueError as exc:
         if not dry_run:
             assert actor is not None
@@ -601,8 +674,8 @@ def code_review(
         _emit_dry_run(
             resolution=resolution,
             prompt=prompt,
-            diff_lines=diff_lines,
-            diff_chars=diff_chars,
+            diff_lines=raw_diff_lines,
+            diff_chars=raw_diff_chars,
             truncated=diff_capped or chars_capped,
             is_json=is_json,
         )
@@ -628,6 +701,16 @@ def code_review(
             timeout=timeout,
             worktree=reviewed_worktree,
             reviewed_header=evidence_header,
+            review_metadata={
+                "base_ref": resolution.base_ref,
+                "base_selection_rule": resolution.base_selection_rule,
+                "base_sha": resolution.base_sha,
+                "head_ref": resolution.head_ref,
+                "head_sha": resolution.head_sha,
+                "diff_lines": raw_diff_lines,
+                "diff_chars": raw_diff_chars,
+                "truncated": diff_capped or chars_capped,
+            },
             auto_fired=triggered_by is not None,
             claim=claim,
         )
@@ -642,9 +725,15 @@ def code_review(
             is_json=is_json,
             quiet=quiet,
             base=resolution.base_ref,
+            base_selection_rule=resolution.base_selection_rule,
+            base_sha=resolution.base_sha,
             head=resolution.head_ref,
             head_sha=resolution.head_sha,
             worktree=reviewed_worktree,
+            diff_content=diff_content,
+            raw_diff_lines=raw_diff_lines,
+            raw_diff_chars=raw_diff_chars,
+            truncated=diff_capped or chars_capped,
             claim=claim,
         )
 
@@ -1207,6 +1296,7 @@ def _record_resolution_failure(
     config: dict,
     auto_fired: bool,
     claim: str | None = None,
+    detail: dict[str, Any] | None = None,
 ) -> None:
     """Make a failed diff resolution as visible as a failed review agent.
 
@@ -1222,6 +1312,10 @@ def _record_resolution_failure(
     """
     existing = read_review_state(lattice_dir, task_id) or {}
     state: dict[str, Any] = dict(existing)
+    failure_detail = dict(existing.get("detail") or {})
+    failure_detail["error_code"] = error_code
+    if detail:
+        failure_detail.update(detail)
     state.update(
         {
             "task_id": task_id,
@@ -1230,7 +1324,7 @@ def _record_resolution_failure(
             "status": "failed",
             "error": message,
             "finished_at": _now_iso(),
-            "detail": {"error_code": error_code},
+            "detail": failure_detail,
         }
     )
     state.setdefault("started_at", state["finished_at"])
@@ -1270,6 +1364,7 @@ def _run_single_and_store(
     timeout: int = 600,
     worktree: Path | None = None,
     reviewed_header: str | None = None,
+    review_metadata: dict[str, Any] | None = None,
     auto_fired: bool = False,
     claim: str | None = None,
 ) -> str | None:
@@ -1347,9 +1442,10 @@ def _run_single_and_store(
 
     if art_id:
         if is_json:
-            click.echo(
-                json.dumps({"ok": True, "data": {"artifact_id": art_id, "role": role}}, indent=2)
-            )
+            data = {"artifact_id": art_id, "role": role}
+            if review_metadata:
+                data.update(review_metadata)
+            click.echo(json.dumps({"ok": True, "data": data}, indent=2))
         elif quiet:
             click.echo(art_id)
         else:
@@ -1393,9 +1489,15 @@ def _spawn_triple_pane(
     is_json: bool,
     quiet: bool,
     base: str | None,
+    base_selection_rule: str | None = None,
+    base_sha: str | None = None,
     head: str | None = None,
     head_sha: str | None = None,
     worktree: Path | None = None,
+    diff_content: str | None = None,
+    raw_diff_lines: int | None = None,
+    raw_diff_chars: int | None = None,
+    truncated: bool = False,
     claim: str | None = None,
 ) -> None:
     """Spawn a c11 pane that runs the trident review. Fire-and-forget.
@@ -1416,10 +1518,16 @@ def _spawn_triple_pane(
         review_type=review_type,
         actor=actor,
         base=base,
+        base_selection_rule=base_selection_rule,
+        base_sha=base_sha,
         head=head,
         head_sha=head_sha,
         short_id=short_id,
         worktree=worktree,
+        diff_content=diff_content,
+        raw_diff_lines=raw_diff_lines,
+        raw_diff_chars=raw_diff_chars,
+        truncated=truncated,
         claim=claim,
         program=program_name(),
     )
@@ -1442,7 +1550,20 @@ def _spawn_triple_pane(
     if is_json:
         click.echo(
             json.dumps(
-                {"ok": True, "data": {"mode": "triple", "task_id": task_id, "message": message}},
+                {
+                    "ok": True,
+                    "data": {
+                        "mode": "triple",
+                        "task_id": task_id,
+                        "message": message,
+                        "base_ref": base,
+                        "base_sha": base_sha,
+                        "base_selection_rule": base_selection_rule,
+                        "diff_lines": raw_diff_lines,
+                        "diff_chars": raw_diff_chars,
+                        "truncated": truncated,
+                    },
+                },
                 indent=2,
             )
         )

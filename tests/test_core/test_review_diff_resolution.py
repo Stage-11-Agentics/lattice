@@ -73,25 +73,23 @@ class TestBaseResolution:
         assert res.success is True, res.error
         assert res.base_ref == "origin/trunk"
 
-    def test_local_ahead_of_unfetched_origin_picks_descendant_merge_base(self, worktree_repo):
-        """When the local default branch is *fresher* than the remote ref, the
-        tighter (descendant) merge-base wins — an unfetched remote degrades
-        gracefully instead of over-including."""
+    def test_local_ahead_of_unfetched_origin_does_not_override_remote_default(self, worktree_repo):
+        """A local branch is only a fallback when no remote candidate resolves."""
         main = worktree_repo.main
         branch = worktree_repo.branch
-        # Local main catches up to the branch point and then some.
+        # Local main moves ahead of the feature branch, while origin/main stays
+        # at the feature's original base. The remote default remains the base
+        # under the nearest-remote-candidate rule.
         git(main, "reset", "--hard", branch)
         (main / "local_only.txt").write_text("local main moved on\n")
         git(main, "add", "-A")
         git(main, "commit", "-m", "local-only commit")
 
         res = review_mod.resolve_diff(worktree_repo.lattice_dir, "task_01", _snapshot(branch))
-        # merge-base(local main, branch) == branch tip, which is a descendant of
-        # merge-base(origin/main, branch). The tighter range wins and is empty —
-        # honestly empty, and reported as a failure rather than a silent pass.
-        assert res.base_ref == "main"
-        assert res.success is False
-        assert "empty" in (res.error or "").lower()
+        assert res.success is True, res.error
+        assert res.base_ref == "origin/main"
+        assert "feature.py" in res.diff
+        assert "local_only.txt" not in res.diff
 
     def test_no_remote_falls_back_to_local_main(self, worktree_repo):
         main = worktree_repo.main

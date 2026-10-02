@@ -190,6 +190,7 @@ class LatticeConfig(TypedDict, total=False):
     review_timeout_seconds: int
     review_max_diff_lines: int
     review_max_diff_chars: int
+    review_base_branch: str | None
     auto_code_review_on_transition: bool
     auto_plan_review_on_transition: bool
     done_display: Literal["all", "recent", "grouped"]
