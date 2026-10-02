@@ -19,12 +19,14 @@ lattice init --project-code PROJ
 The orchestrator agent creates and assigns work:
 
 ```bash
-lattice create "Implement user auth" --actor agent:orchestrator --priority high --type epic
+lattice create "Implement user auth" --actor agent:orchestrator --priority high --type task
 lattice create "Build login endpoint" --actor agent:orchestrator --assign agent:worker-1
 lattice create "Build signup endpoint" --actor agent:orchestrator --assign agent:worker-2
 lattice link PROJ-2 subtask_of PROJ-1 --actor agent:orchestrator
 lattice link PROJ-3 subtask_of PROJ-1 --actor agent:orchestrator
 ```
+
+New boards allow `task`, `bug`, and `chore`. Add custom types to the local board's `.lattice/config.json` `task_types` list; a hosted board admin can replace it with `lattice server project config <slug> --set 'task_types=[...]'` and must keep `task`. Use a parent task only when it has its own deliverable.
 
 ### 3. Workers Claim and Execute
 

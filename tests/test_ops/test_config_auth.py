@@ -26,6 +26,7 @@ WEB = Caller(actor="dashboard:web")
 # A workflow, review, policy, and hook key, each with a plausible new value.
 ADMIN_KEYS = {
     "workflow": {"statuses": ["open"], "transitions": {}},
+    "task_types": ["task", "bug", "chore", "research"],
     "review_mode": "triple",
     "plan_review_mode": "inline",
     "auto_code_review_on_transition": True,

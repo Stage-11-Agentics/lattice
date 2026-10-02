@@ -115,14 +115,15 @@ this is why Lattice works where other tools don't. it meets agents where they ar
 
 ## status
 
-Lattice is **v2.0.0. actively developed.** v2 adds [Lattice Hosted](#lattice-hosted-optional), an optional server. local Lattice works as it did.
+Lattice is **v2.0.0. actively developed.** v2 adds [Lattice Hosted](#lattice-hosted-optional), an optional server. Local Lattice remains the default; see the upgrade notes for behavior changes.
 
 ### upgrading to v2
 
-local boards keep their layout and need no migration. what a local user sees change:
+local boards keep their layout and need no migration. what changes for a local user:
 
 - **origin on every event.** each new event records where it came from: host, OS user, worktree, branch, Lattice version. `lattice show` prints it per event as `actor · user@machine · worktree (branch)`, and `--json` includes it. `lattice list --machine/--user/--worktree` filter by it.
 - **new commands.** `lattice plan write` and `lattice notes write` write a task's plan and notes (direct edits of plan files still work on a local board; the commands work everywhere, including hosted checkouts). `lattice context write` and `lattice board write` write `context.md` and orchestration files. `lattice erase` hides a task from every view and `lattice unerase` brings it back (`list --include-tombstoned` shows erased tasks). `lattice server`, `lattice remote`, `lattice sync`, and `lattice cache` are for hosted mode. `lattice doctor --offline-maintenance` is for server hosts.
+- **task types.** New boards allow `task`, `bug`, and `chore`; a type must be listed in the board's `task_types` config. Add a custom type to local `.lattice/config.json` `task_types`. A hosted admin uses `lattice server project config <slug> --set 'task_types=[...]'`, which replaces the list and must include `task` and all existing values to keep. Existing configs and tasks keep their types.
 - **one set of rules everywhere.** the MCP tools and the dashboard now apply the CLI's rules: the plan gate, the review-cycle limit, and completion policies. a status change the CLI refuses is refused there too, and the dashboard names the CLI command that overrides it (`lattice status <task> <status> --force --reason "..."`). the dashboard's status API keeps its `force` and `reason` parameters, which now work exactly like the CLI's: a non-empty reason is required. dashboard errors carry the CLI's error codes instead of a generic 400.
 - **dashboard: origin filters, no CDN.** the filter drawer gains an Origin section (machine, user, worktree), kept in the page URL, matching like `lattice list --machine/--user/--worktree`; `/api/tasks` takes the same parameters. the graph libraries now ship inside Lattice: the dashboard loads nothing from unpkg or any other site, so it works offline and behind a strict firewall.
 - **dashboard safety.** dashboard POSTs require `Content-Type: application/json` and an `Origin` matching the page, which closes a cross-origin write. the page escapes quotes in board text and builds no inline event handlers.

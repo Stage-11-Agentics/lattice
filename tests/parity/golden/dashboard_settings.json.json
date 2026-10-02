@@ -50,7 +50,6 @@
         "task_types": [
           "task",
           "bug",
-          "spike",
           "chore"
         ],
         "workflow": {

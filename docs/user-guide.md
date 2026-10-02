@@ -158,6 +158,8 @@ the advance is the pattern that makes Lattice click. here's what it looks like. 
 
 create tasks in the dashboard. set priorities. link subtasks to parent tasks. this is the thinking work. deciding *what* matters and *in what order*.
 
+New boards allow three task types: `task`, `bug`, and `chore`. To add a custom type on a local board, add it to `.lattice/config.json` `task_types` and keep the existing values. Hosted board types are changed by an admin; see the [hosted guide](hosted/guide.md).
+
 this is. your job. the part only you can do.
 
 ### 2. agents claim and execute

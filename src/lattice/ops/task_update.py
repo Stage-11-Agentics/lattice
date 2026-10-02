@@ -8,6 +8,7 @@ from lattice.core.config import (
     VALID_COMPLEXITIES,
     VALID_PRIORITIES,
     VALID_URGENCIES,
+    invalid_task_type_message,
     validate_task_type,
 )
 from lattice.core.events import create_event, utc_now
@@ -93,9 +94,8 @@ def _normalize_values(parsed: list[tuple[str, object]], config: dict) -> list[tu
                 f"Invalid complexity: '{value}'. Valid complexities: {valid}.",
             )
         if field == "type" and not validate_task_type(config, value):
-            valid = ", ".join(config.get("task_types", []))
             raise OpError(
-                "VALIDATION_ERROR", f"Invalid task type: '{value}'. Valid types: {valid}."
+                "VALIDATION_ERROR", invalid_task_type_message(config, value)
             )
 
         if field == "tags" and isinstance(value, str):

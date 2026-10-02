@@ -200,7 +200,7 @@ How does your agent read from the tool? Options, in order of preference:
 Every tool has its own vocabulary. Map it to Lattice's:
 
 ```
-Your tool's "Epic"       -> Lattice task with subtasks
+Your tool's "Epic"       -> Group of concrete Lattice tasks; use a parent only if it has its own deliverable
 Your tool's "Story"      -> Lattice task
 Your tool's "Sprint"     -> Lattice custom field "sprint"
 Your tool's "Story Points" -> Lattice custom field "points"

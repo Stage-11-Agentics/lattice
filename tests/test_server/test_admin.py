@@ -137,6 +137,9 @@ def test_project_config_refuses_before_writing(root: Path) -> None:
         {"plan_approval": "maybe"},
         {"hooks": "x"},
         {"auto_code_review_on_transition": "yes"},
+        {"task_types": []},
+        {"task_types": ["bug", "chore"]},
+        {"unallowlisted": "x"},
     ):
         with pytest.raises(OpError) as exc:
             admin.set_project_config(root, "p", bad)
@@ -145,6 +148,43 @@ def test_project_config_refuses_before_writing(root: Path) -> None:
     assert not (root / "projects" / "p" / ".lattice" / "hosted" / "maintenance.json").exists()
     result = _invoke("server", "project", "config", "p", "--set", "hooks=x", "--root", str(root))
     assert result.exit_code == 1 and "cannot be set" in result.output
+
+
+@pytest.mark.parametrize(
+    "assignment",
+    [
+        "task_types=[",
+        'task_types={"task":true}',
+        'task_types="task"',
+        "task_types=[\"task\", 1]",
+        'task_types=["task",""]',
+        'task_types=["task","  "]',
+        'task_types=["task","bug","bug"]',
+        'task_types=["bug"]',
+        'task_types=["task "]',
+    ],
+)
+def test_task_types_assignment_validation(assignment: str) -> None:
+    if assignment == "task_types=[":
+        with pytest.raises(OpError, match="task_types must be a JSON array"):
+            admin.parse_config_assignments([assignment])
+        return
+    with pytest.raises(OpError):
+        admin.validate_config_changes(admin.parse_config_assignments([assignment]))
+
+
+def test_task_types_json_array_validation_is_idempotent() -> None:
+    parsed = admin.parse_config_assignments(['task_types=["task","bug","research"]'])
+    once = admin.validate_config_changes(parsed)
+    twice = admin.validate_config_changes(once)
+    assert once == twice == {"task_types": ["task", "bug", "research"]}
+
+
+def test_task_types_is_not_a_string_choice_and_help_names_it() -> None:
+    assert "task_types" not in admin.CONFIG_CHOICES
+    result = _invoke("server", "project", "config", "--help")
+    assert result.exit_code == 0
+    assert "task_types" in result.output
 
 
 def test_project_config_with_the_server_stopped_writes_config_and_maintenance(
@@ -161,6 +201,8 @@ def test_project_config_with_the_server_stopped_writes_config_and_maintenance(
         "review_mode=triple",
         "--set",
         "auto_plan_review_on_transition=false",
+        "--set",
+        'task_types=["task","bug","chore","research"]',
         "--root",
         str(root),
     )
@@ -168,6 +210,7 @@ def test_project_config_with_the_server_stopped_writes_config_and_maintenance(
     config = json.loads((board / "config.json").read_text())
     assert config["review_mode"] == "triple"
     assert config["auto_plan_review_on_transition"] is False
+    assert config["task_types"] == ["task", "bug", "chore", "research"]
     record = json.loads((board / "hosted" / "maintenance.json").read_text())
     assert record["command"] == "project config"
 

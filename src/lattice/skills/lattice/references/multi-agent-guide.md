@@ -26,6 +26,8 @@ lattice link PROJ-2 subtask_of PROJ-1 --actor agent:orchestrator
 lattice link PROJ-3 subtask_of PROJ-1 --actor agent:orchestrator
 ```
 
+New boards allow `task`, `bug`, and `chore`. Add custom types to the local board's `.lattice/config.json` `task_types` list; a hosted board admin can replace it with `lattice server project config <slug> --set 'task_types=[...]'` and must keep `task`. Use a parent task only when it has its own deliverable.
+
 ### 3. Workers Claim and Execute
 
 Each worker checks for assigned tasks:

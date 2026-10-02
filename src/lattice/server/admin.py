@@ -489,19 +489,43 @@ def _current_epoch(board: Path) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Review workflow configuration (SPEC §8.2 "project config")
+# Project admin configuration (SPEC §8.2 "project config")
 # ---------------------------------------------------------------------------
 
 
-def parse_config_assignments(assignments: list[str] | tuple[str, ...]) -> dict[str, str]:
-    """``KEY=VALUE`` strings to a dict (validation is :func:`validate_config_changes`)."""
-    changes: dict[str, str] = {}
+def parse_config_assignments(assignments: list[str] | tuple[str, ...]) -> dict[str, Any]:
+    """Parse ``KEY=VALUE`` assignments, decoding ``task_types`` as JSON."""
+    changes: dict[str, Any] = {}
     for item in assignments:
         key, sep, value = item.partition("=")
         if not sep:
             raise OpError("VALIDATION_ERROR", f"Expected KEY=VALUE, got {item!r}.")
-        changes[key.strip()] = value.strip()
+        key = key.strip()
+        value = value.strip()
+        if key == "task_types":
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError as exc:
+                raise OpError(
+                    "VALIDATION_ERROR", "task_types must be a JSON array of strings."
+                ) from exc
+        changes[key] = value
     return changes
+
+
+def _validate_task_types(value: Any) -> list[str]:
+    """Validate a complete replacement list of task types."""
+    if not isinstance(value, list) or not value:
+        raise OpError("VALIDATION_ERROR", "task_types must be a non-empty JSON array of strings.")
+    if any(not isinstance(item, str) or not item or item != item.strip() for item in value):
+        raise OpError(
+            "VALIDATION_ERROR", "task_types must contain only non-empty, stripped strings."
+        )
+    if len(set(value)) != len(value):
+        raise OpError("VALIDATION_ERROR", "task_types must not contain duplicate values.")
+    if "task" not in value:
+        raise OpError("VALIDATION_ERROR", "task_types must include 'task'.")
+    return list(value)
 
 
 def validate_config_changes(raw: Any) -> dict[str, Any]:
@@ -510,11 +534,14 @@ def validate_config_changes(raw: Any) -> dict[str, Any]:
         raise OpError("VALIDATION_ERROR", "Give at least one --set KEY=VALUE.")
     typed: dict[str, Any] = {}
     for key, value in raw.items():
+        if key == "task_types":
+            typed[key] = _validate_task_types(value)
+            continue
         if key not in CONFIG_CHOICES:
             raise OpError(
                 "VALIDATION_ERROR",
                 f"'{key}' cannot be set with project config; allowed keys: "
-                f"{', '.join(CONFIG_CHOICES)}.",
+                f"{', '.join((*CONFIG_CHOICES, 'task_types'))}.",
                 {"key": key},
             )
         text = str(value).lower() if isinstance(value, bool) else value
@@ -532,7 +559,7 @@ def validate_config_changes(raw: Any) -> dict[str, Any]:
 def set_project_config(
     root: Path, slug: str, changes: dict[str, Any], *, wait_seconds: float = 30.0
 ) -> dict:
-    """Change a project's review workflow (SPEC §8.2).
+    """Change a project's admin configuration (SPEC §8.2).
 
     With a server running: a control request, applied by the server as a
     journaled change. With no server: take the owner flock, rewrite

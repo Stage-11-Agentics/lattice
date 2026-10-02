@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 from pathlib import Path
 from typing import Literal, TypedDict
 
@@ -437,7 +438,6 @@ def default_config(preset: str = "classic", status_preset: str = "stage11") -> L
         "task_types": [
             "task",
             "bug",
-            "spike",
             "chore",
         ],
         "workflow": workflow,
@@ -604,9 +604,31 @@ def get_valid_transitions(config: dict, from_status: str) -> list[str]:
     return result
 
 
-def validate_task_type(config: dict, task_type: str) -> bool:
+def validate_task_type(config: dict, task_type: object) -> bool:
     """Return ``True`` if *task_type* is listed in the config's task_types."""
-    return task_type in config.get("task_types", [])
+    return isinstance(task_type, str) and task_type in config.get("task_types", [])
+
+
+def invalid_task_type_message(config: dict, task_type: object) -> str:
+    """Explain why a type was refused and how to add it to a board's config.
+
+    The message deliberately does not inspect whether the caller is local or
+    hosted, so the same operation has identical wording on both transports.
+    """
+    configured = config.get("task_types", [])
+    valid = ", ".join(configured)
+    replacement = list(configured)
+    if isinstance(task_type, str) and task_type not in replacement:
+        replacement.append(task_type)
+    replacement_json = json.dumps(replacement, separators=(",", ":"))
+    hosted_assignment = shlex.quote(f"task_types={replacement_json}")
+    return (
+        f"Invalid task type: '{task_type}'. Valid types: {valid}. "
+        "On a local board, add the type to `.lattice/config.json` `task_types`. "
+        "On a hosted board, run `lattice server project config <slug> "
+        f"--set {hosted_assignment}`; this replaces the list, so include "
+        "the existing values when adding a type."
+    )
 
 
 def get_wip_limit(config: dict, status: str) -> int | None:

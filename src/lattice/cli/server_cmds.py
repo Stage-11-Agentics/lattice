@@ -289,14 +289,14 @@ def project_unlock(slug: str, root: str | None, is_json: bool) -> None:
     required=True,
     metavar="KEY=VALUE",
     help="review_mode, plan_review_mode, plan_approval, auto_code_review_on_transition, "
-    "auto_plan_review_on_transition.",
+    "auto_plan_review_on_transition, task_types (JSON array; replaces list and must include task).",
 )
 @_root_option
 @_json_option
 def project_config(
     slug: str, assignments: tuple[str, ...], root: str | None, is_json: bool
 ) -> None:
-    """Change a project's review workflow."""
+    """Change a project's review workflow or allowed task types."""
     from lattice.server import admin
 
     def action() -> dict:

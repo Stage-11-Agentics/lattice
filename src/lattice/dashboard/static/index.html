@@ -1649,6 +1649,8 @@ select.form-control{cursor:pointer}
 <!-- Pure lane sort/group logic (see lane-logic.js). Loaded WITHOUT defer so its
      definitions are global before the main IIFE below runs and calls into them. -->
 <script src="static/lane-logic.js"></script>
+<!-- Pure task-type select option builder, tested in tests/js/task-type-options.test.js. -->
+<script src="static/task-type-options.js"></script>
 <!-- Pure actor identity logic (see actor-logic.js). Loaded WITHOUT defer so its
      definitions are global before the main IIFE below runs and calls into them. -->
 <script src="static/actor-logic.js"></script>
@@ -3968,8 +3970,10 @@ function _renderPanelContent(taskId, task, events) {
 
     var types = (config && config.task_types) || [];
     html += '<select id="dp-type" title="Change type">';
-    types.forEach(function(ty) {
-      html += '<option value="' + esc(ty) + '"' + (ty === task.type ? ' selected' : '') + '>' + esc(ty) + '</option>';
+    buildTaskTypeOptions(types, task.type, true).forEach(function(option) {
+      html += '<option value="' + esc(option.value) + '"'
+        + (option.selected ? ' selected' : '')
+        + (option.disabled ? ' disabled' : '') + '>' + esc(option.value) + '</option>';
     });
     html += '</select>';
     html += '</div>';
@@ -5604,8 +5608,10 @@ async function renderDetail(taskId) {
       // Type dropdown
       var types = (config && config.task_types) || [];
       html += '<select id="detail-type" title="Change type">';
-      types.forEach(function(ty) {
-        html += '<option value="' + esc(ty) + '"' + (ty === task.type ? ' selected' : '') + '>' + esc(ty) + '</option>';
+      buildTaskTypeOptions(types, task.type, true).forEach(function(option) {
+        html += '<option value="' + esc(option.value) + '"'
+          + (option.selected ? ' selected' : '')
+          + (option.disabled ? ' disabled' : '') + '>' + esc(option.value) + '</option>';
       });
       html += '</select>';
 
@@ -7078,11 +7084,11 @@ function showCreateTaskModal() {
   var typeSelect = document.getElementById("ct-type");
   typeSelect.innerHTML = "";
   var types = (config && config.task_types) || ["task"];
-  types.forEach(function(t) {
+  buildTaskTypeOptions(types, "task", false).forEach(function(typeOption) {
     var opt = document.createElement("option");
-    opt.value = t;
-    opt.textContent = t;
-    if (t === "task") opt.selected = true;
+    opt.value = typeOption.value;
+    opt.textContent = typeOption.value;
+    if (typeOption.selected) opt.selected = true;
     typeSelect.appendChild(opt);
   });
   // Reset form

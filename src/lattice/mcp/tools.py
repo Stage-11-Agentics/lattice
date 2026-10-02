@@ -177,7 +177,15 @@ def _resolve_task_id(lattice_dir: Path, raw_id: str) -> str:
 def lattice_create(
     title: Annotated[str, Field(description="Task title")],
     actor: Annotated[str, Field(description="Actor ID (e.g., agent:claude-opus-4, human:atin)")],
-    task_type: Annotated[str, Field(description="Task type")] = "task",
+    task_type: Annotated[
+        str,
+        Field(
+            description=(
+                "Task type. New boards allow task, bug, and chore; custom types must be "
+                "listed in the board's task_types config."
+            )
+        ),
+    ] = "task",
     priority: Annotated[str, Field(description="Priority level")] = "medium",
     status: Annotated[
         str | None, Field(description="Initial status (default: from config)")
@@ -286,7 +294,10 @@ def lattice_update(
     fields: Annotated[
         dict,
         Field(
-            description="Dict of field=value pairs to update (e.g., {'title': 'New title', 'priority': 'high'})"
+            description=(
+                "Dict of fields to update (e.g., {'title': 'New title', 'priority': 'high'}); "
+                "a type must be listed in the board's task_types config."
+            )
         ),
     ],
     lattice_root: Annotated[

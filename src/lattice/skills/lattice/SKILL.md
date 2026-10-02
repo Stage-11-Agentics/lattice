@@ -136,7 +136,7 @@ lattice archive PROJ-1 --actor agent:claude-cli
 
 Options for `create`: `--priority` (critical/high/medium/low/none), `--type` (task/bug/chore), `--description "..."`, `--assign agent:claude-cli`
 
-**No epics, and never a fake one.** Lattice has no `epic` or `spike` type by design, and you must not create an umbrella task to stand in for one. Group related tasks with a shared tag (`lattice create "..." --tags auth,v2`, then `lattice list --tag auth`), and order them with dependencies (`lattice link <later> depends_on <earlier>`). Express exploratory work as a plain `task` whose deliverable is a concrete artifact (plan doc, prototype, decision). Every ticket is a chunk of work with a real output, not a bucket or a question.
+**Task types follow the board config.** New boards allow `task`, `bug`, and `chore`; create and update accept only types listed in `.lattice/config.json` `task_types`. Add a custom type to that list while preserving its existing values. On a hosted board, an admin replaces the list with `lattice server project config <slug> --set 'task_types=[...]'` and keeps `task`. Group related work with tags and dependencies, and create a parent only when it has its own deliverable. Express exploratory work as a plain `task` with a concrete artifact.
 
 **Task description depth:** Match description detail to task ambiguity. Bug fixes and chores can be one-liners ("Add regex validation to frequency names"). Features and integration tasks should include: (1) what it does, (2) acceptance criteria, (3) architectural context, (4) what the user/operator experiences when done. Structured task-local criterion records are optional; add them when stable IDs and evidence traceability help, not as a universal task or workflow requirement.
 
