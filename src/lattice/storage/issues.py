@@ -23,8 +23,11 @@ from pathlib import Path
 from lattice.core.errors import OpError
 from lattice.core.issues import (
     TaskInfo,
+    issue_comments,
+    issue_origin,
     issue_view,
     parse_issue_ref,
+    redact_removed_media_names,
     replay_issue,
     serialize_issue_snapshot,
     validate_issue_media_hashes,
@@ -265,10 +268,47 @@ def issue_views(lattice_dir: Path, snapshots: list[dict]) -> list[dict]:
     info = task_info_for(lattice_dir, task_ids)
     views = []
     for snapshot in snapshots:
-        view = issue_view(snapshot, info)
+        try:
+            filed_event = next(
+                (
+                    e
+                    for e in read_issue_events(lattice_dir, snapshot["id"])
+                    if e.get("type") == "issue_filed"
+                ),
+                None,
+            )
+        except OpError:
+            filed_event = None
+        filed_origin = issue_origin(filed_event.get("origin")) if filed_event else None
+        view = issue_view(snapshot, info, filed_origin)
         view["media"] = media_views(lattice_dir, snapshot)
         views.append(view)
     return views
+
+
+def issue_detail(
+    lattice_dir: Path,
+    issue_id: str,
+    *,
+    on_unreadable: OnUnreadable | None = None,
+) -> dict | None:
+    """The full issue detail used by ``issue show`` and dashboard readers.
+
+    The log is kept in event form, except that removed media names are
+    redacted from the returned history. ``None`` means the issue has no
+    readable snapshot or log.
+    """
+    resolved = resolve_issue(lattice_dir, issue_id)
+    snapshot = read_issue_snapshot(lattice_dir, resolved, on_unreadable=on_unreadable)
+    if snapshot is None:
+        return None
+    events = read_issue_events(lattice_dir, resolved)
+    view = issue_views(lattice_dir, [snapshot])[0]
+    return {
+        **view,
+        "comments": issue_comments(events),
+        "events": redact_removed_media_names(events, snapshot),
+    }
 
 
 def issues_linked_to(
@@ -415,6 +455,7 @@ __all__ = [
     "allocate_issue_seq",
     "current_issue",
     "issue_views",
+    "issue_detail",
     "issue_write_context",
     "issues_dir",
     "issues_linked_to",

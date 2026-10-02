@@ -9,6 +9,10 @@ linked tasks' current statuses.
 
 The display ID format lives in :func:`format_issue_short_id` and
 :func:`parse_issue_ref` and nowhere else.
+
+Issue titles and descriptions are stored separately for new issues; old
+``text``-only logs keep their frozen derivation rule. Comments share the task
+comment shape while remaining in each issue's own event log.
 """
 
 from __future__ import annotations
@@ -18,6 +22,7 @@ import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 
+from lattice.core.comments import materialize_comments
 from lattice.core.events import get_actor_display
 from lattice.core.ids import validate_id
 from lattice.core.issue_media import media_summary, present_media
@@ -99,12 +104,16 @@ def _filed(snapshot: dict | None, event: dict) -> dict:
         "id": event["issue_id"],
         "short_id": data.get("short_id"),
         "seq": data.get("seq"),
-        "text": data.get("text", ""),
         "filed_by": event.get("actor"),
         "filed_at": event.get("ts"),
         "links": [],
         "closure": None,
     }
+    if "title" in data:
+        new["title"] = data["title"]
+        new["description"] = data.get("description", "")
+    else:
+        new["text"] = data.get("text", "")
     for key in ("confidence", "evidence", "source"):
         if key in data:
             new[key] = data[key]
@@ -145,6 +154,23 @@ def _marked_duplicate(snapshot: dict, event: dict) -> None:
 
 def _reopened(snapshot: dict, _event: dict) -> None:
     snapshot["closure"] = None
+
+
+def _edited(snapshot: dict, event: dict) -> None:
+    """Apply title/description values, materializing a legacy ``text`` issue."""
+    if "title" not in snapshot:
+        title, description = issue_title_description(snapshot)
+        snapshot["title"] = title
+        snapshot["description"] = description
+    data = event.get("data", {})
+    for key in ("title", "description"):
+        if key in data:
+            snapshot[key] = data[key]
+    snapshot.pop("text", None)
+
+
+def _comment_added(snapshot: dict, _event: dict) -> None:
+    snapshot["comment_count"] = snapshot.get("comment_count", 0) + 1
 
 
 #: The ``issue_media_added`` data fields a snapshot's media entry keeps (LAT-366).
@@ -235,6 +261,8 @@ def redact_removed_media_names(events: Iterable[dict], snapshot: Mapping) -> lis
 
 
 _HANDLERS: dict[str, Callable[[dict, dict], None]] = {
+    "issue_edited": _edited,
+    "issue_comment_added": _comment_added,
     "issue_linked": _linked,
     "issue_unlinked": _unlinked,
     "issue_dismissed": _dismissed,
@@ -331,7 +359,11 @@ def derive_issue_state(snapshot: dict, task_info: Mapping[str, TaskInfo | None])
 # ---------------------------------------------------------------------------
 
 
-def issue_view(snapshot: dict, task_info: Mapping[str, TaskInfo | None]) -> dict:
+def issue_view(
+    snapshot: dict,
+    task_info: Mapping[str, TaskInfo | None],
+    filed_origin: dict | None = None,
+) -> dict:
     """The issue as commands print it under ``--json``: the snapshot plus its
     derived ``state`` and its linked ``tasks`` with their current statuses."""
     tasks = []
@@ -350,20 +382,24 @@ def issue_view(snapshot: dict, task_info: Mapping[str, TaskInfo | None]) -> dict
         if info and info.archived:
             entry["archived"] = True
         tasks.append(entry)
+    title, description = issue_title_description(snapshot)
     return {
         "id": snapshot["id"],
         "short_id": snapshot.get("short_id"),
         "seq": snapshot.get("seq"),
         "state": derive_issue_state(snapshot, task_info),
-        "text": snapshot.get("text", ""),
+        "title": title,
+        "description": description,
         "confidence": snapshot.get("confidence"),
         "evidence": list(snapshot.get("evidence", [])),
         "source": snapshot.get("source"),
         "filed_by": snapshot.get("filed_by"),
         "filed_at": snapshot.get("filed_at"),
+        "filed_origin": filed_origin or issue_origin(snapshot.get("filed_origin")),
         "closure": snapshot.get("closure"),
         "tasks": tasks,
         "media": [dict(m) for m in snapshot.get("media", [])],
+        "comment_count": snapshot.get("comment_count", 0),
         "updated_at": snapshot.get("updated_at"),
         "last_event_id": snapshot.get("last_event_id"),
     }
@@ -379,7 +415,7 @@ def first_line(text: str, limit: int = TITLE_LIMIT) -> str:
 
 def default_task_title(snapshot: dict) -> str:
     """The title ``promote`` gives a task when none is passed."""
-    return first_line(snapshot.get("text", ""))
+    return issue_title_description(snapshot)[0]
 
 
 #: Column widths: every state fits ``duplicate``, every confidence ``definite``.
@@ -406,8 +442,10 @@ def task_label(entry: Mapping) -> str:
     return f"{entry.get('short_id') or entry.get('id')} ({task_status(entry)})"
 
 
-def format_issue_row(view: Mapping, id_width: int = 0, text_width: int = 60) -> str:
-    """One ``issue list`` row: ID, state, confidence, text, and linked tasks.
+def format_issue_row(
+    view: Mapping, id_width: int = 0, text_width: int = 60, activity: str | None = None
+) -> str:
+    """One ``issue list`` row: ID, state, confidence, title, and linked tasks.
 
     *id_width* pads the ID column (the caller passes the widest ID it prints);
     state and confidence pad to their widest possible value.
@@ -417,9 +455,11 @@ def format_issue_row(view: Mapping, id_width: int = 0, text_width: int = 60) -> 
         f"{view.get('short_id') or view.get('id'):<{id_width}}  "
         f"{view['state']:<{STATE_WIDTH}}  {confidence:<{CONFIDENCE_WIDTH}}  "
     )
-    row += first_line(view.get("text", ""), text_width)
+    row += first_line(view.get("title", ""), text_width)
     if view.get("tasks"):
         row += " -> " + ", ".join(task_label(t) for t in view["tasks"])
+    if activity:
+        row += f"  ({activity})"
     return row
 
 
@@ -438,7 +478,7 @@ def linked_issue_summary(view: Mapping) -> dict:
         "id": view["id"],
         "short_id": view.get("short_id"),
         "state": view["state"],
-        "text": view.get("text", ""),
+        "title": view.get("title", ""),
     }
 
 
@@ -446,7 +486,7 @@ def format_linked_issue_line(item: Mapping, id_width: int = 0, text_width: int =
     """One line of ``lattice show``'s ``Issues:`` section, padded like ``issue list``."""
     return (
         f"{item.get('short_id') or item.get('id'):<{id_width}}  "
-        f"{item['state']:<{STATE_WIDTH}}  {first_line(item.get('text', ''), text_width)}"
+        f"{item['state']:<{STATE_WIDTH}}  {first_line(item.get('title', ''), text_width)}"
     )
 
 
@@ -457,12 +497,196 @@ def promote_description(snapshots: Iterable[dict]) -> str:
         meta = [snap.get("confidence")] if snap.get("confidence") else []
         filer = get_actor_display(snap.get("filed_by") or "?")
         meta.append(f"filed by {filer} on {(snap.get('filed_at') or '?')[:10]}")
-        text_lines = (snap.get("text") or "").strip().splitlines() or [""]
-        lines.append(f"- {snap.get('short_id')} ({', '.join(meta)}): {text_lines[0]}")
-        lines.extend(f"  {ln}" if ln.strip() else "" for ln in text_lines[1:])
+        title, description = issue_title_description(snap)
+        description_lines = description.splitlines()
+        lines.append(f"- {snap.get('short_id')} ({', '.join(meta)}): {title}")
+        lines.extend(f"  {ln}" if ln.strip() else "" for ln in description_lines)
         if snap.get("evidence"):
             lines.append(f"  Evidence: {', '.join(snap['evidence'])}")
         summary = media_summary(present_media(snap))
         if summary:
             lines.append(f"  Media: {summary} (lattice issue media {snap.get('short_id')})")
+        if snap.get("comment_count", 0):
+            lines.append(
+                f"  Comments: {snap['comment_count']} "
+                f"(lattice issue show {snap.get('short_id') or snap.get('id')})"
+            )
     return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# Title, description and comments
+# ---------------------------------------------------------------------------
+
+
+def split_title(raw: str, limit: int = TITLE_LIMIT) -> tuple[str, str, bool]:
+    """Split issue text into its frozen title, overflow description and cut flag.
+
+    This is the read contract for old ``text``-only issue logs as well as the
+    filing rule for new titles. The cut flag is true only when the first line
+    itself exceeds *limit*.
+
+    For a long first line, take the greatest index ``i`` across the separators
+    ``". "``, ``"; "`` and ``" — "`` with ``i >= 40`` and
+    ``i + len(sep) <= limit``; the title is ``first[:i]`` (plus the full stop
+    for ``". "``). Otherwise cut at the last space at or before *limit*, or
+    at *limit* when there is no space.
+    """
+    normalized = raw.strip()
+    lines = normalized.splitlines()
+    first_index = next((i for i, line in enumerate(lines) if line.strip()), None)
+    if first_index is None:
+        return "", "", False
+    first = lines[first_index].strip()
+    rest = "\n".join(lines[first_index + 1 :]).strip()
+    if len(first) <= limit:
+        return first, rest, False
+
+    candidate: tuple[int, str] | None = None
+    for separator in (". ", "; ", " — "):
+        index = first.rfind(separator, 0, limit)
+        if index >= 40 and index + len(separator) <= limit:
+            if candidate is None or index > candidate[0]:
+                candidate = (index, separator)
+    if candidate is not None:
+        index, separator = candidate
+        title = first[:index] + ("." if separator == ". " else "")
+    else:
+        space = first.rfind(" ", 0, limit + 1)
+        title = first[:space] if space >= 0 else first[:limit]
+    return title.rstrip(), normalized, True
+
+
+def normalize_issue_description(description: str | None) -> str:
+    """Strip trailing whitespace; represent whitespace-only descriptions as empty."""
+    if description is None or not description.strip():
+        return ""
+    return description.rstrip()
+
+
+def issue_title_description(snapshot: Mapping) -> tuple[str, str]:
+    """The stored fields for new issues, or their frozen derivation for old logs."""
+    if "title" in snapshot:
+        return str(snapshot.get("title") or ""), str(snapshot.get("description") or "")
+    title, description, _shortened = split_title(str(snapshot.get("text") or ""))
+    return title, description
+
+
+def check_edit_title(title: str) -> str:
+    """Validate and trim a deliberate title edit; filing uses :func:`split_title`."""
+    if "\n" in title or "\r" in title:
+        raise ValueError("Issue title must be a single line.")
+    value = title.strip()
+    if not value:
+        raise ValueError("Issue title must not be empty.")
+    if len(value) > TITLE_LIMIT:
+        raise ValueError(
+            f"Title is {len(value)} characters; the limit is {TITLE_LIMIT}. "
+            "Put the rest in --description."
+        )
+    return value
+
+
+def _adapt_issue_comment_events(events: Iterable[dict]) -> list[dict]:
+    return [
+        {**event, "type": event["type"].removeprefix("issue_")}
+        for event in events
+        if str(event.get("type", "")).startswith("issue_comment_")
+    ]
+
+
+def issue_comments(events: Iterable[dict]) -> list[dict]:
+    """Materialize an issue's ``issue_comment_*`` events in the task comment shape."""
+    adapted = _adapt_issue_comment_events(events)
+    comments = materialize_comments(adapted)
+    origins = {event.get("id"): issue_origin(event.get("origin")) for event in adapted}
+
+    def add_origin(comment: dict) -> None:
+        comment["origin"] = origins.get(comment.get("id"))
+        for reply in comment.get("replies", []):
+            add_origin(reply)
+
+    for comment in comments:
+        add_origin(comment)
+    return comments
+
+
+def issue_comment_events(events: Iterable[dict]) -> list[dict]:
+    """The task-named event copies used by the shared comment validators."""
+    return _adapt_issue_comment_events(events)
+
+
+def issue_origin(origin: object) -> dict | None:
+    """The user and machine shown for a filing or comment, or ``None`` if absent."""
+    if not isinstance(origin, dict):
+        return None
+    from lattice.core.origin import _user_and_machine
+
+    user, machine = _user_and_machine(origin)
+    return {"user": user, "machine": machine}
+
+
+def actor_with_origin(actor: str | dict | None, origin: object) -> str:
+    """A filing/comment author plus the reported origin pair when one exists."""
+    name = get_actor_display(actor or "?")
+    if isinstance(origin, dict) and ("user" in origin or "machine" in origin):
+        fields = {"user": origin.get("user"), "machine": origin.get("machine")}
+    else:
+        fields = issue_origin(origin)
+    if fields is None:
+        return name
+    user, machine = fields["user"], fields["machine"]
+    if user and machine:
+        return f"{name} · {user}@{machine}"
+    if user or machine:
+        return f"{name} · {user or machine}"
+    return name
+
+
+def format_comment_lines(comments: Iterable[Mapping]) -> list[str]:
+    """Issue comment headers/bodies with task-style indentation and attribution."""
+    output: list[str] = []
+
+    def render(comment: Mapping, depth: int) -> None:
+        indent = "  " * (depth + 1)
+        if output and output[-1] != "":
+            output.append("")
+        author = actor_with_origin(comment.get("author"), comment.get("origin"))
+        created_at = comment.get("created_at") or "?"
+        output.append(f"{indent}[{comment.get('id')}] {author} ({created_at})")
+        if not comment.get("deleted"):
+            for line in str(comment.get("body") or "").splitlines():
+                output.append(f"{indent}  {line}")
+        for reply in comment.get("replies", []):
+            render(reply, depth + 1)
+
+    for comment in comments:
+        render(comment, 0)
+    return output
+
+
+def actor_matches(actor: object, requested: str) -> bool:
+    """Match the actor name or stable session ID accepted by ``issue list --by``."""
+    if isinstance(actor, dict):
+        return requested in {
+            actor.get("name"),
+            actor.get("base_name"),
+            actor.get("session"),
+        }
+    return actor == requested
+
+
+def issue_activity(events: Iterable[dict], actor: str) -> str | None:
+    """Return ``filed`` or ``commented`` when *actor* appears in an issue log."""
+    filed = False
+    commented = False
+    for event in events:
+        etype = event.get("type")
+        matches = actor_matches(event.get("actor"), actor)
+        filed |= etype == "issue_filed" and matches
+        commented |= etype == "issue_comment_added" and matches
+    if filed:
+        return "filed"
+    if commented:
+        return "commented"
+    return None

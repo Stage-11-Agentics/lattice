@@ -63,7 +63,7 @@ def test_file_with_media_is_one_atomic_write(board: LocalBoard) -> None:
         video={"width": 720, "height": 1280, "duration_ms": 3000},
         frames=[frame(2900), frame(0)],
     )
-    result = run(board, "issue.file", text="t", media=(item(png(4, 3)), video, item(png(4, 3))))
+    result = run(board, "issue.file", title="t", media=(item(png(4, 3)), video, item(png(4, 3))))
     assert [e["type"] for e in result.events] == [
         "issue_filed",
         "issue_media_added",
@@ -102,7 +102,7 @@ def test_file_with_media_is_one_atomic_write(board: LocalBoard) -> None:
 def test_bad_media_is_refused_before_the_number_is_allocated(
     board: LocalBoard, media: tuple, reason: str | None
 ) -> None:
-    exc = refused(board, "issue.file", text="t", media=media)
+    exc = refused(board, "issue.file", title="t", media=media)
     assert exc.code == "VALIDATION_ERROR"
     if reason:
         assert exc.details.get("reason") == reason
@@ -112,7 +112,7 @@ def test_bad_media_is_refused_before_the_number_is_allocated(
 def test_limits_refuse_the_file_and_the_issue(board: LocalBoard) -> None:
     _set_limits(board, max_media_mb=1, max_issue_media_mb=2)
     big = png() + b"\x00" * (1024 * 1024)
-    exc = refused(board, "issue.file", text="t", media=(item(big, "big.png"),))
+    exc = refused(board, "issue.file", title="t", media=(item(big, "big.png"),))
     assert exc.code == "PAYLOAD_TOO_LARGE"
     assert exc.details["reason"] == "MEDIA_FILE_TOO_LARGE"
     assert "big.png is 1.0 MB; the limit is 1 MB per file" in exc.message
@@ -120,7 +120,7 @@ def test_limits_refuse_the_file_and_the_issue(board: LocalBoard) -> None:
     assert not (board.lattice_dir / "issues").exists()
 
     three = [png() + bytes([i]) * 800_000 for i in range(3)]
-    issue = run(board, "issue.file", text="t", media=(item(three[0]), item(three[1]))).value
+    issue = run(board, "issue.file", title="t", media=(item(three[0]), item(three[1]))).value
     before = media_files(board)
     exc = refused(board, "issue.attach", issue=issue["short_id"], media=(item(three[2]),))
     assert (exc.code, exc.details["reason"]) == ("PAYLOAD_TOO_LARGE", "ISSUE_MEDIA_TOO_LARGE")
@@ -129,7 +129,7 @@ def test_limits_refuse_the_file_and_the_issue(board: LocalBoard) -> None:
 
 
 def test_attach_dedupes_and_skips_duplicates(board: LocalBoard) -> None:
-    issue = run(board, "issue.file", text="t", media=(item(png(1, 1)),)).value["short_id"]
+    issue = run(board, "issue.file", title="t", media=(item(png(1, 1)),)).value["short_id"]
     run(board, "issue.dismiss", issue=issue, reason="closed issues take evidence too")
     same = run(board, "issue.attach", issue=issue, media=(item(png(1, 1), "again.png"),))
     assert same.idempotent and same.events == []
@@ -295,7 +295,7 @@ def test_detach_records_removal_before_deleting_bytes(
     board: LocalBoard, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     video = item(mp4(), "r.mov", frames=[frame(0), frame(500)])
-    issue = run(board, "issue.file", text="t", media=(item(png()), video)).value
+    issue = run(board, "issue.file", title="t", media=(item(png()), video)).value
     name = issue["short_id"]
     assert refused(board, "issue.detach", issue=name, media="2").code == "VALIDATION_ERROR"
 
@@ -401,7 +401,7 @@ def test_detach_leaves_shared_media_root_for_other_issue_filers(board: LocalBoar
 
 
 def test_detach_never_follows_a_planted_symlink(board: LocalBoard, tmp_path: Path) -> None:
-    issue = run(board, "issue.file", text="t", media=(item(png()),)).value
+    issue = run(board, "issue.file", title="t", media=(item(png()),)).value
     path = Path(issue["media"][0]["path"])
     outside = tmp_path / "outside.png"
     outside.write_bytes(b"keep me")
@@ -417,7 +417,7 @@ def test_detach_by_an_ordinal_two_clones_both_used_is_a_conflict(board: LocalBoa
     """m4: two clones each added media 1; the merged log has both."""
     from lattice.core.events import create_issue_event, serialize_event
 
-    issue = run(board, "issue.file", text="t", media=(item(png()),)).value
+    issue = run(board, "issue.file", title="t", media=(item(png()),)).value
     log = board.lattice_dir / "issues" / "events" / f"{issue['id']}.jsonl"
     twin = create_issue_event(
         "issue_media_added",

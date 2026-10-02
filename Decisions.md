@@ -1359,3 +1359,43 @@ Additionally, `lattice advance N` processed multiple tasks in a single context w
   name leaves the snapshot and views; the append-only log keeps it.
 - **Duplicates** are one file: the same stored hash, or the same source hash
   (`converted_from.sha256`), since each transcode can produce new bytes.
+
+## 2026-09-29: Issue title, description and comments (LAT-371)
+
+- **Separate stored fields; derive old logs.** New `issue_filed` events and
+  snapshots store `title` and `description`; old LAT-361 `text` events remain
+  unchanged. `issue_title_description` derives their view through the frozen
+  `split_title` rule, so changing that rule would change how existing logs read.
+- **Split at filing, refuse at edit.** Filing accepts long or multi-line
+  input. For a first line over 120 characters, choose the greatest qualifying
+  `". "`, `"; "` or `" — "` separator with its start at index 40 or later and
+  its end within the limit; keep the period for `". "`, and drop the other
+  separators. Otherwise cut at the last space at or before 120 (or at 120 if
+  the line has no spaces). The full input becomes the description, followed by
+  an explicit description after a blank line. A short first line followed by
+  more lines uses those remaining lines as the description. Editing refuses a
+  multi-line or over-limit title. Descriptions strip trailing whitespace;
+  whitespace-only descriptions are empty.
+- **Materialize deliberately.** The first edit of an old issue writes both
+  title and description into `issue_edited`, with `from_title` and
+  `from_description` recording the values being replaced. Later edits record
+  only changed fields and their prior values. Equal edits append no event.
+- **Comments stay in the issue log.** `issue_comment_added` carries the task
+  comment data shape and uses its event ID as the comment ID. Issue events are
+  shallow-copied with their type prefix removed before the unchanged task
+  comment materializer and reply validator run. This ticket supports adding a
+  top-level comment and one reply; edit, delete, reactions and role links stay
+  follow-ups. Comments do not affect issue state and work on closed issues.
+- **Views are the read contract.** Issue views replace `text` with `title` and
+  `description`, and add `comment_count` plus filing/comment `origin` summaries
+  containing the event's authenticated user and machine, or reported OS user
+  and host. `issue_detail` is the one full-detail reader for the CLI and future
+  dashboard route; removed media names stay redacted from returned history.
+  `lattice issue list --by <actor>` searches all states and marks each result
+  with `activity: filed` or `activity: commented` (filing takes precedence if
+  the actor did both). `issue promote` copies titles and descriptions into its
+  task description and links to live comment threads rather than copying them.
+- **Routes and compatibility.** `issue.comment` is the operation LAT-365 can
+  register behind its POST route; the route itself belongs to LAT-365. No
+  schema version changes, old logs are not migrated, and task event logs and
+  task views stay isolated from issue events.

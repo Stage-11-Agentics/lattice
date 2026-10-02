@@ -51,6 +51,8 @@ BUILTIN_EVENT_TYPES: frozenset[str] = frozenset(
         "notes_written",
         "task_history_reconciled",
         "issue_filed",
+        "issue_edited",
+        "issue_comment_added",
         "issue_linked",
         "issue_unlinked",
         "issue_dismissed",
@@ -66,6 +68,8 @@ BUILTIN_EVENT_TYPES: frozenset[str] = frozenset(
 ISSUE_EVENT_TYPES: frozenset[str] = frozenset(
     {
         "issue_filed",
+        "issue_edited",
+        "issue_comment_added",
         "issue_linked",
         "issue_unlinked",
         "issue_dismissed",

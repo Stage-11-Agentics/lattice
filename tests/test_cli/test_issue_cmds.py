@@ -14,6 +14,8 @@ from lattice.cli.main import cli
 A = ("--actor", "agent:qa")
 DISABLED_COMMANDS = [
     ("issue", "file", "text", *A),
+    ("issue", "edit", "LAT-I1", "--title", "Corrected", *A),
+    ("issue", "comment", "LAT-I1", "A note", *A),
     ("issue", "list"),
     ("issue", "show", "LAT-I1"),
     ("issue", "promote", "LAT-I1", *A),
@@ -151,7 +153,8 @@ def test_file_all_options_and_stdin(on: Path, ok) -> None:
     assert view["state"] == "open" and view["tasks"] == []
     text = "The `make test` target prints $(HOME) and fails\nsecond line"
     piped = ok("issue", "file", "-", *A, input=text + "\n")
-    assert piped["text"] == text
+    assert piped["title"] == "The `make test` target prints $(HOME) and fails"
+    assert piped["description"] == "second line"
 
 
 def test_file_by_session_name(on: Path, ok, invoke) -> None:
@@ -176,7 +179,7 @@ def test_issues_never_move_the_task_sequence(on: Path, ok) -> None:
 def test_no_project_code_numbers_bare(initialized_root: Path, ok) -> None:
     _set_config(initialized_root, issues={"enabled": True})
     assert ok("issue", "file", "Bare", *A)["short_id"] == "I1"
-    assert ok("issue", "show", "i1")["text"] == "Bare"
+    assert ok("issue", "show", "i1")["title"] == "Bare"
 
 
 # ---------------------------------------------------------------------------
@@ -203,6 +206,7 @@ def test_task_views_and_logs_do_not_change(on: Path, ok, invoke) -> None:
     events_before = _tree(ld / "events")
     ok("issue", "file", "One", *A)
     ok("issue", "file", "Two", *A)
+    ok("issue", "comment", "LAT-I1", "This stays in the issue log", *A)
     ok("issue", "link", "LAT-I1", "LAT-1", *A)
     ok("issue", "dismiss", "LAT-I2", "--reason", "noise", *A)
     ok("issue", "unlink", "LAT-I1", "LAT-1", *A)
@@ -423,7 +427,9 @@ def test_operations_refuse_a_server_owned_board(on: Path) -> None:
     caller = Caller(actor="agent:qa", origin={"op_id": "op_01K00000000000000000000000"})
     with owning_board(ld):
         for op, params in (
-            ("issue.file", {"text": "x"}),
+            ("issue.file", {"title": "x"}),
+            ("issue.edit", {"issue": "LAT-I1", "title": "x"}),
+            ("issue.comment", {"issue": "LAT-I1", "text": "x"}),
             ("issue.link", {"issue": "LAT-I1", "task": "LAT-1"}),
             ("issue.promote", {"issues": ["LAT-I1"]}),
             ("issue.reopen", {"issue": "LAT-I1"}),

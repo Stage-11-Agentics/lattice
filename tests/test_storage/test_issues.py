@@ -14,6 +14,7 @@ from lattice.core.issues import apply_issue_event, format_issue_short_id
 from lattice.storage.issues import (
     allocate_issue_seq,
     current_issue,
+    issue_detail,
     issue_write_context,
     list_issue_snapshots,
     load_issue_ids,
@@ -41,10 +42,14 @@ def file_issue(board: Path, text: str = "Footer overlaps", code: str | None = "L
     return snapshot
 
 
-def append(board: Path, issue_id: str, etype: str, data: dict) -> dict:
+def append(
+    board: Path, issue_id: str, etype: str, data: dict, *, origin: dict | None = None
+) -> dict:
     with issue_write_context(board, issue_id):
         snapshot = current_issue(board, issue_id)
         event = create_issue_event(etype, issue_id, "agent:qa", data)
+        if origin is not None:
+            event["origin"] = origin
         snapshot = apply_issue_event(snapshot, event)
         write_issue_events(board, issue_id, [event], snapshot)
     return snapshot
@@ -163,6 +168,60 @@ def test_issue_without_a_snapshot_is_replayed_by_every_read(board: Path) -> None
     )
     assert result.value["state"] == "linked"
     assert (board / "issues" / f"{lost['id']}.json").exists()  # the write repaired it
+
+
+def test_issue_detail_carries_origins_and_redacts_removed_media_names(board: Path) -> None:
+    issue_id = generate_issue_id()
+    seq = allocate_issue_seq(board, issue_id)
+    filed = create_issue_event(
+        "issue_filed",
+        issue_id,
+        "agent:qa",
+        {"seq": seq, "short_id": format_issue_short_id("LAT", seq), "title": "Title"},
+    )
+    filed["origin"] = {
+        "reported": {"os_user": "local-user", "host": "Hyperion"},
+        "authenticated": {"user": "server-user", "machine": "Atlas"},
+    }
+    snapshot = apply_issue_event(None, filed)
+    with issue_write_context(board, issue_id):
+        write_issue_events(board, issue_id, [filed], snapshot)
+
+    append(
+        board,
+        issue_id,
+        "issue_media_added",
+        {
+            "media_id": "med_01K00000000000000000000001",
+            "n": 1,
+            "kind": "photo",
+            "content_type": "image/png",
+            "original_name": "sensitive-name.png",
+            "size_bytes": 12,
+            "sha256": "a" * 64,
+        },
+    )
+    append(
+        board,
+        issue_id,
+        "issue_media_removed",
+        {"media_id": "med_01K00000000000000000000001", "reason": "private"},
+    )
+    append(
+        board,
+        issue_id,
+        "issue_comment_added",
+        {"body": "Reproduced"},
+        origin={"reported": {"os_user": "atin", "host": "Hyperion"}},
+    )
+
+    detail = issue_detail(board, issue_id)
+    assert detail is not None
+    assert detail["title"] == "Title" and "text" not in detail
+    assert detail["filed_origin"] == {"user": "server-user", "machine": "Atlas"}
+    assert detail["comments"][0]["origin"] == {"user": "atin", "machine": "Hyperion"}
+    assert "original_name" not in detail["events"][1]["data"]
+    assert "sensitive-name.png" not in json.dumps(detail)
 
 
 def test_an_unreadable_snapshot_is_replayed_and_reported(board: Path) -> None:

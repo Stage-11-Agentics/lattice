@@ -6,6 +6,7 @@ import json
 
 from lattice.core.events import (
     BUILTIN_EVENT_TYPES,
+    ISSUE_EVENT_TYPES,
     LIFECYCLE_EVENT_TYPES,
     count_review_rework_cycles,
     create_event,
@@ -62,6 +63,8 @@ class TestBuiltinEventTypes:
             "notes_written",
             "task_history_reconciled",
             "issue_filed",
+            "issue_edited",
+            "issue_comment_added",
             "issue_linked",
             "issue_unlinked",
             "issue_dismissed",
@@ -79,11 +82,16 @@ class TestBuiltinEventTypes:
         assert isinstance(BUILTIN_EVENT_TYPES, frozenset)
 
     def test_count(self) -> None:
-        assert len(BUILTIN_EVENT_TYPES) == 45
+        assert len(BUILTIN_EVENT_TYPES) == 47
 
     def test_auto_review_spawned_is_not_lifecycle(self) -> None:
         # ``auto_review_spawned`` is a per-task event, not a lifecycle one.
         assert "auto_review_spawned" not in LIFECYCLE_EVENT_TYPES
+
+
+def test_issue_event_types_include_titles_and_comments() -> None:
+    assert {"issue_edited", "issue_comment_added"} <= ISSUE_EVENT_TYPES
+    assert {"issue_edited", "issue_comment_added"} <= BUILTIN_EVENT_TYPES
 
 
 # ---------------------------------------------------------------------------
