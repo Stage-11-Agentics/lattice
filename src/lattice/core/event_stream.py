@@ -233,6 +233,7 @@ def _stream_with_fswatch(
     cmd = [
         "fswatch",
         "-0",
+        "-r",
         "--event",
         "Updated",
         "--event",

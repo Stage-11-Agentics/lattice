@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import json
+import io
 import shutil
+from types import SimpleNamespace
 from pathlib import Path
 
+import lattice.core.event_stream as event_stream
 from lattice.core.event_stream import (
     _filtered_unique,
     _parse_jsonl_file,
     _scan_event_logs,
     _snapshot_event_offsets,
+    stream_events,
 )
 
 
@@ -121,3 +125,28 @@ def test_filters_exclude_nonmatching_task_and_type(tmp_path: Path) -> None:
 
     assert list(_filtered_unique(events, ["task_1"], ["comment_added"], set())) == [events[0]]
     assert list(_filtered_unique(events, ["task_1"], ["task_archived"], set())) == []
+
+
+def test_fswatch_command_watches_recursively(tmp_path: Path, monkeypatch) -> None:
+    import select
+
+    lattice_dir = tmp_path / ".lattice"
+    (lattice_dir / "events").mkdir(parents=True)
+    process = SimpleNamespace(
+        stdout=io.BytesIO(),
+        terminate=lambda: None,
+        wait=lambda timeout: None,
+    )
+    commands: list[list[str]] = []
+
+    def fake_popen(command: list[str], **_kwargs: object) -> SimpleNamespace:
+        commands.append(command)
+        return process
+
+    monkeypatch.setattr(event_stream, "_check_fswatch", lambda: True)
+    monkeypatch.setattr(event_stream.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(select, "select", lambda readers, *_args: (readers, [], []))
+
+    assert list(stream_events(lattice_dir, timeout=1)) == []
+    assert len(commands) == 1
+    assert "-r" in commands[0]
