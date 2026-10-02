@@ -48,6 +48,7 @@ def human_author(config: dict) -> str | None:
     actor = config.get("default_actor")
     return actor if isinstance(actor, str) and actor.startswith("human:") and actor[6:] else None
 
+
 #: Maximum allowed request body size (1 MiB), to refuse oversized payloads.
 MAX_REQUEST_BODY_BYTES = 1_048_576
 

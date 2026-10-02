@@ -55,7 +55,9 @@ def _prepare_item(item: dict) -> dict:
 def _unknown_keys(item: dict) -> dict:
     """Keys the preparation does not own, kept so ``issue.file`` refuses them whether or
     not ffmpeg is installed."""
-    return {k: v for k, v in item.items() if k not in ("payload", "video", "frames", "converted_from")}
+    return {
+        k: v for k, v in item.items() if k not in ("payload", "video", "frames", "converted_from")
+    }
 
 
 def _suffix(name: str) -> str:
