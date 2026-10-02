@@ -30,6 +30,8 @@ uv cache clean lattice-tracker && uv tool install -e /Users/atin/Projects/Stage1
 
 **Note for dashboards:** After editing static files (HTML/JS/CSS), a running dashboard still serves from memory. Restart it to pick up changes (`lattice restart` or stop/start).
 
+**Validating dashboard changes from a worktree:** the global `lattice` runs the main checkout's source, not your worktree's. In `Lattice-worktrees/<branch>/`, run `uv pip install -e ".[dev]"` once, then `.venv/bin/lattice dashboard --port 8811` (any non-default port), and kill it before doing the same in another worktree.
+
 ## Quick Reference
 
 | Item | Value |
