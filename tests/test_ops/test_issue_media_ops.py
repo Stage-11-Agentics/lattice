@@ -63,7 +63,7 @@ def test_file_with_media_is_one_atomic_write(board: LocalBoard) -> None:
         video={"width": 720, "height": 1280, "duration_ms": 3000},
         frames=[frame(2900), frame(0)],
     )
-    result = run(board, "issue.file", text="t", media=(item(png(4, 3)), video, item(png(4, 3))))
+    result = run(board, "issue.file", title="t", media=(item(png(4, 3)), video, item(png(4, 3))))
     assert [e["type"] for e in result.events] == [
         "issue_filed",
         "issue_media_added",
@@ -102,7 +102,7 @@ def test_file_with_media_is_one_atomic_write(board: LocalBoard) -> None:
 def test_bad_media_is_refused_before_the_number_is_allocated(
     board: LocalBoard, media: tuple, reason: str | None
 ) -> None:
-    exc = refused(board, "issue.file", text="t", media=media)
+    exc = refused(board, "issue.file", title="t", media=media)
     assert exc.code == "VALIDATION_ERROR"
     if reason:
         assert exc.details.get("reason") == reason
@@ -112,7 +112,7 @@ def test_bad_media_is_refused_before_the_number_is_allocated(
 def test_limits_refuse_the_file_and_the_issue(board: LocalBoard) -> None:
     _set_limits(board, max_media_mb=1, max_issue_media_mb=2)
     big = png() + b"\x00" * (1024 * 1024)
-    exc = refused(board, "issue.file", text="t", media=(item(big, "big.png"),))
+    exc = refused(board, "issue.file", title="t", media=(item(big, "big.png"),))
     assert exc.code == "PAYLOAD_TOO_LARGE"
     assert exc.details["reason"] == "MEDIA_FILE_TOO_LARGE"
     assert "big.png is 1.0 MB; the limit is 1 MB per file" in exc.message
@@ -120,7 +120,7 @@ def test_limits_refuse_the_file_and_the_issue(board: LocalBoard) -> None:
     assert not (board.lattice_dir / "issues").exists()
 
     three = [png() + bytes([i]) * 800_000 for i in range(3)]
-    issue = run(board, "issue.file", text="t", media=(item(three[0]), item(three[1]))).value
+    issue = run(board, "issue.file", title="t", media=(item(three[0]), item(three[1]))).value
     before = media_files(board)
     exc = refused(board, "issue.attach", issue=issue["short_id"], media=(item(three[2]),))
     assert (exc.code, exc.details["reason"]) == ("PAYLOAD_TOO_LARGE", "ISSUE_MEDIA_TOO_LARGE")
@@ -129,7 +129,7 @@ def test_limits_refuse_the_file_and_the_issue(board: LocalBoard) -> None:
 
 
 def test_attach_dedupes_and_skips_duplicates(board: LocalBoard) -> None:
-    issue = run(board, "issue.file", text="t", media=(item(png(1, 1)),)).value["short_id"]
+    issue = run(board, "issue.file", title="t", media=(item(png(1, 1)),)).value["short_id"]
     run(board, "issue.dismiss", issue=issue, reason="closed issues take evidence too")
     same = run(board, "issue.attach", issue=issue, media=(item(png(1, 1), "again.png"),))
     assert same.idempotent and same.events == []
@@ -228,7 +228,7 @@ def test_write_ops_report_integrity_error_for_malformed_replayed_hash(
 def test_attach_event_write_failure_cleans_staged_media(
     board: LocalBoard, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    issue = run(board, "issue.file", text="t").value
+    issue = run(board, "issue.file", title="t").value
     import lattice.ops.issue_attach as attach
 
     def fail(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
@@ -254,13 +254,13 @@ def test_file_event_write_failure_cleans_media_and_reuses_issue_number(
 
     monkeypatch.setattr(issue_file, "write_issue_events", fail)
     with pytest.raises(OSError, match="event write failed"):
-        run(board, "issue.file", text="failed", media=(item(png()),))
+        run(board, "issue.file", title="failed", media=(item(png()),))
 
     assert media_files(board) == []
     ids_path = board.lattice_dir / "issues" / "ids.json"
     assert json.loads(ids_path.read_text())["map"] == {}
     monkeypatch.undo()
-    filed = run(board, "issue.file", text="succeeds", media=(item(png()),)).value
+    filed = run(board, "issue.file", title="succeeds", media=(item(png()),)).value
     assert filed["short_id"] == "LAT-I1"
 
 
@@ -281,13 +281,13 @@ def test_file_second_item_failure_cleans_everything_without_reserving_number(
 
     monkeypatch.setattr(common, "store_media", fail_on_second)
     with pytest.raises(OSError, match="second item failed"):
-        run(board, "issue.file", text="failed", media=(item(png()), item(png(2, 2))))
+        run(board, "issue.file", title="failed", media=(item(png()), item(png(2, 2))))
 
     assert media_files(board) == []
     assert (board.lattice_dir / "issues" / "media").is_dir()
     assert not (board.lattice_dir / "issues" / "ids.json").exists()
     monkeypatch.undo()
-    filed = run(board, "issue.file", text="succeeds").value
+    filed = run(board, "issue.file", title="succeeds").value
     assert filed["short_id"] == "LAT-I1"
 
 
@@ -295,7 +295,7 @@ def test_detach_records_removal_before_deleting_bytes(
     board: LocalBoard, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     video = item(mp4(), "r.mov", frames=[frame(0), frame(500)])
-    issue = run(board, "issue.file", text="t", media=(item(png()), video)).value
+    issue = run(board, "issue.file", title="t", media=(item(png()), video)).value
     name = issue["short_id"]
     assert refused(board, "issue.detach", issue=name, media="2").code == "VALIDATION_ERROR"
 
@@ -351,7 +351,7 @@ def test_detach_records_removal_before_deleting_bytes(
 def test_detach_event_write_failure_keeps_bytes(
     board: LocalBoard, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    issue = run(board, "issue.file", text="t", media=(item(png()),)).value
+    issue = run(board, "issue.file", title="t", media=(item(png()),)).value
     path = Path(issue["media"][0]["path"])
     import lattice.ops.issue_detach as detach
 
@@ -369,7 +369,7 @@ def test_detach_event_write_failure_keeps_bytes(
 def test_detach_retries_cleanup_after_unlink_failure(
     board: LocalBoard, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    issue = run(board, "issue.file", text="t", media=(item(png()),)).value
+    issue = run(board, "issue.file", title="t", media=(item(png()),)).value
     path = Path(issue["media"][0]["path"])
     import lattice.ops.issue_detach as detach
 
@@ -401,7 +401,7 @@ def test_detach_leaves_shared_media_root_for_other_issue_filers(board: LocalBoar
 
 
 def test_detach_never_follows_a_planted_symlink(board: LocalBoard, tmp_path: Path) -> None:
-    issue = run(board, "issue.file", text="t", media=(item(png()),)).value
+    issue = run(board, "issue.file", title="t", media=(item(png()),)).value
     path = Path(issue["media"][0]["path"])
     outside = tmp_path / "outside.png"
     outside.write_bytes(b"keep me")
@@ -417,7 +417,7 @@ def test_detach_by_an_ordinal_two_clones_both_used_is_a_conflict(board: LocalBoa
     """m4: two clones each added media 1; the merged log has both."""
     from lattice.core.events import create_issue_event, serialize_event
 
-    issue = run(board, "issue.file", text="t", media=(item(png()),)).value
+    issue = run(board, "issue.file", title="t", media=(item(png()),)).value
     log = board.lattice_dir / "issues" / "events" / f"{issue['id']}.jsonl"
     twin = create_issue_event(
         "issue_media_added",

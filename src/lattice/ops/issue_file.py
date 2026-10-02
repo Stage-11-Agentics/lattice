@@ -1,9 +1,9 @@
-"""``issue.file``: the ``lattice issue file`` command's rules (LAT-361, LAT-366).
+"""``issue.file``: the ``lattice issue file`` command's rules (LAT-361, LAT-366, LAT-371).
 
 Photos and videos travel as ``media`` items (see ``issue_common``). All of
-them are decoded and checked against the limits before the issue number is
-allocated; then the files are written and ``issue_filed`` plus one
-``issue_media_added`` per file are appended in one write.
+them are decoded and checked against the limits before the issue sequence is
+reserved; then blobs are staged before ``issue_filed`` and one
+``issue_media_added`` per file are committed in one write.
 """
 
 from __future__ import annotations
@@ -12,7 +12,13 @@ from dataclasses import dataclass
 
 from lattice.core.events import create_issue_event
 from lattice.core.ids import generate_issue_id
-from lattice.core.issues import CONFIDENCE_VALUES, apply_issue_event, format_issue_short_id
+from lattice.core.issues import (
+    CONFIDENCE_VALUES,
+    apply_issue_event,
+    format_issue_short_id,
+    normalize_issue_description,
+    split_title,
+)
 from lattice.ops import issue_common
 from lattice.ops.base import CommonParams, OpContext, OpError, OpResult, operation
 from lattice.storage.issues import issue_seq_reservation, issue_write_context, write_issue_events
@@ -20,15 +26,21 @@ from lattice.storage.issues import issue_seq_reservation, issue_write_context, w
 
 @dataclass(frozen=True, kw_only=True)
 class IssueFileParams(CommonParams):
-    text: str
+    title: str | None = None
+    # ``text`` remains accepted for callers of the LAT-366 operation contract.
+    text: str | None = None
+    description: str | None = None
     confidence: str | None = None
     evidence: tuple[str, ...] = ()
     source: str | None = None
     media: tuple[dict, ...] = ()
 
     def check(self) -> None:
-        if not self.text.strip():
-            raise OpError("VALIDATION_ERROR", "Issue text must not be empty.")
+        if self.title is not None and self.text is not None:
+            raise OpError("VALIDATION_ERROR", "Provide title or legacy text, not both.")
+        raw_title = self.title if self.title is not None else self.text
+        if raw_title is None or not raw_title.strip():
+            raise OpError("VALIDATION_ERROR", "Issue title must not be empty.")
         if self.confidence is not None and self.confidence not in CONFIDENCE_VALUES:
             raise OpError(
                 "VALIDATION_ERROR",
@@ -46,6 +58,13 @@ class IssueFile:
         issue_common.require_issue_log(ctx)
         decoded = issue_common.decode_media(p.media, ctx.config, nothing="Nothing was filed.")
         issue_common.check_issue_total(ctx.config, "The issue", 0, decoded)
+        raw_title = p.title if p.title is not None else (p.text or "")
+        title, overflow, _shortened = split_title(raw_title)
+        description = normalize_issue_description(p.description)
+        if overflow:
+            description = normalize_issue_description(
+                overflow + (f"\n\n{description}" if description else "")
+            )
         issue_id = generate_issue_id()
         with issue_write_context(ctx.lattice_dir, issue_id):
             media_events = issue_common.stage_media(ctx, issue_id, decoded, 1, p)
@@ -54,8 +73,10 @@ class IssueFile:
                     data: dict = {
                         "seq": seq,
                         "short_id": format_issue_short_id(ctx.config.get("project_code"), seq),
-                        "text": p.text,
+                        "title": title,
                     }
+                    if description:
+                        data["description"] = description
                     if p.confidence is not None:
                         data["confidence"] = p.confidence
                     if p.evidence:

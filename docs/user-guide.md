@@ -231,7 +231,7 @@ if the spawn fails (no `lattice` on PATH, OS kill the fork, etc.), the status tr
 
 not everything an agent notices is a commitment. a flaky test. a footer that overlaps a button at 400px. a confusing error message. make each one a task and the backlog fills with noise. drop them and they are gone.
 
-the issue log is the place in between. an issue is an observation: one line of text, filed in one command. later, someone triages the log. an issue becomes a task, joins an existing task, or gets closed.
+the issue log is the place in between. an issue is an observation with a short title and, if needed, a description. file it in one command. later, someone triages the log. an issue becomes a task, joins an existing task, or gets closed.
 
 it is off by default. to turn it on:
 
@@ -243,9 +243,11 @@ agents never turn it on themselves. on a board where it is off, `lattice issue` 
 filing takes one argument:
 
 ```bash
-lattice issue file "Footer overlaps the CTA at 400px" --actor agent:qa
+lattice issue file "Footer overlaps the CTA at 400px" --description "At 400px, the footer covers the Sign up button in Safari and Chrome." --actor agent:qa
 # optional: --confidence possible|definite  --evidence <path-or-url> (repeatable)  --source <where>
-# text with backticks or $(...)? pipe it in: lattice issue file - --actor agent:qa < note.txt
+# long description with backticks or $(...)? use --description-file note.txt
+lattice issue comment LAT-I3 "Reproduced in Safari 18." --actor agent:qa
+# a multi-line note can be filed through stdin: lattice issue file - --actor agent:qa < note.txt
 ```
 
 each issue gets its own number, like `LAT-I3`. the `I` keeps it apart from task IDs, and filing issues never uses up a task number.
@@ -257,7 +259,7 @@ triage is four moves:
 - `lattice issue dismiss LAT-I6 --reason "not reproducible"` closes an issue that is not worth acting on.
 - `lattice issue duplicate LAT-I7 --of LAT-I3` closes a repeat. `reopen` undoes either close.
 
-nobody sets an issue's state by hand. it follows the tasks it is linked to: `open` with no live task, `linked` while one is in flight, `resolved` when every linked task is done. a cancelled or erased task sends it back to `open`, because it needs a new task. `lattice issue list` shows what is open and linked. `--all` shows the rest. `lattice show <task>` lists the issues a task came from.
+nobody sets an issue's state by hand. it follows the tasks it is linked to: `open` with no live task, `linked` while one is in flight, `resolved` when every linked task is done. a cancelled or erased task sends it back to `open`, because it needs a new task. `lattice issue list` shows what is open and linked. `--all` shows the rest; `--by <actor>` shows all issues that actor filed or commented on. `lattice issue show <issue>` displays the comment thread, and `lattice issue edit` corrects a title or description. `lattice show <task>` lists the issues a task came from.
 
 ### screenshots and recordings
 

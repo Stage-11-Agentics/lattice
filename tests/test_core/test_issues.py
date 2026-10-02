@@ -204,16 +204,16 @@ def test_view_and_row() -> None:
 
 def test_rows_line_up() -> None:
     """ID pads to the widest ID given, state to `duplicate`, confidence to `definite`."""
-    short = {"short_id": "I9", "state": "open", "confidence": None, "text": "a", "tasks": []}
-    long = {"short_id": "I10", "state": "duplicate", "confidence": "definite", "text": "b"}
+    short = {"short_id": "I9", "state": "open", "confidence": None, "title": "a", "tasks": []}
+    long = {"short_id": "I10", "state": "duplicate", "confidence": "definite", "title": "b"}
     width = id_width([short, long])
     assert width == 3
     rows = [format_issue_row(v, width) for v in (short, long)]
     assert rows == ["I9   open       -         a", "I10  duplicate  definite  b"]
     assert rows[0].index("a") == rows[1].index("b")
     lines = [
-        format_linked_issue_line({"short_id": "I9", "state": "open", "text": "a"}, 3),
-        format_linked_issue_line({"short_id": "I10", "state": "resolved", "text": "b"}, 3),
+        format_linked_issue_line({"short_id": "I9", "state": "open", "title": "a"}, 3),
+        format_linked_issue_line({"short_id": "I10", "state": "resolved", "title": "b"}, 3),
     ]
     assert lines == ["I9   open       a", "I10  resolved   b"]
     entries = [

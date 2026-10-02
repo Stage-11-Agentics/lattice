@@ -74,7 +74,7 @@ def served(tmp_path: Path):  # noqa: ANN201
     issue = board.execute(
         "issue.file",
         {
-            "text": "t",
+            "title": "t",
             "media": [
                 {"payload": encode_payload("shot.png", png())},
                 {

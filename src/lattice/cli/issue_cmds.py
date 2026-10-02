@@ -16,6 +16,7 @@ from lattice.cli.helpers import (
     load_project_config,
     output_error,
     output_result,
+    resolve_body,
     require_root,
 )
 from lattice.cli.main import cli
@@ -388,7 +389,7 @@ def _print_write(
 
 @cli.group()
 def issue() -> None:
-    """The issue log: file observations, then promote or link them to tasks.
+    """The issue log: file observations, discuss them, then promote or link them to tasks.
 
     Optional and off by default. The board owner turns it on by adding
     "issues": {"enabled": true} to .lattice/config.json. Local boards only.
@@ -396,7 +397,14 @@ def issue() -> None:
 
 
 @issue.command("file")
-@click.argument("text")
+@click.argument("title")
+@click.option("--description", default=None, help="A longer explanation of the issue.")
+@click.option(
+    "--description-file",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="Read the description from a file.",
+)
 @click.option(
     "--confidence",
     type=click.Choice(["possible", "definite"]),
@@ -411,7 +419,9 @@ def issue() -> None:
 @click.option("--source", default=None, help="Where it came from (e.g., tester-round-8).")
 @common_options
 def issue_file(
-    text: str,
+    title: str,
+    description: str | None,
+    description_file: str | None,
     confidence: str | None,
     evidence: tuple[str, ...],
     source: str | None,
@@ -423,7 +433,10 @@ def issue_file(
     on_behalf_of: str | None,
     provenance_reason: str | None,
 ) -> None:
-    """File an issue. TEXT is the observation; '-' reads it from stdin.
+    """File an issue with a short title and optional description.
+
+    TITLE '-' reads stdin. A long or multi-line title is split into a title and
+    description; an explicit description is appended after the overflow.
 
     A photo or video passed as --evidence (decided by its content: PNG, JPEG,
     GIF, WebP; MP4, MOV, WebM; HEIC is converted to JPEG) is copied into the
@@ -432,13 +445,25 @@ def issue_file(
     """
     is_json = output_json
     checked = _require_issue_log(is_json)
-    if text == "-":
-        text = _read_stdin_text()
+    if description is not None and description_file is not None:
+        output_error(
+            "Provide either --description or --description-file, not both.",
+            "VALIDATION_ERROR",
+            is_json,
+        )
+    if title == "-" and description == "-":
+        output_error(
+            "Only one of TITLE and --description can read stdin.", "VALIDATION_ERROR", is_json
+        )
+    if title == "-":
+        title = _read_stdin_text()
+    description = _resolve_issue_description(description, description_file, is_json)
     pointers, records, kept = _collect_evidence(evidence, checked[1], is_json)
     _lattice_dir, result = _write(
         "issue.file",
         {
-            "text": text,
+            "title": title,
+            "description": description,
             "confidence": confidence,
             "evidence": tuple(pointers),
             "source": source,
@@ -449,12 +474,17 @@ def issue_file(
         checked,
     )
     from lattice.core.issue_media import media_summary
-    from lattice.core.issues import first_line
+    from lattice.core.issues import TITLE_LIMIT, first_line, split_title
 
     view = result.value
     added = {e["data"]["media_id"] for e in result.events if e["type"] == "issue_media_added"}
     notes, lines = _media_notes(view, records, kept, added)
-    message = f"Filed {_name(view)}: {first_line(view['text'])}"
+    if split_title(title)[2]:
+        notes.append({"reason": "title_shortened", "limit": TITLE_LIMIT})
+        lines.append(
+            f"title shortened to {TITLE_LIMIT} characters; the full text is in the description"
+        )
+    message = f"Filed {_name(view)}: {first_line(view['title'])}"
     summary = media_summary(view.get("media", []))
     if summary:
         message += f" ({summary})"
@@ -470,33 +500,45 @@ def issue_file(
     help="Show only issues in this state (repeatable). Default: open and linked.",
 )
 @click.option("--all", "show_all", is_flag=True, help="Show every issue, closed ones too.")
+@click.option(
+    "--by", "by_actor", default=None, help="Show every issue filed or commented on by this actor."
+)
 @click.option("--json", "output_json", is_flag=True, help="Output structured JSON.")
-def issue_list(states: tuple[str, ...], show_all: bool, output_json: bool) -> None:
+def issue_list(
+    states: tuple[str, ...], show_all: bool, by_actor: str | None, output_json: bool
+) -> None:
     """List issues: open, then linked, each oldest first."""
     from lattice.core.issues import DEFAULT_LIST_STATES, ISSUE_STATES, format_issue_row, id_width
-    from lattice.storage.issues import issue_views, list_issue_snapshots
+    from lattice.storage.issues import issue_views, issues_by, list_issue_snapshots
 
     is_json = output_json
     lattice_dir, _config = _require_issue_log(is_json)
-    snapshots = list_issue_snapshots(lattice_dir, on_unreadable=_warn_unreadable)
-    views = issue_views(lattice_dir, snapshots)
-    wanted = ISSUE_STATES if show_all else (states or DEFAULT_LIST_STATES)
+    if by_actor is not None:
+        wanted = states or ISSUE_STATES
+        shown = issues_by(
+            lattice_dir,
+            by_actor,
+            states=states or None,
+            on_unreadable=_warn_unreadable,
+        )
+    else:
+        snapshots = list_issue_snapshots(lattice_dir, on_unreadable=_warn_unreadable)
+        views = issue_views(lattice_dir, snapshots)
+        wanted = ISSUE_STATES if show_all else (states or DEFAULT_LIST_STATES)
+        shown = [view for view in views if view["state"] in wanted]
     order = {state: i for i, state in enumerate(ISSUE_STATES)}
-    shown = sorted(
-        (v for v in views if v["state"] in wanted),
-        key=lambda v: (order[v["state"]], v.get("seq") or 0),
-    )
+    shown.sort(key=lambda v: (order[v["state"]], v.get("seq") or 0))
     if is_json:
         click.echo(json_envelope(True, data=shown))
         return
     width = id_width(shown)
     for view in shown:
-        click.echo(format_issue_row(view, width))
+        click.echo(format_issue_row(view, width, activity=view.get("activity")))
     counts = {state: sum(1 for v in shown if v["state"] == state) for state in ISSUE_STATES}
     summary = ", ".join(f"{counts[s]} {s}" for s in ISSUE_STATES if s in wanted)
     footer = f"{len(shown)} issue{'s' if len(shown) != 1 else ''} ({summary})"
-    hidden = len(views) - len(shown)
-    if hidden and not show_all:
+    hidden = len(views) - len(shown) if by_actor is None else 0
+    if hidden and not show_all and by_actor is None:
         footer += f"; {hidden} other{'s' if hidden != 1 else ''} hidden (--all to show)"
     click.echo(footer)
 
@@ -505,44 +547,48 @@ def issue_list(states: tuple[str, ...], show_all: bool, output_json: bool) -> No
 @click.argument("issue_id")
 @click.option("--json", "output_json", is_flag=True, help="Output structured JSON.")
 def issue_show(issue_id: str, output_json: bool) -> None:
-    """Show one issue: its text, evidence, state, linked tasks and history."""
+    """Show one issue: its title, description, evidence, media, state, linked tasks, comments and history."""
+    from lattice.core.comments import format_comment_lines
     from lattice.core.events import get_actor_display
-    from lattice.core.issues import format_task_link_line, id_width, task_status
+    from lattice.core.issues import (
+        actor_with_origin,
+        format_task_link_line,
+        id_width,
+        task_status,
+    )
     from lattice.storage.issues import (
-        issue_views,
-        read_issue_events,
+        issue_detail,
         read_issue_snapshot,
-        resolve_issue,
     )
 
     is_json = output_json
     lattice_dir, _config = _require_issue_log(is_json)
     try:
-        resolved = resolve_issue(lattice_dir, issue_id)
+        view = issue_detail(lattice_dir, issue_id, on_unreadable=_warn_unreadable)
     except OpError as exc:
         output_error(exc.message, exc.code, is_json)
-    snapshot = read_issue_snapshot(lattice_dir, resolved, on_unreadable=_warn_unreadable)
-    if snapshot is None:
+    if view is None:
         output_error(f"Issue '{issue_id}' not found.", "NOT_FOUND", is_json)
-    view = issue_views(lattice_dir, [snapshot])[0]
-    events = read_issue_events(lattice_dir, resolved)
+    events = view["events"]
     if is_json:
-        from lattice.core.issues import redact_removed_media_names
-
-        shown = redact_removed_media_names(events, snapshot)
-        click.echo(json_envelope(True, data={**view, "events": shown}))
+        click.echo(json_envelope(True, data=view))
         return
 
-    click.echo(f"{_name(view)} ({view['id']})  {view['state']}")
-    click.echo(f"Filed: {view['filed_at']} by {get_actor_display(view['filed_by'] or '?')}")
+    click.echo(f'{_name(view)} ({view["id"]})  "{view["title"]}"')
+    click.echo(f"State: {view['state']}")
+    click.echo(
+        f"Filed: {view['filed_at']} by "
+        f"{actor_with_origin(view['filed_by'], view.get('filed_origin'))}"
+    )
     if view.get("confidence"):
         click.echo(f"Confidence: {view['confidence']}")
     if view.get("source"):
         click.echo(f"Source: {view['source']}")
-    click.echo("")
-    click.echo("Text:")
-    for line in view["text"].splitlines() or [""]:
-        click.echo(f"  {line}")
+    if view["description"]:
+        click.echo("")
+        click.echo("Description:")
+        for line in view["description"].splitlines():
+            click.echo(f"  {line}")
     if view["evidence"]:
         click.echo("")
         click.echo("Evidence:")
@@ -576,17 +622,21 @@ def issue_show(issue_id: str, output_json: bool) -> None:
         else:
             what = f"dismissed: {closure.get('reason')}"
         click.echo(f"Closed: {what} ({closure.get('at')} by {by})")
+    if view.get("comment_count", 0):
+        click.echo("")
+        click.echo(f"Comments ({view['comment_count']}):")
+        for line in format_comment_lines(view["comments"]):
+            click.echo(line)
     click.echo("")
     click.echo("History:")
     for event in events:
-        click.echo(
-            f"  {event.get('ts')}  {event.get('type')}  {get_actor_display(event['actor'])}"
-        )
+        actor = actor_with_origin(event.get("actor"), event.get("origin"))
+        click.echo(f"  {event.get('ts')}  {event.get('type')}  {actor}")
 
 
 @issue.command("promote")
 @click.argument("issue_ids", nargs=-1, required=True)
-@click.option("--title", default=None, help="The task's title (default: the first issue's text).")
+@click.option("--title", default=None, help="The task's title (default: the first issue's title).")
 @click.option("--priority", default=None, help="The task's priority.")
 @click.option("--type", "task_type", default=None, help="The task's type.")
 @common_options
@@ -955,3 +1005,146 @@ def issue_media(issue_id: str, paths: bool, output_json: bool) -> None:
     click.echo(f"{_name(view)} media ({len(present)})")
     for line in format_media_lines(present, get_actor_display):
         click.echo(f"  {line}")
+
+
+def _resolve_issue_description(
+    description: str | None, description_file: str | None, is_json: bool
+) -> str | None:
+    """Resolve issue description flags, including ``-`` for stdin."""
+    if description is not None and description_file is not None:
+        output_error(
+            "Provide either --description or --description-file, not both.",
+            "VALIDATION_ERROR",
+            is_json,
+        )
+    if description is None and description_file is None:
+        return None
+    value = resolve_body(
+        description,
+        description_file,
+        is_json,
+        what="issue description",
+        arg_label="--description",
+    )
+    return _read_stdin_text() if value == "-" else value
+
+
+@issue.command("edit")
+@click.argument("issue_id")
+@click.option("--title", default=None, help="The corrected, single-line issue title.")
+@click.option(
+    "--description", default=None, help="Replace the issue description; empty clears it."
+)
+@click.option(
+    "--description-file",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="Read the description from a file.",
+)
+@common_options
+def issue_edit(
+    issue_id: str,
+    title: str | None,
+    description: str | None,
+    description_file: str | None,
+    output_json: bool,
+    quiet: bool,
+    session: str | None,
+    model: str | None,
+    triggered_by: str | None,
+    on_behalf_of: str | None,
+    provenance_reason: str | None,
+) -> None:
+    """Correct an issue's title or description."""
+    is_json = output_json
+    checked = _require_issue_log(is_json)
+    description = _resolve_issue_description(description, description_file, is_json)
+    lattice_dir, result = _write(
+        "issue.edit",
+        {
+            "issue": issue_id,
+            "title": title,
+            "description": description,
+            **provenance_params(model, session, triggered_by, on_behalf_of, provenance_reason),
+        },
+        is_json,
+        checked,
+    )
+    view = result.value
+    if result.idempotent:
+        message = f"{_name(view)} is unchanged"
+    else:
+        data = result.events[-1]["data"]
+        changed = [
+            field
+            for field in ("title", "description")
+            if data.get(field) != data.get(f"from_{field}")
+        ]
+        message = f"Edited {_name(view)}: {', '.join(changed)}"
+    output_result(
+        data=view,
+        human_message=message,
+        quiet_value=_name(view),
+        is_json=is_json,
+        is_quiet=quiet,
+    )
+
+
+@issue.command("comment")
+@click.argument("issue_id")
+@click.argument("text", required=False)
+@click.option(
+    "--file",
+    "file_path",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="Read the comment from a file.",
+)
+@click.option("--reply-to", default=None, help="Reply to a top-level comment ID.")
+@common_options
+def issue_comment(
+    issue_id: str,
+    text: str | None,
+    file_path: str | None,
+    reply_to: str | None,
+    output_json: bool,
+    quiet: bool,
+    session: str | None,
+    model: str | None,
+    triggered_by: str | None,
+    on_behalf_of: str | None,
+    provenance_reason: str | None,
+) -> None:
+    """Add an issue comment or reply to a top-level comment."""
+    is_json = output_json
+    checked = _require_issue_log(is_json)
+    body = resolve_body(
+        text,
+        file_path,
+        is_json,
+        what="comment text",
+        arg_label="TEXT",
+        missing_message="Provide comment text as TEXT or via --file.",
+    )
+    if body == "-":
+        body = _read_stdin_text()
+    _lattice_dir, result = _write(
+        "issue.comment",
+        {
+            "issue": issue_id,
+            "text": body,
+            "reply_to": reply_to,
+            **provenance_params(model, session, triggered_by, on_behalf_of, provenance_reason),
+        },
+        is_json,
+        checked,
+    )
+    comment_id = result.events[-1]["id"]
+    action = "Reply added" if reply_to else "Comment added"
+    output_result(
+        data=result.value,
+        human_message=f"{action} to {_name(result.value)} ({comment_id})",
+        quiet_value=comment_id,
+        is_json=is_json,
+        is_quiet=quiet,
+    )

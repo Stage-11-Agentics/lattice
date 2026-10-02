@@ -102,7 +102,11 @@ An issue is an observation, not a commitment: "the footer overlaps the CTA at 40
 | `resolved` | Every live linked task is `done`. |
 | `linked` | Anything else: at least one live linked task is not done yet. |
 
-`lattice issue list` prints one row per issue, with its columns aligned: ID, state, confidence (`-` when none was given), the first line of the text, then the linked tasks and their statuses:
+**Title and description.** File an issue with a short title and, optionally, `--description TEXT` or `--description-file PATH`. Titles may be up to 120 characters. At filing, a longer first line is cut at the greatest qualifying `". "`, `"; "` or `" — "` separator starting at index 40 and ending within character 120; a period is kept, while a semicolon or dash is dropped. If none qualifies, the title ends at the last space at or before character 120. The full input becomes the description, followed by an explicit description after a blank line. A multi-line title uses its first non-empty line as the title and the remaining lines as the description. A short title with trailing description lines is not marked as shortened.
+
+Old text-only issues are read through the same frozen split rule and their logs are not rewritten. Their JSON views expose `title` and `description`, not `text`. The first edit materializes both values into the event log. `issue edit` accepts `--title` only when it is a single line of at most 120 characters; put additional detail in `--description`. Passing `--description ""` clears the description, and whitespace-only descriptions are empty.
+
+`lattice issue list` prints one row per issue, with its columns aligned: ID, state, confidence (`-` when none was given), the title, then the linked tasks and their statuses:
 
 ```
 LAT-I9   open       -         Signup button does nothing on Safari
@@ -110,6 +114,12 @@ LAT-I10  linked     definite  Footer overlaps the CTA at 400px -> LAT-370 (in_pr
 LAT-I3   dismissed  -         Tooltip flickers once on hover
 3 issues (1 open, 1 linked, 0 resolved, 1 dismissed, 0 duplicate)
 ```
+
+`lattice issue list --by <actor>` shows every state where that actor filed or commented on an issue. It accepts the full key (`human:Atin-1`), the legacy key (`human:Atin`), or a bare name/session ID; repeat `--state` to narrow results. Each row is marked `filed` or `commented`; `--json` includes the same `activity` field. The reusable storage reader is `storage.issues.issues_by(lattice_dir, actor, *, states=None, on_unreadable=None)`.
+
+**Editing and comments.** `lattice issue edit <issue> --title "..."` corrects a title, and `--description TEXT` replaces its description (`--description-file PATH` reads a file and `--description -` reads stdin). At least one field is required; editing a closed issue is allowed. `lattice issue comment <issue> TEXT` adds a comment; use `--file PATH` for long text or `-` to read stdin. Add one reply level with `--reply-to <comment-id>`. Comments are allowed on closed issues, carry the actor and origin, and appear threaded in `issue show`. `--quiet` prints the new comment ID. The comment operation's `--json` result includes the issue view and the new materialized `comment`.
+
+`lattice issue show <issue>` displays the quoted title, state, filing actor and origin, description when non-empty, evidence, media, linked tasks, comments and history. `--json` carries `title`, `description`, `filed_origin`, `comment_count`, threaded `comments` with author/origin, and redacted event history.
 
 **Rules.** Linking the same task twice, or unlinking a task that is not linked, does nothing. `link` accepts archived tasks and refuses erased ones (`TASK_ERASED`). `link`, `promote`, `dismiss` and `duplicate` on a closed issue give `CONFLICT`; `reopen` it first. `dismiss` requires `--reason`. `duplicate` refuses the issue itself and a target that is itself a duplicate (point at its original instead). `promote` creates one backlog task whose description names each issue, then links them; if a link fails after the task exists, the error names the task, and `lattice issue link` finishes the job.
 
@@ -414,9 +424,11 @@ The CLI is Lattice's write interface — the primary way agents interact with th
 | `lattice file-link <id> <path>...` | Link file(s) to a task (`--reason` for annotation) |
 | `lattice file-unlink <id> <path>...` | Unlink file(s) from a task |
 | `lattice explain <path>` | Show decisions behind a file (supports directory/glob) |
-| `lattice issue file "<text>"` | File an issue (`-` reads the text from stdin; `--confidence`, repeatable `--evidence`, `--source`) |
-| `lattice issue list` | List open and linked issues (`--state` repeatable, `--all`) |
-| `lattice issue show <issue>` | An issue's text, evidence, state, linked tasks and history |
+| `lattice issue file "<title>"` | File an issue (`-` reads stdin; `--description` or `--description-file`, `--confidence`, repeatable `--evidence`, `--source`) |
+| `lattice issue list` | List open and linked issues (`--state` repeatable, `--all`, `--by <actor>`) |
+| `lattice issue show <issue>` | An issue's title, description, evidence, media, state, linked tasks, comments and history |
+| `lattice issue edit <issue>` | Edit its title or description (`--title`, `--description` or `--description-file`) |
+| `lattice issue comment <issue> [text]` | Add a comment or reply (`--file`, `--reply-to`) |
 | `lattice issue promote <issue>...` | Create one backlog task from issues and link them (`--title`, `--priority`, `--type`) |
 | `lattice issue link <issue> <task>` | Link an issue to a task; `lattice issue unlink` removes the link |
 | `lattice issue dismiss <issue> --reason "..."` | Close an issue as not worth acting on |

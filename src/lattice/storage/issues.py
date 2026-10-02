@@ -22,9 +22,15 @@ from pathlib import Path
 
 from lattice.core.errors import OpError
 from lattice.core.issues import (
+    ISSUE_STATES,
     TaskInfo,
+    actor_matches,
+    issue_activity,
+    issue_comments,
+    issue_origin,
     issue_view,
     parse_issue_ref,
+    redact_removed_media_names,
     replay_issue,
     serialize_issue_snapshot,
     validate_issue_media_hashes,
@@ -265,10 +271,83 @@ def issue_views(lattice_dir: Path, snapshots: list[dict]) -> list[dict]:
     info = task_info_for(lattice_dir, task_ids)
     views = []
     for snapshot in snapshots:
-        view = issue_view(snapshot, info)
+        try:
+            filed_event = next(
+                (
+                    e
+                    for e in read_issue_events(lattice_dir, snapshot["id"])
+                    if e.get("type") == "issue_filed"
+                ),
+                None,
+            )
+        except OpError:
+            filed_event = None
+        filed_origin = issue_origin(filed_event.get("origin")) if filed_event else None
+        view = issue_view(snapshot, info, filed_origin)
         view["media"] = media_views(lattice_dir, snapshot)
         views.append(view)
     return views
+
+
+def issues_by(
+    lattice_dir: Path,
+    actor: str,
+    *,
+    states: Iterable[str] | None = None,
+    on_unreadable: OnUnreadable | None = None,
+) -> list[dict]:
+    """The issue views filed or commented on by *actor*.
+
+    Each result adds ``activity`` (``filed`` takes precedence). With no state
+    filter, every state is searched; ``on_unreadable`` reports and skips logs
+    that cannot be read.
+    """
+    wanted = set(ISSUE_STATES if states is None else states)
+    snapshots = list_issue_snapshots(lattice_dir, on_unreadable=on_unreadable)
+    views = issue_views(lattice_dir, snapshots)
+    order = {state: index for index, state in enumerate(ISSUE_STATES)}
+    matches = []
+    for view in views:
+        if view["state"] not in wanted:
+            continue
+        activity = "filed" if actor_matches(view.get("filed_by"), actor) else None
+        if activity is None:
+            path = _events_path(lattice_dir, view["id"])
+            try:
+                activity = issue_activity(read_issue_events(lattice_dir, view["id"]), actor)
+            except OpError as exc:
+                if on_unreadable is None:
+                    raise
+                on_unreadable(path, exc)
+                continue
+        if activity is not None:
+            matches.append({**view, "activity": activity})
+    return sorted(matches, key=lambda view: (order[view["state"]], view.get("seq") or 0))
+
+
+def issue_detail(
+    lattice_dir: Path,
+    issue_id: str,
+    *,
+    on_unreadable: OnUnreadable | None = None,
+) -> dict | None:
+    """The full issue detail used by ``issue show`` and dashboard readers.
+
+    The log is kept in event form, except that removed media names are
+    redacted from the returned history. ``None`` means the issue has no
+    readable snapshot or log.
+    """
+    resolved = resolve_issue(lattice_dir, issue_id)
+    snapshot = read_issue_snapshot(lattice_dir, resolved, on_unreadable=on_unreadable)
+    if snapshot is None:
+        return None
+    events = read_issue_events(lattice_dir, resolved)
+    view = issue_views(lattice_dir, [snapshot])[0]
+    return {
+        **view,
+        "comments": issue_comments(events),
+        "events": redact_removed_media_names(events, snapshot),
+    }
 
 
 def issues_linked_to(
@@ -415,7 +494,9 @@ __all__ = [
     "allocate_issue_seq",
     "current_issue",
     "issue_views",
+    "issue_detail",
     "issue_write_context",
+    "issues_by",
     "issues_dir",
     "issues_linked_to",
     "list_issue_snapshots",
