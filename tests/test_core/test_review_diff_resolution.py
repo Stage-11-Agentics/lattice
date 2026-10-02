@@ -91,17 +91,52 @@ class TestBaseResolution:
         assert "feature.py" in res.diff
         assert "local_only.txt" not in res.diff
 
-    def test_no_remote_does_not_fall_back_to_local_main(self, worktree_repo):
+    def test_no_remote_falls_back_to_local_main(self, worktree_repo):
         main = worktree_repo.main
         git(main, "remote", "remove", "origin")
         git(main, "update-ref", "-d", "refs/remotes/origin/main")
         res = review_mod.resolve_diff(
             worktree_repo.lattice_dir, "task_01", _snapshot(worktree_repo.branch)
         )
-        assert res.base_ref is None
-        assert res.success is False
-        assert res.error_code == "BASE_INFERENCE_NO_CANDIDATES"
-        assert "review_integration_branches" in (res.error or "")
+        assert res.success is True, res.error
+        assert res.base_ref == "main"
+        assert res.base_selection_rule == "inferred_local_default"
+        assert "feature.py" in res.diff
+
+    def test_missing_origin_head_falls_back_to_origin_main(self, worktree_repo):
+        main = worktree_repo.main
+        git(main, "symbolic-ref", "--delete", "refs/remotes/origin/HEAD")
+        res = review_mod.resolve_diff(
+            worktree_repo.lattice_dir, "task_01", _snapshot(worktree_repo.branch)
+        )
+        assert res.success is True, res.error
+        assert res.base_ref == "origin/main"
+        assert res.base_selection_rule == "inferred_nearest_merge_base"
+
+    def test_missing_origin_main_falls_back_to_origin_master(self, worktree_repo):
+        main = worktree_repo.main
+        git(main, "symbolic-ref", "--delete", "refs/remotes/origin/HEAD")
+        origin_main = git(main, "rev-parse", "refs/remotes/origin/main").strip()
+        git(main, "update-ref", "refs/remotes/origin/master", origin_main)
+        git(main, "update-ref", "-d", "refs/remotes/origin/main")
+        res = review_mod.resolve_diff(
+            worktree_repo.lattice_dir, "task_01", _snapshot(worktree_repo.branch)
+        )
+        assert res.success is True, res.error
+        assert res.base_ref == "origin/master"
+
+    def test_no_remote_master_fallback_uses_local_master(self, worktree_repo):
+        main = worktree_repo.main
+        git(main, "branch", "-m", "main", "master")
+        git(main, "remote", "remove", "origin")
+        for ref in ("main", "master"):
+            git(main, "update-ref", "-d", f"refs/remotes/origin/{ref}")
+        res = review_mod.resolve_diff(
+            worktree_repo.lattice_dir, "task_01", _snapshot(worktree_repo.branch)
+        )
+        assert res.success is True, res.error
+        assert res.base_ref == "master"
+        assert res.base_selection_rule == "inferred_local_default"
 
     def test_stale_remote_warns_without_failing(self, worktree_repo):
         """origin/main behind local main is a fetch-overdue signal, not an error."""

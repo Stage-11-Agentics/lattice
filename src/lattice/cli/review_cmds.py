@@ -102,6 +102,8 @@ def _evidence_header(
         )
         if resolution.base_selection_rule:
             lines.append(f"Lattice-Reviewed-Base-Selection: {resolution.base_selection_rule}")
+    if resolution.warning:
+        lines.append(f"Lattice-Review-Warning: {resolution.warning}")
     if resolution.head_ref:
         lines.append(
             f"Lattice-Reviewed-Head: {resolution.head_ref} ({resolution.head_sha or '-'})"
@@ -548,11 +550,14 @@ def code_review(
         if resolution.error_code in {
             "BASE_INFERENCE_NO_CANDIDATES",
             "INVALID_REVIEW_INTEGRATION_BRANCHES",
+            "UNRESOLVABLE_REVIEW_INTEGRATION_BRANCHES",
             "INVALID_REVIEW_BASE_BRANCH",
         }:
             resolution_error += (
                 f" To configure base candidates, {_review_base_config_remedy(lattice_dir)}."
             )
+        if resolution.warning:
+            resolution_error += f" Review warning: {resolution.warning}"
         if not dry_run:
             assert actor is not None
             _record_resolution_failure(
@@ -746,6 +751,7 @@ def code_review(
                 "diff_lines": raw_diff_lines,
                 "diff_chars": raw_diff_chars,
                 "truncated": diff_capped or chars_capped,
+                **({"warning": resolution.warning} if resolution.warning else {}),
             },
             auto_fired=triggered_by is not None,
             claim=claim,
@@ -769,6 +775,7 @@ def code_review(
             diff_content=diff_content,
             raw_diff_lines=raw_diff_lines,
             raw_diff_chars=raw_diff_chars,
+            warning=resolution.warning,
             truncated=diff_capped or chars_capped,
             claim=claim,
         )
@@ -1548,6 +1555,7 @@ def _spawn_triple_pane(
     diff_content: str | None = None,
     raw_diff_lines: int | None = None,
     raw_diff_chars: int | None = None,
+    warning: str | None = None,
     truncated: bool = False,
     claim: str | None = None,
 ) -> None:
@@ -1599,25 +1607,20 @@ def _spawn_triple_pane(
         raise click.exceptions.Exit(code=1)
 
     if is_json:
-        click.echo(
-            json.dumps(
-                {
-                    "ok": True,
-                    "data": {
-                        "mode": "triple",
-                        "task_id": task_id,
-                        "message": message,
-                        "base_ref": base,
-                        "base_sha": base_sha,
-                        "base_selection_rule": base_selection_rule,
-                        "diff_lines": raw_diff_lines,
-                        "diff_chars": raw_diff_chars,
-                        "truncated": truncated,
-                    },
-                },
-                indent=2,
-            )
-        )
+        data = {
+            "mode": "triple",
+            "task_id": task_id,
+            "message": message,
+            "base_ref": base,
+            "base_sha": base_sha,
+            "base_selection_rule": base_selection_rule,
+            "diff_lines": raw_diff_lines,
+            "diff_chars": raw_diff_chars,
+            "truncated": truncated,
+        }
+        if warning:
+            data["warning"] = warning
+        click.echo(json.dumps({"ok": True, "data": data}, indent=2))
     elif quiet:
         click.echo(message)
     else:

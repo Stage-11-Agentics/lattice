@@ -143,8 +143,29 @@ def test_project_config_refuses_before_writing(root: Path) -> None:
         {"review_base_branch": True},
         {"review_integration_branches": ""},
         {"review_integration_branches": "v2,,release/next"},
+        {"review_integration_branches": "v 2"},
+        {"review_integration_branches": "v2..main"},
+        {"review_integration_branches": "v2~1"},
+        {"review_integration_branches": "v2^"},
+        {"review_integration_branches": "v2:x"},
+        {"review_integration_branches": "v2?x"},
+        {"review_integration_branches": "v2*x"},
+        {"review_integration_branches": "v2[x"},
+        {"review_integration_branches": "v2\\x"},
+        {"review_integration_branches": "@{-1}"},
+        {"review_integration_branches": "-x"},
+        {"review_integration_branches": ".hidden"},
+        {"review_integration_branches": "v2.lock"},
+        {"review_integration_branches": "v2/../main"},
+        {"review_integration_branches": "v2\tmain"},
+        {"review_integration_branches": "v2\x01main"},
+        {"review_integration_branches": "x" * 5000},
+        {"review_integration_branches": '["v2"]'},
         {"review_integration_branches": ["v2", ""]},
         {"review_integration_branches": ["v2", "v2"]},
+        {"review_integration_branches": [" v2 "]},
+        {"review_integration_branches": ["v2,branch"]},
+        {"review_integration_branches": ["é" * 128]},
         {"review_timeout_seconds": "0"},
         {"review_max_diff_lines": "-1"},
         {"review_max_diff_chars": "many"},
@@ -155,8 +176,48 @@ def test_project_config_refuses_before_writing(root: Path) -> None:
         assert exc.value.code == "VALIDATION_ERROR"
     assert config_path.read_bytes() == before
     assert not (root / "projects" / "p" / ".lattice" / "hosted" / "maintenance.json").exists()
-    result = _invoke("server", "project", "config", "p", "--set", "hooks=x", "--root", str(root))
+    project_root = root / "projects" / "p"
+    result = _invoke(
+        "server",
+        "project",
+        "config",
+        "p",
+        "--set",
+        "hooks=x",
+        "--root",
+        str(root),
+        env={"LATTICE_ROOT": str(project_root)},
+    )
     assert result.exit_code == 1 and "cannot be set" in result.output
+    result = _invoke(
+        "server",
+        "project",
+        "config",
+        "p",
+        "--set",
+        'review_integration_branches=["v2"]',
+        "--root",
+        str(root),
+        env={"LATTICE_ROOT": str(project_root)},
+    )
+    assert result.exit_code == 1 and "valid Git branch names" in result.output
+
+
+def test_project_config_help_lists_review_integration_branches(root: Path) -> None:
+    admin.create_project(root, "p")
+    project = root / "projects" / "p"
+    result = _invoke(
+        "server",
+        "project",
+        "config",
+        "p",
+        "--help",
+        env={"LATTICE_ROOT": str(project)},
+    )
+    assert result.exit_code == 0, result.output
+    assert "review_integration_branches" in result.output
+    assert "review_base_branch" in result.output
+    assert "review_max_diff_lines" in result.output
 
 
 @pytest.mark.parametrize(

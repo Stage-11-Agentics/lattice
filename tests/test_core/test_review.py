@@ -1297,6 +1297,97 @@ class TestReviewBaseSelection:
         assert res.base_sha == v2_sha
         assert "ticket change" in res.diff and "unpublished fix" in res.diff
 
+    def test_unresolvable_configured_branch_warns_and_refuses_fallback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _repo, lattice_dir, feature, *_ = _non_default_remote_base_repo(tmp_path)
+        monkeypatch.setattr(review_mod, "_open_pr_base_branch", lambda *_args: None)
+
+        res = review_mod.resolve_diff(
+            lattice_dir,
+            "task_01",
+            {"branch_links": [{"branch": feature}]},
+            review_integration_branches=["v3"],
+        )
+
+        assert res.success is False
+        assert res.error_code == "UNRESOLVABLE_REVIEW_INTEGRATION_BRANCHES"
+        assert "v3" in (res.warning or "")
+        assert "v3" in (res.error or "")
+        assert "refusing to fall back" in (res.error or "")
+
+    def test_missing_configured_entry_warns_while_valid_integration_wins(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _repo, lattice_dir, feature, _root_sha, v2_sha, _main_sha = _non_default_remote_base_repo(
+            tmp_path
+        )
+        monkeypatch.setattr(review_mod, "_open_pr_base_branch", lambda *_args: None)
+
+        res = review_mod.resolve_diff(
+            lattice_dir,
+            "task_01",
+            {"branch_links": [{"branch": feature}]},
+            review_integration_branches=["v3", "v2"],
+        )
+
+        assert res.success is True, res.error
+        assert res.base_ref == "origin/v2"
+        assert res.base_sha == v2_sha
+        assert "v3" in (res.warning or "")
+
+    def test_stale_remote_warning_names_the_selected_integration_base(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo, lattice_dir, feature, _root_sha, _v2_sha, main_sha = _non_default_remote_base_repo(
+            tmp_path
+        )
+        _git(repo, "branch", "v2", main_sha)
+        monkeypatch.setattr(review_mod, "_open_pr_base_branch", lambda *_args: None)
+
+        res = review_mod.resolve_diff(
+            lattice_dir,
+            "task_01",
+            {"branch_links": [{"branch": feature}]},
+            review_integration_branches=["v2"],
+        )
+
+        assert res.success is True, res.error
+        assert res.base_ref == "origin/v2"
+        assert "Selected review base origin/v2" in (res.warning or "")
+        assert "local v2" in (res.warning or "")
+        assert "origin/main" not in (res.warning or "")
+
+    @pytest.mark.parametrize(
+        "branch",
+        [
+            "v 2",
+            "v2..main",
+            "v2~1",
+            "v2^",
+            "v2:x",
+            "v2?x",
+            "v2*x",
+            "v2[x",
+            "v2\\x",
+            "@{-1}",
+            "-x",
+            ".hidden",
+            "v2.lock",
+            "v2/../main",
+            "v2\tmain",
+            "v2\x01main",
+            " v2 ",
+            "v2,branch",
+            "é" * 128,
+            "x" * 5000,
+        ],
+    )
+    def test_integration_branch_names_follow_git_ref_rules(self, branch: str) -> None:
+        branches, error = review_mod._normalize_integration_branches([branch])
+        assert branches == []
+        assert "review_integration_branches" in (error or "")
+
     def test_detached_head_uses_only_configured_and_default_candidates(
         self, tmp_path: Path
     ) -> None:
@@ -1494,6 +1585,11 @@ class TestReviewBaseSelection:
         assert res.success is False
         assert res.error_code == "INVALID_REVIEW_INTEGRATION_BRANCHES"
         assert "review_integration_branches" in (res.error or "")
+
+    def test_duplicate_local_integration_branches_are_rejected(self) -> None:
+        branches, error = review_mod._normalize_integration_branches(["v2", "v2"])
+        assert branches == []
+        assert "unique" in (error or "")
 
     def test_gh_open_pr_lookup_uses_head_branch_and_requires_open_state(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

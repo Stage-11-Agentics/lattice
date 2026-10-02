@@ -8,6 +8,42 @@ from pathlib import Path
 from typing import Literal, TypedDict
 
 
+MAX_BRANCH_REF_BYTES = 1024
+MAX_REF_COMPONENT_BYTES = 255
+
+
+def valid_git_branch_name(name: str) -> bool:
+    """Return whether *name* is a safe, bounded Git branch ref name.
+
+    This mirrors ``git check-ref-format --branch``'s syntax without invoking
+    Git from config validation. The byte bounds keep names usable as ref paths
+    across supported filesystems; the branch-name form also rejects leading
+    dashes and the previous-checkout shorthand ``@{-n}``.
+    """
+    if not isinstance(name, str) or not name or name == "@" or name.startswith("-"):
+        return False
+    if name.startswith("/") or name.endswith("/") or "//" in name:
+        return False
+    if ".." in name or "@{" in name or name.endswith("."):
+        return False
+    if any(
+        ord(char) <= 0x20 or ord(char) == 0x7F or char in {"~", "^", ":", "?", "*", "[", "\\"}
+        for char in name
+    ):
+        return False
+    components = name.split("/")
+    if any(component.startswith(".") or component.endswith(".lock") for component in components):
+        return False
+    try:
+        raw = name.encode("utf-8")
+        component_sizes = [len(component.encode("utf-8")) for component in components]
+    except UnicodeEncodeError:
+        return False
+    return len(raw) <= MAX_BRANCH_REF_BYTES and all(
+        size <= MAX_REF_COMPONENT_BYTES for size in component_sizes
+    )
+
+
 class WipLimits(TypedDict, total=False):
     in_progress: int
     review: int

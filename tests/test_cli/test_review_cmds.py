@@ -29,6 +29,7 @@ def _resolution(
     success: bool = True,
     error: str | None = None,
     error_code: str | None = None,
+    warning: str | None = None,
     base_ref: str = "origin/main",
     base_selection_rule: str = "inferred_nearest_merge_base",
     head_ref: str = "feat/branch",
@@ -49,6 +50,7 @@ def _resolution(
         worktree=Path.cwd().resolve(),
         source="linked_branch",
         base_selection_rule=base_selection_rule,
+        warning=warning,
     )
 
 
@@ -1579,7 +1581,12 @@ class TestFailedReviewIsVisible:
         task_id = _create_task(runner, root)
 
         with (
-            patch("lattice.cli.review_cmds.resolve_diff", return_value=_resolution()),
+            patch(
+                "lattice.cli.review_cmds.resolve_diff",
+                return_value=_resolution(
+                    warning="Configured review_integration_branches entry 'v3' did not resolve."
+                ),
+            ),
             patch(
                 "lattice.cli.review_cmds.run_single_review",
                 return_value=(True, "Review complete.", "### 1. Verdict\n**PASS**"),
@@ -1599,6 +1606,38 @@ class TestFailedReviewIsVisible:
         assert stored.startswith(f"Lattice-Reviewed-Commit: {'b' * 40}\n")
         assert f"Lattice-Reviewed-Head: feat/branch ({'b' * 40})" in stored
         assert f"Lattice-Reviewed-Base: origin/main ({'a' * 40})" in stored
+        assert (
+            "Lattice-Review-Warning: Configured review_integration_branches entry 'v3' "
+            "did not resolve."
+        ) in stored
+        assert "v3" in result.output
+
+    def test_unresolved_integration_warning_is_in_failed_cli_output(self, tmp_path):
+        root = _make_board(tmp_path)
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+        warning = "Configured review_integration_branches entry 'v3' did not resolve."
+        resolution = _resolution(
+            success=False,
+            error=(
+                "No configured review_integration_branches entry resolves to a remote ref; "
+                "refusing to fall back to main."
+            ),
+            error_code="UNRESOLVABLE_REVIEW_INTEGRATION_BRANCHES",
+            warning=warning,
+        )
+
+        with patch("lattice.cli.review_cmds.resolve_diff", return_value=resolution):
+            result = runner.invoke(
+                cli,
+                ["code-review", task_id, "--mode", "single", "--dry-run"],
+                env={"LATTICE_ROOT": str(root)},
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code != 0
+        assert "v3" in result.output
+        assert "refusing to fall back to main" in result.output
 
     def test_failure_json_mode_is_an_error_envelope(self, tmp_path):
         root = _make_board(tmp_path, {"review_mode": "single"})

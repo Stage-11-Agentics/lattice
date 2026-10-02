@@ -146,6 +146,12 @@ def test_review_gate_v2_changes_are_declared_in_compatibility_docs() -> None:
         "review_integration_branches",
         "configured order",
         "arbitrary remote branches",
+        "origin/head",
+        "origin/main",
+        "origin/master",
+        "local `main` then `master`",
+        "fails closed",
+        "unresolved entries are named in a warning",
     )
 
     for name, text in (

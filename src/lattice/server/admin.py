@@ -22,7 +22,12 @@ from typing import Any
 
 from filelock import FileLock
 
-from lattice.core.config import serialize_config, validate_project_code, validate_subproject_code
+from lattice.core.config import (
+    serialize_config,
+    valid_git_branch_name,
+    validate_project_code,
+    validate_subproject_code,
+)
 from lattice.core.errors import OpError
 from lattice.core.ids import generate_instance_id
 from lattice.server import audit, control
@@ -579,15 +584,15 @@ def validate_config_changes(raw: Any) -> dict[str, Any]:
                 else:
                     branches = [branch.strip() for branch in value.split(",")]
             elif isinstance(value, list) and all(isinstance(item, str) for item in value):
-                branches = [item.strip() for item in value]
+                branches = list(value)
             else:
                 branches = []
             if not branches or any(
-                not branch or any(char in branch for char in "\0\r\n,") for branch in branches
+                "," in branch or not valid_git_branch_name(branch) for branch in branches
             ):
                 raise OpError(
                     "VALIDATION_ERROR",
-                    f"Invalid value {value!r} for {key}; provide comma-separated non-empty branch names.",
+                    f"Invalid value {value!r} for {key}; provide comma-separated, valid Git branch names.",
                     {"key": key},
                 )
             if any(not branch for branch in branches) or len(set(branches)) != len(branches):
