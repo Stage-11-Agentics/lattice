@@ -315,11 +315,12 @@ The slug is lowercase letters, digits, and dashes, starting with a letter or dig
 lattice server project config web --set auto_plan_review_on_transition=false
 lattice server project config web --set auto_code_review_on_transition=true --set review_mode=single
 lattice server project config web --set review_base_branch=v2
+lattice server project config web --set review_integration_branches=v2,release/next
 ```
 
 `project config` accepts `review_mode` and `plan_review_mode` (`inline`, `single`, `triple`), `plan_approval` (`auto`, `human`), `auto_code_review_on_transition` and `auto_plan_review_on_transition` (`true`, `false`), `review_base_branch` (a non-empty branch/ref), `review_integration_branches` (a comma-separated ordered list of unique Git-valid branch names), `review_timeout_seconds` (a positive integer), `review_max_diff_lines` and `review_max_diff_chars` (non-negative integers; zero disables that cap), and `task_types` (a complete replacement list):
 
-- Inference considers the ordered `review_integration_branches` list plus one safe default: the branch named by `origin/HEAD`, or `origin/main` then `origin/master` if it does not resolve. When the configured list is empty and no remote default resolves, local `main` then `master` is the final fallback. A non-empty list with no resolvable entry fails closed, unresolved entries are named in a warning, and arbitrary remote branches are never candidates. Review resolution never fetches.
+- Integration branch names must be valid Git branch refs and resolve to remote-tracking refs. Inference considers the ordered `review_integration_branches` list plus one safe default: the branch named by `origin/HEAD`, or `origin/main` then `origin/master` if it does not resolve. When the configured list is empty and no remote default resolves, local `main` then `master` is the final fallback. A non-empty list with no resolvable entry fails closed, unresolved entries are named in a warning, and arbitrary remote branches are never candidates. Review resolution never fetches.
 - `task_types` must be a JSON array of unique, non-empty, trimmed strings containing `task`:
 
 ```bash
