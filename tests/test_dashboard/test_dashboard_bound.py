@@ -161,6 +161,8 @@ def test_each_browser_write_looks_at_the_offline_window_afresh(
 
     repo, task = bound_repo(hosted_env, tmp_path)
     window = repo / ".lattice" / "cache" / "unreachable_until"
+    session.reset_process_state()
+    window.write_text(f"{time.time() + 60:.3f}\n")
     seen: list[bool] = []
     post = client.post_operation
 
@@ -169,10 +171,20 @@ def test_each_browser_write_looks_at_the_offline_window_afresh(
         return post(*args, offline=offline, **kwargs)
 
     monkeypatch.setattr(client, "post_operation", spy)
-    with dashboard(repo) as port:
-        window.write_text(f"{time.time() + 60:.3f}\n")
+
+    class NoFollower:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def run(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+    with dashboard(repo, follower_factory=NoFollower, restart_after=3600) as port:
         hosted = Hosted(repo, "team", "demo")
-        assert session.window_open_at_start(hosted)  # as a stale memo would hold
+        assert session.window_open_at_start(hosted)
         window.unlink()
         status, body = request(port, "POST", f"/api/tasks/{task}/comment", {"body": "hi"})
     assert status == 200, body
