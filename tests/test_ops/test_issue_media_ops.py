@@ -228,7 +228,7 @@ def test_write_ops_report_integrity_error_for_malformed_replayed_hash(
 def test_attach_event_write_failure_cleans_staged_media(
     board: LocalBoard, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    issue = run(board, "issue.file", text="t").value
+    issue = run(board, "issue.file", title="t").value
     import lattice.ops.issue_attach as attach
 
     def fail(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
@@ -254,13 +254,13 @@ def test_file_event_write_failure_cleans_media_and_reuses_issue_number(
 
     monkeypatch.setattr(issue_file, "write_issue_events", fail)
     with pytest.raises(OSError, match="event write failed"):
-        run(board, "issue.file", text="failed", media=(item(png()),))
+        run(board, "issue.file", title="failed", media=(item(png()),))
 
     assert media_files(board) == []
     ids_path = board.lattice_dir / "issues" / "ids.json"
     assert json.loads(ids_path.read_text())["map"] == {}
     monkeypatch.undo()
-    filed = run(board, "issue.file", text="succeeds", media=(item(png()),)).value
+    filed = run(board, "issue.file", title="succeeds", media=(item(png()),)).value
     assert filed["short_id"] == "LAT-I1"
 
 
@@ -281,13 +281,13 @@ def test_file_second_item_failure_cleans_everything_without_reserving_number(
 
     monkeypatch.setattr(common, "store_media", fail_on_second)
     with pytest.raises(OSError, match="second item failed"):
-        run(board, "issue.file", text="failed", media=(item(png()), item(png(2, 2))))
+        run(board, "issue.file", title="failed", media=(item(png()), item(png(2, 2))))
 
     assert media_files(board) == []
     assert (board.lattice_dir / "issues" / "media").is_dir()
     assert not (board.lattice_dir / "issues" / "ids.json").exists()
     monkeypatch.undo()
-    filed = run(board, "issue.file", text="succeeds").value
+    filed = run(board, "issue.file", title="succeeds").value
     assert filed["short_id"] == "LAT-I1"
 
 
@@ -351,7 +351,7 @@ def test_detach_records_removal_before_deleting_bytes(
 def test_detach_event_write_failure_keeps_bytes(
     board: LocalBoard, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    issue = run(board, "issue.file", text="t", media=(item(png()),)).value
+    issue = run(board, "issue.file", title="t", media=(item(png()),)).value
     path = Path(issue["media"][0]["path"])
     import lattice.ops.issue_detach as detach
 
@@ -369,7 +369,7 @@ def test_detach_event_write_failure_keeps_bytes(
 def test_detach_retries_cleanup_after_unlink_failure(
     board: LocalBoard, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    issue = run(board, "issue.file", text="t", media=(item(png()),)).value
+    issue = run(board, "issue.file", title="t", media=(item(png()),)).value
     path = Path(issue["media"][0]["path"])
     import lattice.ops.issue_detach as detach
 
