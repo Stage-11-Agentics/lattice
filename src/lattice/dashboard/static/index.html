@@ -2299,6 +2299,77 @@ var WEB_COLLISION_RADIUS = { hub: 30, task: 10 };
 // The page is served at "/" locally and at "/p/<slug>/" by a server, so every
 // API path resolves against the page's own base path (static/escape.js).
 var BASE_PATH = basePath(location.pathname);
+var _issueDashboard = null;
+var _issueAssetError = null;
+
+function _issuesEnabled() {
+  return !!(config && config.issues && config.issues.enabled === true);
+}
+
+function _loadIssueScript(file) {
+  return new Promise(function(resolve, reject) {
+    var script = document.createElement("script");
+    script.src = apiUrl(BASE_PATH, "static/" + file);
+    script.dataset.issueDashboardAsset = file;
+    script.onload = resolve;
+    script.onerror = function() { reject(new Error("Could not load " + file)); };
+    document.body.appendChild(script);
+  });
+}
+
+async function _prepareIssueDashboard() {
+  var oldTab = document.querySelector('.nav-tab[data-view="issues"]');
+  var oldButton = document.getElementById("issue-new-button");
+  if (!_issuesEnabled()) {
+    if (_issueDashboard) { _issueDashboard.destroy(); _issueDashboard = null; }
+    if (oldTab) oldTab.remove();
+    if (oldButton) oldButton.remove();
+    var issueCss = document.querySelector('link[data-issue-dashboard-asset="issue-view.css"]');
+    if (issueCss) issueCss.remove();
+    return;
+  }
+
+  if (!oldTab) {
+    oldTab = document.createElement("span");
+    oldTab.className = "nav-tab";
+    oldTab.dataset.view = "issues";
+    oldTab.textContent = "Issues";
+    oldTab.addEventListener("click", function() { location.hash = "#/issues"; });
+    var activityTab = document.querySelector('.nav-tab[data-view="activity"]');
+    activityTab.parentNode.insertBefore(oldTab, activityTab);
+  }
+  if (!HOSTED_SLUG && !oldButton) {
+    oldButton = document.createElement("button");
+    oldButton.type = "button";
+    oldButton.id = "issue-new-button";
+    oldButton.className = "btn";
+    oldButton.textContent = "+ Issue";
+    var right = document.querySelector(".nav-right");
+    right.insertBefore(oldButton, document.getElementById("new-task-btn"));
+  }
+  if (!document.querySelector('link[data-issue-dashboard-asset="issue-view.css"]')) {
+    var link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = apiUrl(BASE_PATH, "static/issue-view.css");
+    link.dataset.issueDashboardAsset = "issue-view.css";
+    document.head.appendChild(link);
+  }
+  try {
+    if (!window.IssueViewLogic) await _loadIssueScript("issue-view-logic.js");
+    if (!window.IssueDashboard) await _loadIssueScript("issue-view.js");
+    _issueAssetError = null;
+    if (!_issueDashboard) {
+      _issueDashboard = window.IssueDashboard.mount({
+        app: document.getElementById("app"), api: api, apiPost: apiPost, esc: esc,
+        hosted: !!HOSTED_SLUG, basePath: BASE_PATH, showToast: showToast,
+        onFiled: function() { location.hash = "#/issues"; }
+      });
+    }
+  } catch(error) {
+    _issueAssetError = error.message || String(error);
+  }
+  updateTabs();
+}
 
 async function api(path, opts) {
   var r = await fetch(apiUrl(BASE_PATH, path), opts);
@@ -2438,6 +2509,7 @@ async function init() {
   try {
     var results = await Promise.all([api("/api/config"), loadTasks(), api("/api/graph").catch(function() { return { links: [] }; })]);
     config = results[0];
+    await _prepareIssueDashboard();
     boardGraphLinks = (results[2] && results[2].links) || [];
     var initSp = new URLSearchParams(location.search);
     activeTagFilter = initSp.get("tag") || null;
@@ -2477,6 +2549,8 @@ function updateTabs() {
   document.querySelectorAll(".nav-tab-structure").forEach(function(el) {
     el.style.display = isStructure ? "" : "none";
   });
+  var issueTab = document.querySelector('.nav-tab[data-view="issues"]');
+  if (issueTab) issueTab.style.display = _issuesEnabled() ? "" : "none";
 }
 
 function updateStatsBadges() {
@@ -4540,6 +4614,10 @@ async function route(hash) {
   var h = (hash || "/board").replace(/^#?\/?/, "/");
   var parts = h.split("/").filter(Boolean);
   var view = parts[0] || "board";
+  if (view === "issues" && !_issuesEnabled()) {
+    view = "board";
+    if (location.hash !== "#/board") history.replaceState(null, "", location.pathname + location.search + "#/board");
+  }
 
   // Close floating detail panel on any hash navigation
   if (_detailPanelTaskId) closeDetailPanel();
@@ -4556,6 +4634,9 @@ async function route(hash) {
   if (currentView === "web" && view !== "web" && view !== "task") {
     cleanupWeb();
   }
+  if (currentView === "issues" && view !== "issues" && _issueDashboard) {
+    _issueDashboard.deactivate();
+  }
 
   currentView = view === "task" ? currentView : view;
   updateTabs();
@@ -4568,6 +4649,11 @@ async function route(hash) {
   else if (view === "cube2") await renderCubeV2Wrapper();
   else if (view === "web") await renderWeb();
   else if (view === "structure") await renderStructure();
+  else if (view === "issues") {
+    if (_issueAssetError) showError(_issueAssetError);
+    else if (_issueDashboard) _issueDashboard.render();
+    else renderBoard();
+  }
   else if (view === "task" && parts[1]) await renderDetail(parts[1]);
   else renderBoard();
 }
@@ -7510,6 +7596,10 @@ function stopPolling() {
 
 // Refetch whatever the current view shows.
 async function refreshCurrentView() {
+    if (currentView === "issues") {
+      if (_issueDashboard) await _issueDashboard.refresh();
+      return;
+    }
     if (currentView !== "board" && currentView !== "list" && currentView !== "activity" && currentView !== "stats" && currentView !== "cube" && currentView !== "cube2" && currentView !== "web" && currentView !== "structure") return;
 
     // Structure: fetch structure.json + events.jsonl tail, re-render frame.
@@ -7581,6 +7671,7 @@ async function refreshCurrentView() {
       var configChanged = JSON.stringify(newConfig) !== JSON.stringify(config);
       if (tasksChanged || configChanged) {
         config = newConfig;
+        if (configChanged) await _prepareIssueDashboard();
         updateAllBadges();
         if (configChanged) {
           var dca = (config && config.dashboard) || {};

@@ -38,6 +38,25 @@ from lattice.storage.operations import resolve_task_prose_path
 
 __all__ = ["MAX_REQUEST_BODY_BYTES", "STATIC_DIR", "create_server", "origin_allowed"]
 
+# A file request can contain base64 media and up to eight derived JPEG frames
+# per video. Keep its allowance separate from ordinary dashboard writes and
+# hard-bound it even when the board owner raises the media settings.
+MAX_ISSUE_FILE_BODY_BYTES = 2 * 1024 * 1024 * 1024
+MAX_ISSUE_FILE_MEDIA_ITEMS = 64
+
+
+def issue_file_body_limit(lattice_dir: Path) -> int:
+    """Bound quick-file JSON from configured media limits and frame overhead."""
+    from lattice.core.issue_media import MAX_FRAME_BYTES, MAX_FRAMES, media_limits
+
+    config = api.get_config(lattice_dir)
+    _per_file, per_issue = media_limits(config)
+    decoded_allowance = per_issue + MAX_ISSUE_FILE_MEDIA_ITEMS * MAX_FRAMES * MAX_FRAME_BYTES
+    base64_allowance = ((decoded_allowance + 2) // 3) * 4
+    # Payload object keys, filenames, hashes, dimensions and frame timestamps.
+    return min(MAX_ISSUE_FILE_BODY_BYTES, base64_allowance + 1024 * 1024)
+
+
 STATIC_DIR = Path(__file__).parent / "static"
 
 _LOOPBACK_NAMES = frozenset({"localhost", "127.0.0.1", "::1"})
@@ -107,6 +126,22 @@ def host_allowed(host_header: str | None, bound_host: str) -> bool:
     return _is_loopback(_host_name(host_header))
 
 
+def issue_host_allowed(host_header: str | None, configured_hosts: str | tuple[str, ...]) -> bool:
+    """Limit issue reads and writes to loopback or a configured dashboard host."""
+    if not host_header:
+        return False
+    if isinstance(configured_hosts, str):
+        configured_hosts = (configured_hosts,)
+    hostname = _host_name(host_header).rstrip(".").casefold()
+    if _is_loopback(hostname):
+        return True
+    return hostname in {host.rstrip(".").casefold() for host in configured_hosts if host}
+
+
+def _is_issue_api_path(path: str) -> bool:
+    return path == "/api/issues" or path.startswith("/api/issues/")
+
+
 # ---------------------------------------------------------------------------
 # The board a dashboard serves
 # ---------------------------------------------------------------------------
@@ -167,6 +202,11 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
                 self._send_error(403, "FORBIDDEN", "Non-loopback Host refused")
                 return
             if media.MEDIA_ROUTE.fullmatch(path):
+                if not issue_host_allowed(
+                    self.headers.get("Host"), self.server._lattice_configured_host
+                ):
+                    self._send_error(403, "FORBIDDEN", "Issue request Host is not this dashboard.")
+                    return
                 self.connection.settimeout(media.SOCKET_TIMEOUT)
                 media.serve_issue_media(self, self._target, path)
                 return
@@ -180,6 +220,12 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
         def _do_get(self) -> None:
             parsed = urlparse(self.path)
             path = parsed.path.rstrip("/") or "/"
+
+            if _is_issue_api_path(path) and not issue_host_allowed(
+                self.headers.get("Host"), self.server._lattice_configured_host
+            ):
+                self._send_error(403, "FORBIDDEN", "Issue request Host is not this dashboard.")
+                return
 
             if path == "/":
                 self._serve_static("index.html", "text/html")
@@ -225,11 +271,17 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
                 self._send_error(404, "NOT_FOUND", f"Not found: {path}")
 
         def _do_post(self) -> None:
+            path = urlparse(self.path).path.rstrip("/") or "/"
+            if _is_issue_api_path(path) and not issue_host_allowed(
+                self.headers.get("Host"), self.server._lattice_configured_host
+            ):
+                self._send_error(403, "FORBIDDEN", "Issue request Host is not this dashboard.")
+                return
+
             if self._readonly:
                 self._send_error(403, "FORBIDDEN", "Dashboard is in read-only mode")
                 return
 
-            path = urlparse(self.path).path.rstrip("/") or "/"
             if not path.startswith("/api/"):
                 self._send_error(404, "NOT_FOUND", f"Not found: {path}")
                 return
@@ -248,7 +300,18 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
                 )
                 return
 
-            body = self._read_request_body()
+            if _is_issue_api_path(path):
+                if self._target.hosted:
+                    self._send_error(400, "LOCAL_ONLY", "Issue writes are local-only.")
+                    return
+                try:
+                    with self._target.read() as ld:
+                        api._require_issues_enabled(ld)
+                except ApiError as exc:
+                    self._send(ApiResponse(exc.status, exc.envelope()))
+                    return
+
+            body = self._read_request_body(path)
             if body is None:
                 return  # error already sent
 
@@ -337,7 +400,7 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
         # Writes
         # ---------------------------------------------------------------
 
-        def _read_request_body(self) -> Any:
+        def _read_request_body(self, path: str) -> Any:
             """Read and parse a JSON request body. Returns ``None`` on failure."""
             try:
                 content_length = int(self.headers.get("Content-Length", 0))
@@ -347,11 +410,18 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
             if content_length == 0:
                 self._send_error(400, "BAD_REQUEST", "Empty request body")
                 return None
-            if content_length > MAX_REQUEST_BODY_BYTES:
+            body_limit = MAX_REQUEST_BODY_BYTES
+            if path == "/api/issues" and not self._target.hosted:
+                try:
+                    body_limit = issue_file_body_limit(self._target.lattice_dir)
+                except ApiError as exc:
+                    self._send(ApiResponse(exc.status, exc.envelope()))
+                    return None
+            if content_length > body_limit:
                 self._send_error(
                     413,
                     "PAYLOAD_TOO_LARGE",
-                    f"Request body exceeds {MAX_REQUEST_BODY_BYTES} bytes",
+                    f"Request body exceeds {body_limit} bytes",
                 )
                 return None
             try:

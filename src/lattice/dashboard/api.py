@@ -23,7 +23,7 @@ from typing import Any
 from urllib.parse import parse_qs, unquote
 
 from lattice.core.comments import materialize_comments
-from lattice.core.config import get_project_type
+from lattice.core.config import get_project_type, issues_enabled
 from lattice.core.errors import HTTP_STATUS, OpError
 from lattice.core.ids import validate_id
 from lattice.core.origin import format_origin_line, origin_matches
@@ -174,6 +174,231 @@ def _board_row(snap: dict) -> dict:
 
 def get_config(ld: Path) -> dict:
     return _read_config(ld)
+
+
+# ---------------------------------------------------------------------------
+# Issues (LAT-365)
+# ---------------------------------------------------------------------------
+
+
+def _issue_origin(event: dict | None) -> dict | None:
+    """Return the public user/machine pair from an event's recorded origin."""
+    if not event or not isinstance(event.get("origin"), dict):
+        return None
+    from lattice.core.origin import _user_and_machine
+
+    user, machine = _user_and_machine(event["origin"])
+    if user is None and machine is None:
+        return None
+    return {"user": user, "machine": machine}
+
+
+def _issue_comments(events: list[dict]) -> list[dict]:
+    """Materialize LAT-371 issue comments without changing the shared comment core.
+
+    Once LAT-371 lands, its public ``core.issues.issue_comments`` helper is the
+    source. The fallback only adapts its planned event names to the existing
+    task-comment materializer; it never writes or invents comment events.
+    """
+    try:
+        from lattice.core.issues import issue_comments
+    except ImportError:
+        from lattice.core.comments import materialize_comments
+
+        adapted = [
+            {**event, "type": event["type"].replace("issue_comment_", "comment_")}
+            for event in events
+            if event.get("type", "").startswith("issue_comment_")
+        ]
+        return materialize_comments(adapted)
+    return issue_comments(events)
+
+
+def _flatten_issue_comments(comments: list[dict]) -> list[dict]:
+    """Flatten the task-comment-shaped thread for actor filtering and counts."""
+    flattened = []
+    pending = list(reversed(comments))
+    while pending:
+        comment = pending.pop()
+        flattened.append(comment)
+        replies = comment.get("replies", [])
+        if isinstance(replies, list):
+            pending.extend(reversed(replies))
+    return flattened
+
+
+def _issue_detail_adapter(ld: Path, raw_id: str) -> dict | None:
+    """LAT-371 compatibility boundary for the stable dashboard issue shape.
+
+    LAT-371 owns title derivation, comment materialization and event redaction
+    in ``storage.issues.issue_detail``. The LAT-366 branch does not have that
+    reader yet, so the fallback composes its current view and log in one place.
+    """
+    from lattice.core.issues import redact_removed_media_names
+    from lattice.storage.issues import (
+        issue_views,
+        read_issue_events,
+        read_issue_snapshot,
+        resolve_issue,
+    )
+
+    try:
+        issue_id = resolve_issue(ld, raw_id)
+    except OpError as exc:
+        raise ApiError.from_op_error(exc) from exc
+
+    try:
+        from lattice.storage.issues import issue_detail
+    except ImportError:
+        issue_detail = None
+    if issue_detail is not None:
+        try:
+            detail = issue_detail(ld, issue_id)
+        except OpError as exc:
+            raise ApiError.from_op_error(exc) from exc
+        if detail is None:
+            return None
+        return _normalize_issue_detail(detail)
+
+    snapshot = read_issue_snapshot(ld, issue_id)
+    if snapshot is None:
+        return None
+    events = read_issue_events(ld, issue_id)
+    view = issue_views(ld, [snapshot])[0]
+    return _normalize_issue_detail(
+        {
+            **view,
+            "comments": _issue_comments(events),
+            "events": redact_removed_media_names(events, snapshot),
+        }
+    )
+
+
+def _normalize_issue_detail(detail: dict) -> dict:
+    """Keep current and LAT-371 readers behind one page contract."""
+    from lattice.core.issue_media import parse_frame_name
+
+    issue = dict(detail)
+    if "title" not in issue:
+        # LAT-371 adds split_title. Its exact derivation is used when available;
+        # the current LAT-366 branch keeps the legacy text intact as the title.
+        try:
+            from lattice.core.issues import split_title
+
+            title, description, _shortened = split_title(issue.get("text", ""))
+        except ImportError:
+            legacy_text = issue.get("text", "")
+            title, separator, description = legacy_text.partition("\n")
+            description = description.lstrip("\r\n") if separator else ""
+        issue["title"] = title
+        issue["description"] = description
+    issue.setdefault("description", "")
+    issue.setdefault("comments", [])
+    issue.setdefault("comment_count", len(_flatten_issue_comments(issue["comments"])))
+    issue.setdefault("events", [])
+    issue.setdefault("filed_origin", None)
+
+    filed_event = next(
+        (event for event in issue["events"] if event.get("type") == "issue_filed"), None
+    )
+    if issue["filed_origin"] is None:
+        issue["filed_origin"] = _issue_origin(filed_event)
+    comments_by_id = {}
+    for event in issue["events"]:
+        if event.get("type") == "issue_comment_added":
+            comments_by_id[event.get("id")] = _issue_origin(event)
+    for comment in _flatten_issue_comments(issue["comments"]):
+        if comment.get("origin") is None:
+            comment["origin"] = comments_by_id.get(comment.get("id"))
+    media = []
+    for entry in issue.get("media", []):
+        item = dict(entry)
+        media_id = item.get("id")
+        issue_id = issue.get("id")
+        valid_issue_id = isinstance(issue_id, str) and validate_id(issue_id, "iss")
+        valid_media_id = isinstance(media_id, str) and validate_id(media_id, "med")
+        item["url"] = (
+            f"/api/issues/{issue_id}/media/{media_id}"
+            if valid_issue_id
+            and valid_media_id
+            and item.get("path")
+            and not item.get("missing")
+            and not item.get("removed")
+            else None
+        )
+        frames = []
+        for frame in item.get("frames", []):
+            frame_item = dict(frame)
+            raw_path = frame_item.get("path")
+            frame_name = Path(raw_path).name if isinstance(raw_path, str) else ""
+            frame_item["url"] = (
+                f"/api/issues/{issue_id}/media/{media_id}/frames/{frame_name}"
+                if valid_issue_id
+                and valid_media_id
+                and parse_frame_name(frame_name) is not None
+                and not item.get("removed")
+                else None
+            )
+            frames.append(frame_item)
+        item["frames"] = frames
+        item.pop("path", None)
+        for frame in item["frames"]:
+            frame.pop("path", None)
+        media.append(item)
+    issue["media"] = media
+    return issue
+
+
+def _issue_list_adapter(ld: Path, actor: str | None = None) -> list[dict]:
+    """Return every issue, with LAT-371's all-state ``--by`` match semantics."""
+    from lattice.core.issues import redact_removed_media_names
+    from lattice.storage.issues import issue_views, list_issue_snapshots, read_issue_events
+
+    snapshots = list_issue_snapshots(ld)
+    views = issue_views(ld, snapshots)
+    rows = []
+    for snapshot, view in zip(snapshots, views):
+        events = read_issue_events(ld, view["id"])
+        detail = _normalize_issue_detail(
+            {
+                **view,
+                "comments": _issue_comments(events),
+                "events": redact_removed_media_names(events, snapshot),
+            }
+        )
+        comments = _flatten_issue_comments(detail["comments"])
+        filed = detail.get("filed_by") == actor if actor is not None else False
+        commented = any(comment.get("author", comment.get("by")) == actor for comment in comments)
+        if actor is not None and not (filed or commented):
+            continue
+        if actor is not None:
+            detail["matched_by"] = "filed" if filed else "commented"
+            actor_times = [
+                comment.get("created_at", comment.get("at", ""))
+                for comment in comments
+                if comment.get("author", comment.get("by")) == actor
+            ]
+            if filed:
+                actor_times.append(detail.get("filed_at") or "")
+            detail["actor_activity_at"] = max(actor_times, default="")
+            matching_comments = [
+                comment
+                for comment in comments
+                if comment.get("author", comment.get("by")) == actor
+            ]
+            detail["actor_comment_count"] = len(matching_comments)
+            detail["actor_comment_origins"] = [
+                comment.get("origin") for comment in matching_comments
+            ]
+        detail.pop("comments", None)
+        detail.pop("events", None)
+        rows.append(detail)
+    return rows
+
+
+def _require_issues_enabled(ld: Path) -> None:
+    if not issues_enabled(_read_config(ld)):
+        raise ApiError(409, "ISSUES_DISABLED", "The issue log is disabled on this board.")
 
 
 #: ``/api/tasks`` query parameters that filter by origin, as ``lattice list``
@@ -545,6 +770,36 @@ def route_get(
     try:
         if path == "/api/config":
             return ok(get_config(ld))
+        if path == "/api/issues":
+            _require_issues_enabled(ld)
+            values = query.get("by")
+            actor = values[0] if values else None
+            if actor == "":
+                actor = None
+            if actor is not None and len(actor) > 256:
+                raise ApiError(400, "VALIDATION_ERROR", "by filter is longer than 256 characters")
+            try:
+                rows = _issue_list_adapter(ld, actor)
+            except OpError as exc:
+                raise ApiError.from_op_error(exc) from exc
+            # List rows intentionally carry no comments or history; detail has
+            # one endpoint and keeps event redaction in the LAT-371 reader.
+            for row in rows:
+                row.pop("comments", None)
+                row.pop("events", None)
+            return ok(rows)
+        if path.startswith("/api/issues/"):
+            _require_issues_enabled(ld)
+            remainder = path[len("/api/issues/") :]
+            if "/" in remainder:
+                return error(404, "NOT_FOUND", f"Not found: {path}")
+            try:
+                detail = _issue_detail_adapter(ld, remainder)
+            except OpError as exc:
+                raise ApiError.from_op_error(exc) from exc
+            if detail is None:
+                return error(404, "NOT_FOUND", f"No issue {remainder}.")
+            return ok(detail)
         if path == "/api/tasks":
             return ok(get_tasks(ld, **origin_filter_params(query)))
         if path == "/api/stats":
@@ -829,7 +1084,13 @@ def translate_post(path: str, body: Any) -> WriteRequest:
     could never have sent (400); every rule about the change itself is the
     operation's, with the CLI's codes and messages (SPEC §10, G-6).
     """
-    if path == "/api/tasks" or path == "/api/config/dashboard" or path.startswith("/api/tasks/"):
+    if (
+        path == "/api/tasks"
+        or path == "/api/config/dashboard"
+        or path.startswith("/api/tasks/")
+        or path == "/api/issues"
+        or path.startswith("/api/issues/")
+    ):
         if not isinstance(body, dict):
             raise _invalid("Request body must be a JSON object")
     if path == "/api/config/dashboard":
@@ -864,7 +1125,63 @@ def translate_post(path: str, body: Any) -> WriteRequest:
             _require_task_id(task_id)
             return _task_write(task_id, sub, body)
         raise ApiError(404, "NOT_FOUND", f"Not found: {path}")
+    if path == "/api/issues":
+        title = body.get("title")
+        if not isinstance(title, str) or not title.strip():
+            raise _invalid("Missing or empty 'title' field")
+        description = body.get("description", "")
+        if not isinstance(description, str):
+            raise _invalid("'description' must be a string")
+        media = body.get("media", [])
+        if not isinstance(media, list) or not all(isinstance(item, dict) for item in media):
+            raise _invalid("'media' must be an array of objects")
+
+        params = {"title": title, "description": description, "media": tuple(media)}
+        # Until LAT-371 lands, LAT-366's registered operation still takes
+        # ``text``. This is the sole operation-signature compatibility branch.
+        try:
+            from lattice.ops.base import get_operation
+
+            fields = get_operation("issue.file").Params.__dataclass_fields__
+        except (ImportError, OpError):
+            fields = {"title": None}
+        if "title" not in fields:
+            params = {
+                "text": title.strip()
+                + ("\n\n" + description.strip() if description.strip() else ""),
+                "media": tuple(media),
+            }
+
+        def render_issue(result: Any) -> tuple[int, Any]:
+            value = dict(result.value)
+            value["events"] = result.events
+            return 201, _normalize_issue_detail(value)
+
+        return WriteRequest("issue.file", params, body.get("actor"), render_issue)
+    if path.startswith("/api/issues/"):
+        remainder = path[len("/api/issues/") :]
+        issue_id, separator, sub = remainder.partition("/")
+        if not separator or sub != "comment":
+            raise ApiError(404, "NOT_FOUND", f"Not found: {path}")
+        _require_issue_ref(issue_id)
+        if body.get("parent_id") is not None:
+            raise _invalid("The dashboard posts top-level comments only")
+        text = body.get("body")
+        if not isinstance(text, str) or not text.strip():
+            raise _invalid("Missing or empty 'body' field")
+        params = {"issue": issue_id, "text": text}
+        return WriteRequest(
+            "issue.comment", params, body.get("actor"), lambda result: (200, result.value)
+        )
     raise ApiError(404, "NOT_FOUND", f"Unknown API endpoint: {path}")
+
+
+def _require_issue_ref(issue_id: str) -> None:
+    """Validate issue path IDs with the storage resolver's shared grammar."""
+    from lattice.core.issues import parse_issue_ref
+
+    if parse_issue_ref(issue_id) is None:
+        raise ApiError(400, "INVALID_ID", f"Invalid issue ID format: '{issue_id}'.")
 
 
 def write_error(request: WriteRequest, exc: OpError) -> ApiError:

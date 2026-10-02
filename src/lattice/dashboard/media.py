@@ -35,7 +35,7 @@ from lattice.storage.issues import issues_dir, read_issue_snapshot
 
 #: The two media routes; the groups are checked below, so a malformed ID is a 400.
 MEDIA_ROUTE = re.compile(r"^/api/issues/([^/]*)/media/([^/]*)(?:/frames/([^/]*))?$")
-_FRAME_RE = re.compile(r"^t[0-9]{4,}\.[0-9]{3}s\.jpg$")
+_FRAME_RE = re.compile(r"t[0-9]{4,}\.[0-9]{3}s\.jpg\Z")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _SAFE_FILENAME_RE = re.compile(r"[A-Za-z0-9._-]+\Z")
 
@@ -275,13 +275,11 @@ def serve_issue_media(handler: Any, target: Any, path: str) -> None:
         return
     if frame is None:
         file_path = media_path(lattice_dir, issue_id, entry)
-        content_type = entry["content_type"]
-        stored_sha256 = entry.get("sha256")
-        etag = (
-            stored_sha256
-            if isinstance(stored_sha256, str) and _SHA256_RE.fullmatch(stored_sha256)
-            else None
-        )
+        digest = entry.get("sha256")
+        if not isinstance(digest, str) or not _SHA256_RE.fullmatch(digest):
+            _refuse(handler, 500, "INTEGRITY_ERROR", "Issue media has an invalid SHA-256 digest.")
+            return
+        content_type, etag = entry["content_type"], digest
         filename = file_path.name if file_path else media_id
     else:
         directory = frames_dir(lattice_dir, issue_id, entry)

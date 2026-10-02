@@ -85,6 +85,14 @@ class TestPage:
         script = web.get("/p/alpha/static/escape.js")
         assert script.status == 200
         assert script.headers["content-type"].startswith("application/javascript")
+        issue_script = web.get("/p/alpha/static/issue-view.js")
+        issue_style = web.get("/p/alpha/static/issue-view.css")
+        assert issue_script.status == 200 and issue_script.headers["content-type"].startswith(
+            "application/javascript"
+        )
+        assert issue_style.status == 200 and issue_style.headers["content-type"].startswith(
+            "text/css"
+        )
         assert web.get("/p/alpha/favicon.ico").status == 200
         assert web.get("/p/alpha/static/../server.py").status in (403, 404)
         for src in re.findall(r'src="(static/vendor/[^"]+)"', page.text):
@@ -96,6 +104,25 @@ class TestPage:
         response = web.get("/p/alpha")
         assert response.status in (301, 307, 308)
         assert response.headers["location"] == "/p/alpha/"
+
+    def test_issue_api_rejects_an_unconfigured_host(self, web: WebClient) -> None:
+        get = web.get("/p/alpha/api/issues", Host="evil.example")
+        assert get.status == 403
+        assert get.json["error"]["code"] == "FORBIDDEN"
+        post = web.post_json("/p/alpha/api/issues", {"title": "x"}, Host="evil.example")
+        assert post.status == 403
+        assert post.json["error"]["code"] == "FORBIDDEN"
+
+        # Check Host before credentials and Origin, including unauthenticated routes.
+        anonymous = WebClient(web.server)
+        anonymous_get = anonymous.get("/p/alpha/api/issues", Host="evil.example")
+        assert anonymous_get.status == 403
+        assert "Host is not this dashboard" in anonymous_get.json["error"]["message"]
+        anonymous_post = anonymous.post_json(
+            "/p/alpha/api/issues", {"title": "x"}, origin=None, Host="evil.example"
+        )
+        assert anonymous_post.status == 403
+        assert "Host is not this dashboard" in anonymous_post.json["error"]["message"]
 
     def test_other_project_is_403_and_missing_is_404(self, server: ServerHandle, root) -> None:
         web = _logged_in(server, mint(root, projects=["alpha"]))

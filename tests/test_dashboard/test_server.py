@@ -1435,6 +1435,58 @@ class TestPostRouting:
 
 
 class TestPayloadSizeLimit:
+    def test_issue_file_has_a_larger_hard_bounded_route_limit(self, dashboard_server):
+        """Quick-file JSON may exceed 1 MiB, while its route still has a hard ceiling."""
+        import http.client
+
+        from lattice.core.config import serialize_config
+        from lattice.dashboard import api
+        from lattice.dashboard.server import (
+            MAX_ISSUE_FILE_BODY_BYTES,
+            MAX_REQUEST_BODY_BYTES,
+            issue_file_body_limit,
+        )
+        from lattice.storage.fs import atomic_write
+
+        base_url, ld, _ids = dashboard_server
+        config = api.get_config(ld)
+        config["issues"] = {"enabled": True}
+        atomic_write(ld / "config.json", serialize_config(config))
+        host = base_url.replace("http://", "")
+
+        # A valid JSON body just over the ordinary cap reaches issue.file.
+        prefix = b'{"title":"x","padding":"'
+        suffix = b'"}'
+        body = prefix + b"x" * (MAX_REQUEST_BODY_BYTES + 1 - len(prefix) - len(suffix)) + suffix
+        conn = http.client.HTTPConnection(host)
+        conn.request(
+            "POST",
+            "/api/issues",
+            body=body,
+            headers={"Content-Type": "application/json", "Origin": base_url},
+        )
+        response = conn.getresponse()
+        assert response.status == 201
+        assert json.loads(response.read())["data"]["title"] == "x"
+        conn.close()
+
+        # The issue route's configured allowance is still capped, and checks
+        # Content-Length before attempting to read the declared body.
+        route_limit = issue_file_body_limit(ld)
+        assert MAX_REQUEST_BODY_BYTES < route_limit <= MAX_ISSUE_FILE_BODY_BYTES
+        conn = http.client.HTTPConnection(host)
+        conn.putrequest("POST", "/api/issues")
+        conn.putheader("Content-Type", "application/json")
+        conn.putheader("Origin", base_url)
+        conn.putheader("Content-Length", str(route_limit + 1))
+        conn.endheaders()
+        response = conn.getresponse()
+        assert response.status == 413
+        error = json.loads(response.read())["error"]
+        assert error["code"] == "PAYLOAD_TOO_LARGE"
+        assert str(route_limit) in error["message"]
+        conn.close()
+
     def test_oversized_content_length_rejected_with_413(self, dashboard_server):
         """A Content-Length exceeding MAX_REQUEST_BODY_BYTES should return 413."""
         import http.client
@@ -1552,3 +1604,51 @@ class TestReadonlyMode:
         status, body = _get(base_url, "/api/config")
         assert status == 200
         assert body["ok"] is True
+
+
+class TestIssueHostGuard:
+    def test_issue_get_post_and_media_only_accept_loopback_or_configured_host(self, tmp_path):
+        import http.client
+        import threading
+
+        from lattice.core.config import default_config, serialize_config
+        from lattice.dashboard.server import create_server
+        from lattice.storage.fs import atomic_write, ensure_lattice_dirs
+
+        ensure_lattice_dirs(tmp_path)
+        lattice_dir = tmp_path / ".lattice"
+        atomic_write(lattice_dir / "config.json", serialize_config(default_config()))
+        server = create_server(lattice_dir, "0.0.0.0", 0)
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        port = server.server_address[1]
+
+        def request(method, path, host, body=None):
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            headers = {"Host": host}
+            payload = None
+            if body is not None:
+                headers["Content-Type"] = "application/json"
+                headers["Origin"] = f"http://{host}"
+                payload = json.dumps(body)
+            conn.request(method, path, payload, headers)
+            response = conn.getresponse()
+            status = response.status
+            envelope = json.loads(response.read())
+            conn.close()
+            return status, envelope
+
+        try:
+            hostile = f"evil.example:{port}"
+            assert request("GET", "/api/issues", hostile)[0] == 403
+            assert request("POST", "/api/issues", hostile, {"title": "x"})[0] == 403
+            media_path = (
+                "/api/issues/iss_01ARZ3NDEKTSV4RRFFQ69G5FAV/media/med_01ARZ3NDEKTSV4RRFFQ69G5FAV"
+            )
+            assert request("GET", media_path, hostile)[0] == 403
+            assert request("GET", "/api/issues", f"localhost:{port}")[0] == 409
+            assert request("GET", "/api/issues", f"0.0.0.0:{port}")[0] == 409
+        finally:
+            server.shutdown()
+            server.server_close()
+            worker.join(timeout=5)
