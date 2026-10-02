@@ -37,7 +37,7 @@ class ShortIdFloors:
     @classmethod
     def from_board(cls, board: Path) -> ShortIdFloors:
         """Scan all assigned-ID sources once."""
-        inventory = short_id_inventory(Path(board))
+        inventory = short_id_inventory(Path(board), include_occurrences=False)
         return cls(inventory.max_observed, inventory.event_short_ids)
 
     def with_events(self, events: Iterable[dict]) -> ShortIdFloors:

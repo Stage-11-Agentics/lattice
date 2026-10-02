@@ -898,7 +898,12 @@ def _reserve_or_reconcile_short_id(
     index = _load_strict_id_index(lattice_dir)
     inventory = None
     if max_observed is None or event_short_ids is None:
-        inventory = short_id_inventory(lattice_dir, index)
+        inventory = short_id_inventory(
+            lattice_dir,
+            index,
+            include_occurrences=False,
+            persist_cache=True,
+        )
     if max_observed is None:
         max_observed = inventory.max_observed
     if event_short_ids is None:
