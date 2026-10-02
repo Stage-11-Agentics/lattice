@@ -14,13 +14,26 @@ body.issue-view-active #app{flex:1 1 auto;min-height:0;width:100%;max-width:none
 
 /* nav: the open count on the Issues tab, and the amber "+ Issue" button */
 .nav-tab .issue-nav-count{display:inline-block;min-width:1.75rem;text-align:center;margin-left:.375rem;padding:0 .3rem;border-radius:10px;font-size:.72rem;font-weight:700;letter-spacing:0;
-  background:var(--st-open-bg);color:var(--st-open);border:1px solid var(--st-open-border);font-variant-numeric:tabular-nums}
+  line-height:1.3;vertical-align:.05em;background:var(--st-open-bg);color:var(--st-open);border:1px solid var(--st-open-border);font-variant-numeric:tabular-nums}
 .nav-tab .issue-nav-count:empty{display:none}
 .nav-tab.active .issue-nav-count{background:rgba(0,0,0,.25);color:#fff;border-color:rgba(255,255,255,.35)}
 /* "+ Issue" widens the nav's right group; it wraps rather than run off a narrow window. Same on every view. */
 .nav-right{flex-wrap:wrap;justify-content:flex-end;row-gap:.375rem;min-width:0}
 .nav-right .btn-issue{white-space:nowrap;background:transparent;color:var(--st-open);border-color:var(--st-open-border);font-weight:600}
 .nav-right .btn-issue:hover{background:var(--st-open-bg)}
+/* The Issues tab and "+ Issue" add about 200px to the nav. Below 1600px the nav buys that
+   back so it stays one row wherever it was one row without issues: Settings and Help show
+   only their icons (their titles still name them), the count badge, the tabs and the
+   nav's gaps are a little tighter. Keyed to the window width only, so the nav is
+   identical on every view at any one width. */
+@media(max-width:1599px){
+  .nav{column-gap:.5rem}
+  .nav .nav-right{column-gap:.375rem}
+  .nav-right #filters-clear-btn{margin-left:-.375rem} /* still flush against Filters */
+  .nav .nav-tab{padding-left:.5rem;padding-right:.5rem}
+  .nav-tab .issue-nav-count{min-width:1.35rem;margin-left:.3rem;padding:0 .25rem}
+  .nav-right #settings-btn,.nav-right #help-btn{font-size:0;gap:0;padding-left:.5rem;padding-right:.5rem;align-self:stretch}
+}
 
 .issue-inbox kbd,.issue-closer kbd,.issue-file-overlay kbd{font-family:var(--font-mono);font-size:.75rem;padding:0 .35rem;border:1px solid var(--border);border-bottom-width:2px;border-radius:var(--radius-sm);
   background:var(--surface-raised);color:var(--text-secondary);min-width:1.4rem;display:inline-block;text-align:center;line-height:1.5}
@@ -212,6 +225,7 @@ body.issue-view-active #app{flex:1 1 auto;min-height:0;width:100%;max-width:none
 
 /* dragging files anywhere on the page */
 body.issue-dragging-files::after{content:"";position:fixed;inset:.375rem;border:3px dashed var(--accent-primary);border-radius:var(--radius-lg);pointer-events:none;z-index:70}
+/* top is a fallback: while dragging, the view sets it just below the nav's measured bottom */
 .issue-drop-hint{position:fixed;left:0;right:0;top:3.75rem;z-index:71;display:flex;justify-content:center;pointer-events:none}
 .issue-drop-label{background:var(--accent-primary);color:#fff;font-weight:700;padding:.4rem .9rem;border-radius:var(--radius-md);box-shadow:0 2px 10px rgba(0,0,0,.5);font-size:.95rem}
 
