@@ -21,7 +21,7 @@ Verifiability tags:
 | Envelope | `uv run pytest -m envelope -q` | Background only; never a gate. After every landing that touches `ops/`, `storage/`, `server/`, or `remote/`, the Merge Captain runs it against the newest `v2` head (runs coalesce). It never holds the landing slot or pauses admission: a failure files a ticket against the landing that introduced it, and landings continue. The ticket that owns an envelope test (H-10b, H-15, H-13b) runs it while building and reports the result in its PR |
 | Torture, complete | `uv run pytest -m torture -q` | After H-15, and before CP3, CP4, and the release gate |
 | Scenario rehearsal | `uv run pytest -m torture tests/torture/test_scenarios.py -q` | Before CP3, CP4, and the release gate (CP1 and CP2 rely on the tests their tickets own, including H-11's two-worktree mini rehearsal in the default suite) |
-| Perf | `uv run pytest -m perf tests/perf -q` | On the operator's laptop (the G-9 reference machine): at H-6, and before CP3, CP4, and the release gate. H-0 records the baseline from the pre-refactor code |
+| Perf | `uv run pytest -m perf tests -q` | On the operator's laptop (the G-9 reference machine): at H-6, and before CP3, CP4, and the release gate. H-0 records the baseline from the pre-refactor code |
 | Docs agent test | Procedure in §3, AC-44 | H-17 and terminal validation |
 
 - The `envelope` marker marks the envelope-scale torture tests: AC-7's sync envelope, AC-47's supported-size case, and AC-42's load tests. Every envelope test also carries `torture`, so the complete torture suite includes them. They take minutes, so the per-PR torture lane leaves them out and the Envelope lane runs them.

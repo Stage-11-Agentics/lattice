@@ -78,7 +78,7 @@ markers = [
     "timeout: marks tests with a timeout",
     "torture: slow concurrency, crash, and load tests (uv run pytest -m torture)",
     "envelope: envelope-scale torture tests, minutes each (uv run pytest -m envelope); always also torture",
-    "perf: timing checks on the reference machine (uv run pytest -m perf tests/perf)",
+    "perf: timing checks on the reference machine (uv run pytest -m perf tests)",
     "real_fsync: keep the real os.fsync (the default suite skips the syscall; tests/conftest.py)",
 ]
 

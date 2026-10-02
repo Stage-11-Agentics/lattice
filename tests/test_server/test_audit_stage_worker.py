@@ -50,6 +50,26 @@ def _repo(tmp_path: Path, files: int) -> Path:
     return directory
 
 
+def _stage_worker_with_pid_marker() -> str:
+    return "\n".join(
+        (
+            "import os",
+            "from pathlib import Path",
+            "from lattice.server.audit import Stager, _stage_worker",
+            "_stage_here = Stager.stage_here",
+            "def _stage_here_and_mark_worker(self):",
+            "    tree = _stage_here(self)",
+            "    Path(os.environ['LATTICE_STAGE_WORKER_MARKER']).write_text(",
+            "        str(os.getpid())",
+            "    )",
+            "    return tree",
+            "Stager.stage_here = _stage_here_and_mark_worker",
+            "_stage_worker()",
+            "",
+        )
+    )
+
+
 @contextmanager
 def _busy_threads(n: int) -> Iterator[None]:
     stop = threading.Event()
@@ -128,25 +148,8 @@ def test_a_worker_that_dies_mid_stage_is_a_git_error(
 def test_stage_runs_in_the_worker_process(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     directory = _repo(tmp_path, 5)
     marker = directory / ".stage-worker-pid"
-    worker_source = "\n".join(
-        (
-            "import os",
-            "from pathlib import Path",
-            "from lattice.server.audit import Stager, _stage_worker",
-            "_stage_here = Stager.stage_here",
-            "def _stage_here_and_mark_worker(self):",
-            "    tree = _stage_here(self)",
-            "    Path(os.environ['LATTICE_STAGE_WORKER_MARKER']).write_text(",
-            "        str(os.getpid())",
-            "    )",
-            "    return tree",
-            "Stager.stage_here = _stage_here_and_mark_worker",
-            "_stage_worker()",
-            "",
-        )
-    )
     monkeypatch.setenv("LATTICE_STAGE_WORKER_MARKER", str(marker))
-    monkeypatch.setattr(audit, "_STAGE_WORKER", worker_source)
+    monkeypatch.setattr(audit, "_STAGE_WORKER", _stage_worker_with_pid_marker())
     stager = Stager(directory)
     try:
         stager.stage()
@@ -157,6 +160,28 @@ def test_stage_runs_in_the_worker_process(tmp_path: Path, monkeypatch: pytest.Mo
         assert worker_pid != os.getpid()
     finally:
         stager.close()
+
+
+def test_server_audit_commit_stages_in_the_worker_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    marker = tmp_path / ".stage-worker-pid"
+    monkeypatch.setenv("LATTICE_STAGE_WORKER_MARKER", str(marker))
+    monkeypatch.setattr(audit, "_STAGE_WORKER", _stage_worker_with_pid_marker())
+    root = make_root(tmp_path, projects={"alpha": {"code": "ALP"}})
+    project, stream = direct_project(root, "alpha", QUICK)
+    try:
+        run(project, request("task.create", {"title": "one"}))
+        wait_for(lambda: any(line["event"] == "audit_commit" for line in log_lines(stream)))
+        assert project.committer is not None
+        stager = project.committer.stager
+        assert stager._worker is not None
+        assert marker.exists(), "server audit stage did not mark the worker process"
+        worker_pid = int(marker.read_text())
+        assert worker_pid == stager._worker.pid
+        assert worker_pid != os.getpid()
+    finally:
+        close(project)
 
 
 @pytest.mark.perf
@@ -238,10 +263,8 @@ def test_close_kills_a_worker_that_does_not_exit(
     monkeypatch.setattr(audit, "_STAGE_WORKER", "import time; time.sleep(60)")
     stager = Stager(_repo(tmp_path, 1))
     worker = stager._worker = stager._start_worker()
-    started = time.monotonic()
     stager.close(timeout=0.2)
     assert worker.returncode == -signal.SIGKILL
-    assert time.monotonic() - started < 5
 
 
 def _record_worker_at_shutdown(

@@ -1,7 +1,7 @@
 """Local latency against the v1 baseline (EVALUATION §1, SPEC §5). Marker ``perf``.
 
 Runs only on the reference machine (the operator's laptop), never in the default
-suite or CI: ``uv run pytest -m perf tests/perf -q``. Each command's median must
+suite or CI: ``uv run pytest -m perf tests -q``. Each command's median must
 stay within 15% or 20 ms of ``baseline.json``, whichever is larger; ``create``
 may spend up to 100 ms more (the short-ID floor's budget).
 """
