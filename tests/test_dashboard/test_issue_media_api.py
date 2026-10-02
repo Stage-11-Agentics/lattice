@@ -16,7 +16,7 @@ import pytest
 from lattice.boards import resolve_board
 from lattice.core.config import default_config, serialize_config
 from lattice.dashboard.media import RANGE_CAP, UNSATISFIABLE, parse_range
-from lattice.dashboard.server import DashboardBoard, create_server
+from lattice.dashboard.server import DashboardBoard, create_server, host_allowed
 from lattice.ops import Caller
 from lattice.ops.task_attach import encode_payload
 from lattice.storage.fs import atomic_write, ensure_lattice_dirs
@@ -94,13 +94,19 @@ def served(tmp_path: Path):  # noqa: ANN201
     server.server_close()
 
 
-def get(server, path: str, **headers: str) -> tuple[int, dict, bytes]:  # noqa: ANN001
+def get_raw(server, path: str, **headers: str) -> tuple[int, list[tuple[str, str]], bytes]:  # noqa: ANN001
     conn = http.client.HTTPConnection(*server.server_address, timeout=5)
     conn.request("GET", path, headers=headers)
     response = conn.getresponse()
     body = response.read()
+    raw_headers = response.getheaders()
     conn.close()
-    return response.status, {k.lower(): v for k, v in response.getheaders()}, body
+    return response.status, raw_headers, body
+
+
+def get(server, path: str, **headers: str) -> tuple[int, dict, bytes]:  # noqa: ANN001
+    status, raw_headers, body = get_raw(server, path, **headers)
+    return status, {k.lower(): v for k, v in raw_headers}, body
 
 
 def url(issue: dict, n: int, frame: str | None = None) -> str:
@@ -124,6 +130,72 @@ def test_media_bytes_headers_and_etag(served) -> None:  # noqa: ANN001
     assert (status, headers["content-type"], body) == (200, "image/jpeg", jpeg())
 
 
+@pytest.mark.parametrize("bad_sha", ['x"\r\nSet-Cookie: injected=1\r\n\r\n<script>', "€"])
+def test_malformed_snapshot_hash_is_omitted_at_header_boundary(
+    served, monkeypatch: pytest.MonkeyPatch, bad_sha: str
+) -> None:  # noqa: ANN001
+    server, issue, _ld, _config = served
+    import lattice.dashboard.media as media
+
+    snapshot = {**issue, "media": [dict(entry) for entry in issue["media"]]}
+    snapshot["media"][0]["sha256"] = bad_sha
+    monkeypatch.setattr(media, "read_issue_snapshot", lambda _ld, _issue: snapshot)
+
+    status, raw_headers, body = get_raw(server, url(issue, 0))
+
+    headers = [(name.lower(), value) for name, value in raw_headers]
+    assert status == 200 and body == png()
+    assert not any(name == "etag" for name, _value in headers)
+    assert not any(name == "set-cookie" for name, _value in headers)
+    assert not any(name == "content-type" and value == "text/html" for name, value in headers)
+
+
+@pytest.mark.parametrize(
+    ("source", "bad_sha"),
+    [
+        ("snapshot", 'x"\r\nContent-Type: text/html\r\n\r\n<script>'),
+        ("snapshot", "€"),
+        ("replay", 'x"\r\nContent-Type: text/html\r\n\r\n<script>'),
+        ("replay", "€"),
+    ],
+)
+def test_malformed_persisted_hash_never_reaches_response_headers(
+    served, source: str, bad_sha: str
+) -> None:  # noqa: ANN001
+    server, issue, ld, _config = served
+    if source == "snapshot":
+        snapshot_path = ld / "issues" / f"{issue['id']}.json"
+        snapshot = json.loads(snapshot_path.read_text())
+        snapshot["media"][0]["sha256"] = bad_sha
+        snapshot_path.write_text(json.dumps(snapshot))
+    else:
+        event_path = ld / "issues" / "events" / f"{issue['id']}.jsonl"
+        events = [json.loads(line) for line in event_path.read_text().splitlines()]
+        for event in events:
+            if (
+                event["type"] == "issue_media_added"
+                and event["data"]["media_id"] == issue["media"][0]["id"]
+            ):
+                event["data"]["sha256"] = bad_sha
+        event_path.write_text(
+            "".join(
+                json.dumps(event, sort_keys=True, separators=(",", ":")) + "\n" for event in events
+            )
+        )
+        (ld / "issues" / f"{issue['id']}.json").unlink()
+
+    status, raw_headers, body = get_raw(server, url(issue, 0))
+    headers = [(name.lower(), value) for name, value in raw_headers]
+
+    if source == "snapshot":
+        assert status == 200 and body == png()
+        assert dict(headers)["etag"] == f'"{issue["media"][0]["sha256"]}"'
+    else:
+        assert status == 500 and json.loads(body)["error"]["code"] == "INTEGRITY_ERROR"
+    assert not any(name == "set-cookie" for name, _value in headers)
+    assert not any(name == "content-type" and value == "text/html" for name, value in headers)
+
+
 def test_ranges(served) -> None:  # noqa: ANN001
     server, issue, _ld, _config = served
     size = len(VIDEO)
@@ -137,6 +209,41 @@ def test_ranges(served) -> None:  # noqa: ANN001
     status, headers, body = get(server, url(issue, 1), Range="bytes=0-")
     assert (status, len(body)) == (206, RANGE_CAP)
     assert headers["content-range"] == f"bytes 0-{RANGE_CAP - 1}/{size}"
+
+
+def test_get_rejects_non_loopback_host_for_media_and_task_routes(served) -> None:  # noqa: ANN001
+    server, issue, _ld, _config = served
+    hostile_host = f"attacker.example:{server.server_address[1]}"
+
+    assert get(server, url(issue, 0), Host=hostile_host)[0] == 403
+    assert get(server, "/api/tasks", Host=hostile_host)[0] == 403
+
+
+def test_non_loopback_dashboard_host_allows_configured_or_bound_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import lattice.dashboard.server as dashboard_server
+
+    class FakeHTTPServer:
+        def __init__(self, address, handler_class):  # noqa: ANN001
+            self.server_address = ("192.0.2.7", address[1])
+            self.RequestHandlerClass = handler_class
+
+    monkeypatch.setattr(dashboard_server, "ThreadingHTTPServer", FakeHTTPServer)
+    server = dashboard_server.create_server(tmp_path / ".lattice", "board.example", 8000)
+    assert server._lattice_configured_host == "board.example"
+    assert host_allowed(
+        "127.0.0.1:8000", server.server_address[0], server._lattice_configured_host
+    )
+    assert host_allowed(
+        "BOARD.EXAMPLE:8000", server.server_address[0], server._lattice_configured_host
+    )
+    assert host_allowed(
+        "192.0.2.7:8000", server.server_address[0], server._lattice_configured_host
+    )
+    assert not host_allowed(
+        "attacker.example:8000", server.server_address[0], server._lattice_configured_host
+    )
 
 
 def test_ranges_work_without_pread(served, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: ANN001
@@ -215,6 +322,22 @@ def test_issue_directory_symlink_cannot_read_sibling_media(served, tmp_path: Pat
     status, _headers, body = get(server, url(issue, 0))
     assert status == 404
     assert b"sibling secret" not in body
+
+
+def test_media_serves_through_a_symlinked_board_root(served, tmp_path: Path) -> None:  # noqa: ANN001
+    _server, issue, ld, _config = served
+    alias_root = tmp_path / "board-alias"
+    alias_root.symlink_to(ld.parent, target_is_directory=True)
+    alias_server = create_server(alias_root / ".lattice", "127.0.0.1", 0)
+    thread = threading.Thread(target=alias_server.serve_forever, kwargs={"poll_interval": 0.01})
+    thread.daemon = True
+    thread.start()
+    try:
+        status, _headers, body = get(alias_server, url(issue, 0))
+        assert (status, body) == (200, png())
+    finally:
+        alias_server.shutdown()
+        alias_server.server_close()
 
 
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO files are unavailable")

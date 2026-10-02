@@ -12,6 +12,7 @@ import pytest
 from lattice.boards import LocalBoard, resolve_board
 from lattice.ops import Caller, OpError
 from lattice.ops.task_attach import encode_payload
+from lattice.storage.issues import current_issue
 from tests.issue_media_helpers import HTML_AS_PNG, heic, jpeg, mp4, png
 
 
@@ -90,6 +91,10 @@ def test_file_with_media_is_one_atomic_write(board: LocalBoard) -> None:
         ((item(mp4(), frames=[frame(i) for i in range(9)]),), "WRONG_TYPE"),
         ((item(mp4(), frames=[frame(1), frame(1)]),), "WRONG_TYPE"),
         ((item(mp4(), video={"width": -1}),), "WRONG_TYPE"),
+        ((item(mp4(), video={"width": 10**300}),), "WRONG_TYPE"),
+        ((item(mp4(), video={"height": 10**300}),), "WRONG_TYPE"),
+        ((item(mp4(), video={"duration_ms": 10**300}),), "WRONG_TYPE"),
+        ((item(mp4(), frames=[frame(10**300)]),), "WRONG_TYPE"),
         ((item(mp4(), extra=1),), "WRONG_TYPE"),
         ((item(mp4(), converted_from={"content_type": "video/quicktime"}),), "WRONG_TYPE"),
     ],
@@ -144,7 +149,72 @@ def test_attach_dedupes_and_skips_duplicates(board: LocalBoard) -> None:
     assert again.idempotent
 
 
-def test_detach_deletes_bytes_before_the_event(
+def test_attach_event_write_failure_cleans_staged_media(
+    board: LocalBoard, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    issue = run(board, "issue.file", text="t").value
+    import lattice.ops.issue_attach as attach
+
+    def fail(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise OSError("event write failed")
+
+    monkeypatch.setattr(attach, "write_issue_events", fail)
+    with pytest.raises(OSError, match="event write failed"):
+        run(board, "issue.attach", issue=issue["short_id"], media=(item(png()),))
+
+    assert media_files(board) == []
+    assert not (board.lattice_dir / "issues" / "media").exists()
+    assert current_issue(board.lattice_dir, issue["id"]).get("media", []) == []
+
+
+def test_file_event_write_failure_cleans_media_and_reuses_issue_number(
+    board: LocalBoard, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import lattice.ops.issue_file as issue_file
+
+    def fail(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise OSError("event write failed")
+
+    monkeypatch.setattr(issue_file, "write_issue_events", fail)
+    with pytest.raises(OSError, match="event write failed"):
+        run(board, "issue.file", text="failed", media=(item(png()),))
+
+    assert media_files(board) == []
+    ids_path = board.lattice_dir / "issues" / "ids.json"
+    assert json.loads(ids_path.read_text())["map"] == {}
+    monkeypatch.undo()
+    filed = run(board, "issue.file", text="succeeds", media=(item(png()),)).value
+    assert filed["short_id"] == "LAT-I1"
+
+
+def test_file_second_item_failure_cleans_everything_without_reserving_number(
+    board: LocalBoard, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import lattice.ops.issue_common as common
+
+    original_store = common.store_media
+    calls = 0
+
+    def fail_on_second(lattice_dir, issue_id, entry, content, frames):  # noqa: ANN001
+        nonlocal calls
+        calls += 1
+        original_store(lattice_dir, issue_id, entry, content, frames)
+        if calls == 2:
+            raise OSError("second item failed")
+
+    monkeypatch.setattr(common, "store_media", fail_on_second)
+    with pytest.raises(OSError, match="second item failed"):
+        run(board, "issue.file", text="failed", media=(item(png()), item(png(2, 2))))
+
+    assert media_files(board) == []
+    assert not (board.lattice_dir / "issues" / "media").exists()
+    assert not (board.lattice_dir / "issues" / "ids.json").exists()
+    monkeypatch.undo()
+    filed = run(board, "issue.file", text="succeeds").value
+    assert filed["short_id"] == "LAT-I1"
+
+
+def test_detach_records_removal_before_deleting_bytes(
     board: LocalBoard, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     video = item(mp4(), "r.mov", frames=[frame(0), frame(500)])
@@ -154,16 +224,26 @@ def test_detach_deletes_bytes_before_the_event(
 
     import lattice.ops.issue_detach as detach
 
-    def crash(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
-        raise RuntimeError("crash before the event")
+    original_delete = detach.delete_media_files
+    media_id = issue["media"][1]["id"]
+    log = board.lattice_dir / "issues" / "events" / f"{issue['id']}.jsonl"
+    removed_before_delete = []
 
-    monkeypatch.setattr(detach, "write_issue_events", crash)
-    with pytest.raises(RuntimeError):
-        run(board, "issue.detach", issue=name, media="2", reason="shows a key")
-    assert all(not f.startswith(issue["media"][1]["id"]) for f in media_files(board))
-    monkeypatch.undo()
+    def assert_event_first(lattice_dir, issue_id, entry):  # noqa: ANN001
+        paths = media_files(board)
+        assert any(media_id in path for path in paths)
+        events = [json.loads(line) for line in log.read_text().splitlines()]
+        assert any(
+            event["type"] == "issue_media_removed" and event["data"]["media_id"] == media_id
+            for event in events
+        )
+        removed_before_delete.append(True)
+        return original_delete(lattice_dir, issue_id, entry)
+
+    monkeypatch.setattr(detach, "delete_media_files", assert_event_first)
 
     result = run(board, "issue.detach", issue=name, media="2", reason="shows a key")
+    assert removed_before_delete == [True]
     removed = result.value["media"][1]
     assert removed["removed"]["reason"] == "shows a key"
     assert removed["path"] is None and "original_name" not in removed
@@ -178,6 +258,45 @@ def test_detach_deletes_bytes_before_the_event(
     )
     assert again.idempotent and not restored.exists()
     assert refused(board, "issue.detach", issue=name, media="9", reason="r").code == "NOT_FOUND"
+
+
+def test_detach_event_write_failure_keeps_bytes(
+    board: LocalBoard, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    issue = run(board, "issue.file", text="t", media=(item(png()),)).value
+    path = Path(issue["media"][0]["path"])
+    import lattice.ops.issue_detach as detach
+
+    def fail(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise OSError("event write failed")
+
+    monkeypatch.setattr(detach, "write_issue_events", fail)
+    with pytest.raises(OSError, match="event write failed"):
+        run(board, "issue.detach", issue=issue["short_id"], media="1", reason="private")
+
+    assert path.exists()
+    assert current_issue(board.lattice_dir, issue["id"])["media"][0].get("removed") is None
+
+
+def test_detach_retries_cleanup_after_unlink_failure(
+    board: LocalBoard, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    issue = run(board, "issue.file", text="t", media=(item(png()),)).value
+    path = Path(issue["media"][0]["path"])
+    import lattice.ops.issue_detach as detach
+
+    def fail(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise OSError("unlink failed")
+
+    monkeypatch.setattr(detach, "delete_media_files", fail)
+    with pytest.raises(OSError, match="unlink failed"):
+        run(board, "issue.detach", issue=issue["short_id"], media="1", reason="private")
+    assert path.exists()
+    assert current_issue(board.lattice_dir, issue["id"])["media"][0]["removed"]
+
+    monkeypatch.undo()
+    retry = run(board, "issue.detach", issue=issue["short_id"], media="1", reason="private")
+    assert retry.idempotent and not path.exists()
 
 
 def test_detach_never_follows_a_planted_symlink(board: LocalBoard, tmp_path: Path) -> None:

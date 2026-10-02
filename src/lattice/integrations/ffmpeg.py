@@ -69,6 +69,12 @@ def find_tools() -> Tools | None:
         return None
     if configured:
         ffmpeg = Path(configured).expanduser()
+        if os.sep not in configured and (os.altsep is None or os.altsep not in configured):
+            found = shutil.which(configured)
+            if found is None:
+                return None
+            ffmpeg = Path(found)
+        ffmpeg = Path(os.path.abspath(ffmpeg))
         ffprobe = ffmpeg.with_name("ffprobe")
         if ffmpeg.is_file() and os.access(ffmpeg, os.X_OK) and os.access(ffprobe, os.X_OK):
             return Tools(str(ffmpeg), str(ffprobe))
@@ -105,6 +111,11 @@ def _run(argv: list[str], timeout: float) -> subprocess.CompletedProcess | None:
     except (OSError, subprocess.SubprocessError):
         return None
     return proc if proc.returncode == 0 else None
+
+
+def _input_path(src: Path) -> str:
+    """Make a user-supplied input an unambiguous local filename for tool CLIs."""
+    return os.path.abspath(src)
 
 
 # ---------------------------------------------------------------------------
@@ -149,7 +160,7 @@ def _packet_duration_ms(tools: Tools, src: Path, timeout: float) -> int | None:
             "packet=pts_time",
             "-of",
             "csv=p=0",
-            str(src),
+            _input_path(src),
         ],
         timeout,
     )
@@ -177,7 +188,7 @@ def probe(tools: Tools, src: Path, timeout: float = PROBE_TIMEOUT) -> dict | Non
             "-show_entries",
             "format=duration:stream=codec_type,codec_name,width,height,duration"
             ":stream_side_data=rotation:stream_tags=rotate",
-            str(src),
+            _input_path(src),
         ],
         timeout,
     )
@@ -229,7 +240,7 @@ def _frame_at(tools: Tools, src: Path, t_ms: int, timeout: float) -> bytes | Non
             "-ss",
             f"{t_ms / 1000:.3f}",
             "-i",
-            str(src),
+            _input_path(src),
             "-frames:v",
             "1",
             "-vf",
@@ -304,7 +315,7 @@ def transcode(tools: Tools, src: Path, dst: Path, timeout: float = TRANSCODE_TIM
             "error",
             "-y",
             "-i",
-            str(src),
+            _input_path(src),
             "-map",
             "0:v:0",
             "-map",
@@ -332,6 +343,30 @@ def transcode(tools: Tools, src: Path, dst: Path, timeout: float = TRANSCODE_TIM
     return proc is not None and dst.is_file()
 
 
+def _remux_without_metadata(
+    tools: Tools, src: Path, dst: Path, timeout: float = TRANSCODE_TIMEOUT
+) -> bool:
+    """Copy the streams into a fresh container without source metadata."""
+    proc = _run(
+        [
+            tools.ffmpeg,
+            "-nostdin",
+            "-v",
+            "error",
+            "-y",
+            "-i",
+            _input_path(src),
+            "-map_metadata",
+            "-1",
+            "-c",
+            "copy",
+            str(dst),
+        ],
+        timeout,
+    )
+    return proc is not None and dst.is_file()
+
+
 def convert_heic(src: Path, tools: Tools | None = None) -> bytes | None:
     """A HEIC photo as JPEG bytes: sips (macOS), else ffmpeg. ``None`` when neither can."""
     with tempfile.TemporaryDirectory(prefix="lattice-media-") as tmp:
@@ -339,11 +374,11 @@ def convert_heic(src: Path, tools: Tools | None = None) -> bytes | None:
         attempts: list[list[str]] = []
         sips = find_sips()
         if sips:
-            attempts.append([sips, "-s", "format", "jpeg", str(src), "--out", str(out)])
+            attempts.append([sips, "-s", "format", "jpeg", _input_path(src), "--out", str(out)])
         tools = tools if tools is not None else find_tools()
         if tools is not None:
             attempts.append(
-                [tools.ffmpeg, "-nostdin", "-v", "error", "-y", "-i", str(src)]
+                [tools.ffmpeg, "-nostdin", "-v", "error", "-y", "-i", _input_path(src)]
                 + ["-frames:v", "1", "-q:v", "2", str(out)]
             )
         for argv in attempts:
@@ -394,7 +429,33 @@ def prepare_video(src: Path, content: bytes, content_type: str, sha256: str) -> 
             if sniff_media(data[:SNIFF_BYTES]) != "video/mp4":
                 prepared.notes.append(("not_transcoded", "ffmpeg_failed"))
             elif len(data) > len(content) and (source_info or {}).get("codec") == "h264":
-                prepared.notes.append(("not_transcoded", "kept_smaller_original"))
+                suffix = ".mov" if content_type == "video/quicktime" else ".mp4"
+                stripped = Path(tmp) / f"video-stripped{suffix}"
+                if _remux_without_metadata(tools, src, stripped):
+                    stripped_data = stripped.read_bytes()
+                    stripped_type = sniff_media(stripped_data[:SNIFF_BYTES])
+                else:
+                    stripped_data, stripped_type = b"", None
+                if stripped_type in ("video/mp4", "video/quicktime") and len(stripped_data) < len(
+                    data
+                ):
+                    prepared.converted_from = {
+                        "content_type": content_type,
+                        "size_bytes": len(content),
+                        "sha256": sha256,
+                    }
+                    prepared.content = stripped_data
+                    prepared.content_type = stripped_type
+                    stored = stripped
+                    prepared.notes.append(("not_transcoded", "kept_smaller_original"))
+                else:
+                    prepared.converted_from = {
+                        "content_type": content_type,
+                        "size_bytes": len(content),
+                        "sha256": sha256,
+                    }
+                    prepared.content, prepared.content_type, stored = data, "video/mp4", out
+                    prepared.notes.append(("transcoded", ""))
             else:
                 prepared.converted_from = {
                     "content_type": content_type,

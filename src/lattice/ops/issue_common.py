@@ -37,12 +37,13 @@ from lattice.core.issues import apply_issue_event, issues_disabled_message
 from lattice.core.visibility import require_not_tombstoned
 from lattice.ops.base import CommonParams, OpContext, OpError, OpResult
 from lattice.ops.task_attach import decode_payload
-from lattice.storage.issue_media import store_media
+from lattice.storage.issue_media import delete_media_files, store_media
 from lattice.storage.issues import (
     current_issue,
     issue_views,
     issue_write_context,
     issues_dir,
+    read_issue_events,
     resolve_issue,
     write_issue_events,
 )
@@ -175,6 +176,8 @@ _VIDEO_KEYS = frozenset({"width", "height", "duration_ms"})
 _CONVERTED_KEYS = frozenset({"content_type", "size_bytes", "sha256"})
 _CONTENT_TYPE_RE = re.compile(r"^[a-z]+/[a-z0-9.+-]{1,64}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+MAX_VIDEO_DIMENSION = 100_000
+MAX_VIDEO_DURATION_MS = 86_400_000
 
 
 def _invalid(message: str) -> OpError:
@@ -227,10 +230,12 @@ def check_media_items(items: tuple[dict, ...]) -> None:
             not isinstance(video, dict)
             or set(video) - _VIDEO_KEYS
             or not all(_non_negative_int(v) for v in video.values())
+            or any(video[k] > MAX_VIDEO_DIMENSION for k in ("width", "height") if k in video)
+            or video.get("duration_ms", 0) > MAX_VIDEO_DURATION_MS
         ):
             raise _invalid(
-                f"media item {i}: video must hold non-negative integers "
-                "width, height, duration_ms."
+                f"media item {i}: video dimensions must be at most {MAX_VIDEO_DIMENSION} and "
+                f"duration_ms at most {MAX_VIDEO_DURATION_MS}."
             )
         converted = item.get("converted_from")
         if converted is not None and (
@@ -254,9 +259,13 @@ def check_media_items(items: tuple[dict, ...]) -> None:
                     not isinstance(frame, dict)
                     or set(frame) != {"t_ms", "payload"}
                     or not _non_negative_int(frame["t_ms"])
+                    or frame["t_ms"] > MAX_VIDEO_DURATION_MS
                     or not isinstance(frame["payload"], dict)
                 ):
-                    raise _invalid(f"media item {i}: each frame must be {{t_ms, payload}}.")
+                    raise _invalid(
+                        f"media item {i}: each frame needs t_ms from 0 to "
+                        f"{MAX_VIDEO_DURATION_MS} and a payload."
+                    )
             times = [frame["t_ms"] for frame in frames]
             if len(set(times)) != len(times):
                 raise _invalid(f"media item {i}: two frames have the same t_ms.")
@@ -384,17 +393,62 @@ def stage_media(
     The caller holds the issue's lock and appends the events after this returns.
     """
     events = []
-    for offset, item in enumerate(decoded):
-        media_id = generate_media_id()
-        data = media_added_data(item, media_id, first_n + offset)
-        store_media(
-            ctx.lattice_dir,
-            issue_id,
-            {"id": media_id, "content_type": item.content_type},
-            item.content,
-            list(item.frames),
-        )
-        events.append(
-            create_issue_event("issue_media_added", issue_id, ctx.actor, data, **p.provenance())
-        )
+    entries = []
+    try:
+        for offset, item in enumerate(decoded):
+            media_id = generate_media_id()
+            entry = {"id": media_id, "content_type": item.content_type}
+            entries.append(entry)
+            data = media_added_data(item, media_id, first_n + offset)
+            store_media(ctx.lattice_dir, issue_id, entry, item.content, list(item.frames))
+            events.append(
+                create_issue_event(
+                    "issue_media_added", issue_id, ctx.actor, data, **p.provenance()
+                )
+            )
+    except BaseException as failure:
+        _cleanup_media_entries(ctx.lattice_dir, issue_id, entries, failure)
+        raise
     return events
+
+
+def _cleanup_media_entries(lattice_dir, issue_id: str, entries: list[dict], failure) -> None:  # noqa: ANN001
+    for entry in reversed(entries):
+        try:
+            delete_media_files(lattice_dir, issue_id, entry)
+        except Exception as cleanup_error:  # noqa: BLE001
+            failure.add_note(f"Could not clean staged issue media {entry['id']}: {cleanup_error}")
+
+
+def issue_filing_event_committed(lattice_dir, issue_id: str) -> bool:  # noqa: ANN001
+    """Whether the authoritative log contains this new issue's filing event.
+
+    If the log cannot be inspected after a write error, keep the reservation:
+    deleting its media or sequence could break an event that reached disk.
+    """
+    try:
+        return any(
+            event.get("type") == "issue_filed"
+            for event in read_issue_events(lattice_dir, issue_id)
+        )
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def cleanup_uncommitted_media(lattice_dir, issue_id: str, events: list[dict], failure) -> None:  # noqa: ANN001
+    """Remove staged media whose add event did not reach the authoritative log."""
+    try:
+        committed = {
+            event.get("data", {}).get("media_id")
+            for event in read_issue_events(lattice_dir, issue_id)
+            if event.get("type") == "issue_media_added"
+        }
+    except Exception:  # noqa: BLE001
+        committed = {event.get("data", {}).get("media_id") for event in events}
+    entries = [
+        {"id": media_id, "content_type": event.get("data", {}).get("content_type")}
+        for event in events
+        if event.get("type") == "issue_media_added"
+        and (media_id := event.get("data", {}).get("media_id")) not in committed
+    ]
+    _cleanup_media_entries(lattice_dir, issue_id, entries, failure)

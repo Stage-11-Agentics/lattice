@@ -35,7 +35,9 @@ from lattice.storage.issues import issues_dir, read_issue_snapshot
 
 #: The two media routes; the groups are checked below, so a malformed ID is a 400.
 MEDIA_ROUTE = re.compile(r"^/api/issues/([^/]*)/media/([^/]*)(?:/frames/([^/]*))?$")
-_FRAME_RE = re.compile(r"^t\d{4,}\.\d{3}s\.jpg$")
+_FRAME_RE = re.compile(r"^t[0-9]{4,}\.[0-9]{3}s\.jpg$")
+_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
+_SAFE_FILENAME_RE = re.compile(r"[A-Za-z0-9._-]+\Z")
 
 #: The most one ranged response sends; the browser asks for the next range itself.
 RANGE_CAP = 1024 * 1024
@@ -238,7 +240,9 @@ def serve_issue_media(handler: Any, target: Any, path: str) -> None:
     if target.hosted:
         _refuse(handler, 400, "LOCAL_ONLY", "The issue log works only on local boards for now.")
         return
-    lattice_dir = Path(target.lattice_dir)
+    # Resolve once so both the constructed path and its confinement root use
+    # the same spelling when LATTICE_ROOT or .lattice is a symlink.
+    lattice_dir = Path(target.lattice_dir).resolve()
     try:
         config = json.loads((lattice_dir / "config.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -259,13 +263,19 @@ def serve_issue_media(handler: Any, target: Any, path: str) -> None:
         return
     if frame is None:
         file_path = media_path(lattice_dir, issue_id, entry)
-        content_type, etag = entry["content_type"], entry.get("sha256")
+        content_type = entry["content_type"]
+        stored_sha256 = entry.get("sha256")
+        etag = (
+            stored_sha256
+            if isinstance(stored_sha256, str) and _SHA256_RE.fullmatch(stored_sha256)
+            else None
+        )
         filename = file_path.name if file_path else media_id
     else:
         directory = frames_dir(lattice_dir, issue_id, entry)
         file_path = directory / frame if directory else None
         content_type, etag, filename = "image/jpeg", None, f"{media_id}-{frame}"
-    root = media_root(lattice_dir.resolve())
+    root = media_root(lattice_dir)
     opened = _open_regular(file_path, root) if file_path is not None else None
     if opened is None:
         _refuse(handler, 404, "NOT_FOUND", "No such media")
@@ -280,7 +290,11 @@ def serve_issue_media(handler: Any, target: Any, path: str) -> None:
 def _send_file(
     handler: Any, fd: int, size: int, content_type: str, etag: str | None, filename: str
 ) -> None:
-    quoted = f'"{etag}"' if etag else None
+    # Recheck at the header boundary: ``send_header`` does not reject CR/LF,
+    # and persisted board fields are untrusted even after snapshot replay.
+    quoted = f'"{etag}"' if isinstance(etag, str) and _SHA256_RE.fullmatch(etag) else None
+    if not _SAFE_FILENAME_RE.fullmatch(filename):
+        filename = "media"
     if quoted and handler.headers.get("If-None-Match") == quoted:
         handler.send_response(304)
         handler.send_header("ETag", quoted)

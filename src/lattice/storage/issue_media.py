@@ -160,13 +160,21 @@ def delete_media_files(lattice_dir: Path, issue_id: str, entry: Mapping) -> int:
     if path is not None:
         _remove_entry(path)
     parent = _issue_media_dir(lattice_dir, issue_id)
-    if (
-        parent is not None
-        and parent.is_dir()
-        and not os.path.islink(parent)
-        and not any(parent.iterdir())
-    ):
-        remove_dir(parent)
+    issues = issues_dir(lattice_dir)
+    candidates = [
+        parent,
+        media_root(lattice_dir),
+        issues / "events",
+        issues,
+    ]
+    for directory in candidates:
+        if (
+            directory is not None
+            and directory.is_dir()
+            and not os.path.islink(directory)
+            and not any(directory.iterdir())
+        ):
+            remove_dir(directory)
     return deleted
 
 

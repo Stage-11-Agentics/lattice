@@ -15,7 +15,7 @@ from lattice.core.ids import generate_issue_id
 from lattice.core.issues import CONFIDENCE_VALUES, apply_issue_event, format_issue_short_id
 from lattice.ops import issue_common
 from lattice.ops.base import CommonParams, OpContext, OpError, OpResult, operation
-from lattice.storage.issues import allocate_issue_seq, issue_write_context, write_issue_events
+from lattice.storage.issues import issue_seq_reservation, issue_write_context, write_issue_events
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -47,24 +47,41 @@ class IssueFile:
         decoded = issue_common.decode_media(p.media, ctx.config, nothing="Nothing was filed.")
         issue_common.check_issue_total(ctx.config, "The issue", 0, decoded)
         issue_id = generate_issue_id()
-        seq = allocate_issue_seq(ctx.lattice_dir, issue_id)
-        data: dict = {
-            "seq": seq,
-            "short_id": format_issue_short_id(ctx.config.get("project_code"), seq),
-            "text": p.text,
-        }
-        if p.confidence is not None:
-            data["confidence"] = p.confidence
-        if p.evidence:
-            data["evidence"] = list(p.evidence)
-        if p.source is not None:
-            data["source"] = p.source
-        events = [create_issue_event("issue_filed", issue_id, ctx.actor, data, **p.provenance())]
         with issue_write_context(ctx.lattice_dir, issue_id):
-            events += issue_common.stage_media(ctx, issue_id, decoded, 1, p)
-            snapshot = None
-            for event in events:
-                snapshot = apply_issue_event(snapshot, event)
-            assert snapshot is not None
-            write_issue_events(ctx.lattice_dir, issue_id, events, snapshot)
+            media_events = issue_common.stage_media(ctx, issue_id, decoded, 1, p)
+            try:
+                with issue_seq_reservation(ctx.lattice_dir, issue_id) as (seq, commit_seq):
+                    data: dict = {
+                        "seq": seq,
+                        "short_id": format_issue_short_id(ctx.config.get("project_code"), seq),
+                        "text": p.text,
+                    }
+                    if p.confidence is not None:
+                        data["confidence"] = p.confidence
+                    if p.evidence:
+                        data["evidence"] = list(p.evidence)
+                    if p.source is not None:
+                        data["source"] = p.source
+                    events = [
+                        create_issue_event(
+                            "issue_filed", issue_id, ctx.actor, data, **p.provenance()
+                        ),
+                        *media_events,
+                    ]
+                    snapshot = None
+                    for event in events:
+                        snapshot = apply_issue_event(snapshot, event)
+                    assert snapshot is not None
+                    try:
+                        write_issue_events(ctx.lattice_dir, issue_id, events, snapshot)
+                    except BaseException:
+                        if issue_common.issue_filing_event_committed(ctx.lattice_dir, issue_id):
+                            commit_seq()
+                        raise
+                    commit_seq()
+            except BaseException as failure:
+                issue_common.cleanup_uncommitted_media(
+                    ctx.lattice_dir, issue_id, media_events, failure
+                )
+                raise
         return issue_common.result(ctx, snapshot, events)

@@ -160,6 +160,29 @@ MEDIA_ENTRY_FIELDS: tuple[str, ...] = (
     "duration_ms",
     "converted_from",
 )
+_MEDIA_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
+
+
+def _valid_media_sha256(value: object) -> bool:
+    return isinstance(value, str) and _MEDIA_SHA256_RE.fullmatch(value) is not None
+
+
+def validate_issue_media_hashes(snapshot: Mapping) -> None:
+    """Reject malformed content hashes in persisted media entries."""
+    entries = snapshot.get("media", [])
+    if not isinstance(entries, list):
+        return
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            continue
+        if "sha256" in entry and not _valid_media_sha256(entry["sha256"]):
+            raise ValueError("issue media sha256 must be 64 lowercase hexadecimal characters")
+        source = entry.get("converted_from")
+        if isinstance(source, Mapping) and "sha256" in source:
+            if not _valid_media_sha256(source["sha256"]):
+                raise ValueError(
+                    "converted issue media sha256 must be 64 lowercase hexadecimal characters"
+                )
 
 
 def _media_added(snapshot: dict, event: dict) -> None:
@@ -167,6 +190,7 @@ def _media_added(snapshot: dict, event: dict) -> None:
     data = event.get("data", {})
     media_id = data.get("media_id")
     media = snapshot.get("media", [])
+    validate_issue_media_hashes({"media": [data]})
     if not media_id or any(m.get("id") == media_id for m in media):
         return
     entry: dict = {"id": media_id}

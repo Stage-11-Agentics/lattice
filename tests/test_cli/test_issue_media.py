@@ -5,6 +5,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -190,6 +193,72 @@ def test_over_the_file_limit_files_nothing(root: Path, invoke, files: Path) -> N
     assert error["code"] == "PAYLOAD_TOO_LARGE"
     assert error["message"].startswith("big.mov is 1.0 MB; the limit is 1 MB per file")
     assert "Nothing was filed." in error["message"] and "ffmpeg -i big.mov" in error["message"]
+    assert not (root / ".lattice" / "issues").exists()
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO input requires POSIX")
+def test_fifo_evidence_is_refused_without_blocking(root: Path, tmp_path: Path) -> None:
+    fifo = tmp_path / "waiting.png"
+    os.mkfifo(fifo)
+    lattice_script = Path(sys.executable).with_name("lattice")
+    assert lattice_script.exists(), "the test environment must install the lattice entry point"
+    result = subprocess.run(
+        [
+            str(lattice_script),
+            "issue",
+            "file",
+            "fifo evidence",
+            "--evidence",
+            str(fifo),
+            *A,
+            "--json",
+        ],
+        cwd=root,
+        env={**os.environ, "LATTICE_ROOT": str(root)},
+        capture_output=True,
+        text=True,
+        timeout=3,
+    )
+    assert result.returncode == 0, result.stderr
+    view = json.loads(result.stdout)["data"]
+    assert view["media"] == []
+    assert view["evidence"] == [str(fifo)]
+
+
+def test_oversized_media_is_refused_before_payload_open(
+    root: Path, invoke, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = json.loads((root / ".lattice" / "config.json").read_text())
+    _set_config(root, issues={**config["issues"], "max_media_mb": 1})
+    big = tmp_path / "large.png"
+    with big.open("wb") as fh:
+        fh.truncate(2 * 1024 * 1024)
+
+    monkeypatch.setattr(
+        "lattice.cli.issue_cmds._classify",
+        lambda _arg: ("media", big, "image/png"),
+    )
+    real_open = open
+    payload_opens: list[Path] = []
+
+    def observe_open(file, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+        if Path(file) == big:
+            payload_opens.append(big)
+            raise AssertionError("oversized media payload was opened")
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", observe_open)
+    error = err(
+        invoke,
+        "issue",
+        "file",
+        "large media",
+        "--evidence",
+        str(big),
+        *A,
+    )
+    assert error["code"] == "PAYLOAD_TOO_LARGE"
+    assert payload_opens == []
     assert not (root / ".lattice" / "issues").exists()
 
 

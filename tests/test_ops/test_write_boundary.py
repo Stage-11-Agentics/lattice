@@ -293,6 +293,195 @@ def _writes_mode(mode: object) -> bool:
     return isinstance(mode, str) and bool(WRITE_MODE_CHARS & set(mode))
 
 
+def _scope_parents(module: Module) -> dict[int, ast.AST]:
+    return {
+        id(child): node for node in ast.walk(module.tree) for child in ast.iter_child_nodes(node)
+    }
+
+
+def _function_binds(function: ast.FunctionDef | ast.AsyncFunctionDef, name: str) -> bool:
+    """Whether *name* is local anywhere in *function*'s lexical scope."""
+    arguments = function.args
+    if any(
+        arg.arg == name for arg in (*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs)
+    ):
+        return True
+    if arguments.vararg is not None and arguments.vararg.arg == name:
+        return True
+    if arguments.kwarg is not None and arguments.kwarg.arg == name:
+        return True
+
+    pending: list[ast.AST] = list(function.body)
+    while pending:
+        node = pending.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if node.name == name:
+                return True
+            # A nested definition binds its name in this function, but its body
+            # belongs to another scope.
+            continue
+        if isinstance(node, ast.Lambda):
+            continue
+        if isinstance(node, ast.Global) and name in node.names:
+            return True
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            if node.id == name:
+                return True
+        if isinstance(node, ast.alias):
+            bound = node.asname or (node.name.split(".")[0] if "." in node.name else node.name)
+            if bound == name:
+                return True
+        if isinstance(node, ast.ExceptHandler) and node.name == name:
+            return True
+        if isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name == name:
+            return True
+        if isinstance(node, ast.MatchMapping) and node.rest == name:
+            return True
+        pending.extend(ast.iter_child_nodes(node))
+    return False
+
+
+def _function_shadowed(module: Module, expr: ast.expr, name: str) -> bool:
+    """Whether a lexical function surrounding *expr* binds *name*."""
+    parents = _scope_parents(module)
+    scopes: list[ast.FunctionDef | ast.AsyncFunctionDef] = []
+    cursor = parents.get(id(expr))
+    while cursor is not None:
+        if isinstance(cursor, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            scopes.append(cursor)
+        cursor = parents.get(id(cursor))
+    return any(_function_binds(scope, name) for scope in scopes)
+
+
+def _module_bindings(module: Module, name: str) -> list[tuple[str, ast.AST | str]]:
+    """Bindings for *name* in module scope, including reassignments.
+
+    Function, class, lambda, and comprehension bodies have their own scopes;
+    assignments in module-level conditionals still bind the module name.
+    """
+    found: list[tuple[str, ast.AST | str]] = []
+    pending: list[ast.AST] = list(module.tree.body)
+    while pending:
+        node = pending.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if node.name == name:
+                found.append(("definition", node))
+            continue
+        if isinstance(
+            node, (ast.Lambda, ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+        ):
+            continue
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                bound = alias.asname or alias.name.split(".")[0]
+                if bound == name:
+                    found.append(("module", alias.asname and alias.name or bound))
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                bound = alias.asname or alias.name
+                if bound == name and node.module and node.level == 0:
+                    found.append(("symbol", f"{node.module}.{alias.name}"))
+                elif bound == name:
+                    found.append(("unknown", node))
+        elif isinstance(node, ast.Assign):
+            if any(isinstance(target, ast.Name) and target.id == name for target in node.targets):
+                found.append(("value", node.value if len(node.targets) == 1 else node))
+            elif any(name in _target_names(target) for target in node.targets):
+                found.append(("unknown", node))
+        elif isinstance(node, ast.AnnAssign):
+            if name in _target_names(node.target):
+                found.append(("value", node.value if isinstance(node.target, ast.Name) else node))
+        elif isinstance(node, (ast.AugAssign, ast.NamedExpr, ast.Delete)):
+            targets = (
+                node.targets if isinstance(node, (ast.AugAssign, ast.Delete)) else [node.target]
+            )
+            if any(name in _target_names(target) for target in targets):
+                found.append(("unknown", node))
+        elif isinstance(node, (ast.For, ast.AsyncFor)):
+            if name in _target_names(node.target):
+                found.append(("unknown", node))
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            if any(
+                item.optional_vars is not None and name in _target_names(item.optional_vars)
+                for item in node.items
+            ):
+                found.append(("unknown", node))
+        elif isinstance(node, ast.ExceptHandler) and node.name == name:
+            found.append(("unknown", node))
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name == name:
+            found.append(("unknown", node))
+        elif isinstance(node, ast.MatchMapping) and node.rest == name:
+            found.append(("unknown", node))
+        pending.extend(ast.iter_child_nodes(node))
+    return found
+
+
+def _target_names(target: ast.AST) -> set[str]:
+    return {
+        node.id
+        for node in ast.walk(target)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del))
+    }
+
+
+def _os_module_binding(module: Module, name: str, expr: ast.expr) -> str | None:
+    if _function_shadowed(module, expr, name):
+        return None
+    bindings = _module_bindings(module, name)
+    if len(bindings) != 1:
+        return None
+    kind, binding = bindings[0]
+    if kind == "module" and binding == "os":
+        return "os"
+    return None
+
+
+def _safe_flag_target(
+    module: Module, expr: ast.expr, seen: frozenset[str] = frozenset()
+) -> str | None:
+    """Resolve only statically stable, non-writing os.open flag expressions."""
+    if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.BitOr):
+        if _read_only_flag_expr(module, expr.left, seen) and _read_only_flag_expr(
+            module, expr.right, seen
+        ):
+            return "os.__read_only_combination__"
+        return None
+    if isinstance(expr, ast.Attribute) and isinstance(expr.value, ast.Name):
+        if _os_module_binding(module, expr.value.id, expr) == "os":
+            return f"os.{expr.attr}"
+        return None
+    if isinstance(expr, ast.Name):
+        if expr.id in seen or _function_shadowed(module, expr, expr.id):
+            return None
+        bindings = _module_bindings(module, expr.id)
+        if len(bindings) != 1:
+            return None
+        kind, binding = bindings[0]
+        if kind == "symbol" and isinstance(binding, str):
+            return binding
+        if kind == "value" and isinstance(binding, ast.AST):
+            return _safe_flag_target(module, binding, seen | {expr.id})
+        return None
+    if (
+        isinstance(expr, ast.Call)
+        and isinstance(expr.func, ast.Name)
+        and expr.func.id == "getattr"
+        and len(expr.args) == 3
+        and not expr.keywords
+        and not _function_shadowed(module, expr, "getattr")
+        and not _module_bindings(module, "getattr")
+        and isinstance(expr.args[0], ast.Name)
+        and _os_module_binding(module, expr.args[0].id, expr) == "os"
+        and isinstance(expr.args[1], ast.Constant)
+        and expr.args[1].value
+        in {"O_BINARY", "O_CLOEXEC", "O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK"}
+        and isinstance(expr.args[2], ast.Constant)
+        and expr.args[2].value == 0
+    ):
+        return f"os.{expr.args[1].value}"
+    return None
+
+
 def _read_only_flag_expr(
     module: Module, flags: ast.expr, seen: frozenset[str] = frozenset()
 ) -> bool:
@@ -301,19 +490,6 @@ def _read_only_flag_expr(
         return _read_only_flag_expr(module, flags.left, seen) and _read_only_flag_expr(
             module, flags.right, seen
         )
-    if (
-        isinstance(flags, ast.Call)
-        and isinstance(flags.func, ast.Name)
-        and flags.func.id == "getattr"
-        and len(flags.args) == 3
-        and resolve(module, flags.args[0]) == "os"
-        and isinstance(flags.args[1], ast.Constant)
-        and flags.args[1].value
-        in {"O_BINARY", "O_CLOEXEC", "O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK"}
-        and isinstance(flags.args[2], ast.Constant)
-        and flags.args[2].value == 0
-    ):
-        return True
     safe_flags = {
         "os.O_RDONLY",
         "os.O_DIRECTORY",
@@ -321,19 +497,9 @@ def _read_only_flag_expr(
         "os.O_CLOEXEC",
         "os.O_BINARY",
         "os.O_NONBLOCK",
+        "os.__read_only_combination__",
     }
-    if isinstance(flags, (ast.Name, ast.Attribute)) and resolve(module, flags) in safe_flags:
-        return True
-    if isinstance(flags, ast.Name) and flags.id not in seen:
-        for node in module.tree.body:
-            if (
-                isinstance(node, ast.Assign)
-                and len(node.targets) == 1
-                and isinstance(node.targets[0], ast.Name)
-                and node.targets[0].id == flags.id
-            ):
-                return _read_only_flag_expr(module, node.value, seen | {flags.id})
-    return False
+    return _safe_flag_target(module, flags, seen) in safe_flags
 
 
 def _read_only_flags(module: Module, call: ast.Call) -> bool:
@@ -612,6 +778,42 @@ def f(p, flags):
 """
     )
     assert raw == ["os.open", "os.open", "os.open", "os.open", "os.open"]
+
+
+def test_os_open_read_only_guard_rejects_shadowed_or_reassigned_flags() -> None:
+    shadowed, _ = _scan(
+        """
+import os
+from os import O_RDONLY
+
+def f(path, O_RDONLY):
+    os.open(path, O_RDONLY)
+"""
+    )
+    reassigned, _ = _scan(
+        """
+import os
+
+SAFE_FLAGS = os.O_RDONLY
+SAFE_FLAGS = os.O_WRONLY
+
+def f(path):
+    os.open(path, SAFE_FLAGS)
+"""
+    )
+    stable_constant, _ = _scan(
+        """
+import os
+
+SAFE_FLAGS = os.O_RDONLY | os.O_DIRECTORY
+
+def f(path):
+    os.open(path, SAFE_FLAGS)
+"""
+    )
+    assert shadowed == ["os.open"]
+    assert reassigned == ["os.open"]
+    assert stable_constant == []
 
 
 def test_the_scan_sees_through_aliases_and_imported_functions() -> None:

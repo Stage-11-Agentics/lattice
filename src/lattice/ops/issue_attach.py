@@ -48,7 +48,11 @@ class IssueAttach:
                 ctx.config, issue_common.display(snapshot), present_media_bytes(snapshot), new
             )
             events = issue_common.stage_media(ctx, issue_id, new, next_media_n(snapshot), p)
-            for event in events:
-                snapshot = apply_issue_event(snapshot, event)
-            write_issue_events(ctx.lattice_dir, issue_id, events, snapshot)
+            try:
+                for event in events:
+                    snapshot = apply_issue_event(snapshot, event)
+                write_issue_events(ctx.lattice_dir, issue_id, events, snapshot)
+            except BaseException as failure:
+                issue_common.cleanup_uncommitted_media(ctx.lattice_dir, issue_id, events, failure)
+                raise
         return issue_common.result(ctx, snapshot, events)

@@ -1,11 +1,11 @@
 """``issue.detach``: the ``lattice issue detach`` command's rules (LAT-366).
 
 Removes one media file for good, with a reason, closed issues included. Under
-the issue's lock the bytes are deleted first (the file, its frames and their
-directory), then ``issue_media_removed`` is appended: a crash in between
-leaves the file gone and the log showing it present, and running the command
-again records the removal. Media already removed is idempotent, and any bytes
-found at its paths (restored by a merge) are deleted again.
+the issue's lock, ``issue_media_removed`` is appended before the bytes are
+deleted: hosted server transactions can roll back the event, but cannot restore
+an unlink. If cleanup fails, retrying the command deletes the remaining bytes.
+Media already removed is idempotent, and any bytes found at its paths (restored
+by a merge) are deleted again.
 """
 
 from __future__ import annotations
@@ -86,7 +86,6 @@ class IssueDetach:
                     delete_media_files(ctx.lattice_dir, issue_id, entry)
                 return issue_common.result(ctx, snapshot, [])
             entry = present[0]
-            delete_media_files(ctx.lattice_dir, issue_id, entry)
             event = create_issue_event(
                 "issue_media_removed",
                 issue_id,
@@ -96,4 +95,5 @@ class IssueDetach:
             )
             snapshot = apply_issue_event(snapshot, event)
             write_issue_events(ctx.lattice_dir, issue_id, [event], snapshot)
+            delete_media_files(ctx.lattice_dir, issue_id, entry)
         return issue_common.result(ctx, snapshot, [event])

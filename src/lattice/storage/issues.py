@@ -27,6 +27,7 @@ from lattice.core.issues import (
     parse_issue_ref,
     replay_issue,
     serialize_issue_snapshot,
+    validate_issue_media_hashes,
 )
 from lattice.core.visibility import is_tombstoned
 from lattice.storage.fs import atomic_write, ensure_dir
@@ -108,7 +109,12 @@ def read_issue_snapshot(
     if not path.exists():
         return _replayed(lattice_dir, issue_id)
     try:
-        return _load_json(path)
+        snapshot = _load_json(path)
+        try:
+            validate_issue_media_hashes(snapshot)
+        except ValueError as exc:
+            raise OpError("INTEGRITY_ERROR", f"Cannot read {path}: {exc}.") from exc
+        return snapshot
     except OpError as exc:
         try:
             replayed = _replayed(lattice_dir, issue_id)
@@ -303,16 +309,52 @@ def allocate_issue_seq(lattice_dir: Path, issue_id: str) -> int:
     """
     locks_dir = Path(lattice_dir) / "locks"
     ensure_dir(locks_dir)
-    ensure_dir(issues_dir(lattice_dir) / "events")
     with lattice_lock(locks_dir, IDS_LOCK):
-        data = load_issue_ids(lattice_dir)
-        used = [int(k) for k in data["map"] if str(k).isdigit()]
-        seq = max(int(data.get("next_seq") or 1), 1 + max(used, default=0))
-        data["map"][str(seq)] = issue_id
-        data["next_seq"] = seq + 1
-        data["schema_version"] = 1
-        atomic_write(_ids_path(lattice_dir), _serialize_ids(data))
+        return _allocate_issue_seq_locked(lattice_dir, issue_id)
+
+
+def _allocate_issue_seq_locked(lattice_dir: Path, issue_id: str) -> int:
+    ensure_dir(issues_dir(lattice_dir) / "events")
+    data = load_issue_ids(lattice_dir)
+    used = [int(k) for k in data["map"] if str(k).isdigit()]
+    seq = max(int(data.get("next_seq") or 1), 1 + max(used, default=0))
+    data["map"][str(seq)] = issue_id
+    data["next_seq"] = seq + 1
+    data["schema_version"] = 1
+    atomic_write(_ids_path(lattice_dir), _serialize_ids(data))
     return seq
+
+
+@contextlib.contextmanager
+def issue_seq_reservation(
+    lattice_dir: Path, issue_id: str
+) -> Generator[tuple[int, Callable[[], None]], None, None]:
+    """Reserve an issue number until its filing event is committed.
+
+    The issue sequence lock remains held through the caller's transaction so
+    an aborted filing can restore the exact previous index without a gap.
+    Call the yielded commit function after the filing event is durable.
+    """
+    locks_dir = Path(lattice_dir) / "locks"
+    ensure_dir(locks_dir)
+    with lattice_lock(locks_dir, IDS_LOCK):
+        previous = _serialize_ids(load_issue_ids(lattice_dir))
+        seq = _allocate_issue_seq_locked(lattice_dir, issue_id)
+        committed = False
+
+        def commit() -> None:
+            nonlocal committed
+            committed = True
+
+        try:
+            yield seq, commit
+        except BaseException:
+            if not committed:
+                atomic_write(_ids_path(lattice_dir), previous)
+            raise
+        else:
+            if not committed:
+                atomic_write(_ids_path(lattice_dir), previous)
 
 
 def current_issue(lattice_dir: Path, issue_id: str) -> dict | None:
