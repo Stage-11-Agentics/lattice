@@ -235,7 +235,7 @@ not everything an agent notices is a commitment. a flaky test. a footer that ove
 
 the issue log is the place in between. an issue is an observation with a short title and, if needed, a description. file it in one command. later, someone triages the log. an issue becomes a task, joins an existing task, or gets closed.
 
-it is off by default. on a local board, add `"issues": {"enabled": true}` to `.lattice/config.json`. on a hosted board, a server admin turns it on with `lattice server project config <slug> --set issues.enabled=true`. before importing or enabling issues on a hosted project, upgrade the server and every client to at least `0.2.2`.
+it is off by default. on a local board, add `"issues": {"enabled": true}` to `.lattice/config.json`. on a hosted board, a server admin turns it on with `lattice server project config <slug> --set issues.enabled=true`. before importing or enabling issues on a hosted project, upgrade every client to at least `0.2.2`, then the server.
 
 then run `lattice setup-claude --force`, so your agents' CLAUDE.md learns the new commands.
 
@@ -279,7 +279,7 @@ with ffmpeg installed, a video is re-encoded to H.264 and gets up to eight still
 lattice issue media LAT-I42 --paths    # every photo, and every video's frames, one path per line
 ```
 
-anything that is not a photo or video (a log, a URL) stays a text pointer, as before. `lattice issue detach LAT-I42 2 --reason "shows an API key"` deletes a file for good. on hosted boards, media is copied into private server storage during import by default; `--omit-media` opts out. a bound checkout fetches media into a separate private cache only when requested. phone photos may retain location in EXIF metadata. the details, limits and the local git story are in the [user reference](user-reference.md); hosted setup and import are in the [Hosted guide](hosted/guide.md).
+anything that is not a photo or video (a log, a URL) stays a text pointer, as before. `lattice issue detach LAT-I42 2 --reason "shows an API key"` deletes a file for good. on hosted boards, media is copied into private server storage during import by default; `--omit-media` opts out. a bound checkout fetches media into a separate private cache only when requested. phone photos may retain location in EXIF metadata, which Lattice does not strip. a video's metadata, which can include where it was recorded, is stripped by ffmpeg; without ffmpeg the video is refused unless you pass `--keep-video-metadata` to file the original as it is. the details, limits and the local git story are in the [user reference](user-reference.md); hosted setup and import are in the [Hosted guide](hosted/guide.md).
 
 the issue log remains separate from task workflow. promoting an issue creates a task; linking an issue connects it to an existing task. task list, `next`, and `stats` remain task-based.
 
