@@ -20,6 +20,7 @@ from dataclasses import dataclass
 
 from lattice.core.events import get_actor_display
 from lattice.core.ids import validate_id
+from lattice.core.issue_media import media_summary, present_media
 
 ISSUE_STATES: tuple[str, ...] = ("open", "linked", "resolved", "dismissed", "duplicate")
 #: What ``issue list`` shows without ``--state`` or ``--all``: the issues that still need a look.
@@ -146,12 +147,101 @@ def _reopened(snapshot: dict, _event: dict) -> None:
     snapshot["closure"] = None
 
 
+#: The ``issue_media_added`` data fields a snapshot's media entry keeps (LAT-366).
+MEDIA_ENTRY_FIELDS: tuple[str, ...] = (
+    "n",
+    "kind",
+    "content_type",
+    "original_name",
+    "size_bytes",
+    "sha256",
+    "width",
+    "height",
+    "duration_ms",
+    "converted_from",
+)
+_MEDIA_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
+
+
+def _valid_media_sha256(value: object) -> bool:
+    return isinstance(value, str) and _MEDIA_SHA256_RE.fullmatch(value) is not None
+
+
+def validate_issue_media_hashes(snapshot: Mapping) -> None:
+    """Reject malformed persisted issue and media snapshot shapes or hashes."""
+    if not isinstance(snapshot, Mapping):
+        raise ValueError("issue snapshot must be an object")
+    entries = snapshot.get("media", [])
+    if not isinstance(entries, list):
+        raise ValueError("issue media must be a list")
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            raise ValueError("issue media entry must be an object")
+        if "content_type" in entry and not isinstance(entry["content_type"], str):
+            raise ValueError("issue media content_type must be a string")
+        if "sha256" in entry and not _valid_media_sha256(entry["sha256"]):
+            raise ValueError("issue media sha256 must be 64 lowercase hexadecimal characters")
+        source = entry.get("converted_from")
+        if source is not None and not isinstance(source, Mapping):
+            raise ValueError("converted issue media metadata must be an object")
+        if isinstance(source, Mapping) and "sha256" in source:
+            if not _valid_media_sha256(source["sha256"]):
+                raise ValueError(
+                    "converted issue media sha256 must be 64 lowercase hexadecimal characters"
+                )
+
+
+def _media_added(snapshot: dict, event: dict) -> None:
+    """Append a media entry; a ``media_id`` already present is ignored (merged logs)."""
+    data = event.get("data", {})
+    media_id = data.get("media_id")
+    media = snapshot.get("media", [])
+    validate_issue_media_hashes({"media": [data]})
+    if not media_id or any(m.get("id") == media_id for m in media):
+        return
+    entry: dict = {"id": media_id}
+    entry.update({key: data[key] for key in MEDIA_ENTRY_FIELDS if key in data})
+    entry["added_at"] = event.get("ts")
+    entry["added_by"] = event.get("actor")
+    snapshot["media"] = [*media, entry]
+
+
+def _media_removed(snapshot: dict, event: dict) -> None:
+    """Mark an entry removed and drop its original name from the snapshot; an
+    unknown or already-removed ``media_id`` is ignored."""
+    media_id = event.get("data", {}).get("media_id")
+    for entry in snapshot.get("media", []):
+        if entry.get("id") == media_id and not entry.get("removed"):
+            entry.pop("original_name", None)
+            entry["removed"] = {
+                "at": event.get("ts"),
+                "by": event.get("actor"),
+                "reason": event.get("data", {}).get("reason"),
+            }
+            return
+
+
+def redact_removed_media_names(events: Iterable[dict], snapshot: Mapping) -> list[dict]:
+    """*events* as a command prints them: the ``original_name`` of media since
+    removed is left out, as it is from the views. The log itself keeps it."""
+    removed = {m.get("id") for m in snapshot.get("media", []) if m.get("removed")}
+    shown = []
+    for event in events:
+        data = event.get("data") or {}
+        if event.get("type") == "issue_media_added" and data.get("media_id") in removed:
+            event = {**event, "data": {k: v for k, v in data.items() if k != "original_name"}}
+        shown.append(event)
+    return shown
+
+
 _HANDLERS: dict[str, Callable[[dict, dict], None]] = {
     "issue_linked": _linked,
     "issue_unlinked": _unlinked,
     "issue_dismissed": _dismissed,
     "issue_marked_duplicate": _marked_duplicate,
     "issue_reopened": _reopened,
+    "issue_media_added": _media_added,
+    "issue_media_removed": _media_removed,
 }
 
 
@@ -273,6 +363,7 @@ def issue_view(snapshot: dict, task_info: Mapping[str, TaskInfo | None]) -> dict
         "filed_at": snapshot.get("filed_at"),
         "closure": snapshot.get("closure"),
         "tasks": tasks,
+        "media": [dict(m) for m in snapshot.get("media", [])],
         "updated_at": snapshot.get("updated_at"),
         "last_event_id": snapshot.get("last_event_id"),
     }
@@ -371,4 +462,7 @@ def promote_description(snapshots: Iterable[dict]) -> str:
         lines.extend(f"  {ln}" if ln.strip() else "" for ln in text_lines[1:])
         if snap.get("evidence"):
             lines.append(f"  Evidence: {', '.join(snap['evidence'])}")
+        summary = media_summary(present_media(snap))
+        if summary:
+            lines.append(f"  Media: {summary} (lattice issue media {snap.get('short_id')})")
     return "\n".join(lines) + "\n"

@@ -1,4 +1,10 @@
-"""``issue.file``: the ``lattice issue file`` command's rules (LAT-361)."""
+"""``issue.file``: the ``lattice issue file`` command's rules (LAT-361, LAT-366).
+
+Photos and videos travel as ``media`` items (see ``issue_common``). All of
+them are decoded and checked against the limits before the issue number is
+allocated; then the files are written and ``issue_filed`` plus one
+``issue_media_added`` per file are appended in one write.
+"""
 
 from __future__ import annotations
 
@@ -9,7 +15,7 @@ from lattice.core.ids import generate_issue_id
 from lattice.core.issues import CONFIDENCE_VALUES, apply_issue_event, format_issue_short_id
 from lattice.ops import issue_common
 from lattice.ops.base import CommonParams, OpContext, OpError, OpResult, operation
-from lattice.storage.issues import allocate_issue_seq, issue_write_context, write_issue_events
+from lattice.storage.issues import issue_seq_reservation, issue_write_context, write_issue_events
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -18,6 +24,7 @@ class IssueFileParams(CommonParams):
     confidence: str | None = None
     evidence: tuple[str, ...] = ()
     source: str | None = None
+    media: tuple[dict, ...] = ()
 
     def check(self) -> None:
         if not self.text.strip():
@@ -28,6 +35,7 @@ class IssueFileParams(CommonParams):
                 f"Invalid confidence: '{self.confidence}'. "
                 f"Valid values: {', '.join(CONFIDENCE_VALUES)}.",
             )
+        issue_common.check_media_items(self.media)
 
 
 @operation("issue.file")
@@ -36,21 +44,44 @@ class IssueFile:
 
     def run(self, ctx: OpContext, p: IssueFileParams) -> OpResult:
         issue_common.require_issue_log(ctx)
+        decoded = issue_common.decode_media(p.media, ctx.config, nothing="Nothing was filed.")
+        issue_common.check_issue_total(ctx.config, "The issue", 0, decoded)
         issue_id = generate_issue_id()
-        seq = allocate_issue_seq(ctx.lattice_dir, issue_id)
-        data: dict = {
-            "seq": seq,
-            "short_id": format_issue_short_id(ctx.config.get("project_code"), seq),
-            "text": p.text,
-        }
-        if p.confidence is not None:
-            data["confidence"] = p.confidence
-        if p.evidence:
-            data["evidence"] = list(p.evidence)
-        if p.source is not None:
-            data["source"] = p.source
-        event = create_issue_event("issue_filed", issue_id, ctx.actor, data, **p.provenance())
-        snapshot = apply_issue_event(None, event)
         with issue_write_context(ctx.lattice_dir, issue_id):
-            write_issue_events(ctx.lattice_dir, issue_id, [event], snapshot)
-        return issue_common.result(ctx, snapshot, [event])
+            media_events = issue_common.stage_media(ctx, issue_id, decoded, 1, p)
+            try:
+                with issue_seq_reservation(ctx.lattice_dir, issue_id) as (seq, commit_seq):
+                    data: dict = {
+                        "seq": seq,
+                        "short_id": format_issue_short_id(ctx.config.get("project_code"), seq),
+                        "text": p.text,
+                    }
+                    if p.confidence is not None:
+                        data["confidence"] = p.confidence
+                    if p.evidence:
+                        data["evidence"] = list(p.evidence)
+                    if p.source is not None:
+                        data["source"] = p.source
+                    events = [
+                        create_issue_event(
+                            "issue_filed", issue_id, ctx.actor, data, **p.provenance()
+                        ),
+                        *media_events,
+                    ]
+                    snapshot = None
+                    for event in events:
+                        snapshot = apply_issue_event(snapshot, event)
+                    assert snapshot is not None
+                    try:
+                        write_issue_events(ctx.lattice_dir, issue_id, events, snapshot)
+                    except BaseException:
+                        if issue_common.issue_filing_event_committed(ctx.lattice_dir, issue_id):
+                            commit_seq()
+                        raise
+                    commit_seq()
+            except BaseException as failure:
+                issue_common.cleanup_uncommitted_media(
+                    ctx.lattice_dir, issue_id, media_events, failure
+                )
+                raise
+        return issue_common.result(ctx, snapshot, events)

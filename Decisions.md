@@ -1328,3 +1328,34 @@ Additionally, `lattice advance N` processed multiple tasks in a single context w
   warning.
 - **No schema bump.** Issue events and snapshots carry `schema_version: 1`;
   replay ignores an `issue_*` type it does not know.
+
+## 2026-09-29: Issue media (LAT-366)
+
+- **Decision:** a photo or video passed to `lattice issue file --evidence` or
+  `lattice issue attach` is copied into `.lattice/issues/media/<iss>/<med>.<ext>`
+  and recorded by `issue_media_added`; `lattice issue detach` records
+  `issue_media_removed`. Anything else under `--evidence` stays a text pointer.
+- **Under `issues/`, not `artifacts/`.** `artifacts/` is durable and synced
+  (server import, caches), and its metadata is task-shaped. Under `issues/`,
+  LAT-361's isolation holds: nothing else enumerates it, and turning the log
+  off hides media with the rest.
+- **Type by content.** Magic bytes decide (PNG, JPEG, GIF, WebP; MP4, MOV,
+  WebM); the filename is metadata, never a path. SVG and HTML are never media.
+- **Client-side tools (G-5).** Transcoding, frames and HEIC conversion run in
+  the CLI through `lattice.integrations.ffmpeg`, before the operation; the
+  operation receives bytes and JPEG frames as payloads and never runs a tool,
+  so a server never would either. Every tool is optional.
+- **Operator decisions (2026-09-29).** With ffmpeg, video is re-encoded to
+  H.264 (1280 px, CRF 28, `+faststart`) and the original is not kept; limits
+  are 100 MB per file (before transcoding, and after) and 250 MB per issue
+  (after); HEIC photos convert to JPEG; media is tracked in git with the rest
+  of `.lattice/` by default (the docs give the `.gitignore` opt-out and the
+  Git LFS line).
+- **Frames are derived sidecars** (`<med>.frames/t0014.100s.jpg`), found by
+  listing, with no event: a later backfill needs no new event type.
+- **Removal deletes the bytes first**, then appends the event, under the
+  issue lock: a crash in between leaves the secret gone and the log showing
+  the file present; running it again records the removal. The removed item's
+  name leaves the snapshot and views; the append-only log keeps it.
+- **Duplicates** are one file: the same stored hash, or the same source hash
+  (`converted_from.sha256`), since each transcode can produce new bytes.

@@ -71,7 +71,7 @@ packages = ["src/lattice"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-m 'not torture and not perf' -n auto"
+addopts = "-m 'not torture and not perf and not ffmpeg' -n auto"
 timeout = 15
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
@@ -79,6 +79,7 @@ markers = [
     "torture: slow concurrency, crash, and load tests (uv run pytest -m torture)",
     "envelope: envelope-scale torture tests, minutes each (uv run pytest -m envelope); always also torture",
     "perf: timing checks on the reference machine (uv run pytest -m perf tests)",
+    "ffmpeg: runs the machine's real ffmpeg (uv run pytest -m ffmpeg); skipped without it",
     "real_fsync: keep the real os.fsync (the default suite skips the syscall; tests/conftest.py)",
 ]
 

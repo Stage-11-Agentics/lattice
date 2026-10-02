@@ -104,6 +104,11 @@ def generate_issue_id() -> str:
     return f"iss_{ULID()}"
 
 
+def generate_media_id() -> str:
+    """Generate a new issue media ID with the med_ prefix (LAT-366)."""
+    return f"med_{ULID()}"
+
+
 def generate_session_id() -> str:
     """Generate a new session ID with the sess_ prefix."""
     return f"sess_{ULID()}"

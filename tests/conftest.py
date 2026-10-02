@@ -72,7 +72,7 @@ def _hermetic_env(
       ``lattice-review-*`` file and leak checks see only their own files.
     * Git ignores global and system config; the PyPI update check is off.
     * Every ``LATTICE_*``, ``C11_*`` and ``CMUX_*`` variable is removed before
-      the intentional values are set.
+      the intentional values are set (see :func:`purge_caller_env`).
     """
     for name in list(os.environ):
         if name.startswith(_AMBIENT_ENV_PREFIXES) or name in _AMBIENT_ENV:
@@ -414,6 +414,10 @@ def purge_caller_env(monkeypatch: pytest.MonkeyPatch) -> None:
         if key.startswith(("LATTICE_", "C11_", "CMUX_")):
             monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("LATTICE_NO_UPDATE_CHECK", "1")
+    # Issue media (LAT-366) never runs the machine's own ffmpeg or sips by
+    # accident; a test that needs a tool points these at a fake one.
+    monkeypatch.setenv("LATTICE_FFMPEG", "off")
+    monkeypatch.setenv("LATTICE_SIPS", "off")
 
 
 @pytest.fixture(autouse=True)

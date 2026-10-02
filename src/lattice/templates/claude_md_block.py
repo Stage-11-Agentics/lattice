@@ -74,10 +74,13 @@ lattice issue file "<what you saw>" --actor agent:<your-id> [--confidence possib
 ```
 
 Observations go to `lattice issue file`; commitments go to `lattice create`. Someone triages the log later: `lattice issue promote` turns issues into a backlog task, `lattice issue link` attaches them to an existing one, and `lattice issue dismiss` or `lattice issue duplicate` closes them. An issue's state (open, linked, resolved, dismissed, duplicate) follows its linked tasks; nobody sets it by hand. `lattice issue list` shows what is still open, and `lattice show <task>` lists the issues linked to a task.
+
+Pass screenshots and recordings as `--evidence <file>`: photos and videos are copied into the issue. Read an issue's media with `lattice issue media <issue> --paths` (videos as still frames).
 """
 
 ISSUE_LOG_QUICK_REFERENCE = """lattice issue file "<text>" --actor agent:<id>    # an observation, not a task
 lattice issue list
+lattice issue media <issue> --paths                # its photos and video frames, to read
 """
 
 

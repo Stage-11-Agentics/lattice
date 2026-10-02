@@ -56,6 +56,8 @@ BUILTIN_EVENT_TYPES: frozenset[str] = frozenset(
         "issue_dismissed",
         "issue_marked_duplicate",
         "issue_reopened",
+        "issue_media_added",
+        "issue_media_removed",
     }
 )
 
@@ -69,6 +71,8 @@ ISSUE_EVENT_TYPES: frozenset[str] = frozenset(
         "issue_dismissed",
         "issue_marked_duplicate",
         "issue_reopened",
+        "issue_media_added",
+        "issue_media_removed",
     }
 )
 

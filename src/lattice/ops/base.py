@@ -46,8 +46,8 @@ Rules of the pattern:
   names in snake_case (the option name, not Click's destination), minus
   ``--json``, ``--quiet``, ``--actor`` and ``--name``. ``--file PATH`` becomes
   the file's text; repeatable options are ``tuple[str, ...]``. Supported
-  annotations: ``str``, ``int``, ``bool``, ``dict``, ``tuple[str, ...]``, and
-  any of them ``| None``.
+  annotations: ``str``, ``int``, ``bool``, ``dict``, ``tuple[str, ...]``,
+  ``tuple[dict, ...]`` (a list of objects), and any of them ``| None``.
 - ``run`` never prints and never exits. Every rejection is an ``OpError`` with
   the code and message the CLI has always shown.
 - Board writes go through ``ctx.mutate`` (or the resource, prose, session and
@@ -227,11 +227,19 @@ def _is_str_tuple(annotation: Any) -> bool:
     return typing.get_origin(annotation) is tuple and typing.get_args(annotation) == (str, ...)
 
 
+def _is_dict_tuple(annotation: Any) -> bool:
+    return typing.get_origin(annotation) is tuple and typing.get_args(annotation) == (dict, ...)
+
+
 def _supported(annotation: Any) -> bool:
     members = _union_args(annotation)
     if members is not None:
         return all(m is type(None) or _supported(m) for m in members)
-    return annotation in (str, int, bool, dict) or _is_str_tuple(annotation)
+    return (
+        annotation in (str, int, bool, dict)
+        or _is_str_tuple(annotation)
+        or _is_dict_tuple(annotation)
+    )
 
 
 def _type_name(annotation: Any) -> str:
@@ -242,6 +250,8 @@ def _type_name(annotation: Any) -> str:
         return "null"
     if _is_str_tuple(annotation):
         return "list of str"
+    if _is_dict_tuple(annotation):
+        return "list of object"
     return annotation.__name__
 
 
@@ -266,6 +276,10 @@ def _coerce(value: Any, annotation: Any) -> tuple[bool, Any]:
         return isinstance(value, dict), value
     if _is_str_tuple(annotation):
         if isinstance(value, (list, tuple)) and all(isinstance(v, str) for v in value):
+            return True, tuple(value)
+        return False, value
+    if _is_dict_tuple(annotation):
+        if isinstance(value, (list, tuple)) and all(isinstance(v, dict) for v in value):
             return True, tuple(value)
         return False, value
     return False, value

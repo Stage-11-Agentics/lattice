@@ -9,19 +9,41 @@ and the new snapshot.
 
 from __future__ import annotations
 
+import hashlib
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
 from lattice.core.config import issues_enabled
 from lattice.core.events import create_issue_event
+from lattice.core.ids import generate_media_id
+from lattice.core.issue_media import (
+    ACCEPTED_FORMATS_TEXT,
+    ISSUE_MEDIA_TOO_LARGE,
+    MAX_FRAME_BYTES,
+    MAX_FRAMES,
+    MEDIA_FILE_TOO_LARGE,
+    SNIFF_BYTES,
+    clean_original_name,
+    file_too_large_message,
+    format_size,
+    image_dimensions,
+    issue_too_large_message,
+    media_kind,
+    media_limits,
+    sniff_media,
+)
 from lattice.core.issues import apply_issue_event, issues_disabled_message
 from lattice.core.visibility import require_not_tombstoned
 from lattice.ops.base import CommonParams, OpContext, OpError, OpResult
+from lattice.ops.task_attach import decode_payload
+from lattice.storage.issue_media import delete_media_files, store_media
 from lattice.storage.issues import (
     current_issue,
     issue_views,
     issue_write_context,
     issues_dir,
+    read_issue_events,
     resolve_issue,
     write_issue_events,
 )
@@ -135,3 +157,305 @@ def view(ctx: OpContext, snapshot: dict) -> dict:
 def result(ctx: OpContext, snapshot: dict, events: list[dict]) -> OpResult:
     """The ``OpResult`` of an issue operation: the issue's view is its ``--json`` data."""
     return OpResult(events=events, value=view(ctx, snapshot), idempotent=not events)
+
+
+# ---------------------------------------------------------------------------
+# Media (LAT-366)
+# ---------------------------------------------------------------------------
+#
+# A media item travels as ``{"payload": {filename, content_b64, sha256}}``,
+# plus for a video ``"video": {width, height, duration_ms}`` and ``"frames":
+# [{"t_ms", "payload"}]`` (JPEG stills the client made), and ``"converted_from":
+# {content_type, size_bytes, sha256}`` (the source's) when the client transcoded
+# or converted it. The type is sniffed here from the bytes; the filename is
+# metadata only. Content is "the same" when either hash matches, so a source
+# attached twice is one file even though each attach transcodes it anew.
+
+_MEDIA_ITEM_KEYS = frozenset({"payload", "video", "frames", "converted_from"})
+_VIDEO_KEYS = frozenset({"width", "height", "duration_ms"})
+_CONVERTED_KEYS = frozenset({"content_type", "size_bytes", "sha256"})
+_CONTENT_TYPE_RE = re.compile(r"^[a-z]+/[a-z0-9.+-]{1,64}$")
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+MAX_VIDEO_DIMENSION = 100_000
+MAX_VIDEO_DURATION_MS = 86_400_000
+
+
+def _invalid(message: str) -> OpError:
+    return OpError("VALIDATION_ERROR", message, {"reason": "WRONG_TYPE", "param": "media"})
+
+
+def _non_negative_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _b64_size(payload: object) -> int:
+    """An upper bound of a payload's decoded size, from its text alone."""
+    text = payload.get("content_b64") if isinstance(payload, dict) else None
+    return (len(text) * 3) // 4 if isinstance(text, str) else 0
+
+
+@dataclass(frozen=True)
+class DecodedMedia:
+    """One media item, decoded and checked."""
+
+    content_type: str
+    kind: str
+    original_name: str
+    content: bytes
+    sha256: str
+    width: int | None = None
+    height: int | None = None
+    duration_ms: int | None = None
+    frames: tuple[tuple[int, bytes], ...] = ()
+    converted_from: dict | None = None
+
+    @property
+    def hashes(self) -> set[str]:
+        """The stored content's hash, and its source's when it was converted."""
+        source = (self.converted_from or {}).get("sha256")
+        return {self.sha256, source} if source else {self.sha256}
+
+
+def check_media_items(items: tuple[dict, ...]) -> None:
+    """The shape of each media item, without decoding anything (``VALIDATION_ERROR``)."""
+    for i, item in enumerate(items, 1):
+        extra = set(item) - _MEDIA_ITEM_KEYS
+        if extra or "payload" not in item or not isinstance(item["payload"], dict):
+            raise _invalid(
+                f"media item {i} must be an object with a payload and optionally "
+                f"video, frames, converted_from (got {sorted(item)})."
+            )
+        video = item.get("video")
+        if video is not None and (
+            not isinstance(video, dict)
+            or set(video) - _VIDEO_KEYS
+            or not all(_non_negative_int(v) for v in video.values())
+            or any(video[k] > MAX_VIDEO_DIMENSION for k in ("width", "height") if k in video)
+            or video.get("duration_ms", 0) > MAX_VIDEO_DURATION_MS
+        ):
+            raise _invalid(
+                f"media item {i}: video dimensions must be at most {MAX_VIDEO_DIMENSION} and "
+                f"duration_ms at most {MAX_VIDEO_DURATION_MS}."
+            )
+        converted = item.get("converted_from")
+        if converted is not None and (
+            not isinstance(converted, dict)
+            or set(converted) != _CONVERTED_KEYS
+            or not isinstance(converted["content_type"], str)
+            or not _CONTENT_TYPE_RE.fullmatch(converted["content_type"])
+            or not _non_negative_int(converted["size_bytes"])
+            or not isinstance(converted["sha256"], str)
+            or not _SHA256_RE.fullmatch(converted["sha256"])
+        ):
+            raise _invalid(
+                f"media item {i}: converted_from must be {{content_type, size_bytes, sha256}}."
+            )
+        frames = item.get("frames")
+        if frames is not None:
+            if not isinstance(frames, list) or len(frames) > MAX_FRAMES:
+                raise _invalid(f"media item {i}: frames must be a list of at most {MAX_FRAMES}.")
+            for frame in frames:
+                if (
+                    not isinstance(frame, dict)
+                    or set(frame) != {"t_ms", "payload"}
+                    or not _non_negative_int(frame["t_ms"])
+                    or frame["t_ms"] > MAX_VIDEO_DURATION_MS
+                    or not isinstance(frame["payload"], dict)
+                ):
+                    raise _invalid(
+                        f"media item {i}: each frame needs t_ms from 0 to "
+                        f"{MAX_VIDEO_DURATION_MS} and a payload."
+                    )
+            times = [frame["t_ms"] for frame in frames]
+            if len(set(times)) != len(times):
+                raise _invalid(f"media item {i}: two frames have the same t_ms.")
+
+
+def _decode_one(item: dict, per_file: int, nothing: str) -> DecodedMedia:
+    filename = item["payload"].get("filename")
+    name = clean_original_name(filename) if isinstance(filename, str) else "?"
+    source = item.get("converted_from")
+    if source is not None and source["size_bytes"] > per_file:
+        raise _too_large_file(name, source["size_bytes"], per_file, nothing)
+    if _b64_size(item["payload"]) > per_file + 2:
+        size = _b64_size(item["payload"])
+        raise _too_large_file(name, size, per_file, nothing)
+    filename, content = decode_payload(item["payload"])
+    name = clean_original_name(filename)
+    if len(content) > per_file:
+        raise _too_large_file(name, len(content), per_file, nothing)
+    content_type = sniff_media(content[:SNIFF_BYTES])
+    if content_type is None:
+        raise OpError(
+            "VALIDATION_ERROR",
+            f"{name} is not a photo or video by its content. Accepted: {ACCEPTED_FORMATS_TEXT}.",
+            {"reason": "NOT_MEDIA", "param": "media"},
+        )
+    kind = media_kind(content_type) or ""
+    video = item.get("video") or {}
+    frames: list[tuple[int, bytes]] = []
+    if kind != "video" and (item.get("video") is not None or item.get("frames")):
+        raise _invalid(f"{name} is a photo; only a video carries video metadata or frames.")
+    for frame in item.get("frames") or []:
+        if _b64_size(frame["payload"]) > MAX_FRAME_BYTES + 2:
+            raise _invalid(f"{name}: a frame is over {format_size(MAX_FRAME_BYTES)}.")
+        _frame_name, data = decode_payload(frame["payload"])
+        if sniff_media(data[:SNIFF_BYTES]) != "image/jpeg" or len(data) > MAX_FRAME_BYTES:
+            raise _invalid(f"{name}: every frame must be a JPEG of at most 2 MB.")
+        frames.append((frame["t_ms"], data))
+    if kind == "photo":
+        dims = image_dimensions(content_type, content)
+        width, height = dims if dims else (None, None)
+    else:
+        width, height = video.get("width"), video.get("height")
+    return DecodedMedia(
+        content_type=content_type,
+        kind=kind,
+        original_name=name,
+        content=content,
+        sha256=hashlib.sha256(content).hexdigest(),
+        width=width,
+        height=height,
+        duration_ms=video.get("duration_ms"),
+        frames=tuple(sorted(frames)),
+        converted_from=dict(item["converted_from"]) if item.get("converted_from") else None,
+    )
+
+
+def _too_large_file(name: str, size: int, limit: int, nothing: str) -> OpError:
+    if size.bit_length() > 1024:
+        message = f"{name} exceeds the per-file limit of {format_size(limit)}. {nothing}"
+    else:
+        message = file_too_large_message(name, size, limit, nothing=nothing)
+    return OpError(
+        "PAYLOAD_TOO_LARGE",
+        message,
+        {"reason": MEDIA_FILE_TOO_LARGE, "size_bytes": size, "limit_bytes": limit},
+    )
+
+
+def decode_media(items: tuple[dict, ...], config: dict, *, nothing: str) -> list[DecodedMedia]:
+    """Decode and check every item, each within ``issues.max_media_mb``; the same
+    content twice is kept once. *nothing*: the refusal's last sentence."""
+    per_file, _per_issue = media_limits(config)
+    decoded: list[DecodedMedia] = []
+    seen: set[str] = set()
+    for item in items:
+        one = _decode_one(item, per_file, nothing)
+        if not seen & one.hashes:
+            seen |= one.hashes
+            decoded.append(one)
+    return decoded
+
+
+def held_hashes(entries: list[dict]) -> set[str]:
+    """Every content hash of *entries*: each stored file's and its source's."""
+    hashes = set()
+    for entry in entries:
+        hashes.add(entry.get("sha256"))
+        hashes.add((entry.get("converted_from") or {}).get("sha256"))
+    hashes.discard(None)
+    return hashes
+
+
+def check_issue_total(config: dict, issue: str, existing: int, new: list[DecodedMedia]) -> None:
+    """``PAYLOAD_TOO_LARGE`` when the issue's present media would pass ``issues.max_issue_media_mb``."""
+    _per_file, per_issue = media_limits(config)
+    total = existing + sum(len(d.content) for d in new)
+    if new and total > per_issue:
+        raise OpError(
+            "PAYLOAD_TOO_LARGE",
+            issue_too_large_message(issue, total, per_issue),
+            {"reason": ISSUE_MEDIA_TOO_LARGE, "size_bytes": total, "limit_bytes": per_issue},
+        )
+
+
+def media_added_data(decoded: DecodedMedia, media_id: str, n: int) -> dict:
+    """The ``issue_media_added`` event data; unknown dimensions are left out."""
+    data: dict = {
+        "media_id": media_id,
+        "n": n,
+        "kind": decoded.kind,
+        "content_type": decoded.content_type,
+        "original_name": decoded.original_name,
+        "size_bytes": len(decoded.content),
+        "sha256": decoded.sha256,
+    }
+    for key in ("width", "height", "duration_ms", "converted_from"):
+        value = getattr(decoded, key)
+        if value is not None:
+            data[key] = value
+    return data
+
+
+def stage_media(
+    ctx: OpContext,
+    issue_id: str,
+    decoded: list[DecodedMedia],
+    first_n: int,
+    p: CommonParams,
+) -> list[dict]:
+    """Write each item's file and frames; return their ``issue_media_added`` events.
+
+    The caller holds the issue's lock and appends the events after this returns.
+    """
+    events = []
+    entries = []
+    try:
+        for offset, item in enumerate(decoded):
+            media_id = generate_media_id()
+            entry = {"id": media_id, "content_type": item.content_type}
+            entries.append(entry)
+            data = media_added_data(item, media_id, first_n + offset)
+            store_media(ctx.lattice_dir, issue_id, entry, item.content, list(item.frames))
+            events.append(
+                create_issue_event(
+                    "issue_media_added", issue_id, ctx.actor, data, **p.provenance()
+                )
+            )
+    except BaseException as failure:
+        _cleanup_media_entries(ctx.lattice_dir, issue_id, entries, failure)
+        raise
+    return events
+
+
+def _cleanup_media_entries(lattice_dir, issue_id: str, entries: list[dict], failure) -> None:  # noqa: ANN001
+    for entry in reversed(entries):
+        try:
+            delete_media_files(lattice_dir, issue_id, entry)
+        except Exception as cleanup_error:  # noqa: BLE001
+            failure.add_note(f"Could not clean staged issue media {entry['id']}: {cleanup_error}")
+
+
+def issue_filing_event_committed(lattice_dir, issue_id: str) -> bool:  # noqa: ANN001
+    """Whether the authoritative log contains this new issue's filing event.
+
+    If the log cannot be inspected after a write error, keep the reservation:
+    deleting its media or sequence could break an event that reached disk.
+    """
+    try:
+        return any(
+            event.get("type") == "issue_filed"
+            for event in read_issue_events(lattice_dir, issue_id)
+        )
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def cleanup_uncommitted_media(lattice_dir, issue_id: str, events: list[dict], failure) -> None:  # noqa: ANN001
+    """Remove staged media whose add event did not reach the authoritative log."""
+    try:
+        committed = {
+            event.get("data", {}).get("media_id")
+            for event in read_issue_events(lattice_dir, issue_id)
+            if event.get("type") == "issue_media_added"
+        }
+    except Exception:  # noqa: BLE001
+        committed = {event.get("data", {}).get("media_id") for event in events}
+    entries = [
+        {"id": media_id, "content_type": event.get("data", {}).get("content_type")}
+        for event in events
+        if event.get("type") == "issue_media_added"
+        and (media_id := event.get("data", {}).get("media_id")) not in committed
+    ]
+    _cleanup_media_entries(lattice_dir, issue_id, entries, failure)

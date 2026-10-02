@@ -74,7 +74,8 @@ def test_cleanup_cannot_see_another_tests_temp_files(
 
 def test_ambient_env_is_stripped_by_prefix() -> None:
     leaked = [n for n in os.environ if n.startswith(("LATTICE_", "C11_", "CMUX_"))]
-    assert leaked == ["LATTICE_NO_UPDATE_CHECK"]
+    assert sorted(leaked) == ["LATTICE_FFMPEG", "LATTICE_NO_UPDATE_CHECK", "LATTICE_SIPS"]
+    assert os.environ["LATTICE_FFMPEG"] == os.environ["LATTICE_SIPS"] == "off"
 
 
 def test_polluted_ambient_env_does_not_change_results() -> None:

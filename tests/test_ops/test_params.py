@@ -232,3 +232,22 @@ class TestPathComponents:
             )
         assert exc.value.code == "VALIDATION_ERROR"
         assert exc.value.details["reason"] == "UNSAFE_NAME"
+
+
+@dataclass(frozen=True, kw_only=True)
+class ObjectListParams(CommonParams):
+    items: tuple[dict, ...] = ()
+
+
+def test_a_list_of_objects_is_accepted_as_a_tuple() -> None:
+    """LAT-366: ``tuple[dict, ...]`` (issue media items)."""
+    p = parse_params(ObjectListParams, {"items": [{"a": 1}, {}]})
+    assert p.items == ({"a": 1}, {})
+
+
+@pytest.mark.parametrize("value", [[{"a": 1}, "x"], {"a": 1}, "x", [[1]]])
+def test_a_list_of_objects_refuses_anything_else(value: object) -> None:
+    with pytest.raises(OpError) as exc:
+        parse_params(ObjectListParams, {"items": value}, op_name="x.y")
+    assert _reason(exc) == ("WRONG_TYPE", "items")
+    assert "must be list of object" in exc.value.message
