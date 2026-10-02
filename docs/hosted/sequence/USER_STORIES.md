@@ -95,7 +95,7 @@ These stories were minted at the architect stage, from the operator's rulings an
 
 *As a local user who never opts in, nothing changes.*
 
-- **AC-29** With no hosted binding, the CLI's behavior and output do not change: every existing test passes, and a recorded corpus of every board-writing command produces the same boards and the same output before and after v2, apart from the new optional origin fields (AC-36).
+- **AC-29** With no hosted binding, the CLI's behavior and output do not change: every existing test passes, and a recorded corpus of every board-writing command produces the same boards and the same output before and after v2, apart from the new optional origin fields (AC-36) and the changes declared in SPEC G-6.
 - **AC-30** The base install adds no runtime dependency. Everything only the server needs is an optional extra.
 
 ## US-9: It runs as a service
