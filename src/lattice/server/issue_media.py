@@ -833,7 +833,20 @@ class HostedIssueMedia:
                 )
             elif verdict:
                 self._log("info", "issue_media_reconcile_finalize", op_id=op_id)
-                self.finalize_operation(op_id)
+                try:
+                    self.finalize_operation(op_id)
+                except OpError as exc:
+                    # A committed operation whose bytes cannot be published (the
+                    # staged copy was lost, or a file is damaged) must not take
+                    # the whole project offline: keep the manifest, say so, and
+                    # let doctor and the media route report the missing object.
+                    self._log(
+                        "error",
+                        "issue_media_reconcile_failed",
+                        op_id=op_id,
+                        code=exc.code,
+                        reason="its media could not be published; the project still loads",
+                    )
             else:
                 self._log("info", "issue_media_reconcile_abort", op_id=op_id)
                 self.abort_operation(op_id, keep=needed)

@@ -197,3 +197,33 @@ def test_reload_keeps_media_of_an_issue_that_has_a_log_but_no_snapshot(
     (board_of(root) / "issues" / f"{issue['id']}.json").unlink()
     with running_server(root):
         assert target.read_bytes() == data
+
+
+def test_a_committed_manifest_whose_staged_bytes_are_lost_does_not_stop_the_project_loading(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Crash in the finalize window, then the staged copy is lost before the next
+    load: the project still loads (before, the whole project became unavailable
+    with ``load failed: OpError``); the media is reported missing, with the
+    pending manifest kept and the failure logged."""
+    data = blob(5000, b"lost-stage")
+    _crash_after_commit(root, data, monkeypatch)
+    for staged in stage_dir(root).iterdir():
+        staged.unlink()
+
+    snapshot = _snapshot(root)
+    entry = snapshot["media"][0]
+    token = mint(root, projects=[SLUG])
+    with running_server(root) as server:
+        assert server.project(SLUG).state == "loaded"
+        events = {line["event"]: line for line in server.log_lines}
+        assert events["issue_media_reconcile_failed"]["code"] == "NOT_FOUND"
+        path = f"/v1/projects/{SLUG}/issues/media/{snapshot['id']}/{entry['id']}"
+        status, _, _ = call(server, "GET", path, token=token)
+        assert status == 404  # reported missing, not a server error
+        # The rest of the project works.
+        status, _, body = server.op(SLUG, "task.create", {"title": "still works"}, token=token)
+        assert status == 200, body
+    assert len(names(manifest_dir(root))) == 1  # kept, for the operator to clear
+    report = admin.project_doctor(root, SLUG)
+    assert [f["check"] for f in report["findings"]] == ["issue_media_missing"]
