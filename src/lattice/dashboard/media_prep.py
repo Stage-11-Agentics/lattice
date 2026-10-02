@@ -52,6 +52,12 @@ def _prepare_item(item: dict) -> dict:
     return item
 
 
+def _unknown_keys(item: dict) -> dict:
+    """Keys the preparation does not own, kept so ``issue.file`` refuses them whether or
+    not ffmpeg is installed."""
+    return {k: v for k, v in item.items() if k not in ("payload", "video", "frames", "converted_from")}
+
+
 def _suffix(name: str) -> str:
     suffix = Path(name).suffix
     return suffix if suffix and suffix.isascii() and len(suffix) <= 8 else ".bin"
@@ -66,7 +72,7 @@ def _prepare_video(item: dict, name: str, content: bytes, content_type: str, sha
         prepared = prepare_video(src, content, content_type, sha256)
     if ("no_frames", "ffmpeg_not_found") in prepared.notes:
         return item
-    out: dict = {"payload": encode_payload(name, prepared.content)}
+    out: dict = {**_unknown_keys(item), "payload": encode_payload(name, prepared.content)}
     if prepared.video:
         out["video"] = prepared.video
     if prepared.frames:
@@ -89,6 +95,7 @@ def _convert_heic(item: dict, name: str, content: bytes, sha256: str) -> dict:
     if converted is None:
         return item
     return {
+        **_unknown_keys(item),
         "payload": encode_payload(name, converted),
         "converted_from": {
             "content_type": "image/heic",

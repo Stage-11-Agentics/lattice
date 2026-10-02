@@ -400,6 +400,24 @@ def test_bound_checkout_is_local_only(served) -> None:  # noqa: ANN001
     try:
         status, _headers, body = get(server, url(issue, 0))
         assert status == 400 and json.loads(body)["error"]["code"] == "LOCAL_ONLY"
+        # The list and detail routes answer the same state, not ISSUES_DISABLED.
+        for path in ("/api/issues", f"/api/issues/{issue['id']}", "/api/issues?by=agent:qa"):
+            status, _headers, body = get(server, path)
+            assert status == 400, path
+            assert json.loads(body)["error"]["code"] == "LOCAL_ONLY", path
+        for path in ("/api/issues", f"/api/issues/{issue['id']}/comment"):
+            conn = http.client.HTTPConnection(*server.server_address, timeout=5)
+            host = f"127.0.0.1:{server.server_address[1]}"
+            conn.request(
+                "POST",
+                path,
+                json.dumps({"title": "x", "body": "x"}),
+                {"Content-Type": "application/json", "Origin": f"http://{host}", "Host": host},
+            )
+            response = conn.getresponse()
+            assert response.status == 400, path
+            assert json.loads(response.read())["error"]["code"] == "LOCAL_ONLY", path
+            conn.close()
     finally:
         server.shutdown()
         server.server_close()

@@ -300,11 +300,20 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
             body = self._read_request_body(path)
             if body is None:
                 return None  # error already sent
-            if path == "/api/issues" and isinstance(body, dict):
-                media_items = body.get("media")
-                if isinstance(media_items, list) and all(isinstance(m, dict) for m in media_items):
-                    # Strip metadata and derive frames as the CLI does (can take a while).
-                    body = {**body, "media": media_prep.prepare_issue_media(media_items)}
+            if path == "/api/issues":
+                try:
+                    # The cheap checks (title, text size, item count) run before the
+                    # slow media step, so a request that will be refused costs no ffmpeg.
+                    api.translate_post(path, body)
+                    if isinstance(body, dict) and isinstance(body.get("media"), list):
+                        # Strip metadata and derive frames as the CLI does (can take a while).
+                        body = {**body, "media": media_prep.prepare_issue_media(body["media"])}
+                except ApiError as exc:
+                    self._send(ApiResponse(exc.status, exc.envelope()))
+                    return None
+                except Exception as exc:  # noqa: BLE001 - the page gets an envelope, never a reset
+                    self._send_error(500, "WRITE_ERROR", f"Could not prepare the media: {exc}")
+                    return None
             return path, body
 
         def _do_post(self, path: str, body: Any) -> None:
@@ -451,7 +460,7 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
                 forget_window_at_start(board.root)
             try:
                 caller = Caller(
-                    actor=self._target.actor_for(request.actor),
+                    actor=self._author_for(request),
                     origin={"reported": browser_reported_origin()},
                 )
                 return board.execute(request.op_name, request.params, caller)
@@ -470,6 +479,21 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
                 else:
                     self._send_error(500, "WRITE_ERROR", f"Failed to write: {exc}")
             return None
+
+        def _author_for(self, request: api.WriteRequest) -> Any:
+            """The actor for a write. Issues and comments come from the person at the
+            dashboard, so with no actor sent they are the board's configured human
+            (``default_actor: human:...``); everything else, and a board with no
+            human configured, keeps ``dashboard:web``."""
+            actor = self._target.actor_for(request.actor)
+            if (
+                request.actor is None
+                and actor == api.DEFAULT_ACTOR
+                and request.op_name in api.HUMAN_AUTHORED_OPS
+            ):
+                with self._target.read() as ld:
+                    return api.human_author(api.get_config(ld)) or actor
+            return actor
 
         def _execute(self, request: api.WriteRequest) -> None:
             result = self._run(request)

@@ -1738,3 +1738,173 @@ class TestIssueHostGuard:
             server.shutdown()
             server.server_close()
             worker.join(timeout=5)
+
+
+class TestIssueWritesOverHttp:
+    """What the dashboard does to an issue filing or comment between the socket and the board."""
+
+    @staticmethod
+    def _board(tmp_path, *, default_actor=None):
+        import threading
+
+        from lattice.core.config import default_config, serialize_config
+        from lattice.dashboard.server import create_server
+        from lattice.storage.fs import atomic_write, ensure_lattice_dirs
+
+        ensure_lattice_dirs(tmp_path)
+        lattice_dir = tmp_path / ".lattice"
+        config = default_config()
+        config["issues"] = {"enabled": True}
+        if default_actor is None:
+            config.pop("default_actor", None)
+        else:
+            config["default_actor"] = default_actor
+        atomic_write(lattice_dir / "config.json", serialize_config(config))
+        server = create_server(lattice_dir, "127.0.0.1", 0)
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        return server, worker, lattice_dir
+
+    @staticmethod
+    def _post(server, path, body):
+        import http.client
+
+        host = f"127.0.0.1:{server.server_address[1]}"
+        conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=30)
+        conn.request(
+            "POST",
+            path,
+            json.dumps(body),
+            {"Content-Type": "application/json", "Origin": f"http://{host}", "Host": host},
+        )
+        response = conn.getresponse()
+        status, envelope = response.status, json.loads(response.read())
+        conn.close()
+        return status, envelope
+
+    @staticmethod
+    def _stop(server, worker):
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=5)
+
+    def test_a_geo_tagged_video_filed_over_http_is_stored_without_its_location(
+        self, tmp_path, monkeypatch
+    ):
+        """The media step is wired into POST /api/issues: delete the call and this goes red."""
+        import shutil
+        import subprocess
+
+        import pytest
+
+        from lattice.ops.task_attach import encode_payload
+
+        if shutil.which("ffmpeg") is None:
+            pytest.skip("needs ffmpeg")
+        monkeypatch.delenv("LATTICE_FFMPEG")  # the suite turns ffmpeg off; this test needs it
+        src = tmp_path / "geo.mp4"
+        subprocess.run(
+            [
+                "ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc=duration=1:size=64x48:rate=5",
+                "-pix_fmt", "yuv420p", "-metadata", "location=+37.7749-122.4194/",
+                "-metadata", "title=home", str(src),
+            ],
+            check=True,
+        )  # fmt: skip
+        server, worker, lattice_dir = self._board(tmp_path / "board")
+        try:
+            status, envelope = self._post(
+                server,
+                "/api/issues",
+                {
+                    "title": "geo",
+                    "media": [{"payload": encode_payload("geo.mp4", src.read_bytes())}],
+                },
+            )
+            assert status == 201, envelope
+            stored = next((lattice_dir / "issues" / "media").rglob("*.mp4"))
+            tags = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_format", str(stored)],
+                capture_output=True,
+                text=True,
+            ).stdout.lower()
+            assert "location" not in tags and "37.7749" not in tags
+            assert envelope["data"]["media"][0]["frames"], "ffmpeg's frames are stored"
+        finally:
+            self._stop(server, worker)
+
+    def test_a_failing_media_step_answers_an_envelope_not_a_reset(self, tmp_path, monkeypatch):
+        from lattice.dashboard import media_prep
+        from lattice.ops.task_attach import encode_payload
+
+        def boom(items):  # noqa: ANN001, ANN202
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr(media_prep, "prepare_issue_media", boom)
+        server, worker, _ld = self._board(tmp_path)
+        try:
+            status, envelope = self._post(
+                server,
+                "/api/issues",
+                {"title": "x", "media": [{"payload": encode_payload("a.png", b"png")}]},
+            )
+            assert status == 500
+            assert envelope["error"]["code"] == "WRITE_ERROR"
+        finally:
+            self._stop(server, worker)
+
+    def test_a_request_that_will_be_refused_never_reaches_the_media_step(
+        self, tmp_path, monkeypatch
+    ):
+        from lattice.dashboard import media_prep
+        from lattice.ops.task_attach import encode_payload
+
+        calls = []
+        monkeypatch.setattr(
+            media_prep, "prepare_issue_media", lambda items: calls.append(items) or items
+        )
+        server, worker, _ld = self._board(tmp_path)
+        try:
+            media = [{"payload": encode_payload("a.png", b"png")}]
+            assert self._post(server, "/api/issues", {"title": "  ", "media": media})[0] == 400
+            too_many = media * 65
+            assert self._post(server, "/api/issues", {"title": "x", "media": too_many})[0] == 400
+            assert calls == []
+        finally:
+            self._stop(server, worker)
+
+    def test_issues_and_comments_are_written_by_the_configured_human(self, tmp_path):
+        server, worker, _ld = self._board(tmp_path, default_actor="human:atin")
+        try:
+            status, filed = self._post(server, "/api/issues", {"title": "From the dashboard"})
+            assert status == 201 and filed["data"]["filed_by"] == "human:atin"
+            status, commented = self._post(
+                server, f"/api/issues/{filed['data']['id']}/comment", {"body": "A note"}
+            )
+            assert status == 200
+            assert commented["ok"]
+            import http.client
+
+            conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+            conn.request("GET", f"/api/issues/{filed['data']['id']}")
+            detail = json.loads(conn.getresponse().read())["data"]
+            conn.close()
+            assert detail["comments"][0]["author"] == "human:atin"
+            # An actor the page sends is still honoured, as it is for task writes.
+            _status, explicit = self._post(
+                server, "/api/issues", {"title": "By an agent", "actor": "agent:qa"}
+            )
+            assert explicit["data"]["filed_by"] == "agent:qa"
+        finally:
+            self._stop(server, worker)
+
+    def test_without_a_configured_human_the_dashboard_files_as_itself(self, tmp_path):
+        for default_actor in (None, "agent:cairn"):
+            server, worker, _ld = self._board(
+                tmp_path / str(default_actor), default_actor=default_actor
+            )
+            try:
+                _status, filed = self._post(server, "/api/issues", {"title": "x"})
+                assert filed["data"]["filed_by"] == "dashboard:web"
+            finally:
+                self._stop(server, worker)
