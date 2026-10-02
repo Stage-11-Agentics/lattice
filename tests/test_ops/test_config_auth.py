@@ -29,6 +29,7 @@ ADMIN_KEYS = {
     "task_types": ["task", "bug", "chore", "research"],
     "review_mode": "triple",
     "plan_review_mode": "inline",
+    "review_base_branch": "v2",
     "auto_code_review_on_transition": True,
     "completion_policies": {"done": {"require_roles": []}},
     "hooks": {"post_event": "touch /tmp/pwned"},

@@ -132,6 +132,28 @@ def test_hosted_docs_present() -> None:
         assert path.read_text().strip(), path
 
 
+def test_review_gate_v2_changes_are_declared_in_compatibility_docs() -> None:
+    spec = (HOSTED / "SPEC.md").read_text()
+    readme = (REPO / "README.md").read_text()
+    user_reference = (REPO / "docs" / "user-reference.md").read_text()
+    g6 = next(line for line in spec.splitlines() if line.startswith("| G-6 |"))
+    required = ("gh", "Review base:", "--dry-run", "three times", "raw diff")
+
+    for name, text in (
+        ("SPEC G-6", g6),
+        ("README upgrade note", readme),
+        ("user reference", user_reference),
+    ):
+        lowered = text.lower()
+        for phrase in required:
+            assert phrase.lower() in lowered, f"{name} does not declare {phrase!r}"
+        assert (
+            "current-cycle" in lowered
+            or "most recently entered" in lowered
+            or "latest entry into" in lowered
+        ), f"{name} does not declare the review-evidence boundary"
+
+
 def test_guide_covers_ac32_topics() -> None:
     guide = GUIDE.read_text()
     for needle in (

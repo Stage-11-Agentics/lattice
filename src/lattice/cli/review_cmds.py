@@ -273,12 +273,29 @@ def _claim_or_refuse(
 
 def _hosted(lattice_dir: Path) -> bool:
     """True when *lattice_dir* is a hosted checkout's cache (SPEC §9.3)."""
+    return _hosted_project_slug(lattice_dir) is not None
+
+
+def _hosted_project_slug(lattice_dir: Path) -> str | None:
+    """Return the hosted project slug for this cache, when one is bound."""
     from lattice.remote.binding import classify
 
     try:
-        return classify(lattice_dir.parent) is not None
+        hosted = classify(lattice_dir.parent)
     except Exception:  # noqa: BLE001 - routing already succeeded; a board read decides nothing
-        return False
+        return None
+    return hosted.project if hosted is not None else None
+
+
+def _review_base_config_remedy(lattice_dir: Path) -> str:
+    """Give the correct base-setting route for this board type."""
+    project = _hosted_project_slug(lattice_dir)
+    if project is not None:
+        return (
+            f"configure it on the server host with `{program_name()} server project config "
+            f"{project} --set review_base_branch=<branch>`"
+        )
+    return "set review_base_branch in `.lattice/config.json`"
 
 
 def _task_events(lattice_dir: Path, task_id: str) -> list[dict]:
@@ -581,7 +598,7 @@ def code_review(
             f"{raw_diff_chars} characters; configured caps are review_max_diff_lines="
             f"{max_diff_lines} and review_max_diff_chars={max_diff_chars}. At least one "
             "enabled cap would retain less than one third of the diff. Narrow the range "
-            "with --base <ref> or set review_base_branch in .lattice/config.json, then retry."
+            f"with --base <ref> or {_review_base_config_remedy(lattice_dir)}, then retry."
         )
         if not dry_run:
             assert actor is not None
@@ -942,7 +959,7 @@ def _echo_review_failure(
     click.echo(f"  Re-run with:  {program_name()} {review_type} {task_id}")
 
 
-def _timeout_guidance(config: dict) -> dict[str, Any]:
+def _timeout_guidance(config: dict, lattice_dir: Path | None = None) -> dict[str, Any]:
     """Describe this board's review budgets and a safe next step after timeout."""
     values: dict[str, Any] = {
         "review_timeout_seconds": config.get("review_timeout_seconds", DEFAULT_AGENT_TIMEOUT),
@@ -957,9 +974,20 @@ def _timeout_guidance(config: dict) -> dict[str, Any]:
         value = values[name]
         if not isinstance(value, int) or isinstance(value, bool):
             values[name] = default
+    project = _hosted_project_slug(lattice_dir) if lattice_dir is not None else None
+    if project is not None:
+        command = (
+            f"`{program_name()} server project config {project} "
+            "--set review_timeout_seconds=<seconds> "
+            "--set review_max_diff_lines=<lines> --set review_max_diff_chars=<chars>` "
+            "on the server host"
+        )
+    else:
+        command = "in .lattice/config.json"
     values["next_step"] = (
         "Narrow the review diff, or explicitly raise review_timeout_seconds, "
-        "review_max_diff_lines, or review_max_diff_chars in .lattice/config.json before retrying."
+        "review_max_diff_lines, or review_max_diff_chars "
+        f"{command} before retrying."
     )
     return values
 
@@ -1031,7 +1059,9 @@ def review_status(task_id: str, output_json: bool) -> None:
                 data["status"] = "failed"
                 data["last_failure"] = failure
                 if _is_timeout(failure.get("error")):
-                    data["timeout_guidance"] = _timeout_guidance(load_project_config(lattice_dir))
+                    data["timeout_guidance"] = _timeout_guidance(
+                        load_project_config(lattice_dir), lattice_dir
+                    )
             click.echo(json.dumps({"ok": True, "data": data}, indent=2))
         else:
             if has_artifacts:
@@ -1042,7 +1072,7 @@ def review_status(task_id: str, output_json: bool) -> None:
                     click.echo(line)
             elif failure:
                 guidance = (
-                    _timeout_guidance(load_project_config(lattice_dir))
+                    _timeout_guidance(load_project_config(lattice_dir), lattice_dir)
                     if _is_timeout(failure.get("error"))
                     else None
                 )
@@ -1069,12 +1099,14 @@ def review_status(task_id: str, output_json: bool) -> None:
         if is_json:
             data = dict(state)
             if _is_timeout(state.get("error")):
-                data["timeout_guidance"] = _timeout_guidance(load_project_config(lattice_dir))
+                data["timeout_guidance"] = _timeout_guidance(
+                    load_project_config(lattice_dir), lattice_dir
+                )
             click.echo(json.dumps({"ok": True, "data": data}, indent=2))
         else:
             detail = state.get("detail") or {}
             guidance = (
-                _timeout_guidance(load_project_config(lattice_dir))
+                _timeout_guidance(load_project_config(lattice_dir), lattice_dir)
                 if _is_timeout(state.get("error"))
                 else None
             )
@@ -1408,7 +1440,7 @@ def _run_single_and_store(
     if not success:
         cleanup_temp_files(task_id)
         if _is_timeout(message):
-            guidance = _timeout_guidance(config)
+            guidance = _timeout_guidance(config, lattice_dir)
             message = (
                 f"{message}. Configured limits: review_timeout_seconds="
                 f"{guidance['review_timeout_seconds']}, review_max_diff_lines="

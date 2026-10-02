@@ -545,6 +545,51 @@ class TestValidateCompletionPolicy:
         assert ok is True
         assert failures == []
 
+    def test_custom_in_review_stage_requires_evidence_after_stage_entry(self) -> None:
+        config = default_config()
+        config["workflow"]["statuses"] = ["backlog", "in_progress", "in_review", "done"]
+        config["workflow"]["completion_policies"] = {
+            "done": {"require_roles": ["review"]},
+        }
+        snap = _snap_with_evidence(
+            [{"id": "art_before", "role": "review", "source_type": "artifact"}]
+        )
+        events = [
+            {"type": "task_created", "data": {"status": "backlog"}},
+            {"type": "artifact_attached", "data": {"role": "review"}},
+            {"type": "status_changed", "data": {"to": "in_review"}},
+        ]
+
+        ok, failures = validate_completion_policy(config, snap, "done", events=events)
+
+        assert ok is False
+        assert any("latest transition into in_review" in failure for failure in failures)
+
+        events.append({"type": "comment_added", "data": {"role": "review"}})
+        ok, failures = validate_completion_policy(config, snap, "done", events=events)
+
+        assert ok is True
+        assert failures == []
+
+    def test_workflow_without_review_stage_keeps_lifetime_review_evidence(self) -> None:
+        config = default_config()
+        config["workflow"]["statuses"] = ["backlog", "in_progress", "done"]
+        config["workflow"]["completion_policies"] = {
+            "done": {"require_roles": ["review"]},
+        }
+        snap = _snap_with_evidence(
+            [{"id": "art_lifetime", "role": "review", "source_type": "artifact"}]
+        )
+        events = [
+            {"type": "task_created", "data": {"status": "backlog"}},
+            {"type": "artifact_attached", "data": {"role": "review"}},
+        ]
+
+        ok, failures = validate_completion_policy(config, snap, "done", events=events)
+
+        assert ok is True
+        assert failures == []
+
     def test_current_cycle_role_edit_satisfies_done(self) -> None:
         config = default_config()
         snap = _snap_with_evidence(

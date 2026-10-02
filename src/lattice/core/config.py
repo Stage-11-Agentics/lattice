@@ -681,15 +681,21 @@ def validate_completion_policy(
     if require_roles:
         present_roles = get_evidence_roles(snapshot)
         review_role_existed = "review" in present_roles
-        if "review" in require_roles and events is not None:
-            if not _has_current_review_evidence(events):
+        review_stage = _configured_review_stage(workflow)
+        if "review" in require_roles and events is not None and review_stage is not None:
+            if not _has_current_review_evidence(events, review_stage):
                 present_roles.discard("review")
         for required in require_roles:
             if required not in present_roles:
-                if required == "review" and events is not None and review_role_existed:
+                if (
+                    required == "review"
+                    and events is not None
+                    and review_role_existed
+                    and review_stage is not None
+                ):
                     failures.append(
                         "Missing current-cycle review evidence: attach or comment with role "
-                        "review after the latest transition into review. Satisfy with: "
+                        f"review after the latest transition into {review_stage}. Satisfy with: "
                         "lattice attach --role review or lattice comment --role review"
                     )
                 else:
@@ -725,15 +731,32 @@ def validate_completion_policy(
     return (len(failures) == 0, failures)
 
 
-def _has_current_review_evidence(events: list[dict] | tuple[dict, ...]) -> bool:
-    """Whether review evidence follows the task's latest entry into review."""
+def _configured_review_stage(workflow: dict) -> str | None:
+    """Return the configured review status slug, if the workflow has one.
+
+    ``review`` is the agentic workflow's gate; ``in_review`` is the familiar
+    linear-workflow equivalent. Workflows without either stage retain lifetime
+    role semantics because there is no review-cycle boundary to enforce.
+    """
+    statuses = workflow.get("statuses", [])
+    if not isinstance(statuses, list):
+        return None
+    if "review" in statuses:
+        return "review"
+    if "in_review" in statuses:
+        return "in_review"
+    return None
+
+
+def _has_current_review_evidence(events: list[dict] | tuple[dict, ...], review_stage: str) -> bool:
+    """Whether review evidence follows the task's latest entry into *review_stage*."""
     latest_review_entry = -1
     for index, event in enumerate(events):
         event_type = event.get("type")
         data = event.get("data") or {}
-        if event_type == "status_changed" and data.get("to") == "review":
+        if event_type == "status_changed" and data.get("to") == review_stage:
             latest_review_entry = index
-        elif event_type == "task_created" and data.get("status") == "review":
+        elif event_type == "task_created" and data.get("status") == review_stage:
             latest_review_entry = index
     if latest_review_entry < 0:
         return False

@@ -57,7 +57,8 @@ from lattice.storage.ownership import (
 
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 
-#: ``project config`` keys and their allowed values: ``init``'s choices (SPEC §8.2).
+#: Enum-valued ``project config`` keys (SPEC §8.2); typed string/integer keys
+#: are listed separately below.
 CONFIG_CHOICES: dict[str, tuple[str, ...]] = {
     "review_mode": ("inline", "single", "triple"),
     "plan_review_mode": ("inline", "single", "triple"),
@@ -66,6 +67,12 @@ CONFIG_CHOICES: dict[str, tuple[str, ...]] = {
     "auto_plan_review_on_transition": ("true", "false"),
 }
 _BOOL_KEYS = ("auto_code_review_on_transition", "auto_plan_review_on_transition")
+_STRING_CONFIG_KEYS = {"review_base_branch"}
+_INTEGER_CONFIG_MINIMUMS = {
+    "review_timeout_seconds": 1,
+    "review_max_diff_lines": 0,
+    "review_max_diff_chars": 0,
+}
 
 #: What ``server init`` writes to a new ``server.json``: SPEC §8.1's defaults.
 DEFAULT_SERVER_JSON: dict[str, Any] = {
@@ -533,17 +540,55 @@ def validate_config_changes(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict) or not raw:
         raise OpError("VALIDATION_ERROR", "Give at least one --set KEY=VALUE.")
     typed: dict[str, Any] = {}
+    allowed_keys = (
+        set(CONFIG_CHOICES) | _STRING_CONFIG_KEYS | set(_INTEGER_CONFIG_MINIMUMS) | {"task_types"}
+    )
     for key, value in raw.items():
         if key == "task_types":
             typed[key] = _validate_task_types(value)
             continue
-        if key not in CONFIG_CHOICES:
+        if key not in allowed_keys:
             raise OpError(
                 "VALIDATION_ERROR",
                 f"'{key}' cannot be set with project config; allowed keys: "
-                f"{', '.join((*CONFIG_CHOICES, 'task_types'))}.",
+                f"{', '.join(sorted(allowed_keys))}.",
                 {"key": key},
             )
+        if key in _STRING_CONFIG_KEYS:
+            if (
+                not isinstance(value, str)
+                or not value.strip()
+                or any(char in value for char in "\0\r\n")
+            ):
+                raise OpError(
+                    "VALIDATION_ERROR",
+                    f"Invalid value {value!r} for {key}; provide a non-empty branch name.",
+                    {"key": key},
+                )
+            typed[key] = value.strip()
+            continue
+        if key in _INTEGER_CONFIG_MINIMUMS:
+            if isinstance(value, bool):
+                integer = None
+            elif isinstance(value, int):
+                integer = value
+            elif isinstance(value, str) and value.isdecimal():
+                try:
+                    integer = int(value)
+                except ValueError:
+                    integer = None
+            else:
+                integer = None
+            minimum = _INTEGER_CONFIG_MINIMUMS[key]
+            if integer is None or integer < minimum:
+                qualifier = "positive" if minimum else "non-negative"
+                raise OpError(
+                    "VALIDATION_ERROR",
+                    f"Invalid value {value!r} for {key}; provide a {qualifier} integer.",
+                    {"key": key},
+                )
+            typed[key] = integer
+            continue
         text = str(value).lower() if isinstance(value, bool) else value
         if text not in CONFIG_CHOICES[key]:
             raise OpError(

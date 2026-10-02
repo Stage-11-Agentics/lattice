@@ -139,6 +139,11 @@ def test_project_config_refuses_before_writing(root: Path) -> None:
         {"auto_code_review_on_transition": "yes"},
         {"task_types": []},
         {"task_types": ["bug", "chore"]},
+        {"review_base_branch": "  "},
+        {"review_base_branch": True},
+        {"review_timeout_seconds": "0"},
+        {"review_max_diff_lines": "-1"},
+        {"review_max_diff_chars": "many"},
         {"unallowlisted": "x"},
     ):
         with pytest.raises(OpError) as exc:
@@ -213,6 +218,34 @@ def test_project_config_with_the_server_stopped_writes_config_and_maintenance(
     assert config["task_types"] == ["task", "bug", "chore", "research"]
     record = json.loads((board / "hosted" / "maintenance.json").read_text())
     assert record["command"] == "project config"
+
+
+def test_project_config_sets_review_base_and_numeric_budgets(root: Path) -> None:
+    admin.create_project(root, "p")
+
+    result = _invoke(
+        "server",
+        "project",
+        "config",
+        "p",
+        "--set",
+        "review_base_branch=v2",
+        "--set",
+        "review_timeout_seconds=720",
+        "--set",
+        "review_max_diff_lines=5000",
+        "--set",
+        "review_max_diff_chars=120000",
+        "--root",
+        str(root),
+    )
+
+    assert result.exit_code == 0, result.output
+    config = json.loads((root / "projects" / "p" / ".lattice" / "config.json").read_text())
+    assert config["review_base_branch"] == "v2"
+    assert config["review_timeout_seconds"] == 720
+    assert config["review_max_diff_lines"] == 5000
+    assert config["review_max_diff_chars"] == 120000
 
 
 def test_unlock_removes_a_stale_marker(root: Path) -> None:

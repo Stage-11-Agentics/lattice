@@ -1327,6 +1327,25 @@ class TestFailedReviewIsVisible:
         assert guidance["review_max_diff_chars"] == 45678
         assert "Narrow the review diff" in guidance["next_step"]
 
+    def test_hosted_remediation_uses_server_project_config_command(self, tmp_path):
+        from lattice.cli.review_cmds import _review_base_config_remedy, _timeout_guidance
+
+        root = tmp_path / "hosted-cache"
+        lattice_dir = root / ".lattice"
+        (lattice_dir / "cache").mkdir(parents=True)
+        identity = {"remote": "stage11", "project": "lattice"}
+        (root / ".lattice-remote.json").write_text(json.dumps(identity))
+        (lattice_dir / "cache" / "state.json").write_text(json.dumps(identity))
+
+        base_remedy = _review_base_config_remedy(lattice_dir)
+        timeout_remedy = _timeout_guidance({}, lattice_dir)["next_step"]
+
+        assert "server project config lattice --set review_base_branch=<branch>" in base_remedy
+        assert "on the server host" in base_remedy
+        assert "server project config lattice" in timeout_remedy
+        assert "--set review_timeout_seconds=<seconds>" in timeout_remedy
+        assert ".lattice/config.json" not in timeout_remedy
+
     def test_success_still_exits_zero(self, tmp_path):
         """Positive pair for the exit-code assertion above."""
         root = _make_board(tmp_path, {"review_mode": "single"})

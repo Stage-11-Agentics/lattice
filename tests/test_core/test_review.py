@@ -952,6 +952,18 @@ def _git(cwd: Path, *args: str) -> str:
     ).stdout
 
 
+def _set_origin_upstream(repo: Path, branch: str, upstream: str) -> None:
+    _git(repo, "config", "remote.origin.url", "https://example.invalid/repo.git")
+    _git(
+        repo,
+        "config",
+        "remote.origin.fetch",
+        "+refs/heads/*:refs/remotes/origin/*",
+    )
+    _git(repo, "config", f"branch.{branch}.remote", "origin")
+    _git(repo, "config", f"branch.{branch}.merge", f"refs/heads/{upstream}")
+
+
 def _non_default_remote_base_repo(tmp_path: Path):
     """A feature cut from origin/v2 while origin/HEAD still names diverged main."""
     repo = tmp_path / "non-default-base"
@@ -1162,6 +1174,57 @@ class TestReviewBaseSelection:
         assert "ticket change" in res.diff
         assert "main-only work" not in res.diff
         assert not any(command and command[0] == "fetch" for command in git_commands)
+
+    def test_excludes_pushed_head_and_its_upstream_after_local_fix(self, tmp_path: Path) -> None:
+        repo, lattice_dir, feature, _root_sha, v2_sha, _main_sha = _non_default_remote_base_repo(
+            tmp_path
+        )
+        _set_origin_upstream(repo, feature, feature)
+        assert review_mod._upstream_ref_for_branch(repo, feature) == f"origin/{feature}"
+        (repo / "fix.txt").write_text("unpublished fix\n")
+        _git(repo, "add", "fix.txt")
+        _git(repo, "commit", "-m", "LAT-367: local review fix")
+
+        res = review_mod.resolve_diff(
+            lattice_dir,
+            "task_01",
+            {"branch_links": [{"branch": feature}]},
+        )
+
+        assert res.success is True, res.error
+        assert res.base_ref == "origin/v2"
+        assert res.base_sha == v2_sha
+        assert "ticket change" in res.diff
+        assert "unpublished fix" in res.diff
+
+    def test_prefers_integration_branch_advanced_after_feature_fork(self, tmp_path: Path) -> None:
+        repo, lattice_dir, feature, _root_sha, v2_sha, main_sha = _non_default_remote_base_repo(
+            tmp_path
+        )
+        _set_origin_upstream(repo, feature, "v2")
+        assert review_mod._upstream_ref_for_branch(repo, feature) == "origin/v2"
+        _git(repo, "checkout", "-b", "v2", "origin/v2")
+        (repo / "later-integration.txt").write_text("landed after feature fork\n")
+        _git(repo, "add", "later-integration.txt")
+        _git(repo, "commit", "-m", "later v2 change")
+        advanced_v2_sha = _git(repo, "rev-parse", "HEAD").strip()
+        _git(repo, "update-ref", "refs/remotes/origin/v2", advanced_v2_sha)
+        _git(repo, "checkout", feature)
+
+        res = review_mod.resolve_diff(
+            lattice_dir,
+            "task_01",
+            {"branch_links": [{"branch": feature}]},
+        )
+
+        assert res.success is True, res.error
+        assert res.base_ref == "origin/v2"
+        assert res.base_sha == v2_sha
+        assert advanced_v2_sha != v2_sha
+        assert main_sha != v2_sha
+        assert "ticket change" in res.diff
+        assert "main-only work" not in res.diff
+        assert "landed after feature fork" not in res.diff
 
     def test_explicit_base_precedes_gh_and_board_config(self, tmp_path: Path, monkeypatch) -> None:
         _repo, lattice_dir, feature, *_ = _non_default_remote_base_repo(tmp_path)

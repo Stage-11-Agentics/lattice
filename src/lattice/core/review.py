@@ -770,12 +770,14 @@ def resolve_diff(
 
     **Base selection** is explicit ``--base``, the open PR's base from ``gh``,
     ``review_base_branch`` from board config, then local inference. Inference
-    considers the remote default and remote branches that are ancestors of the
-    head; it picks the smallest commit distance from merge-base to head, with
-    the remote default and then lexical ref order breaking ties. Local
-    ``main``/``master`` are a final compatibility fallback only when no remote
-    candidate resolves. No ``git fetch`` is ever run — a review must not
-    mutate refs or block on Git network access.
+    considers the remote default and remote branches with a merge-base against
+    the head, even when those branches advanced after the feature fork. Remote
+    copies of the head branch are excluded. It picks the smallest commit
+    distance from merge-base to head, with the remote default and then lexical
+    ref order breaking ties. Local ``main``/``master`` are a final
+    compatibility fallback only when no remote candidate resolves. No
+    ``git fetch`` is ever run — a review must not mutate refs or block on Git
+    network access.
 
     An **empty** diff is never accepted as success.
     """
@@ -919,15 +921,26 @@ def _resolve_base_ref(
     remote_default = _origin_head_ref(repo_root)
     head_sha = _rev_parse(repo_root, head_ref)
     remote_candidates = _remote_branch_refs(repo_root)
-    candidates: set[str] = set()
+    candidates: set[str] = set(remote_candidates)
     if remote_default:
         candidates.add(remote_default)
-    candidates.update(
+
+    head_branch = _branch_name_for_ref(repo_root, head_ref)
+    head_upstream = _upstream_ref_for_branch(repo_root, head_branch) if head_branch else None
+    # A pushed copy of the reviewed feature is not a meaningful base. In a
+    # rework cycle it commonly sits one commit behind HEAD and would make the
+    # review cover only that latest fix. Exclude every remote copy with the
+    # same branch name (including non-origin remotes), including its upstream
+    # when that points to the head copy. A feature can instead track an
+    # integration branch (for example origin/main or origin/v2); keep it.
+    head_remote_copies = {
         candidate
-        for candidate in remote_candidates
-        if _rev_parse(repo_root, candidate) != head_sha
-        and _is_ancestor(repo_root, candidate, head_ref)
-    )
+        for candidate in candidates
+        if head_branch and candidate.endswith("/" + head_branch)
+    }
+    if head_branch and head_upstream and head_upstream.endswith("/" + head_branch):
+        head_remote_copies.add(head_upstream)
+    candidates.difference_update(head_remote_copies)
 
     scored: list[tuple[int, int, str, str]] = []
     for candidate in candidates:
@@ -1116,6 +1129,25 @@ def _remote_branch_refs(repo_root: Path) -> list[str]:
         for ref in result.stdout.splitlines()
         if ref.strip() and not ref.rstrip().endswith("/HEAD")
     )
+
+
+def _upstream_ref_for_branch(repo_root: Path, branch: str) -> str | None:
+    """Return a local branch's configured upstream in short-ref form."""
+    result = subprocess.run(
+        [
+            "git",
+            "for-each-ref",
+            "--format=%(upstream:short)",
+            f"refs/heads/{branch}",
+        ],
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    ref = result.stdout.strip()
+    return ref or None
 
 
 def _commit_distance_from_merge_base(
