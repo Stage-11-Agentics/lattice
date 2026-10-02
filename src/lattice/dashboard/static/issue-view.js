@@ -76,6 +76,12 @@
       return rows.find(function (issue) { return issue.id === id; }) || details[id] || null;
     }
     function visibleRows() { return person ? personRows : issues; }
+    // An issue reference (its id or short ID) as the short ID people read.
+    function issueRef(ref) {
+      var found = issues.find(function (item) { return item.id === ref || item.short_id === ref; }) ||
+        personRows.find(function (item) { return item.id === ref || item.short_id === ref; });
+      return found ? found.short_id || found.id : ref;
+    }
     function rowsForQueue(key, sourceRows) {
       var source = sourceRows || visibleRows();
       if (person && key === "all") return logic.sortPersonIssues(source, person.actor);
@@ -428,7 +434,7 @@
         var full = actorText(tag.actor);
         return why + '<span class="issue-q-actor" data-actor="' + esc(full) + '">' + esc(full || "unknown") + "</span>";
       }
-      if (tag.kind === "duplicate") return why + "duplicate of " + esc(tag.of);
+      if (tag.kind === "duplicate") return why + "duplicate of " + esc(issueRef(tag.of));
       if (tag.kind === "dismissed") return why + "dismissed";
       if (tag.kind === "state") return why + esc(tag.text);
       return why + '<span class="issue-tid">' + esc(tag.task) + "</span>" + (tag.more ? " +" + tag.more : "") + " " + esc(tag.status);
@@ -568,7 +574,7 @@
           var target = issues.find(function (item) { return item.short_id === duplicate || item.id === duplicate; });
           var line = target ? String(target.title || "").split("\n")[0] : "";
           if (line.length > 100) line = line.slice(0, 97) + "...";
-          return '<div class="issue-closure"><b>Duplicate of <a href="#" data-goto="' + esc(target ? target.id : duplicate) + '">' + esc(duplicate) +
+          return '<div class="issue-closure"><b>Duplicate of <a href="#" data-goto="' + esc(target ? target.id : duplicate) + '">' + esc(issueRef(duplicate)) +
             "</a>.</b> " + esc(line) + "</div>";
         }
         return '<div class="issue-closure"><b>Dismissed.</b> ' + esc(closure.reason || "") + "</div>";
@@ -632,7 +638,7 @@
         case "issue_linked": what = (data.promoted ? "made story " : "linked to ") + '<span class="issue-tid">' + esc(data.task_id || "task") + "</span>"; break;
         case "issue_unlinked": what = 'unlinked from <span class="issue-tid">' + esc(data.task_id || "task") + "</span>"; break;
         case "issue_dismissed": what = "dismissed: " + esc(data.reason || ""); break;
-        case "issue_marked_duplicate": what = 'marked a duplicate of <span class="issue-iid">' + esc(data.duplicate_of || "issue") + "</span>"; break;
+        case "issue_marked_duplicate": what = 'marked a duplicate of <span class="issue-iid">' + esc(issueRef(data.duplicate_of || "issue")) + "</span>"; break;
         case "issue_reopened": what = "reopened"; break;
         case "issue_media_added": what = "added a " + esc((data.media && data.media.kind) || data.kind || "file"); break;
         case "issue_comment_added": what = "commented"; break;

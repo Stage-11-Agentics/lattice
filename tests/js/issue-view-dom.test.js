@@ -212,7 +212,7 @@ test("the person page labels each row by that issue's own state", async () => {
     issue(2, { filed_by: "agent:qa", state: "linked", tasks: [{ id: "task_9", short_id: "T-9", status: "in_progress", title: "Fix" }] }),
     issue(3, { filed_by: "human:atin", state: "dismissed", closure: { kind: "dismissed", reason: "not a bug" },
       comments: [{ author: "agent:qa", body: "cannot reproduce", created_at: ago(1), origin: { user: "atin", machine: "Hyperion" } }] }),
-    issue(4, { filed_by: "agent:qa", state: "duplicate", closure: { kind: "duplicate", duplicate_of: "T-I1" } }),
+    issue(4, { filed_by: "agent:qa", state: "duplicate", closure: { kind: "duplicate", duplicate_of: "iss_1" } }), // the server names the target by its id
   ]);
   const view = boot(server);
   try {

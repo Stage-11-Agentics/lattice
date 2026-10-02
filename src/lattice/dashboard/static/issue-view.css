@@ -15,12 +15,16 @@ body.issue-view-active #app{flex:1 1 auto;min-height:0;width:100%;max-width:none
 /* nav: the open count on the Issues tab, and the amber "+ Issue" button */
 .nav-tab .issue-nav-count{display:inline-block;min-width:1.75rem;text-align:center;margin-left:.375rem;padding:0 .3rem;border-radius:10px;font-size:.72rem;font-weight:700;letter-spacing:0;
   background:var(--st-open-bg);color:var(--st-open);border:1px solid var(--st-open-border);font-variant-numeric:tabular-nums}
+.nav-tab .issue-nav-count:empty{display:none}
 .nav-tab.active .issue-nav-count{background:rgba(0,0,0,.25);color:#fff;border-color:rgba(255,255,255,.35)}
-.nav-right .btn-issue{background:transparent;color:var(--st-open);border-color:var(--st-open-border);font-weight:600}
+/* "+ Issue" widens the nav's right group; it wraps rather than run off a narrow window. Same on every view. */
+.nav-right{flex-wrap:wrap;justify-content:flex-end;row-gap:.375rem;min-width:0}
+.nav-right .btn-issue{white-space:nowrap;background:transparent;color:var(--st-open);border-color:var(--st-open-border);font-weight:600}
 .nav-right .btn-issue:hover{background:var(--st-open-bg)}
 
 .issue-inbox kbd,.issue-closer kbd,.issue-file-overlay kbd{font-family:var(--font-mono);font-size:.75rem;padding:0 .35rem;border:1px solid var(--border);border-bottom-width:2px;border-radius:var(--radius-sm);
   background:var(--surface-raised);color:var(--text-secondary);min-width:1.4rem;display:inline-block;text-align:center;line-height:1.5}
+.issue-inbox button,.issue-closer button,.issue-dialog button{font-family:inherit}
 .issue-iid,.issue-tid{font-family:var(--font-mono);font-weight:700;white-space:nowrap}
 .issue-iid{color:var(--text-primary)}
 .issue-tid{color:var(--accent-primary)}
@@ -39,7 +43,7 @@ body.issue-view-active #app{flex:1 1 auto;min-height:0;width:100%;max-width:none
 .issue-tstatus-cancelled{color:var(--st-closed);text-decoration:line-through}
 .issue-tstatus-in_progress,.issue-tstatus-review,.issue-tstatus-in_validation,.issue-tstatus-pr_open{color:var(--st-linked);border-color:var(--st-linked-border);background:var(--st-linked-bg)}
 
-.issue-inbox{--issue-queue-width:clamp(25rem,24vw,34rem);--issue-row-height:4.5rem;display:grid;grid-template-columns:var(--issue-queue-width) minmax(0,1fr);height:100%;min-width:0;font-variant-numeric:tabular-nums}
+.issue-inbox{--issue-queue-width:clamp(25rem,24vw,34rem);--issue-row-height:4.5rem;display:grid;grid-template-columns:var(--issue-queue-width) minmax(0,1fr);height:100%;min-width:0;font-variant-numeric:tabular-nums;letter-spacing:normal}
 
 /* ---------- left: the queue ---------- */
 .issue-q-pane{display:flex;flex-direction:column;min-height:0;min-width:0;border-right:1px solid var(--border);background:var(--surface-card)}
@@ -155,7 +159,7 @@ body.issue-view-active #app{flex:1 1 auto;min-height:0;width:100%;max-width:none
 .issue-quiet h2{color:var(--st-resolved);font-size:1.4rem;margin:0 0 .5rem}
 
 /* look closer: the current item as large as the window allows */
-.issue-closer{position:fixed;inset:0;z-index:35;background:#000;display:flex;flex-direction:column}
+.issue-closer{position:fixed;inset:0;z-index:35;background:#000;display:flex;flex-direction:column;letter-spacing:normal}
 .issue-closer-bar{flex-shrink:0;height:3rem;display:flex;align-items:center;gap:1rem;padding:0 1.25rem;background:rgba(23,23,23,.92);border-bottom:1px solid var(--border);font-size:.9rem}
 .issue-closer-bar .issue-iid{font-size:1.05rem;width:6.5rem}
 .issue-closer-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-secondary)}
@@ -169,7 +173,7 @@ body.issue-view-active #app{flex:1 1 auto;min-height:0;width:100%;max-width:none
 
 /* ---------- the quick-file panel ---------- */
 .issue-file-overlay{position:fixed;inset:0;background:var(--overlay-bg);z-index:60;display:flex;align-items:flex-start;justify-content:center;padding-top:8vh}
-.issue-dialog{width:min(48rem,calc(100vw - 2rem));background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);box-shadow:var(--shadow-modal);color:var(--text-primary)}
+.issue-dialog{width:min(48rem,calc(100vw - 2rem));background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);box-shadow:var(--shadow-modal);color:var(--text-primary);letter-spacing:normal}
 .issue-dialog-head{display:flex;align-items:center;justify-content:space-between;padding:.625rem .875rem;border-bottom:1px solid var(--border);font-weight:700}
 .issue-dialog-body{padding:.75rem .875rem .875rem}
 .issue-dialog-foot{display:flex;align-items:center;gap:.5rem;padding:.625rem .875rem;border-top:1px solid var(--border)}
@@ -224,7 +228,6 @@ body.issue-dragging-files::after{content:"";position:fixed;inset:.375rem;border:
 @media(max-width:520px){
   .issue-q-tabs{gap:.2rem;padding:.4rem}
   .issue-q-tab{height:2.8rem;padding:.2rem .35rem}
-  .issue-q-row{height:3.8rem}
   .issue-q-thumb{height:2.8rem;flex-basis:4rem}
   .issue-q-age{width:3.5rem}
   .issue-d-head{gap:.35rem;padding:0 .5rem;font-size:.7rem}
