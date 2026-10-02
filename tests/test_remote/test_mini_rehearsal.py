@@ -23,6 +23,10 @@ def _show(cwd: Path, short_id: str) -> dict:
     return json.loads(result.stdout)["data"]
 
 
+#: About 1 s alone; 150 CLI runs and a server, so a loaded parallel run or a slow
+#: CI runner outlasts the suite's 15 s default (LAT-363). The assertions carry
+#: the test; this only bounds a hang.
+@pytest.mark.timeout(120)
 def test_two_worktrees_alternate_fifty_writes(
     hosted_env: HostedEnv, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

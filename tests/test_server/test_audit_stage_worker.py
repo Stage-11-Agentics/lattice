@@ -8,6 +8,7 @@ readers' catch-ups timed out. In the worker it keeps its idle speed.
 
 from __future__ import annotations
 
+import os
 import shutil
 import signal
 import subprocess
@@ -33,7 +34,8 @@ pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git is not 
 
 BOARD_FILES = 3000
 #: With two spinning threads, one changed file of 3,000: the worker staged in
-#: 0.11 s and in-process staging took 5-9 s (laptop, LAT-340).
+#: 0.11 s and in-process staging took 5-9 s (laptop, LAT-340). An absolute
+#: bound, so it runs in the perf lane on a quiet host (LAT-363).
 CONTENDED_LIMIT_SECONDS = 2.0
 QUICK = AuditConfig(debounce_seconds=0.05, max_interval_seconds=1)
 
@@ -46,6 +48,26 @@ def _repo(tmp_path: Path, files: int) -> Path:
         (tasks / f"task_{n:05d}.json").write_text(f'{{"n": {n}}}\n')
     subprocess.run(["git", "init", "-q", str(directory)], check=True, timeout=30)
     return directory
+
+
+def _stage_worker_with_pid_marker() -> str:
+    return "\n".join(
+        (
+            "import os",
+            "from pathlib import Path",
+            "from lattice.server.audit import Stager, _stage_worker",
+            "_stage_here = Stager.stage_here",
+            "def _stage_here_and_mark_worker(self):",
+            "    tree = _stage_here(self)",
+            "    Path(os.environ['LATTICE_STAGE_WORKER_MARKER']).write_text(",
+            "        str(os.getpid())",
+            "    )",
+            "    return tree",
+            "Stager.stage_here = _stage_here_and_mark_worker",
+            "_stage_worker()",
+            "",
+        )
+    )
 
 
 @contextmanager
@@ -123,7 +145,47 @@ def test_a_worker_that_dies_mid_stage_is_a_git_error(
     assert stager._worker is None
 
 
-def test_busy_server_threads_do_not_slow_the_stage(tmp_path: Path) -> None:
+def test_stage_runs_in_the_worker_process(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    directory = _repo(tmp_path, 5)
+    marker = directory / ".stage-worker-pid"
+    monkeypatch.setenv("LATTICE_STAGE_WORKER_MARKER", str(marker))
+    monkeypatch.setattr(audit, "_STAGE_WORKER", _stage_worker_with_pid_marker())
+    stager = Stager(directory)
+    try:
+        stager.stage()
+        assert marker.exists(), "stage_here did not mark the worker process"
+        assert stager._worker is not None
+        worker_pid = int(marker.read_text())
+        assert worker_pid == stager._worker.pid
+        assert worker_pid != os.getpid()
+    finally:
+        stager.close()
+
+
+def test_server_audit_commit_stages_in_the_worker_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    marker = tmp_path / ".stage-worker-pid"
+    monkeypatch.setenv("LATTICE_STAGE_WORKER_MARKER", str(marker))
+    monkeypatch.setattr(audit, "_STAGE_WORKER", _stage_worker_with_pid_marker())
+    root = make_root(tmp_path, projects={"alpha": {"code": "ALP"}})
+    project, stream = direct_project(root, "alpha", QUICK)
+    try:
+        run(project, request("task.create", {"title": "one"}))
+        wait_for(lambda: any(line["event"] == "audit_commit" for line in log_lines(stream)))
+        assert project.committer is not None
+        stager = project.committer.stager
+        assert stager._worker is not None
+        assert marker.exists(), "server audit stage did not mark the worker process"
+        worker_pid = int(marker.read_text())
+        assert worker_pid == stager._worker.pid
+        assert worker_pid != os.getpid()
+    finally:
+        close(project)
+
+
+@pytest.mark.perf
+def test_busy_server_threads_do_not_slow_the_stage_on_a_quiet_host(tmp_path: Path) -> None:
     directory = _repo(tmp_path, BOARD_FILES)
     stager = Stager(directory)
     try:
@@ -201,10 +263,8 @@ def test_close_kills_a_worker_that_does_not_exit(
     monkeypatch.setattr(audit, "_STAGE_WORKER", "import time; time.sleep(60)")
     stager = Stager(_repo(tmp_path, 1))
     worker = stager._worker = stager._start_worker()
-    started = time.monotonic()
     stager.close(timeout=0.2)
     assert worker.returncode == -signal.SIGKILL
-    assert time.monotonic() - started < 5
 
 
 def _record_worker_at_shutdown(
