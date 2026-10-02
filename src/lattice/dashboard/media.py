@@ -275,11 +275,13 @@ def serve_issue_media(handler: Any, target: Any, path: str) -> None:
         return
     if frame is None:
         file_path = media_path(lattice_dir, issue_id, entry)
-        digest = entry.get("sha256")
-        if not isinstance(digest, str) or not _SHA256_RE.fullmatch(digest):
-            _refuse(handler, 500, "INTEGRITY_ERROR", "Issue media has an invalid SHA-256 digest.")
-            return
-        content_type, etag = entry["content_type"], digest
+        content_type = entry["content_type"]
+        stored_sha256 = entry.get("sha256")
+        etag = (
+            stored_sha256
+            if isinstance(stored_sha256, str) and _SHA256_RE.fullmatch(stored_sha256)
+            else None
+        )
         filename = file_path.name if file_path else media_id
     else:
         directory = frames_dir(lattice_dir, issue_id, entry)

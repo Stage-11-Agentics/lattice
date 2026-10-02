@@ -134,7 +134,10 @@ def test_media_bytes_headers_and_etag(served) -> None:  # noqa: ANN001
     assert (status, headers["content-type"], body) == (200, "image/jpeg", jpeg())
 
 
-@pytest.mark.parametrize("bad_sha", ['x"\r\nSet-Cookie: injected=1\r\n\r\n<script>', "€"])
+@pytest.mark.parametrize(
+    "bad_sha",
+    ['x"\r\nSet-Cookie: injected=1\r\n\r\n<script>', "€", "a" * 63 + "G\r\nX-Injected: yes"],
+)
 def test_malformed_snapshot_hash_is_omitted_at_header_boundary(
     served, monkeypatch: pytest.MonkeyPatch, bad_sha: str
 ) -> None:  # noqa: ANN001
@@ -416,16 +419,3 @@ def test_a_held_video_does_not_stall_the_board(served) -> None:  # noqa: ANN001
         assert time.monotonic() - started < 2
     finally:
         held.close()
-
-
-def test_invalid_media_digest_is_never_used_as_an_etag(served) -> None:  # noqa: ANN001
-    server, issue, lattice_dir, _config = served
-    snapshot_path = lattice_dir / "issues" / f"{issue['id']}.json"
-    snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
-    snapshot["media"][0]["sha256"] = "a" * 63 + "G\r\nX-Injected: yes"
-    atomic_write(snapshot_path, json.dumps(snapshot, sort_keys=True, indent=2) + "\n")
-
-    status, headers, body = get(server, url(issue, 0))
-    assert status == 500
-    assert b"invalid SHA-256 digest" in body
-    assert "x-injected" not in headers
