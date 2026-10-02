@@ -200,6 +200,15 @@ def test_upload_needs_a_token_for_the_project(server: ServerHandle, root: Path) 
     assert put_stage(server, beta_only, blob(200, b"scope"), slug="beta")[0] == 201
 
 
+def _body_complete(reply: bytes) -> bool:
+    head, _, body = reply.partition(b"\r\n\r\n")
+    for line in head.split(b"\r\n")[1:]:
+        name, _, value = line.partition(b":")
+        if name.strip().lower() == b"content-length":
+            return len(body) >= int(value)
+    return True
+
+
 @pytest.mark.parametrize("mode", ["missing", "chunked"])
 def test_upload_needs_a_content_length(server: ServerHandle, root: Path, token: str, mode) -> None:
     data = blob(200, b"len")
@@ -219,7 +228,14 @@ def test_upload_needs_a_content_length(server: ServerHandle, root: Path, token: 
                 + data
                 + b"\r\n0\r\n\r\n"
             )
-            reply = conn.recv(65536)
+            reply = b""
+            # Headers and body may arrive in separate segments: read to the
+            # end of the declared body (the server closes or length-delimits).
+            while b"\r\n\r\n" not in reply or not _body_complete(reply):
+                part = conn.recv(65536)
+                if not part:
+                    break
+                reply += part
         finally:
             conn.close()
         status, body = int(reply.split()[1]), reply
