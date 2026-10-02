@@ -1288,6 +1288,10 @@
         document.body.appendChild(dropHint);
       }
       setTextIfChanged(dropHint.querySelector(".issue-drop-label"), dropLabel());
+      // Just below the nav's real bottom, however many rows it wrapped to.
+      var nav = document.querySelector(".nav");
+      var top = (nav ? Math.max(0, Math.round(nav.getBoundingClientRect().bottom)) : 42) + 18 + "px";
+      if (dropHint.style.top !== top) dropHint.style.top = top;
       document.body.classList.add("issue-dragging-files");
     }
     function hideDrop() {

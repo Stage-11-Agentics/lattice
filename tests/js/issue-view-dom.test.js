@@ -413,6 +413,24 @@ test("pasting or dropping a file anywhere opens the panel with it attached", asy
   }
 });
 
+test("the drop hint sits below the nav's real bottom, even when the nav wraps to more rows", async () => {
+  const server = makeServer([issue(1)]);
+  const view = boot(server);
+  try {
+    const nav = $(".nav");
+    nav.offsetHeight = 42; // one row
+    const drag = () => document.body.dispatchEvent(new Event("dragenter", { bubbles: true, cancelable: true, dataTransfer: { types: ["Files"] } }));
+    drag();
+    assert.equal($(".issue-drop-hint").style.top, "60px");
+    document.body.dispatchEvent(new Event("drop", { bubbles: true, cancelable: true, dataTransfer: { types: ["Files"], files: [] } }));
+    nav.offsetHeight = 122; // wrapped to three rows
+    drag();
+    assert.equal($(".issue-drop-hint").style.top, "140px", "below the third nav row, not over it");
+  } finally {
+    view.done();
+  }
+});
+
 test("Inbox keys stay out of the way while a dashboard drawer is open", async () => {
   const server = makeServer([issue(1), issue(2)]);
   const view = boot(server, { html: '<div class="filter-panel" id="filter-panel"></div>' });
