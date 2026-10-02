@@ -22,7 +22,7 @@ import anyio.to_thread
 
 from lattice.core.errors import OpError
 from lattice.core.tasks import set_unknown_type_reporter
-from lattice.server import admin, audit, control
+from lattice.server import admin, audit, control, doctor_media
 from lattice.server.config import STATUS_JSON, ServerConfig
 from lattice.server.journal import now_ms
 from lattice.server.log import ServerLog
@@ -280,7 +280,9 @@ class ProjectRegistry:
         """
         action = control.request_action(path)
         try:
-            result = await self._lifecycle(project, action or "")
+            result = await self._lifecycle(
+                project, action or "", verify_media=control.request_flag(path, "verify_media")
+            )
             answer: dict = {"ok": True, "result": result}
         except OpError as exc:
             answer = {"ok": False, "error": exc.to_dict()}
@@ -302,7 +304,9 @@ class ProjectRegistry:
             error_code=(answer.get("error") or {}).get("code"),
         )
 
-    async def _lifecycle(self, project: Project, action: str) -> dict:
+    async def _lifecycle(
+        self, project: Project, action: str, *, verify_media: bool = False
+    ) -> dict:
         async with self.admission_only(project):
             if action == "unload":
                 return await in_worker(lambda: self._unload(project))
@@ -312,7 +316,7 @@ class ProjectRegistry:
                 await in_worker(lambda: self._unload(project))
                 return await in_worker(lambda: self._load(project))
             if action == "doctor":
-                return await in_worker(lambda: self._doctor(project))
+                return await in_worker(lambda: self._doctor(project, verify_media))
         raise OpError("VALIDATION_ERROR", f"unsupported control action {action!r}")
 
     def _unload(self, project: Project) -> dict:
@@ -338,10 +342,12 @@ class ProjectRegistry:
         head = project.head()
         return {"project": project.slug, "state": project.state, **head}
 
-    def _doctor(self, project: Project) -> dict:
+    def _doctor(self, project: Project, verify_media: bool = False) -> dict:
+        # Existence and size of media are read under the lock; hashes are not.
         if project.holds_lease:
             with project.locked():
                 data = admin.run_doctor(project.board)
+                scan = doctor_media.scan_media(project.board, project.directory)
         else:
             fd = try_owner_flock(project.board)
             if fd is None:
@@ -352,8 +358,10 @@ class ProjectRegistry:
             try:
                 with project.work:
                     data = admin.run_doctor(project.board)
+                    scan = doctor_media.scan_media(project.board, project.directory)
             finally:
                 release_owner_flock(fd)
+        data = doctor_media.merge_media(data, doctor_media.finish_media(scan, verify=verify_media))
         return {"project": project.slug, **data}
 
     def write_status(self, *, stopped: bool = False) -> None:

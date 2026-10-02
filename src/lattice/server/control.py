@@ -159,6 +159,15 @@ def request_action(path: Path) -> str | None:
     return action_name if isinstance(action_name, str) else None
 
 
+def request_flag(path: Path, name: str) -> bool:
+    """Whether a request file carries the boolean *name* as ``true``."""
+    try:
+        request = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(request, dict) and request.get(name) is True
+
+
 def action(name: str) -> Callable[[Callable[[Any, dict], Any]], Callable[[Any, dict], Any]]:
     def register(fn: Callable[[Any, dict], Any]) -> Callable[[Any, dict], Any]:
         ACTIONS[name] = fn

@@ -31,7 +31,7 @@ from lattice.core.config import (
 )
 from lattice.core.errors import OpError
 from lattice.core.ids import generate_instance_id
-from lattice.server import audit, control
+from lattice.server import audit, control, doctor_media
 from lattice.server.config import (
     ADMIN_LOCK,
     PROJECTS_DIR,
@@ -750,17 +750,27 @@ def run_doctor(board: Path) -> dict:
     return payload.get("data") or {}
 
 
-def project_doctor(root: Path, slug: str, *, wait_seconds: float = 120.0) -> dict:
+def project_doctor(
+    root: Path, slug: str, *, wait_seconds: float = 120.0, verify_media: bool = False
+) -> dict:
     """``project doctor``: doctor's read-only checks, never racing a transaction.
 
     Through the running server (under the project's work lock, or its owner
     flock when the server does not hold the project); with no server, directly,
-    holding the owner flock so a starting server cannot race it.
+    holding the owner flock so a starting server cannot race it. A media pass
+    (``server/doctor_media.py``) checks every media file a snapshot lists, and
+    with *verify_media* hashes each original; the server runs the hash pass
+    after releasing the work lock.
     """
     root = Path(root)
     board = existing_project(root, slug) / ".lattice"
     if control.server_running(root):
-        answer = control.send_request(board, "doctor", {}, wait_seconds=wait_seconds)
+        answer = control.send_request(
+            board,
+            "doctor",
+            {"verify_media": True} if verify_media else {},
+            wait_seconds=wait_seconds,
+        )
         return {"via": "server", **_control_answer(answer)}
     fd = try_owner_flock(board)
     if fd is None:
@@ -770,6 +780,8 @@ def project_doctor(root: Path, slug: str, *, wait_seconds: float = 120.0) -> dic
         )
     try:
         data = run_doctor(board)
+        scan = doctor_media.scan_media(board, board.parent)
+        data = doctor_media.merge_media(data, doctor_media.finish_media(scan, verify=verify_media))
     finally:
         release_owner_flock(fd)
     return {"via": "offline", "project": slug, **data}

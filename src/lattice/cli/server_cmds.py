@@ -402,21 +402,41 @@ def _render_doctor(slug: str, data: dict) -> str:
         lines.append(
             f"{slug}: {summary.get('warnings', 0)} warning(s), {summary.get('errors', 0)} error(s)."
         )
+    if "media_checked" in summary:
+        verified = (
+            "hashes verified"
+            if summary.get("media_hash_verified")
+            else "hash check skipped (use --verify-media)"
+        )
+        lines.append(
+            f"media: {summary['media_checked']} checked, {summary['media_missing']} missing, "
+            f"{summary['media_corrupt']} corrupt, {summary['media_orphans']} orphaned, "
+            f"{summary['staged_objects']} staged; {verified}."
+        )
     return "\n".join(lines)
 
 
 @project_group.command("doctor")
 @click.argument("slug")
 @_root_option
+@click.option(
+    "--verify-media",
+    is_flag=True,
+    help="Also hash every issue media original against its recorded sha256 (slow).",
+)
 @_json_option
-def project_doctor(slug: str, root: str | None, is_json: bool) -> None:
-    """Run doctor's read-only checks on a project without racing its writes."""
+def project_doctor(slug: str, root: str | None, verify_media: bool, is_json: bool) -> None:
+    """Run doctor's read-only checks on a project without racing its writes.
+
+    Also checks issue media: every file a snapshot lists must exist with the
+    recorded size and type (always), and match its sha256 with --verify-media.
+    Orphaned files and stale staged uploads are warnings."""
     from lattice.server import admin
 
     result: dict = {}
 
     def action() -> dict:
-        result.update(admin.project_doctor(_root(root), slug))
+        result.update(admin.project_doctor(_root(root), slug, verify_media=verify_media))
         return result
 
     _run(is_json, action, lambda data: _render_doctor(slug, data))
