@@ -992,14 +992,23 @@ async def issue_media_upload(request: Request, state: ServerState) -> Response:
     body = _UploadBody(request, state.log, slug, token.id)
     try:
         return await _stage_upload(request, state, token, project, sha256, body)
-    except OpError:
+    except OpError as refusal:
         # Refused after authorization, usually before the body was read (quota,
-        # rate limit, size, a concurrent upload of the same object): read and
-        # discard the rest of a body of reasonable size, so the client finishes
-        # sending and reads this answer instead of a reset connection.
+        # size, a concurrent upload of the same object): read and discard a
+        # bounded amount of the body, so the client finishes sending and reads
+        # this answer instead of a reset connection. The discard counts against
+        # the token's in-flight limit until it is over, and a rate-limit refusal
+        # is never drained (it exists to stop work).
         limit = REFUSED_UPLOAD_DRAIN_FACTOR * state.config.limits.max_issue_media_file_bytes
-        if body.declared is not None and body.declared <= limit:
-            await body.drain()
+        if refusal.code != "RATE_LIMITED" and body.declared is not None and body.declared <= limit:
+            try:
+                state.limits.enter(token.id)
+            except OpError:
+                raise refusal from None
+            try:
+                await body.drain()
+            finally:
+                state.limits.leave(token.id)
         raise
 
 
@@ -1012,6 +1021,9 @@ UPLOAD_CHUNK_TIMEOUT = 30.0
 REFUSED_UPLOAD_DRAIN_FACTOR = 2
 #: Seconds without a byte after which that discarding stops and the refusal is sent.
 REFUSED_UPLOAD_DRAIN_IDLE = 2.0
+#: Seconds after which discarding stops however the client keeps sending; the
+#: refusal is then sent and the connection is not reused.
+REFUSED_UPLOAD_DRAIN_TOTAL = 10.0
 
 
 class _UploadBody:
@@ -1083,9 +1095,18 @@ class _UploadBody:
         if self.ended or "100-continue" in self._expect:
             return
         self.ended = True
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + REFUSED_UPLOAD_DRAIN_TOTAL
         try:
-            while True:
-                await asyncio.wait_for(self._chunks.__anext__(), REFUSED_UPLOAD_DRAIN_IDLE)
+            # Stop at the declared length, the idle limit, or the total limit.
+            while self.declared is None or self.received < self.declared:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    break
+                chunk = await asyncio.wait_for(
+                    self._chunks.__anext__(), min(REFUSED_UPLOAD_DRAIN_IDLE, remaining)
+                )
+                self.received += len(chunk)
         except (StopAsyncIteration, TimeoutError, ClientDisconnect):
             pass
 
