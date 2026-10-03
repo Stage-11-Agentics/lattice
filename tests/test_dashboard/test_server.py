@@ -1890,6 +1890,16 @@ class TestIssueWritesOverHttp:
             detail = json.loads(conn.getresponse().read())["data"]
             conn.close()
             assert detail["comments"][0]["author"] == "human:atin"
+            issue_path = f"/api/issues/{filed['data']['id']}"
+            assert self._post(server, issue_path + "/dismiss", {"reason": "Not a bug"})[0] == 200
+            assert self._post(server, issue_path + "/reopen", {})[0] == 200
+            conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+            conn.request("GET", issue_path)
+            events = json.loads(conn.getresponse().read())["data"]["events"]
+            conn.close()
+            by_type = {event["type"]: event for event in events}
+            for kind in ("issue_dismissed", "issue_reopened"):
+                assert by_type[kind]["actor"] == "human:atin", kind
             # An actor the page sends is still honoured, as it is for task writes.
             _status, explicit = self._post(
                 server, "/api/issues", {"title": "By an agent", "actor": "agent:qa"}

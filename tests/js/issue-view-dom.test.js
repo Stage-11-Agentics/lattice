@@ -117,7 +117,10 @@ function boot(server, extra) {
   const dashboard = globalThis.IssueDashboard.mount({
     app: document.getElementById("app"),
     api: (url) => server.get(url),
-    apiPost: (url, body) => { posts.push({ url, body }); return Promise.resolve({ id: "iss_99", short_id: "T-I99" }); },
+    apiPost: (url, body) => {
+      posts.push({ url, body });
+      return extra && extra.apiPost ? extra.apiPost(url, body) : Promise.resolve({ id: "iss_99", short_id: "T-I99" });
+    },
     esc, hosted: false, basePath: "/", showToast: (message) => toasts.push(message),
   });
   return {
@@ -556,6 +559,202 @@ test("when the selected issue is gone from the board, the row the cursor lands o
     await view.dashboard.refresh(); await flush();
     assert.equal(shownIssue(), "T-I3");
     assert.equal(litRow(), "T-I3", "the highlight moves with the cursor even when the rows did not change");
+  } finally {
+    view.done();
+  }
+});
+
+// ---- close and reopen in the detail header ----
+const triage = () => $("#issue-triage");
+const popOn = () => $("#issue-close-pop").classList.contains("on");
+function typeReason(text) {
+  const input = $("#issue-close-reason");
+  input.value = text;
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+// What the dashboard server does on a dismiss or reopen, for the fake API.
+function closeOnServer(server, shortId, reason) {
+  Object.assign(server.find(shortId), { state: "dismissed", closure: { kind: "dismiss", reason } });
+}
+function reopenOnServer(server, shortId) {
+  Object.assign(server.find(shortId), { state: "open", closure: null });
+}
+
+test("the header button reads Close for a live issue and Reopen for a closed one, and keeps its slot with nothing selected", async () => {
+  const server = makeServer([issue(1), issue(2, { state: "dismissed", closure: { kind: "dismiss", reason: "No" } })]);
+  const view = boot(server);
+  try {
+    view.dashboard.render();
+    await flush();
+    assert.equal(triage().textContent, "Close");
+    assert.equal(triage().classList.contains("off"), false);
+    assert.equal(triage().disabled, false);
+    for (const state of ["linked", "resolved"]) {
+      server.find("T-I1").state = state;
+      await view.dashboard.refresh(); await flush();
+      assert.equal(triage().textContent, "Close", state);
+      assert.equal(triage().classList.contains("off"), false, state);
+    }
+    server.find("T-I1").state = "open";
+    await view.dashboard.refresh(); await flush();
+    key(document.body, "4");
+    await flush();
+    assert.equal(shownIssue(), "T-I2");
+    assert.equal(triage().textContent, "Reopen");
+    assert.equal(triage().classList.contains("off"), false);
+    key(document.body, "3");
+    await flush();
+    assert.equal(shownIssue(), "", "nothing is selected in the empty Resolved queue");
+    assert.ok(triage(), "the slot is still in the header");
+    assert.equal(triage().classList.contains("off"), true, "hidden, not removed");
+    assert.equal(triage().disabled, true);
+  } finally {
+    view.done();
+  }
+});
+
+test("Close opens a reason box; a blank reason posts nothing; a reason posts to the dismiss route", async () => {
+  const server = makeServer([issue(1), issue(2)]);
+  const view = boot(server, { apiPost: (url, body) => { closeOnServer(server, "T-I1", body.reason); return Promise.resolve({}); } });
+  try {
+    view.dashboard.render();
+    await flush();
+    assert.equal(popOn(), false);
+    triage().click();
+    assert.equal(popOn(), true);
+    same(document.activeElement, $("#issue-close-reason"), "the box takes focus");
+    assert.equal($("#issue-close-go").disabled, true, "confirm waits for a reason");
+    key($("#issue-close-reason"), "Enter");
+    typeReason("   ");
+    assert.equal($("#issue-close-go").disabled, true, "blank text is still blank");
+    key($("#issue-close-reason"), "Enter");
+    $("#issue-close-go").click();
+    await flush();
+    assert.equal(view.posts.length, 0, "nothing was posted");
+
+    typeReason("  Works as designed ");
+    assert.equal($("#issue-close-go").disabled, false);
+    key($("#issue-close-reason"), "Enter");
+    key($("#issue-close-reason"), "Enter"); // a double Enter must not post twice
+    await flush();
+    assert.deepEqual(view.posts, [{ url: "/api/issues/iss_1/dismiss", body: { reason: "Works as designed" } }]);
+    assert.equal(popOn(), false, "the box closes on success");
+    assert.equal($("#issue-close-reason").value, "", "and is cleared");
+    assert.equal(shownIssue(), "T-I1", "the issue stays selected after it leaves its queue");
+    assert.equal(triage().textContent, "Reopen");
+    assert.match($("#issue-outcome").textContent, /Dismissed\. Works as designed/);
+    assert.equal($$(".issue-q-row").length, 1, "it left the Open rows");
+  } finally {
+    view.done();
+  }
+});
+
+test("Reopen posts at once, with no box", async () => {
+  const server = makeServer([issue(1, { state: "dismissed", closure: { kind: "dismiss", reason: "No" } })]);
+  const view = boot(server, { apiPost: () => { reopenOnServer(server, "T-I1"); return Promise.resolve({}); } });
+  try {
+    view.dashboard.render();
+    await flush();
+    key(document.body, "4");
+    await flush();
+    assert.equal(triage().textContent, "Reopen");
+    triage().click();
+    await flush();
+    assert.deepEqual(view.posts, [{ url: "/api/issues/iss_1/reopen", body: {} }]);
+    assert.equal(popOn(), false);
+    assert.equal(triage().textContent, "Close");
+    assert.equal($("#issue-d-state").textContent, "open");
+  } finally {
+    view.done();
+  }
+});
+
+test("a refused close keeps the box and the typed reason and shows the message inline; a refused reopen toasts", async () => {
+  const server = makeServer([issue(1), issue(2, { state: "dismissed", closure: { kind: "dismiss", reason: "No" } })]);
+  const view = boot(server, { apiPost: () => Promise.reject(new Error("Issue is already closed.")) });
+  try {
+    view.dashboard.render();
+    await flush();
+    triage().click();
+    typeReason("Because");
+    $("#issue-close-go").click();
+    await flush();
+    assert.equal(popOn(), true, "the box stays");
+    assert.equal($("#issue-close-reason").value, "Because", "the text stays");
+    assert.equal($("#issue-close-err").textContent, "Issue is already closed.");
+    assert.equal($("#issue-close-go").disabled, false, "it can be sent again");
+    assert.deepEqual(view.toasts, [], "no toast: the message is in the box");
+    typeReason("Because, still");
+    assert.equal($("#issue-close-err").textContent, "", "typing clears the message");
+
+    key(document.body, "4");
+    await flush();
+    triage().click();
+    await flush();
+    assert.deepEqual(view.toasts, ["Issue is already closed."]);
+  } finally {
+    view.done();
+  }
+});
+
+test("a refresh leaves an open reason box, its text and its focus alone; Escape and a new selection close it", async () => {
+  const server = makeServer([issue(1), issue(2)]);
+  const view = boot(server);
+  try {
+    view.dashboard.render();
+    await flush();
+    triage().click();
+    typeReason("half a reas");
+    const input = $("#issue-close-reason");
+    for (let i = 0; i < 3; i++) {
+      await view.dashboard.refresh(); await flush();
+      same($("#issue-close-reason"), input, "the same input");
+      assert.equal(popOn(), true);
+      assert.equal(input.value, "half a reas");
+      same(document.activeElement, input, "focus kept");
+      assert.equal($("#issue-close-go").disabled, false);
+    }
+    server.comment("T-I1", "agent:claude", "a note while typing");
+    await view.dashboard.refresh(); await flush();
+    assert.equal(input.value, "half a reas");
+    same(document.activeElement, input);
+
+    // Queue keys are inert while typing in the box.
+    for (const name of ["j", "k", "c", "f", "1", "2", "3", "4"]) key(input, name);
+    await flush();
+    assert.equal(shownIssue(), "T-I1");
+    assert.equal(popOn(), true);
+
+    const escape = key(input, "Escape");
+    assert.equal(escape.defaultPrevented, true);
+    assert.equal(popOn(), false);
+    assert.equal(input.value, "");
+    same(document.activeElement, triage(), "focus returns to the button");
+
+    triage().click();
+    typeReason("for the first one");
+    $$(".issue-q-row")[1].click();
+    await flush();
+    assert.equal(shownIssue(), "T-I2");
+    assert.equal(popOn(), false, "a new selection closes the box");
+    assert.equal($("#issue-close-reason").value, "", "and clears it");
+  } finally {
+    view.done();
+  }
+});
+
+test("a box left open on an issue that someone else closes is dropped, as closing no longer applies", async () => {
+  const server = makeServer([issue(1)]);
+  const view = boot(server);
+  try {
+    view.dashboard.render();
+    await flush();
+    triage().click();
+    typeReason("mine");
+    closeOnServer(server, "T-I1", "theirs");
+    await view.dashboard.refresh(); await flush();
+    assert.equal(popOn(), false);
+    assert.equal(triage().textContent, "Reopen");
   } finally {
     view.done();
   }

@@ -260,6 +260,8 @@ triage is four moves:
 - `lattice issue dismiss LAT-I6 --reason "not reproducible"` closes an issue that is not worth acting on.
 - `lattice issue duplicate LAT-I7 --of LAT-I3` closes a repeat. `reopen` undoes either close.
 
+the dashboard Inbox can also close an issue (with a reason) and reopen it.
+
 nobody sets an issue's state by hand. it follows the tasks it is linked to: `open` with no live task, `linked` while one is in flight, `resolved` when every linked task is done. a cancelled or erased task sends it back to `open`, because it needs a new task. `lattice issue list` shows what is open and linked. `--all` shows the rest; `--by <actor>` shows all issues that actor filed or commented on. `lattice issue show <issue>` displays the comment thread, and `lattice issue edit` corrects a title or description. `lattice show <task>` lists the issues a task came from.
 
 ### screenshots and recordings

@@ -1,6 +1,6 @@
 # Dashboard issue Inbox
 
-The Inbox is an optional, read-only issue viewer with two writes: file an issue and post a top-level comment. Issue lifecycle decisions stay with agents and the CLI.
+The Inbox is an optional issue viewer with four writes: file an issue, post a top-level comment, close an issue with a reason, and reopen a closed one. Linking, promoting and marking duplicates stay with agents and the CLI.
 
 ## Approved design
 
@@ -18,7 +18,7 @@ The left pane has four queues: "No story" (open), "Has story" (linked), "Resolve
 
 The right pane shows the copyable issue ID, a fixed-width state chip, the filer as an actor chip with the machine it was filed from, the title, the description, media inline (a video uses its first frame as poster and lists the frames an agent sees), linked stories or the closure reason, top-level comments, and collapsed history. Origins read as the prototype's: just the machine for a human who is that machine's user, otherwise `user@machine`. History has one line per thing someone did: a filing with media is one line ("filed with 1 video", "filed with 1 photo and 1 video"), because the media events that share the filing's `op_id` fold into it; media added later keeps its own line ("added a photo").
 
-`j`/`k` or the arrow keys move; `1`–`4` switch queues; `c` copies the ID; `f` opens or closes look closer; Space plays or pauses; Escape closes look closer or leaves a person view; `i` opens the filing panel from any dashboard view. The keys do nothing while a dashboard drawer or dialog (Settings, Filters, task detail, New Task) is open. Clicking an actor opens everything that person filed or commented on, newest activity first, with filing and comment counts and their machines, most used first.
+`j`/`k` or the arrow keys move; `1`–`4` switch queues; `c` copies the ID; `f` opens or closes look closer; Space plays or pauses; Escape closes look closer or leaves a person view; `i` opens the filing panel from any dashboard view. The keys do nothing while a dashboard drawer or dialog (Settings, Filters, task detail, New Task) is open. Clicking an actor opens everything that person filed or commented on, newest activity first, with filing and comment counts and their machines, most used first. The right pane's header ends in one fixed-size control: Close for an open, linked or resolved issue, Reopen for a dismissed or duplicate one, and invisible (its space kept) with nothing selected. Close opens a one-line reason box under the header; the reason is required, so the confirm button and Enter do nothing while it is blank, and Escape or Cancel closes the box. Reopen posts at once. An operation refusal shows inline in the box (Close) or as a toast (Reopen). The control has no key of its own, and the queue keys stay inert while the reason box has focus.
 
 ## Filing
 
@@ -28,7 +28,7 @@ A video goes up with its width, height, duration and up to eight JPEG frames sam
 
 ## Refresh rule
 
-The dashboard refreshes every few seconds. A refresh never interrupts the reader: a playing video keeps playing in the same element, the detail pane keeps its scroll, focus stays where it is, and half-typed comments and filings stay. A refresh changes only what changed: queue rows and counts are patched in place, the selected issue is refetched only when its own row changed, and media are rebuilt only when the set of media or frames changes.
+The dashboard refreshes every few seconds. A refresh never interrupts the reader: a playing video keeps playing in the same element, the detail pane keeps its scroll, focus stays where it is, and half-typed comments and filings stay. An open reason box keeps its text and focus too; it closes only when the reader selects another issue or the issue stops being closable (someone else closed it). A refresh changes only what changed: queue rows and counts are patched in place, the selected issue is refetched only when its own row changed, and media are rebuilt only when the set of media or frames changes.
 
 A refresh never moves the selection off the issue being read, whatever happens to it: linked, resolved, dismissed, out of the queue, its video playing, paused or never started. Only the reader moves it, with `j`/`k`, a click on a row, or a queue switch. While the selected issue is outside the queue's rows, the detail pane keeps showing it, updated in place, and no row is lit; `j` then goes to the row now where it would sit (the next one after it) and `k` to the row before, clamped to the first and last rows. Only an issue gone from the board lets the cursor land on the row at its old position, and the lit row follows. `issue-view-logic.js` decides each refresh (`planRefresh`); `tests/js/issue-view-dom.test.js` drives the real view through refreshes and fails if any of these is lost.
 
@@ -38,6 +38,6 @@ The nav is the dashboard's and is the same on every view at a given width; the I
 
 ## API boundary and safety
 
-`dashboard/api.py` adapts LAT-371's `issue_detail` and `issues_by` readers to the page's issue shape, removes local media paths and serves media and frames through the range-capable media route. Filing and commenting are the registered `issue.file` and `issue.comment` operations run by the board writer. The local issue-file JSON body gets its own computed allowance for encoded media and frames, with a hard 2 GiB ceiling; other local dashboard writes keep their 1 MiB cap.
+`dashboard/api.py` adapts LAT-371's `issue_detail` and `issues_by` readers to the page's issue shape, removes local media paths and serves media and frames through the range-capable media route. Filing, commenting, closing and reopening are the registered `issue.file`, `issue.comment`, `issue.dismiss` and `issue.reopen` operations run by the board writer, as the board's configured human (`default_actor: human:...`) when there is one. Closing requires a non-blank reason, checked by the page and again by the route. The local issue-file JSON body gets its own computed allowance for encoded media and frames, with a hard 2 GiB ceiling; other local dashboard writes keep their 1 MiB cap.
 
 Markup is built with escaped HTML and issue prose goes in through `textContent`; board text never becomes an inline handler. Pure rules live in `static/issue-view-logic.js` and the view in `static/issue-view.js`; both run under `node:test` (`tests/js/issue-view-logic.test.js`, `tests/js/issue-view-dom.test.js` with a small DOM in `tests/js/support/mini-dom.js`) through the pytest bridge in `tests/test_dashboard/test_js_issue_view_logic.py`.

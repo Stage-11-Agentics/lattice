@@ -12,7 +12,7 @@ import pytest
 from lattice.boards import resolve_board
 from lattice.core.config import default_config, serialize_config
 from lattice.dashboard import api
-from lattice.ops import Caller, get_operation
+from lattice.ops import Caller, OpError, get_operation
 from lattice.ops.task_attach import encode_payload
 from lattice.storage.fs import atomic_write, ensure_lattice_dirs
 from tests.issue_media_helpers import jpeg, mp4, png
@@ -195,6 +195,70 @@ def test_comment_translation_stays_on_the_registered_operation_boundary() -> Non
         api.translate_post(
             "/api/issues/LAT-I1/comment", {"body": "Reply", "parent_id": "comment-id"}
         )
+
+
+def test_dismiss_and_reopen_translate_to_the_registered_operations() -> None:
+    dismiss = api.translate_post("/api/issues/LAT-I1/dismiss", {"reason": "  Not a bug \n"})
+    assert dismiss.op_name == "issue.dismiss"
+    assert dismiss.params == {"issue": "LAT-I1", "reason": "Not a bug"}
+    assert dismiss.actor is None
+    named = api.translate_post("/api/issues/LAT-I1/dismiss", {"reason": "x", "actor": "agent:qa"})
+    assert named.actor == "agent:qa"
+
+    reopen = api.translate_post("/api/issues/LAT-I1/reopen", {})
+    assert reopen.op_name == "issue.reopen"
+    assert reopen.params == {"issue": "LAT-I1"}
+
+    for body in ({}, {"reason": ""}, {"reason": "   "}, {"reason": 7}, {"reason": None}):
+        with pytest.raises(api.ApiError) as refused:
+            api.translate_post("/api/issues/LAT-I1/dismiss", body)
+        assert refused.value.status == 400, body
+        assert refused.value.code == "VALIDATION_ERROR", body
+    for sub in ("dismiss", "reopen"):
+        with pytest.raises(api.ApiError) as bad:
+            api.translate_post(f"/api/issues/not-an-issue/{sub}", {"reason": "x"})
+        assert bad.value.code == "INVALID_ID"
+    with pytest.raises(api.ApiError) as unknown:
+        api.translate_post("/api/issues/LAT-I1/resolve", {})
+    assert unknown.value.status == 404
+
+
+def test_dismiss_then_reopen_round_trips_and_refusals_carry_the_op_message(
+    issue_board,  # noqa: ANN001
+) -> None:
+    board, lattice_dir, config = issue_board
+    enable_issues(lattice_dir, config)
+    issue = file_issue(board, "Footer overlaps the button")
+
+    def post(sub: str, body: dict) -> object:
+        request = api.translate_post(f"/api/issues/{issue['id']}/{sub}", body)
+        result = board.execute(request.op_name, request.params, Caller(actor="human:atin"))
+        return request.render(result)
+
+    status, closed = post("dismiss", {"reason": "Works as designed"})
+    assert status == 200
+    assert closed["state"] == "dismissed"
+    detail = data(api.route_get(lattice_dir, f"/api/issues/{issue['id']}"))
+    assert detail["closure"]["reason"] == "Works as designed"
+
+    again = api.translate_post(f"/api/issues/{issue['id']}/dismiss", {"reason": "twice"})
+    with pytest.raises(OpError) as conflict:
+        board.execute(again.op_name, again.params, Caller(actor="human:atin"))
+    refused = api.write_error(again, conflict.value)
+    assert refused.code == "CONFLICT"
+    assert refused.message
+
+    status, reopened = post("reopen", {})
+    assert status == 200
+    assert reopened["state"] == "open"
+    nothing = api.translate_post(f"/api/issues/{issue['id']}/reopen", {})
+    with pytest.raises(OpError) as idle:
+        board.execute(nothing.op_name, nothing.params, Caller(actor="human:atin"))
+    assert api.write_error(nothing, idle.value).code == "CONFLICT"
+
+
+def test_the_human_authored_ops_include_close_and_reopen() -> None:
+    assert {"issue.dismiss", "issue.reopen"} <= api.HUMAN_AUTHORED_OPS
 
 
 def test_issue_ref_validation_and_by_length_are_stable(issue_board) -> None:  # noqa: ANN001

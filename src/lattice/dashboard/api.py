@@ -40,7 +40,7 @@ from lattice.storage.operations import (
 DEFAULT_ACTOR = "dashboard:web"
 
 #: Operations whose author is the person at the dashboard, not the dashboard itself.
-HUMAN_AUTHORED_OPS = frozenset({"issue.file", "issue.comment"})
+HUMAN_AUTHORED_OPS = frozenset({"issue.file", "issue.comment", "issue.dismiss", "issue.reopen"})
 
 
 def human_author(config: dict) -> str | None:
@@ -1084,9 +1084,26 @@ def translate_post(path: str, body: Any) -> WriteRequest:
     if path.startswith("/api/issues/"):
         remainder = path[len("/api/issues/") :]
         issue_id, separator, sub = remainder.partition("/")
-        if not separator or sub != "comment":
+        if not separator or sub not in ("comment", "dismiss", "reopen"):
             raise ApiError(404, "NOT_FOUND", f"Not found: {path}")
         _require_issue_ref(issue_id)
+        if sub == "dismiss":
+            reason = body.get("reason")
+            if not isinstance(reason, str) or not reason.strip():
+                raise _invalid("Missing or empty 'reason' field")
+            return WriteRequest(
+                "issue.dismiss",
+                {"issue": issue_id, "reason": reason.strip()},
+                body.get("actor"),
+                lambda result: (200, result.value),
+            )
+        if sub == "reopen":
+            return WriteRequest(
+                "issue.reopen",
+                {"issue": issue_id},
+                body.get("actor"),
+                lambda result: (200, result.value),
+            )
         for key in ("parent_id", "reply_to"):
             if body.get(key) is not None:
                 raise _invalid("The dashboard posts top-level comments only")
