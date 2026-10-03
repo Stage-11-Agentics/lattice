@@ -340,6 +340,8 @@ lattice server project config web --set issues.enabled=true
 
 Setting `issues.enabled` preserves the project's other `issues.*` limits and settings. Hosted issue commands read synced metadata and send writes through named server operations; an ordinary operation cannot change the project configuration.
 
+The dashboard's Issues view (the Inbox) works on local boards only for now. On a bound checkout's dashboard and on the server's hosted dashboard it answers "Issues are not available on this board yet." Use the `lattice issue` commands on hosted boards.
+
 To bring an existing local board onto the server, import it instead of creating a project: section 14.
 
 Other project commands, all run on the server host:

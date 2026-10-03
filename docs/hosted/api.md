@@ -44,7 +44,7 @@ export LATTICE_TOKEN="$(cat "$HOME/lattice-trial/token")"
 | `GET /login`, `POST /login` | none (`POST` authenticates with the token it submits) | Dashboard login |
 | `POST /logout` | session | End the dashboard session |
 | `GET /p/{slug}/`, `/p/{slug}/static/*`, `/p/{slug}/api/*` | session or token | The project's dashboard |
-| `GET /p/{slug}/issues/media/...` | session | Same-origin dashboard media read; uses the same range-serving helper |
+| `GET /p/{slug}/issues/media/...` | session | Same-origin dashboard media read; uses the same range-serving helper. Reserved: no hosted dashboard page calls it yet (the Issues view is local-only for now) |
 | `GET /web/dashboard.css`, `GET /web/logout.js` | none | The login and index pages' stylesheet and logout script |
 
 A dashboard session cookie authenticates only `/`, `/logout`, `/p/<slug>/...`, and the stream. It never authenticates operations, sync, or files.

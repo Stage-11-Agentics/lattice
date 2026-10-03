@@ -255,7 +255,9 @@ async def api_get(request: Request, state: ServerState) -> Response:
         if path == "/api/git" or path.startswith("/api/git/"):
             return _json_response(api.ok(HOSTED_GIT))  # never inspects the server's repo
         if path == "/api/issues" or path.startswith("/api/issues/"):
-            return _json_response(api.error(*api.ISSUES_UNAVAILABLE))  # until LAT-368
+            return _json_response(
+                api.error(*api.ISSUES_UNAVAILABLE)
+            )  # hosted Issues view not built yet
         query = request.url.query
         memo = state.dashboard_memos.for_project(project.slug)
 
