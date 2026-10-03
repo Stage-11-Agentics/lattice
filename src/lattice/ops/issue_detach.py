@@ -84,8 +84,9 @@ class IssueDetach:
                     {"media": [e["id"] for e in present]},
                 )
             if not present:
-                for entry in matches:
-                    delete_media_files(ctx.lattice_dir, issue_id, entry)
+                if not ctx.transactional:
+                    for entry in matches:
+                        delete_media_files(ctx.lattice_dir, issue_id, entry)
                 return issue_common.result(ctx, snapshot, [])
             entry = present[0]
             event = create_issue_event(
@@ -97,5 +98,6 @@ class IssueDetach:
             )
             snapshot = apply_issue_event(snapshot, event)
             write_issue_events(ctx.lattice_dir, issue_id, [event], snapshot)
-            delete_media_files(ctx.lattice_dir, issue_id, entry)
+            if not ctx.transactional:
+                delete_media_files(ctx.lattice_dir, issue_id, entry)
         return issue_common.result(ctx, snapshot, [event])

@@ -19,7 +19,13 @@
 - **Bounded time.** A :class:`Policy` bounds the connect and the wait for the
   response to start; once the server has started answering, the body has
   60 seconds plus 2 seconds per MiB announced (``Content-Length``), with a
-  progress line on stderr every 5 seconds of a long transfer (SPEC §9.5).
+  progress line on stderr every 5 seconds of a long transfer (SPEC §9.5). An
+  upload's policy (``idle``) bounds inactivity instead: the response budget
+  restarts with every request chunk sent.
+- **A refusal is read, not guessed.** When the server answers and closes before
+  reading a request's whole body, the broken send is set aside and its answer
+  (``MEDIA_QUOTA_EXCEEDED``, ``PAYLOAD_TOO_LARGE``, ``RATE_LIMITED``, ...) is
+  raised as itself; only a send with no answer after it is :class:`Unreachable`.
 
 Failures to reach the server raise :class:`Unreachable` (internal to the
 client); a Lattice error envelope raises :class:`ServerError`, an ``OpError``
@@ -42,7 +48,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from lattice.core.errors import OpError
@@ -54,6 +60,9 @@ HEADER_SERVER_VERSION = "Lattice-Server-Version"
 
 _MIB = 1024 * 1024
 _CHUNK = 256 * 1024
+#: Request bodies go out in pieces this size, so an idle budget (and upload
+#: progress) can follow them.
+_SEND_CHUNK = 64 * 1024
 _PROGRESS_SECONDS = 5.0
 _ERROR_BODY_LIMIT = _MIB
 
@@ -96,9 +105,13 @@ class Policy:
     connect_seconds: float
     response_seconds: float
     progress: str | None = None
+    #: An upload: ``response_seconds`` bounds inactivity (no request byte sent
+    #: and no answer for that long), not the whole send, so a large body on a
+    #: slow link is never cut off while it is still moving.
+    idle: bool = False
 
     def with_progress(self, label: str | None) -> Policy:
-        return Policy(self.connect_seconds, self.response_seconds, label)
+        return replace(self, progress=label)
 
 
 #: A command's catch-up (SPEC §9.5): 2 s to connect, 5 s until the answer starts.
@@ -237,13 +250,26 @@ class _Socket:
     each wait inside it, and a watchdog shuts the socket down when the budget
     runs out, so a peer dribbling header bytes cannot stretch it. Once the
     headers are in, the body runs under its own deadline (:func:`_read_body`).
+
+    With ``idle`` (an upload, :attr:`Policy.idle`) the budget restarts with
+    every request chunk sent, so it bounds inactivity rather than the send.
+    A send the server cut short (it answered before reading the whole body,
+    then closed) is recorded in ``send_error`` and the request goes on to read
+    the answer the server sent, which says why.
     """
 
     started: float
     response_seconds: float
+    idle: bool = False
+    progress: str | None = None
+    body_bytes: int = 0
     connected: bool = False
     expired: bool = False
+    stopped: bool = False
     sock: socket.socket | None = None
+    send_error: OSError | None = None
+    sent: int = 0
+    _next_progress: float = 0.0
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _watchdog: threading.Timer | None = field(default=None, repr=False)
 
@@ -251,17 +277,41 @@ class _Socket:
         return self.started + self.response_seconds - time.monotonic()
 
     def arm(self) -> None:
+        self._next_progress = time.monotonic() + _PROGRESS_SECONDS
+        self._start_timer()
+
+    def _start_timer(self) -> None:
         self._watchdog = threading.Timer(max(0.0, self.remaining()), self._expire)
         self._watchdog.daemon = True
         self._watchdog.start()
 
     def stop(self) -> None:
         """Stop the watchdog (the answer started, or the request failed)."""
-        if self._watchdog is not None:
-            self._watchdog.cancel()
+        with self._lock:
+            self.stopped = True
+            if self._watchdog is not None:
+                self._watchdog.cancel()
 
     def expiry_reason(self) -> str:
+        if self.idle:
+            return f"no progress for {self.response_seconds:g} s"
         return f"no answer within {self.response_seconds:g} s"
+
+    def progressed(self, n: int) -> None:
+        """*n* more request bytes went out: an idle budget starts again."""
+        self.sent += n
+        if self.idle:
+            self.started = time.monotonic()
+            if self.sock is not None:
+                with contextlib.suppress(OSError):
+                    self.sock.settimeout(max(0.05, self.response_seconds))
+        if self.idle and self.progress and time.monotonic() >= self._next_progress:
+            self._next_progress = time.monotonic() + _PROGRESS_SECONDS
+            print(
+                f"lattice: {self.progress}: {self.sent / _MIB:.1f} of "
+                f"{self.body_bytes / _MIB:.1f} MiB sent",
+                file=sys.stderr,
+            )
 
     def attach(self, sock: socket.socket) -> None:
         with self._lock:
@@ -273,6 +323,11 @@ class _Socket:
 
     def _expire(self) -> None:
         with self._lock:
+            if self.stopped:
+                return
+            if self.idle and self.remaining() > 0:
+                self._start_timer()  # bytes moved since: wait out the rest
+                return
             self.expired = True
             if self.sock is not None:
                 with contextlib.suppress(OSError):
@@ -290,6 +345,27 @@ def _connection_class(base: type[http.client.HTTPConnection], holder: _Socket) -
         def connect(self) -> None:
             super().connect()
             holder.attach(self.sock)
+
+        def send(self, data: Any) -> None:
+            if holder.send_error is not None:
+                return  # the server stopped reading; its answer is read next
+            try:
+                if isinstance(data, bytes | bytearray) and len(data) > _SEND_CHUNK:
+                    view = memoryview(data)
+                    for start in range(0, len(view), _SEND_CHUNK):
+                        piece = view[start : start + _SEND_CHUNK]
+                        super().send(piece)
+                        holder.progressed(len(piece))
+                else:
+                    super().send(data)
+                    holder.progressed(len(data) if isinstance(data, bytes | bytearray) else 0)
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError) as exc:
+                if holder.expired:
+                    raise
+                # A server that refuses a request before reading its body
+                # (over quota, too large, rate limited) answers, then closes:
+                # read that answer rather than report the server unreachable.
+                holder.send_error = exc
 
     return _Conn
 
@@ -356,7 +432,13 @@ def user_agent() -> str:
 
 
 def build_request(
-    remote: Remote, method: str, url: str, body: bytes | None = None
+    remote: Remote,
+    method: str,
+    url: str,
+    body: bytes | None = None,
+    *,
+    content_type: str | None = None,
+    headers: Mapping[str, str] | None = None,
 ) -> urllib.request.Request:
     req = urllib.request.Request(url, data=body, method=method)
     req.add_header(HEADER_PROTOCOL, str(PROTOCOL))
@@ -366,12 +448,14 @@ def build_request(
     # header of that name (any case) replaces this one below.
     req.add_unredirected_header("User-Agent", user_agent())
     if body is not None:
-        req.add_header("Content-Type", "application/json")
+        req.add_header("Content-Type", content_type or "application/json")
     # Credentials never ride a redirect (SPEC §9.1).
     if remote.token:
         req.add_unredirected_header("Authorization", f"Bearer {remote.token}")
     for name, value in remote.headers.items():
         req.add_unredirected_header(name, value)
+    for name, value in (headers or {}).items():
+        req.add_header(name, value)
     return req
 
 
@@ -381,6 +465,9 @@ def request(
     path: str,
     *,
     json_body: Any = None,
+    raw_body: bytes | None = None,
+    content_type: str | None = None,
+    headers: Mapping[str, str] | None = None,
     expect: str = "json",
     policy: Policy = PROBE,
     sink: Callable[[bytes], None] | None = None,
@@ -400,9 +487,21 @@ def request(
     """
     url = remote.url + path
     what = what or f"{method} {path.split('?', 1)[0]}"
-    body = None if json_body is None else json.dumps(json_body).encode("utf-8")
-    req = build_request(remote, method, url, body)
-    holder = _Socket(time.monotonic(), policy.response_seconds)
+    if json_body is not None and raw_body is not None:
+        raise ValueError("request accepts either json_body or raw_body, not both")
+    body = (
+        raw_body
+        if raw_body is not None
+        else (None if json_body is None else json.dumps(json_body).encode("utf-8"))
+    )
+    req = build_request(remote, method, url, body, content_type=content_type, headers=headers)
+    holder = _Socket(
+        time.monotonic(),
+        policy.response_seconds,
+        idle=policy.idle,
+        progress=policy.progress,
+        body_bytes=len(body or b""),
+    )
     opener = urllib.request.build_opener(
         _NoRedirect(), _HTTPHandler(holder), _HTTPSHandler(holder)
     )
@@ -419,7 +518,11 @@ def request(
         raise _redirect_error(remote, what, exc.status, exc.location) from None
     except (urllib.error.URLError, OSError, http.client.HTTPException, ValueError) as exc:
         holder.stop()
-        reason = holder.expiry_reason() if holder.expired else _reason(exc)
+        if holder.expired:
+            reason = holder.expiry_reason()
+        else:
+            # A send cut short with no answer after it: the send error says more.
+            reason = _reason(holder.send_error or exc)
         raise Unreachable(reason, sent=holder.connected) from None
     holder.stop()
     if holder.expired:  # the watchdog fired as the headers completed

@@ -38,10 +38,21 @@ ENABLE_LINE = '"issues": {"enabled": true}'
 
 
 def issues_disabled_message(has_existing: bool) -> str:
-    """The ``ISSUES_DISABLED`` message; *has_existing*: the board has an ``issues/`` directory."""
+    """The local-board ``ISSUES_DISABLED`` message and any preserved-data clause."""
     message = (
         "The issue log is off for this project. The board owner turns it on by adding "
         f"{ENABLE_LINE} to .lattice/config.json."
+    )
+    if has_existing:
+        message += " Existing issues are kept and reappear when it is on."
+    return message
+
+
+def hosted_issues_disabled_message(has_existing: bool, project: str) -> str:
+    """The hosted-board ``ISSUES_DISABLED`` guidance for its server-side owner."""
+    message = (
+        "The issue log is off for this project. The board owner turns it on by running "
+        f"'lattice server project config {project} --set issues.enabled=true' on the server host."
     )
     if has_existing:
         message += " Existing issues are kept and reappear when it is on."
@@ -54,6 +65,16 @@ def unreadable_issue_warning(path: object, error: Exception) -> str:
     return (
         f"Warning: issue file {path} is unreadable ({cause}). "
         "Run 'lattice rebuild --all' to rebuild it from its log."
+    )
+
+
+def hosted_unreadable_issue_warning(path: object, error: Exception) -> str:
+    """The warning for issue metadata on a hosted, read-only cache."""
+    cause = error.__cause__ or error
+    return (
+        f"Warning: issue file {path} is unreadable ({cause}). "
+        "Run 'lattice rebuild --all --offline-maintenance' on the server host "
+        "to rebuild it from its log."
     )
 
 

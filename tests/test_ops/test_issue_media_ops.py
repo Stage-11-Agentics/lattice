@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 from pathlib import Path
@@ -78,6 +79,36 @@ def test_file_with_media_is_one_atomic_write(board: LocalBoard) -> None:
     assert Path(clip["frames"][1]["path"]).name == "t0002.900s.jpg"
     log = board.lattice_dir / "issues" / "events" / f"{result.value['id']}.jsonl"
     assert len(log.read_text().splitlines()) == 3
+
+
+def test_local_video_frame_payload_without_client_hash_keeps_local_behavior(
+    board: LocalBoard,
+) -> None:
+    image = jpeg()
+    result = run(
+        board,
+        "issue.file",
+        text="video with a local frame",
+        media=(
+            item(
+                mp4(),
+                "clip.mp4",
+                video={"width": 640, "height": 480, "duration_ms": 1000},
+                frames=[
+                    {
+                        "t_ms": 0,
+                        "payload": {
+                            "filename": "frame.jpg",
+                            "content_b64": base64.b64encode(image).decode("ascii"),
+                        },
+                    }
+                ],
+            ),
+        ),
+    )
+
+    frame_path = Path(result.value["media"][0]["frames"][0]["path"])
+    assert frame_path.read_bytes() == image
 
 
 @pytest.mark.parametrize(

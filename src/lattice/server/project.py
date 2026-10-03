@@ -32,7 +32,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, TypeVar
 
-from lattice.core.config import serialize_config
+from lattice.core.config import merge_config_changes, serialize_config
 from lattice.core.errors import OpError
 from lattice.core.ids import generate_op_id
 from lattice.ops.base import Authorizer, Caller, OpResult, execute
@@ -69,6 +69,7 @@ from lattice.storage.fs import (
     unlink_path,
 )
 from lattice.storage.locks import LockTimeout
+from lattice.storage.issues import has_synced_issue_files
 from lattice.storage.operations import AuthoritativeLogError, discover_task_authorities
 from lattice.storage.ownership import (
     board_scope,
@@ -145,6 +146,7 @@ class FinalizedState:
     manifest: Manifest
     floors: ShortIdFloors
     watched: Mapping[str, tuple[int, int, int] | None]
+    has_issue_metadata: bool
 
 
 def _watched_after(
@@ -220,6 +222,7 @@ class Project:
         server_id: str,
         on_state_change: Callable[[], None] | None = None,
         audit_config: AuditConfig | None = None,
+        issue_media_limits: Any | None = None,
     ) -> None:
         self.slug = slug
         self.directory = directory
@@ -266,6 +269,27 @@ class Project:
         #: The audit settings when this server keeps audit histories (SPEC §8.10),
         #: else ``None``; the committer runs while the project is loaded.
         self.audit_config = audit_config
+        from lattice.server.issue_media import (
+            DEFAULT_FILE_BYTES,
+            DEFAULT_ISSUE_BYTES,
+            DEFAULT_PROJECT_BYTES,
+            HostedIssueMedia,
+        )
+
+        media_limits = issue_media_limits
+        self.issue_media = HostedIssueMedia(
+            directory,
+            self.board,
+            max_file_bytes=getattr(media_limits, "max_issue_media_file_bytes", DEFAULT_FILE_BYTES),
+            max_issue_bytes=getattr(
+                media_limits, "max_issue_media_issue_bytes", DEFAULT_ISSUE_BYTES
+            ),
+            max_project_bytes=getattr(
+                media_limits, "max_issue_media_project_bytes", DEFAULT_PROJECT_BYTES
+            ),
+            log=log,
+            slug=slug,
+        )
         self.committer: audit.AuditCommitter | None = None
         self._audit_staged: audit.Staged | None = None
 
@@ -362,6 +386,7 @@ class Project:
             journal = self._recover_on_disk(board)
         if journal is None:
             return
+        self.issue_media.reconcile(journal)
         self.journal = journal
         try:
             discover_task_authorities(board)
@@ -377,6 +402,7 @@ class Project:
                 manifest=Manifest.build(board, journal.head_seq),
                 floors=ShortIdFloors.from_board(board),
                 watched=_watched_after(board, {}, WATCHED_FILES),
+                has_issue_metadata=has_synced_issue_files(board),
             ),
         )
         self.broadcaster.announce(journal.epoch, journal.head_seq)
@@ -548,6 +574,12 @@ class Project:
     def floors(self) -> ShortIdFloors:
         state = self._state
         return state.floors if state is not None else ShortIdFloors()
+
+    @property
+    def has_issue_metadata(self) -> bool:
+        """Whether any synced file exists under ``issues/`` (the 0.2.1 version gate)."""
+        state = self._state
+        return state.has_issue_metadata if state is not None else False
 
     def _published_index(self) -> JournalIndex:
         state = self._state
@@ -771,6 +803,7 @@ class Project:
                 authorize=request.authorize,
                 short_id_floor=self.floors.max_observed,
                 event_short_ids=self.floors.event_short_ids,
+                issue_media=self.issue_media,
             )
 
         return self._transact(
@@ -834,6 +867,19 @@ class Project:
             except BaseException as exc:
                 failure = exc
                 quarantine = self._recover(txn, exc)
+                # A quarantine means the outcome is unknown or the rollback did not
+                # finish; the staged media is left for reload reconciliation, which
+                # publishes it if the journal shows the operation committed.
+                if quarantine is None and not txn.committed:
+                    try:
+                        self.issue_media.abort_operation(op_id)
+                    except Exception as cleanup_error:  # noqa: BLE001 - restart reconciliation retries
+                        self.log.warning(
+                            "issue_media_rollback_cleanup_failed",
+                            project=self.slug,
+                            op_id=op_id,
+                            error=describe_error(cleanup_error),
+                        )
                 if quarantine is None:
                     raise
         if quarantine is not None:
@@ -945,6 +991,12 @@ class Project:
         if state is None:
             raise RuntimeError(f"project {self.slug} is not loaded")
         seq = line["seq"]
+        op_name = line.get("op")
+        op_id = line.get("op_id")
+        if op_name in {"issue.file", "issue.attach"} and isinstance(op_id, str):
+            self.issue_media.finalize_operation(op_id)
+        if op_name == "issue.detach":
+            self.issue_media.finalize_removed(events)
         if seq <= state.journal.head_seq:
             return
         paths = [p for p in line.get("paths") or () if isinstance(p, str)]
@@ -958,7 +1010,12 @@ class Project:
         transactions._fault("finish.memory.floors", seq=seq)
         watched = _watched_after(self.board, state.watched, paths)
         transactions._fault("finish.memory.watched", seq=seq)
-        self._state = FinalizedState(journal, manifest, floors, watched)
+        issue_metadata = state.has_issue_metadata
+        if any(
+            path.startswith("issues/") and not path.startswith("issues/media/") for path in paths
+        ):
+            issue_metadata = has_synced_issue_files(self.board)
+        self._state = FinalizedState(journal, manifest, floors, watched, issue_metadata)
 
     def _publish(self, line: dict) -> None:
         """Hand a committed line to every open stream (under the locks, in ``seq``
@@ -994,6 +1051,7 @@ class Project:
                 manifest=Manifest.build(self.board),
                 floors=state.floors,
                 watched=state.watched,
+                has_issue_metadata=state.has_issue_metadata,
             )
             self.op_seqs = {}  # the op-status map covers the current epoch only
             self._adopt(rotated, renewed)
@@ -1061,8 +1119,7 @@ class Project:
         """
         op = "server.set_config"
         tracker = MutationTracker(self.board, op)
-        config = self.read_config()
-        config.update(changes)
+        config = merge_config_changes(self.read_config(), changes)
 
         def work(txn: Transaction) -> OpResult:
             with recording(txn.before_mutation) as recorder:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import tomllib
 
 from lattice.server.protocol import MIN_CLIENT_VERSION, server_version
 from lattice.server.testing import ServerHandle
@@ -88,12 +89,24 @@ def test_client_too_old(server: ServerHandle, root: Path) -> None:
         "/v1/projects/alpha/ops/task.create",
         token=token,
         body={"params": {"title": "x"}},
-        headers={"Lattice-Client-Version": "0.0.1"},
+        headers={"Lattice-Client-Version": "0.2.1"},
     )
     assert status == 400 and body["error"]["code"] == "CLIENT_TOO_OLD"
-    assert "0.0.1" in body["error"]["message"] and MIN_CLIENT_VERSION in body["error"]["message"]
+    assert "0.2.1" in body["error"]["message"] and MIN_CLIENT_VERSION in body["error"]["message"]
     assert headers["lattice-min-client-version"] == MIN_CLIENT_VERSION
     assert board_hash(root, "alpha") == before
+
+
+def test_phase_one_floor_and_package_version_are_022(server: ServerHandle, root: Path) -> None:
+    project_root = Path(__file__).resolve().parents[2]
+    with (project_root / "pyproject.toml").open("rb") as stream:
+        package = tomllib.load(stream)
+    assert MIN_CLIENT_VERSION == "0.2.2"
+    assert package["project"]["version"] == "0.2.2"
+    status, headers, body = server.request("GET", "/v1/info", token=mint(root))
+    assert status == 200
+    assert body["data"]["min_client_version"] == "0.2.2"
+    assert headers["lattice-min-client-version"] == "0.2.2"
 
 
 def test_malformed_requests(server: ServerHandle, root: Path) -> None:

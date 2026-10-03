@@ -59,6 +59,8 @@ RUNTIME_DIRS = ("locks", "review_state", "tmp-prompts", ".daemon")
 def is_durable(rel: str) -> bool:
     """*rel* (relative to ``.lattice/``) is durable board data or workspace (SPEC §6.1)."""
     parts = rel.split("/")
+    if parts[:2] == ["issues", "media"]:
+        return False
     if len(parts) == 1:
         return rel in DURABLE_FILES
     return parts[0] in DURABLE_DIRS
@@ -75,6 +77,8 @@ def durable_tree(lattice_dir: Path) -> dict[str, bytes]:
         base = lattice_dir / name
         if base.is_dir():
             for path in sorted(base.rglob("*")):
+                if path.relative_to(lattice_dir).parts[:2] == ("issues", "media"):
+                    continue
                 if path.is_file() and ".tmp." not in path.name:
                     found[path.relative_to(lattice_dir).as_posix()] = path.read_bytes()
     return dict(sorted(found.items()))
@@ -560,6 +564,7 @@ HOSTED_GROUPS: tuple[tuple[str, ...], ...] = (
         "plan_integrity",
         "flags",
         "dashboard_settings",
+        "issues",
     ),
 )
 

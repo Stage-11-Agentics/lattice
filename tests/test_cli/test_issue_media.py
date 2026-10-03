@@ -92,7 +92,7 @@ NEW_COMMANDS = [
 ]
 
 
-def test_new_commands_refuse_when_off_and_on_a_bound_checkout(
+def test_new_commands_refuse_when_off_and_stop_on_an_unconfigured_bound_checkout(
     initialized_root: Path, invoke, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     for argv in NEW_COMMANDS:
@@ -104,7 +104,8 @@ def test_new_commands_refuse_when_off_and_on_a_bound_checkout(
     monkeypatch.chdir(bound)
     for argv in NEW_COMMANDS:
         result = CliRunner().invoke(cli, [*argv, "--json"])
-        assert json.loads(result.output)["error"]["code"] == "LOCAL_ONLY", argv
+        assert json.loads(result.output)["error"]["code"] == "REMOTE_NOT_CONFIGURED", argv
+    assert not (bound / ".lattice").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -391,16 +392,29 @@ def test_video_is_transcoded_and_gets_frames(
 
 
 def test_video_without_ffmpeg_is_stored_as_is(root: Path, invoke, files: Path) -> None:
-    result = invoke("issue", "file", "t", "--evidence", str(files / "run.webm"), *A)
+    result = invoke(
+        "issue", "file", "t", "--evidence", str(files / "run.webm"), "--keep-video-metadata", *A
+    )
     assert result.exit_code == 0, result.output
     assert result.stdout.splitlines() == [
         "Filed LAT-I1: t (1 video)",
         "  no frames for run.webm: ffmpeg is off (LATTICE_FFMPEG=off)",
+        "  run.webm: filed as it is, with its metadata, which can include where it was "
+        "recorded (--keep-video-metadata)",
     ]
     (entry,) = ok(invoke, "issue", "show", "LAT-I1")["media"]
     assert entry["content_type"] == "video/webm" and entry["frames"] == []
     assert not {"width", "height", "duration_ms"} & set(entry)
-    quiet = invoke("issue", "file", "u", "--evidence", str(files / "repro.mov"), *A, "--quiet")
+    quiet = invoke(
+        "issue",
+        "file",
+        "u",
+        "--evidence",
+        str(files / "repro.mov"),
+        "--keep-video-metadata",
+        *A,
+        "--quiet",
+    )
     assert quiet.stdout == "LAT-I2\n"
     assert "no frames for repro.mov" in quiet.stderr
 
@@ -426,7 +440,7 @@ def test_media_paths_json_and_no_content_in_json(
         *A,
     )
     monkeypatch.setenv("LATTICE_FFMPEG", "off")
-    ok(invoke, "issue", "attach", "LAT-I1", str(files / "run.webm"), *A)
+    ok(invoke, "issue", "attach", "LAT-I1", str(files / "run.webm"), "--keep-video-metadata", *A)
     photo, video, bare = ok(invoke, "issue", "media", "LAT-I1")["media"]
     result = invoke("issue", "media", "LAT-I1", "--paths")
     assert result.stdout.splitlines() == [photo["path"]] + [f["path"] for f in video["frames"]]

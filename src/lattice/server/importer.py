@@ -31,15 +31,19 @@ Any refusal or failure removes the staging directory, so nothing is created.
 from __future__ import annotations
 
 import errno
+import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 from lattice.core.errors import OpError
-from lattice.core.ids import generate_instance_id
+from lattice.core.ids import generate_instance_id, validate_id
+from lattice.core.issue_media import format_size, media_ext, parse_frame_name, sniff_media
+from lattice.core.issues import replay_issue, validate_issue_media_hashes
 from lattice.server.admin import (
     _create_audit_repo,
     admin_lock,
@@ -51,7 +55,9 @@ from lattice.server.admin import (
 from lattice.server.config import PROJECTS_DIR, SERVER_JSON, ServerConfigError, load_config
 from lattice.server.journal import HOSTED_DIR
 from lattice.storage.fs import LATTICE_DIR, atomic_write, ensure_dir
+from lattice.storage.issue_media import frames_dir, media_path, store_media
 from lattice.storage.integrity import DoctorReport, check_board, repair_task_derived_files
+from lattice.storage.issues import rebuild_issue_snapshots
 from lattice.storage.operations import AuthoritativeLogError
 from lattice.storage.ownership import (
     PathClass,
@@ -66,6 +72,7 @@ _PROSE_DIRS = (("plans",), ("notes",), ("archive", "plans"), ("archive", "notes"
 _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
 _FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
 _ROOT = "."
+_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 
 
 @dataclass(frozen=True)
@@ -97,6 +104,7 @@ class _Scan:
     """
 
     entries: dict[str, tuple[PathClass, _Identity]] = field(default_factory=dict)
+    unreadable_media_dirs: set[str] = field(default_factory=set)
 
     def identity(self, path: str) -> _Identity | None:
         entry = self.entries.get(path)
@@ -132,6 +140,350 @@ class _Scan:
                 continue
             rows.append((f"{path}/" if identity.kind == "dir" else path, path_class.value))
         return sorted(rows)
+
+
+@dataclass(frozen=True)
+class _MediaSource:
+    issue_id: str
+    media_id: str
+    content_type: str
+    original_path: str
+    original_sha256: str
+    original_size: int
+    frames: tuple[tuple[int, str, str, int], ...]
+
+
+@dataclass(frozen=True)
+class _MediaInventory:
+    sources: tuple[_MediaSource, ...]
+    media_count: int
+    media_known_bytes: int
+    media_unknown_size_count: int
+    media_inventory_complete: bool
+
+    @property
+    def media_bytes(self) -> int | None:
+        if self.media_unknown_size_count or not self.media_inventory_complete:
+            return None
+        return self.media_known_bytes
+
+
+def _media_refusal(path: str, detail: str, *, code: str = "INTEGRITY_ERROR") -> OpError:
+    return OpError(code, f"Import refused: issue media .lattice/{path} {detail}.", {"path": path})
+
+
+def _issue_snapshots_for_import(lattice_fd: int, scan: _Scan, source_board: Path) -> list[dict]:
+    """Replay scanned issue logs without trusting snapshots or following paths."""
+    snapshots = []
+    for path in sorted(scan.copied_files):
+        rel = PurePosixPath(path)
+        if rel.parent.as_posix() != "issues/events" or not rel.name.endswith(".jsonl"):
+            continue
+        issue_id = rel.stem
+        if not validate_id(issue_id, "iss"):
+            raise OpError(
+                "INTEGRITY_ERROR",
+                f"Import refused: invalid issue log name {source_board / path}.",
+                {"path": path},
+            )
+        try:
+            raw = _read_file(lattice_fd, path, scan)
+            events = [
+                json.loads(line) for line in raw.decode("utf-8").splitlines() if line.strip()
+            ]
+            snapshot = replay_issue(events)
+            if snapshot is not None:
+                if snapshot.get("id") != issue_id:
+                    raise ValueError("log issue ID does not match its filename")
+                validate_issue_media_hashes(snapshot)
+                snapshots.append(snapshot)
+        except (OSError, UnicodeDecodeError, ValueError, KeyError, TypeError) as exc:
+            raise OpError(
+                "INTEGRITY_ERROR",
+                f"Import refused: issue-log replay failed for {source_board / path}: {exc}.",
+                {"path": path},
+            ) from exc
+    return snapshots
+
+
+def _media_relative_paths(source_board: Path, issue_id: str, entry: dict) -> tuple[str, str]:
+    original = media_path(source_board, issue_id, entry)
+    frames = frames_dir(source_board, issue_id, entry)
+    if original is None or frames is None:
+        raise _media_refusal(f"{issue_id}/{entry.get('id')}", "has an invalid ID or content type")
+    return original.relative_to(source_board).as_posix(), frames.relative_to(
+        source_board
+    ).as_posix()
+
+
+def _file_bytes_for_preflight(
+    lattice_fd: int,
+    scan: _Scan,
+    relative: str,
+    *,
+    expected_sha256: str | None,
+    expected_size: int | None,
+    expected_type: str,
+) -> tuple[str, int]:
+    identity = scan.entries.get(relative)
+    if identity is None:
+        raise _media_refusal(relative, "is missing")
+    if identity[1].kind != "file":
+        raise _media_refusal(relative, "is a symbolic link or not a regular file")
+    try:
+        content = _read_file(lattice_fd, relative, scan)
+    except OpError as exc:
+        raise _media_refusal(relative, f"could not be read safely ({exc.message})") from exc
+    digest = hashlib.sha256(content).hexdigest()
+    if expected_size is not None and len(content) != expected_size:
+        raise _media_refusal(relative, "does not match the size recorded in issue metadata")
+    if expected_sha256 is not None and digest != expected_sha256:
+        raise _media_refusal(relative, "does not match the SHA-256 recorded in issue metadata")
+    if sniff_media(content[:64]) != expected_type:
+        raise _media_refusal(relative, f"does not have the recorded {expected_type} content type")
+    return digest, len(content)
+
+
+def _direct_children(scan: _Scan, directory: str) -> list[tuple[str, _Identity]]:
+    prefix = directory + "/"
+    result = []
+    for path, (_path_class, identity) in scan.entries.items():
+        if not path.startswith(prefix):
+            continue
+        remainder = path[len(prefix) :]
+        if remainder and "/" not in remainder:
+            result.append((path, identity))
+    return sorted(result)
+
+
+def _preflight_media_copy(
+    lattice_fd: int,
+    scan: _Scan,
+    source_board: Path,
+    snapshots: list[dict],
+    limits,
+) -> _MediaInventory:
+    """Verify every referenced original/frame and enforce import quotas before writes."""
+    sources: list[_MediaSource] = []
+    issue_totals: dict[str, int] = {}
+    project_hash_sizes: dict[str, int] = {}
+    object_sizes: list[tuple[str, str, int]] = []
+
+    for snapshot in snapshots:
+        issue_id = snapshot["id"]
+        for entry in snapshot.get("media", []):
+            if entry.get("removed"):
+                continue
+            media_id = entry.get("id")
+            content_type = entry.get("content_type")
+            sha256 = entry.get("sha256")
+            size = entry.get("size_bytes")
+            if (
+                not validate_id(media_id, "med")
+                or media_ext(content_type) is None
+                or not isinstance(sha256, str)
+                or _SHA256_RE.fullmatch(sha256) is None
+                or isinstance(size, bool)
+                or not isinstance(size, int)
+                or size < 0
+            ):
+                raise _media_refusal(f"{issue_id}/{media_id}", "has invalid issue metadata")
+            original, frame_directory = _media_relative_paths(source_board, issue_id, entry)
+            original_sha, original_size = _file_bytes_for_preflight(
+                lattice_fd,
+                scan,
+                original,
+                expected_sha256=sha256,
+                expected_size=size,
+                expected_type=content_type,
+            )
+            frame_rows: list[tuple[int, str, str, int]] = []
+            frame_identity = scan.entries.get(frame_directory)
+            if frame_identity is not None:
+                if frame_identity[1].kind != "dir":
+                    raise _media_refusal(frame_directory, "is not a real frame-sidecar directory")
+                for frame_path, identity in _direct_children(scan, frame_directory):
+                    t_ms = parse_frame_name(PurePosixPath(frame_path).name)
+                    if t_ms is None:
+                        raise _media_refusal(frame_path, "has an invalid frame-sidecar name")
+                    if identity.kind != "file":
+                        raise _media_refusal(
+                            frame_path, "is a symbolic link or not a regular file"
+                        )
+                    frame_hash, frame_size = _file_bytes_for_preflight(
+                        lattice_fd,
+                        scan,
+                        frame_path,
+                        expected_sha256=None,
+                        expected_size=None,
+                        expected_type="image/jpeg",
+                    )
+                    frame_rows.append((t_ms, frame_path, frame_hash, frame_size))
+
+            sources.append(
+                _MediaSource(
+                    issue_id,
+                    media_id,
+                    content_type,
+                    original,
+                    original_sha,
+                    original_size,
+                    tuple(frame_rows),
+                )
+            )
+            items = [(original, original_sha, original_size)] + [
+                (path, digest, frame_size) for _t_ms, path, digest, frame_size in frame_rows
+            ]
+            issue_totals[issue_id] = issue_totals.get(issue_id, 0) + sum(
+                item_size for _path, _digest, item_size in items
+            )
+            for path, digest, item_size in items:
+                object_sizes.append((path, digest, item_size))
+                project_hash_sizes.setdefault(digest, item_size)
+                if project_hash_sizes[digest] != item_size:
+                    raise _media_refusal(path, "has an inconsistent size for its SHA-256")
+
+    for path, _digest, size in object_sizes:
+        if size > limits.max_issue_media_file_bytes:
+            raise _media_refusal(
+                path,
+                f"exceeds max_issue_media_file_bytes ({format_size(limits.max_issue_media_file_bytes)}); "
+                "rerun with --omit-media to import metadata only if acceptable",
+                code="PAYLOAD_TOO_LARGE",
+            )
+    for issue_id, size in issue_totals.items():
+        if size > limits.max_issue_media_issue_bytes:
+            raise _media_refusal(
+                issue_id,
+                f"exceeds max_issue_media_issue_bytes ({format_size(limits.max_issue_media_issue_bytes)}); "
+                "rerun with --omit-media to import metadata only if acceptable",
+                code="PAYLOAD_TOO_LARGE",
+            )
+    # Storage is not deduplicated, so the project total is every stored object.
+    project_bytes = sum(size for _path, _digest, size in object_sizes)
+    if project_bytes > limits.max_issue_media_project_bytes:
+        raise _media_refusal(
+            "issues/media",
+            f"exceeds max_issue_media_project_bytes ({format_size(limits.max_issue_media_project_bytes)}); "
+            "rerun with --omit-media to import metadata only if acceptable",
+            code="MEDIA_QUOTA_EXCEEDED",
+        )
+
+    return _MediaInventory(
+        tuple(sources),
+        len(object_sizes),
+        sum(size for _path, _digest, size in object_sizes),
+        0,
+        True,
+    )
+
+
+def _safe_missing_parent(scan: _Scan, relative: str) -> bool:
+    """Whether a missing path's scanned parents are real dirs or absent, never links."""
+    parts = PurePosixPath(relative).parts[:-1]
+    for depth in range(1, len(parts) + 1):
+        parent = PurePosixPath(*parts[:depth]).as_posix()
+        entry = scan.entries.get(parent)
+        if entry is None:
+            return True
+        if entry[1].kind != "dir":
+            return False
+    return True
+
+
+def _media_dir_unreadable(scan: _Scan, relative: str) -> bool:
+    return any(
+        relative == directory or relative.startswith(directory + "/")
+        for directory in scan.unreadable_media_dirs
+    )
+
+
+def _inventory_media_omit(
+    scan: _Scan, source_board: Path, snapshots: list[dict]
+) -> _MediaInventory:
+    """Report media paths using lstat identities only; never opens or hashes bytes."""
+    media_count = 0
+    known_bytes = unknown = 0
+    complete = True
+    for snapshot in snapshots:
+        issue_id = snapshot["id"]
+        for entry in snapshot.get("media", []):
+            if entry.get("removed"):
+                continue
+            original, frame_directory = _media_relative_paths(source_board, issue_id, entry)
+            media_count += 1
+            identity = scan.entries.get(original)
+            if identity is not None and identity[1].kind == "file":
+                known_bytes += identity[1].size
+            else:
+                unknown += 1
+
+            if _media_dir_unreadable(scan, frame_directory):
+                complete = False
+                continue
+            frame_identity = scan.entries.get(frame_directory)
+            if frame_identity is None:
+                if not _safe_missing_parent(scan, frame_directory):
+                    complete = False
+                continue
+            if frame_identity[1].kind != "dir":
+                complete = False
+                continue
+            for _path, child in _direct_children(scan, frame_directory):
+                media_count += 1
+                if child.kind == "file":
+                    known_bytes += child.size
+                else:
+                    unknown += 1
+    return _MediaInventory((), media_count, known_bytes, unknown, complete)
+
+
+def _copy_preflighted_media(
+    lattice_fd: int, scan: _Scan, board: Path, inventory: _MediaInventory
+) -> set[str]:
+    """Copy already-verified references, checking each source again against preflight."""
+    copied_paths = set()
+    for source in inventory.sources:
+        original = _read_file(lattice_fd, source.original_path, scan)
+        if (
+            len(original) != source.original_size
+            or hashlib.sha256(original).hexdigest() != source.original_sha256
+        ):
+            raise _changed(source.original_path)
+        frames = []
+        for t_ms, path, expected_hash, expected_size in source.frames:
+            content = _read_file(lattice_fd, path, scan)
+            if (
+                len(content) != expected_size
+                or hashlib.sha256(content).hexdigest() != expected_hash
+            ):
+                raise _changed(path)
+            frames.append((t_ms, content))
+        store_media(
+            board,
+            source.issue_id,
+            {"id": source.media_id, "content_type": source.content_type},
+            original,
+            frames,
+        )
+        copied_paths.add(source.original_path)
+        copied_paths.update(path for _t_ms, path, _hash, _size in source.frames)
+    return copied_paths
+
+
+def _not_copied(scan: _Scan, copied_media_paths: set[str]) -> list[dict]:
+    copied_dirs = set()
+    for path in copied_media_paths:
+        for parent in PurePosixPath(path).parents:
+            if parent.parts and parent.as_posix().startswith("issues/media"):
+                copied_dirs.add(parent.as_posix())
+    result = []
+    for path, path_class in scan.not_copied:
+        normalized = path.rstrip("/")
+        if normalized in copied_media_paths or normalized in copied_dirs:
+            continue
+        result.append({"path": path, "class": path_class})
+    return result
 
 
 def _unsafe(path: str, what: str) -> OpError:
@@ -178,7 +530,7 @@ def _open_dir(parent_fd: int, name: str, rel: str, expected: _Identity | None) -
     return fd
 
 
-def _scan(lattice_fd: int) -> _Scan:
+def _scan(lattice_fd: int, *, tolerate_media_errors: bool = False) -> _Scan:
     """Walk the whole board below *lattice_fd* without following links (step 2)."""
     scan = _Scan()
     scan.entries[_ROOT] = (PathClass.DURABLE, _Identity.of(os.fstat(lattice_fd)))
@@ -188,17 +540,30 @@ def _scan(lattice_fd: int) -> _Scan:
         try:
             names = sorted(os.listdir(dir_fd))
         except OSError as exc:
+            if (
+                tolerate_media_errors
+                and where != _ROOT
+                and classify_path(where) is PathClass.ISSUE_MEDIA
+            ):
+                scan.unreadable_media_dirs.add(where)
+                return
             raise _unreadable(where, exc) from None
         for name in names:
             child = rel / name
             path = child.as_posix()
+            path_class = classify_path(child)
             try:
                 st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
             except FileNotFoundError:
+                if tolerate_media_errors and path_class is PathClass.ISSUE_MEDIA:
+                    scan.entries[path] = (path_class, _Identity("unknown", 0, 0))
+                    continue
                 raise _changed(path) from None
             except OSError as exc:
+                if tolerate_media_errors and path_class is PathClass.ISSUE_MEDIA:
+                    scan.entries[path] = (path_class, _Identity("unknown", 0, 0))
+                    continue
                 raise _unreadable(path, exc) from None
-            path_class = classify_path(child)
             identity = _Identity.of(st)
             if path_class in _COPIED_CLASSES:
                 if identity.kind == "link":
@@ -207,7 +572,13 @@ def _scan(lattice_fd: int) -> _Scan:
                     raise _unsafe(path, "is not a regular file or a directory")
             scan.entries[path] = (path_class, identity)
             if identity.kind == "dir":
-                fd = _open_dir(dir_fd, name, path, identity)
+                try:
+                    fd = _open_dir(dir_fd, name, path, identity)
+                except OpError:
+                    if tolerate_media_errors and path_class is PathClass.ISSUE_MEDIA:
+                        scan.unreadable_media_dirs.add(path)
+                        continue
+                    raise
                 try:
                     visit(fd, child)
                 finally:
@@ -280,7 +651,7 @@ def _open_source(source: Path) -> int:
         os.close(parent)
 
 
-def _source_unchanged(source: Path, scan: _Scan) -> None:
+def _source_unchanged(source: Path, scan: _Scan, *, tolerate_media_errors: bool = False) -> None:
     """Reopen the board by its path and rescan it; refuse on any difference (step 4)."""
     try:
         fd = _open_source(source)
@@ -289,13 +660,21 @@ def _source_unchanged(source: Path, scan: _Scan) -> None:
             raise _changed(_ROOT) from None
         raise
     try:
-        rescan = _scan(fd)
+        rescan = _scan(fd, tolerate_media_errors=tolerate_media_errors)
     finally:
         os.close(fd)
-    if rescan.entries != scan.entries:
+    if (
+        rescan.entries != scan.entries
+        or rescan.unreadable_media_dirs != scan.unreadable_media_dirs
+    ):
         for path in sorted(scan.entries.keys() | rescan.entries.keys()):
             if scan.entries.get(path) != rescan.entries.get(path):
                 raise _changed(path)
+        changed_unreadable = scan.unreadable_media_dirs.symmetric_difference(
+            rescan.unreadable_media_dirs
+        )
+        if changed_unreadable:
+            raise _changed(sorted(changed_unreadable)[0])
 
 
 def _non_canonical(scan: _Scan) -> list[str]:
@@ -368,7 +747,7 @@ def _move_steps(slug: str) -> list[dict]:
     ]
 
 
-def import_project(root: Path, slug: str, source: Path) -> dict:
+def import_project(root: Path, slug: str, source: Path, *, omit_media: bool = False) -> dict:
     """Import the board at ``<source>/.lattice/`` as project *slug* (SPEC §11)."""
     root = Path(root)
     check_slug(slug)
@@ -377,15 +756,29 @@ def import_project(root: Path, slug: str, source: Path) -> dict:
     if final.exists():
         raise OpError("CONFLICT", f"Project '{slug}' already exists at {final}.")
     try:
-        audit_config = load_config(root).audit
+        server_config = load_config(root)
+        audit_config = server_config.audit
     except ServerConfigError as exc:
         raise OpError("VALIDATION_ERROR", f"{root / SERVER_JSON}: {exc}") from exc
     source = Path(source)
     lattice_fd = _open_source(source)
-    staging = root / PROJECTS_DIR / f".importing-{slug}-{generate_instance_id()[5:]}"
-    board = staging / LATTICE_DIR
+    staging: Path | None = None
     try:
-        scan = _scan(lattice_fd)
+        scan = _scan(lattice_fd, tolerate_media_errors=omit_media)
+        source_board = source / LATTICE_DIR
+        snapshots = _issue_snapshots_for_import(lattice_fd, scan, source_board)
+        media_inventory = (
+            _inventory_media_omit(scan, source_board, snapshots)
+            if omit_media
+            else _preflight_media_copy(
+                lattice_fd, scan, source_board, snapshots, server_config.limits
+            )
+        )
+        # The media preflight is deliberately complete before this first project
+        # directory or imported file is written.
+        _source_unchanged(source, scan, tolerate_media_errors=omit_media)
+        staging = root / PROJECTS_DIR / f".importing-{slug}-{generate_instance_id()[5:]}"
+        board = staging / LATTICE_DIR
         with owning_board(board):
             ensure_dir(board / HOSTED_DIR)
             fd = try_owner_flock(board)
@@ -396,7 +789,12 @@ def import_project(root: Path, slug: str, source: Path) -> dict:
                     ensure_dir(board / path)
                 for path in scan.copied_files:
                     atomic_write(board / path, _read_file(lattice_fd, path, scan))
-                _source_unchanged(source, scan)
+                copied_media_paths = (
+                    set()
+                    if omit_media
+                    else _copy_preflighted_media(lattice_fd, scan, board, media_inventory)
+                )
+                _source_unchanged(source, scan, tolerate_media_errors=omit_media)
                 report = check_board(board)
                 findings = [_clean(f, board, source / LATTICE_DIR) for f in report.findings]
                 if report.errors:
@@ -408,6 +806,18 @@ def import_project(root: Path, slug: str, source: Path) -> dict:
                     raise OpError(
                         "INTEGRITY_ERROR", f"Import refused: short-ID repair failed: {message}"
                     ) from exc
+                try:
+                    rebuild_issue_snapshots(board)
+                except OpError as exc:
+                    message = _as_source(exc.message, board, source / LATTICE_DIR)
+                    raise OpError(
+                        "INTEGRITY_ERROR", f"Import refused: issue-log rebuild failed: {message}"
+                    ) from exc
+                except (ValueError, KeyError, TypeError, AttributeError) as exc:
+                    message = _as_source(str(exc), board, source / LATTICE_DIR)
+                    raise OpError(
+                        "INTEGRITY_ERROR", f"Import refused: issue-log rebuild failed: {message}"
+                    ) from exc
                 journal = seal_new_board(board)
             finally:
                 release_owner_flock(fd)
@@ -417,7 +827,8 @@ def import_project(root: Path, slug: str, source: Path) -> dict:
                 raise OpError("CONFLICT", f"Project '{slug}' already exists at {final}.")
             os.rename(staging, final)
     except BaseException:
-        shutil.rmtree(staging, ignore_errors=True)
+        if staging is not None:
+            shutil.rmtree(staging, ignore_errors=True)
         raise
     finally:
         os.close(lattice_fd)
@@ -430,8 +841,14 @@ def import_project(root: Path, slug: str, source: Path) -> dict:
         "epoch": journal.epoch,
         "head_seq": 0,
         "audit": audit_state,
-        "copied": len(scan.copied_files),
-        "not_copied": [{"path": p, "class": c} for p, c in scan.not_copied],
+        "copied": len(scan.copied_files) + (0 if omit_media else media_inventory.media_count),
+        "not_copied": _not_copied(scan, copied_media_paths),
+        "media_omitted": omit_media,
+        "media_count": media_inventory.media_count,
+        "media_bytes": media_inventory.media_bytes,
+        "media_known_bytes": media_inventory.media_known_bytes,
+        "media_unknown_size_count": media_inventory.media_unknown_size_count,
+        "media_inventory_complete": media_inventory.media_inventory_complete,
         "non_canonical": _non_canonical(scan),
         "doctor": {
             "findings": findings,

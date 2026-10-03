@@ -71,6 +71,8 @@ RAW_WRITERS: dict[str, str] = {
     "lattice.remote.cache_paths": "the client's own directories under a hosted .lattice/ "
     "(cache/, runtime) and files in them, never through a symlink (SPEC §6.1, §9.4)",
     "lattice.remote.config": "remotes.json in the user's config dir",
+    "lattice.remote.issue_media": "the client-private issue-media cache under cache/issue-media/ "
+    "(runtime, never synced) and the media files an upload reads",
     "lattice.remote.session": "opens locks/cache_sync.lock to probe it (runtime); its cache "
     "files go through lattice.remote.cache_paths",
     "lattice.server.control": "control requests under hosted/control (server control)",
@@ -78,6 +80,9 @@ RAW_WRITERS: dict[str, str] = {
     "lattice.server.transactions": "undo logs and receipts under hosted/ (server control)",
     "lattice.server.admin": "the server root: server.json, projects/.creating-* staging",
     "lattice.server.audit": "the project directory's .gitignore, outside the board (SPEC §8.10)",
+    "lattice.server.issue_media": "hosted issue media: transport staging under the project's "
+    "server-runtime directory and the finalize step into issues/media/, outside the board's "
+    "synced and recorded paths (SPEC §8.4)",
     "lattice.server.importer": "project import: reads the source without following links, "
     "then renames or removes its projects/.importing-* staging (SPEC §11)",
     "lattice.server.testing": "server.json of a test server root (test helper)",
@@ -100,6 +105,9 @@ BOARD_OWNERS: dict[str, str] = {
     "lattice.server.audit": "the owning server: hosted/audit.json settings (SPEC §8.10)",
     "lattice.server.importer": "project import on the server host, doctor-gated, into its "
     "staging board (SPEC §11)",
+    "lattice.server.issue_media": "the owning server: finalizes, reconciles and removes issue media "
+    "blobs after the named transaction commits; media is marker-checked but not synced or "
+    "recorded (SPEC §8.4)",
     "lattice.server.tokens": "tokens.json in the server root, outside any board (SPEC §8.3)",
     "lattice.server.sessions": "web_sessions.json in the server root, outside any board "
     "(SPEC §10)",
@@ -130,6 +138,8 @@ CACHE_OWNERS: dict[str, str] = {
     "lattice.remote.session": "cache/unreachable_until (SPEC §9.5) and cache/server_info.json "
     "(SPEC §15)",
     "lattice.remote.follower": "the follower's cache/follower.json (SPEC §9.6)",
+    "lattice.remote.issue_media": "the client-private issue-media cache under cache/issue-media/ "
+    "(SPEC §6.1 runtime, never synced)",
 }
 
 #: Board writers that still bypass operations, each removed by the named ticket

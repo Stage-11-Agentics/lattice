@@ -1429,3 +1429,19 @@ Additionally, `lattice advance N` processed multiple tasks in a single context w
   including the same `--actor` or `--name` supplied for the claim when present.
   Follow the status output about review, then explicitly move to `in_progress`.
   Other workflow configurations and claim statuses keep their existing behavior.
+
+## 2026-10-02: Hosted issue metadata and private media (LAT-368)
+
+- **Decision:** issue logs, snapshots, and the ID index are durable hosted board
+  metadata, covered by normal sync, audit, and import. `issues/media/` is a
+  private media exception: uploaded bytes stay in server storage, outside
+  ordinary sync manifests, deltas, streams, and audit history, and are fetched
+  into a separate private client cache on demand.
+- **Import:** `project import` copies referenced media into private server
+  storage by default, after hash and per-file, per-issue, and project quota
+  preflight. `--omit-media` is the explicit metadata-only option.
+- **Compatibility:** the issue path establishes package version and
+  `min_client_version` at `0.2.2`; the same floor covers issue-bearing reads
+  and issue writes, including hosted media operations.
+- **Why:** issue metadata must travel with the board while evidence bytes stay
+  outside ordinary copies and audit history.

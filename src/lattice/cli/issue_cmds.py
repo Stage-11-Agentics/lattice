@@ -2,8 +2,8 @@
 
 Issues are observations, kept apart from tasks, which are commitments. The log
 is off unless ``.lattice/config.json`` has ``"issues": {"enabled": true}``, and
-works only on local boards. Writes run the ``issue.*`` operations; ``list``
-and ``show`` read the files directly.
+works on local boards and hosted boards whose owner enabled it. Hosted writes
+run as named server operations; reads use the synced, read-only cache.
 """
 
 from __future__ import annotations
@@ -17,50 +17,105 @@ from lattice.cli.helpers import (
     output_error,
     output_result,
     resolve_body,
-    require_root,
 )
 from lattice.cli.main import cli
-from lattice.cli.ops_bridge import provenance_params, run_operation
+from lattice.cli.ops_bridge import board_or_exit, provenance_params, run_operation
 from lattice.core.errors import OpError
 
 
 def _require_issue_log(is_json: bool) -> tuple:
-    """``(lattice_dir, config)`` when the issue log can be used here, else the
-    command's error: ``LOCAL_ONLY`` on a bound checkout (before anything is
-    read or fetched), ``NOT_INITIALIZED``, or ``ISSUES_DISABLED``."""
-    from lattice.boards import hosted_binding
+    """``(board, lattice_dir, config)`` after hosted freshness and issue checks."""
+    from lattice.boards import HostedBoard
     from lattice.core.config import issues_enabled
-    from lattice.core.issues import issues_disabled_message
-    from lattice.storage.issues import issues_dir
+    from lattice.core.issues import hosted_issues_disabled_message, issues_disabled_message
+    from lattice.storage.issues import has_issue_metadata
 
+    board = board_or_exit(is_json)
     try:
-        binding = hosted_binding(None)
+        # HostedBoard catches the cache up and holds its shared read lock here.
+        lattice_dir = board.lattice_dir
     except OpError as exc:
         output_error(exc.message, exc.code, is_json)
-    if binding is not None:
-        output_error(
-            "The issue log works only on local boards for now; this checkout's board "
-            f"lives on the server ('{binding}').",
-            "LOCAL_ONLY",
-            is_json,
-        )
-    lattice_dir = require_root(is_json)
     config = load_project_config(lattice_dir)
     if not issues_enabled(config):
-        output_error(
-            issues_disabled_message(issues_dir(lattice_dir).is_dir()), "ISSUES_DISABLED", is_json
+        message = (
+            _old_server_message(board)
+            or hosted_issues_disabled_message(
+                has_issue_metadata(lattice_dir), board.hosted.project
+            )
+            if isinstance(board, HostedBoard)
+            else issues_disabled_message(has_issue_metadata(lattice_dir))
         )
-    return lattice_dir, config
+        output_error(message, "ISSUES_DISABLED", is_json)
+    return board, lattice_dir, config
+
+
+#: The first server release with the issue log.
+_ISSUE_LOG_SERVER_VERSION = "0.2.2"
+
+
+def _old_server_message(board) -> str | None:  # noqa: ANN001
+    """For a server too old to have the issue log, the one thing that helps
+    (its admin CLI refuses ``issues.enabled``); ``None`` otherwise."""
+    from lattice.remote import session
+    from lattice.server.protocol import is_older
+
+    version = session._state(board.hosted).get("server_version")
+    if not isinstance(version, str) or not is_older(version, _ISSUE_LOG_SERVER_VERSION):
+        return None
+    return (
+        f"The issue log is off: server {board.hosted.remote} runs Lattice {version}, which has "
+        f"no issue log. Upgrade the server to Lattice {_ISSUE_LOG_SERVER_VERSION} or later; the "
+        "board owner can then turn the log on for this project."
+    )
 
 
 def _write(op_name: str, params: dict, is_json: bool, checked: tuple | None = None) -> tuple:
-    """``(lattice_dir, result)`` of running *op_name* after the issue-log checks."""
-    lattice_dir, config = checked or _require_issue_log(is_json)
-    return lattice_dir, run_operation(op_name, params, is_json, config=config)
+    """``(board, lattice_dir, result)`` after the issue-log checks."""
+    board, lattice_dir, config = checked or _require_issue_log(is_json)
+    return board, lattice_dir, run_operation(op_name, params, is_json, board=board, config=config)
 
 
 def _name(view: dict) -> str:
     return view.get("short_id") or view["id"]
+
+
+def _hosted_media_views(board, views: list[dict]) -> list[dict]:  # noqa: ANN001
+    """Add verified private-cache/server availability fields on a bound checkout."""
+    from lattice.boards import HostedBoard
+
+    if not isinstance(board, HostedBoard) or not any(view.get("media") for view in views):
+        return views
+    from lattice.remote.issue_media import annotate_views
+
+    board.end_read_phase()
+    return annotate_views(board.root, board.remote, board.hosted.project, views)
+
+
+#: Why a hosted media file (or frame) has no path to print, by ``available``.
+_GAP = {
+    "missing": "not on the server",
+    "unreachable": "server unreachable",
+    "remote": "not fetched",
+}
+
+
+def _media_label(entry: dict) -> str:
+    name = entry.get("original_name") or entry.get("id") or "?"
+    return f"media {entry.get('n', '?')} ({name})"
+
+
+def _hosted_paths_gap(entry: dict) -> str | None:
+    """The stderr line ``issue media --paths`` prints for a hosted entry with no
+    file to print (its number and name, and why); ``None`` otherwise, and
+    always for a local entry (which has no ``available``)."""
+    available = entry.get("available")
+    if available not in ("missing", "unreachable") or entry.get("path"):
+        return None
+    if available == "unreachable" and entry.get("kind") == "video" and entry.get("frames"):
+        return None  # its cached frames are printed
+    word = "missing" if available == "missing" else "not fetched"
+    return f"{word}: {_media_label(entry)}: {_GAP[available]}"
 
 
 def _task_entry(view: dict, raw_task: str) -> dict | None:
@@ -76,11 +131,17 @@ def _task_entry(view: dict, raw_task: str) -> dict | None:
     )
 
 
-def _warn_unreadable(path, exc: OpError) -> None:  # noqa: ANN001
+def _warn_unreadable(path, exc: OpError, board=None) -> None:  # noqa: ANN001
     """Skip an unreadable issue file with one line on stderr (stdout stays clean)."""
-    from lattice.core.issues import unreadable_issue_warning
+    from lattice.boards import HostedBoard
+    from lattice.core.issues import hosted_unreadable_issue_warning, unreadable_issue_warning
 
-    click.echo(unreadable_issue_warning(path, exc), err=True)
+    warning = (
+        hosted_unreadable_issue_warning(path, exc)
+        if isinstance(board, HostedBoard)
+        else unreadable_issue_warning(path, exc)
+    )
+    click.echo(warning, err=True)
 
 
 def _read_stdin_text() -> str:
@@ -173,6 +234,26 @@ def _read_media_file(path, limit: int, nothing: str, is_json: bool, video: bool)
     return content
 
 
+def _refuse_unstripped_video(name: str, nothing: str, is_json: bool):  # noqa: ANN202
+    """Privacy by default: a video whose metadata (which can include where it was
+    recorded) could not be removed is not filed unless the filer says so."""
+    from lattice.integrations.ffmpeg import ffmpeg_state
+
+    state = ffmpeg_state()
+    why = {
+        "off": "ffmpeg is turned off (LATTICE_FFMPEG=off)",
+        "missing": "ffmpeg was not found",
+    }.get(state, "ffmpeg could not process it")
+    output_error(
+        f"{name} is a video, and Lattice could not remove its metadata, which can "
+        f"include where it was recorded: {why}. {nothing} Install ffmpeg (or point "
+        "LATTICE_FFMPEG at it) and run the command again, or pass --keep-video-metadata "
+        "to file the original as it is.",
+        "VALIDATION_ERROR",
+        is_json,
+    )
+
+
 def _prepare_media(
     arg: str,
     path,
@@ -180,11 +261,13 @@ def _prepare_media(
     limit: int,
     nothing: str,
     is_json: bool,  # noqa: ANN001
+    keep_video_metadata: bool = False,
 ) -> dict | None:
     """One file, ready to send: ``{"item", "name", "arg", "hashes", "notes", "sizes"}``.
 
     A video is transcoded and gets frames when ffmpeg is present; a HEIC photo is
-    converted to JPEG. ``None`` for a HEIC photo nothing could convert.
+    converted to JPEG. ``None`` for a HEIC photo nothing could convert. A video
+    whose metadata could not be stripped is refused unless *keep_video_metadata*.
     """
     import hashlib
 
@@ -216,6 +299,9 @@ def _prepare_media(
         from lattice.integrations.ffmpeg import ffmpeg_state, prepare_video
 
         prepared = prepare_video(path, content, content_type, sha256)
+        kept_metadata = prepared.converted_from is None
+        if kept_metadata and not keep_video_metadata:
+            _refuse_unstripped_video(name, nothing, is_json)
         if len(prepared.content) > limit:
             _refuse_too_large(name, len(prepared.content), limit, True, nothing, is_json)
         item = {"payload": encode_payload(name, prepared.content)}
@@ -232,6 +318,8 @@ def _prepare_media(
         notes = list(prepared.notes)
         if ("no_frames", "ffmpeg_not_found") in notes and ffmpeg_state() == "off":
             notes[notes.index(("no_frames", "ffmpeg_not_found"))] = ("no_frames", "ffmpeg_off")
+        if kept_metadata:
+            notes.append(("metadata_kept", ""))
         record["notes"] = notes
     else:
         item = {"payload": encode_payload(name, content)}
@@ -240,7 +328,7 @@ def _prepare_media(
 
 
 def _collect_evidence(
-    evidence: tuple[str, ...], config: dict, is_json: bool
+    evidence: tuple[str, ...], config: dict, is_json: bool, keep_video_metadata: bool = False
 ) -> tuple[list[str], list[dict], list[dict]]:
     """``(pointers, media records, kept-as-text notes)`` for ``issue file --evidence``.
 
@@ -258,7 +346,9 @@ def _collect_evidence(
     for arg in evidence:
         what, path, content_type = _classify(arg)
         if what in ("media", "heic"):
-            record = _prepare_media(arg, path, content_type, limit, "Nothing was filed.", is_json)
+            record = _prepare_media(
+                arg, path, content_type, limit, "Nothing was filed.", is_json, keep_video_metadata
+            )
             if record is None:
                 pointers.append(arg)
                 kept.append({"evidence": arg, "kept_as": "text", "reason": "heic_unconverted"})
@@ -345,6 +435,11 @@ def _media_notes(
                 )
             elif reason == "not_transcoded":
                 lines.append(f"{name}: stored as it is; ffmpeg could not transcode it")
+            elif reason == "metadata_kept":
+                lines.append(
+                    f"{name}: filed as it is, with its metadata, which can include where it "
+                    "was recorded (--keep-video-metadata)"
+                )
             elif reason == "one_frame":
                 lines.append(f"{name}: its length is unknown, so it has one frame, at 0:00")
             elif reason == "no_frames":
@@ -387,12 +482,44 @@ def _print_write(
 # ---------------------------------------------------------------------------
 
 
-@cli.group()
+class _IssueGroup(click.Group):
+    """The ``issue`` group; its help names the server command only on a bound checkout."""
+
+    def format_help_text(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
+        super().format_help_text(ctx, formatter)
+        if _bound_checkout():
+            formatter.write_paragraph()
+            hint = (
+                "This checkout is bound to a hosted project: the project's server admin "
+                "turns the log on with "
+                "'lattice server project config <slug> --set issues.enabled=true' "
+                "on the server host."
+            )
+            formatter.write(
+                click.formatting.wrap_text(hint, formatter.width, preserve_paragraphs=True)
+            )
+            formatter.write("\n")
+
+
+def _bound_checkout() -> bool:
+    """Whether the working directory is a hosted checkout. Quiet: help never fails."""
+    try:
+        from lattice.storage.fs import BINDING_FILE, LATTICE_DIR, find_root
+
+        root = find_root()
+        return root is not None and (
+            (root / BINDING_FILE).exists() or (root / LATTICE_DIR / "cache").is_dir()
+        )
+    except Exception:
+        return False
+
+
+@cli.group(cls=_IssueGroup)
 def issue() -> None:
     """The issue log: file observations, discuss them, then promote or link them to tasks.
 
     Optional and off by default. The board owner turns it on by adding
-    "issues": {"enabled": true} to .lattice/config.json. Local boards only.
+    "issues": {"enabled": true} to .lattice/config.json.
     """
 
 
@@ -417,6 +544,14 @@ def issue() -> None:
     help="A path or URL backing it up (repeatable). Photos and videos are copied in.",
 )
 @click.option("--source", default=None, help="Where it came from (e.g., tester-round-8).")
+@click.option(
+    "--keep-video-metadata",
+    is_flag=True,
+    help=(
+        "File a video as it is, with its metadata (which can include where it was recorded), "
+        "when ffmpeg cannot strip it. Without this, such a video is refused."
+    ),
+)
 @common_options
 def issue_file(
     title: str,
@@ -425,6 +560,7 @@ def issue_file(
     confidence: str | None,
     evidence: tuple[str, ...],
     source: str | None,
+    keep_video_metadata: bool,
     output_json: bool,
     quiet: bool,
     session: str | None,
@@ -441,10 +577,12 @@ def issue_file(
     A photo or video passed as --evidence (decided by its content: PNG, JPEG,
     GIF, WebP; MP4, MOV, WebM; HEIC is converted to JPEG) is copied into the
     issue. With ffmpeg, a video is re-encoded to H.264 and gets still frames an
-    agent can read ('lattice issue media <issue> --paths').
+    agent can read ('lattice issue media <issue> --paths'). ffmpeg also removes
+    a video's metadata, which can include where it was recorded; when it cannot,
+    the video is refused unless you pass --keep-video-metadata. Photos are filed
+    as they are: Lattice does not strip their EXIF data.
     """
     is_json = output_json
-    checked = _require_issue_log(is_json)
     if description is not None and description_file is not None:
         output_error(
             "Provide either --description or --description-file, not both.",
@@ -456,10 +594,16 @@ def issue_file(
             "Only one of TITLE and --description can read stdin.", "VALIDATION_ERROR", is_json
         )
     if title == "-":
+        # Read before HostedBoard takes its cache lock: a slow pipe must not
+        # hold up the next sync writer.
         title = _read_stdin_text()
     description = _resolve_issue_description(description, description_file, is_json)
-    pointers, records, kept = _collect_evidence(evidence, checked[1], is_json)
-    _lattice_dir, result = _write(
+    checked = _require_issue_log(is_json)
+    # ffmpeg, ffprobe and sips run next: release the cache's read lock first, so
+    # a long transcode never holds up a sync (SPEC §9.4).
+    checked[0].end_read_phase()
+    pointers, records, kept = _collect_evidence(evidence, checked[2], is_json, keep_video_metadata)
+    _board, _lattice_dir, result = _write(
         "issue.file",
         {
             "title": title,
@@ -512,20 +656,21 @@ def issue_list(
     from lattice.storage.issues import issue_views, issues_by, list_issue_snapshots
 
     is_json = output_json
-    lattice_dir, _config = _require_issue_log(is_json)
+    board, lattice_dir, _config = _require_issue_log(is_json)
+
+    def unreadable(path, exc):  # noqa: ANN001
+        _warn_unreadable(path, exc, board)
+
     if by_actor is not None:
         wanted = states or ISSUE_STATES
-        shown = issues_by(
-            lattice_dir,
-            by_actor,
-            states=states or None,
-            on_unreadable=_warn_unreadable,
-        )
+        views = issues_by(lattice_dir, by_actor, states=states or None, on_unreadable=unreadable)
+        shown = _hosted_media_views(board, views)
     else:
-        snapshots = list_issue_snapshots(lattice_dir, on_unreadable=_warn_unreadable)
+        snapshots = list_issue_snapshots(lattice_dir, on_unreadable=unreadable)
         views = issue_views(lattice_dir, snapshots)
         wanted = ISSUE_STATES if show_all else (states or DEFAULT_LIST_STATES)
-        shown = [view for view in views if view["state"] in wanted]
+        # Ask the server about media only for the issues that are shown.
+        shown = _hosted_media_views(board, [v for v in views if v["state"] in wanted])
     order = {state: i for i, state in enumerate(ISSUE_STATES)}
     shown.sort(key=lambda v: (order[v["state"]], v.get("seq") or 0))
     if is_json:
@@ -562,13 +707,18 @@ def issue_show(issue_id: str, output_json: bool) -> None:
     )
 
     is_json = output_json
-    lattice_dir, _config = _require_issue_log(is_json)
+    board, lattice_dir, _config = _require_issue_log(is_json)
     try:
-        view = issue_detail(lattice_dir, issue_id, on_unreadable=_warn_unreadable)
+        view = issue_detail(
+            lattice_dir,
+            issue_id,
+            on_unreadable=lambda path, exc: _warn_unreadable(path, exc, board),
+        )
     except OpError as exc:
         output_error(exc.message, exc.code, is_json)
     if view is None:
         output_error(f"Issue '{issue_id}' not found.", "NOT_FOUND", is_json)
+    view = _hosted_media_views(board, [view])[0]
     events = view["events"]
     if is_json:
         click.echo(json_envelope(True, data=view))
@@ -655,7 +805,7 @@ def issue_promote(
 ) -> None:
     """Create one backlog task from one or more issues and link them to it."""
     is_json = output_json
-    _lattice_dir, result = _write(
+    _board, _lattice_dir, result = _write(
         "issue.promote",
         {
             "issues": issue_ids,
@@ -698,7 +848,7 @@ def _issue_task_command(op_name: str, verb: str):  # noqa: ANN202
         from lattice.core.issues import task_label
 
         is_json = output_json
-        _lattice_dir, result = _write(
+        _board, _lattice_dir, result = _write(
             op_name,
             {
                 "issue": issue_id,
@@ -761,7 +911,7 @@ def _closing_command(op_name: str, doc: str, *, of: bool = False):  # noqa: ANN2
         }
         if of:
             params["of"] = of_id
-        lattice_dir, result = _write(op_name, params, is_json)
+        board, _lattice_dir, result = _write(op_name, params, is_json)
         view = result.value
         closure = view.get("closure") or {}
         if op_name == "issue.dismiss":
@@ -769,7 +919,9 @@ def _closing_command(op_name: str, doc: str, *, of: bool = False):  # noqa: ANN2
         elif op_name == "issue.duplicate":
             from lattice.storage.issues import read_issue_snapshot
 
-            original = read_issue_snapshot(lattice_dir, closure["duplicate_of"])
+            # The hosted write has already caught up the cache. Reacquire its
+            # read lock now instead of reading through the pre-write path.
+            original = read_issue_snapshot(board.lattice_dir, closure["duplicate_of"])
             original_name = (original or {}).get("short_id") or closure["duplicate_of"]
             message = f"Marked {_name(view)} as a duplicate of {original_name}"
         else:
@@ -813,10 +965,19 @@ issue.command("reopen")(_closing_command("issue.reopen", "Reopen a dismissed or 
 @issue.command("attach")
 @click.argument("issue_id")
 @click.argument("files", nargs=-1, required=True)
+@click.option(
+    "--keep-video-metadata",
+    is_flag=True,
+    help=(
+        "File a video as it is, with its metadata (which can include where it was recorded), "
+        "when ffmpeg cannot strip it. Without this, such a video is refused."
+    ),
+)
 @common_options
 def issue_attach(
     issue_id: str,
     files: tuple[str, ...],
+    keep_video_metadata: bool,
     output_json: bool,
     quiet: bool,
     session: str | None,
@@ -830,16 +991,23 @@ def issue_attach(
     All or nothing: every FILE must be a photo or video by its content (PNG,
     JPEG, GIF, WebP; MP4, MOV, WebM; HEIC is converted to JPEG). Content the
     issue already holds is skipped.
+
+    A video has its metadata (which can include where it was recorded) removed
+    by ffmpeg. When ffmpeg cannot do that, the video is refused unless you pass
+    --keep-video-metadata.
     """
     from lattice.core.issue_media import HEIC_HINT, media_limits, media_summary
 
     is_json = output_json
     checked = _require_issue_log(is_json)
-    limit, _per_issue = media_limits(checked[1])
+    limit, _per_issue = media_limits(checked[2])
+    checked[0].end_read_phase()  # before ffmpeg or sips runs (SPEC §9.4)
     records: list[dict] = []
     seen: set[str] = set()
     for arg, path, content_type in _check_attach_args(files, is_json):
-        record = _prepare_media(arg, path, content_type, limit, "Nothing was attached.", is_json)
+        record = _prepare_media(
+            arg, path, content_type, limit, "Nothing was attached.", is_json, keep_video_metadata
+        )
         if record is None:
             output_error(
                 f"{arg} is a HEIC photo, and neither sips nor ffmpeg could convert it to JPEG. "
@@ -851,7 +1019,7 @@ def issue_attach(
             continue
         seen |= record["hashes"]
         records.append(record)
-    _lattice_dir, result = _write(
+    _board, _lattice_dir, result = _write(
         "issue.attach",
         {
             "issue": issue_id,
@@ -896,8 +1064,8 @@ def issue_detach(
     """
     is_json = output_json
     checked = _require_issue_log(is_json)
-    before = _media_before_detach(checked[0], issue_id, media)
-    _lattice_dir, result = _write(
+    before = _media_before_detach(checked[1], issue_id, media)
+    _board, _lattice_dir, result = _write(
         "issue.detach",
         {
             "issue": issue_id,
@@ -973,15 +1141,39 @@ def issue_media(issue_id: str, paths: bool, output_json: bool) -> None:
     from lattice.storage.issues import issue_views, read_issue_snapshot, resolve_issue
 
     is_json = output_json
-    lattice_dir, _config = _require_issue_log(is_json)
+    board, lattice_dir, _config = _require_issue_log(is_json)
     try:
         resolved = resolve_issue(lattice_dir, issue_id)
-        snapshot = read_issue_snapshot(lattice_dir, resolved, on_unreadable=_warn_unreadable)
+        snapshot = read_issue_snapshot(
+            lattice_dir,
+            resolved,
+            on_unreadable=lambda path, exc: _warn_unreadable(path, exc, board),
+        )
     except OpError as exc:
         output_error(exc.message, exc.code, is_json)
     if snapshot is None:
         output_error(f"Issue '{issue_id}' not found.", "NOT_FOUND", is_json)
     view = issue_views(lattice_dir, [snapshot])[0]
+    from lattice.boards import HostedBoard
+
+    if isinstance(board, HostedBoard) and paths:
+        from lattice.remote.issue_media import fetch_view_media
+
+        board.end_read_phase()
+        from lattice.remote import session
+
+        view = fetch_view_media(board.root, board.remote, board.hosted.project, view)
+        # A concurrent detach may have committed while bytes were fetched. Sync
+        # again and make the final printed paths follow the latest issue snapshot.
+        # Offline (the window is open) nothing was fetched: serve the cache.
+        if not session.in_unreachable_window(board.hosted):
+            board.refresh()
+            lattice_dir = board.lattice_dir
+            refreshed = read_issue_snapshot(lattice_dir, resolved) or snapshot
+            view = issue_views(lattice_dir, [refreshed])[0]
+            view = _hosted_media_views(board, [view])[0]
+    else:
+        view = _hosted_media_views(board, [view])[0]
     present = [m for m in view.get("media", []) if not m.get("removed")]
     if is_json:
         data = {"id": view["id"], "short_id": view.get("short_id"), "media": present}
@@ -989,13 +1181,23 @@ def issue_media(issue_id: str, paths: bool, output_json: bool) -> None:
         return
     if paths:
         for entry in present:
-            if entry.get("missing"):
+            hosted_gap = _hosted_paths_gap(entry)
+            if hosted_gap:
+                click.echo(hosted_gap, err=True)
+            elif entry.get("missing"):
                 click.echo(f"missing: {entry.get('path')}", err=True)
             elif entry.get("kind") == "photo":
                 click.echo(entry["path"])
             elif entry.get("frames"):
                 for frame in entry["frames"]:
-                    click.echo(frame["path"])
+                    if frame.get("path"):
+                        click.echo(frame["path"])
+                    else:
+                        at = f"{frame.get('t_ms', 0) / 1000:.1f}s"
+                        why = _GAP.get(frame.get("available"), "not fetched")
+                        click.echo(
+                            f"not fetched: {_media_label(entry)} frame at {at}: {why}", err=True
+                        )
             else:
                 click.echo(f"{entry['path']}: {NO_FRAMES_TEXT}", err=True)
         return
@@ -1057,9 +1259,10 @@ def issue_edit(
 ) -> None:
     """Correct an issue's title or description."""
     is_json = output_json
-    checked = _require_issue_log(is_json)
+    # Read stdin before the hosted read lock (see ``issue file``).
     description = _resolve_issue_description(description, description_file, is_json)
-    lattice_dir, result = _write(
+    checked = _require_issue_log(is_json)
+    _board, _lattice_dir, result = _write(
         "issue.edit",
         {
             "issue": issue_id,
@@ -1117,7 +1320,6 @@ def issue_comment(
 ) -> None:
     """Add an issue comment or reply to a top-level comment."""
     is_json = output_json
-    checked = _require_issue_log(is_json)
     body = resolve_body(
         text,
         file_path,
@@ -1128,7 +1330,8 @@ def issue_comment(
     )
     if body == "-":
         body = _read_stdin_text()
-    _lattice_dir, result = _write(
+    checked = _require_issue_log(is_json)
+    _board, _lattice_dir, result = _write(
         "issue.comment",
         {
             "issue": issue_id,

@@ -279,7 +279,10 @@ The server root is `--root`, else `$LATTICE_SERVER_ROOT`, else `$XDG_DATA_HOME/l
     "max_stream_subscribers_per_project": 64,
     "stream_queue_entries": 1000,
     "replay_reset_entries": 1000,
-    "min_free_disk_bytes": 1073741824
+    "min_free_disk_bytes": 1073741824,
+    "max_issue_media_file_bytes": 104857600,
+    "max_issue_media_issue_bytes": 262144000,
+    "max_issue_media_project_bytes": 10737418240
   },
   "stream": {"heartbeat_seconds": 2}
 }
@@ -288,7 +291,7 @@ The server root is `--root`, else `$LATTICE_SERVER_ROOT`, else `$XDG_DATA_HOME/l
 - `bind` and `port`: where the server listens. Keep `127.0.0.1` and put a reverse proxy in front (section 10), or bind a private-network address.
 - `trusted_proxies`: the addresses or CIDR ranges of your reverse proxies, for example `["127.0.0.1"]` for a proxy on the same host. The server honors `X-Forwarded-Proto` and `X-Forwarded-For` only on connections from those addresses and ignores them from every other peer. Leave it empty (the default) with no proxy. Section 10 says what to list.
 - `public_origins`: the browser origins of the dashboard when a proxy rewrites `Host`, for example `["https://lattice.example.internal"]`.
-- `limits`: what one token can take from the others. All projects share one process, one disk, and one memory. `lock_timeout_seconds` may not exceed 60. Below `min_free_disk_bytes` of free disk, writes fail with `STORAGE_LOW` and reads keep working.
+- `limits`: what one token can take from the others. All projects share one process, one disk, and one memory. `lock_timeout_seconds` may not exceed 60. Below `min_free_disk_bytes` of free disk, writes fail with `STORAGE_LOW` and reads keep working. The three `max_issue_media_*` keys cap issue media: 100 MiB per stored file, 250 MiB per issue (frames included) and 10 GiB per project; an upload over a cap is refused with `PAYLOAD_TOO_LARGE` or `MEDIA_QUOTA_EXCEEDED` (HTTP 413).
 
 Edit `server.json` with the server stopped; the server reads it at start.
 
@@ -318,7 +321,7 @@ lattice server project config web --set review_base_branch=v2
 lattice server project config web --set review_integration_branches=v2,release/next
 ```
 
-`project config` accepts `review_mode` and `plan_review_mode` (`inline`, `single`, `triple`), `plan_approval` (`auto`, `human`), `auto_code_review_on_transition` and `auto_plan_review_on_transition` (`true`, `false`), `review_base_branch` (a non-empty branch/ref), `review_integration_branches` (a comma-separated ordered list of unique Git-valid branch names), `review_timeout_seconds` (a positive integer), `review_max_diff_lines` and `review_max_diff_chars` (non-negative integers; zero disables that cap), and `task_types` (a complete replacement list):
+`project config` accepts `review_mode` and `plan_review_mode` (`inline`, `single`, `triple`), `plan_approval` (`auto`, `human`), `auto_code_review_on_transition` and `auto_plan_review_on_transition` (`true`, `false`), `review_base_branch` (a non-empty branch/ref), `review_integration_branches` (a comma-separated ordered list of unique Git-valid branch names), `review_timeout_seconds` (a positive integer), `review_max_diff_lines` and `review_max_diff_chars` (non-negative integers; zero disables that cap), `task_types` (a complete replacement list), and `issues.enabled` (`true`, `false`):
 
 - Integration branch names must be valid Git branch refs and resolve to remote-tracking refs. Inference considers the ordered `review_integration_branches` list plus one safe default: the branch named by `origin/HEAD`, or `origin/main` then `origin/master` if it does not resolve. When the configured list is empty and no remote default resolves, local `main` then `master` is the final fallback. A non-empty list with no resolvable entry fails closed, unresolved entries are named in a warning, and arbitrary remote branches are never candidates. Review resolution never fetches.
 - `task_types` must be a JSON array of unique, non-empty, trimmed strings containing `task`:
@@ -329,6 +332,14 @@ lattice server project config web --set 'task_types=["task","bug","chore","resea
 
 The task type list is replaced as a whole, so include every type the project should keep. New boards allow `task`, `bug`, and `chore` by default; existing project configs and tasks are preserved. With the server running, changes go through the server and every cache receives them at its next sync. Board configuration is admin-only: from a checkout, only `set-project-code`, `set-subproject-code`, and dashboard settings can change `config.json`.
 
+The issue log is off by default. After the server and every client have been upgraded to at least `0.2.2` (section 19), enable it on the server host:
+
+```bash
+lattice server project config web --set issues.enabled=true
+```
+
+Setting `issues.enabled` preserves the project's other `issues.*` limits and settings. Hosted issue commands read synced metadata and send writes through named server operations; an ordinary operation cannot change the project configuration.
+
 To bring an existing local board onto the server, import it instead of creating a project: section 14.
 
 Other project commands, all run on the server host:
@@ -336,7 +347,7 @@ Other project commands, all run on the server host:
 | Command | Use |
 |---|---|
 | `lattice server project list` | Slug, code, head seq, task count, state (`loaded`, `loading`, `unloaded`, `unavailable`), owner |
-| `lattice server project doctor <slug>` | `lattice doctor`'s read-only checks on the server's copy, without racing a write |
+| `lattice server project doctor <slug> [--verify-media]` | `lattice doctor`'s read-only checks on the server's copy, plus a check of every issue media file, without racing a write |
 | `lattice server project unload <slug>` | Release one project so offline maintenance can run on it; the others keep serving |
 | `lattice server project load <slug>` / `reload <slug>` | Take it back and run its startup recovery |
 | `lattice server project rotate-epoch <slug>` | Make every cache resync from scratch (after a restore) |
@@ -686,7 +697,7 @@ A machine that should never run reviews (a small box, a CI job) sets `"run_auto_
 
 ## 14. Moving a board to the server
 
-Moving a board needs one tool, a doctor-gated import, and five steps in the checkout. Nothing is deleted: the old board is kept beside the checkout.
+Moving a board needs one tool, a doctor-gated import, and five steps in the checkout. Nothing is deleted: the old board is kept beside the checkout. For a board with issues, first follow section 19: upgrade every client to at least `0.2.2`, then the server, before importing or enabling it.
 
 The example below makes a local board to move, so it can be run on a scratch machine. For a real board, start at step 1 in your own checkout, with your own slug and alias. The quick start's server is still running:
 
@@ -706,6 +717,18 @@ mkdir -p "$TRIAL/legacy-copy"
 cp -R "$TRIAL/legacy/.lattice" "$TRIAL/legacy-copy/"
 lattice server project import legacy --from "$TRIAL/legacy-copy"
 ```
+
+By default, import copies issue media into private server storage along with the durable issue logs, snapshots, and ID index. Add `--omit-media` to import issue metadata without copying any media bytes:
+
+```bash
+lattice server project import legacy --from "$TRIAL/legacy-copy" --omit-media
+```
+
+`--omit-media` is an explicit metadata-only choice. Issue metadata syncs to bound clients; media bytes do not enter ordinary sync, reset manifests, deltas, stream events, or audit history. When a user requests media, a bound checkout fetches it on demand into a separate private `.lattice/cache/issue-media/` cache. `lattice cache clear` removes that cache. Default import and later uploads retain the media in private server storage. Phone photos may contain location in EXIF data: Lattice does not yet strip photo metadata; a later release will. A video's metadata, which can include where it was recorded, is stripped by ffmpeg on the machine that files it, before the upload; when ffmpeg is missing, turned off (`LATTICE_FFMPEG=off`) or fails, `issue file --evidence` and `issue attach` refuse the video unless the filer passes `--keep-video-metadata` to file the original as it is.
+
+Before creating the project's staging directory or writing any imported file, the importer replays and validates source issue logs and metadata, then preflights every referenced original and frame. It refuses symlinks and special files, checks media IDs, extensions and lowercase SHA-256 fields, verifies file contents against their hashes, and calculates all three media quotas. Only after preflight succeeds does it stage the import, rebuild issue snapshots, and publish the project. Limits are 100 MiB per stored file, 250 MiB per issue including frame sidecars, and 10 GiB per project by default; the project cap is configurable as `max_issue_media_project_bytes` in `server.json`. Missing or corrupt media and any quota failure stop the default import before imported files are written. The error names an exceeded quota and says when `--omit-media` is an acceptable retry.
+
+The import report gives the exact copied media-object count and bytes when media is copied. In `--omit-media` mode, logs and snapshots still validate, including the syntax of stored hash fields, but media contents are never opened or hash-compared and no media quota is applied. The report inventories metadata-referenced originals and discoverable frame sidecars with no-follow directory enumeration and `lstat` only; it counts a missing original or an entry with failed/non-regular `lstat` as an object of unknown size. JSON always includes `media_count`, `media_bytes`, `media_known_bytes`, `media_unknown_size_count`, and `media_inventory_complete`. `media_bytes` is null when any object's size is unknown or frame enumeration is incomplete; `media_inventory_complete` is false when a frame directory could not be safely enumerated. Human output says when the byte total is unknown or the media count is incomplete.
 
 Every token that should reach the new project needs it granted (section 8). Here, the quick start's token; its ID is the middle of the token string:
 
@@ -728,7 +751,7 @@ lattice doctor
 
 Read the two lists it prints:
 
-- **paths not copied**: anything that is not board data (for example `reviews/`, `logs/`, `exports/`, and the optional issue log's `issues/`). They stay in the old board, which step 3 keeps.
+- **paths not copied**: anything that is not board data (for example `reviews/`, `logs/`, and `exports/`). Issue logs, snapshots, and the ID index are durable metadata and are copied; `issues/media/` follows the explicit default-copy or `--omit-media` policy above.
 - **non-canonical plan and notes files**: loose files under `plans/` or `notes/`. They are copied, and on a hosted checkout they are read-only; write them with `lattice board write`, and put new working files under `orchestration/`.
 
 The import also repairs short-ID bookkeeping from the logs, starts the project's journal and its audit history (section 16), and prints these same steps with your slug filled in.
@@ -843,6 +866,8 @@ tar -C "$TRIAL" -czf "$TRIAL/server-root-backup.tgz" server-root
 lattice server project load legacy
 ```
 
+**Issue media lives in the server root, and only there.** The photos, videos and video frames filed on issues are under `projects/<slug>/.lattice/issues/media/`. They are not in the audit history (the audit repository ignores that directory, so `audit --push-remote` never carries them) and nothing else holds a copy: a detach deletes the bytes for good, and a project whose root is lost without a root backup loses its media. The root backup above includes them. To back up one project, unload it and copy its whole `projects/<slug>/` directory, which holds the board, the journal and the media together. Include the project's `.lattice/issues/media/` in every backup of the board; a backup taken from the audit history alone has the issue metadata and none of the media.
+
 **Restore** with the server stopped: put the copy back in place, then start a new epoch for every project **before any client connects**, so every cache resyncs instead of trusting history the server no longer has:
 
 <!-- guide: skip: run only after restoring a backup, with the server stopped -->
@@ -852,7 +877,18 @@ for slug in $(ls "$LATTICE_SERVER_ROOT/projects"); do
 done
 ```
 
-A write acknowledged after the backup was taken is lost by the restore. `lattice remote verify` (section 17) on each client reports every such write.
+To restore one project while the server runs, unload it, replace its `projects/<slug>/` directory with the copy from the backup (board, journal and media from the same backup, never a newer media tree under an older board: a load deletes media files that no issue snapshot lists), then load it and start the new epoch:
+
+<!-- guide: skip: run only after restoring a project from a backup -->
+```bash
+lattice server project unload legacy
+# replace $LATTICE_SERVER_ROOT/projects/legacy from the backup here
+lattice server project load legacy
+lattice server project rotate-epoch legacy
+lattice server project doctor legacy --verify-media
+```
+
+A write acknowledged after the backup was taken is lost by the restore. `lattice remote verify` (section 17) on each client reports every such write. The doctor's media pass reports every media file a restored issue lists that is missing or damaged.
 
 **The audit history.** With `audit.enabled` (the default) and `git` on the server's `PATH`, each `projects/<slug>/` is a git repository that commits the board's data a few seconds after each burst of writes (`audit: seq 41-47 (7 ops)`). It holds only board data: no journal, receipts, or runtime files. To push it somewhere safe, add a git remote to the project's repository and point the project at it:
 
@@ -868,6 +904,20 @@ Here the remote is a local bare repository; in practice it is any git URL the se
 
 Restoring from the audit history is an import, not a restore: check the commit you want out into a scratch directory and run `lattice server project import <new-slug> --from <that directory>`. It starts a new epoch; the old journal cannot be resumed.
 
+The audit history holds no media, and the default import copies every media file the issues list from the source directory, refusing when one is missing. So put the media back into the checkout before importing, from a server-root backup (the same project's `.lattice/issues/media/`):
+
+<!-- guide: skip: run only when restoring a project from its audit history -->
+```bash
+git clone "$TRIAL/audit-backup.git" "$TRIAL/restore"
+git -C "$TRIAL/restore" checkout <commit>
+mkdir -p "$TRIAL/restore/.lattice/issues"
+cp -R "<backup>/projects/legacy/.lattice/issues/media" "$TRIAL/restore/.lattice/issues/"
+lattice server project import legacy-restored --from "$TRIAL/restore"
+lattice server project doctor legacy-restored --verify-media
+```
+
+Media in the backup that the commit's issues do not list is left behind (the import prints it as not copied). An issue the commit lists whose media is not in the backup stops the import, naming the file. `--omit-media` imports the issue metadata without those bytes: use it only when the media is truly gone, because the issues then keep entries whose files the server cannot serve.
+
 ## 17. Daily checks
 
 On the server host, for every hosted project:
@@ -876,6 +926,10 @@ On the server host, for every hosted project:
 lattice server project list
 lattice server project doctor legacy
 ```
+
+`project doctor` also checks issue media: every file an issue lists must exist, be a regular file and match its recorded size and type; files no issue lists, videos with no frames, and staged uploads left over a day are warnings. After a crash or a restore, add `--verify-media`, which also hashes every original against its recorded sha256 (slow on a large project; the hashing runs after the project is released, so reads and writes keep working while it runs): `lattice server project doctor legacy --verify-media`. Its `--json` summary carries `media_checked`, `media_missing`, `media_corrupt`, `media_orphans` and `staged_objects`; a damaged or missing file is an error and exits 1.
+
+After a crash in the middle of a filing, the server finishes publishing the media when the project loads. If the staged copy of a committed upload was lost or cannot be read first (a damaged disk, a cleaned `projects/<slug>/.runtime/issue-media/staging/`, wrong file permissions), the project still loads: the server logs `issue_media_reconcile_failed` with the operation ID and the reason, keeps that operation's manifest in `projects/<slug>/.runtime/issue-media/manifests/`, and doctor and the media route report the file as missing. To recover, detach the missing entry and attach the file again: `lattice issue detach <issue> <n> --reason "bytes lost"`, then `lattice issue attach <issue> <file>` (the file gets a new number; attaching without detaching first does nothing, because the issue already lists the file). Then run `lattice server project reload <slug>` (or wait for the next load): it drops the stale manifest and doctor comes back clean. If the whole `.runtime/` directory was removed there is no manifest and nothing is logged; doctor still reports the missing file, and the same two commands recover it.
 
 On every client that wrote, from its bound checkout:
 
@@ -906,12 +960,21 @@ A write retries on its own for up to `retry_seconds` (15 by default) on connecti
 
 ## 19. Upgrading
 
-Upgrade the server with the same install command (section 5, add `--force` for `uv tool install`) and restart it. Clients upgrade independently.
+**Order: clients first, then the server, then enable the issue log.** The `0.2.2` server refuses every operation from a client below `0.2.2`, on every project, so a server-first upgrade cuts off hosted writes from each machine and seat you have not upgraded yet. A `0.2.2` client works against a `0.2.1` server (issue commands report that the log is off or that the server does not support it), so there is no outage in this order.
+
+1. **Release.** The install command (section 5) installs from the `v2` branch: make sure the `0.2.2` build is merged there first.
+2. **Every client.** On each laptop, seat, box and CI image, upgrade with the same command (`--force` for `uv tool install`). Check `lattice --version` prints `0.2.2`. Then restart anything long-lived that loaded the old code (MCP servers, `lattice dashboard`, `lattice sync --follow`) and refresh agent instructions: `lattice setup-claude --force` and `lattice setup-claude-skill --force`.
+3. **The server.** Upgrade it the same way and restart it. The server reads `server.json` only at start, so restart it after editing `limits` too. Check `curl http://<server>/healthz` reports `"version":"0.2.2"`. (A client's `lattice remote status` proves nothing here: a `0.2.2` client against a `0.2.1` server prints no upgrade line either.)
+4. **Enable the issue log, per project,** on the server host: `lattice server project config <slug> --set issues.enabled=true`. With the server running this is a journaled write at the same epoch and caches pick it up at their next sync; only with the server stopped does the next load start a new epoch. Check from a bound checkout: `lattice issue list` prints `0 issues`.
+5. **Import a board that has issues** (section 14): the import copies issue media by default. Back up media with the server root (section 16).
+
+**Rolling back to `0.2.1`** destroys nothing. The server keeps the issue data and media on disk but serves none of it. A `0.2.2` client then sees no issues, `lattice sync` moves its cached `issues/` files to `.lattice/cache/rescued/` (the message says "locally edited board file(s)"; they are not edits), and issue writes, including `issue file --evidence` and `issue attach`, answer that the server does not support the issue log or issue media and to upgrade it. **A `0.2.1` server refuses to start while `server.json` holds the three `max_issue_media_*` keys** under `limits` (it reports an unknown key), and `0.2.2` writes them at `server init`: remove them from `limits` before starting `0.2.1`. Upgrading the server again brings everything back.
 
 - **`server.json` from an early v2 trial** may hold `"trusted_proxy": false`. The server refuses to start with that key; replace it with `"trusted_proxies": []`, or with your proxy's address (section 10).
 - **Every machine that works in a bound checkout needs Lattice 2.** A recent Lattice 1 refuses a bound checkout with `BOUND_CHECKOUT`; an older one reads the read-only cache as if it were a board and fails on its first write. Upgrade it (section 5).
 - The server and clients speak protocol 1. A client and server on different protocols refuse each other before any write.
 - A client older than the server prints one line per command asking you to upgrade. When the server raises its minimum client version, older clients' writes fail with `CLIENT_TOO_OLD`, naming both versions.
+- The issue path has two version gates. Operations from any client below `0.2.2` are refused before execution, even on projects without issues. Sync and stream return `CLIENT_TOO_OLD` before any data only when the project holds any synced issue file (even an ID map with no entries) and the client is below `0.2.2`; projects with no synced issue file keep their existing read behavior. Upgrade every client before importing or enabling an issue-bearing project so the new durable path is never exposed to an older reader.
 - A newer client works against an older server until it uses something the server lacks: `UNKNOWN_OP` or `UNSUPPORTED_PARAM`, naming both versions. Upgrade the server.
 - **Plugin operations** (from packages registering the `lattice.operations` entry point) run on a hosted board only when the plugin is installed on the server too. Install it into the server's environment (for example `uv tool install --with <plugin> 'lattice-tracker[server]'`) and restart.
 - After upgrading clients, refresh installed agent instructions with `lattice setup-claude --force` and `lattice setup-claude-skill --force`.

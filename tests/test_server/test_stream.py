@@ -13,8 +13,15 @@ from pathlib import Path
 
 import pytest
 
-from lattice.server import syncstate, tokens
-from lattice.server.testing import BoardServer, SSEReader, apply_sync, serve_board, wait_for
+from lattice.server import admin, syncstate, tokens
+from lattice.server.testing import (
+    BoardServer,
+    SSEReader,
+    apply_sync,
+    open_stream,
+    serve_board,
+    wait_for,
+)
 
 HEARTBEAT = 0.2
 
@@ -102,6 +109,33 @@ def test_a_stale_line_hash_or_epoch_gets_reset(board: BoardServer) -> None:
         with board.stream(last_event_id=resume) as reader:
             first = reader.next()
             assert first.event == "reset" and first.data == {"epoch": epoch}, resume
+
+
+def test_old_client_cannot_resume_a_stream_with_issue_metadata(board: BoardServer) -> None:
+    admin.set_project_config(board.root, board.slug, {"issues.enabled": True})
+    board.op("issue.file", {"text": "A streamed issue"})
+    journal = board.project.journal
+    assert journal is not None and board.project.has_issue_metadata
+    seq = journal.head_seq - 1
+    digest = journal.hash_at(seq)
+    last_event_id = f"{journal.epoch}:{seq}:{digest}"
+
+    reader = open_stream(
+        board.url,
+        board.slug,
+        board.token,
+        last_event_id=last_event_id,
+        headers={"Lattice-Client-Version": "0.2.1"},
+    )
+    try:
+        assert reader.status == 400
+        body = json.loads(reader.response.read())
+        assert body["error"]["code"] == "CLIENT_TOO_OLD"
+        assert body["error"]["details"]["client_version"] == "0.2.1"
+        assert body["error"]["details"]["min_client_version"] == "0.2.2"
+        assert body["error"]["details"]["project"] == board.slug
+    finally:
+        reader.close()
 
 
 # ---------------------------------------------------------------------------

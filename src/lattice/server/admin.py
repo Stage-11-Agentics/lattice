@@ -23,6 +23,7 @@ from typing import Any
 from filelock import FileLock
 
 from lattice.core.config import (
+    merge_config_changes,
     serialize_config,
     valid_git_branch_name,
     validate_project_code,
@@ -30,7 +31,7 @@ from lattice.core.config import (
 )
 from lattice.core.errors import OpError
 from lattice.core.ids import generate_instance_id
-from lattice.server import audit, control
+from lattice.server import audit, control, doctor_media
 from lattice.server.config import (
     ADMIN_LOCK,
     PROJECTS_DIR,
@@ -70,8 +71,13 @@ CONFIG_CHOICES: dict[str, tuple[str, ...]] = {
     "plan_approval": ("auto", "human"),
     "auto_code_review_on_transition": ("true", "false"),
     "auto_plan_review_on_transition": ("true", "false"),
+    "issues.enabled": ("true", "false"),
 }
-_BOOL_KEYS = ("auto_code_review_on_transition", "auto_plan_review_on_transition")
+_BOOL_KEYS = (
+    "auto_code_review_on_transition",
+    "auto_plan_review_on_transition",
+    "issues.enabled",
+)
 _STRING_CONFIG_KEYS = {"review_base_branch"}
 _LIST_CONFIG_KEYS = {"review_integration_branches"}
 _INTEGER_CONFIG_MINIMUMS = {
@@ -100,6 +106,9 @@ DEFAULT_SERVER_JSON: dict[str, Any] = {
         "stream_queue_entries": 1000,
         "replay_reset_entries": 1000,
         "min_free_disk_bytes": 1073741824,
+        "max_issue_media_file_bytes": 104857600,
+        "max_issue_media_issue_bytes": 262144000,
+        "max_issue_media_project_bytes": 10737418240,
     },
     "stream": {"heartbeat_seconds": 2},
 }
@@ -660,7 +669,7 @@ def set_project_config(
         return {"via": "server", **(answer.get("result") or {})}
     with admin_lock(root), offline_maintenance(board, "project config"):
         config = json.loads((board / "config.json").read_text(encoding="utf-8"))
-        config.update(typed)
+        config = merge_config_changes(config, typed)
         atomic_write(board / "config.json", serialize_config(config))
     return {"via": "offline", "project": slug, "set": typed, "maintenance": True}
 
@@ -741,17 +750,27 @@ def run_doctor(board: Path) -> dict:
     return payload.get("data") or {}
 
 
-def project_doctor(root: Path, slug: str, *, wait_seconds: float = 120.0) -> dict:
+def project_doctor(
+    root: Path, slug: str, *, wait_seconds: float = 120.0, verify_media: bool = False
+) -> dict:
     """``project doctor``: doctor's read-only checks, never racing a transaction.
 
     Through the running server (under the project's work lock, or its owner
     flock when the server does not hold the project); with no server, directly,
-    holding the owner flock so a starting server cannot race it.
+    holding the owner flock so a starting server cannot race it. A media pass
+    (``server/doctor_media.py``) checks every media file a snapshot lists, and
+    with *verify_media* hashes each original; the server runs the hash pass
+    after releasing the work lock.
     """
     root = Path(root)
     board = existing_project(root, slug) / ".lattice"
     if control.server_running(root):
-        answer = control.send_request(board, "doctor", {}, wait_seconds=wait_seconds)
+        answer = control.send_request(
+            board,
+            "doctor",
+            {"verify_media": True} if verify_media else {},
+            wait_seconds=wait_seconds,
+        )
         return {"via": "server", **_control_answer(answer)}
     fd = try_owner_flock(board)
     if fd is None:
@@ -761,6 +780,8 @@ def project_doctor(root: Path, slug: str, *, wait_seconds: float = 120.0) -> dic
         )
     try:
         data = run_doctor(board)
+        scan = doctor_media.scan_media(board, board.parent)
+        data = doctor_media.merge_media(data, doctor_media.finish_media(scan, verify=verify_media))
     finally:
         release_owner_flock(fd)
     return {"via": "offline", "project": slug, **data}

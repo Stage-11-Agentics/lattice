@@ -64,7 +64,7 @@ class IssuePromote:
             try:
                 snapshot, link_events = issue_common.link_one(ctx, issue_id, task["id"], p)
             except OpError as exc:
-                raise _partial(exc, task, linked, snapshots) from exc
+                raise _partial(ctx, exc, task, linked, snapshots) from exc
             linked.append(issue_id)
             events += link_events
             final.append(snapshot)
@@ -73,7 +73,15 @@ class IssuePromote:
         return OpResult(task=task, events=events, value={"task": task, "issues": views})
 
 
-def _partial(exc: OpError, task: dict, linked: list[str], snapshots: list[dict]) -> OpError:
+def _partial(
+    ctx: OpContext, exc: OpError, task: dict, linked: list[str], snapshots: list[dict]
+) -> OpError:
+    if ctx.transactional:
+        return OpError(
+            exc.code,
+            f"Could not complete issue promotion: {exc.message} Nothing was committed.",
+            {"transactional": True},
+        )
     name = task.get("short_id") or task["id"]
     missing = [s for s in snapshots if s["id"] not in linked]
     not_linked = [s["id"] for s in missing]

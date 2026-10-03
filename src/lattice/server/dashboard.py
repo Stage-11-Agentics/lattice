@@ -281,6 +281,48 @@ async def api_get(request: Request, state: ServerState) -> Response:
     return await _limited(state, token, run)
 
 
+async def issue_media(request: Request, state: ServerState) -> Response:
+    """Same-origin, session-cookie path for dashboard media elements."""
+    if request.headers.get("authorization") is not None:
+        raise OpError("FORBIDDEN", "dashboard issue media uses the browser session cookie.")
+    if request.headers.get("origin") is not None:
+        web.require_origin(request, state)
+    _session, token = web.session_auth(request, state)
+
+    async def run() -> Response:
+        project = _project(request, state, token)
+        issue_id = request.path_params["issue_id"]
+        media_id = request.path_params["media_id"]
+        frame = request.path_params.get("frame")
+
+        def plan():
+            from lattice.server.app import check_issue_data_version
+            from lattice.server.issue_media import plan_media_read
+
+            check_issue_data_version(request, project)
+            return plan_media_read(project.board, issue_id, media_id, frame_name_value=frame)
+
+        try:
+            from lattice.server.issue_media import open_media
+
+            planned = await state.registry.run_locked(project, plan)
+            value = await in_worker(lambda: open_media(planned, request.headers.get("range")))
+        except OpError as exc:
+            if exc.code != "RANGE_NOT_SATISFIABLE":
+                raise
+            from lattice.server.app import envelope_error
+
+            response = envelope_error(exc)
+            response.headers["Accept-Ranges"] = "bytes"
+            response.headers["Content-Range"] = f"bytes */{exc.details.get('size_bytes', 0)}"
+            return response
+        from lattice.server.app import media_response
+
+        return media_response(value)
+
+    return await _limited(state, token, run)
+
+
 # ---------------------------------------------------------------------------
 # Writes
 # ---------------------------------------------------------------------------

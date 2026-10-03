@@ -68,6 +68,23 @@ def test_project_config_through_a_running_server(root: Path) -> None:
     assert not control.server_running(root)
 
 
+def test_issues_enabled_merges_nested_config_through_live_transaction(root: Path) -> None:
+    config_path = root / "projects" / "alpha" / ".lattice" / "config.json"
+    config = json.loads(config_path.read_text())
+    config["issues"] = {"enabled": False, "future_setting": "preserve"}
+    config_path.write_text(json.dumps(config, sort_keys=True, indent=2) + "\n")
+
+    with running_server(root):
+        result = admin.set_project_config(root, "alpha", {"issues.enabled": True})
+        assert result["via"] == "server"
+        assert result["set"] == {"issues.enabled": True}
+        updated = json.loads(config_path.read_text())
+        assert updated["issues"] == {"enabled": True, "future_setting": "preserve"}
+        assert updated["project_code"] == config["project_code"]
+        line = _journal(root)[-1]
+        assert line["op"] == "server.set_config" and line["paths"] == ["config.json"]
+
+
 def test_control_requests_run_at_admission(root: Path) -> None:
     token = mint(root)
     with running_server(root) as server:

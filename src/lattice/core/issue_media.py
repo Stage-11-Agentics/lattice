@@ -416,19 +416,35 @@ def format_media_lines(entries: Iterable[Mapping], actor_display=None) -> list[s
         head = f"{n}  {entry.get('kind', '?'):<5}  {name:<{name_width}}  "
         lines.append((head + "  ".join(_entry_facts(entry))).rstrip())
         path = entry.get("path")
+        hosted = "available" in entry  # only a hosted view says where media is
         if entry.get("missing"):
-            lines.append(f"{pad}(missing: {path})")
+            shown = "not on the server" if hosted and not path else path
+            lines.append(f"{pad}(missing: {shown})")
         elif path:
             lines.append(f"{pad}{path}")
+        elif entry.get("available") == "remote":
+            lines.append(f"{pad}{REMOTE_MEDIA_TEXT}")
+        elif entry.get("available") == "unreachable":
+            lines.append(f"{pad}{UNREACHABLE_MEDIA_TEXT}")
         if entry.get("kind") == "video":
             frames = entry.get("frames") or []
-            if frames:
+            if frames and all(f.get("path") for f in frames):
                 lines.append(f"{pad}frames: {frames[0]['path']}")
                 lines.extend(f"{pad}        {f['path']}" for f in frames[1:])
-            elif not entry.get("missing"):
+            elif frames:
+                at = ", ".join(f"{f.get('t_ms', 0) / 1000:.1f}s" for f in frames)
+                lines.append(f"{pad}frames: {len(frames)} (at {at}; fetched on request)")
+            elif not entry.get("missing") and entry.get("available") != "unreachable":
                 lines.append(f"{pad}{NO_FRAMES_TEXT}")
     return lines
 
+
+REMOTE_MEDIA_TEXT = "(on the server; 'lattice issue media <issue> --paths' fetches it)"
+#: A hosted entry that is not cached while the server cannot be reached.
+UNREACHABLE_MEDIA_TEXT = (
+    "(not fetched: server unreachable; 'lattice issue media <issue> --paths' "
+    "fetches it when it is back)"
+)
 
 __all__ = [
     "ACCEPTED_FORMATS_TEXT",
@@ -444,6 +460,7 @@ __all__ = [
     "MEDIA_TYPES",
     "NO_FRAMES_TEXT",
     "SNIFF_BYTES",
+    "UNREACHABLE_MEDIA_TEXT",
     "clean_original_name",
     "file_too_large_message",
     "format_duration",

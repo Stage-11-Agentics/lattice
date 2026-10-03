@@ -94,6 +94,10 @@ def test_allowlist_admits_exactly_the_durable_and_workspace_paths(tmp_path: Path
         "resources/r/x.json": True,
         "sessions/archive/s.json": True,
         "templates/review.md": True,
+        "issues/events/iss_01J9ZABCDEFGHJKMNPQRSTVWXY.jsonl": True,
+        "issues/iss_01J9ZABCDEFGHJKMNPQRSTVWXY.json": True,
+        "issues/media/iss_01J9ZABCDEFGHJKMNPQRSTVWXY/med.jpg": False,
+        "issues/media/iss_01J9ZABCDEFGHJKMNPQRSTVWXY/.frames/med/1000.jpg": False,
         "orchestration/run/state.md": True,
         "config.json": True,
         "ids.json": True,
@@ -121,6 +125,9 @@ def test_allowlist_admits_exactly_the_durable_and_workspace_paths(tmp_path: Path
     assert audit.init_repo(directory) is True
     tracked = set(git_out(directory, "ls-files").splitlines())
     assert tracked == {f".lattice/{rel}" for rel, keep in files.items() if keep}
+    allowlist = audit.gitignore_text()
+    assert "!/.lattice/issues/" in allowlist
+    assert allowlist.index("!/.lattice/issues/") < allowlist.index("/.lattice/issues/media/")
     # The allowlist itself is not history: a commit's tree is the board alone.
     assert ".gitignore" not in tracked
     assert commits(directory) == ["audit: project created"]

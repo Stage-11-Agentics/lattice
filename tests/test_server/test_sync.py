@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from lattice.server import syncstate
+from lattice.server import admin, syncstate
 from lattice.server.testing import BoardServer, apply_sync, serve_board, wait_for
 from tests.test_server.conftest import mint
 
@@ -58,6 +58,30 @@ def test_sync_from_zero_is_a_reset_that_mirrors_the_board(board: BoardServer, tm
 def test_an_empty_board_has_no_head_hash(board: BoardServer) -> None:
     body = board.sync()
     assert body["head_seq"] == 0 and "head_hash" not in body
+
+
+def test_old_client_sync_is_gated_only_after_issue_metadata_exists(board: BoardServer) -> None:
+    headers = {"Lattice-Client-Version": "0.2.1"}
+    (board.board / "issues").mkdir()
+    (board.board / "issues" / "ids.json").write_text(
+        '{"schema_version":1,"next_seq":1,"map":{}}\n'
+    )
+    status, _, body = board.handle.request(
+        "GET", f"/v1/projects/{board.slug}/sync?since=0", token=board.token, headers=headers
+    )
+    assert status == 200, body
+
+    admin.set_project_config(board.root, board.slug, {"issues.enabled": True})
+    board.op("issue.file", {"text": "A compatibility gated issue"})
+    assert board.project.has_issue_metadata
+    status, response_headers, body = board.handle.request(
+        "GET", f"/v1/projects/{board.slug}/sync?since=0", token=board.token, headers=headers
+    )
+    assert status == 400 and body["error"]["code"] == "CLIENT_TOO_OLD"
+    assert body["error"]["details"]["client_version"] == "0.2.1"
+    assert body["error"]["details"]["min_client_version"] == "0.2.2"
+    assert "issue metadata" in body["error"]["message"]
+    assert response_headers["lattice-min-client-version"] == "0.2.2"
 
 
 def test_delta_coalesces_paths_and_sends_append_deltas(board: BoardServer, tmp_path: Path):

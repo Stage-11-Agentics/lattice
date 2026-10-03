@@ -23,7 +23,11 @@
 from __future__ import annotations
 
 import contextlib
+import base64
+import binascii
 import dataclasses
+import hashlib
+import re
 import sys
 import threading
 import time
@@ -39,6 +43,11 @@ from lattice.remote import http
 #: (at most ``lock_timeout_seconds``) plus the work, so the read timeout sits
 #: above both and a slow admission is never mistaken for a lost request.
 OP_POLICY = http.Policy(connect_seconds=5.0, response_seconds=90.0)
+#: Media uploads: 60 s without progress (no byte sent, no answer) ends one
+#: attempt, however long the whole body takes on a slow link.
+MEDIA_UPLOAD_POLICY = http.Policy(
+    connect_seconds=5.0, response_seconds=60.0, progress="uploading issue media", idle=True
+)
 FIRST_BACKOFF_SECONDS = 0.5
 MAX_BACKOFF_SECONDS = 5.0
 #: A retrying write reports progress this often (SPEC §8.6).
@@ -81,6 +90,81 @@ def wire_params(op_name: str, params: Any) -> dict[str, Any]:
             continue
         wire[f.name] = _jsonable(value)
     return wire
+
+
+_MEDIA_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
+
+
+def stage_issue_media(
+    remote: http.Remote, project: str, params: dict, *, offline: bool = False
+) -> dict:
+    """Upload each LAT-366 payload as raw bytes and return hosted staged params.
+
+    Each upload follows the operation rules (SPEC §8.6, :func:`post_operation`):
+    staging is idempotent by hash and size, so a failed upload is retried with
+    the same object for up to ``retry_seconds``, with the same progress lines;
+    *offline* (the window was open when the command started) gives up at once
+    when the first upload cannot connect. Giving up is :func:`write_unreachable`
+    (plain words, the OS error only in ``details``), or the server's own error
+    when it kept answering busy.
+    """
+    import copy
+
+    result = copy.deepcopy(params)
+    objects: dict[str, bytes] = {}
+    first = [offline]  # only the first upload may give up at once
+
+    def stage(payload: dict) -> dict:
+        if set(payload) != {"filename", "content_b64", "sha256"}:
+            raise OpError(
+                "VALIDATION_ERROR",
+                "hosted media upload expects the local filename, content_b64, sha256 payload.",
+            )
+        claimed = payload.get("sha256")
+        if not isinstance(claimed, str) or not _MEDIA_SHA256_RE.fullmatch(claimed):
+            raise OpError(
+                "VALIDATION_ERROR", "media sha256 must be 64 lowercase hexadecimal characters."
+            )
+        try:
+            content = base64.b64decode(payload["content_b64"], validate=True)
+        except (binascii.Error, ValueError, TypeError) as exc:
+            raise OpError("VALIDATION_ERROR", "payload content_b64 is not valid base64.") from exc
+        actual = hashlib.sha256(content).hexdigest()
+        if actual != claimed:
+            raise OpError("VALIDATION_ERROR", "payload sha256 does not match its content.")
+        if actual not in objects:
+            objects[actual] = content
+            path = f"/v1/projects/{urllib.parse.quote(project, safe='')}/issues/media/staging/{actual}"
+            metadata = _upload(remote, path, content, offline=first[0])
+            first[0] = False
+            if (
+                not isinstance(metadata, dict)
+                or metadata.get("sha256") != actual
+                or metadata.get("size_bytes") != len(content)
+                or metadata.get("staged") is not True
+            ):
+                raise OpError(
+                    "INTEGRITY_ERROR", "server returned invalid issue-media staging metadata."
+                )
+        return {
+            "filename": payload["filename"],
+            "sha256": actual,
+            "size": len(content),
+            "staged": True,
+        }
+
+    items = result.get("media")
+    if not isinstance(items, list):
+        raise OpError("VALIDATION_ERROR", "issue media must be a list.")
+    for item in items:
+        if not isinstance(item, dict) or not isinstance(item.get("payload"), dict):
+            raise OpError("VALIDATION_ERROR", "issue media item must contain a payload.")
+        item["payload"] = stage(item["payload"])
+        for frame in item.get("frames") or []:
+            if not isinstance(frame, dict) or not isinstance(frame.get("payload"), dict):
+                raise OpError("VALIDATION_ERROR", "issue media frame must contain a payload.")
+            frame["payload"] = stage(frame["payload"])
+    return result
 
 
 def result_from_json(data: dict) -> Any:
@@ -283,6 +367,12 @@ def post_operation(
                 raise write_unreachable(remote, detail, _now() - started) from None
         except http.ServerError as exc:
             if not _retryable(exc):
+                if op_name.startswith("issue.") and exc.code in {"UNKNOWN_OP", "LOCAL_ONLY"}:
+                    raise OpError(
+                        exc.code,
+                        "this server does not support the issue log; upgrade the server.",
+                        {**exc.details, "op": op_name},
+                    ) from None
                 raise OpError(exc.code, exc.message, exc.details) from None
             reached = True
             detail = f"HTTP {exc.status} {exc.code}"
@@ -315,6 +405,69 @@ def _give_up(
     if reached:
         return outcome_unknown(remote, op_id, detail)
     return write_unreachable(remote, detail, waited)
+
+
+def _upload(remote: http.Remote, path: str, content: bytes, *, offline: bool) -> Any:
+    """``PUT`` one staged media object with the retries of :func:`post_operation`.
+
+    Staging writes nothing to the board and is idempotent by hash and size, so
+    a sent upload is simply sent again; giving up is never ``OUTCOME_UNKNOWN``.
+    """
+    started = _now()
+    deadline = started + remote.retry_seconds
+    progress = _Progress(remote, started, deadline)
+    backoff = FIRST_BACKOFF_SECONDS
+    first = True
+    while True:
+        wait: float | None = None
+        refusal: OpError | None = None
+        try:
+            return http.request(
+                remote,
+                "PUT",
+                path,
+                raw_body=content,
+                content_type="application/octet-stream",
+                policy=MEDIA_UPLOAD_POLICY,
+                what="issue media upload",
+            ).data()
+        except http.Unreachable as exc:
+            detail = exc.reason
+            progress.state = "not available"
+            wait = exc.retry_after
+            if first and offline and not exc.sent:
+                raise write_unreachable(remote, detail, _now() - started) from None
+        except http.ServerError as exc:
+            if (
+                exc.status == 404
+                and exc.code == "NOT_FOUND"
+                and exc.message.startswith("no route")
+            ):
+                # A server older than the media routes: say what to do, as the
+                # operations do for an issue operation it does not have.
+                raise OpError(
+                    "UNKNOWN_OP",
+                    "this server does not support issue media; upgrade the server to 0.2.2.",
+                    {"path": path},
+                ) from None
+            refusal = OpError(exc.code, exc.message, exc.details)
+            if not _retryable(exc):
+                raise refusal from None
+            detail = f"HTTP {exc.status} {exc.code}"
+            progress.state = "busy"
+            wait = exc.retry_after
+        first = False
+        now = _now()
+        latest = deadline - LAST_ATTEMPT_MARGIN_SECONDS
+        wait = min(backoff, latest - now) if wait is None else max(wait, backoff)
+        backoff = min(backoff * 2, MAX_BACKOFF_SECONDS)
+        if wait <= 0 or now + wait > latest:
+            raise refusal or write_unreachable(remote, detail, now - started)
+        progress.begin(now)
+        progress.sleep(wait)
+        now = _now()
+        if now >= deadline:
+            raise refusal or write_unreachable(remote, detail, now - started)
 
 
 def op_status(remote: http.Remote, project: str, op_id: str) -> dict:

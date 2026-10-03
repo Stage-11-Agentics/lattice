@@ -12,8 +12,9 @@ PROTOCOL = 1
 
 #: The oldest client this server's code accepts ops from (SPEC §15). A release
 #: raises it when it adds an event type that changes snapshot materialization,
-#: or changes the default or meaning of an existing operation parameter.
-MIN_CLIENT_VERSION = "0.2.1"
+#: a newly synced durable path, or the default or meaning of an existing
+#: operation parameter.
+MIN_CLIENT_VERSION = "0.2.2"
 
 HEADER_PROTOCOL = "Lattice-Protocol"
 HEADER_SERVER_VERSION = "Lattice-Server-Version"

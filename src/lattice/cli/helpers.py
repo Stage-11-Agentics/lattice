@@ -142,9 +142,10 @@ def json_error_obj(code: str, message: str) -> dict:
 
 
 #: Error codes whose ``--json`` envelope carries the error's ``details``
-#: (SPEC §8.6: an unreachable server's URL and raw OS error). Only hosted
+#: (SPEC §8.6: an unreachable server's URL and raw OS error; a media quota
+#: refusal's limit and used bytes). Only hosted
 #: checkouts raise them, so local output is unchanged.
-_ENVELOPE_DETAILS = frozenset({"SERVER_UNREACHABLE"})
+_ENVELOPE_DETAILS = frozenset({"SERVER_UNREACHABLE", "MEDIA_QUOTA_EXCEEDED"})
 
 
 def _handled_details(code: str) -> dict | None:

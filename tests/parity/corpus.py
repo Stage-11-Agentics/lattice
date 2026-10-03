@@ -954,6 +954,29 @@ TOMBSTONES = Scenario(
     ),
 )
 
+ISSUES = Scenario(
+    name="issues",
+    description="hosted and local issue filing, editing, closing, linking and promotion",
+    config={"issues": {"enabled": True}},
+    steps=(
+        c("create", "Issue-linked task", *H),
+        c("issue", "file", "Observed a race", *H),
+        c("issue", "link", "PAR-I1", "PAR-1", *H),
+        c("issue", "show", "PAR-I1"),
+        c("issue", "unlink", "PAR-I1", "PAR-1", *H),
+        c("issue", "file", "A second observation", "--description", "More detail.", *H),
+        c("issue", "edit", "PAR-I2", "--title", "A corrected observation", *H),
+        c("issue", "comment", "PAR-I2", "Seen again on the nightly run", *H),
+        c("issue", "dismiss", "PAR-I2", "--reason", "noise", *H),
+        c("issue", "reopen", "PAR-I2", *H),
+        c("issue", "file", "A repeat of the first", *H),
+        c("issue", "duplicate", "PAR-I3", "--of", "PAR-I1", *H),
+        c("issue", "promote", "PAR-I2", "--title", "Fix the observation", *H),
+        c("issue", "show", "PAR-I2"),
+        c("issue", "list", "--all"),
+    ),
+)
+
 
 SCENARIOS: tuple[Scenario, ...] = (
     LIFECYCLE,
@@ -977,6 +1000,7 @@ SCENARIOS: tuple[Scenario, ...] = (
     DASHBOARD,
     MAINTENANCE,
     TOMBSTONES,
+    ISSUES,
 )
 
 # Every rejection code of SPEC §3.1 that the CLI emits today. test_local_parity
@@ -1066,5 +1090,14 @@ REQUIRED_COMMANDS = frozenset(
         "notes write",
         "context write",
         "board write",
+        "issue file",
+        "issue link",
+        "issue unlink",
+        "issue edit",
+        "issue comment",
+        "issue dismiss",
+        "issue reopen",
+        "issue duplicate",
+        "issue promote",
     }
 )

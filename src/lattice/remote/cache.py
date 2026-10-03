@@ -103,6 +103,7 @@ STANDARD_DIRS = (
     "sessions",
     "sessions/archive",
     "templates",
+    "issues",
 )
 
 FILE_MODE = 0o400
