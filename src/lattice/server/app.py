@@ -233,6 +233,8 @@ class HeadersMiddleware:
                 clear = scope["state"].get(CLEAR_COOKIE)
                 if clear:  # a dead session cookie is cleared on any answer (SPEC §10)
                     headers.append((b"set-cookie", clear.encode("latin-1")))
+                if scope["state"].get("close_connection"):
+                    headers.append((b"connection", b"close"))
                 message = {**message, "headers": headers + extra}
             await send(message)
 
@@ -986,11 +988,13 @@ async def issue_media_upload(request: Request, state: ServerState) -> Response:
     slug = request.path_params["slug"]
     sha256 = request.path_params["sha256"]
     request.scope["state"]["log"].update(project=slug, op="issue.media_stage")
-    check_protocol(request)
-    token = authenticate(request, state)
-    project = resolve_project(state, token, slug)
-    body = _UploadBody(request, state.log, slug, token.id)
+    token = None
+    body = None
     try:
+        check_protocol(request)
+        token = authenticate(request, state)
+        project = resolve_project(state, token, slug)
+        body = _UploadBody(request, state.log, slug, token.id)
         return await _stage_upload(request, state, token, project, sha256, body)
     except OpError as refusal:
         # Refused after authorization, usually before the body was read (quota,
@@ -1000,16 +1004,33 @@ async def issue_media_upload(request: Request, state: ServerState) -> Response:
         # the token's in-flight limit until it is over, and a rate-limit refusal
         # is never drained (it exists to stop work).
         limit = REFUSED_UPLOAD_DRAIN_FACTOR * state.config.limits.max_issue_media_file_bytes
-        if refusal.code != "RATE_LIMITED" and body.declared is not None and body.declared <= limit:
+        if (
+            token is not None
+            and body is not None
+            and refusal.code != "RATE_LIMITED"
+            and body.declared is not None
+            and body.declared <= limit
+        ):
             try:
                 state.limits.enter(token.id)
             except OpError:
+                _close_after_answer(request, body)
                 raise refusal from None
             try:
                 await body.drain()
             finally:
                 state.limits.leave(token.id)
+        _close_after_answer(request, body)
         raise
+
+
+def _close_after_answer(request: Request, body: "_UploadBody | None") -> None:
+    """Send ``Connection: close`` with a refusal whose request body was not read to
+    its end, so the connection cannot be reused (or kept open) by a client that
+    keeps sending: the server would otherwise discard that body with no limit."""
+    if body is not None and body.declared is not None and body.received >= body.declared:
+        return
+    request.scope["state"]["close_connection"] = True
 
 
 #: Seconds an upload body may go without a byte arriving. A stalled or vanished

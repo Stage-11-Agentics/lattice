@@ -835,16 +835,17 @@ class HostedIssueMedia:
                 self._log("info", "issue_media_reconcile_finalize", op_id=op_id)
                 try:
                     self.finalize_operation(op_id)
-                except OpError as exc:
+                except (OpError, OSError) as exc:
                     # A committed operation whose bytes cannot be published (the
-                    # staged copy was lost, or a file is damaged) must not take
-                    # the whole project offline: keep the manifest, say so, and
-                    # let doctor and the media route report the missing object.
+                    # staged copy was lost or unreadable, a media folder is
+                    # read-only, the disk errored) must not take the whole project
+                    # offline: keep the manifest, say so, and let doctor and the
+                    # media route report the missing object.
                     self._log(
                         "error",
                         "issue_media_reconcile_failed",
                         op_id=op_id,
-                        code=exc.code,
+                        code=exc.code if isinstance(exc, OpError) else type(exc).__name__,
                         reason="its media could not be published; the project still loads",
                     )
             else:

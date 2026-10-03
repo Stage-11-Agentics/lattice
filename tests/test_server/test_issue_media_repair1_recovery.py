@@ -227,3 +227,34 @@ def test_a_committed_manifest_whose_staged_bytes_are_lost_does_not_stop_the_proj
     assert len(names(manifest_dir(root))) == 1  # kept, for the operator to clear
     report = admin.project_doctor(root, SLUG)
     assert [f["check"] for f in report["findings"]] == ["issue_media_missing"]
+
+
+def test_an_unreadable_staged_file_does_not_stop_the_project_loading(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An OSError while finalizing (an unreadable staged blob, a read-only media
+    folder, a disk read error) is handled like a lost stage: the project loads and
+    the media is reported missing."""
+    data = blob(5000, b"unreadable")
+    _crash_after_commit(root, data, monkeypatch)
+    staged = stage_dir(root) / f"{sha(data)}.blob"
+    staged.chmod(0)
+    try:
+        snapshot = _snapshot(root)
+        with running_server(root) as server:
+            assert server.project(SLUG).state == "loaded"
+            failed = [
+                line
+                for line in server.log_lines
+                if line["event"] == "issue_media_reconcile_failed"
+            ]
+            assert failed and failed[0]["code"] == "PermissionError"
+            token = mint(root, projects=[SLUG])
+            status, _, body = server.op(SLUG, "task.create", {"title": "ok"}, token=token)
+            assert status == 200, body
+        report = admin.project_doctor(root, SLUG)
+        assert [f["check"] for f in report["findings"]] == ["issue_media_missing"]
+        assert len(names(manifest_dir(root))) == 1
+        assert snapshot["media"]
+    finally:
+        staged.chmod(0o600)

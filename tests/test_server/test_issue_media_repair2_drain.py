@@ -98,3 +98,59 @@ def test_discarding_stops_after_its_total_time_however_the_client_keeps_sending(
             conn.close()
         assert status == 413 and body["error"]["code"] == "PAYLOAD_TOO_LARGE"
         assert elapsed < 2.5, f"the refusal waited {elapsed:.1f}s for a trickling client"
+
+
+def _reply_headers(conn: socket.socket) -> tuple[int, dict[str, str]]:
+    reply = b""
+    while b"\r\n\r\n" not in reply:
+        part = conn.recv(65536)
+        assert part, f"connection closed before a reply: {reply!r}"
+        reply += part
+    head = reply.partition(b"\r\n\r\n")[0].decode("latin-1").split("\r\n")
+    headers = {k.strip().lower(): v.strip() for k, v in (line.split(":", 1) for line in head[1:])}
+    return int(head[0].split()[1]), headers
+
+
+def test_a_refusal_whose_body_was_not_read_closes_the_connection(
+    root: Path, token: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A keep-alive client that keeps sending after a refusal must not keep its
+    socket: the answer carries ``Connection: close`` unless the whole body was read."""
+    monkeypatch.setattr(app_module, "REFUSED_UPLOAD_DRAIN_IDLE", 0.3)
+    with media_server(root, max_issue_media_file_bytes=4 * KIB) as server:
+        # Over the per-file limit, body never sent: drained until idle, not complete.
+        conn = _drip(server, token, 6 * KIB, pieces=0, pause=0)
+        try:
+            conn.settimeout(5.0)
+            status, headers = _reply_headers(conn)
+        finally:
+            conn.close()
+        assert status == 413
+        assert headers.get("connection", "").lower() == "close", headers
+
+        # Far over the drain bound: not drained at all, still closed.
+        conn = _drip(server, token, 40 * KIB, pieces=0, pause=0)
+        try:
+            conn.settimeout(5.0)
+            status, headers = _reply_headers(conn)
+        finally:
+            conn.close()
+        assert status == 413
+        assert headers.get("connection", "").lower() == "close", headers
+
+
+def test_a_refusal_after_the_whole_body_was_read_keeps_the_connection(
+    root: Path, token: str
+) -> None:
+    data = blob(3 * KIB, b"whole")
+    with media_server(
+        root, max_issue_media_file_bytes=4 * KIB, max_issue_media_project_bytes=KIB
+    ) as server:
+        conn = socket.create_connection(("127.0.0.1", server.port), timeout=5)
+        try:
+            conn.sendall(_head(token, sha(data), len(data)) + data)
+            status, headers = _reply_headers(conn)
+        finally:
+            conn.close()
+        assert status == 413  # over the project quota; its body was drained to the end
+        assert "close" not in headers.get("connection", "").lower(), headers
