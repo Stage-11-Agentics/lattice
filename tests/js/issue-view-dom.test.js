@@ -759,3 +759,91 @@ test("a box left open on an issue that someone else closes is dropped, as closin
     view.done();
   }
 });
+
+test("keys typed on the reason box's buttons or Space on the header button stay out of the Inbox's own keys", async () => {
+  const server = makeServer([issue(1, { media: [VIDEO] }), issue(2)]);
+  const view = boot(server);
+  try {
+    view.dashboard.render();
+    await flush();
+    triage().click();
+    typeReason("keep me");
+    for (const target of [$("#issue-close-cancel"), $("#issue-close-go")]) {
+      target.focus();
+      for (const name of ["j", "k", "ArrowDown", "1", "2", "3", "4", "c", "f", " "]) {
+        const event = key(target, name);
+        assert.equal(event.defaultPrevented, false, name + " is left to the button");
+      }
+      assert.equal(shownIssue(), "T-I1", "selection did not move");
+      assert.equal(popOn(), true, "the box stayed open");
+      assert.equal($("#issue-close-reason").value, "keep me", "the reason stayed");
+    }
+    key($("#issue-close-reason"), "Escape");
+    triage().focus();
+    assert.equal(key(triage(), " ").defaultPrevented, false, "Space on the header button is a press, not play or pause");
+    assert.equal(shownIssue(), "T-I1");
+  } finally {
+    view.done();
+  }
+});
+
+test("Escape closes the reason box from Cancel and from Close issue, and returns focus to the header button", async () => {
+  const server = makeServer([issue(1)]);
+  const view = boot(server);
+  try {
+    view.dashboard.render();
+    await flush();
+    for (const id of ["issue-close-cancel", "issue-close-go", "issue-close-reason"]) {
+      triage().click();
+      typeReason("something");
+      $("#" + id).focus();
+      const event = key($("#" + id), "Escape");
+      assert.equal(event.defaultPrevented, true, id);
+      assert.equal(popOn(), false, id + " closed the box");
+      assert.equal($("#issue-close-reason").value, "", id + " cleared it");
+      same(document.activeElement, triage(), id + " returned focus to the button");
+    }
+  } finally {
+    view.done();
+  }
+});
+
+test("after a successful close, focus lands on the header button, which now reads Reopen", async () => {
+  const server = makeServer([issue(1)]);
+  const view = boot(server, { apiPost: (url, body) => { closeOnServer(server, "T-I1", body.reason); return Promise.resolve({}); } });
+  try {
+    view.dashboard.render();
+    await flush();
+    triage().click();
+    typeReason("done with it");
+    $("#issue-close-go").focus();
+    $("#issue-close-go").click();
+    await flush();
+    assert.equal(popOn(), false);
+    assert.equal(triage().textContent, "Reopen");
+    same(document.activeElement, triage(), "focus is on the header button, not the page body");
+  } finally {
+    view.done();
+  }
+});
+
+test("a double click on Reopen posts once", async () => {
+  const server = makeServer([issue(1, { state: "dismissed", closure: { kind: "dismiss", reason: "No" } })]);
+  let release;
+  const view = boot(server, { apiPost: () => new Promise((resolve) => { release = () => { reopenOnServer(server, "T-I1"); resolve({}); }; }) });
+  try {
+    view.dashboard.render();
+    await flush();
+    key(document.body, "4");
+    await flush();
+    triage().click();
+    triage().click();
+    await flush();
+    assert.equal(view.posts.length, 1, "the second click was ignored while the first was in flight");
+    release();
+    await flush();
+    assert.equal(triage().textContent, "Close");
+  } finally {
+    view.done();
+  }
+});

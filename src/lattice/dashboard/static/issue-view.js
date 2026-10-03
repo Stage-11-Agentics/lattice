@@ -43,6 +43,7 @@
     var dropHint = null;
     var destroyed = false;
     var closing = false;
+    var reopening = false;
 
     // ---- actors and origins ----
     function actorText(actor) {
@@ -670,9 +671,10 @@
         el.input.focus();
       });
       el.input.addEventListener("input", function () { showCloseError(""); syncCloseGo(); });
-      el.input.addEventListener("keydown", function (event) {
+      // Escape works from anywhere in the box (the field and both buttons); Enter sends from the field.
+      el.pop.addEventListener("keydown", function (event) {
         if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closePop(true); }
-        else if (event.key === "Enter" && !event.isComposing) { event.preventDefault(); postClose(); }
+        else if (event.key === "Enter" && !event.isComposing && event.target === el.input) { event.preventDefault(); postClose(); }
       });
       document.getElementById("issue-close-cancel").addEventListener("click", function () { closePop(true); });
       el.go.addEventListener("click", postClose);
@@ -693,7 +695,11 @@
       syncCloseGo();
       apiPost("/api/issues/" + encodeURIComponent(issue.id) + "/dismiss", { reason: reason }).then(function () {
         closing = false;
-        if (current() && current().id === issue.id) closePop(false);
+        if (current() && current().id === issue.id) {
+          closePop(false);
+          // The box held focus and is now hidden: land on the header button, which reads Reopen next.
+          if (el.button && !el.button.disabled) el.button.focus();
+        }
         afterTriage(issue);
       }).catch(function (error) {
         closing = false;
@@ -704,10 +710,15 @@
     }
     function postReopen() {
       var issue = current();
-      if (!issue) return;
+      if (!issue || reopening) return;
+      reopening = true;
       apiPost("/api/issues/" + encodeURIComponent(issue.id) + "/reopen", {}).then(function () {
+        reopening = false;
         afterTriage(issue);
-      }).catch(function (error) { options.showToast(error.message || String(error), "error"); });
+      }).catch(function (error) {
+        reopening = false;
+        options.showToast(error.message || String(error), "error");
+      });
     }
     function postComment() {
       var issue = current();
@@ -924,6 +935,10 @@
       if (sharedPanelOpen()) return;
       var tag = (event.target.tagName || "").toLowerCase();
       if (tag === "input" || tag === "textarea" || tag === "select" || event.target.isContentEditable) return;
+      // The reason box owns every key typed inside it, and a focused Close or Reopen button
+      // takes Space as a press, not as play or pause.
+      if (event.target.closest && event.target.closest("#issue-close-pop")) return;
+      if (event.key === " " && event.target.closest && event.target.closest("#issue-triage")) return;
       var key = event.key;
       if (key === "i") {
         if (hosted) return;
