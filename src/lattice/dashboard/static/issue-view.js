@@ -42,6 +42,8 @@
     var dragDepth = 0;
     var dropHint = null;
     var destroyed = false;
+    var closing = false;
+    var reopening = false;
 
     // ---- actors and origins ----
     function actorText(actor) {
@@ -140,7 +142,14 @@
         "</section>" +
         '<section class="issue-d-pane" aria-label="Selected issue">' +
           '<div class="issue-d-head" id="issue-d-head"><button type="button" class="issue-id-copy" id="issue-id-copy" title="Copy the ID (c), to tell an agent what to do with it" disabled></button>' +
-            '<span class="issue-copy-status" id="issue-copy-status"></span><span id="issue-d-state"></span><span class="issue-d-facts" id="issue-d-facts"></span></div>' +
+            '<span class="issue-copy-status" id="issue-copy-status"></span><span id="issue-d-state"></span><span class="issue-d-facts" id="issue-d-facts"></span>' +
+            '<button type="button" class="btn btn-sm issue-triage off" id="issue-triage" disabled>Close</button>' +
+            '<div class="issue-close-pop" id="issue-close-pop" role="group" aria-label="Close this issue">' +
+              '<input type="text" id="issue-close-reason" autocomplete="off" maxlength="500" placeholder="Why is this closed? (required)" aria-label="Reason for closing">' +
+              '<div class="issue-close-err" id="issue-close-err" role="alert"></div>' +
+              '<div class="issue-close-actions"><button type="button" class="btn btn-sm" id="issue-close-cancel">Cancel</button>' +
+              '<button type="button" class="btn btn-sm issue-close-go" id="issue-close-go" disabled>Close issue</button></div>' +
+            "</div></div>" +
           '<div class="issue-d-body" id="issue-d-body"></div>' +
         "</section></div>";
       var tabs = document.getElementById("issue-q-tabs");
@@ -166,6 +175,7 @@
         var actor = event.target.closest("[data-actor]");
         if (actor) enterPerson(actor.getAttribute("data-actor"));
       });
+      wireTriage();
       document.getElementById("issue-d-body").addEventListener("click", onDetailClick);
       document.getElementById("issue-d-body").addEventListener("dblclick", function (event) {
         var figure = event.target.closest(".issue-media-item");
@@ -532,6 +542,7 @@
       setTextIfChanged(copy, issue ? issue.short_id || issue.id : "");
       copy.disabled = !issue;
       var detail = issue ? details[issue.id] || issue : null;
+      renderTriage(detail, changed);
       setHtmlIfChanged(document.getElementById("issue-d-state"), issue ? stateChip(logic.stateOf(detail)) : "");
       setHtmlIfChanged(document.getElementById("issue-d-facts"), issue ? factsHtml(detail) : "");
       var status = document.getElementById("issue-copy-status");
@@ -607,6 +618,107 @@
           '<span title="' + esc(displayTime(time)) + '">' + esc(relativeTime(time)) + '</span></div><div class="issue-comment-body">' +
           commentBody(comment.body || "") + "</div></div>";
       }).join("");
+    }
+    // ---- close and reopen: the header control ----
+    // The button and the reason box are static shell markup, so a refresh never rebuilds
+    // them: renderTriage only relabels the button, and closes the box when it stops applying.
+    function triageEls() {
+      return {
+        button: document.getElementById("issue-triage"),
+        pop: document.getElementById("issue-close-pop"),
+        input: document.getElementById("issue-close-reason"),
+        err: document.getElementById("issue-close-err"),
+        go: document.getElementById("issue-close-go")
+      };
+    }
+    function popOpen() {
+      var el = document.getElementById("issue-close-pop");
+      return !!el && el.classList.contains("on");
+    }
+    function syncCloseGo() {
+      var el = triageEls();
+      if (el.go) el.go.disabled = closing || !el.input.value.trim();
+    }
+    function showCloseError(message) { setTextIfChanged(document.getElementById("issue-close-err"), message || ""); }
+    function closePop(refocus) {
+      var el = triageEls();
+      if (!el.pop) return;
+      el.pop.classList.remove("on");
+      el.input.value = "";
+      showCloseError("");
+      syncCloseGo();
+      if (refocus && el.button && !el.button.disabled) el.button.focus();
+    }
+    function renderTriage(detail, changed) {
+      var el = triageEls();
+      if (!el.button) return;
+      var action = logic.triageAction(detail);
+      setTextIfChanged(el.button, action === "reopen" ? "Reopen" : "Close");
+      el.button.classList.toggle("off", !action);
+      el.button.disabled = !action;
+      if (el.button.getAttribute("data-triage") !== (action || "")) el.button.setAttribute("data-triage", action || "");
+      // The box is open only for the issue it was opened on, and only while closing still applies.
+      if (popOpen() && (changed || action !== "close")) closePop(false);
+    }
+    function wireTriage() {
+      var el = triageEls();
+      el.button.addEventListener("click", function () {
+        var action = el.button.getAttribute("data-triage");
+        if (action === "reopen") { el.button.blur(); postReopen(); return; }
+        if (action !== "close") return;
+        if (popOpen()) { closePop(true); return; }
+        el.pop.classList.add("on");
+        el.input.focus();
+      });
+      el.input.addEventListener("input", function () { showCloseError(""); syncCloseGo(); });
+      // Escape works from anywhere in the box (the field and both buttons); Enter sends from the field.
+      el.pop.addEventListener("keydown", function (event) {
+        if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closePop(true); }
+        else if (event.key === "Enter" && !event.isComposing && event.target === el.input) { event.preventDefault(); postClose(); }
+      });
+      document.getElementById("issue-close-cancel").addEventListener("click", function () { closePop(true); });
+      el.go.addEventListener("click", postClose);
+      syncCloseGo();
+    }
+    function afterTriage(issue) {
+      markDetailStale(issue.id);
+      ensureDetail(issue);
+      refresh();
+    }
+    function postClose() {
+      var issue = current();
+      var el = triageEls();
+      var reason = el.input ? el.input.value.trim() : "";
+      if (!issue || !reason || closing) return;
+      closing = true;
+      showCloseError("");
+      syncCloseGo();
+      apiPost("/api/issues/" + encodeURIComponent(issue.id) + "/dismiss", { reason: reason }).then(function () {
+        closing = false;
+        if (current() && current().id === issue.id) {
+          closePop(false);
+          // The box held focus and is now hidden: land on the header button, which reads Reopen next.
+          if (el.button && !el.button.disabled) el.button.focus();
+        }
+        afterTriage(issue);
+      }).catch(function (error) {
+        closing = false;
+        syncCloseGo();
+        if (current() && current().id === issue.id) showCloseError(error.message || String(error));
+        else options.showToast(error.message || String(error), "error");
+      });
+    }
+    function postReopen() {
+      var issue = current();
+      if (!issue || reopening) return;
+      reopening = true;
+      apiPost("/api/issues/" + encodeURIComponent(issue.id) + "/reopen", {}).then(function () {
+        reopening = false;
+        afterTriage(issue);
+      }).catch(function (error) {
+        reopening = false;
+        options.showToast(error.message || String(error), "error");
+      });
     }
     function postComment() {
       var issue = current();
@@ -823,6 +935,10 @@
       if (sharedPanelOpen()) return;
       var tag = (event.target.tagName || "").toLowerCase();
       if (tag === "input" || tag === "textarea" || tag === "select" || event.target.isContentEditable) return;
+      // The reason box owns every key typed inside it, and a focused Close or Reopen button
+      // takes Space as a press, not as play or pause.
+      if (event.target.closest && event.target.closest("#issue-close-pop")) return;
+      if (event.key === " " && event.target.closest && event.target.closest("#issue-triage")) return;
       var key = event.key;
       if (key === "i") {
         if (hosted) return;

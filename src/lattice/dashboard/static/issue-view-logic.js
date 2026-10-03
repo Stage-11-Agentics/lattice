@@ -29,6 +29,14 @@
     return state === "dismissed" || state === "duplicate" ? "closed" : state;
   }
 
+  // The one lifecycle action the header offers: close what is live, reopen what is closed.
+  function triageAction(issue) {
+    if (!issue) return null;
+    var queue = queueOf(issue);
+    if (queue === "closed") return "reopen";
+    return queue === "open" || queue === "linked" || queue === "resolved" ? "close" : null;
+  }
+
   function commentsOf(issue) {
     return Array.isArray(issue && issue.comments) ? issue.comments : [];
   }
@@ -464,6 +472,7 @@
     durationMs: durationMs,
     stateOf: stateOf,
     queueOf: queueOf,
+    triageAction: triageAction,
     originPair: originPair,
     originLabel: originLabel,
     personIssues: personIssues,

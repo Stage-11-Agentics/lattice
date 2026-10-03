@@ -228,3 +228,11 @@ test("the media key ignores everything but which media and frames are shown", ()
   assert.equal(logic.mediaKey("i", media), logic.mediaKey("i", [Object.assign({}, media[0], { width: 641 })]));
   assert.notEqual(logic.mediaKey("i", media), logic.mediaKey("i", media.concat({ id: "m2", url: "/v" })));
 });
+
+test("triageAction offers Close for live issues and Reopen for closed ones", () => {
+  for (const state of ["open", "linked", "resolved"]) assert.equal(logic.triageAction({ state }), "close", state);
+  for (const state of ["dismissed", "duplicate"]) assert.equal(logic.triageAction({ state }), "reopen", state);
+  assert.equal(logic.triageAction({}), "close", "an issue with no state is open");
+  assert.equal(logic.triageAction(null), null);
+  assert.equal(logic.triageAction(undefined), null);
+});

@@ -405,13 +405,18 @@ def test_bound_checkout_is_local_only(served) -> None:  # noqa: ANN001
             status, _headers, body = get(server, path)
             assert status == 400, path
             assert json.loads(body)["error"]["code"] == "LOCAL_ONLY", path
-        for path in ("/api/issues", f"/api/issues/{issue['id']}/comment"):
+        for path in (
+            "/api/issues",
+            f"/api/issues/{issue['id']}/comment",
+            f"/api/issues/{issue['id']}/dismiss",
+            f"/api/issues/{issue['id']}/reopen",
+        ):
             conn = http.client.HTTPConnection(*server.server_address, timeout=5)
             host = f"127.0.0.1:{server.server_address[1]}"
             conn.request(
                 "POST",
                 path,
-                json.dumps({"title": "x", "body": "x"}),
+                json.dumps({"title": "x", "body": "x", "reason": "x"}),
                 {"Content-Type": "application/json", "Origin": f"http://{host}", "Host": host},
             )
             response = conn.getresponse()
