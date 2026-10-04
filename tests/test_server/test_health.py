@@ -17,20 +17,25 @@ from tests.test_server.conftest import board_hash, mint
 
 def test_healthz_answers_during_the_prewarm(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     release = threading.Event()
+    prewarm_started = threading.Event()
     real_load = Project._load
 
     def slow_load(self: Project) -> None:
+        prewarm_started.set()
         release.wait(5)
         real_load(self)
 
     monkeypatch.setattr(Project, "_load", slow_load)
     with running_server(root, wait_prewarm=False) as server:
-        status, _, body = server.request("GET", "/healthz", timeout=2)
-        assert status == 200
-        assert body["projects"]["loading"] == 1 and body["projects"]["unloaded"] == 1
-        assert body["disk_free_bytes"] > 0 and body["protocol"] == 1
-        assert set(body) == {"ok", "version", "protocol", "disk_free_bytes", "projects"}
-        release.set()
+        try:
+            assert prewarm_started.wait(5), "prewarm did not enter Project._load"
+            status, _, body = server.request("GET", "/healthz", timeout=2)
+            assert status == 200
+            assert body["projects"]["loading"] == 1 and body["projects"]["unloaded"] == 1
+            assert body["disk_free_bytes"] > 0 and body["protocol"] == 1
+            assert set(body) == {"ok", "version", "protocol", "disk_free_bytes", "projects"}
+        finally:
+            release.set()
         assert wait_for(lambda: server.request("GET", "/healthz")[2]["projects"]["loaded"] == 2)
         assert "alpha" not in str(server.request("GET", "/healthz")[2])
 
