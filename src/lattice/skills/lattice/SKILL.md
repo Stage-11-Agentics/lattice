@@ -224,6 +224,14 @@ Observations go to `lattice issue file`; commitments go to `lattice create`. Dis
 
 Pass screenshots and recordings as `--evidence <file>`: photos and videos are copied into the issue (`lattice issue attach <issue> <file>...` adds more later). Read an issue's media with `lattice issue media <issue> --paths` (videos as still frames).
 
+From a service or box with no bound checkout, file through the hosted `issue.file` API with a filing-only token, its bound `source`, and a stable `source_ref`:
+
+```bash
+curl -sS -X POST "$LATTICE_URL/v1/projects/<slug>/ops/issue.file" -H "Authorization: Bearer $LATTICE_TOKEN" -H 'Content-Type: application/json' -d '{"actor":"agent:<id>","params":{"title":"<title>","source":"<bound source>","source_ref":"<stable id>"}}'
+```
+
+The receipt's `deduplicated` is `false` for a new issue and `true` when the same source/reference returns its original receipt; it does not update that issue. See `docs/hosted/guide.md` → Filing-only issue token for token setup and media uploads.
+
 If a command answers `ISSUES_DISABLED`, the log is off on this board. Do not turn it on yourself: record the observation as a comment on the task you are working, or tell the human.
 
 ## Rules

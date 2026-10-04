@@ -436,6 +436,42 @@ def test_list_filters_and_order(on: Path, ok, invoke) -> None:
     assert footer == "3 issues (2 open, 1 linked); 1 other hidden (--all to show)"
 
 
+def test_text_issue_list_marks_external_rows_without_changing_existing_columns(
+    on: Path, ok, invoke, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    filed = ok("issue", "file", "External observation", *A)
+    baseline = next(
+        line for line in invoke("issue", "list").output.splitlines() if filed["short_id"] in line
+    )
+    from lattice.storage import issues as issue_storage
+
+    original = issue_storage.issue_views
+
+    def external(lattice_dir: Path, snapshots: list[dict]) -> list[dict]:
+        views = original(lattice_dir, snapshots)
+        views[0].update(external=True, on_behalf_of="Reporter", source_ref="case-7")
+        return views
+
+    monkeypatch.setattr(issue_storage, "issue_views", external)
+    row = next(
+        line for line in invoke("issue", "list").output.splitlines() if filed["short_id"] in line
+    )
+    assert row == f"{baseline}  [EXTERNAL]"
+
+
+def test_issue_list_filters_by_actor_and_state(on: Path, ok) -> None:
+    first = ok("issue", "file", "First", *A)
+    second = ok("issue", "file", "Second", "--actor", "agent:other")
+
+    assert [view["short_id"] for view in ok("issue", "list", "--by", "agent:other")] == [
+        second["short_id"]
+    ]
+    assert [view["short_id"] for view in ok("issue", "list", "--state", "open")] == [
+        first["short_id"],
+        second["short_id"],
+    ]
+
+
 # ---------------------------------------------------------------------------
 # AC-7: edge rules
 # ---------------------------------------------------------------------------

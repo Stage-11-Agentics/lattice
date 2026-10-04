@@ -668,7 +668,7 @@ def issue_list(
 ) -> None:
     """List issues: open, then linked, each oldest first."""
     from lattice.core.issues import DEFAULT_LIST_STATES, ISSUE_STATES, format_issue_row, id_width
-    from lattice.storage.issues import issue_views, issues_by, list_issue_snapshots
+    from lattice.storage.issues import issue_list_views
 
     is_json = output_json
     board, lattice_dir, _config = _require_issue_log(is_json)
@@ -676,18 +676,15 @@ def issue_list(
     def unreadable(path, exc):  # noqa: ANN001
         _warn_unreadable(path, exc, board)
 
-    if by_actor is not None:
-        wanted = states or ISSUE_STATES
-        views = issues_by(lattice_dir, by_actor, states=states or None, on_unreadable=unreadable)
-        shown = _hosted_media_views(board, views)
-    else:
-        snapshots = list_issue_snapshots(lattice_dir, on_unreadable=unreadable)
-        views = issue_views(lattice_dir, snapshots)
-        wanted = ISSUE_STATES if show_all else (states or DEFAULT_LIST_STATES)
-        # Ask the server about media only for the issues that are shown.
-        shown = _hosted_media_views(board, [v for v in views if v["state"] in wanted])
-    order = {state: i for i, state in enumerate(ISSUE_STATES)}
-    shown.sort(key=lambda v: (order[v["state"]], v.get("seq") or 0))
+    shown, total = issue_list_views(
+        lattice_dir,
+        states=states,
+        show_all=show_all,
+        by_actor=by_actor,
+        on_unreadable=unreadable,
+    )
+    # Ask the server about media only for the issues that are shown.
+    shown = _hosted_media_views(board, shown)
     if is_json:
         click.echo(json_envelope(True, data=shown))
         return
@@ -695,9 +692,15 @@ def issue_list(
     for view in shown:
         click.echo(format_issue_row(view, width, activity=view.get("activity")))
     counts = {state: sum(1 for v in shown if v["state"] == state) for state in ISSUE_STATES}
+    if by_actor is not None:
+        wanted = states or ISSUE_STATES
+    elif show_all:
+        wanted = ISSUE_STATES
+    else:
+        wanted = states or DEFAULT_LIST_STATES
     summary = ", ".join(f"{counts[s]} {s}" for s in ISSUE_STATES if s in wanted)
     footer = f"{len(shown)} issue{'s' if len(shown) != 1 else ''} ({summary})"
-    hidden = len(views) - len(shown) if by_actor is None else 0
+    hidden = total - len(shown) if by_actor is None else 0
     if hidden and not show_all and by_actor is None:
         footer += f"; {hidden} other{'s' if hidden != 1 else ''} hidden (--all to show)"
     click.echo(footer)

@@ -25,6 +25,7 @@ from pathlib import Path
 
 from lattice.core.errors import OpError
 from lattice.core.issues import (
+    DEFAULT_LIST_STATES,
     ISSUE_STATES,
     TaskInfo,
     actor_matches,
@@ -427,6 +428,39 @@ def issue_detail(
     }
 
 
+def issue_list_views(
+    lattice_dir: Path,
+    *,
+    states: Iterable[str] | None = None,
+    show_all: bool = False,
+    by_actor: str | None = None,
+    on_unreadable: OnUnreadable | None = None,
+) -> tuple[list[dict], int]:
+    """Return the CLI/MCP issue-list views in their shared state/sequence order.
+
+    The second value is the count before the default state filter, used by the
+    CLI's hidden-issue footer. Actor-filtered listings already represent their
+    complete result and therefore return the same count as the first value.
+    """
+    selected_states = tuple(states or ())
+    if by_actor is not None:
+        views = issues_by(
+            lattice_dir,
+            by_actor,
+            states=selected_states or None,
+            on_unreadable=on_unreadable,
+        )
+        return views, len(views)
+
+    snapshots = list_issue_snapshots(lattice_dir, on_unreadable=on_unreadable)
+    views = issue_views(lattice_dir, snapshots)
+    wanted = ISSUE_STATES if show_all else (selected_states or DEFAULT_LIST_STATES)
+    shown = [view for view in views if view["state"] in wanted]
+    order = {state: index for index, state in enumerate(ISSUE_STATES)}
+    shown.sort(key=lambda view: (order[view["state"]], view.get("seq") or 0))
+    return shown, len(views)
+
+
 def issues_linked_to(
     lattice_dir: Path, task_id: str, *, on_unreadable: OnUnreadable | None = None
 ) -> list[dict]:
@@ -586,6 +620,7 @@ __all__ = [
     "has_issue_metadata",
     "issue_views",
     "issue_detail",
+    "issue_list_views",
     "issue_write_context",
     "source_ref_lock",
     "issues_by",

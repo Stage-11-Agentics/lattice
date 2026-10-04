@@ -42,11 +42,19 @@ def _checkout(path: Path, code: str, branch: str) -> Path:
 class McpProcess:
     """A ``lattice-mcp`` subprocess driven over newline-delimited JSON-RPC."""
 
-    def __init__(self, cwd: Path, extra_env: dict[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        cwd: Path,
+        extra_env: dict[str, str] | None = None,
+        *,
+        executable: str | None = None,
+    ) -> None:
         env = {k: v for k, v in os.environ.items() if not k.startswith("LATTICE_")}
         env.update(extra_env or {})
         self.proc = subprocess.Popen(
-            [sys.executable, "-c", "from lattice.mcp.server import main; main()"],
+            [executable]
+            if executable is not None
+            else [sys.executable, "-c", "from lattice.mcp.server import main; main()"],
             cwd=cwd,
             env=env,
             stdin=subprocess.PIPE,
