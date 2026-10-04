@@ -932,6 +932,8 @@
           "  --evidence TEXT                 A path or URL backing it up (repeatable).",
           "                                  Photos and videos are copied in.",
           "  --source TEXT                   Where it came from (e.g., tester-round-8).",
+          "  --source-ref TEXT               A stable reference within --source; repeats",
+          "                                  return the existing issue.",
           "  --keep-video-metadata           File a video as it is, with its metadata",
           "                                  (which can include where it was recorded),",
           "                                  when ffmpeg cannot strip it. Without this,",

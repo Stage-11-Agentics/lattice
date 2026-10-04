@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import json
+import random
 import struct
 import sys
 import zlib
@@ -54,6 +55,25 @@ def png_with_large_icc(size: int, seed: int = 0) -> bytes:
         b"\x89PNG\r\n\x1a\n"
         + chunk(b"IHDR", ihdr)
         + chunk(b"iCCP", profile)
+        + chunk(b"IDAT", zlib.compress(raw))
+        + chunk(b"IEND", b"")
+    )
+
+
+def png_with_large_idat(size: int, seed: int = 0) -> bytes:
+    """A valid PNG whose retained image data exceeds *size* bytes."""
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+        )
+
+    width = max(1, (size + 2) // 3)
+    raw = b"\x00" + random.Random(seed).randbytes(width * 3)
+    ihdr = struct.pack(">IIBBBBB", width, 1, 8, 2, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", ihdr)
         + chunk(b"IDAT", zlib.compress(raw))
         + chunk(b"IEND", b"")
     )
