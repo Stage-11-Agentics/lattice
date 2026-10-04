@@ -36,7 +36,7 @@ from lattice.core.agent_spawn import (
     spawn_one,
 )
 from lattice.storage.review_state import write_review_state_file
-from lattice.core.config import valid_git_branch_name
+from lattice.core.config import contains_control_characters, valid_git_branch_name
 
 
 # ---------------------------------------------------------------------------
@@ -728,7 +728,16 @@ class DiffResolution:
     worktree: Path | None = None
     source: str | None = None
     base_selection_rule: str | None = None
+    #: Combined warning contract used by JSON, artifact headers and trident.
     warning: str | None = None
+    #: Configured integration-branch warnings, shown as ``Warning:`` in the CLI.
+    config_warning: str | None = None
+    #: Non-configuration advisory, such as a stale selected remote base.
+    note: str | None = None
+    #: Whether any remote-tracking refs exist anywhere in this repository.
+    remote_tracking_refs_present: bool = False
+    #: Whether any remote is configured in this repository.
+    configured_remotes_present: bool = False
 
     @property
     def range_desc(self) -> str | None:
@@ -844,6 +853,16 @@ def resolve_diff(
         review_integration_branches=review_integration_branches,
     )
     head_sha = _rev_parse(repo_root, head_ref)
+    if base_selection_rule in {
+        "unresolved_integration_config",
+        "inferred_no_candidate",
+        "inferred_nearest_merge_base",
+        "inferred_local_default",
+    }:
+        config_warning = _configured_integration_warning(repo_root, review_integration_branches)
+    else:
+        config_warning = None
+    note = _stale_remote_warning(repo_root, base_ref) if base_ref else None
 
     if base_error:
         base_error_code = {
@@ -851,6 +870,15 @@ def resolve_diff(
             "invalid_integration_config": "INVALID_REVIEW_INTEGRATION_BRANCHES",
             "unresolved_integration_config": "UNRESOLVABLE_REVIEW_INTEGRATION_BRANCHES",
         }.get(base_selection_rule, "INVALID_REVIEW_INTEGRATION_BRANCHES")
+        if base_selection_rule == "unresolved_integration_config":
+            configured_remotes_present, remote_tracking_refs_present = _remote_state(repo_root)
+            base_error = _unresolved_integration_base_error(
+                configured_remotes_present=configured_remotes_present,
+                remote_tracking_refs_present=remote_tracking_refs_present,
+            )
+        else:
+            configured_remotes_present = False
+            remote_tracking_refs_present = False
         return DiffResolution(
             success=False,
             error=base_error,
@@ -860,16 +888,20 @@ def resolve_diff(
             worktree=repo_root,
             source=source,
             warning=warning,
+            config_warning=config_warning,
+            note=note,
             base_selection_rule=base_selection_rule,
+            configured_remotes_present=configured_remotes_present,
+            remote_tracking_refs_present=remote_tracking_refs_present,
         )
 
     if base_ref is None:
+        configured_remotes_present, remote_tracking_refs_present = _remote_state(repo_root)
         return DiffResolution(
             success=False,
-            error=(
-                "Could not infer a review base: no safe default or configured integration "
-                "branch shares history with the head. Pass --base <ref>, configure "
-                "review_base_branch, or configure review_integration_branches."
+            error=_no_candidate_base_error(
+                configured_remotes_present=configured_remotes_present,
+                remote_tracking_refs_present=remote_tracking_refs_present,
             ),
             error_code="BASE_INFERENCE_NO_CANDIDATES",
             head_ref=head_ref,
@@ -877,7 +909,11 @@ def resolve_diff(
             worktree=repo_root,
             source=source,
             warning=warning,
+            config_warning=config_warning,
+            note=note,
             base_selection_rule=base_selection_rule,
+            remote_tracking_refs_present=remote_tracking_refs_present,
+            configured_remotes_present=configured_remotes_present,
         )
 
     ref_range = f"{base_ref}...{head_ref}"
@@ -890,6 +926,8 @@ def resolve_diff(
         "source": source,
         "base_selection_rule": base_selection_rule,
         "warning": warning,
+        "config_warning": config_warning,
+        "note": note,
     }
     if not _ref_exists(repo_root, base_ref):
         return DiffResolution(
@@ -969,14 +1007,15 @@ def _resolve_base_ref(
         if (
             not isinstance(review_base_branch, str)
             or not review_base_branch.strip()
-            or any(ord(char) < 32 or ord(char) == 127 for char in review_base_branch)
+            or contains_control_characters(review_base_branch)
         ):
             return (
                 None,
                 None,
                 None,
                 "invalid_base_config",
-                "Invalid review_base_branch configuration: expected a non-empty branch name.",
+                "Invalid review_base_branch configuration "
+                f"{review_base_branch!r}: expected a non-empty branch/ref without control characters.",
             )
         base_ref = _remote_ref_for_branch(repo_root, review_base_branch.strip())
         return (
@@ -1010,7 +1049,7 @@ def _resolve_base_ref(
         message = (
             "No configured review_integration_branches entry resolves to a remote-tracking "
             "branch; refusing to fall back to a default branch. Check the configured names "
-            f"({'; '.join(configured_warnings)}) Fetch the intended branch ref."
+            "and fetch the intended branch ref."
         )
         warning = _combine_review_warnings(configured_warnings, None)
         return None, None, warning, "unresolved_integration_config", message
@@ -1060,25 +1099,23 @@ def _normalize_integration_branches(
     value: object,
 ) -> tuple[list[str], str | None]:
     """Validate the local config's ordered list without letting bad JSON crash review."""
+    guidance = "expected a JSON array of unique, valid Git branch names"
     if value is None:
         return [], None
     if not isinstance(value, list):
-        return [], (
-            "Invalid review_integration_branches configuration: expected a JSON array "
-            "of non-empty branch names."
-        )
+        return [], f"Invalid review_integration_branches configuration: {guidance}."
     branches: list[str] = []
     for item in value:
         if not isinstance(item, str) or not item or "," in item or not valid_git_branch_name(item):
             return [], (
-                "Invalid review_integration_branches configuration: expected a JSON array "
-                "of unique, valid Git branch names."
+                "Invalid review_integration_branches configuration: offending entry "
+                f"{item!r}; {guidance}."
             )
         branch = item
         if branch in branches:
             return [], (
-                "Invalid review_integration_branches configuration: expected a JSON array "
-                "of unique, valid Git branch names."
+                "Invalid review_integration_branches configuration: duplicate entry "
+                f"{item!r}; {guidance}."
             )
         branches.append(branch)
     return branches, None
@@ -1111,6 +1148,68 @@ def _combine_review_warnings(warnings: list[str], stale_remote_warning: str | No
     if stale_remote_warning:
         combined.append(stale_remote_warning)
     return "; ".join(combined) or None
+
+
+def _configured_integration_warning(repo_root: Path, value: object) -> str | None:
+    """Reconstruct only unresolved config entries for structured CLI output."""
+    branches, error = _normalize_integration_branches(value)
+    if error:
+        return None
+    warnings: list[str] = []
+    for branch in branches:
+        candidate = _remote_tracking_ref_for_branch(repo_root, branch)
+        if candidate is None or not _ref_exists(repo_root, candidate):
+            warnings.append(
+                f"Configured review_integration_branches entry {branch!r} did not resolve "
+                "to a remote-tracking branch."
+            )
+    return "; ".join(warnings) or None
+
+
+def _remote_state(repo_root: Path) -> tuple[bool, bool]:
+    """Return ``(configured remotes, tracking refs)`` without fetching."""
+    configured = subprocess.run(
+        ["git", "remote"], cwd=str(repo_root), capture_output=True, text=True, check=False
+    )
+    tracking = subprocess.run(
+        ["git", "for-each-ref", "--format=%(refname)", "refs/remotes"],
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return (
+        configured.returncode == 0 and bool(configured.stdout.strip()),
+        tracking.returncode == 0 and bool(tracking.stdout.strip()),
+    )
+
+
+def _no_candidate_base_error(
+    *, configured_remotes_present: bool, remote_tracking_refs_present: bool
+) -> str:
+    prefix = "Could not infer a review base: no safe candidate shares history with the head."
+    return f"{prefix} {_remote_state_base_remedy(configured_remotes_present, remote_tracking_refs_present)}"
+
+
+def _unresolved_integration_base_error(
+    *, configured_remotes_present: bool, remote_tracking_refs_present: bool
+) -> str:
+    prefix = (
+        "No configured review_integration_branches entry resolves to a remote-tracking branch; "
+        "refusing to fall back to a default branch."
+    )
+    return f"{prefix} {_remote_state_base_remedy(configured_remotes_present, remote_tracking_refs_present)}"
+
+
+def _remote_state_base_remedy(
+    configured_remotes_present: bool, remote_tracking_refs_present: bool
+) -> str:
+    """Return base guidance that matches remotes and tracking refs available locally."""
+    if not remote_tracking_refs_present and not configured_remotes_present:
+        return "Pass --base <ref> or set review_base_branch to a local branch."
+    if not remote_tracking_refs_present:
+        return "Fetch the intended branch from a configured remote, then retry."
+    return "Check review_integration_branches and shared history, or pass --base <ref>."
 
 
 def _open_pr_base_branch(repo_root: Path, head_ref: str) -> str | None:

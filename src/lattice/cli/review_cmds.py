@@ -553,9 +553,16 @@ def code_review(
             "UNRESOLVABLE_REVIEW_INTEGRATION_BRANCHES",
             "INVALID_REVIEW_BASE_BRANCH",
         }:
-            resolution_error += (
-                f" To configure base candidates, {_review_base_config_remedy(lattice_dir)}."
-            )
+            should_append_config_remedy = resolution.error_code != "BASE_INFERENCE_NO_CANDIDATES"
+            if resolution.error_code in {
+                "BASE_INFERENCE_NO_CANDIDATES",
+                "UNRESOLVABLE_REVIEW_INTEGRATION_BRANCHES",
+            }:
+                should_append_config_remedy = resolution.remote_tracking_refs_present
+            if should_append_config_remedy:
+                resolution_error += (
+                    f" To configure base candidates, {_review_base_config_remedy(lattice_dir)}."
+                )
         if resolution.warning:
             resolution_error += f" Review warning: {resolution.warning}"
         if not dry_run:
@@ -583,8 +590,10 @@ def code_review(
             f"(selection rule: {resolution.base_selection_rule or 'unknown'})."
         )
 
-    if resolution.warning and not quiet:
-        click.echo(f"Note: {resolution.warning}", err=True)
+    if resolution.config_warning and not quiet:
+        click.echo(f"Warning: {resolution.config_warning}", err=True)
+    if resolution.note and not quiet:
+        click.echo(f"Note: {resolution.note}", err=True)
 
     diff_content = resolution.diff
     range_desc = resolution.range_desc

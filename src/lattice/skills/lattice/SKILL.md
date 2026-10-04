@@ -57,7 +57,12 @@ lattice status <task> review --no-auto-review --actor agent:<id>
 ```bash
 lattice complete <task_id> --review "What was done. Key decisions. Test results. What remains." --actor agent:claude-cli
 lattice complete <task_id> --review-file review.md --actor agent:claude-cli   # multi-paragraph review
+lattice complete <task_id> --review-file review.md --via https://git.example.com/org/repo/pull/42 --actor agent:claude-cli
 ```
+
+Use `--via` to record the primary task ID (the ticket carrying this bundled work), an ASCII `#N` pull request number, or a printable ASCII HTTP(S) pull request URL. It adds a canonical task or pull-request object to the final completion event; it does not add a task relationship or infer a branch. It only permits the initial move to `review` from a nonterminal status whose workflow has no direct edge. The normal review evidence and completion policies remain required.
+
+If `require_reachable_review_commit` is enabled, `--via` does not supply reachability. Link the completed task's own branch with `lattice branch-link <task> <primary-branch>`, and run `complete` from a checkout whose `HEAD` is an ancestor of that still-existing branch. The link is necessary but not sufficient; finish before deleting the branch. A bundled task's branch is never borrowed.
 
 The `--review` text is your breadcrumb for every future agent and human who reads this task. Be specific: files changed, approach taken, edge cases considered, anything left undone.
 

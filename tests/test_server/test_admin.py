@@ -140,6 +140,10 @@ def test_project_config_refuses_before_writing(root: Path) -> None:
         {"task_types": []},
         {"task_types": ["bug", "chore"]},
         {"review_base_branch": "  "},
+        {"review_base_branch": "v2\tmain"},
+        {"review_base_branch": "v2\x01main"},
+        {"review_base_branch": "v2\x7fmain"},
+        {"review_base_branch": "v2\x85main"},
         {"review_base_branch": True},
         {"review_integration_branches": ""},
         {"review_integration_branches": "v2,,release/next"},
@@ -159,6 +163,7 @@ def test_project_config_refuses_before_writing(root: Path) -> None:
         {"review_integration_branches": "v2/../main"},
         {"review_integration_branches": "v2\tmain"},
         {"review_integration_branches": "v2\x01main"},
+        {"review_integration_branches": ["HEAD"]},
         {"review_integration_branches": "x" * 5000},
         {"review_integration_branches": '["v2"]'},
         {"review_integration_branches": ["v2", ""]},
@@ -218,6 +223,7 @@ def test_project_config_help_lists_review_integration_branches(root: Path) -> No
     assert "review_integration_branches" in result.output
     assert "review_base_branch" in result.output
     assert "review_max_diff_lines" in result.output
+    assert "control characters are refused" in result.output
 
 
 @pytest.mark.parametrize(
@@ -314,6 +320,18 @@ def test_project_config_sets_review_base_and_numeric_budgets(root: Path) -> None
     assert config["review_timeout_seconds"] == 720
     assert config["review_max_diff_lines"] == 5000
     assert config["review_max_diff_chars"] == 120000
+
+
+def test_project_config_keeps_accepting_review_base_commit_sha(root: Path) -> None:
+    admin.create_project(root, "p")
+    sha = "a" * 40
+
+    result = admin.set_project_config(root, "p", {"review_base_branch": sha})
+
+    config_path = root / "projects" / "p" / ".lattice" / "config.json"
+    config = json.loads(config_path.read_text())
+    assert result["set"]["review_base_branch"] == sha
+    assert config["review_base_branch"] == sha
 
 
 def test_project_config_merges_dotted_issue_toggle_offline(root: Path) -> None:

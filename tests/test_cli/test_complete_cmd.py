@@ -136,6 +136,74 @@ class TestCompleteBasic:
         assert r.exit_code == 0
         assert r.output.strip() == "ok"
 
+    def test_via_complete_names_bundle_target_and_actual_path(
+        self, invoke, initialized_root
+    ) -> None:
+        primary = json.loads(invoke("create", "Primary", "--actor", _ACTOR, "--json").output)[
+            "data"
+        ]
+        bundled = json.loads(invoke("create", "Bundled", "--actor", _ACTOR, "--json").output)[
+            "data"
+        ]
+        target_label = primary.get("short_id") or primary["id"]
+
+        result = invoke(
+            "complete",
+            bundled["id"],
+            "--review",
+            "Reviewed in the primary PR.",
+            "--via",
+            primary["id"],
+            "--reason",
+            "bundle provenance",
+            "--actor",
+            _ACTOR,
+        )
+
+        assert result.exit_code == 0, result.output
+        assert f"via {target_label}" in result.output
+        assert "backlog -> review -> done" in result.output
+        events = [
+            json.loads(line)
+            for line in (initialized_root / LATTICE_DIR / "events" / f"{bundled['id']}.jsonl")
+            .read_text()
+            .splitlines()
+        ]
+        emitted = events[-4:]
+        assert emitted[1]["data"]["force"] is True
+        assert target_label in emitted[1]["data"]["reason"]
+        assert emitted[1]["provenance"]["reason"] == "bundle provenance"
+        assert emitted[-1]["data"]["via"] == {
+            "kind": "task",
+            "id": primary["id"],
+            "short_id": primary.get("short_id"),
+        }
+
+    def test_via_syntax_is_checked_before_board_access(self, tmp_path: Path) -> None:
+        from click.testing import CliRunner
+
+        from lattice.cli.main import cli
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "complete",
+                "task_01JBBBBBBBBBBBBBBBBBBBBBBB",
+                "--review",
+                "Reviewed.",
+                "--via",
+                "https://user@example.com/PR/1",
+            ],
+            env={"LATTICE_ROOT": str(tmp_path / "missing-board")},
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code != 0
+        assert "--via" in result.output
+        assert "<task ID>" in result.output
+        assert "#<N>" in result.output
+        assert "http(s)://<host>/" in result.output
+
 
 class TestCompleteEvents:
     """Verify the event stream produced by lattice complete."""
@@ -472,3 +540,57 @@ class TestReachableReviewCommitCommandBoundaries:
             encoding="utf-8"
         )
         assert payload == f"Lattice-Reviewed-Commit: {head}\n\ngood"
+
+    def test_via_does_not_borrow_primary_branch_for_reachability(
+        self, invoke, initialized_root, caller_repo
+    ) -> None:
+        task_id = json.loads(invoke("create", "Bundled", "--actor", _ACTOR, "--json").output)[
+            "data"
+        ]["id"]
+        primary_id = json.loads(invoke("create", "Primary", "--actor", _ACTOR, "--json").output)[
+            "data"
+        ]["id"]
+        config_path = initialized_root / LATTICE_DIR / "config.json"
+        config = json.loads(config_path.read_text())
+        config["workflow"]["completion_policies"]["done"] = {
+            "require_reachable_review_commit": True
+        }
+        config_path.write_text(json.dumps(config, sort_keys=True, indent=2) + "\n")
+
+        subprocess.run(["git", "branch", "primary"], cwd=caller_repo, check=True)
+        (caller_repo / "later.txt").write_text("not on primary\n", encoding="utf-8")
+        subprocess.run(["git", "add", "later.txt"], cwd=caller_repo, check=True)
+        subprocess.run(
+            ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "later"],
+            cwd=caller_repo,
+            check=True,
+        )
+        assert invoke("branch-link", task_id, "primary", "--actor", _ACTOR).exit_code == 0
+
+        event_path = initialized_root / LATTICE_DIR / "events" / f"{task_id}.jsonl"
+        before_events = event_path.read_bytes()
+        before_payloads = set((initialized_root / LATTICE_DIR / "artifacts" / "payload").glob("*"))
+        before_meta = set((initialized_root / LATTICE_DIR / "artifacts" / "meta").glob("*"))
+
+        result = invoke(
+            "complete",
+            task_id,
+            "--review",
+            "Not reachable from the primary branch.",
+            "--via",
+            primary_id,
+            "--actor",
+            _ACTOR,
+            "--json",
+        )
+
+        assert result.exit_code != 0
+        assert json.loads(result.output)["error"]["code"] == "COMPLETION_BLOCKED"
+        assert event_path.read_bytes() == before_events
+        assert (
+            set((initialized_root / LATTICE_DIR / "artifacts" / "payload").glob("*"))
+            == before_payloads
+        )
+        assert (
+            set((initialized_root / LATTICE_DIR / "artifacts" / "meta").glob("*")) == before_meta
+        )

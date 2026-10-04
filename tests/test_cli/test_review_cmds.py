@@ -30,6 +30,10 @@ def _resolution(
     error: str | None = None,
     error_code: str | None = None,
     warning: str | None = None,
+    config_warning: str | None = None,
+    note: str | None = None,
+    remote_tracking_refs_present: bool = False,
+    configured_remotes_present: bool = False,
     base_ref: str = "origin/main",
     base_selection_rule: str = "inferred_nearest_merge_base",
     head_ref: str = "feat/branch",
@@ -51,6 +55,10 @@ def _resolution(
         source="linked_branch",
         base_selection_rule=base_selection_rule,
         warning=warning,
+        config_warning=config_warning,
+        note=note,
+        remote_tracking_refs_present=remote_tracking_refs_present,
+        configured_remotes_present=configured_remotes_present,
     )
 
 
@@ -785,7 +793,7 @@ class TestCodeReviewTriple:
         with (
             patch(
                 "lattice.cli.review_cmds.resolve_diff",
-                return_value=_resolution(warning=warning),
+                return_value=_resolution(warning=warning, config_warning=warning),
             ),
             patch(
                 "lattice.cli.review_cmds.run_triple_review",
@@ -1589,7 +1597,8 @@ class TestFailedReviewIsVisible:
             patch(
                 "lattice.cli.review_cmds.resolve_diff",
                 return_value=_resolution(
-                    warning="Configured review_integration_branches entry 'v3' did not resolve."
+                    warning="Configured review_integration_branches entry 'v3' did not resolve.",
+                    config_warning="Configured review_integration_branches entry 'v3' did not resolve.",
                 ),
             ),
             patch(
@@ -1625,11 +1634,13 @@ class TestFailedReviewIsVisible:
         resolution = _resolution(
             success=False,
             error=(
-                "No configured review_integration_branches entry resolves to a remote ref; "
-                "refusing to fall back to main."
+                "No configured review_integration_branches entry resolves to a remote-tracking "
+                "branch; refusing to fall back to a default branch. Pass --base <ref> or set "
+                "review_base_branch to a local branch."
             ),
             error_code="UNRESOLVABLE_REVIEW_INTEGRATION_BRANCHES",
             warning=warning,
+            config_warning=warning,
         )
 
         with patch("lattice.cli.review_cmds.resolve_diff", return_value=resolution):
@@ -1641,8 +1652,196 @@ class TestFailedReviewIsVisible:
             )
 
         assert result.exit_code != 0
-        assert "v3" in result.output
-        assert "refusing to fall back to main" in result.output
+        assert result.output.count("v3") == 1
+        assert "refusing to fall back to a default branch" in result.output
+        assert result.output.rstrip().endswith(".")
+
+    @pytest.mark.parametrize(
+        ("configured_remotes", "tracking_refs", "core_remedy", "cli_config_remedy"),
+        [
+            (
+                False,
+                False,
+                "Pass --base <ref> or set review_base_branch to a local branch",
+                False,
+            ),
+            (
+                True,
+                False,
+                "Fetch the intended branch from a configured remote",
+                False,
+            ),
+            (
+                False,
+                True,
+                "Check review_integration_branches and shared history",
+                True,
+            ),
+        ],
+    )
+    def test_unresolved_integration_cli_remedy_matches_remote_state(
+        self, tmp_path, configured_remotes, tracking_refs, core_remedy, cli_config_remedy
+    ):
+        root = _make_board(tmp_path)
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+        warning = "Configured review_integration_branches entry 'v3' did not resolve."
+        resolution = _resolution(
+            success=False,
+            error=(
+                "No configured review_integration_branches entry resolves to a remote-tracking "
+                f"branch; refusing to fall back to a default branch. {core_remedy}."
+            ),
+            error_code="UNRESOLVABLE_REVIEW_INTEGRATION_BRANCHES",
+            warning=warning,
+            config_warning=warning,
+            configured_remotes_present=configured_remotes,
+            remote_tracking_refs_present=tracking_refs,
+        )
+
+        with patch("lattice.cli.review_cmds.resolve_diff", return_value=resolution):
+            result = runner.invoke(
+                cli,
+                ["code-review", task_id, "--mode", "single", "--dry-run"],
+                env={"LATTICE_ROOT": str(root)},
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code != 0
+        assert core_remedy in result.output
+        assert ("To configure base candidates" in result.output) is cli_config_remedy
+
+    def test_unresolved_integration_entry_is_once_in_json_and_failure_comment(self, tmp_path):
+        root = _make_board(tmp_path)
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+        warning = "Configured review_integration_branches entry 'v3' did not resolve."
+        resolution = _resolution(
+            success=False,
+            error=(
+                "No configured review_integration_branches entry resolves to a remote-tracking "
+                "branch; refusing to fall back to a default branch. Pass --base <ref> or set "
+                "review_base_branch to a local branch."
+            ),
+            error_code="UNRESOLVABLE_REVIEW_INTEGRATION_BRANCHES",
+            warning=warning,
+            config_warning=warning,
+        )
+
+        with patch("lattice.cli.review_cmds.resolve_diff", return_value=resolution):
+            result = runner.invoke(
+                cli,
+                ["code-review", task_id, "--mode", "single", "--actor", "agent:test", "--json"],
+                env={"LATTICE_ROOT": str(root)},
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code != 0
+        message = json.loads(result.stdout)["error"]["message"]
+        assert message.count("'v3'") == 1
+        failure_comments = [
+            body for body in _comment_bodies(root, task_id) if "Automated review failed" in body
+        ]
+        assert len(failure_comments) == 1
+        assert failure_comments[0].count("'v3'") == 1
+
+    @pytest.mark.parametrize(
+        ("configured_remotes", "tracking_refs", "core_remedy", "cli_config_remedy"),
+        [
+            (False, False, "review_base_branch to a local branch", False),
+            (True, False, "Fetch the intended branch from a configured remote", False),
+            (False, True, "Check review_integration_branches and shared history", True),
+        ],
+    )
+    def test_no_candidate_cli_remedy_matches_available_remote_state(
+        self, tmp_path, configured_remotes, tracking_refs, core_remedy, cli_config_remedy
+    ):
+        root = _make_board(tmp_path)
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+        resolution = _resolution(
+            success=False,
+            error=f"Could not infer a review base: no safe candidate shares history with the head. {core_remedy}.",
+            error_code="BASE_INFERENCE_NO_CANDIDATES",
+            configured_remotes_present=configured_remotes,
+            remote_tracking_refs_present=tracking_refs,
+        )
+
+        with patch("lattice.cli.review_cmds.resolve_diff", return_value=resolution):
+            result = runner.invoke(
+                cli,
+                ["code-review", task_id, "--mode", "single", "--dry-run"],
+                env={"LATTICE_ROOT": str(root)},
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code != 0
+        assert core_remedy in result.output
+        assert ("To configure base candidates" in result.output) is cli_config_remedy
+
+    @pytest.mark.parametrize(
+        ("config_warning", "note"),
+        [
+            ("Configured review entry 'v3' did not resolve.", None),
+            (None, "Selected review base origin/v2 is behind local v2."),
+            (
+                "Configured review entry 'v3' did not resolve.",
+                "Selected review base origin/v2 is behind local v2.",
+            ),
+        ],
+    )
+    def test_config_warning_and_stale_remote_note_have_separate_cli_labels(
+        self, tmp_path, config_warning, note
+    ):
+        root = _make_board(tmp_path)
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+        combined = "; ".join(value for value in (config_warning, note) if value)
+        resolution = _resolution(
+            warning=combined,
+            config_warning=config_warning,
+            note=note,
+        )
+
+        with patch("lattice.cli.review_cmds.resolve_diff", return_value=resolution):
+            result = runner.invoke(
+                cli,
+                ["code-review", task_id, "--mode", "single", "--dry-run", "--actor", "agent:test"],
+                env={"LATTICE_ROOT": str(root)},
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0, result.output
+        if config_warning:
+            assert f"Warning: {config_warning}" in result.output
+            assert f"Note: {config_warning}" not in result.output
+        if note:
+            assert f"Note: {note}" in result.output
+            assert f"\nWarning: {note}" not in result.output
+
+    def test_config_and_stale_warning_contract_remains_combined_for_json(self, tmp_path):
+        root = _make_board(tmp_path)
+        runner = CliRunner()
+        task_id = _create_task(runner, root)
+        combined = (
+            "Configured review entry 'v3' did not resolve.; Selected base origin/v2 is stale."
+        )
+        resolution = _resolution(
+            warning=combined,
+            config_warning="Configured review entry 'v3' did not resolve.",
+            note="Selected base origin/v2 is stale.",
+        )
+
+        with patch("lattice.cli.review_cmds.resolve_diff", return_value=resolution):
+            result = runner.invoke(
+                cli,
+                ["code-review", task_id, "--mode", "single", "--dry-run", "--json"],
+                env={"LATTICE_ROOT": str(root)},
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["data"]["warning"] == combined
 
     def test_failure_json_mode_is_an_error_envelope(self, tmp_path):
         root = _make_board(tmp_path, {"review_mode": "single"})

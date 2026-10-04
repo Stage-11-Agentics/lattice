@@ -23,6 +23,7 @@ from typing import Any
 from filelock import FileLock
 
 from lattice.core.config import (
+    contains_control_characters,
     merge_config_changes,
     serialize_config,
     valid_git_branch_name,
@@ -577,11 +578,12 @@ def validate_config_changes(raw: Any) -> dict[str, Any]:
             if (
                 not isinstance(value, str)
                 or not value.strip()
-                or any(char in value for char in "\0\r\n")
+                or contains_control_characters(value)
             ):
                 raise OpError(
                     "VALIDATION_ERROR",
-                    f"Invalid value {value!r} for {key}; provide a non-empty branch name.",
+                    f"Invalid value {value!r} for {key}; provide a non-empty branch/ref "
+                    "without control characters.",
                     {"key": key},
                 )
             typed[key] = value.strip()

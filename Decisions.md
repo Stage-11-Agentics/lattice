@@ -1452,3 +1452,24 @@ Additionally, `lattice advance N` processed multiple tasks in a single context w
   of `title`, but refuses a request that supplies both. New events, snapshots
   and views store `title` and `description`; the alias does not add a stored
   `text` field.
+
+## 2026-10-04: Bundled completion uses `--via` (LAT-381, LAT-382)
+
+- **Decision:** `lattice complete --via <primary task ID|#N|HTTP(S) URL>`
+  records a canonical primary-task or pull-request object on the final completion event. The
+  optional parameter is omitted when unset; using it against an older hosted
+  server returns `UNSUPPORTED_PARAM`, with no `min_client_version` bump.
+- **Transition scope:** `--via` may bypass only the initial current-status to
+  `review` graph edge, and only for a nonterminal status. An off-graph move is
+  marked `force: true` and carries a generated `data.reason` naming the
+  canonical bundle target. The normal review comment, artifact, final
+  `review -> done` transition, and all configured completion policies remain
+  required. Caller provenance is preserved.
+- **Truthful records:** the event log records the actual initial status and
+  never invents an `in_progress` step. `--via` does not create a relationship,
+  auto-link a branch, or borrow branch/review reachability from the bundled
+  task.
+- **Reachability policy:** when `require_reachable_review_commit` is enabled,
+  the completed task's own branch must be linked and the caller's `HEAD` must
+  be an ancestor of that still-existing branch at completion time. Branch
+  linking alone is not sufficient; complete before the branch is deleted.
