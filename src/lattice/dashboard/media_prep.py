@@ -93,12 +93,15 @@ def _prepare_video(
         src = Path(tmp) / f"video{_suffix(name)}"
         src.write_bytes(content)
         prepared = prepare_video(src, content, content_type, sha256)
-    if ("no_frames", "ffmpeg_not_found") in prepared.notes:
-        if refuse_video_without_ffmpeg:
-            raise OpError(
-                "MEDIA_STAGE_UNAVAILABLE",
-                "This server cannot remove location data from videos yet; ask the board admin to install ffmpeg",
-            )
+    ffmpeg_missing = ("no_frames", "ffmpeg_not_found") in prepared.notes
+    if refuse_video_without_ffmpeg and prepared.converted_from is None:
+        message = (
+            "This server cannot remove location data from videos yet; ask the board admin to install ffmpeg"
+            if ffmpeg_missing
+            else "This server could not remove location data from this video; ask the board admin to check its ffmpeg"
+        )
+        raise OpError("MEDIA_STAGE_UNAVAILABLE", message)
+    if ffmpeg_missing:
         return item
     out: dict = {**_unknown_keys(item), "payload": encode_payload(name, prepared.content)}
     if prepared.video:

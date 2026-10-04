@@ -115,6 +115,17 @@ def test_assets_and_api_calls_use_the_base_path() -> None:
     )
 
 
+def test_issue_view_read_only_comes_from_bound_checkout_config() -> None:
+    html = INDEX_HTML.read_text()
+    assert 'api("/api/config")' in html
+    assert "config = results[0];" in html
+    assert (
+        "var issueReadOnly = !!(config && config.dashboard_mode && config.dashboard_mode.bound_checkout);"
+        in html
+    )
+    assert re.search(r"readOnly\s*:\s*issueReadOnly\b", html)
+
+
 def test_status_and_legend_markup_goes_through_the_tested_helpers() -> None:
     """Where workflow statuses and display names reach markup (review round 1)."""
     html = INDEX_HTML.read_text()

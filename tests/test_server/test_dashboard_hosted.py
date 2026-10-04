@@ -319,6 +319,35 @@ class TestPage:
             "This server cannot remove location data from videos yet; ask the board admin to install ffmpeg"
         )
 
+    def test_hosted_video_refuses_when_ffmpeg_cannot_strip_metadata(
+        self, server: ServerHandle, root: Path, tmp_path: Path, monkeypatch
+    ) -> None:  # noqa: ANN001
+        admin.set_project_config(root, "alpha", {"issues.enabled": True})
+        web = _logged_in(server, mint(root, projects=["alpha"]))
+        source = mp4()
+        calls = use_stdlib_fake_ffmpeg(
+            monkeypatch,
+            tmp_path / "fake-ffmpeg",
+            source=source,
+            frame=jpeg(),
+            fail_transcode=True,
+        )
+        digest = hashlib.sha256(source).hexdigest()
+        response = web.request(
+            "PUT",
+            f"/p/alpha/issues/media/staging/{digest}?filename=geo.mp4",
+            body=source,
+            headers={"Content-Type": "application/octet-stream", "Origin": web.origin},
+        )
+
+        assert response.status == 400, response.text
+        assert response.json["error"]["code"] == "MEDIA_STAGE_UNAVAILABLE"
+        assert response.json["error"]["message"] == (
+            "This server could not remove location data from this video; ask the board admin to check its ffmpeg"
+        )
+        commands = [json.loads(line) for line in calls.read_text(encoding="utf-8").splitlines()]
+        assert any(argv and argv[-1] != "-" for argv in commands)
+
     def test_issue_media_staging_rejects_foreign_origin_before_staging(
         self, server: ServerHandle, root: Path
     ) -> None:

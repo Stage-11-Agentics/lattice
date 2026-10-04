@@ -169,7 +169,9 @@ def use_fake_ffmpeg(monkeypatch, directory: Path, **probe) -> Path:  # noqa: ANN
     return ffmpeg
 
 
-def use_stdlib_fake_ffmpeg(monkeypatch, directory: Path, *, source: bytes, frame: bytes) -> Path:  # noqa: ANN001
+def use_stdlib_fake_ffmpeg(
+    monkeypatch, directory: Path, *, source: bytes, frame: bytes, fail_transcode: bool = False
+) -> Path:  # noqa: ANN001
     """Install Python-stdlib ffmpeg/ffprobe shims and return the argv log path."""
     directory.mkdir(parents=True, exist_ok=True)
     calls = directory / "ffmpeg-argv.jsonl"
@@ -183,6 +185,7 @@ def use_stdlib_fake_ffmpeg(monkeypatch, directory: Path, *, source: bytes, frame
         "if args[-1] == '-':\n"
         f"    sys.stdout.buffer.write(base64.b64decode({base64.b64encode(frame).decode()!r}))\n"
         "else:\n"
+        f"    if {fail_transcode!r}: sys.exit(1)\n"
         f"    pathlib.Path(args[-1]).write_bytes(base64.b64decode({base64.b64encode(source).decode()!r}))\n",
         encoding="utf-8",
     )
