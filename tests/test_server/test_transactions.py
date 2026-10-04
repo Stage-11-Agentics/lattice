@@ -371,9 +371,15 @@ def test_every_boundary_leaves_the_operation_wholly_present_or_absent(
     boundaries = counter.occurrences()
     if scenario.name in ("task.status", "task.unarchive"):
         # These setups already have a receipt file for day one. The next day's
-        # receipt file adds a directory fsync before journal commit and shifts
-        # the meaning of a later dir_fsync occurrence.
+        # receipt file adds a directory fsync before journal commit. Recount
+        # after that deterministic rollover so every boundary is still faulted.
         receipt_date[0] = "2026-10-03"
+        root, project, build = _prepared(fresh, projects, scenario)
+        wire_publication(project)
+        with monkeypatch.context() as m:
+            counter = install(m, Injector())
+            run(project, build())
+        boundaries = counter.occurrences()
     points = {p for p, _ in boundaries}
     for required in (
         "undo.write",
@@ -397,9 +403,7 @@ def test_every_boundary_leaves_the_operation_wholly_present_or_absent(
         assert required in points, (scenario.name, required)
     if scenario.name in ("task.archive", "task.unarchive"):
         assert "placement.source_event_removed" in points
-    commit_at = boundaries.index(("journal.fsync", 1))
-
-    for position, (point, occurrence) in enumerate(boundaries):
+    for point, occurrence in boundaries:
         case = f"{scenario.name} failing at {point} #{occurrence}"
         root, project, build = _prepared(fresh, projects, scenario)
         closed = wire_publication(project)
@@ -415,7 +419,17 @@ def test_every_boundary_leaves_the_operation_wholly_present_or_absent(
                 error = exc
         assert injector.fired, case
 
-        if position == commit_at or point.startswith("finish.memory"):
+        # A later pass can have a different boundary order (for example, the
+        # first receipt for a new UTC day adds a dir_fsync). Classify this fault
+        # from its own trace, not its index in the earlier counting pass.
+        injected_boundaries = injector.occurrences()
+        fault_position = injected_boundaries.index((point, occurrence))
+        try:
+            commit_position = injected_boundaries.index(("journal.fsync", 1))
+        except ValueError:
+            commit_position = None
+
+        if (point, occurrence) == ("journal.fsync", 1) or point.startswith("finish.memory"):
             # Durability unknown, or committed but memory could not be finalized
             # (H-10a: never left half-updated): quarantine, nothing more is written.
             assert isinstance(error, OpError) and error.code == "BOARD_UNAVAILABLE", case
@@ -432,7 +446,7 @@ def test_every_boundary_leaves_the_operation_wholly_present_or_absent(
         assert project.state == "loaded", case
         assert undo_logs(root) == [], case
         after = state(root)
-        if position < commit_at:
+        if commit_position is None or fault_position < commit_position:
             assert after == before, case  # wholly absent
             assert not isinstance(error, OpError) or error.code != "BOARD_UNAVAILABLE", case
         else:
