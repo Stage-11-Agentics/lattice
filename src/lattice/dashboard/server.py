@@ -109,7 +109,10 @@ class _RestartAwareHTTPServer(ThreadingHTTPServer):
 
     def process_request(self, request: socket.socket, client_address: Any) -> None:
         with self._restart_condition:
-            self._request_states[request] = "unparsed"
+            # Account for the accepted socket before its worker gets scheduled.
+            # The handler keeps it in this state through request-line parsing and
+            # classifies it as a read, admitted write, or refused write afterward.
+            self._request_states[request] = "parsing"
             self._restart_condition.notify_all()
         try:
             super().process_request(request, client_address)
@@ -128,7 +131,7 @@ class _RestartAwareHTTPServer(ThreadingHTTPServer):
                 self._restart_condition.notify_all()
 
     def begin_parse(self, request: socket.socket) -> bool:
-        """Keep drain from closing a socket while its request is being classified."""
+        """Keep drain from closing a socket before its request line is read."""
         with self._restart_condition:
             if self._request_states.get(request) == "closing":
                 return False
@@ -179,9 +182,8 @@ class _RestartAwareHTTPServer(ThreadingHTTPServer):
             pass
 
     def begin_write_drain(self, timeout: float = WRITE_DRAIN_TIMEOUT) -> tuple[bool, int]:
-        """Stop admitting writes, close nonwrites, and wait a bounded time."""
+        """Stop admitting writes, close reads, and await parses/writes boundedly."""
         deadline = time.monotonic() + timeout
-        header_deadline = min(deadline, time.monotonic() + _HEADER_READ_TIMEOUT)
         with self._restart_condition:
             self._draining = True
             self._restart_condition.notify_all()
@@ -194,34 +196,17 @@ class _RestartAwareHTTPServer(ThreadingHTTPServer):
         with self._restart_condition:
             while True:
                 now = time.monotonic()
-                unparsed = [
-                    request
-                    for request, state in self._request_states.items()
-                    if state == "unparsed"
-                ]
                 parsing = sum(state == "parsing" for state in self._request_states.values())
                 pending = sum(
                     state in {"write", "refused"} for state in self._request_states.values()
                 )
-                if not unparsed and parsing == 0 and pending == 0:
+                if parsing == 0 and pending == 0:
                     return True, 0
-                if unparsed and now >= header_deadline:
-                    for request in unparsed:
-                        if self._request_states.get(request) == "unparsed":
-                            self._request_states[request] = "closing"
-                    to_close = unparsed
-                else:
-                    to_close = []
                 if (pending or parsing) and now >= deadline:
                     self._draining = False
                     self._restart_condition.notify_all()
                     return False, pending + parsing
-                if to_close:
-                    for request in to_close:
-                        self._close_connection(request)
-                    continue
-                wake_at = deadline if pending or parsing else header_deadline
-                self._restart_condition.wait(max(0, wake_at - now))
+                self._restart_condition.wait(max(0, deadline - now))
 
 
 _STATIC_TYPES = {
@@ -346,6 +331,10 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
         def handle_one_request(self) -> None:
             self._restart_write_admitted = False
             self._restart_write_refused = False
+            if not self.server.begin_parse(self.connection):
+                self.close_connection = True
+                return
+            self.connection.settimeout(_HEADER_READ_TIMEOUT)
             try:
                 super().handle_one_request()
             finally:
@@ -353,9 +342,6 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
                     self.server.finish_write_response(self.connection)
 
         def parse_request(self) -> bool:
-            if not self.server.begin_parse(self.connection):
-                self.close_connection = True
-                return False
             parsed = super().parse_request()
             if not parsed:
                 return False

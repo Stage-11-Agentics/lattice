@@ -2138,6 +2138,98 @@ def test_write_drain_waits_for_response_and_refuses_later_write(
         worker.join(timeout=2)
 
 
+def test_write_waiting_at_request_line_survives_drain_deadline(populated_lattice_dir, monkeypatch):
+    import http.client
+    import threading
+
+    from lattice.dashboard import api
+    from lattice.dashboard.server import _HEADER_READ_TIMEOUT
+
+    lattice_dir, _ids = populated_lattice_dir
+    request_line_entered = threading.Event()
+    allow_request_line = threading.Event()
+    header_deadline_elapsed = threading.Event()
+    post_called = threading.Event()
+    drain_result = []
+
+    def should_not_run(handler, _path, _body):  # noqa: ANN001
+        post_called.set()
+        handler._send(api.ok({"saved": True}))
+
+    server, worker = _start_restart_test_server(lattice_dir, monkeypatch, should_not_run)
+    original_begin_parse = server.begin_parse
+
+    def paused_before_request_line(request):  # noqa: ANN001
+        parsing = original_begin_parse(request)
+        request_line_entered.set()
+        assert allow_request_line.wait(5)
+        return parsing
+
+    monkeypatch.setattr(server, "begin_parse", paused_before_request_line)
+    port = server.server_address[1]
+    host = f"127.0.0.1:{port}"
+    client = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    body = b'{"value":"request-line-boundary"}'
+    request = (
+        f"POST /api/test HTTP/1.1\r\n"
+        f"Host: {host}\r\n"
+        f"Origin: http://{host}\r\n"
+        "Content-Type: application/json\r\n"
+        f"Content-Length: {len(body)}\r\n"
+        "Connection: close\r\n\r\n"
+    ).encode() + body
+    drain = threading.Thread(
+        target=lambda: drain_result.append(server.begin_write_drain(timeout=3))
+    )
+    deadline_timer = threading.Timer(_HEADER_READ_TIMEOUT + 0.15, header_deadline_elapsed.set)
+    timer_started = False
+    try:
+        client.connect()
+        assert request_line_entered.wait(2), (
+            "the handler must mark the accepted socket before reading its request line"
+        )
+        drain.start()
+        with server._restart_condition:
+            assert server._restart_condition.wait_for(lambda: server._draining, timeout=2)
+        deadline_timer.start()
+        timer_started = True
+        assert header_deadline_elapsed.wait(3), "the test must cross the stalled-header deadline"
+        client.request(
+            "POST",
+            "/api/test",
+            body=body,
+            headers={
+                "Origin": f"http://{host}",
+                "Content-Type": "application/json",
+                "Connection": "close",
+            },
+        )
+        allow_request_line.set()
+        response = client.getresponse()
+        response_body = response.read()
+        assert response.status == 503
+        assert b"RESTARTING" in response_body
+        assert not post_called.is_set()
+        drain.join(timeout=3)
+        assert drain_result == [(True, 0)]
+    finally:
+        allow_request_line.set()
+        if not request_line_entered.is_set() and client.sock is not None:
+            try:
+                client.sock.sendall(request)
+            except OSError:
+                pass
+        client.close()
+        if timer_started:
+            deadline_timer.cancel()
+            deadline_timer.join(timeout=1)
+        if drain.is_alive():
+            drain.join(timeout=2)
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=2)
+
+
 def test_write_parsed_at_drain_edge_gets_explicit_refusal(populated_lattice_dir, monkeypatch):
     import threading
 
