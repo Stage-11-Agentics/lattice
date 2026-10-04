@@ -57,6 +57,7 @@ from lattice.ops.base import registered_operations as _registered_operations
 from lattice.server import admin, dashboard, web
 from lattice.server.dashboard import ReadMemos
 from lattice.server.config import ServerConfig
+from lattice.server.filing_guard import FilingTokenGuard, require_filing_route
 from lattice.server.journal import fingerprint
 from lattice.server.limits import DiskFloor, TokenLimits, check_event_data_cap
 from lattice.server.log import ServerLog, exception_fields
@@ -91,7 +92,7 @@ from lattice.server.syncstate import (
     reset_body,
 )
 from lattice.server.sessions import SessionStore
-from lattice.server.tokens import TokenRecord, TokenStore
+from lattice.server.tokens import TOKEN_STATE_KEY, TokenRecord, TokenStore
 from lattice.server.web import (
     CLEAR_COOKIE,
     WebAssets,
@@ -367,7 +368,15 @@ def check_issue_data_version(request: Request, project: Project) -> None:
 
 
 def authenticate(request: Request, state: ServerState) -> TokenRecord:
-    token = state.tokens.authenticate(request.headers.get("authorization"))
+    token = request.scope.setdefault("state", {}).get(TOKEN_STATE_KEY)
+    if token is None:
+        token = state.tokens.authenticate(request.headers.get("authorization"))
+    require_filing_route(
+        request.method,
+        request.scope.get("path", ""),
+        token,
+        request.scope.get("raw_path"),
+    )
     request.scope["state"]["log"]["token_id"] = token.id
     return token
 
@@ -387,6 +396,18 @@ async def read_body(request: Request, state: ServerState, token: TokenRecord) ->
     """The body, refused (413) as soon as it passes ``max_body_bytes``; charges the
     token's byte bucket up front from ``Content-Length`` or as the bytes arrive."""
     limit = state.config.limits.max_body_bytes
+    token_byte_limit = token.effective_bytes_per_minute(
+        state.config.limits.token_body_bytes_per_minute,
+        max_issue_media_file_bytes=state.config.limits.max_issue_media_file_bytes,
+    )
+
+    def token_body_too_large() -> OpError:
+        return OpError(
+            "PAYLOAD_TOO_LARGE",
+            f"request body is over this token's {token_byte_limit} byte per-body limit",
+            {"limit_bytes": token_byte_limit, "scope": "token"},
+        )
+
     declared = request.headers.get("content-length")
     too_large = OpError(
         "PAYLOAD_TOO_LARGE", f"request body is over the server's limit of {limit} bytes"
@@ -398,14 +419,26 @@ async def read_body(request: Request, state: ServerState, token: TokenRecord) ->
             raise OpError("VALIDATION_ERROR", "invalid Content-Length") from None
         if length > limit:
             raise too_large
-        state.limits.take_bytes(token.id, length)
+        if length > token_byte_limit:
+            raise token_body_too_large()
+        state.limits.take_bytes(
+            token.id,
+            length,
+            token_byte_limit,
+        )
     received = bytearray()
     async for chunk in request.stream():
         if len(received) + len(chunk) > limit:
             raise too_large  # checked before copying: nothing is buffered past the limit
+        if declared is None and len(received) + len(chunk) > token_byte_limit:
+            raise token_body_too_large()
         received.extend(chunk)
         if declared is None:
-            state.limits.take_bytes(token.id, len(chunk))
+            state.limits.take_bytes(
+                token.id,
+                len(chunk),
+                token_byte_limit,
+            )
     return bytes(received)
 
 
@@ -501,6 +534,21 @@ def _parse_envelope(
                 "client_version": client_version(request),
             },
         ) from None
+    if token.filing_only:
+        source = getattr(params, "source", None)
+        if (
+            op_name != "issue.file"
+            or not isinstance(source, str)
+            or source.strip() != token.source
+        ):
+            raise OpError(
+                "TOKEN_RESTRICTED",
+                "issue.file source does not match this token's bound source",
+                {"source": token.source},
+            )
+        if body.get("actor_name") is not None:
+            raise OpError("TOKEN_RESTRICTED", "filing-only tokens cannot select a board session")
+        params = dataclasses.replace(params, source=token.source)
     check_event_data_cap(op_name, params_json, state.config.limits.max_event_data_bytes)
 
     origin = body.get("origin")
@@ -552,6 +600,7 @@ def _parse_envelope(
         },
         attestations=attestations,
         expect_last_event_id=expect_last,
+        filing_only=token.filing_only,
     )
     fp = fingerprint(op_name, params_json, actor, actor_name, attestations, expect_last)
     write = WriteRequest(
@@ -745,7 +794,9 @@ async def op_request(request: Request, state: ServerState) -> Response:
         )
     state.limits.enter(token.id)
     try:
-        state.limits.take_op(token.id)
+        state.limits.take_op(
+            token.id, token.effective_ops_per_minute(state.config.limits.token_ops_per_minute)
+        )
         raw = await read_body(request, state, token)
         write, body = parse_envelope(request, state, token, op_name, raw)
         state.disk.check()
@@ -1160,12 +1211,28 @@ async def _stage_upload(
             f"media object is over the {state.config.limits.max_issue_media_file_bytes} byte per-file limit.",
             {"limit_bytes": state.config.limits.max_issue_media_file_bytes},
         )
+    token_byte_limit = token.effective_bytes_per_minute(
+        state.config.limits.token_body_bytes_per_minute,
+        max_issue_media_file_bytes=state.config.limits.max_issue_media_file_bytes,
+    )
+    if size > token_byte_limit:
+        raise OpError(
+            "PAYLOAD_TOO_LARGE",
+            f"media object is over this token's {token_byte_limit} byte per-body limit.",
+            {"limit_bytes": token_byte_limit, "scope": "token"},
+        )
     state.limits.enter(token.id)
     upload = None
     finished = False
     try:
-        state.limits.take_op(token.id)
-        state.limits.take_bytes(token.id, size)
+        state.limits.take_op(
+            token.id, token.effective_ops_per_minute(state.config.limits.token_ops_per_minute)
+        )
+        state.limits.take_bytes(
+            token.id,
+            size,
+            token_byte_limit,
+        )
         state.disk.check()
         async with state.registry.admitted(project):
             project.require_loaded()
@@ -1178,7 +1245,14 @@ async def _stage_upload(
             raise OpError(
                 "ISSUES_DISABLED", hosted_issues_disabled_message(existing, project.slug)
             )
-        upload = await in_worker(lambda: project.issue_media.begin_upload(sha256, size))
+        upload = await in_worker(
+            lambda: project.issue_media.begin_upload(
+                sha256,
+                size,
+                token_id=token.id,
+                max_staged_bytes=token.effective_max_staged_bytes(),
+            )
+        )
         while (chunk := await body.next()) is not None:
             if body.received > size:
                 raise OpError("VALIDATION_ERROR", "media upload exceeded Content-Length.")
@@ -1543,4 +1617,4 @@ def create_app(root: Path, *, config: ServerConfig, log: ServerLog | None = None
     ]
     app = Starlette(routes=routes, lifespan=lifespan)
     app.state.lattice = state
-    return HeadersMiddleware(app, state)
+    return HeadersMiddleware(FilingTokenGuard(app, state.tokens), state)

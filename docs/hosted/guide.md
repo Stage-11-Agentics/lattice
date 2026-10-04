@@ -397,6 +397,79 @@ lattice server token ungrant "$SEAT_TOKEN_ID" --project demo
 lattice server token list
 ```
 
+That grant workflow applies to unrestricted tokens. A filing-only token is restricted to exactly one project and `issue.file`; a grant cannot widen its project or operation scope. Revoke it and mint a replacement to change the scope.
+
+### Filing-only issue token
+
+For an external intake service, mint a token for one project and bind it to one source namespace. `--source` is required with `--only issue.file`, and every `issue.file` request from that token must send the same `params.source`:
+
+```bash
+lattice server token create \
+  --user human:intake \
+  --machine intake-worker \
+  --actor agent:intake-worker \
+  --project demo \
+  --only issue.file \
+  --source reporter-links \
+  --json
+```
+
+The token is printed once as `data.token`. Store it in the intake service's secret store. Optional integer overrides are `--ops-per-minute N`, `--bytes-per-minute N`, and `--max-staged-bytes N`; the latter two are byte counts. An unrestricted token with omitted operation or body-byte overrides keeps the server's configured per-token limits; without a staged-byte override it keeps the existing project-quota behavior. A filing-only token defaults to 30 operations per minute, `max(64 MiB, the live per-file media cap)` of request bodies per minute, and 512 MiB of unreferenced staged bytes owned by that token.
+
+This token can use only the exact `POST /v1/projects/demo/ops/issue.file` and `PUT /v1/projects/demo/issues/media/staging/{sha256}` routes. Other methods and routes return 403 `TOKEN_RESTRICTED`, including `GET /v1/projects/demo/ops/{op_id}` (op-status), every read route, and dashboard routes. It cannot create a dashboard session at `/login`; sessions backed by it are also denied. An `issue.file` request must use the token's permitted actor, cannot use `actor_name`, and cannot change the bound source. See the full [HTTP API contract](api.md#filing-only-tokens) for the exact response and route boundary.
+
+Optional `source_ref` makes retries idempotent across distinct operation IDs. It requires a nonempty source. With a reference, Lattice trims surrounding whitespace from `source` and `source_ref`, preserves case, rejects blanks and control characters, and limits `source` to 128 characters and `source_ref` to 256. A longer `source_ref` returns 400 `VALIDATION_ERROR`; it is never truncated. For email, hash unusually long RFC 5322 Message-IDs before using them as `source_ref`. Optional `on_behalf_of` is free-form reporter text, separate from the service actor. A new issue filed by this token is marked `external: true`; a dedupe receipt reports the original issue's marker.
+
+The issue media file cap is the live `limits.max_issue_media_file_bytes` (100 MiB by default). An unset filing-token byte rate is `max(64 MiB, the current per-file cap)`, so one legal upload fits. An explicit `--bytes-per-minute` override for any token must be at least the current per-file cap at mint. If a later server config change makes one body larger than a token's effective byte capacity, it gets a non-retryable 413 `PAYLOAD_TOO_LARGE` with `details.scope: "token"`.
+
+The following example stages one image as raw bytes, files it, then repeats the same `(source, source_ref)` with a fresh operation ID. It uses `jq` to JSON-escape the request and Python's standard library to mint operation IDs:
+
+```bash
+export LATTICE_URL="${LATTICE_URL:-http://127.0.0.1:8740}"
+: "${LATTICE_TOKEN:?Export LATTICE_TOKEN from the intake service secret store first}"
+IMAGE="${IMAGE:-shot.jpg}"
+SHA256="$(shasum -a 256 "$IMAGE" | awk '{print $1}')"
+SIZE="$(wc -c < "$IMAGE" | tr -d '[:space:]')"
+
+curl -sS -X PUT \
+  -H "Authorization: Bearer $LATTICE_TOKEN" \
+  -H 'Content-Type: application/octet-stream' \
+  -H "Content-Length: $SIZE" \
+  --data-binary @"$IMAGE" \
+  "$LATTICE_URL/v1/projects/demo/issues/media/staging/$SHA256"
+
+new_op_id() {
+  python3 - <<'PY'
+import os, time
+alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+value = (int(time.time() * 1000) << 80) | int.from_bytes(os.urandom(10), "big")
+print("op_" + "".join(alphabet[(value >> (5 * i)) & 31] for i in range(25, -1, -1)))
+PY
+}
+
+OP_ID="$(new_op_id)"
+jq -n \
+  --arg op_id "$OP_ID" \
+  --arg filename "$IMAGE" \
+  --arg sha256 "$SHA256" \
+  --argjson size "$SIZE" \
+  '{op_id:$op_id, actor:"agent:intake-worker", params:{title:"Export fails after reconnect", description:"The original report text is untrusted input.", source:"reporter-links", source_ref:"ISS-7K2MQ", on_behalf_of:"Alex Example <alex@example.test>", media:[{payload:{filename:$filename, sha256:$sha256, size:$size, staged:true}}]}}' \
+  | curl -sS -H "Authorization: Bearer $LATTICE_TOKEN" \
+      -H 'Content-Type: application/json' --data-binary @- \
+      "$LATTICE_URL/v1/projects/demo/ops/issue.file"
+
+OP_ID="$(new_op_id)"
+jq -n --arg op_id "$OP_ID" \
+  '{op_id:$op_id, actor:"agent:intake-worker", params:{title:"Export fails after reconnect", source:"reporter-links", source_ref:"ISS-7K2MQ"}}' \
+  | curl -sS -H "Authorization: Bearer $LATTICE_TOKEN" \
+      -H 'Content-Type: application/json' --data-binary @- \
+      "$LATTICE_URL/v1/projects/demo/ops/issue.file"
+```
+
+The first response contains a filing receipt with `deduplicated: false` and `events: []`. The second has the same issue `id`, `short_id`, `filed_at`, `source`, and `source_ref`, with `deduplicated: true`, `idempotent: true`, and `events: []`. It does not need to upload or send media again. A source/ref match can return an issue originally filed by another token. Any retry media the filing token staged stays owned by it and counts against its staged-byte quota until expiry; the dedupe hit neither attaches nor consumes it. Filing-only responses never include issue text, evidence, media details, task links, or closure state; `task`, `resource_id`, and `resource_name` are always null. Full issue views are returned only to unrestricted tokens. A distinct operation still has its ordinary journal entry and receipt, but the source-ref hit creates no second `issue_filed` event.
+
+Because op-status is denied to this token, retry a possibly lost filing with the same bound `source` and `source_ref`. Reuse the same `op_id` for the normal operation-receipt replay while retained, or use a fresh `op_id` and receive the source-ref dedupe receipt. The source-ref pair is the safe recovery key, including after the seven-day operation-receipt window.
+
 **Revoke** a token when a machine is retired or a secret leaks. It stops working on the server's next request, including open streams and dashboard sessions made with it:
 
 ```bash
@@ -911,7 +984,7 @@ The audit history holds no media, and the default import copies every media file
 <!-- guide: skip: run only when restoring a project from its audit history -->
 ```bash
 git clone "$TRIAL/audit-backup.git" "$TRIAL/restore"
-git -C "$TRIAL/restore" checkout <commit>
+git -C "$TRIAL/restore" checkout "<commit>"
 mkdir -p "$TRIAL/restore/.lattice/issues"
 cp -R "<backup>/projects/legacy/.lattice/issues/media" "$TRIAL/restore/.lattice/issues/"
 lattice server project import legacy-restored --from "$TRIAL/restore"

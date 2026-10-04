@@ -34,7 +34,8 @@ from lattice.dashboard.server import STATIC_DIR
 from lattice.server.project import LOADED
 from lattice.server.registry import in_worker
 from lattice.server.sessions import COOKIE_NAME, SESSION_SECONDS, Session, unauthenticated
-from lattice.server.tokens import TokenRecord
+from lattice.server.filing_guard import require_filing_route
+from lattice.server.tokens import TOKEN_STATE_KEY, TokenRecord
 
 if TYPE_CHECKING:
     from lattice.server.app import ServerState
@@ -196,6 +197,17 @@ def session_auth(request: Request, state: ServerState) -> tuple[Session, TokenRe
             secure = request_scheme(request, state) == "https"
             request.scope["state"][CLEAR_COOKIE] = _cookie_header("", secure=secure, max_age=0)
         raise
+    cached = request.scope.setdefault("state", {}).get(TOKEN_STATE_KEY)
+    if cached is not None and cached.id == token.id:
+        token = cached
+    require_filing_route(
+        request.method,
+        request.scope.get("path", ""),
+        token,
+        request.scope.get("raw_path"),
+    )
+    if token.filing_only:
+        raise OpError("TOKEN_RESTRICTED", "filing-only tokens cannot create dashboard sessions")
     request.scope["state"]["log"]["token_id"] = token.id
     return session, token
 
@@ -293,6 +305,8 @@ async def login(request: Request, state: ServerState) -> Response:
         token = state.tokens.authenticate(f"Bearer {submitted}")
     except OpError:
         return _html(login_form(next_path, "That token is not valid."), status=401)
+    if token.filing_only:
+        raise OpError("TOKEN_RESTRICTED", "filing-only tokens cannot create dashboard sessions")
     request.scope["state"]["log"]["token_id"] = token.id
     cookie = await in_worker(lambda: state.sessions.create(token))
     state.log.info("login", token_id=token.id)

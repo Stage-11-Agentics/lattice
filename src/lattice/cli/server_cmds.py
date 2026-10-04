@@ -525,9 +525,17 @@ def _describe_token(record: dict) -> str:
     projects = ", ".join(record["projects"]) or "(none)"
     actors = ", ".join(record["actors"]) or "(none)"
     revoked = f"  revoked {record['revoked_at']}" if record.get("revoked_at") else ""
+    only = f"  only: {', '.join(record['only'])}" if record.get("only") else ""
+    source = f"  source: {record['source']}" if record.get("source") is not None else ""
+    limit_parts = [
+        f"{name}: {record[name]}"
+        for name in ("ops_per_minute", "bytes_per_minute", "max_staged_bytes")
+        if record.get(name) is not None
+    ]
+    limits = f"  limits: {', '.join(limit_parts)}" if limit_parts else ""
     return (
         f"{record['id']}  {record['user']} @ {record['machine']}  actors: {actors}  "
-        f"projects: {projects}  created {record['created_at']}{revoked}"
+        f"projects: {projects}{only}{source}{limits}  created {record['created_at']}{revoked}"
     )
 
 
@@ -542,6 +550,11 @@ def _describe_token(record: dict) -> str:
 )
 @click.option("--project", "projects", multiple=True, help="Project slug (repeatable).")
 @click.option("--all-projects", is_flag=True, help="Every project on this server.")
+@click.option("--only", "only", multiple=True, help="Restrict to an operation (repeatable).")
+@click.option("--source", help="Bound source for --only issue.file.")
+@click.option("--ops-per-minute", type=click.IntRange(min=1))
+@click.option("--bytes-per-minute", type=click.IntRange(min=1))
+@click.option("--max-staged-bytes", type=click.IntRange(min=1))
 @_root_option
 @_json_option
 def token_create(
@@ -550,6 +563,11 @@ def token_create(
     actors: tuple[str, ...],
     projects: tuple[str, ...],
     all_projects: bool,
+    only: tuple[str, ...],
+    source: str | None,
+    ops_per_minute: int | None,
+    bytes_per_minute: int | None,
+    max_staged_bytes: int | None,
     root: str | None,
     is_json: bool,
 ) -> None:
@@ -564,6 +582,11 @@ def token_create(
             actors=actors,
             projects=projects,
             all_projects=all_projects,
+            only=only,
+            source=source,
+            ops_per_minute=ops_per_minute,
+            bytes_per_minute=bytes_per_minute,
+            max_staged_bytes=max_staged_bytes,
         )
         if data["warning"]:
             click.echo(f"Warning: {data['warning']}", err=True)
@@ -575,7 +598,12 @@ def token_create(
             f"{data['token']}\n"
             f"Token {record['id']} for {record['user']} @ {record['machine']}; it may act as: "
             f"{', '.join(record['actors'])}; projects: {', '.join(record['projects']) or '(none)'}.\n"
-            "This is the only time the token is shown. Store it now."
+            + (
+                f"Restricted to {', '.join(record['only'])} from source {record['source']}.\n"
+                if record.get("only")
+                else ""
+            )
+            + "This is the only time the token is shown. Store it now."
         )
 
     _run(is_json, action, render)

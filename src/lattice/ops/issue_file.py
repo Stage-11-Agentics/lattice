@@ -8,6 +8,8 @@ reserved; then blobs are staged before ``issue_filed`` and one
 
 from __future__ import annotations
 
+import unicodedata
+from contextlib import nullcontext
 from dataclasses import dataclass
 
 from lattice.core.events import create_issue_event
@@ -21,7 +23,49 @@ from lattice.core.issues import (
 )
 from lattice.ops import issue_common
 from lattice.ops.base import CommonParams, OpContext, OpError, OpResult, operation
-from lattice.storage.issues import issue_seq_reservation, issue_write_context, write_issue_events
+from lattice.storage.issues import (
+    issue_seq_reservation,
+    issue_write_context,
+    list_issue_snapshots,
+    source_ref_lock,
+    write_issue_events,
+)
+
+
+def normalize_source_ref(source: str | None, source_ref: str | None) -> tuple[str, str] | None:
+    """Validate and normalize the source identity when a caller supplies a reference."""
+    if source_ref is None:
+        return None
+    if source is None:
+        raise OpError("VALIDATION_ERROR", "source_ref requires a nonempty source.")
+    normalized_source = source.strip()
+    normalized_ref = source_ref.strip()
+    if not normalized_source:
+        raise OpError("VALIDATION_ERROR", "source must not be blank when source_ref is set.")
+    if not normalized_ref:
+        raise OpError("VALIDATION_ERROR", "source_ref must not be blank.")
+    if any(unicodedata.category(char) == "Cc" for char in normalized_source + normalized_ref):
+        raise OpError(
+            "VALIDATION_ERROR", "source and source_ref may not contain control characters."
+        )
+    if len(normalized_source) > 128:
+        raise OpError("VALIDATION_ERROR", "source must be at most 128 characters.")
+    if len(normalized_ref) > 256:
+        raise OpError("VALIDATION_ERROR", "source_ref must be at most 256 characters.")
+    return normalized_source, normalized_ref
+
+
+def normalize_reporter(value: str | None) -> str | None:
+    if value is None:
+        return None
+    reporter = value.strip()
+    if not reporter:
+        raise OpError("VALIDATION_ERROR", "on_behalf_of must not be blank.")
+    if len(reporter) > 256:
+        raise OpError("VALIDATION_ERROR", "on_behalf_of must be at most 256 characters.")
+    if not reporter.isprintable():
+        raise OpError("VALIDATION_ERROR", "on_behalf_of may not contain control characters.")
+    return reporter
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -33,6 +77,7 @@ class IssueFileParams(CommonParams):
     confidence: str | None = None
     evidence: tuple[str, ...] = ()
     source: str | None = None
+    source_ref: str | None = None
     media: tuple[dict, ...] = ()
 
     def check(self) -> None:
@@ -47,6 +92,8 @@ class IssueFileParams(CommonParams):
                 f"Invalid confidence: '{self.confidence}'. "
                 f"Valid values: {', '.join(CONFIDENCE_VALUES)}.",
             )
+        normalize_source_ref(self.source, self.source_ref)
+        normalize_reporter(self.on_behalf_of)
         issue_common.check_media_items(self.media)
 
 
@@ -56,11 +103,45 @@ class IssueFile:
 
     def run(self, ctx: OpContext, p: IssueFileParams) -> OpResult:
         issue_common.require_issue_log(ctx)
+        pair = normalize_source_ref(p.source, p.source_ref)
+        reporter = normalize_reporter(p.on_behalf_of)
+        lock = (
+            source_ref_lock(ctx.lattice_dir, *pair)
+            if pair is not None and not ctx.caller.source_ref_lock_held
+            else nullcontext()
+        )
+        with lock:
+            if pair is not None:
+                existing = next(
+                    (
+                        snapshot
+                        for snapshot in list_issue_snapshots(ctx.lattice_dir)
+                        if snapshot.get("source") == pair[0]
+                        and snapshot.get("source_ref") == pair[1]
+                    ),
+                    None,
+                )
+                if existing is not None:
+                    result = issue_common.result(ctx, existing, [])
+                    value = dict(result.value)
+                    value["deduplicated"] = True
+                    return OpResult(events=[], value=value, idempotent=True)
+            return self._file_new(ctx, p, pair, reporter)
+
+    def _file_new(
+        self,
+        ctx: OpContext,
+        p: IssueFileParams,
+        pair: tuple[str, str] | None,
+        reporter: str | None,
+    ) -> OpResult:
         decoded = issue_common.decode_media(
             p.media,
             ctx.config,
             nothing="Nothing was filed.",
             stage_manager=ctx.issue_media,
+            token_id=(ctx.caller.origin.get("authenticated") or {}).get("token_id"),
+            require_stage_owner=ctx.caller.filing_only,
         )
         issue_common.check_issue_total(ctx.config, "The issue", 0, decoded)
         raw_title = p.title if p.title is not None else (p.text or "")
@@ -86,12 +167,17 @@ class IssueFile:
                         data["confidence"] = p.confidence
                     if p.evidence:
                         data["evidence"] = list(p.evidence)
-                    if p.source is not None:
-                        data["source"] = p.source
+                    source = pair[0] if pair is not None else p.source
+                    if source is not None:
+                        data["source"] = source
+                    if pair is not None:
+                        data["source_ref"] = pair[1]
+                    if ctx.caller.filing_only:
+                        data["external"] = True
+                    provenance = p.provenance()
+                    provenance["on_behalf_of"] = reporter
                     events = [
-                        create_issue_event(
-                            "issue_filed", issue_id, ctx.actor, data, **p.provenance()
-                        ),
+                        create_issue_event("issue_filed", issue_id, ctx.actor, data, **provenance),
                         *media_events,
                     ]
                     snapshot = None

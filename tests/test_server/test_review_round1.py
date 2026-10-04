@@ -62,6 +62,14 @@ class _State:
 class _Token:
     id = "tok_x"
 
+    @staticmethod
+    def effective_ops_per_minute(fallback: int) -> int:
+        return fallback
+
+    @staticmethod
+    def effective_bytes_per_minute(fallback: int, **_kwargs: int) -> int:
+        return fallback
+
 
 def test_one_oversized_chunk_is_refused_before_it_is_copied() -> None:
     """A3: the limit is checked before a chunk is appended, so nothing is buffered past it."""

@@ -300,7 +300,14 @@ def check_media_items(items: tuple[dict, ...]) -> None:
                 raise _invalid(f"media item {i}: two frames have the same t_ms.")
 
 
-def _decode_one(item: dict, per_file: int, nothing: str, stage_manager=None) -> DecodedMedia:
+def _decode_one(
+    item: dict,
+    per_file: int,
+    nothing: str,
+    stage_manager=None,
+    token_id: str | None = None,
+    require_stage_owner: bool = False,
+) -> DecodedMedia:
     filename = item["payload"].get("filename")
     name = clean_original_name(filename) if isinstance(filename, str) else "?"
     payload = item["payload"]
@@ -328,7 +335,9 @@ def _decode_one(item: dict, per_file: int, nothing: str, stage_manager=None) -> 
         if size > per_file:
             raise _too_large_file(name, size, per_file, nothing)
         _validate_media_filename(filename)
-        metadata = stage_manager.verify_staged(sha256, size)
+        metadata = stage_manager.verify_staged(
+            sha256, size, token_id=token_id, require_owner=require_stage_owner
+        )
         content_type = metadata["content_type"]
         content = None
     else:
@@ -379,7 +388,9 @@ def _decode_one(item: dict, per_file: int, nothing: str, stage_manager=None) -> 
                 raise _invalid(f"{name}: a frame is over {format_size(MAX_FRAME_BYTES)}.")
             _frame_name = frame_payload.get("filename")
             _validate_media_filename(_frame_name)
-            frame_meta = stage_manager.verify_staged(frame_hash, frame_size)
+            frame_meta = stage_manager.verify_staged(
+                frame_hash, frame_size, token_id=token_id, require_owner=require_stage_owner
+            )
             if frame_meta["content_type"] != "image/jpeg":
                 raise _invalid(f"{name}: every frame must be a JPEG of at most 2 MB.")
             staged_frames.append((frame["t_ms"], frame_hash, frame_size))
@@ -458,7 +469,13 @@ def _too_large_file(name: str, size: int, limit: int, nothing: str) -> OpError:
 
 
 def decode_media(
-    items: tuple[dict, ...], config: dict, *, nothing: str, stage_manager=None
+    items: tuple[dict, ...],
+    config: dict,
+    *,
+    nothing: str,
+    stage_manager=None,
+    token_id: str | None = None,
+    require_stage_owner: bool = False,
 ) -> list[DecodedMedia]:
     """Decode and check every item, each within ``issues.max_media_mb``; the same
     content twice is kept once. *nothing*: the refusal's last sentence."""
@@ -466,7 +483,14 @@ def decode_media(
     decoded: list[DecodedMedia] = []
     seen: set[str] = set()
     for item in items:
-        one = _decode_one(item, per_file, nothing, stage_manager)
+        one = _decode_one(
+            item,
+            per_file,
+            nothing,
+            stage_manager,
+            token_id=token_id,
+            require_stage_owner=require_stage_owner,
+        )
         if not seen & one.hashes:
             seen |= one.hashes
             decoded.append(one)

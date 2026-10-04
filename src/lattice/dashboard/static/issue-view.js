@@ -379,6 +379,7 @@
       if (!rows.length) {
         setHtmlIfChanged(list, '<div class="issue-q-empty">' + esc(emptyMessage()) + "</div>");
       } else {
+        var reserveExternalBadge = rows.some(function (issue) { return !!(issue && issue.external); });
         if (list.__issueViewHtml !== undefined) {
           while (list.firstChild) list.removeChild(list.firstChild);
           delete list.__issueViewHtml;
@@ -391,7 +392,7 @@
         var selected = cursors[currentKey()];
         rows.forEach(function (issue, index) {
           var key = "$" + issue.id;
-          var markup = queueRowMarkup(issue, issue.id === selected);
+          var markup = queueRowMarkup(issue, issue.id === selected, reserveExternalBadge);
           var row = existing[key];
           if (!row || row.__issueRowMarkup !== markup) {
             var template = document.createElement("template");
@@ -430,15 +431,23 @@
           esc(logic.formatDuration(typeof item.duration_ms === "number" ? item.duration_ms / 1000 : null)) + "</span>" : "") +
         (media.length > 1 ? '<span class="issue-q-badge issue-q-count-badge">' + media.length + "</span>" : "") + "</span>";
     }
-    function queueRowMarkup(issue, selected) {
+    function queueRowMarkup(issue, selected, reserveExternalBadge) {
       var commentCount = Number(issue.comment_count || 0);
       return '<div class="issue-q-row' + (selected ? " cursor" : "") + '" data-issue-id="' + esc(issue.id) +
         '" role="option" aria-selected="' + (selected ? "true" : "false") + '"><div class="issue-q-main"><div class="issue-q-top">' +
         '<span class="issue-iid">' + esc(issue.short_id || issue.id) + '</span><span class="issue-q-tag">' + tagHtml(issue) + "</span>" +
         '<span class="issue-q-comments" title="' + commentCount + (commentCount === 1 ? " comment" : " comments") + '">' +
         (commentCount ? BUBBLE + commentCount : "") + '</span><span class="issue-q-age" title="' + esc(displayTime(issue.filed_at)) + '">' +
-        esc(relativeTime(issue.filed_at)) + '</span></div><div class="issue-q-text" title="' + esc(issue.title || "") + '">' +
-        esc(issue.title || "Untitled issue") + "</div></div>" + queueThumb(issue) + "</div>";
+        esc(relativeTime(issue.filed_at)) + '</span></div><div class="issue-q-text">' + externalBadge(issue, reserveExternalBadge) +
+        '<span class="issue-q-title" title="' + esc(issue.title || "") + '">' + esc(issue.title || "Untitled issue") +
+        "</span></div></div>" + queueThumb(issue) + "</div>";
+    }
+    function externalBadge(issue, reserveSlot) {
+      if (issue && issue.external) {
+        return '<span class="issue-external-badge" role="note" aria-label="External / untrusted input">' +
+          "EXTERNAL / UNTRUSTED INPUT</span>";
+      }
+      return reserveSlot ? '<span class="issue-external-badge reserved" aria-hidden="true"></span>' : "";
     }
     function tagHtml(issue) {
       var tag = logic.rowTag(issue, person ? person.actor : null);
@@ -505,12 +514,15 @@
       return '<span class="issue-state issue-state-' + esc(state) + '">' + esc(state) + "</span>";
     }
     function factsHtml(issue) {
+      var badge = externalBadge(issue, false);
       var bits = [actorHtml(issue.filed_by, issue.filed_origin), '<span title="' + esc(displayTime(issue.filed_at)) + '">' +
         esc(relativeTime(issue.filed_at)) + "</span>"];
-      if (issue.source) bits.push(esc(issue.source));
+      if (issue.on_behalf_of) bits.push('<span>Reporter: ' + esc(issue.on_behalf_of) + "</span>");
+      if (issue.source) bits.push('<span>Source: ' + esc(issue.source) + "</span>");
+      if (issue.source_ref) bits.push('<span>Source reference: ' + esc(issue.source_ref) + "</span>");
       if (issue.confidence) bits.push(esc(issue.confidence));
       (issue.evidence || []).forEach(function (item) { bits.push(esc(item)); });
-      return bits.join(" · ");
+      return badge + (issue.external ? " · " : "") + bits.join(" · ");
     }
     function detailShell() {
       return '<h1 class="issue-d-title" id="issue-d-title"></h1><div class="issue-d-desc" id="issue-d-desc"></div>' +

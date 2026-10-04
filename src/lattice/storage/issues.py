@@ -15,6 +15,7 @@ call no writer, so ``show`` can use them.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import stat
@@ -452,6 +453,19 @@ def issue_write_context(lattice_dir: Path, issue_id: str) -> Generator[None, Non
         yield
 
 
+@contextlib.contextmanager
+def source_ref_lock(
+    lattice_dir: Path, source: str, source_ref: str
+) -> Generator[None, None, None]:
+    """Serialize one normalized source/ref pair before any issue or sequence lock."""
+    pair = json.dumps([source, source_ref], ensure_ascii=False, separators=(",", ":"))
+    key = hashlib.sha256(pair.encode("utf-8")).hexdigest()
+    locks_dir = Path(lattice_dir) / "locks"
+    ensure_dir(locks_dir)
+    with lattice_lock(locks_dir, f"issue_source_ref_{key}"):
+        yield
+
+
 def _serialize_ids(data: dict) -> str:
     return json.dumps(data, sort_keys=True, indent=2) + "\n"
 
@@ -573,6 +587,7 @@ __all__ = [
     "issue_views",
     "issue_detail",
     "issue_write_context",
+    "source_ref_lock",
     "issues_by",
     "issues_dir",
     "issues_linked_to",

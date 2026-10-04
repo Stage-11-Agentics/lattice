@@ -47,6 +47,22 @@ def _shell_blocks(text: str) -> list[str]:
     return [m.group(2) for m in FENCE.finditer(text) if m.group(1) in ("bash", "sh")]
 
 
+@pytest.mark.parametrize("path", [GUIDE, API], ids=lambda path: path.name)
+def test_hosted_bash_examples_parse(path: Path) -> None:
+    """Every fenced Bash example in the hosted contract must be pasteable syntax."""
+    text = path.read_text()
+    for match in FENCE.finditer(text):
+        if match.group(1) != "bash":
+            continue
+        line = text.count("\n", 0, match.start()) + 1
+        result = subprocess.run(
+            ["bash", "-n"], input=match.group(2), capture_output=True, text=True, timeout=5
+        )
+        assert result.returncode == 0, (
+            f"{path.relative_to(REPO)}:{line} has invalid Bash syntax:\n{result.stderr}"
+        )
+
+
 def _lattice_invocations(code: str) -> list[list[str]]:
     """Every `lattice ...` argv in a block of shell, continuation lines joined."""
     code = code.replace("\\\n", " ")

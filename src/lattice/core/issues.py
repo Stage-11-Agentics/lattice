@@ -135,9 +135,17 @@ def _filed(snapshot: dict | None, event: dict) -> dict:
         new["description"] = data.get("description", "")
     else:
         new["text"] = data.get("text", "")
-    for key in ("confidence", "evidence", "source"):
+    for key in (
+        "confidence",
+        "evidence",
+        "source",
+        "source_ref",
+        "external",
+    ):
         if key in data:
             new[key] = data[key]
+    if "on_behalf_of" in event.get("provenance", {}):
+        new["on_behalf_of"] = event["provenance"]["on_behalf_of"]
     return new
 
 
@@ -404,7 +412,7 @@ def issue_view(
             entry["archived"] = True
         tasks.append(entry)
     title, description = issue_title_description(snapshot)
-    return {
+    view = {
         "id": snapshot["id"],
         "short_id": snapshot.get("short_id"),
         "seq": snapshot.get("seq"),
@@ -424,6 +432,10 @@ def issue_view(
         "updated_at": snapshot.get("updated_at"),
         "last_event_id": snapshot.get("last_event_id"),
     }
+    for key in ("source_ref", "external", "on_behalf_of"):
+        if key in snapshot:
+            view[key] = snapshot[key]
+    return view
 
 
 def first_line(text: str, limit: int = TITLE_LIMIT) -> str:

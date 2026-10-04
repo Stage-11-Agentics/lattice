@@ -94,25 +94,25 @@ class TokenLimits:
         else:
             self._inflight[token_id] = count
 
-    def take_op(self, token_id: str) -> None:
-        bucket = self._bucket(self._ops, token_id, self.limits.token_ops_per_minute)
+    def take_op(self, token_id: str, per_minute: int | None = None) -> None:
+        capacity = per_minute or self.limits.token_ops_per_minute
+        bucket = self._bucket(self._ops, token_id, capacity)
         wait = bucket.take(1, self.clock())
         if wait:
             raise rate_limited(
-                f"token {token_id} is over {self.limits.token_ops_per_minute} operations "
-                "per minute",
+                f"token {token_id} is over {capacity} operations per minute",
                 wait,
             )
 
-    def take_bytes(self, token_id: str, amount: int) -> None:
+    def take_bytes(self, token_id: str, amount: int, per_minute: int | None = None) -> None:
         if amount <= 0:
             return
-        bucket = self._bucket(self._bytes, token_id, self.limits.token_body_bytes_per_minute)
+        capacity = per_minute or self.limits.token_body_bytes_per_minute
+        bucket = self._bucket(self._bytes, token_id, capacity)
         wait = bucket.take(amount, self.clock())
         if wait:
             raise rate_limited(
-                f"token {token_id} is over {self.limits.token_body_bytes_per_minute} body "
-                "bytes per minute",
+                f"token {token_id} is over {capacity} body bytes per minute",
                 wait,
             )
 

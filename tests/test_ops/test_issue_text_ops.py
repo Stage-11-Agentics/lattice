@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,8 @@ from lattice.ops import Caller, OpError
 from lattice.storage.issues import (
     allocate_issue_seq,
     issue_write_context,
+    list_issue_snapshots,
+    read_issue_events,
     write_issue_events,
 )
 
@@ -78,6 +81,158 @@ def test_issue_file_rejects_an_empty_title_without_allocating_a_number(board: Lo
         run(board, "issue.file", title="  ")
     assert exc.value.code == "VALIDATION_ERROR"
     assert not (board.lattice_dir / "issues").exists()
+
+
+def test_issue_file_deduplicates_normalized_source_ref_before_reading_retry_media(
+    board: LocalBoard,
+) -> None:
+    first = run(
+        board,
+        "issue.file",
+        title="Original title",
+        source="  reporter-links  ",
+        source_ref="  ISS-7K2MQ  ",
+    )
+    retry = run(
+        board,
+        "issue.file",
+        title="Changed retry title",
+        source="reporter-links",
+        source_ref="ISS-7K2MQ",
+        media=(
+            {
+                "payload": {
+                    "filename": "retry.png",
+                    "sha256": "not-a-hash",
+                    "size": 3,
+                    "staged": True,
+                }
+            },
+        ),
+    )
+
+    assert first.value["source"] == "reporter-links"
+    assert first.value["source_ref"] == "ISS-7K2MQ"
+    assert retry.value["id"] == first.value["id"]
+    assert retry.value["title"] == "Original title"
+    assert retry.value["deduplicated"] is True
+    assert retry.idempotent is True
+    assert retry.events == []
+    snapshots = list_issue_snapshots(board.lattice_dir)
+    assert len(snapshots) == 1
+    assert [
+        event["type"] for event in read_issue_events(board.lattice_dir, first.value["id"])
+    ] == ["issue_filed"]
+
+
+@pytest.mark.parametrize(
+    ("params", "message"),
+    [
+        ({"source_ref": "R-1"}, "requires a nonempty source"),
+        ({"source": "feed", "source_ref": "   "}, "source_ref must not be blank"),
+        ({"source": "  ", "source_ref": "R-1"}, "source must not be blank"),
+        ({"source": "feed\nother", "source_ref": "R-1"}, "control character"),
+        ({"source": "feed", "source_ref": "R\x7f1"}, "control character"),
+        ({"source": "x" * 129, "source_ref": "R-1"}, "128 characters"),
+        ({"source": "feed", "source_ref": "x" * 257}, "256 characters"),
+    ],
+)
+def test_issue_file_rejects_invalid_source_ref_keys(
+    board: LocalBoard, params: dict, message: str
+) -> None:
+    with pytest.raises(OpError) as exc:
+        run(board, "issue.file", title="T", **params)
+    assert exc.value.code == "VALIDATION_ERROR"
+    assert message in exc.value.message
+    assert list_issue_snapshots(board.lattice_dir) == []
+
+
+def test_issue_file_accepts_a_free_form_reporter_only_for_filing(board: LocalBoard) -> None:
+    result = run(
+        board,
+        "issue.file",
+        title="T",
+        on_behalf_of="  Alex Example <alex@example.test>  ",
+    )
+    assert result.events[0]["provenance"]["on_behalf_of"] == "Alex Example <alex@example.test>"
+    assert result.value["on_behalf_of"] == "Alex Example <alex@example.test>"
+
+    for invalid in ("  ", "name\nforged", "x" * 257):
+        with pytest.raises(OpError) as exc:
+            run(board, "issue.file", title="invalid reporter", on_behalf_of=invalid)
+        assert exc.value.code == "VALIDATION_ERROR"
+
+    with pytest.raises(OpError) as other_op:
+        run(
+            board,
+            "issue.comment",
+            issue=result.value["id"],
+            text="comment",
+            on_behalf_of="Alex Example",
+        )
+    assert other_op.value.code == "INVALID_ACTOR"
+
+
+def test_source_ref_retry_returns_a_dismissed_issue_without_reopening_it(
+    board: LocalBoard,
+) -> None:
+    filed = run(
+        board,
+        "issue.file",
+        title="Duplicate report",
+        source="mail",
+        source_ref="message-7",
+    )
+    dismissed = run(
+        board,
+        "issue.dismiss",
+        issue=filed.value["id"],
+        reason="not actionable",
+    )
+    retry = run(
+        board,
+        "issue.file",
+        title="Retry",
+        source="mail",
+        source_ref="message-7",
+    )
+    assert retry.value["id"] == dismissed.value["id"]
+    assert retry.value["state"] == "dismissed"
+    assert retry.value["closure"] == dismissed.value["closure"]
+    assert retry.events == [] and retry.idempotent
+
+
+def test_source_ref_concurrent_distinct_operations_commit_one_issue_event(
+    board: LocalBoard,
+) -> None:
+    def file_one(title: str):  # noqa: ANN202
+        return board.execute(
+            "issue.file",
+            {"title": title, "source": "mail", "source_ref": "message-race"},
+            Caller(actor="agent:qa"),
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(file_one, ("first", "second")))
+
+    assert sorted(result.idempotent for result in results) == [False, True]
+    issue_id = results[0].value["id"]
+    assert {result.value["id"] for result in results} == {issue_id}
+    assert [event["type"] for event in read_issue_events(board.lattice_dir, issue_id)] == [
+        "issue_filed"
+    ]
+    assert len(list_issue_snapshots(board.lattice_dir)) == 1
+
+
+def test_filing_context_sets_external_marker_in_shared_issue_view(board: LocalBoard) -> None:
+    result = board.execute(
+        "issue.file",
+        {"title": "Untrusted report", "source": "reporter-link", "source_ref": "link-7"},
+        Caller(actor="agent:intake", filing_only=True),
+    )
+    assert result.value["external"] is True
+    assert result.value["source_ref"] == "link-7"
+    assert result.events[0]["data"]["external"] is True
 
 
 def test_issue_edit_is_idempotent_and_materializes_an_old_issue(board: LocalBoard) -> None:

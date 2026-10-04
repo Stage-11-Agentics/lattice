@@ -3,12 +3,28 @@
 from __future__ import annotations
 
 import json
+import hmac
 from pathlib import Path
 
+import pytest
+
+from lattice.core.errors import OpError
 from lattice.server import tokens
+from lattice.server.tokens import TokenStore
 from lattice.server.testing import ServerHandle
 from tests.test_server.conftest import board_hash, mint
 from tests.test_server.web_client import WebClient
+
+
+def pre_389_authenticate(raw_records: list[dict], bearer: str) -> None:
+    """Frozen pre-389 reader: raw SHA-256 comparison, with no scope concept."""
+    parsed = tokens.parse_token(bearer.removeprefix("Bearer "))
+    token_id, secret = parsed or (None, None)
+    record = next((item for item in raw_records if item.get("id") == token_id), None)
+    if record is None or not hmac.compare_digest(
+        tokens.hash_secret(secret), record.get("sha256", "")
+    ):
+        raise OpError("UNAUTHENTICATED", "missing, invalid, or revoked credential")
 
 
 def _bad_tokens(good: str) -> list[str | None]:
@@ -44,6 +60,132 @@ def test_revoked_token_is_401(server: ServerHandle, root: Path) -> None:
     tokens.revoke_token(root, data["record"]["id"])
     status, _, body = server.op("alpha", "task.create", {"title": "x"}, token=data["token"])
     assert status == 401 and body["error"]["code"] == "UNAUTHENTICATED"
+
+
+def test_filing_token_hash_prefix_and_restricted_record_fail_closed(
+    server: ServerHandle, root: Path
+) -> None:
+    minted = tokens.create_token(
+        root,
+        user="human:alice",
+        machine="intake",
+        actors=("agent:intake",),
+        projects=("alpha",),
+        only=("issue.file",),
+        source="  reporter-mail  ",
+    )
+    record = tokens._read(root)[0]
+    token_id, secret = tokens.parse_token(minted["token"])
+    assert record.sha256.startswith("only-v1:")
+    assert record.source == "reporter-mail"
+    assert record.only == ("issue.file",)
+    assert (
+        tokens.hash_secret(secret) != record.sha256
+    )  # a frozen pre-389 reader compares raw hashes
+    assert TokenStore(root).authenticate(f"Bearer {minted['token']}").filing_only
+
+    raw_records = json.loads((root / "tokens.json").read_text())["tokens"]
+    with pytest.raises(OpError) as old_reader:
+        pre_389_authenticate(raw_records, minted["token"])
+    assert old_reader.value.http_status == 401
+
+    # An older writer can preserve the versioned hash while dropping the fields
+    # that explain its restriction. The new reader must not reinterpret it as full.
+    path = root / "tokens.json"
+    data = json.loads(path.read_text())
+    data["tokens"][0].pop("only")
+    data["tokens"][0].pop("source")
+    path.write_text(json.dumps(data))
+    status, _, body = server.request("GET", "/v1/info", token=minted["token"])
+    assert status == 401 and body["error"]["code"] == "UNAUTHENTICATED"
+    with pytest.raises(OpError) as refused:
+        TokenStore(root).authenticate(f"Bearer {minted['token']}")
+    assert refused.value.code == "UNAUTHENTICATED"
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"only": ("issue.file",), "all_projects": True, "source": "mail"},
+        {"only": ("issue.file",), "projects": ("alpha", "beta"), "source": "mail"},
+        {"only": ("issue.file",), "projects": ("alpha",), "source": None},
+        {"only": ("issue.file",), "projects": ("alpha",), "source": "mail\nforged"},
+        {"only": ("task.create",), "projects": ("alpha",), "source": "mail"},
+    ],
+)
+def test_filing_token_requires_fixed_project_operation_and_source(
+    root: Path, kwargs: dict
+) -> None:
+    with pytest.raises(OpError) as exc:
+        tokens.create_token(root, user="human:alice", machine="intake", **kwargs)
+    assert exc.value.code == "VALIDATION_ERROR"
+
+
+def test_filing_token_scope_cannot_be_widened_with_project_grant(root: Path) -> None:
+    minted = tokens.create_token(
+        root,
+        user="human:alice",
+        machine="intake",
+        actors=("agent:intake",),
+        projects=("alpha",),
+        only=("issue.file",),
+        source="mail",
+    )
+    token_id, _secret = tokens.parse_token(minted["token"])
+    with pytest.raises(OpError) as exc:
+        tokens.grant(root, token_id, projects=("beta",))
+    assert exc.value.code == "TOKEN_RESTRICTED"
+    assert tokens._read(root)[0].projects == ("alpha",)
+
+
+def test_unrestricted_legacy_token_record_omits_new_scope_fields(root: Path) -> None:
+    tokens.create_token(root, user="human:alice", machine="m", all_projects=True)
+    data = json.loads((root / "tokens.json").read_text())["tokens"][0]
+    assert "only" not in data and "source" not in data
+    assert "ops_per_minute" not in data and "max_staged_bytes" not in data
+    assert tokens.TokenRecord.from_json(data).only == ()
+    full = tokens.TokenRecord.from_json(data)
+    assert full.effective_ops_per_minute(77) == 77
+    assert full.effective_bytes_per_minute(1234) == 1234
+    assert full.effective_max_staged_bytes() is None
+
+
+def test_filing_limit_defaults_and_mint_overrides(root: Path) -> None:
+    base = {
+        "user": "human:alice",
+        "machine": "intake",
+        "actors": ("agent:intake",),
+        "projects": ("alpha",),
+        "only": ("issue.file",),
+        "source": "mail",
+    }
+    tokens.create_token(root, **base)
+    default_token = tokens._read(root)[0]
+    assert default_token.effective_ops_per_minute(600) == 30
+    assert (
+        default_token.effective_bytes_per_minute(
+            256 * 1024 * 1024, max_issue_media_file_bytes=100 * 1024 * 1024
+        )
+        == 100 * 1024 * 1024
+    )
+    assert default_token.effective_max_staged_bytes() == 512 * 1024 * 1024
+
+    tokens.create_token(
+        root,
+        **base,
+        ops_per_minute=7,
+        bytes_per_minute=128 * 1024 * 1024,
+        max_staged_bytes=16384,
+    )
+    overridden = tokens._read(root)[1]
+    assert overridden.effective_ops_per_minute(600) == 7
+    assert (
+        overridden.effective_bytes_per_minute(
+            256 * 1024 * 1024, max_issue_media_file_bytes=100 * 1024 * 1024
+        )
+        == 128 * 1024 * 1024
+    )
+    assert overridden.effective_max_staged_bytes() == 16384
 
 
 def test_healthz_needs_no_credential(server: ServerHandle) -> None:

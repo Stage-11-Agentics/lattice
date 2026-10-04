@@ -36,7 +36,7 @@ from lattice.core.auto_review import AUTO_REVIEW_ACTOR
 from lattice.core.errors import OpError
 from lattice.core.events import utc_now
 from lattice.core.ids import generate_instance_id, validate_actor
-from lattice.server.config import TOKENS_JSON
+from lattice.server.config import TOKENS_JSON, load_config
 from lattice.server.log import describe_error
 from lattice.storage.fs import atomic_write
 
@@ -44,8 +44,16 @@ TOKEN_PREFIX = "lat_"
 _TOKEN_ID_RE = re.compile(r"^tok_[0-9A-HJKMNP-TV-Z]{26}$")
 _TOKEN_ID_LEN = len("tok_") + 26
 _SECRET_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
+_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 _WILDCARD = re.compile(r"[*?\[]")
 _LABEL_RE = re.compile(r"^[^\x00-\x1f\x7f-\x9f]{1,128}$")
+FILING_ONLY_SCOPE = ("issue.file",)
+FILING_HASH_PREFIX = "only-v1:"
+FILING_OPS_PER_MINUTE = 30
+FILING_BYTES_PER_MINUTE = 64 * 1024 * 1024
+FILING_MAX_STAGED_BYTES = 512 * 1024 * 1024
+TOKEN_STATE_KEY = "lattice_authenticated_token"
 
 
 def new_token_id() -> str:
@@ -96,6 +104,11 @@ class TokenRecord:
     projects: tuple[str, ...]
     created_at: str
     revoked_at: str | None = None
+    only: tuple[str, ...] = ()
+    source: str | None = None
+    ops_per_minute: int | None = None
+    bytes_per_minute: int | None = None
+    max_staged_bytes: int | None = None
 
     @classmethod
     def from_json(cls, raw: dict) -> TokenRecord:
@@ -108,12 +121,27 @@ class TokenRecord:
             projects=tuple(raw.get("projects") or ()),
             created_at=raw.get("created_at", ""),
             revoked_at=raw.get("revoked_at"),
+            only=tuple(raw.get("only") or ()),
+            source=raw.get("source"),
+            ops_per_minute=raw.get("ops_per_minute"),
+            bytes_per_minute=raw.get("bytes_per_minute"),
+            max_staged_bytes=raw.get("max_staged_bytes"),
         )
 
     def to_json(self) -> dict:
         data = asdict(self)
         data["actors"] = list(self.actors)
         data["projects"] = list(self.projects)
+        if not self.only:
+            data.pop("only")
+        if self.source is None:
+            data.pop("source")
+        if self.ops_per_minute is None:
+            data.pop("ops_per_minute")
+        if self.bytes_per_minute is None:
+            data.pop("bytes_per_minute")
+        if self.max_staged_bytes is None:
+            data.pop("max_staged_bytes")
         return data
 
     def public(self) -> dict:
@@ -127,6 +155,50 @@ class TokenRecord:
     @property
     def all_projects(self) -> bool:
         return "*" in self.projects
+
+    @property
+    def filing_only(self) -> bool:
+        return self.only == FILING_ONLY_SCOPE and self.source is not None
+
+    @property
+    def valid_restriction(self) -> bool:
+        limits = (self.ops_per_minute, self.bytes_per_minute, self.max_staged_bytes)
+        return not self.only or (
+            self.only == FILING_ONLY_SCOPE
+            and isinstance(self.source, str)
+            and bool(self.source.strip())
+            and self.source == self.source.strip()
+            and len(self.source) <= 128
+            and self.source.isprintable()
+            and len(self.projects) == 1
+            and _SLUG_RE.fullmatch(self.projects[0]) is not None
+            and all(
+                value is None
+                or (isinstance(value, int) and not isinstance(value, bool) and value > 0)
+                for value in limits
+            )
+        )
+
+    def effective_ops_per_minute(self, fallback: int) -> int:
+        return (
+            self.ops_per_minute
+            if self.ops_per_minute is not None
+            else (FILING_OPS_PER_MINUTE if self.filing_only else fallback)
+        )
+
+    def effective_bytes_per_minute(
+        self, fallback: int, *, max_issue_media_file_bytes: int | None = None
+    ) -> int:
+        if self.bytes_per_minute is not None:
+            return self.bytes_per_minute
+        if self.filing_only:
+            return max(FILING_BYTES_PER_MINUTE, max_issue_media_file_bytes or 0)
+        return fallback
+
+    def effective_max_staged_bytes(self) -> int | None:
+        if self.max_staged_bytes is not None:
+            return self.max_staged_bytes
+        return FILING_MAX_STAGED_BYTES if self.filing_only else None
 
     def permits_project(self, slug: str) -> bool:
         return self.all_projects or slug in self.projects
@@ -241,9 +313,19 @@ class TokenStore:
             raise failure
         token_id, secret = parsed
         record = self._by_id.get(token_id)
-        expected = record.sha256 if record else "0" * 64
+        stored_hash = record.sha256 if record is not None else ""
+        prefixed = stored_hash.startswith(FILING_HASH_PREFIX)
+        digest = stored_hash.removeprefix(FILING_HASH_PREFIX) if prefixed else stored_hash
+        expected = digest if _HASH_RE.fullmatch(digest) else "0" * 64
         matches = hmac.compare_digest(hash_secret(secret), expected)
-        if record is None or not matches or record.revoked_at is not None:
+        if (
+            record is None
+            or not matches
+            or record.revoked_at is not None
+            or not record.valid_restriction
+            or (prefixed and not record.filing_only)
+            or (record.only and not prefixed)
+        ):
             raise failure
         return record
 
@@ -282,6 +364,11 @@ def create_token(
     actors: tuple[str, ...] | list[str] = (),
     projects: tuple[str, ...] | list[str] = (),
     all_projects: bool = False,
+    only: tuple[str, ...] | list[str] = (),
+    source: str | None = None,
+    ops_per_minute: int | None = None,
+    bytes_per_minute: int | None = None,
+    max_staged_bytes: int | None = None,
 ) -> dict:
     """Mint a token. Returns ``{token, record, warning}``; the token string exists only here."""
     from lattice.server import admin
@@ -294,18 +381,57 @@ def create_token(
     patterns = tuple(_check_pattern(p) for p in actors) or (user, "agent:*")
     if all_projects and projects:
         raise OpError("VALIDATION_ERROR", "Use --project or --all-projects, not both.")
+    restricted = tuple(dict.fromkeys(only))
+    if restricted and restricted != FILING_ONLY_SCOPE:
+        raise OpError("VALIDATION_ERROR", "The only supported restriction is --only issue.file.")
+    normalized_source = source.strip() if source is not None else None
+    if restricted:
+        if all_projects or len(projects) != 1:
+            raise OpError(
+                "VALIDATION_ERROR",
+                "--only issue.file requires exactly one --project and forbids --all-projects.",
+            )
+        if normalized_source is None or not normalized_source:
+            raise OpError("VALIDATION_ERROR", "--only issue.file requires a nonempty --source.")
+        if len(normalized_source) > 128 or not normalized_source.isprintable():
+            raise OpError("VALIDATION_ERROR", "--source must be at most 128 printable characters.")
+    elif source is not None:
+        raise OpError("VALIDATION_ERROR", "--source is available only with --only issue.file.")
+    for name, value in (
+        ("--ops-per-minute", ops_per_minute),
+        ("--bytes-per-minute", bytes_per_minute),
+        ("--max-staged-bytes", max_staged_bytes),
+    ):
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, int) or value < 1
+        ):
+            raise OpError("VALIDATION_ERROR", f"{name} must be a positive integer.")
+    if bytes_per_minute is not None:
+        media_cap = load_config(root).limits.max_issue_media_file_bytes
+        if bytes_per_minute < media_cap:
+            raise OpError(
+                "VALIDATION_ERROR",
+                "--bytes-per-minute must be at least the server's max_issue_media_file_bytes "
+                f"({media_cap} bytes).",
+                {"limit_bytes": media_cap},
+            )
     for slug in projects:
         admin.check_slug(slug)
     scope = ("*",) if all_projects else tuple(dict.fromkeys(projects))
     token_id, secret = new_token_id(), new_secret()
     record = TokenRecord(
         id=token_id,
-        sha256=hash_secret(secret),
+        sha256=(FILING_HASH_PREFIX if restricted else "") + hash_secret(secret),
         user=user,
         machine=machine,
         actors=tuple(dict.fromkeys(patterns)),
         projects=scope,
         created_at=utc_now(),
+        only=restricted,
+        source=normalized_source,
+        ops_per_minute=ops_per_minute,
+        bytes_per_minute=bytes_per_minute,
+        max_staged_bytes=max_staged_bytes,
     )
     with admin.admin_lock(root):
         records = _read(root)
@@ -360,6 +486,11 @@ def grant(
         raise OpError("VALIDATION_ERROR", "Give at least one --project or --actor.")
 
     def change(record: TokenRecord) -> TokenRecord:
+        if record.filing_only and projects:
+            raise OpError(
+                "TOKEN_RESTRICTED",
+                "A filing-only token's project scope cannot be widened; revoke and replace it.",
+            )
         return replace(
             record,
             projects=tuple(dict.fromkeys((*record.projects, *projects))),
