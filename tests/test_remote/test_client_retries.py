@@ -312,6 +312,165 @@ def _progress_threads() -> list[threading.Thread]:
     return [t for t in threading.enumerate() if t.name == "lattice-write-progress"]
 
 
+def test_progress_fake_clock_covers_in_flight_retry_and_post_deadline_lines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = [10.0]
+    monkeypatch.setattr(client, "PROGRESS_SECONDS", 1.0)
+    monkeypatch.setattr(client, "_now", lambda: now[0])
+    lines: list[str] = []
+    monkeypatch.setattr(client, "_progress", lines.append)
+
+    progress = client._Progress(_remote("http://fake", retry_seconds=3.0), 10.0, 13.0)
+    now[0] = 11.0
+    progress.tick(in_flight=True)  # The request can still be in flight before its first failure.
+    progress.state = "busy"
+    progress.begin(now[0])
+    now[0] = 12.0
+    progress.tick(in_flight=True)  # Retry progress is distinct from uncertain waiting.
+    now[0] = 13.0
+    progress.tick(in_flight=True)
+    now[0] = 14.0
+    progress.tick(in_flight=True)
+
+    warning = "if the request reached it, the write may have applied"
+    assert lines[0].startswith("still waiting for team to answer (")
+    assert lines[0].endswith(warning)
+    assert lines[1].endswith("is busy; retrying for up to 3 s")
+    assert lines[2].startswith("team still busy (")
+    assert len(lines[3:]) == 2
+    assert all(line.startswith("still waiting for team to answer (") for line in lines[3:])
+    assert all(line.endswith(warning) for line in lines[3:])
+    assert all("op_" not in line and "errno" not in line.lower() for line in lines)
+
+
+def test_post_operation_progress_uses_real_ticker_with_fake_http_and_clock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = 100.0
+    retry_seconds = 0.12
+    interval = 0.005  # The real Event wait has a 0.01 s floor; Events control ordering.
+    deadline = started + retry_seconds
+    clock_lock = threading.Lock()
+    now = [started]
+    request1_entered = threading.Event()
+    pre_notice = threading.Event()
+    request2_entered = threading.Event()
+    release_request2 = threading.Event()
+    operation_done = threading.Event()
+    lines_changed = threading.Condition()
+    lines: list[str] = []
+    post_deadline_waits = 0
+    outcomes: list[Any] = []
+    output_at_return: list[int] = []
+
+    def fake_now() -> float:
+        with clock_lock:
+            return now[0]
+
+    def set_now(value: float) -> None:
+        with clock_lock:
+            now[0] = value
+
+    def fake_sleep(seconds: float) -> None:
+        with clock_lock:
+            now[0] += seconds
+
+    def progress(line: str) -> None:
+        nonlocal post_deadline_waits
+        with lines_changed:
+            lines.append(line)
+            if line.startswith("still waiting for team to answer ("):
+                if fake_now() < deadline:
+                    pre_notice.set()
+                else:
+                    post_deadline_waits += 1
+                    lines_changed.notify_all()
+
+    monkeypatch.setattr(client, "PROGRESS_SECONDS", interval)
+    monkeypatch.setattr(client, "_now", fake_now)
+    monkeypatch.setattr(client, "_sleep", fake_sleep)
+    monkeypatch.setattr(client, "_progress", progress)
+    monkeypatch.setattr(client, "OP_POLICY", http.Policy(1.0, 1.5))
+
+    calls = 0
+
+    def request(*args: Any, **kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            request1_entered.set()
+            if not pre_notice.wait(10):
+                raise AssertionError("ticker did not emit the forced pre-notice line")
+            raise http.ServerError("BOARD_BUSY", "busy", {}, status=503)
+        if calls == 2:
+            request2_entered.set()
+            if not release_request2.wait(10):
+                raise AssertionError("test did not release the post-deadline request")
+            raise http.Unreachable("read timed out", sent=True)
+        raise AssertionError(f"unexpected HTTP attempt {calls}")
+
+    monkeypatch.setattr(http, "request", request)
+
+    def run_operation() -> None:
+        try:
+            outcomes.append(
+                client.post_operation(
+                    _remote("http://fake", retry_seconds=retry_seconds),
+                    "demo",
+                    "task.create",
+                    dict(BODY),
+                )
+            )
+        except Exception as exc:  # surfaced in the test thread below
+            outcomes.append(exc)
+        finally:
+            with lines_changed:
+                output_at_return.append(len(lines))
+            operation_done.set()
+
+    operation = threading.Thread(target=run_operation, name="lat394-post-operation")
+    operation.start()
+    try:
+        assert request1_entered.wait(10)
+        set_now(started + interval)
+        assert pre_notice.wait(10)
+        assert request2_entered.wait(10)
+
+        set_now(deadline + interval)
+        for expected in range(1, 4):
+            with lines_changed:
+                assert lines_changed.wait_for(lambda: post_deadline_waits >= expected, timeout=10)
+            if expected < 3:
+                with clock_lock:
+                    now[0] += interval
+    finally:
+        pre_notice.set()
+        release_request2.set()
+        assert operation_done.wait(10)
+        operation.join(timeout=10)
+
+    assert not operation.is_alive()
+    assert len(lines) == output_at_return[0]
+    assert len(outcomes) == 1
+    assert isinstance(outcomes[0], OpError) and outcomes[0].code == "OUTCOME_UNKNOWN"
+    assert calls == 2
+    assert lines[0].startswith("still waiting for team to answer (")
+    assert lines[0].endswith("if the request reached it, the write may have applied")
+    retry_notice = next(i for i, line in enumerate(lines) if "is busy; retrying" in line)
+    assert retry_notice > 0
+    assert lines[retry_notice].endswith("is busy; retrying for up to 0.12 s")
+    busy = [line for line in lines if "still busy" in line]
+    waiting = [line for line in lines if line.startswith("still waiting for team to answer (")]
+    assert busy and len(waiting) >= 4
+    assert all(
+        line.endswith("if the request reached it, the write may have applied") for line in waiting
+    )
+    assert all("op_" not in line and "errno" not in line.lower() for line in lines)
+    assert not _progress_threads()
+
+
+@pytest.mark.perf  # LAT-363 timing lane; LAT-394 keeps the real-clock cadence check here.
 def test_progress_keeps_coming_while_a_request_blocks_past_the_window(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
@@ -336,6 +495,11 @@ def test_progress_keeps_coming_while_a_request_blocks_past_the_window(
     assert ended - started >= 1.9  # 0.5 s backoff + 1.5 s read timeout, past the window
     assert not _progress_threads()
     lines = capsys.readouterr().err.splitlines()
+    leading_waiting: str | None = None
+    if lines and lines[0].startswith("lattice: still waiting for team to answer ("):
+        leading_waiting = lines.pop(0)
+    if leading_waiting is not None:
+        assert leading_waiting.endswith("if the request reached it, the write may have applied")
     assert lines[0].endswith("is busy; retrying for up to 0.6 s")
     within = [line for line in lines if "still busy" in line]
     waiting = [line for line in lines if "still waiting for team to answer" in line]
@@ -344,7 +508,8 @@ def test_progress_keeps_coming_while_a_request_blocks_past_the_window(
     assert all(
         line.endswith("if the request reached it, the write may have applied") for line in waiting
     )
-    assert all("op_" not in line and "errno" not in line.lower() for line in lines)
+    transcript = ([leading_waiting] if leading_waiting is not None else []) + lines
+    assert all("op_" not in line and "errno" not in line.lower() for line in transcript)
     marks = [started, *times, ended]
     assert max(b - a for a, b in zip(marks, marks[1:], strict=False)) < 0.5
     time.sleep(0.5)  # a ticker left behind would print here
