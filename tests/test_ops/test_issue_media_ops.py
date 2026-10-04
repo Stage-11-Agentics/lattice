@@ -331,8 +331,12 @@ def test_converted_source_size_over_limit_is_rejected_before_staging(
     )
 
     assert exc.code == "PAYLOAD_TOO_LARGE"
-    assert exc.details["size_bytes"] == source_size
-    assert exc.details["limit_bytes"] == 1024 * 1024
+    assert "original source for converted payload small.jpg" in exc.message
+    assert exc.details == {
+        "reason": "MEDIA_FILE_TOO_LARGE",
+        "size_bytes": source_size,
+        "limit_bytes": 1024 * 1024,
+    }
     assert media_files(board) == []
     assert not (board.lattice_dir / "issues").exists()
 

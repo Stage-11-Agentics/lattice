@@ -329,7 +329,12 @@ def _decode_one(
     staged = "staged" in payload
     source = item.get("converted_from")
     if source is not None and source["size_bytes"] > per_file:
-        raise _too_large_file(name, source["size_bytes"], per_file, nothing)
+        raise _too_large_file(
+            f"original source for converted payload {name}",
+            source["size_bytes"],
+            per_file,
+            nothing,
+        )
     if staged:
         if stage_manager is None:
             raise OpError(

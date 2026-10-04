@@ -76,6 +76,41 @@ def test_issue_file_accepts_the_legacy_text_operation_parameter(board: LocalBoar
     assert "text" not in result.events[0]["data"]
 
 
+@pytest.mark.parametrize(
+    ("params", "message", "details"),
+    [
+        pytest.param(
+            {"title": "current", "text": "legacy"},
+            "Provide title or legacy text, not both.",
+            {},
+            id="both-title-and-text",
+        ),
+        pytest.param(
+            {"text": " \t "},
+            "Issue title must not be empty.",
+            {},
+            id="whitespace-only-text",
+        ),
+        pytest.param(
+            {},
+            "Issue title is required.",
+            {"reason": "MISSING_PARAM", "param": "title"},
+            id="missing-title",
+        ),
+    ],
+)
+def test_issue_file_rejects_invalid_title_inputs_before_number_allocation(
+    board: LocalBoard, params: dict, message: str, details: dict | None
+) -> None:
+    with pytest.raises(OpError) as exc:
+        run(board, "issue.file", **params)
+
+    assert exc.value.code == "VALIDATION_ERROR"
+    assert exc.value.message == message
+    assert exc.value.details == details
+    assert not (board.lattice_dir / "issues").exists()
+
+
 def test_issue_file_rejects_an_empty_title_without_allocating_a_number(board: LocalBoard) -> None:
     with pytest.raises(OpError) as exc:
         run(board, "issue.file", title="  ")

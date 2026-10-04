@@ -1673,7 +1673,7 @@ class TestIssueHostGuard:
     loopback bind, any Host on a network bind (as ``origin_allowed`` for POSTs)."""
 
     @staticmethod
-    def _serve(tmp_path, bind):
+    def _serve(tmp_path, bind, *, advertised_host=None):
         import threading
 
         from lattice.core.config import default_config, serialize_config
@@ -1684,6 +1684,8 @@ class TestIssueHostGuard:
         lattice_dir = tmp_path / ".lattice"
         atomic_write(lattice_dir / "config.json", serialize_config(default_config()))
         server = create_server(lattice_dir, bind, 0)
+        if advertised_host is not None:
+            server.server_address = (advertised_host, server.server_address[1])
         worker = threading.Thread(target=server.serve_forever, daemon=True)
         worker.start()
         return server, worker
@@ -1725,9 +1727,11 @@ class TestIssueHostGuard:
             worker.join(timeout=5)
 
     def test_network_bind_serves_issue_routes_to_any_host(self, tmp_path):
-        server, worker = self._serve(tmp_path, "0.0.0.0")
+        network_host = "0.0.0.0"
+        server, worker = self._serve(tmp_path, "127.0.0.1", advertised_host=network_host)
         port = server.server_address[1]
         try:
+            assert server.server_address == ("0.0.0.0", port)
             for host in (f"box.lan:{port}", f"198.51.100.9:{port}", f"0.0.0.0:{port}"):
                 # 409: issues are off on this board, which means the Host was accepted.
                 assert self._request(port, "GET", "/api/issues", host)[0] == 409

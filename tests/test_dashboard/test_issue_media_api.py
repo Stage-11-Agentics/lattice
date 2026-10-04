@@ -245,7 +245,8 @@ def test_malformed_issue_snapshot_returns_structured_http_error(
 
 def test_network_bind_allows_lan_host_for_api_and_media_gets(served) -> None:  # noqa: ANN001
     _local_server, issue, ld, _config = served
-    server = create_server(ld, "0.0.0.0", 0)
+    server = create_server(ld, "127.0.0.1", 0)
+    server.server_address = ("0.0.0.0", server.server_address[1])
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01})
     thread.daemon = True
     thread.start()
@@ -258,6 +259,49 @@ def test_network_bind_allows_lan_host_for_api_and_media_gets(served) -> None:  #
     finally:
         server.shutdown()
         server.server_close()
+
+
+@pytest.mark.parametrize("has_issue_metadata", [False, True], ids=["empty-scaffold", "real-issue"])
+def test_disabled_media_route_message_uses_actual_issue_metadata(
+    tmp_path: Path, has_issue_metadata: bool
+) -> None:
+    ensure_lattice_dirs(tmp_path)
+    ld = tmp_path / ".lattice"
+    config = default_config()
+    config["issues"] = {"enabled": True}
+    atomic_write(ld / "config.json", serialize_config(config))
+
+    issue_id = "iss_01ARZ3NDEKTSV4RRFFQ69G5FAV"
+    if has_issue_metadata:
+        issue = (
+            resolve_board(tmp_path)
+            .execute("issue.file", {"title": "kept issue"}, Caller(actor="agent:qa"))
+            .value
+        )
+        issue_id = issue["id"]
+    else:
+        (ld / "issues" / "media").mkdir(parents=True)
+
+    config["issues"] = {"enabled": False}
+    atomic_write(ld / "config.json", serialize_config(config))
+    server = create_server(ld, "127.0.0.1", 0)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01})
+    thread.daemon = True
+    thread.start()
+    try:
+        status, _headers, body = get(
+            server,
+            f"/api/issues/{issue_id}/media/med_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        )
+        error = json.loads(body)["error"]
+        assert status == 409
+        assert error["code"] == "ISSUES_DISABLED"
+        kept_message = "Existing issues are kept and reappear when it is on."
+        assert (kept_message in error["message"]) is has_issue_metadata
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 def test_ranges_work_without_pread(served, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: ANN001

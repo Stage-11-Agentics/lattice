@@ -124,6 +124,33 @@ def test_turning_it_off_keeps_the_data(on: Path, ok, invoke) -> None:
     assert [v["short_id"] for v in ok("issue", "list")] == ["LAT-I1"]
 
 
+def test_failed_first_filing_empty_media_scaffold_is_not_kept_issue_data(
+    on: Path, invoke, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.issue_media_helpers import png
+
+    photo = tmp_path / "failed.png"
+    photo.write_bytes(png())
+
+    def fail_event_append(*_args, **_kwargs):  # noqa: ANN002, ANN003
+        raise OSError("simulated issue event append failure")
+
+    monkeypatch.setattr("lattice.ops.issue_file.write_issue_events", fail_event_append)
+    filed = invoke("issue", "file", "failed first filing", "--evidence", str(photo), *A, "--json")
+    assert filed.exit_code != 0, filed.output
+
+    media_root = on / ".lattice" / "issues" / "media"
+    assert media_root.is_dir()
+    assert not any(path.is_file() for path in media_root.rglob("*"))
+
+    _set_config(on, issues=None)
+    listed = invoke("issue", "list", "--json")
+    assert listed.exit_code == 1, listed.output
+    error = json.loads(listed.stdout)["error"]
+    assert error["code"] == "ISSUES_DISABLED"
+    assert "Existing issues are kept and reappear when it is on." not in error["message"]
+
+
 # ---------------------------------------------------------------------------
 # AC-2, AC-3: filing
 # ---------------------------------------------------------------------------

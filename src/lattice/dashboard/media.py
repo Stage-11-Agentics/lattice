@@ -31,7 +31,7 @@ from lattice.core.issue_media import MEDIA_TYPES
 from lattice.core.issues import issues_disabled_message
 from lattice.dashboard import api
 from lattice.storage.issue_media import frames_dir, media_path, media_root
-from lattice.storage.issues import issues_dir, read_issue_snapshot
+from lattice.storage.issues import has_issue_metadata, read_issue_snapshot
 
 #: The two media routes; the groups are checked below, so a malformed ID is a 400.
 MEDIA_ROUTE = re.compile(r"^/api/issues/([^/]*)/media/([^/]*)(?:/frames/([^/]*))?$")
@@ -249,8 +249,12 @@ def serve_issue_media(handler: Any, target: Any, path: str) -> None:
         _refuse(handler, 500, "INTEGRITY_ERROR", "Cannot read .lattice/config.json")
         return
     if not issues_enabled(config):
-        exists = issues_dir(lattice_dir).is_dir()
-        _refuse(handler, 409, "ISSUES_DISABLED", issues_disabled_message(exists))
+        _refuse(
+            handler,
+            409,
+            "ISSUES_DISABLED",
+            issues_disabled_message(has_issue_metadata(lattice_dir)),
+        )
         return
     try:
         snapshot = read_issue_snapshot(lattice_dir, issue_id)

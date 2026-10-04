@@ -1445,3 +1445,10 @@ Additionally, `lattice advance N` processed multiple tasks in a single context w
   and issue writes, including hosted media operations.
 - **Why:** issue metadata must travel with the board while evidence bytes stay
   outside ordinary copies and audit history.
+
+## 2026-10-04: `issue.file` legacy text alias clarification (LAT-371)
+
+- **Compatibility:** `issue.file` accepts the legacy `text` parameter in place
+  of `title`, but refuses a request that supplies both. New events, snapshots
+  and views store `title` and `description`; the alias does not add a stored
+  `text` field.
