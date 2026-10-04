@@ -1079,11 +1079,6 @@ async def submit(request: Request, state: Any) -> Response:
             {key: receipt[key] for key in RECEIPT_FIELDS}, status_code=200
         )
     except LockTimeout as exc:
-        if source_ref is not None:
-            try:
-                await _cleanup_source_stages(state, secret, record, token, project, source_ref)
-            except OpError as cleanup_error:
-                return app_module.envelope_error(_plain_error(cleanup_error))
         return app_module.envelope_error(_plain_error(OpError("BOARD_BUSY", str(exc))))
     except OpError as exc:
         # A successful source/ref dedupe keeps retry media owned until its

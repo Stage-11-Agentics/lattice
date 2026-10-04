@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import http.client
 import json
@@ -756,10 +757,17 @@ def test_reporter_upload_hash_is_computed_in_the_media_worker(
     original_prepare = media_staging.prepare_media_file
     hash_threads: list[int] = []
     prepare_threads: list[int] = []
+    event_loop_hash_threads: list[int] = []
 
     def track_sha256(data=b"", *args, **kwargs):
         if isinstance(data, (bytes, bytearray)) and bytes(data) == raw:
             hash_threads.append(threading.get_ident())
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                pass
+            else:
+                event_loop_hash_threads.append(threading.get_ident())
         return original_sha256(data, *args, **kwargs)
 
     def track_prepare(*args, **kwargs):
@@ -781,6 +789,7 @@ def test_reporter_upload_hash_is_computed_in_the_media_worker(
     assert status == 201, response
     assert hash_threads and prepare_threads
     assert hash_threads[-1] == prepare_threads[-1]
+    assert event_loop_hash_threads == []
 
 
 def test_submit_rate_limit_closes_without_draining_the_request_body(
@@ -821,23 +830,61 @@ def test_submit_maps_storage_lock_timeout_to_plain_board_busy(
     record = result["link"]
     secret = secret_from(result["url"])
     source_ref = generate_instance_id().removeprefix("inst_")
+    raw = png(4, 2)
+    digest = hashlib.sha256(raw).hexdigest()
     with running_server(root, config=NO_AUDIT) as server:
         project = server.project("alpha")
+        stage_status, _, stage = server.request(
+            "PUT",
+            f"/r/{secret}/media/{source_ref}/{digest}?filename=retry.png",
+            body=raw,
+            headers={
+                "Content-Type": "application/octet-stream",
+                "Origin": record["public_origin"],
+            },
+        )
+        assert stage_status == 201, stage
+        staged = stage["data"]
+        original_run_write = project.run_write
+        write_attempts = 0
 
-        def timeout(_write) -> None:
-            raise LockTimeout("private storage lock detail")
+        def timeout_once(write):
+            nonlocal write_attempts
+            write_attempts += 1
+            if write_attempts == 1:
+                raise LockTimeout("private storage lock detail")
+            return original_run_write(write)
 
-        monkeypatch.setattr(project, "run_write", timeout)
+        monkeypatch.setattr(project, "run_write", timeout_once)
         status, _, refusal = post_report(
             server,
             secret,
-            {"op_id": generate_op_id(), "source_ref": source_ref, "title": "Busy board"},
+            {
+                "op_id": generate_op_id(),
+                "source_ref": source_ref,
+                "title": "Busy board",
+                "media": [staged],
+            },
+            origin=record["public_origin"],
+        )
+        retry_status, _, retry_receipt = post_report(
+            server,
+            secret,
+            {
+                "op_id": generate_op_id(),
+                "source_ref": source_ref,
+                "title": "Retry after busy board",
+                "media": [staged],
+            },
             origin=record["public_origin"],
         )
     assert status == 503
     assert refusal["error"]["code"] == "BOARD_BUSY"
     assert refusal["error"]["message"] == reporter_links.REPORTER_COPY["BOARD_BUSY"]
     assert "private storage lock detail" not in refusal["error"]["message"]
+    assert retry_status == 200, retry_receipt
+    assert retry_receipt["deduplicated"] is False
+    assert retry_receipt["source_ref"] == source_ref
 
 
 def test_submit_rechecks_revoke_under_lock_before_committing_body(
@@ -915,6 +962,22 @@ def test_submit_replay_after_revoke_cannot_file_or_keep_stages(root: Path) -> No
         assert status == 200, receipt
         issue_dir = root / "projects" / "alpha" / ".lattice" / "issues"
         assert len(list(issue_dir.glob("iss_*.json"))) == 1
+
+        unconsumed_raw = png(5, 3)
+        unconsumed_digest = hashlib.sha256(unconsumed_raw).hexdigest()
+        unconsumed_source_ref = generate_instance_id().removeprefix("inst_")
+        unconsumed_status, _, unconsumed = server.request(
+            "PUT",
+            f"/r/{secret}/media/{unconsumed_source_ref}/{unconsumed_digest}?filename=pending.png",
+            body=unconsumed_raw,
+            headers={
+                "Content-Type": "application/octet-stream",
+                "Origin": record["public_origin"],
+            },
+        )
+        assert unconsumed_status == 201, unconsumed
+        media_hashes = reporter_links._submitted_hashes([unconsumed["data"]])
+        assert project.issue_media._read_stage_metadata(unconsumed_digest) is not None
 
         reporter_links.revoke_link(root, record["id"])
         replay_status, _, replay = post_report(
@@ -1147,6 +1210,20 @@ def test_revoke_on_live_server_with_unloaded_project_returns_pending_cleanup(
         token = next(row for row in tokens._read(root) if row.id == record["token_id"])
         assert token.revoked_at
         assert project.issue_media._read_stage_metadata(digest) is not None
+        non_json = CliRunner().invoke(
+            cli,
+            [
+                "server",
+                "project",
+                "reporter-link",
+                "revoke",
+                record["id"],
+                "--root",
+                str(root),
+            ],
+        )
+        assert non_json.exit_code == 0, non_json.output
+        assert "cleanup is pending" in non_json.output.lower()
 
 
 def test_stopped_server_revoke_cleans_under_server_lock_lease(root: Path, monkeypatch) -> None:

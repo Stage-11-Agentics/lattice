@@ -182,10 +182,16 @@ def reporter_link_revoke(link_id: str, root: str | None, is_json: bool) -> None:
     """Revoke a reporter link and remove its unreferenced staged media."""
     from lattice.server.reporter_links import revoke_link
 
+    def render(row: dict) -> str:
+        message = f"Revoked reporter link {row['id']} for {row['project']}."
+        if row.get("cleanup") == "pending":
+            message += " Media cleanup is pending until the project is available."
+        return message
+
     _run(
         is_json,
         lambda: revoke_link(_root(root), link_id),
-        lambda row: f"Revoked reporter link {row['id']} for {row['project']}.",
+        render,
     )
 
 
