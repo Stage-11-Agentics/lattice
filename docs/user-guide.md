@@ -119,7 +119,7 @@ lattice dashboard
 
 reads and writes the same `.lattice/` directory your agents use. an agent commits a status change via CLI. your dashboard reflects it on refresh. one source of truth. many windows into it.
 
-if an agent makes changes that need a dashboard reset (schema updates, config changes), it can restart your running dashboard in place without killing your terminal session:
+If Python handlers or dashboard assets change, `lattice restart` stops the listening dashboard after a bounded write drain and starts a fresh process with the same board, bind address, port, and output flags. Connected browser clients are not signalled. SIGHUP does not reload Python code.
 
 ```bash
 lattice restart              # default port 8799

@@ -2029,3 +2029,263 @@ class TestIssueWritesOverHttp:
                 assert filed["data"]["filed_by"] == "dashboard:web"
             finally:
                 self._stop(server, worker)
+
+def _start_restart_test_server(lattice_dir, monkeypatch, post_handler):  # noqa: ANN001
+    import threading
+
+    from lattice.dashboard.server import create_server
+
+    server = create_server(lattice_dir, "127.0.0.1", 0)
+    monkeypatch.setattr(server.RequestHandlerClass, "_do_post", post_handler)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    return server, worker
+
+
+def _restart_test_post(server, path="/api/test"):
+    import http.client
+
+    host = f"127.0.0.1:{server.server_address[1]}"
+    conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+    conn.request(
+        "POST",
+        path,
+        json.dumps({"value": "test"}),
+        {"Content-Type": "application/json", "Origin": f"http://{host}", "Host": host},
+    )
+    response = conn.getresponse()
+    result = response.status, response.read()
+    conn.close()
+    return result
+
+
+def test_boot_identity_is_stable_and_bypasses_board_lock(dashboard_server):
+    import os
+    import threading
+
+    from lattice.dashboard.server import _BOARD_LOCK
+
+    base_url, _ld, _ids = dashboard_server
+    result = []
+    finished = threading.Event()
+
+    def get_boot():
+        result.append(_get(base_url, "/api/boot"))
+        finished.set()
+
+    worker = threading.Thread(target=get_boot, daemon=True)
+    try:
+        with _BOARD_LOCK:
+            worker.start()
+            assert finished.wait(1), "/api/boot waited for the board lock"
+    finally:
+        worker.join(timeout=2)
+
+    status, first = result[0]
+    assert status == 200
+    assert first["ok"] is True
+    assert first["data"]["pid"] == os.getpid()
+    assert first["data"]["boot_id"]
+    assert _get(base_url, "/api/boot")[1]["data"] == first["data"]
+
+
+def test_write_drain_waits_for_response_and_refuses_later_write(
+    populated_lattice_dir, monkeypatch
+):
+    import threading
+
+    from lattice.dashboard import api
+
+    lattice_dir, _ids = populated_lattice_dir
+    entered = threading.Event()
+    release = threading.Event()
+    post_result = []
+    drain_result = []
+
+    def slow_post(handler, _path, _body):  # noqa: ANN001
+        entered.set()
+        assert release.wait(4)
+        handler._send(api.ok({"saved": True}))
+
+    server, worker = _start_restart_test_server(lattice_dir, monkeypatch, slow_post)
+    writer = threading.Thread(target=lambda: post_result.append(_restart_test_post(server)))
+    drain = threading.Thread(
+        target=lambda: drain_result.append(server.begin_write_drain(timeout=4))
+    )
+    try:
+        writer.start()
+        assert entered.wait(2)
+        drain.start()
+        with server._restart_condition:
+            assert server._restart_condition.wait_for(lambda: server._draining, timeout=2)
+
+        status, body = _restart_test_post(server, "/api/rejected-during-drain")
+        assert status == 503
+        assert b"RESTARTING" in body
+        release.set()
+        writer.join(timeout=3)
+        drain.join(timeout=3)
+        assert post_result and post_result[0][0] == 200
+        assert drain_result == [(True, 0)]
+    finally:
+        release.set()
+        if drain.is_alive():
+            drain.join(timeout=2)
+        if writer.is_alive():
+            writer.join(timeout=2)
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=2)
+
+
+def test_write_parsed_at_drain_edge_gets_explicit_refusal(populated_lattice_dir, monkeypatch):
+    import threading
+
+    from lattice.dashboard import api
+
+    lattice_dir, _ids = populated_lattice_dir
+    admission_entered = threading.Event()
+    allow_admission = threading.Event()
+    post_called = threading.Event()
+    post_result = []
+    drain_result = []
+
+    def should_not_run(handler, _path, _body):  # noqa: ANN001
+        post_called.set()
+        handler._send(api.ok({"saved": True}))
+
+    server, worker = _start_restart_test_server(lattice_dir, monkeypatch, should_not_run)
+    original_admit = server.admit_write
+
+    def paused_admission(request):  # noqa: ANN001
+        admission_entered.set()
+        assert allow_admission.wait(3)
+        return original_admit(request)
+
+    monkeypatch.setattr(server, "admit_write", paused_admission)
+    writer = threading.Thread(target=lambda: post_result.append(_restart_test_post(server)))
+    drain = threading.Thread(
+        target=lambda: drain_result.append(server.begin_write_drain(timeout=3))
+    )
+    try:
+        writer.start()
+        assert admission_entered.wait(2)
+        drain.start()
+        with server._restart_condition:
+            assert server._restart_condition.wait_for(lambda: server._draining, timeout=2)
+        allow_admission.set()
+        writer.join(timeout=3)
+        drain.join(timeout=3)
+        assert post_result and post_result[0][0] == 503
+        assert b"RESTARTING" in post_result[0][1]
+        assert not post_called.is_set()
+        assert drain_result == [(True, 0)]
+    finally:
+        allow_admission.set()
+        if writer.is_alive():
+            writer.join(timeout=2)
+        if drain.is_alive():
+            drain.join(timeout=2)
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=2)
+
+
+def test_drain_timeout_resumes_the_same_listener(populated_lattice_dir, monkeypatch):
+    import threading
+
+    from lattice.dashboard import api
+
+    lattice_dir, _ids = populated_lattice_dir
+    entered = threading.Event()
+    release = threading.Event()
+    post_result = []
+
+    def slow_post(handler, _path, _body):  # noqa: ANN001
+        entered.set()
+        assert release.wait(4)
+        handler._send(api.ok({"saved": True}))
+
+    server, worker = _start_restart_test_server(lattice_dir, monkeypatch, slow_post)
+    writer = threading.Thread(target=lambda: post_result.append(_restart_test_post(server)))
+    try:
+        writer.start()
+        assert entered.wait(2)
+        assert server.begin_write_drain(timeout=0.05) == (False, 1)
+        assert server._draining is False
+
+        release.set()
+        writer.join(timeout=3)
+        assert post_result and post_result[0][0] == 200
+        status, boot = _get(f"http://127.0.0.1:{server.server_address[1]}", "/api/boot")
+        assert status == 200
+        assert boot["data"]["pid"] == server.pid
+        assert boot["data"]["boot_id"] == server.boot_id
+        assert _restart_test_post(server)[0] == 200
+    finally:
+        release.set()
+        writer.join(timeout=2)
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=2)
+
+
+def test_unparsed_and_media_read_connections_do_not_hold_drain(populated_lattice_dir, monkeypatch):
+    import socket
+    import threading
+    import time
+
+    from lattice.dashboard import api, media
+
+    lattice_dir, _ids = populated_lattice_dir
+    media_entered = threading.Event()
+    media_release = threading.Event()
+
+    def post_unused(handler, _path, _body):  # noqa: ANN001
+        handler._send(api.ok({}))
+
+    def paused_media(handler, target, path):  # noqa: ANN001
+        media_entered.set()
+        media_release.wait(4)
+
+    server, worker = _start_restart_test_server(lattice_dir, monkeypatch, post_unused)
+    monkeypatch.setattr(server.RequestHandlerClass, "protocol_version", "HTTP/1.1")
+    monkeypatch.setattr(media, "serve_issue_media", paused_media)
+    port = server.server_address[1]
+    partial = socket.create_connection(("127.0.0.1", port), timeout=2)
+    media_conn = socket.create_connection(("127.0.0.1", port), timeout=2)
+    from http.client import HTTPConnection
+
+    keepalive = HTTPConnection("127.0.0.1", port, timeout=2)
+    try:
+        keepalive.request("GET", "/api/boot")
+        assert keepalive.getresponse().status == 200
+        partial.sendall(b"GET /api/boot HTTP/1.1\r\nHost:")
+        media_conn.sendall(
+            (
+                "GET /api/issues/iss_01ARZ3NDEKTSV4RRFFQ69G5FAV/media/"
+                "med_01ARZ3NDEKTSV4RRFFQ69G5FAV HTTP/1.1\r\n"
+                f"Host: 127.0.0.1:{port}\r\n\r\n"
+            ).encode()
+        )
+        assert media_entered.wait(2)
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            with server._restart_condition:
+                states = set(server._request_states.values())
+            if "unparsed" in states and "read" in states:
+                break
+            time.sleep(0.01)
+        else:
+            pytest.fail(f"connections were not tracked before drain: {states}")
+
+        assert server.begin_write_drain(timeout=0.5) == (True, 0)
+        assert server._draining is True
+    finally:
+        partial.close()
+        media_conn.close()
+        keepalive.close()
+        media_release.set()
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=2)

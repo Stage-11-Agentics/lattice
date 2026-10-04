@@ -463,7 +463,7 @@ The CLI is Lattice's write interface — the primary way agents interact with th
 | `lattice archive <id>` | Archive a completed task |
 | `lattice unarchive <id>` | Restore an archived task |
 | `lattice dashboard` | Launch the web dashboard |
-| `lattice restart` | Restart a running dashboard (sends SIGHUP) |
+| `lattice restart` | Gracefully stop and start a fresh dashboard process with its recorded launch settings |
 | `lattice doctor` | Check project integrity |
 | `lattice rebuild <id\|--all>` | Rebuild snapshots from events |
 | `lattice setup-claude` | Add/update CLAUDE.md integration block |
