@@ -209,7 +209,8 @@ def test_a_committed_manifest_whose_staged_bytes_are_lost_does_not_stop_the_proj
     data = blob(5000, b"lost-stage")
     _crash_after_commit(root, data, monkeypatch)
     for staged in stage_dir(root).iterdir():
-        staged.unlink()
+        if staged.is_file():
+            staged.unlink()
 
     snapshot = _snapshot(root)
     entry = snapshot["media"][0]

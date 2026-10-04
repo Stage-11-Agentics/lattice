@@ -19,6 +19,7 @@ from lattice.cli.main import cli
 from lattice.core.issue_media import frame_name
 from lattice.server import admin
 from lattice.server.testing import running_server
+from tests.issue_media_helpers import png
 from tests.test_server.test_issue_media_routes import (
     CLIP,
     FRAME,
@@ -32,7 +33,7 @@ from tests.test_server.test_issue_media_routes import (
 )
 from tests.test_server.conftest import mint
 
-PHOTO = b"\x89PNG\r\n\x1a\n" + b"doctor-photo" + b"\x00" * 2980
+PHOTO = png()
 
 
 @pytest.fixture()
@@ -161,7 +162,7 @@ def test_a_missing_frame_sidecar_and_a_damaged_frame(root: Path, filed_issue: di
 def test_a_stale_staged_object_is_reported_and_counted(root: Path, filed_issue: dict) -> None:
     token = mint(root, projects=[SLUG])
     with running_server(root) as server:
-        stage_ok(server, token, PHOTO[:-1] + b"\x01")  # staged, never filed
+        stage_ok(server, token, png(4, 2))  # staged, never filed
     meta = next(stage_dir(root).glob("*.json"))
     raw = json.loads(meta.read_text())
     assert doctor(root)["summary"]["staged_objects"] == 1
