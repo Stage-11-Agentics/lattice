@@ -57,3 +57,49 @@ def test_server_token_create_persists_filing_contract(tmp_path: Path) -> None:
     assert record["ops_per_minute"] == 7
     assert record["bytes_per_minute"] == 8192
     assert record["max_staged_bytes"] == 16384
+
+
+def test_server_token_create_allows_limit_overrides_without_restriction(tmp_path: Path) -> None:
+    root = tmp_path / "server-root"
+    runner = CliRunner()
+    initialized = runner.invoke(cli, ["server", "init", "--root", str(root), "--json"])
+    assert initialized.exit_code == 0, initialized.output
+    project = runner.invoke(
+        cli,
+        ["server", "project", "create", "alpha", "--root", str(root), "--json"],
+    )
+    assert project.exit_code == 0, project.output
+
+    result = runner.invoke(
+        cli,
+        [
+            "server",
+            "token",
+            "create",
+            "--user",
+            "human:alice",
+            "--machine",
+            "trusted-service",
+            "--actor",
+            "agent:service",
+            "--project",
+            "alpha",
+            "--ops-per-minute",
+            "91",
+            "--bytes-per-minute",
+            "131072",
+            "--max-staged-bytes",
+            "262144",
+            "--root",
+            str(root),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    record = json.loads(result.stdout)["data"]["record"]
+    assert record.get("only", []) == []
+    assert record.get("source") is None
+    assert record["ops_per_minute"] == 91
+    assert record["bytes_per_minute"] == 131072
+    assert record["max_staged_bytes"] == 262144

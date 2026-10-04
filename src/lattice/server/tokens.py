@@ -404,12 +404,6 @@ def create_token(
             isinstance(value, bool) or not isinstance(value, int) or value < 1
         ):
             raise OpError("VALIDATION_ERROR", f"{name} must be a positive integer.")
-    if not restricted and any(
-        value is not None for value in (ops_per_minute, bytes_per_minute, max_staged_bytes)
-    ):
-        raise OpError(
-            "VALIDATION_ERROR", "Per-token limits are available only with --only issue.file."
-        )
     for slug in projects:
         admin.check_slug(slug)
     scope = ("*",) if all_projects else tuple(dict.fromkeys(projects))
