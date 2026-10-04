@@ -28,6 +28,7 @@ from lattice.core.errors import OpError
 from lattice.core.events import utc_now
 from lattice.core.ids import generate_instance_id
 from lattice.server import admin, control
+from lattice.storage.locks import LockTimeout
 from lattice.storage.fs import atomic_write, ensure_dir
 
 REGISTRY_NAME = "reporter_links.json"
@@ -459,9 +460,16 @@ def revoke_link(root: Path, link_id: str) -> dict[str, Any]:
         )
         if not answer.get("ok"):
             error = answer.get("error") or {}
-            raise OpError(
-                error.get("code", "BOARD_BUSY"), "Link revoked; media cleanup is pending."
-            )
+            if error.get("code") == "BOARD_UNAVAILABLE":
+                # The running server owns the project, but an unloaded or
+                # unavailable board cannot clean runtime objects right now.
+                # Link and token revocation are already durable; report the
+                # pending cleanup instead of turning a successful revoke into
+                # a CLI failure.
+                public = _public_record(record)
+                public["cleanup"] = "pending"
+                return public
+            raise OpError(error.get("code", "BOARD_BUSY"), "Link revoked; media cleanup failed.")
     else:
         try:
             _offline_cleanup(root, record)
@@ -564,7 +572,9 @@ async def page(request: Request, state: Any) -> Response:
     from lattice.server.registry import in_worker
 
     secret = request.path_params["secret"]
-    if not _canonical(request, f"/r/{secret}/") or not _ensure_no_authorization(request):
+    if not _canonical(request, f"/r/{secret}/", allow_query=True) or not _ensure_no_authorization(
+        request
+    ):
         return _not_found(request)
     record, token = await _resolve_request_link(request, state)
     if record is None or token is None:
@@ -577,7 +587,9 @@ async def page(request: Request, state: Any) -> Response:
 
 async def redirect(request: Request, state: Any) -> Response:
     secret = request.path_params["secret"]
-    if not _canonical(request, f"/r/{secret}") or not _ensure_no_authorization(request):
+    if not _canonical(request, f"/r/{secret}", allow_query=True) or not _ensure_no_authorization(
+        request
+    ):
         return _not_found(request)
     record, token = await _resolve_request_link(request, state)
     if record is None or token is None:
@@ -592,7 +604,7 @@ async def asset(request: Request, state: Any) -> Response:
     name = request.path_params["name"]
     if (
         name not in {"reporter.css", "reporter.js"}
-        or not _canonical(request, f"/r/{secret}/{name}")
+        or not _canonical(request, f"/r/{secret}/{name}", allow_query=True)
         or not _ensure_no_authorization(request)
     ):
         return _not_found(request)
@@ -766,6 +778,21 @@ async def media_stage(request: Request, state: Any) -> Response:
         except OpError as exc:
             await refuse(exc, body)
 
+        try:
+            async with state.registry.admitted(project):
+                project.require_loaded()
+            enabled, existing = await state.registry.run_locked(
+                project, lambda: app_module._issue_log_state(project), admit=False
+            )
+            if not enabled:
+                from lattice.core.issues import hosted_issues_disabled_message
+
+                raise OpError(
+                    "ISSUES_DISABLED", hosted_issues_disabled_message(existing, project.slug)
+                )
+        except OpError as exc:
+            await refuse(exc, body)
+
         received = bytearray()
         try:
             while (chunk := await body.next()) is not None:
@@ -775,7 +802,7 @@ async def media_stage(request: Request, state: Any) -> Response:
                 received.extend(chunk)
         except OpError as exc:
             await refuse(exc, body)
-        if len(received) != size or hashlib.sha256(received).hexdigest() != digest:
+        if len(received) != size:
             await refuse(
                 OpError(
                     "VALIDATION_ERROR", "The upload did not match its declared size and hash."
@@ -785,14 +812,26 @@ async def media_stage(request: Request, state: Any) -> Response:
 
         try:
             filename = _safe_filename(request.query_params.get("filename", "attachment"))
-            prepared = await app_module.in_worker(
-                lambda: prepare_media_file(
+
+            def verify_and_prepare() -> tuple[str, dict[str, Any] | None]:
+                actual_digest = hashlib.sha256(received).hexdigest()
+                if actual_digest != digest:
+                    return actual_digest, None
+                return actual_digest, prepare_media_file(
                     filename,
                     bytes(received),
                     refuse_video_without_ffmpeg=True,
                     refuse_unstrippable_photos=True,
                 )
-            )
+
+            actual_digest, prepared = await app_module.in_worker(verify_and_prepare)
+            if actual_digest != digest or prepared is None:
+                await refuse(
+                    OpError(
+                        "VALIDATION_ERROR", "The upload did not match its declared size and hash."
+                    ),
+                    body,
+                )
 
             def commit_stage() -> dict:
                 with _link_lock(
@@ -920,7 +959,11 @@ async def submit(request: Request, state: Any) -> Response:
     source_ref = None
     media: list[dict] = []
     try:
-        state.limits.enter(token.id)
+        try:
+            state.limits.enter(token.id)
+        except OpError:
+            app_module._close_after_answer(request, None)
+            raise
         entered = True
         try:
             _take_link_operation(state, token)
@@ -1035,6 +1078,13 @@ async def submit(request: Request, state: Any) -> Response:
         return app_module.AsciiJSONResponse(
             {key: receipt[key] for key in RECEIPT_FIELDS}, status_code=200
         )
+    except LockTimeout as exc:
+        if source_ref is not None:
+            try:
+                await _cleanup_source_stages(state, secret, record, token, project, source_ref)
+            except OpError as cleanup_error:
+                return app_module.envelope_error(_plain_error(cleanup_error))
+        return app_module.envelope_error(_plain_error(OpError("BOARD_BUSY", str(exc))))
     except OpError as exc:
         # A successful source/ref dedupe keeps retry media owned until its
         # ordinary expiry; terminal errors release only this source ref's stages.

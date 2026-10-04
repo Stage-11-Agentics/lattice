@@ -13,6 +13,7 @@
   const another = document.querySelector("#another");
   const FILE_LIMIT = 100 * 1024 * 1024;
   const ISSUE_LIMIT = 250 * 1024 * 1024;
+  const PHOTO_TYPES = new Set(["image/jpeg", "image/png"]);
   const ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
   const messages = {
     PHOTO_METADATA_UNSTRIPPED: "This photo could not be made private. Try another photo.",
@@ -98,7 +99,12 @@
   }
 
   function addFiles(incoming) {
-    const accepted = [...incoming].filter((file) => file.type.startsWith("image/") || file.type.startsWith("video/"));
+    const candidates = [...incoming];
+    const accepted = candidates.filter((file) => {
+      const type = (file.type || "").toLowerCase();
+      return PHOTO_TYPES.has(type) || type.startsWith("image/heic") || type.startsWith("image/heif") || type.startsWith("video/");
+    });
+    const skipped = candidates.filter((file) => !accepted.includes(file));
     const existing = new Set(files.map((entry) => `${entry.file.name}:${entry.file.size}:${entry.file.lastModified}`));
     const additions = accepted.filter((file) => !existing.has(`${file.name}:${file.size}:${file.lastModified}`));
     if (additions.some((file) => file.size > FILE_LIMIT)) {
@@ -111,7 +117,20 @@
     }
     files.push(...additions.map((file) => ({ file, staged: null })));
     renderFiles();
-    if (additions.length) show("Files are ready to upload when you send the report.");
+    if (skipped.length) {
+      const reasons = [...new Set(skipped.map((file) => {
+        const type = (file.type || "").toLowerCase();
+        if (type === "image/webp" || type === "image/gif") {
+          return "WebP and GIF photos are refused by the privacy rule.";
+        }
+        if (!type) return "Some files have no recognizable file type.";
+        return "Only JPEG, PNG or HEIC photos and videos are supported.";
+      }))];
+      const noun = skipped.length === 1 ? "file" : "files";
+      show(`${skipped.length} ${noun} skipped: ${reasons.join(" ")}`, true);
+    } else if (additions.length) {
+      show("Files are ready to upload when you send the report.");
+    }
   }
 
   function messageFor(code) {
@@ -201,6 +220,10 @@
       renderReceipt(await responseData(response));
     } catch (error) {
       show(error.message || messageFor("GENERIC"), true);
+      // The response may have been lost after issue.file committed. A new
+      // operation ID avoids OP_ID_REUSED after an edited resend; sourceRef
+      // remains stable so the server returns the original filing receipt.
+      opId = null;
       if (error.code && !["RATE_LIMITED", "BOARD_BUSY"].includes(error.code)) {
         for (const entry of files) entry.staged = null;
         renderFiles();

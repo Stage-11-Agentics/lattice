@@ -482,6 +482,9 @@ Every response carries `Lattice-Server-Version`, `Lattice-Min-Client-Version` (�
 | `GET /p/{slug}/`, `/p/{slug}/static/*`, `/p/{slug}/api/*` | session or token | Hosted dashboard (§10) |
 | `PUT /p/{slug}/issues/media/staging/{sha256}` | session | Same-origin raw issue-media upload for the hosted dashboard; returns prepared media metadata backed by project-private staging (§10, §8.12) |
 | `GET /p/{slug}/issues/media/{issue_id}/{media_id}` and `GET /p/{slug}/issues/media/{issue_id}/{media_id}/frames/{frame}` | session | Same-origin dashboard media reads using the server's range-serving helper (§10, §8.12) |
+| `GET /r/{secret}`, `/r/{secret}/`, `/r/{secret}/reporter.css`, `/r/{secret}/reporter.js` | unguessable link secret in path | Redirect, reporter form, and fixed assets. GETs ignore tracking query parameters while matching the raw path strictly. Every response carries `Cache-Control: no-store` and `Referrer-Policy: no-referrer` |
+| `PUT /r/{secret}/media/{source_ref}/{sha256}` | unguessable link secret and that link's public `Origin` | Raw reporter media staging; only the `filename` query parameter is allowed. Requires `Content-Length`; applies the link token's per-body and rate limits before reading bytes. Every response carries `Cache-Control: no-store` and `Referrer-Policy: no-referrer` |
+| `POST /r/{secret}/submit` | unguessable link secret and that link's public `Origin` | File an issue through the bound filing-only token; returns only the seven-field filing receipt. Queries and every other `/r/` route or method are refused with the generic 404. Every response carries `Cache-Control: no-store` and `Referrer-Policy: no-referrer` |
 
 Op request body:
 

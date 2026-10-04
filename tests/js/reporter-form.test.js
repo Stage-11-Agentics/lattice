@@ -137,3 +137,69 @@ test("reporter assets and form requests stay relative on direct and prefix route
     await renderForm("http://report.example.test/prefix/reports/r/rpt_testsecret/");
   });
 });
+
+test("an edited resend uses a new op_id and keeps its source_ref after a lost response", async () => {
+  const win = createWindow();
+  const doc = win.document;
+  addReporterDomMethods(doc);
+  doc.body.innerHTML = HTML;
+  const attempts = [];
+  const fetchStub = async (_url, options) => {
+    const body = JSON.parse(options.body);
+    attempts.push(body);
+    if (attempts.length === 1) throw new TypeError("The network response was lost");
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true, data: { ...RECEIPT, deduplicated: true } }),
+      headers: { get: () => null },
+    };
+  };
+  vm.runInNewContext(SCRIPT, { document: doc, crypto: webcrypto, fetch: fetchStub });
+
+  const form = doc.querySelector("#report-form");
+  const receipt = doc.querySelector("#receipt");
+  doc.querySelector("#title").value = "First attempt";
+  form.dispatchEvent(new Event("submit", { cancelable: true }));
+  const failedDeadline = Date.now() + 2000;
+  while (!doc.querySelector("#status").classList.contains("error") && Date.now() < failedDeadline) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  doc.querySelector("#title").value = "Edited resend";
+  form.dispatchEvent(new Event("submit", { cancelable: true }));
+  const receiptDeadline = Date.now() + 2000;
+  while (receipt.hidden !== false && Date.now() < receiptDeadline) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  assert.equal(attempts.length, 2);
+  assert.notEqual(attempts[0].op_id, attempts[1].op_id);
+  assert.equal(attempts[0].source_ref, attempts[1].source_ref);
+  assert.equal(attempts[0].title, "First attempt");
+  assert.equal(attempts[1].title, "Edited resend");
+  assert.equal(receipt.hidden, false);
+});
+
+test("unsupported and empty-MIME files produce a visible skipped count", () => {
+  const win = createWindow();
+  const doc = win.document;
+  addReporterDomMethods(doc);
+  doc.body.innerHTML = HTML;
+  vm.runInNewContext(SCRIPT, { document: doc, crypto: webcrypto, fetch: async () => { throw new Error("unexpected upload"); } });
+
+  const input = doc.querySelector("#media-input");
+  input.files = [
+    { name: "map.gif", type: "image/gif", size: 12, lastModified: 1 },
+    { name: "unknown.bin", type: "", size: 13, lastModified: 2 },
+    { name: "photo.png", type: "image/png", size: 14, lastModified: 3 },
+  ];
+  input.dispatchEvent(new Event("change"));
+
+  assert.match(doc.querySelector("#status").textContent, /2 files skipped:/);
+  assert.match(doc.querySelector("#status").textContent, /WebP and GIF photos are refused by the privacy rule/);
+  assert.match(doc.querySelector("#status").textContent, /no recognizable file type/);
+  assert.equal(doc.querySelector("#media-total").textContent.startsWith("1 file"), true);
+  assert.match(HTML, /Photos: JPEG, PNG or HEIC\. Videos are supported\./);
+  assert.match(HTML, /WebP and GIF photos are refused/);
+});

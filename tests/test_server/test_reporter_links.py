@@ -6,6 +6,7 @@ import hashlib
 import http.client
 import json
 import struct
+import threading
 import time
 import zlib
 from pathlib import Path
@@ -18,11 +19,12 @@ from lattice.cli.main import cli
 from lattice.core.errors import OpError
 from lattice.core.ids import generate_instance_id, generate_op_id
 from lattice.ops.task_attach import encode_payload
-from lattice.server import admin, control, media_staging, reporter_links, tokens
+from lattice.server import admin, app as app_module, control, media_staging, reporter_links, tokens
 from lattice.server.issue_media import HostedIssueMedia
-from lattice.server.log import _scrub
+from lattice.server.log import _scrub, redact_reporter_path
 from lattice.server.testing import ServerHandle, running_server
 from lattice.storage.issues import read_issue_events, read_issue_snapshot
+from lattice.storage.locks import LockTimeout
 from tests.issue_media_helpers import jpeg, mp4, png, webp
 from tests.test_server.conftest import NO_AUDIT
 
@@ -210,8 +212,14 @@ def test_create_rolls_back_token_if_registry_write_fails(root: Path, monkeypatch
     assert len(created) == 1 and created[0].revoked_at is not None
 
 
+def test_redact_reporter_path_redacts_the_fixed_prefix_secret_directly() -> None:
+    secret = "rpt_" + "A" * 43
+    assert redact_reporter_path(f"/r/{secret}/submit") == "/r/[redacted]/submit"
+    assert redact_reporter_path("/r/not-a-secret/submit") == "/r/not-a-secret/submit"
+
+
 def test_report_form_proxy_origin_receipt_headers_and_secret_redaction(root: Path) -> None:
-    result = create_link(root)
+    result = create_link(root, label="human:atin")
     record = result["link"]
     secret = secret_from(result["url"])
     with running_server(root, config=NO_AUDIT) as server:
@@ -222,6 +230,20 @@ def test_report_form_proxy_origin_receipt_headers_and_secret_redaction(root: Pat
         assert "What happened?" in page_body
         assert 'href="./reporter.css"' in page_body
         assert 'src="./reporter.js"' in page_body
+        tracked_status, tracked_headers, _ = server.request(
+            "GET", f"/r/{secret}/?fbclid=messenger&utm_source=mail"
+        )
+        assert tracked_status == 200
+        assert tracked_headers["cache-control"] == "no-store"
+        for name in ("reporter.css", "reporter.js"):
+            tracked_asset, _, tracked_body = server.request(
+                "GET", f"/r/{secret}/{name}?utm_campaign=report"
+            )
+            assert tracked_asset == 200 and tracked_body
+        redirect_status, _redirect_headers, redirect_body = server.request(
+            "GET", f"/r/{secret}?fbclid=messenger"
+        )
+        assert redirect_status == 200 and "What happened?" in redirect_body
         page_url = f"{record['public_base_url']}r/{secret}/"
         assert urljoin(page_url, "./reporter.css") == (
             f"{record['public_base_url']}r/{secret}/reporter.css"
@@ -314,10 +336,35 @@ def test_report_form_proxy_origin_receipt_headers_and_secret_redaction(root: Pat
         assert duplicate["external"] is True and duplicate["deduplicated"] is True
 
         snapshot = read_issue_snapshot(root / "projects" / "alpha" / ".lattice", receipt["id"])
-        assert snapshot["on_behalf_of"] == "Outside reporter"
+        assert snapshot["on_behalf_of"] == "human:atin"
         assert snapshot["external"] is True
         events = read_issue_events(root / "projects" / "alpha" / ".lattice", receipt["id"])
-        assert events[0]["actor"] == reporter_links.SERVICE_ACTOR
+        assert events[0]["actor"] == "agent:reporter-link"
+
+        query_submit = server.request(
+            "POST",
+            f"/r/{secret}/submit?fbclid=messenger",
+            body={
+                "op_id": generate_op_id(),
+                "source_ref": generate_instance_id().removeprefix("inst_"),
+                "title": "Query on write",
+            },
+            headers={"Origin": record["public_origin"]},
+        )
+        assert query_submit[0] == 404 and query_submit[2] == "Not found.\n"
+        tracker_raw = png(4, 2)
+        tracker_digest = hashlib.sha256(tracker_raw).hexdigest()
+        tracker_upload = server.request(
+            "PUT",
+            f"/r/{secret}/media/{generate_instance_id().removeprefix('inst_')}/"
+            f"{tracker_digest}?filename=photo.png&fbclid=messenger",
+            body=tracker_raw,
+            headers={
+                "Content-Type": "application/octet-stream",
+                "Origin": record["public_origin"],
+            },
+        )
+        assert tracker_upload[0] == 404 and tracker_upload[2] == "Not found.\n"
 
         invalid = server.request(
             "GET",
@@ -656,6 +703,230 @@ def test_unknown_link_and_oversized_upload_close_without_reading_body(root: Path
         assert json.loads(large_body)["error"]["code"] == "PAYLOAD_TOO_LARGE"
 
 
+def test_reporter_stage_checks_issue_availability_before_reading_body(root: Path) -> None:
+    admin.set_project_config(root, "alpha", {"issues.enabled": False})
+    result = create_link(root)
+    secret = secret_from(result["url"])
+    source_ref = generate_instance_id().removeprefix("inst_")
+    digest = hashlib.sha256(png()).hexdigest()
+    with running_server(root, config=NO_AUDIT) as server:
+        status, connection, body, elapsed = _request_headers_without_body(
+            server,
+            "PUT",
+            f"/r/{secret}/media/{source_ref}/{digest}?filename=photo.png",
+            len(png()),
+            {"Content-Type": "application/octet-stream", "Origin": PUBLIC_ORIGIN},
+        )
+    refusal = json.loads(body)
+    assert status == 409 and connection == "close" and elapsed < 2
+    assert refusal["error"]["code"] == "ISSUES_DISABLED"
+    assert refusal["error"]["message"] == reporter_links.REPORTER_COPY["ISSUES_DISABLED"]
+
+
+def test_reporter_stage_refuses_unloaded_project_before_reading_body(root: Path) -> None:
+    result = create_link(root)
+    record = result["link"]
+    secret = secret_from(result["url"])
+    source_ref = generate_instance_id().removeprefix("inst_")
+    digest = hashlib.sha256(png()).hexdigest()
+    with running_server(root, config=NO_AUDIT) as server:
+        admin.project_lifecycle(root, "alpha", "unload")
+        status, connection, body, elapsed = _request_headers_without_body(
+            server,
+            "PUT",
+            f"/r/{secret}/media/{source_ref}/{digest}?filename=photo.png",
+            len(png()),
+            {"Content-Type": "application/octet-stream", "Origin": record["public_origin"]},
+        )
+    refusal = json.loads(body)
+    assert status == 503 and connection == "close" and elapsed < 2
+    assert refusal["error"]["code"] == "BOARD_UNAVAILABLE"
+
+
+def test_reporter_upload_hash_is_computed_in_the_media_worker(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = create_link(root)
+    record = result["link"]
+    secret = secret_from(result["url"])
+    raw = png()
+    digest = hashlib.sha256(raw).hexdigest()
+    source_ref = generate_instance_id().removeprefix("inst_")
+    original_sha256 = hashlib.sha256
+    original_prepare = media_staging.prepare_media_file
+    hash_threads: list[int] = []
+    prepare_threads: list[int] = []
+
+    def track_sha256(data=b"", *args, **kwargs):
+        if isinstance(data, (bytes, bytearray)) and bytes(data) == raw:
+            hash_threads.append(threading.get_ident())
+        return original_sha256(data, *args, **kwargs)
+
+    def track_prepare(*args, **kwargs):
+        prepare_threads.append(threading.get_ident())
+        return original_prepare(*args, **kwargs)
+
+    monkeypatch.setattr(hashlib, "sha256", track_sha256)
+    monkeypatch.setattr(media_staging, "prepare_media_file", track_prepare)
+    with running_server(root, config=NO_AUDIT) as server:
+        status, _, response = server.request(
+            "PUT",
+            f"/r/{secret}/media/{source_ref}/{digest}?filename=photo.png",
+            body=raw,
+            headers={
+                "Content-Type": "application/octet-stream",
+                "Origin": record["public_origin"],
+            },
+        )
+    assert status == 201, response
+    assert hash_threads and prepare_threads
+    assert hash_threads[-1] == prepare_threads[-1]
+
+
+def test_submit_rate_limit_closes_without_draining_the_request_body(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = create_link(root)
+    secret = secret_from(result["url"])
+    request_body = json.dumps(
+        {
+            "op_id": generate_op_id(),
+            "source_ref": generate_instance_id().removeprefix("inst_"),
+            "title": "Rate limited report",
+        }
+    ).encode()
+    with running_server(root, config=NO_AUDIT) as server:
+
+        def reject(_token_id: str) -> None:
+            raise OpError("RATE_LIMITED", "raw refusal includes the private token ID")
+
+        monkeypatch.setattr(server.state.limits, "enter", reject)
+        status, connection, body, elapsed = _request_headers_without_body(
+            server,
+            "POST",
+            f"/r/{secret}/submit",
+            len(request_body),
+            {"Content-Type": "application/json", "Origin": PUBLIC_ORIGIN},
+        )
+    refusal = json.loads(body)
+    assert status == 429 and connection == "close" and elapsed < 2
+    assert refusal["error"]["code"] == "RATE_LIMITED"
+    assert refusal["error"]["message"] == reporter_links.REPORTER_COPY["RATE_LIMITED"]
+
+
+def test_submit_maps_storage_lock_timeout_to_plain_board_busy(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = create_link(root)
+    record = result["link"]
+    secret = secret_from(result["url"])
+    source_ref = generate_instance_id().removeprefix("inst_")
+    with running_server(root, config=NO_AUDIT) as server:
+        project = server.project("alpha")
+
+        def timeout(_write) -> None:
+            raise LockTimeout("private storage lock detail")
+
+        monkeypatch.setattr(project, "run_write", timeout)
+        status, _, refusal = post_report(
+            server,
+            secret,
+            {"op_id": generate_op_id(), "source_ref": source_ref, "title": "Busy board"},
+            origin=record["public_origin"],
+        )
+    assert status == 503
+    assert refusal["error"]["code"] == "BOARD_BUSY"
+    assert refusal["error"]["message"] == reporter_links.REPORTER_COPY["BOARD_BUSY"]
+    assert "private storage lock detail" not in refusal["error"]["message"]
+
+
+def test_submit_rechecks_revoke_under_lock_before_committing_body(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = create_link(root)
+    record = result["link"]
+    secret = secret_from(result["url"])
+    source_ref = generate_instance_id().removeprefix("inst_")
+    request_body = json.dumps(
+        {"op_id": generate_op_id(), "source_ref": source_ref, "title": "Must not file"}
+    ).encode()
+    body_reader_entered = threading.Event()
+    original_read_body = app_module.read_body
+
+    async def watch_read_body(request, state, token):
+        body_reader_entered.set()
+        return await original_read_body(request, state, token)
+
+    monkeypatch.setattr(app_module, "read_body", watch_read_body)
+    with running_server(root, config=NO_AUDIT) as server:
+        project = server.project("alpha")
+        sequence_before = project.journal.head_seq
+        conn = http.client.HTTPConnection("127.0.0.1", server.port, timeout=10)
+        conn.putrequest("POST", f"/r/{secret}/submit")
+        conn.putheader("Content-Type", "application/json")
+        conn.putheader("Origin", record["public_origin"])
+        conn.putheader("Content-Length", str(len(request_body)))
+        conn.endheaders()
+        try:
+            assert body_reader_entered.wait(3), "submit did not reach body receipt"
+            revoked = reporter_links.revoke_link(root, record["id"])
+            assert revoked["revoked_at"]
+            conn.send(request_body)
+            response = conn.getresponse()
+            body = response.read()
+            assert response.status == 404 and body == b"Not found.\n"
+        finally:
+            conn.close()
+
+        issue_dir = root / "projects" / "alpha" / ".lattice" / "issues"
+        assert list(issue_dir.glob("iss_*.json")) == []
+        assert project.journal.head_seq == sequence_before
+
+
+def test_submit_replay_after_revoke_cannot_file_or_keep_stages(root: Path) -> None:
+    result = create_link(root)
+    record = result["link"]
+    secret = secret_from(result["url"])
+    raw = png()
+    digest = hashlib.sha256(raw).hexdigest()
+    source_ref = generate_instance_id().removeprefix("inst_")
+    op_id = generate_op_id()
+    with running_server(root, config=NO_AUDIT) as server:
+        project = server.project("alpha")
+        stage_status, _, stage = server.request(
+            "PUT",
+            f"/r/{secret}/media/{source_ref}/{digest}?filename=report.png",
+            body=raw,
+            headers={
+                "Content-Type": "application/octet-stream",
+                "Origin": record["public_origin"],
+            },
+        )
+        assert stage_status == 201, stage
+        staged = stage["data"]
+        media_hashes = reporter_links._submitted_hashes([staged])
+        payload = {
+            "op_id": op_id,
+            "source_ref": source_ref,
+            "title": "Filed before revoke",
+            "media": [staged],
+        }
+        status, _, receipt = post_report(server, secret, payload, origin=record["public_origin"])
+        assert status == 200, receipt
+        issue_dir = root / "projects" / "alpha" / ".lattice" / "issues"
+        assert len(list(issue_dir.glob("iss_*.json"))) == 1
+
+        reporter_links.revoke_link(root, record["id"])
+        replay_status, _, replay = post_report(
+            server, secret, payload, origin=record["public_origin"]
+        )
+        assert replay_status == 404 and replay == "Not found.\n"
+        assert len(list(issue_dir.glob("iss_*.json"))) == 1
+        assert all(project.issue_media._read_stage_metadata(item) is None for item in media_hashes)
+        stage_map_path = root / reporter_links.STAGE_MAP_NAME
+        assert json.loads(stage_map_path.read_text())["entries"] == {}
+
+
 def test_all_methods_and_filing_bearer_get_generic_reporter_404(root: Path) -> None:
     result = create_link(root)
     secret = secret_from(result["url"])
@@ -807,10 +1078,15 @@ def _stage_direct(media: HostedIssueMedia, token_id: str, data: bytes) -> str:
 
 
 def test_running_server_revoke_cleans_through_control_and_preserves_other_owner(
-    root: Path,
+    root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     result = create_link(root)
     record = result["link"]
+
+    def offline_cleanup_must_not_run(*_args) -> None:
+        pytest.fail("live-server revoke must clean through its control action")
+
+    monkeypatch.setattr(reporter_links, "_offline_cleanup", offline_cleanup_must_not_run)
     with running_server(root, config=NO_AUDIT) as server:
         project = server.project("alpha")
         other = tokens.create_token(
@@ -835,6 +1111,42 @@ def test_running_server_revoke_cleans_through_control_and_preserves_other_owner(
         assert staged_owner(root, digest)["owners"] == [other]
         assert project.issue_media._blob_path(digest).is_file()
         assert control.server_running(root)
+
+
+def test_revoke_on_live_server_with_unloaded_project_returns_pending_cleanup(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = create_link(root)
+    record = result["link"]
+
+    def offline_cleanup_must_not_run(*_args) -> None:
+        pytest.fail("a running server owns cleanup even when its project is unloaded")
+
+    monkeypatch.setattr(reporter_links, "_offline_cleanup", offline_cleanup_must_not_run)
+    with running_server(root, config=NO_AUDIT) as server:
+        project = server.project("alpha")
+        digest = _stage_direct(project.issue_media, record["token_id"], png())
+        admin.project_lifecycle(root, "alpha", "unload")
+        revoked = CliRunner().invoke(
+            cli,
+            [
+                "server",
+                "project",
+                "reporter-link",
+                "revoke",
+                record["id"],
+                "--root",
+                str(root),
+                "--json",
+            ],
+        )
+        assert revoked.exit_code == 0, revoked.output
+        data = json.loads(revoked.stdout)["data"]
+        assert data["revoked_at"]
+        assert data["cleanup"] == "pending"
+        token = next(row for row in tokens._read(root) if row.id == record["token_id"])
+        assert token.revoked_at
+        assert project.issue_media._read_stage_metadata(digest) is not None
 
 
 def test_stopped_server_revoke_cleans_under_server_lock_lease(root: Path, monkeypatch) -> None:

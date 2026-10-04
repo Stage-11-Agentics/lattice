@@ -36,9 +36,9 @@
           <span class="drop-title">Drop or paste files here</span>
           <span class="drop-subtitle">or choose photos and videos</span>
         </button>
-        <input id="media-input" type="file" accept="image/*,video/*" multiple hidden>
+        <input id="media-input" type="file" accept="image/jpeg,image/png,image/heic,video/*" multiple hidden>
         <ul id="media-list" class="media-list" aria-label="Selected media"></ul>
-        <p class="limit-note">Up to 100 MB per file and 250 MB per report.</p>
+        <p class="limit-note">Photos: JPEG, PNG or HEIC. Videos are supported. WebP and GIF photos are refused because their private metadata cannot be stripped. Up to 100 MB per file and 250 MB per report.</p>
       </section>
       <p id="status" class="status" role="status" aria-live="polite"></p>
       <button id="submit" class="submit" type="submit">Send report</button>
