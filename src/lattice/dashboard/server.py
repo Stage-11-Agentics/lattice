@@ -7,19 +7,24 @@ JSON: ``Content-Type: application/json`` and an ``Origin`` equal to the
 served host.
 
 The server is threaded, but one lock (:data:`_BOARD_LOCK`) runs every POST
-and every GET other than issue media one at a time, as a single-threaded
-server did. Only issue media GETs (``dashboard/media.py``, LAT-366) run
-beside them, so a video held open by a browser never stalls the board.
+and every GET other than issue media and ``/api/boot`` one at a time, as a
+single-threaded server did. Only issue media GETs (``dashboard/media.py``,
+LAT-366) run beside board operations, so a video held open by a browser never
+stalls the board.
 """
 
 from __future__ import annotations
 
 import ipaddress
 import json
+import os
 import platform
+import secrets
+import socket
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Callable
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
@@ -73,9 +78,137 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 _LOOPBACK_NAMES = frozenset({"localhost", "127.0.0.1", "::1"})
 
+_HEADER_READ_TIMEOUT = 1.0
+WRITE_DRAIN_TIMEOUT = 5.0
+_PROCESS_BOOT_ID = secrets.token_urlsafe(18)
+_PROCESS_PID = os.getpid()
+
 #: Held around every request but issue media GETs: the board sees one request
 #: at a time, as it did before the server was threaded.
 _BOARD_LOCK = threading.Lock()
+
+
+class _RestartAwareHTTPServer(ThreadingHTTPServer):
+    """Threaded server that drains admitted writes before a local restart."""
+
+    daemon_threads = True
+    block_on_close = False
+
+    def __init__(self, address: tuple[str, int], handler: type[BaseHTTPRequestHandler]):
+        self.boot_id = _PROCESS_BOOT_ID
+        self.pid = _PROCESS_PID
+        self._restart_condition = threading.Condition()
+        self._request_states: dict[socket.socket, str] = {}
+        self._draining = False
+        super().__init__(address, handler)
+
+    def get_request(self) -> tuple[socket.socket, Any]:
+        request, client_address = super().get_request()
+        request.settimeout(_HEADER_READ_TIMEOUT)
+        return request, client_address
+
+    # The shared mixin stub includes UDP datagram tuples; HTTPServer passes sockets.
+    def process_request(self, request: Any, client_address: Any) -> None:
+        with self._restart_condition:
+            # Account for the accepted socket before its worker gets scheduled.
+            # The handler keeps it in this state through request-line parsing and
+            # classifies it as a read, admitted write, or refused write afterward.
+            self._request_states[request] = "parsing"
+            self._restart_condition.notify_all()
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            with self._restart_condition:
+                self._request_states.pop(request, None)
+                self._restart_condition.notify_all()
+            raise
+
+    def process_request_thread(self, request: Any, client_address: Any) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            with self._restart_condition:
+                self._request_states.pop(request, None)
+                self._restart_condition.notify_all()
+
+    def begin_parse(self, request: socket.socket) -> bool:
+        """Keep drain from closing a socket before its request line is read."""
+        with self._restart_condition:
+            if self._request_states.get(request) == "closing":
+                return False
+            self._request_states[request] = "parsing"
+            self._restart_condition.notify_all()
+            return True
+
+    def admit_write(self, request: socket.socket) -> bool:
+        """Admit a parsed POST, or mark it for an explicit restart refusal."""
+        with self._restart_condition:
+            if self._draining:
+                self._request_states[request] = "refused"
+                self._restart_condition.notify_all()
+                return False
+            self._request_states[request] = "write"
+            self._restart_condition.notify_all()
+            return True
+
+    def mark_read(self, request: socket.socket) -> None:
+        close_request = False
+        with self._restart_condition:
+            if self._draining:
+                self._request_states[request] = "closing"
+                close_request = True
+            else:
+                self._request_states[request] = "read"
+            self._restart_condition.notify_all()
+        if close_request:
+            self._close_connection(request)
+
+    def finish_write_response(self, request: socket.socket) -> None:
+        """Release a write only after BaseHTTPRequestHandler flushed its reply."""
+        with self._restart_condition:
+            state = self._request_states.get(request)
+            if state in {"write", "refused"}:
+                self._request_states[request] = "read"
+            self._restart_condition.notify_all()
+
+    @staticmethod
+    def _close_connection(request: socket.socket) -> None:
+        try:
+            request.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            request.close()
+        except OSError:
+            pass
+
+    def begin_write_drain(self, timeout: float = WRITE_DRAIN_TIMEOUT) -> tuple[bool, int]:
+        """Stop admitting writes, close reads, and await parses/writes boundedly."""
+        deadline = time.monotonic() + timeout
+        with self._restart_condition:
+            self._draining = True
+            self._restart_condition.notify_all()
+            active_reads = [
+                request for request, state in self._request_states.items() if state == "read"
+            ]
+        for request in active_reads:
+            self._close_connection(request)
+
+        with self._restart_condition:
+            while True:
+                now = time.monotonic()
+                parsing = sum(state == "parsing" for state in self._request_states.values())
+                pending = sum(
+                    state in {"write", "refused"} for state in self._request_states.values()
+                )
+                if parsing == 0 and pending == 0:
+                    return True, 0
+                if (pending or parsing) and now >= deadline:
+                    self._draining = False
+                    self._restart_condition.notify_all()
+                    return False, pending + parsing
+                self._restart_condition.wait(max(0, deadline - now))
+
 
 _STATIC_TYPES = {
     ".js": "application/javascript",
@@ -196,10 +329,43 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
             sys.stderr.write(f"{self.address_string()} - {format % args}\n")
 
+        def handle_one_request(self) -> None:
+            self._restart_write_admitted = False
+            self._restart_write_refused = False
+            if not self.server.begin_parse(self.connection):
+                self.close_connection = True
+                return
+            self.connection.settimeout(_HEADER_READ_TIMEOUT)
+            try:
+                super().handle_one_request()
+            finally:
+                if self._restart_write_admitted or self._restart_write_refused:
+                    self.server.finish_write_response(self.connection)
+
+        def parse_request(self) -> bool:
+            parsed = super().parse_request()
+            if not parsed:
+                return False
+            self.connection.settimeout(media.SOCKET_TIMEOUT)
+            if self.command == "POST":
+                self._restart_write_admitted = self.server.admit_write(self.connection)
+                self._restart_write_refused = not self._restart_write_admitted
+            else:
+                self.server.mark_read(self.connection)
+            return True
+
         def do_GET(self) -> None:  # noqa: N802
             path = urlparse(self.path).path.rstrip("/") or "/"
             if not host_allowed(self.headers.get("Host"), self.server.server_address[0]):
                 self._send_error(403, "FORBIDDEN", "Non-loopback Host refused")
+                return
+            if path == "/api/boot":
+                self._send(
+                    api.ok(
+                        {"pid": self.server.pid, "boot_id": self.server.boot_id},
+                        headers={"Cache-Control": "no-store"},
+                    )
+                )
                 return
             if media.MEDIA_ROUTE.fullmatch(path):
                 self.connection.settimeout(media.SOCKET_TIMEOUT)
@@ -209,6 +375,14 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
                 self._do_get()
 
         def do_POST(self) -> None:  # noqa: N802
+            if self._restart_write_refused:
+                self.close_connection = True
+                self._send_error(
+                    503,
+                    "RESTARTING",
+                    "Dashboard restart is draining writes; retry this request.",
+                )
+                return
             # The body is read before the board lock is taken, so a client that
             # stalls mid-upload holds only its own connection, never the board.
             self.connection.settimeout(media.SOCKET_TIMEOUT)
@@ -631,4 +805,4 @@ def create_server(
         root = Path(lattice_dir).parent
         board = DashboardBoard(LocalBoard(root=root, start=root))
     handler_cls = _make_handler_class(board, readonly=readonly)
-    return ThreadingHTTPServer((host, port), handler_cls)
+    return _RestartAwareHTTPServer((host, port), handler_cls)

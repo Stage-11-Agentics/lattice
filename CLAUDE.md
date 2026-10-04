@@ -28,7 +28,7 @@ The `.pth` file at `~/.local/share/uv/tools/lattice-tracker/` redirects imports 
 uv cache clean lattice-tracker && uv tool install -e /Users/atin/Projects/Stage11/code/Lattice --force
 ```
 
-**Note for dashboards:** After editing static files (HTML/JS/CSS), a running dashboard still serves from memory. Restart it to pick up changes (`lattice restart` or stop/start).
+**Note for dashboards:** A running dashboard keeps its imported Python handlers and loaded assets. Run `lattice restart` to stop it after a bounded write drain and start a fresh detached process with the recorded board, host, port, and flags. The replacement uses the environment of the shell that ran `lattice restart`, does not open another browser tab, and prints its PID, `kill <pid>` command, and restart log path. Logs live under `$XDG_CACHE_HOME/lattice/dashboard/` (default `~/.cache/lattice/dashboard/`). Keep bound remote token variables available in the restarting shell. SIGHUP does not reload Python code.
 
 ## Quick Reference
 
