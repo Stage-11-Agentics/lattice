@@ -2030,6 +2030,7 @@ class TestIssueWritesOverHttp:
             finally:
                 self._stop(server, worker)
 
+
 def _start_restart_test_server(lattice_dir, monkeypatch, post_handler):  # noqa: ANN001
     import threading
 
