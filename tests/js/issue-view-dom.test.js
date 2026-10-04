@@ -236,6 +236,21 @@ test("external issues carry a fixed warning badge and render reporter and issue 
   }
 });
 
+test("ordinary issue lists do not reserve external badge space", async () => {
+  const server = makeServer([issue(1), issue(2)]);
+  const view = boot(server);
+  try {
+    view.dashboard.render();
+    await flush();
+    for (const row of document.querySelectorAll(".issue-q-row")) {
+      assert.equal(row.querySelector(".issue-external-badge"), null);
+    }
+    assert.equal($("#issue-d-facts .issue-external-badge"), null);
+  } finally {
+    view.done();
+  }
+});
+
 test("a refresh never closes or clears a half-typed filing", async () => {
   const server = makeServer([issue(1), issue(2)]);
   const view = boot(server);

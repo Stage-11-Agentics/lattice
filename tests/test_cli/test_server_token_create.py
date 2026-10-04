@@ -42,7 +42,7 @@ def test_server_token_create_persists_filing_contract(tmp_path: Path) -> None:
             "--ops-per-minute",
             "7",
             "--bytes-per-minute",
-            "8192",
+            str(128 * 1024 * 1024),
             "--max-staged-bytes",
             "16384",
             "--root",
@@ -55,8 +55,14 @@ def test_server_token_create_persists_filing_contract(tmp_path: Path) -> None:
     assert record["only"] == ["issue.file"]
     assert record["source"] == "reporter-mail"
     assert record["ops_per_minute"] == 7
-    assert record["bytes_per_minute"] == 8192
+    assert record["bytes_per_minute"] == 128 * 1024 * 1024
     assert record["max_staged_bytes"] == 16384
+
+    listed = runner.invoke(cli, ["server", "token", "list", "--root", str(root)])
+    assert listed.exit_code == 0, listed.output
+    assert "ops_per_minute: 7" in listed.output
+    assert f"bytes_per_minute: {128 * 1024 * 1024}" in listed.output
+    assert "max_staged_bytes: 16384" in listed.output
 
 
 def test_server_token_create_allows_limit_overrides_without_restriction(tmp_path: Path) -> None:
@@ -87,7 +93,7 @@ def test_server_token_create_allows_limit_overrides_without_restriction(tmp_path
             "--ops-per-minute",
             "91",
             "--bytes-per-minute",
-            "131072",
+            str(128 * 1024 * 1024),
             "--max-staged-bytes",
             "262144",
             "--root",
@@ -101,5 +107,5 @@ def test_server_token_create_allows_limit_overrides_without_restriction(tmp_path
     assert record.get("only", []) == []
     assert record.get("source") is None
     assert record["ops_per_minute"] == 91
-    assert record["bytes_per_minute"] == 131072
+    assert record["bytes_per_minute"] == 128 * 1024 * 1024
     assert record["max_staged_bytes"] == 262144

@@ -180,9 +180,12 @@ def _filing_receipt_result(result_data: dict) -> dict:
         "filed_at": value.get("filed_at"),
         "source": value.get("source"),
         "source_ref": value.get("source_ref"),
-        "external": True,
+        "external": bool(value.get("external", False)),
         "deduplicated": bool(value.get("deduplicated", False)),
     }
+    result["task"] = None
+    result["resource_id"] = None
+    result["resource_name"] = None
     result["events"] = []
     return result
 

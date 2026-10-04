@@ -396,6 +396,18 @@ async def read_body(request: Request, state: ServerState, token: TokenRecord) ->
     """The body, refused (413) as soon as it passes ``max_body_bytes``; charges the
     token's byte bucket up front from ``Content-Length`` or as the bytes arrive."""
     limit = state.config.limits.max_body_bytes
+    token_byte_limit = token.effective_bytes_per_minute(
+        state.config.limits.token_body_bytes_per_minute,
+        max_issue_media_file_bytes=state.config.limits.max_issue_media_file_bytes,
+    )
+
+    def token_body_too_large() -> OpError:
+        return OpError(
+            "PAYLOAD_TOO_LARGE",
+            f"request body is over this token's {token_byte_limit} byte per-body limit",
+            {"limit_bytes": token_byte_limit, "scope": "token"},
+        )
+
     declared = request.headers.get("content-length")
     too_large = OpError(
         "PAYLOAD_TOO_LARGE", f"request body is over the server's limit of {limit} bytes"
@@ -407,21 +419,25 @@ async def read_body(request: Request, state: ServerState, token: TokenRecord) ->
             raise OpError("VALIDATION_ERROR", "invalid Content-Length") from None
         if length > limit:
             raise too_large
+        if length > token_byte_limit:
+            raise token_body_too_large()
         state.limits.take_bytes(
             token.id,
             length,
-            token.effective_bytes_per_minute(state.config.limits.token_body_bytes_per_minute),
+            token_byte_limit,
         )
     received = bytearray()
     async for chunk in request.stream():
         if len(received) + len(chunk) > limit:
             raise too_large  # checked before copying: nothing is buffered past the limit
+        if declared is None and len(received) + len(chunk) > token_byte_limit:
+            raise token_body_too_large()
         received.extend(chunk)
         if declared is None:
             state.limits.take_bytes(
                 token.id,
                 len(chunk),
-                token.effective_bytes_per_minute(state.config.limits.token_body_bytes_per_minute),
+                token_byte_limit,
             )
     return bytes(received)
 
@@ -1195,6 +1211,16 @@ async def _stage_upload(
             f"media object is over the {state.config.limits.max_issue_media_file_bytes} byte per-file limit.",
             {"limit_bytes": state.config.limits.max_issue_media_file_bytes},
         )
+    token_byte_limit = token.effective_bytes_per_minute(
+        state.config.limits.token_body_bytes_per_minute,
+        max_issue_media_file_bytes=state.config.limits.max_issue_media_file_bytes,
+    )
+    if size > token_byte_limit:
+        raise OpError(
+            "PAYLOAD_TOO_LARGE",
+            f"media object is over this token's {token_byte_limit} byte per-body limit.",
+            {"limit_bytes": token_byte_limit, "scope": "token"},
+        )
     state.limits.enter(token.id)
     upload = None
     finished = False
@@ -1205,7 +1231,7 @@ async def _stage_upload(
         state.limits.take_bytes(
             token.id,
             size,
-            token.effective_bytes_per_minute(state.config.limits.token_body_bytes_per_minute),
+            token_byte_limit,
         )
         state.disk.check()
         async with state.registry.admitted(project):

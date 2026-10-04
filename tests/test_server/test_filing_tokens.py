@@ -4,22 +4,32 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import UTC, datetime, timedelta
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from starlette.requests import Request
 
 from lattice.core.ids import generate_op_id
 from lattice.core.errors import OpError
+from lattice.ops.base import Caller
 from lattice.ops import issue_file as issue_file_module
 from lattice.ops.base import registered_operations
-from lattice.server import admin, project as project_module, tokens
+from lattice.server import (
+    admin,
+    app as app_module,
+    project as project_module,
+    tokens,
+    web as web_module,
+)
+from lattice.server.config import load_config
 from lattice.server.filing_guard import filing_route_allowed, require_filing_route
 from lattice.server.sessions import COOKIE_NAME, hash_secret
-from lattice.server.testing import ServerHandle
-from tests.issue_media_helpers import png
+from lattice.server.testing import ServerHandle, running_server
+from lattice.server.transactions import IndexEntry
+from tests.issue_media_helpers import jpeg, png
 from tests.test_server.conftest import mint
 from tests.test_server.web_client import WebClient
 
@@ -229,6 +239,93 @@ def test_filing_receipt_is_safe_for_create_dedupe_and_same_op_replay(
         )
         == 1
     )
+
+
+def test_filing_dedupe_receipt_keeps_original_issue_external_marker(
+    server: ServerHandle, root: Path
+) -> None:
+    full = mint(root, projects=[SLUG])
+    params = {"title": "Filed by a full token", "source": SOURCE, "source_ref": "shared-ref"}
+    status, _, original = server.op(
+        SLUG, "issue.file", params, token=full, actor=SERVICE_ACTOR, op_id=generate_op_id()
+    )
+    assert status == 200, original
+    assert original["data"]["result"]["value"].get("external", False) is False
+
+    filing = filing_token(root)
+    status, _, duplicate = file_issue(server, filing, source_ref="shared-ref")
+    assert status == 200, duplicate
+    value = duplicate["data"]["result"]["value"]
+    assert value["deduplicated"] is True
+    assert value["external"] is False
+
+
+def test_authenticate_reasserts_filing_route_for_a_cached_token(
+    server: ServerHandle, root: Path
+) -> None:
+    filing = filing_token(root)
+    record = tokens._read(root)[0]
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/v1/info",
+            "raw_path": b"/v1/info",
+            "headers": [],
+            "state": {app_module.TOKEN_STATE_KEY: record, "log": {}},
+        }
+    )
+    assert tokens.parse_token(filing)[0] == record.id
+    with pytest.raises(OpError) as exc:
+        app_module.authenticate(request, server.state)
+    assert exc.value.code == "TOKEN_RESTRICTED"
+
+
+def test_replay_shapes_an_unshaped_receipt_for_a_filing_token(
+    server: ServerHandle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stored = {
+        "value": {
+            "id": "iss_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "short_id": "ALP-1",
+            "filed_at": "2026-10-04T00:00:00Z",
+            "source": SOURCE,
+            "source_ref": "secret-ref",
+            "external": False,
+            "title": "private report",
+        },
+        "events": [{"private": "event payload"}],
+        "task": {"id": "task_01ARZ3NDEKTSV4RRFFQ69G5FAV"},
+        "resource_id": "private-resource",
+        "resource_name": "private name",
+        "idempotent": False,
+    }
+    monkeypatch.setattr(
+        project_module,
+        "read_receipt",
+        lambda _board, _entry: {"result": stored},
+    )
+    caller = Caller(filing_only=True)
+    request = project_module.WriteRequest(
+        op="issue.file", params={}, caller=caller, token_id="tok_test", fp="fp"
+    )
+    known = IndexEntry(fp="fp", epoch="ep_test", seq=4, receipt="today.jsonl", offset=0, length=1)
+    outcome = server.project(SLUG)._replay(known, request, "op_test")
+    result = outcome.result_data
+    assert result["value"] == {
+        "id": "iss_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "short_id": "ALP-1",
+        "filed_at": "2026-10-04T00:00:00Z",
+        "source": SOURCE,
+        "source_ref": "secret-ref",
+        "external": False,
+        "deduplicated": False,
+    }
+    assert result["events"] == []
+    assert result["task"] is None
+    assert result["resource_id"] is None
+    assert result["resource_name"] is None
+    assert result["replayed"] is True
 
 
 def test_source_ref_pair_is_project_local_and_concurrent_hosted_retries_dedupe(
@@ -619,6 +716,45 @@ def test_existing_session_backed_by_filing_token_fails_closed(
     assert response.json["error"]["code"] == "TOKEN_RESTRICTED"
 
 
+def test_session_auth_refuses_a_filing_token_after_route_reassertion(
+    server: ServerHandle, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    filing = filing_token(root)
+    token_id = tokens.parse_token(filing)[0]
+    cookie = "B" * 43
+    created = datetime.now(UTC).replace(microsecond=0)
+    expires = created + timedelta(days=1)
+    (root / "web_sessions.json").write_text(
+        json.dumps(
+            {
+                "sessions": [
+                    {
+                        "sha256": hash_secret(cookie),
+                        "token_id": token_id,
+                        "created_at": created.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        "expires_at": expires.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    }
+                ]
+            }
+        )
+    )
+    # This isolates session_auth's own filing-only refusal from the route guard.
+    monkeypatch.setattr(web_module, "require_filing_route", lambda *_args: None)
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": f"/p/{SLUG}/api/issues",
+            "raw_path": f"/p/{SLUG}/api/issues".encode(),
+            "headers": [(b"cookie", f"{COOKIE_NAME}={cookie}".encode())],
+            "state": {"log": {}},
+        }
+    )
+    with pytest.raises(OpError) as exc:
+        web_module.session_auth(request, server.state)
+    assert exc.value.code == "TOKEN_RESTRICTED"
+
+
 def test_filing_token_authenticates_once_and_uses_token_operation_rate(
     server: ServerHandle, root: Path
 ) -> None:
@@ -640,21 +776,66 @@ def test_filing_token_authenticates_once_and_uses_token_operation_rate(
 
 
 def test_filing_token_byte_rate_override_is_enforced_over_http(
-    server: ServerHandle, root: Path
+    root: Path,
 ) -> None:
-    filing = filing_token(root, bytes_per_minute=1024)
-    status, headers, body = server.request(
-        "POST",
-        f"/v1/projects/{SLUG}/ops/issue.file",
-        token=filing,
-        body={
-            "actor": SERVICE_ACTOR,
-            "params": {"title": "too large", "source": SOURCE, "description": "x" * 2048},
-        },
-    )
-    assert status == 429 and body["error"]["code"] == "RATE_LIMITED"
-    assert headers.get("retry-after")
-    assert not (root / "projects" / SLUG / ".lattice" / "issues").exists()
+    with running_server(
+        root, config={"limits": {"max_issue_media_file_bytes": 1024}}
+    ) as small_server:
+        filing = filing_token(root, bytes_per_minute=2048)
+        status, headers, body = small_server.request(
+            "POST",
+            f"/v1/projects/{SLUG}/ops/issue.file",
+            token=filing,
+            body={
+                "actor": SERVICE_ACTOR,
+                "params": {
+                    "title": "too large",
+                    "source": SOURCE,
+                    "description": "x" * 4096,
+                },
+            },
+        )
+        assert status == 413 and body["error"]["code"] == "PAYLOAD_TOO_LARGE"
+        assert body["error"]["details"] == {"limit_bytes": 2048, "scope": "token"}
+        assert "retry-after" not in headers
+        assert not (root / "projects" / SLUG / ".lattice" / "issues").exists()
+
+
+def test_mint_rejects_byte_rate_below_live_media_cap_for_any_token(root: Path) -> None:
+    media_cap = load_config(root).limits.max_issue_media_file_bytes
+    with pytest.raises(OpError, match="max_issue_media_file_bytes"):
+        filing_token(root, bytes_per_minute=media_cap - 1)
+    with pytest.raises(OpError, match="max_issue_media_file_bytes"):
+        tokens.create_token(
+            root,
+            user="human:trusted",
+            machine="trusted-service",
+            all_projects=True,
+            bytes_per_minute=media_cap - 1,
+        )
+
+
+def test_staging_body_above_token_capacity_is_token_scoped_413(root: Path) -> None:
+    with running_server(root, config={"limits": {"max_issue_media_file_bytes": 512}}):
+        filing = filing_token(root, bytes_per_minute=512)
+
+    # A restarted server can raise the file cap while an older token keeps its
+    # explicit byte capacity. The token check must run before bucket charging.
+    with running_server(
+        root, config={"limits": {"max_issue_media_file_bytes": 1024}}
+    ) as updated_server:
+        media = jpeg() + b"x" * (600 - len(jpeg()))
+        status, _, body = stage(updated_server, filing, media)
+        assert status == 413 and body["error"]["code"] == "PAYLOAD_TOO_LARGE"
+        assert body["error"]["details"] == {"limit_bytes": 512, "scope": "token"}
+
+
+def test_default_filing_token_can_stage_a_70_mib_file(server: ServerHandle, root: Path) -> None:
+    filing = filing_token(root)
+    media = png() + bytes(70 * 1024 * 1024 - len(png()))
+    status, _, body = stage(server, filing, media)
+    assert status == 201, body
+    assert body["data"]["size_bytes"] == 70 * 1024 * 1024
 
 
 def test_filing_token_reuses_cached_auth_record_and_rejects_session_selection(

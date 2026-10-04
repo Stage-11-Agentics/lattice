@@ -36,7 +36,7 @@ from lattice.core.auto_review import AUTO_REVIEW_ACTOR
 from lattice.core.errors import OpError
 from lattice.core.events import utc_now
 from lattice.core.ids import generate_instance_id, validate_actor
-from lattice.server.config import TOKENS_JSON
+from lattice.server.config import TOKENS_JSON, load_config
 from lattice.server.log import describe_error
 from lattice.storage.fs import atomic_write
 
@@ -186,12 +186,14 @@ class TokenRecord:
             else (FILING_OPS_PER_MINUTE if self.filing_only else fallback)
         )
 
-    def effective_bytes_per_minute(self, fallback: int) -> int:
-        return (
-            self.bytes_per_minute
-            if self.bytes_per_minute is not None
-            else (FILING_BYTES_PER_MINUTE if self.filing_only else fallback)
-        )
+    def effective_bytes_per_minute(
+        self, fallback: int, *, max_issue_media_file_bytes: int | None = None
+    ) -> int:
+        if self.bytes_per_minute is not None:
+            return self.bytes_per_minute
+        if self.filing_only:
+            return max(FILING_BYTES_PER_MINUTE, max_issue_media_file_bytes or 0)
+        return fallback
 
     def effective_max_staged_bytes(self) -> int | None:
         if self.max_staged_bytes is not None:
@@ -404,6 +406,15 @@ def create_token(
             isinstance(value, bool) or not isinstance(value, int) or value < 1
         ):
             raise OpError("VALIDATION_ERROR", f"{name} must be a positive integer.")
+    if bytes_per_minute is not None:
+        media_cap = load_config(root).limits.max_issue_media_file_bytes
+        if bytes_per_minute < media_cap:
+            raise OpError(
+                "VALIDATION_ERROR",
+                "--bytes-per-minute must be at least the server's max_issue_media_file_bytes "
+                f"({media_cap} bytes).",
+                {"limit_bytes": media_cap},
+            )
     for slug in projects:
         admin.check_slug(slug)
     scope = ("*",) if all_projects else tuple(dict.fromkeys(projects))

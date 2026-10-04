@@ -527,9 +527,15 @@ def _describe_token(record: dict) -> str:
     revoked = f"  revoked {record['revoked_at']}" if record.get("revoked_at") else ""
     only = f"  only: {', '.join(record['only'])}" if record.get("only") else ""
     source = f"  source: {record['source']}" if record.get("source") is not None else ""
+    limit_parts = [
+        f"{name}: {record[name]}"
+        for name in ("ops_per_minute", "bytes_per_minute", "max_staged_bytes")
+        if record.get(name) is not None
+    ]
+    limits = f"  limits: {', '.join(limit_parts)}" if limit_parts else ""
     return (
         f"{record['id']}  {record['user']} @ {record['machine']}  actors: {actors}  "
-        f"projects: {projects}{only}{source}  created {record['created_at']}{revoked}"
+        f"projects: {projects}{only}{source}{limits}  created {record['created_at']}{revoked}"
     )
 
 

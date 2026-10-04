@@ -67,7 +67,7 @@ class _Token:
         return fallback
 
     @staticmethod
-    def effective_bytes_per_minute(fallback: int) -> int:
+    def effective_bytes_per_minute(fallback: int, **_kwargs: int) -> int:
         return fallback
 
 

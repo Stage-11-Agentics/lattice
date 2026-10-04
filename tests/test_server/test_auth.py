@@ -162,19 +162,29 @@ def test_filing_limit_defaults_and_mint_overrides(root: Path) -> None:
     tokens.create_token(root, **base)
     default_token = tokens._read(root)[0]
     assert default_token.effective_ops_per_minute(600) == 30
-    assert default_token.effective_bytes_per_minute(256 * 1024 * 1024) == 64 * 1024 * 1024
+    assert (
+        default_token.effective_bytes_per_minute(
+            256 * 1024 * 1024, max_issue_media_file_bytes=100 * 1024 * 1024
+        )
+        == 100 * 1024 * 1024
+    )
     assert default_token.effective_max_staged_bytes() == 512 * 1024 * 1024
 
     tokens.create_token(
         root,
         **base,
         ops_per_minute=7,
-        bytes_per_minute=8192,
+        bytes_per_minute=128 * 1024 * 1024,
         max_staged_bytes=16384,
     )
     overridden = tokens._read(root)[1]
     assert overridden.effective_ops_per_minute(600) == 7
-    assert overridden.effective_bytes_per_minute(256 * 1024 * 1024) == 8192
+    assert (
+        overridden.effective_bytes_per_minute(
+            256 * 1024 * 1024, max_issue_media_file_bytes=100 * 1024 * 1024
+        )
+        == 128 * 1024 * 1024
+    )
     assert overridden.effective_max_staged_bytes() == 16384
 
 
