@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 
@@ -165,6 +166,104 @@ class TestNextStatusOverride:
 
 class TestNextClaim:
     """--claim atomically assigns and respects the explicit planning gate."""
+
+    def _planned_task_with_live_review(self, create_task, invoke, fill_plan, cli_env):
+        task = create_task("Plan review in flight")
+        task_id = task["id"]
+        assert invoke("status", task_id, "in_planning", "--actor", "human:test").exit_code == 0
+        fill_plan(task_id, task["title"])
+        assert (
+            invoke(
+                "status",
+                task_id,
+                "planned",
+                "--actor",
+                "human:test",
+                "--no-auto-review",
+            ).exit_code
+            == 0
+        )
+        assert invoke("assign", task_id, "none", "--actor", "human:test").exit_code == 0
+
+        state_dir = Path(cli_env["LATTICE_ROOT"]) / ".lattice" / "review_state"
+        state_dir.mkdir(exist_ok=True)
+        (state_dir / f"{task_id}.json").write_text(
+            json.dumps(
+                {
+                    "task_id": task_id,
+                    "review_type": "plan-review",
+                    "status": "running",
+                    "started_by_pid": os.getpid(),
+                }
+            )
+        )
+        return task
+
+    def test_live_plan_review_plain_output_explicitly_says_no_claim(
+        self, create_task, invoke, fill_plan, cli_env
+    ) -> None:
+        task = self._planned_task_with_live_review(create_task, invoke, fill_plan, cli_env)
+
+        result = invoke("next", "--actor", "agent:claude", "--claim")
+
+        assert result.exit_code == 0
+        assert "PLAN_REVIEW_IN_FLIGHT" in result.output
+        assert "not claimed" in result.output.lower()
+        assert task["title"] in result.output
+        snapshot = json.loads(
+            (
+                Path(cli_env["LATTICE_ROOT"]) / ".lattice" / "tasks" / f"{task['id']}.json"
+            ).read_text()
+        )
+        assert snapshot["status"] == "planned"
+        assert snapshot["assigned_to"] is None
+
+    def test_live_plan_review_json_output_has_machine_readable_no_claim(
+        self, create_task, invoke, fill_plan, cli_env
+    ) -> None:
+        task = self._planned_task_with_live_review(create_task, invoke, fill_plan, cli_env)
+
+        result = invoke("next", "--actor", "agent:claude", "--claim", "--json")
+
+        assert result.exit_code == 0
+        parsed = json.loads(result.output)
+        assert parsed["ok"] is True
+        assert parsed["data"]["task"]["id"] == task["id"]
+        assert parsed["data"]["claimed"] is False
+        assert parsed["data"]["reason"] == "PLAN_REVIEW_IN_FLIGHT"
+        snapshot = json.loads(
+            (
+                Path(cli_env["LATTICE_ROOT"]) / ".lattice" / "tasks" / f"{task['id']}.json"
+            ).read_text()
+        )
+        assert snapshot["status"] == "planned"
+        assert snapshot["assigned_to"] is None
+
+    def test_live_plan_review_plain_output_names_existing_assignee(
+        self, create_task, invoke, fill_plan, cli_env
+    ) -> None:
+        task = self._planned_task_with_live_review(create_task, invoke, fill_plan, cli_env)
+        assigned = invoke("assign", task["id"], "agent:claude", "--actor", "agent:claude")
+        assert assigned.exit_code == 0
+
+        result = invoke("next", "--actor", "agent:claude", "--claim")
+
+        assert result.exit_code == 0
+        assert "remains planned" in result.output
+        assert "assigned_to=agent:claude" in result.output
+        assert "unassigned" not in result.output
+
+    def test_live_plan_review_quiet_mode_does_not_print_task_id(
+        self, create_task, invoke, fill_plan, cli_env
+    ) -> None:
+        task = self._planned_task_with_live_review(create_task, invoke, fill_plan, cli_env)
+
+        result = invoke("next", "--actor", "agent:claude", "--claim", "--quiet")
+
+        assert result.exit_code == 0
+        assert result.stdout == ""
+        assert "PLAN_REVIEW_IN_FLIGHT" in result.stderr
+        assert task["id"] not in result.stdout
 
     def test_claim_requires_actor(self, invoke) -> None:
         result = invoke("next", "--claim")

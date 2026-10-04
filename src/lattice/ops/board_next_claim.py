@@ -7,12 +7,15 @@ The in-lock guard against a task claimed by another writer (``assign``,
 released, as every write's hooks do. On workflows with the complete
 plan-review route, backlog claims stop in ``in_planning`` so the caller can
 explicitly move to ``planned`` and fire the configured review.
+If a selected planned task still has a live plan-review gate, the result says
+it was not claimed; the operation does not fall through to another task.
 """
 
 from __future__ import annotations
 
 import dataclasses
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from lattice.core.events import create_event, get_actor_display
 from lattice.core.next import (
@@ -30,6 +33,8 @@ from lattice.storage.locks import lattice_lock
 from lattice.storage.operations import TaskMutationDecision, discover_task_authorities
 
 NEXT_CLAIM_LOCK = "next_claim"
+PLAN_REVIEW_IN_FLIGHT = "PLAN_REVIEW_IN_FLIGHT"
+AUTO_REVIEW_HANDOFF_GRACE_SECONDS = 30
 CLAIMED_STATUSES = frozenset(
     {"in_progress", "review", "in_validation", "pr_open", "done", "cancelled"}
 )
@@ -48,9 +53,12 @@ class NextClaim:
     On the complete plan-review route, backlog tasks and planning resumes stop
     in ``in_planning``. Other claims retain the usual ``in_progress`` target.
 
-    ``value`` is the claimed task's snapshot, or ``None`` when no task is
-    available. A task the caller already has in progress is returned with no
-    new events (``idempotent``).
+    ``value`` is the claimed task's snapshot, ``None`` when no task is
+    available, or an explicit ``PLAN_REVIEW_IN_FLIGHT`` no-claim result for a
+    planned task whose live plan-review gate has not finished. That result
+    preserves the selected task and does not fall through to another one. A
+    task the caller already has in progress is returned with no new events
+    (``idempotent``).
     """
 
     Params = NextClaimParams
@@ -78,8 +86,8 @@ class NextClaim:
         return OpResult(
             task=result.snapshot,
             events=result.appended_events,
-            value=result.snapshot,
-            idempotent=not result.appended_events,
+            value=result.callback_value if result.callback_value is not None else result.snapshot,
+            idempotent=result.idempotent or not result.appended_events,
         )
 
     @staticmethod
@@ -87,6 +95,14 @@ class NextClaim:
         actor = ctx.actor
         current = snapshot = context.snapshot
         status = snapshot.get("status", "")
+        if status == "planned" and _plan_review_in_flight(
+            ctx.lattice_dir, task_id, context.events, ctx.config
+        ):
+            return TaskMutationDecision(
+                value={"task": snapshot, "claimed": False, "reason": PLAN_REVIEW_IN_FLIGHT},
+                idempotent=True,
+            )
+
         workflow = ctx.config.get("workflow", {})
         target_status = claim_target_status(status, workflow)
 
@@ -135,3 +151,71 @@ class NextClaim:
                 snapshot = apply_event_to_snapshot(snapshot, event)
                 status = next_status
         return TaskMutationDecision(events=events)
+
+
+def _plan_review_in_flight(
+    lattice_dir, task_id: str, events: tuple[dict, ...], config: dict
+) -> bool:  # noqa: ANN001
+    """Whether a plan-review for *task_id* has a live local owner or hosted gate."""
+    from lattice.boards import _process_origin
+    from lattice.core.hosted_review import LOCAL, RUNNING, gate_state
+    from lattice.core.review import is_review_abandoned, read_review_state
+
+    now = datetime.now(timezone.utc)
+    local = read_review_state(lattice_dir, task_id)
+    local_record = local if isinstance(local, dict) else {}
+    local_plan_review = local_record.get("review_type") == "plan-review"
+    terminal = local_plan_review and local_record.get("status") in {
+        "failed",
+        "done",
+        "abandoned",
+    }
+    holder = local_record.get("started_by_pid") if local_plan_review else None
+    valid_holder = isinstance(holder, int) and not isinstance(holder, bool) and holder > 0
+    handoff_pending = local_plan_review and _auto_fired_review_handoff_pending(
+        local_record, now=now
+    )
+    local_live = bool(
+        local_plan_review
+        and not terminal
+        and (handoff_pending or (valid_holder and not is_review_abandoned(local_record)))
+    )
+
+    this_host = _process_origin().get("host")
+    gate = gate_state(
+        list(events),
+        "plan-review",
+        this_host=this_host,
+        has_local_record=local_live,
+        timeout_seconds=int(config.get("review_timeout_seconds", 600)),
+        now=now,
+    )
+    if local_live:
+        return True
+    if gate is None or gate.state not in {LOCAL, RUNNING}:
+        return False
+    # A terminal or dead record on this host identifies the recent spawn as
+    # finished, failed, or abandoned even when no artifact was attached. It
+    # must not be mistaken for a remote review that is still within timeout.
+    return not (local_plan_review and not local_live and gate.host == this_host)
+
+
+def _auto_fired_review_handoff_pending(record: dict, *, now: datetime) -> bool:
+    """Keep a new auto-review live while its child adopts the parent's record."""
+    if record.get("auto_fired") is not True or record.get("status") in {
+        "failed",
+        "done",
+        "abandoned",
+    }:
+        return False
+    started_at = record.get("started_at")
+    if not isinstance(started_at, str):
+        return False
+    try:
+        started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    age_seconds = (now - started).total_seconds()
+    return 0 <= age_seconds < AUTO_REVIEW_HANDOFF_GRACE_SECONDS

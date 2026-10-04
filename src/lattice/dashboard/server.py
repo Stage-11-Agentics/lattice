@@ -47,6 +47,7 @@ __all__ = ["MAX_REQUEST_BODY_BYTES", "STATIC_DIR", "create_server", "origin_allo
 # per video. Keep its allowance separate from ordinary dashboard writes and
 # hard-bound it even when the board owner raises the media settings.
 MAX_ISSUE_FILE_BODY_BYTES = 2 * 1024 * 1024 * 1024
+_POST_BODY_FAILED = object()
 
 # A bound checkout exposes issue metadata, but the cached board is read-only.
 _BOUND_CHECKOUT_ISSUES_READ_ONLY = (
@@ -315,8 +316,14 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
                     return None
 
             body = self._read_request_body(path)
-            if body is None:
+            if body is _POST_BODY_FAILED:
                 return None  # error already sent
+            try:
+                api.validate_json_post_body(path, body)
+            except ApiError as exc:
+                self._send(ApiResponse(exc.status, exc.envelope()))
+                return None
+
             if path == "/api/issues":
                 try:
                     # The cheap checks (title, text size, item count) run before the
@@ -334,10 +341,8 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
             return path, body
 
         def _do_post(self, path: str, body: Any) -> None:
-            if path.startswith("/api/tasks/") and path.rsplit("/", 1)[-1] in (
-                "open-notes",
-                "open-plans",
-            ):
+            route = api.match_json_post_route(path)
+            if route in api._TASK_OPEN_ROUTE_TEMPLATES:
                 task_id, sub = path[len("/api/tasks/") :].rsplit("/", 1)
                 self._open_prose(task_id, "notes" if sub == "open-notes" else "plan")
                 return
@@ -420,12 +425,12 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
         # ---------------------------------------------------------------
 
         def _read_request_body(self, path: str) -> Any:
-            """Read and parse a JSON request body. Returns ``None`` on failure."""
+            """Read and parse JSON; ``_POST_BODY_FAILED`` means an error was sent."""
             try:
                 content_length = int(self.headers.get("Content-Length", 0))
             except (TypeError, ValueError):
                 self._send_error(400, "BAD_REQUEST", "Missing or invalid Content-Length")
-                return None
+                return _POST_BODY_FAILED
             if content_length <= 0:
                 message = (
                     "Empty request body"
@@ -433,30 +438,30 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
                     else "Missing or invalid Content-Length"
                 )
                 self._send_error(400, "BAD_REQUEST", message)
-                return None
+                return _POST_BODY_FAILED
             body_limit = MAX_REQUEST_BODY_BYTES
             if path == "/api/issues" and not self._target.hosted:
                 try:
                     body_limit = issue_file_body_limit(self._target.lattice_dir)
                 except ApiError as exc:
                     self._send(ApiResponse(exc.status, exc.envelope()))
-                    return None
+                    return _POST_BODY_FAILED
             if content_length > body_limit:
                 self._send_error(
                     413,
                     "PAYLOAD_TOO_LARGE",
                     f"Request body exceeds {body_limit} bytes",
                 )
-                return None
+                return _POST_BODY_FAILED
             try:
                 return json.loads(self.rfile.read(content_length))
             except (json.JSONDecodeError, UnicodeDecodeError):
                 self._send_error(400, "BAD_REQUEST", "Invalid JSON in request body")
-                return None
+                return _POST_BODY_FAILED
             except TimeoutError:
                 self.close_connection = True
                 self._send_error(408, "REQUEST_TIMEOUT", "Request body was not received in time")
-                return None
+                return _POST_BODY_FAILED
 
         def _run(self, request: api.WriteRequest, *, exists_ok: bool = False) -> Any:
             """Run *request*'s operation on the board as a browser write.

@@ -530,6 +530,46 @@ def _drag(web: WebClient, task_id: str, status: str, **kw):
 
 
 class TestWrites:
+    def test_every_registered_post_route_rejects_non_object_json(
+        self, root: Path, web: WebClient
+    ) -> None:
+        config_path = root / "projects" / "alpha" / ".lattice" / "config.json"
+        config = json.loads(config_path.read_text())
+        config["issues"] = {**config.get("issues", {}), "enabled": True}
+        config_path.write_text(json.dumps(config))
+        before = board_hash(root, "alpha")
+
+        bodies = (None, 7, ["x"], "x")
+        for route_template in api.JSON_POST_ROUTE_TEMPLATES:
+            route = route_template.replace("{task_id}", "task_01ARZ3NDEKTSV4RRFFQ69G5FAV").replace(
+                "{issue_id}", "LAT-I1"
+            )
+            for body in bodies:
+                response = web.post_json(f"/p/alpha{route}", body)
+                assert response.status == 400, (route_template, body, response.text)
+                assert response.json == {
+                    "ok": False,
+                    "error": {
+                        "code": "VALIDATION_ERROR",
+                        "message": "Request body must be a JSON object",
+                    },
+                }
+        assert board_hash(root, "alpha") == before
+
+    def test_empty_and_malformed_json_have_distinct_errors(self, web: WebClient) -> None:
+        for raw_body, message in (
+            (b"", "Empty request body"),
+            (b"{", "Invalid JSON in request body"),
+        ):
+            response = web.request(
+                "POST",
+                "/p/alpha/api/tasks",
+                body=raw_body,
+                headers={"Origin": web.origin, "Content-Type": "application/json"},
+            )
+            assert response.status == 400
+            assert response.json["error"] == {"code": "BAD_REQUEST", "message": message}
+
     def test_plan_gate_refuses_a_drag(self, web: WebClient) -> None:
         created = web.post_json("/p/alpha/api/tasks", {"title": "gated"})
         assert created.status == 201, created.text

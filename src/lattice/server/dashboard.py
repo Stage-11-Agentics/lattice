@@ -508,16 +508,15 @@ async def api_post(request: Request, state: ServerState) -> Response:
     async def run() -> Response:
         state.limits.take_op(token.id)
         raw = await read_body(request, state, token)
+        if not raw:
+            raise api.ApiError(400, "BAD_REQUEST", "Empty request body")
         try:
-            body = json.loads(raw.decode("utf-8")) if raw else None
+            body = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, ValueError):
             raise api.ApiError(400, "BAD_REQUEST", "Invalid JSON in request body") from None
-        if body is None:
-            raise api.ApiError(400, "BAD_REQUEST", "Empty request body")
-        if path.startswith("/api/tasks/") and path.rsplit("/", 1)[-1] in (
-            "open-notes",
-            "open-plans",
-        ):
+        api.validate_json_post_body(path, body)
+        route = api.match_json_post_route(path)
+        if route in api._TASK_OPEN_ROUTE_TEMPLATES:
             kind = "notes" if path.endswith("open-notes") else "plan"
             raise api.ApiError(
                 400,

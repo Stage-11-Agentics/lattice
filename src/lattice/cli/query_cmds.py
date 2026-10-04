@@ -493,6 +493,34 @@ def next_cmd(
             click.echo("No tasks available.")
         return
 
+    if (
+        claim
+        and isinstance(selected, dict)
+        and selected.get("claimed") is False
+        and selected.get("reason") == "PLAN_REVIEW_IN_FLIGHT"
+        and isinstance(selected.get("task"), dict)
+    ):
+        task = selected["task"]
+        display_id = task.get("short_id") or task["id"]
+        title = task.get("title", "?")
+        assigned_to = task.get("assigned_to")
+        assignment = f"assigned_to={assigned_to}" if assigned_to is not None else "unassigned"
+        human_message = (
+            f'PLAN_REVIEW_IN_FLIGHT: {display_id} "{title}" remains planned; '
+            f"{assignment}, it was not claimed."
+        )
+        if quiet and not is_json:
+            click.echo(human_message, err=True)
+        else:
+            output_result(
+                data=selected,
+                human_message=human_message,
+                quiet_value="",
+                is_json=is_json,
+                is_quiet=quiet,
+            )
+        return
+
     task_id = selected["id"]
     display_id = selected.get("short_id") or task_id
     result_data = selected
