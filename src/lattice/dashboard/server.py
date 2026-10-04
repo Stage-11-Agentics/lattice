@@ -107,7 +107,8 @@ class _RestartAwareHTTPServer(ThreadingHTTPServer):
         request.settimeout(_HEADER_READ_TIMEOUT)
         return request, client_address
 
-    def process_request(self, request: socket.socket, client_address: Any) -> None:
+    # The shared mixin stub includes UDP datagram tuples; HTTPServer passes sockets.
+    def process_request(self, request: Any, client_address: Any) -> None:
         with self._restart_condition:
             # Account for the accepted socket before its worker gets scheduled.
             # The handler keeps it in this state through request-line parsing and
@@ -122,7 +123,7 @@ class _RestartAwareHTTPServer(ThreadingHTTPServer):
                 self._restart_condition.notify_all()
             raise
 
-    def process_request_thread(self, request: socket.socket, client_address: Any) -> None:
+    def process_request_thread(self, request: Any, client_address: Any) -> None:
         try:
             super().process_request_thread(request, client_address)
         finally:

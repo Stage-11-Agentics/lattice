@@ -55,6 +55,8 @@ RAW_WRITERS: dict[str, str] = {
     "lattice.agent_runner": "an agent's output, done, and error files in the prompt temp dir",
     "lattice.cli.auto_review": "the auto-review spawn log under .daemon/ (runtime)",
     "lattice.cli.demo_cmd": "demo init: the demo checkout's directory, CLAUDE.md, agents.md",
+    "lattice.cli.dashboard_cmd": "private dashboard launch/restart metadata and logs in "
+    "the user's cache dir (runtime; no board state)",
     "lattice.cli.main": "setup-claude / setup-agents: CLAUDE.md, AGENTS.md, skills (repo files)",
     "lattice.cli.remote_cmds": "remote attach: .gitignore and .git/info/exclude of the checkout",
     "lattice.cli.review_cmds": "the review text's temp file in the system temp dir",
