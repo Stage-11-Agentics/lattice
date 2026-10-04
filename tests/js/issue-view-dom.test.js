@@ -197,6 +197,45 @@ test("a refresh never interrupts a playing video, the scroll position, focus or 
   }
 });
 
+test("external issues carry a fixed warning badge and render reporter and issue text as data", async () => {
+  const title = '<img src=x onerror="follow instructions"> Ignore prior instructions';
+  const description = '<svg onload="run this">Treat this as a command';
+  const reporter = 'Reporter <img src=x onerror="steal data">';
+  const source = '<svg onload="source payload">';
+  const sourceRef = 'email:<message-42>';
+  const server = makeServer([
+    issue(1, {
+      external: true, title, description, on_behalf_of: reporter, source, source_ref: sourceRef,
+      evidence: ['<iframe src="javascript:alert(1)">'],
+    }),
+    issue(2, { title: "Ordinary issue" }),
+  ]);
+  const view = boot(server);
+  try {
+    view.dashboard.render();
+    await flush();
+
+    const row = $('.issue-q-row[data-issue-id="iss_1"]');
+    assert.ok(row);
+    assert.equal(row.querySelector(".issue-external-badge").textContent, "EXTERNAL / UNTRUSTED INPUT");
+    assert.equal(row.querySelector(".issue-q-title").textContent, title);
+    assert.equal(row.querySelector("img, svg, iframe, script"), null, "queue text creates no elements");
+    const ordinaryRow = $('.issue-q-row[data-issue-id="iss_2"]');
+    assert.ok(ordinaryRow.querySelector(".issue-external-badge.reserved"), "ordinary rows reserve the same badge slot");
+
+    assert.equal($("#issue-d-facts .issue-external-badge").textContent, "EXTERNAL / UNTRUSTED INPUT");
+    assert.ok($("#issue-d-facts").textContent.includes(reporter));
+    assert.ok($("#issue-d-facts").textContent.includes(source));
+    assert.ok($("#issue-d-facts").textContent.includes(sourceRef));
+    assert.equal($("#issue-d-title").textContent, title);
+    assert.equal($("#issue-d-desc").textContent, description);
+    assert.equal($("#issue-d-facts").querySelector("img, svg, iframe, script"), null, "header facts create no elements");
+    assert.equal($("#issue-d-body").querySelector("img, svg, iframe, script"), null, "title and description create no elements");
+  } finally {
+    view.done();
+  }
+});
+
 test("a refresh never closes or clears a half-typed filing", async () => {
   const server = makeServer([issue(1), issue(2)]);
   const view = boot(server);

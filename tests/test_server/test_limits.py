@@ -62,6 +62,23 @@ def test_byte_bucket_retry_after_is_the_wait_until_it_fits() -> None:
     limits.take_bytes("a", 0)
 
 
+def test_mint_time_capacities_override_server_buckets_without_changing_full_tokens() -> None:
+    clock = Clock()
+    limits = TokenLimits(Limits(token_ops_per_minute=20, token_body_bytes_per_minute=100), clock)
+    limits.take_op("narrow", 2)
+    limits.take_op("narrow", 2)
+    with pytest.raises(OpError) as ops:
+        limits.take_op("narrow", 2)
+    assert ops.value.code == "RATE_LIMITED"
+    assert "2 operations per minute" in ops.value.message
+    limits.take_op("full", 20)
+    limits.take_bytes("narrow", 5, 5)
+    with pytest.raises(OpError) as body:
+        limits.take_bytes("narrow", 1, 5)
+    assert body.value.code == "RATE_LIMITED"
+    limits.take_bytes("full", 100)
+
+
 def test_disk_floor_samples_at_most_once_a_second(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

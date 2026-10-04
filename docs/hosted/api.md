@@ -49,6 +49,40 @@ export LATTICE_TOKEN="$(cat "$HOME/lattice-trial/token")"
 
 A dashboard session cookie authenticates only `/`, `/logout`, `/p/<slug>/...`, and the stream. It never authenticates operations, sync, or files.
 
+### Filing-only tokens
+
+`lattice server token create --only issue.file` mints a bearer token for exactly one `--project SLUG`; it cannot be combined with `--all-projects`. It also requires `--source NAME`. The server stores that trimmed source on the token. The request's `params.source` must match it or the server returns 403 `TOKEN_RESTRICTED`. A filing token may call only the exact `POST /v1/projects/{slug}/ops/issue.file` route and the exact `PUT /v1/projects/{slug}/issues/media/staging/{sha256}` route for that project. Every other method or route is denied with 403 `TOKEN_RESTRICTED`, including `GET /v1/projects/{slug}/ops/{op_id}` (op-status), all other operation names, `/v1/info`, project and issue reads, sync, stream, files, task and media reads, dashboard routes, session routes, public routes when the restricted bearer credential is supplied, and unknown routes. Trailing slashes, duplicate slashes, and encoded path separators do not widen the allowlist. It cannot create a dashboard session at `/login`, and a session backed by a filing-only token is denied. A filing-only `issue.file` request cannot use `actor_name`; its `actor` must still match the token's actor rules. Unauthenticated `GET /healthz` remains public.
+
+The restriction is stored with the token record. A filing token's `sha256` value is prefixed `only-v1:<hex-digest>` so pre-LAT-389 readers cannot authenticate it. New readers treat a `only-v1:` record without a valid filing restriction, or with an unknown restriction value, as unusable, never as an unrestricted token. Unrestricted records keep their existing hash and behavior. Granting a filing token additional projects or actors cannot widen its filing restriction; revoke and mint a replacement to change its scope.
+
+Mint-time limit overrides are `--ops-per-minute N`, `--bytes-per-minute N`, and `--max-staged-bytes N` (bytes for the last two flags). Unset operation and body-byte limits on unrestricted tokens use the server's current per-token limits; an unrestricted token with no staged-byte override keeps the existing project-quota behavior. For filing-only tokens, omitted limits default to 30 operations/minute, 64 MiB of request bodies/minute, and 512 MiB of unreferenced staged objects owned by that token. Per-token operation or body rate refusals return 429 `RATE_LIMITED` with `Retry-After`. If a staged upload would put that token over its staged-byte cap, the server returns 413 `MEDIA_QUOTA_EXCEEDED` with `details.scope: "token"` and does not store the object. Re-uploading a hash that token already owns does not count it twice.
+
+### `issue.file` source references and filing receipts
+
+`issue.file` accepts `source_ref` alongside `source`. A `source_ref` requires a nonempty `source`. When the pair is supplied, the server trims surrounding whitespace, preserves case, rejects blank or control-character values, and limits `source` to 128 characters and `source_ref` to 256 characters. A longer `source_ref` returns HTTP 400 `VALIDATION_ERROR`; it is never truncated. Callers with unusually long RFC 5322 email Message-IDs should hash the Message-ID and use that digest as `source_ref`.
+
+The deduplication key is `(project, source, source_ref)`. The first filing commits one `issue_filed` event. A later request with the same normalized pair returns that original issue without changing its title, reporter, media, links, or closure state and without committing another issue event. Concurrent filings with the same pair resolve to one issue. A distinct `op_id` still gets the ordinary successful operation transaction, journal sequence, and receipt; a dedupe response has `events: []` and `idempotent: true`.
+
+`actor` is the authorized service actor. Optional `on_behalf_of` is a separate reporter label, not an actor or permission identity. For `issue.file` it is trimmed, nonblank free-form printable text of at most 256 characters with no control characters. The server sets `external: true` from the authenticated filing-only token; clients cannot set that marker. Full-token callers keep the full issue view and normal event result, including `external`, `on_behalf_of`, and `source_ref` when present.
+
+Filing-only callers receive a receipt as `data.result.value` on the first filing, a source-ref dedupe hit, and a same-`op_id` replay. The receipt has exactly these keys; `source_ref` is `null` if omitted, and `deduplicated` is true only for a source-ref hit:
+
+```json
+{
+  "id": "<issue-id>",
+  "short_id": "<short-id>",
+  "filed_at": "<UTC timestamp>",
+  "source": "reporter-links",
+  "source_ref": "ISS-7K2MQ",
+  "external": true,
+  "deduplicated": false
+}
+```
+
+For filing-only callers, `data.result.events` is `[]` on all three paths. The response and durable operation receipt never include the title, description, evidence, media, closure, task links, or `filed_origin`. On a dedupe hit, the receipt has the same `id`, `short_id`, `filed_at`, `source`, and `source_ref` as the first filing, with `deduplicated: true`; a same-`op_id` replay returns the original receipt with the normal `replayed: true` indicator. The full issue view is available only to full tokens. This receipt is the stable filing contract for LAT-390, LAT-370, RP-V1-94, and LAT-392; filing-only callers cannot read issues with list or show routes.
+
+If a filing response is lost, `GET /v1/projects/{slug}/ops/{op_id}` is deliberately unavailable to this token. Retry `issue.file` with the same bound source and `source_ref`; use the same `op_id` for an ordinary receipt replay while it is retained, or a fresh `op_id` to receive the source-ref dedupe receipt. This pair is the safe recovery key and prevents a second issue event even after the operation receipt expires.
+
 ## GET /healthz
 
 No token. Touches no board.
@@ -201,7 +235,7 @@ curl -s -X PUT \
   "$LATTICE_URL/v1/projects/demo/issues/media/staging/<64-lowercase-hex-sha256>"
 ```
 
-The response uses the normal JSON envelope and describes the verified object (`sha256`, `size_bytes`, detected `content_type`, and `staged: true`). The server reserves project quota from the declared length, then streams the body and verifies its actual length, SHA-256, and supported photo/video type. Upload staging is under the project's private server runtime directory, outside the board. It creates no operation receipt, board sequence, audit commit, or stream event. Retrying the same hash and size is idempotent; a hash/size conflict fails, and a verified re-upload replaces a staged copy that has been damaged. The route refuses with `ISSUES_DISABLED` when the project's issue log is off, before reserving anything. The server waits at most 30 seconds for each chunk of the body; a stalled upload ends with `408 UPLOAD_TIMEOUT` and releases its reservation. When the server refuses an upload before reading its body (over quota, too large, rate limited, the same hash already uploading), it first reads and discards the rest of the body, up to twice the per-file limit and stopping after 2 seconds without data, so the client receives the refusal instead of a broken connection. Failed uploads release their reservation, and abandoned stages expire.
+The response uses the normal JSON envelope and describes the verified object (`sha256`, `size_bytes`, detected `content_type`, and `staged: true`). The server reserves project quota from the declared length, then streams the body and verifies its actual length, SHA-256, and supported photo/video type. Upload staging is under the project's private server runtime directory, outside the board. It creates no operation receipt, board sequence, audit commit, or stream event. Retrying the same hash and size is idempotent; a hash/size conflict fails, and a verified re-upload replaces a staged copy that has been damaged. Each stage records an owner set. A verified re-upload adds the authenticated token to that set without removing existing owners. A filing-only token can consume a stage only when its token ID is in the owner set; a stage owned only by another token answers `NOT_FOUND` to it. Unrestricted tokens retain the existing cross-token staging behavior. The route refuses with `ISSUES_DISABLED` when the project's issue log is off, before reserving anything. The server waits at most 30 seconds for each chunk of the body; a stalled upload ends with `408 UPLOAD_TIMEOUT` and releases its reservation. When the server refuses an upload before reading its body (over quota, too large, rate limited, the same hash already uploading), it first reads and discards the rest of the body, up to twice the per-file limit and stopping after 2 seconds without data, so the client receives the refusal instead of a broken connection. Failed uploads release their reservation, and abandoned stages expire.
 
 The raw upload limit is `limits.max_issue_media_file_bytes` (100 MiB per stored object). Hosted issue mutations remain separate JSON operations: `issue.file` and `issue.attach` pass `payload: {filename, sha256, size, staged: true}` and use the same shape under each `frames[].payload`; the server accepts neither media bytes nor `content_b64` in hosted operation params. Local operations keep the `{filename, content_b64, sha256}` form. The server verifies staged bytes again when the named operation consumes them. These operations commit the issue event and snapshot in the ordinary write transaction, then finalize media paths after commit. `issue.detach` commits its removal event before unlinking or quarantining the bytes. The server trusts client-supplied video metadata and source hashes, while verifying the uploaded stored object's own hash and size. Raw staging avoids the 16 MiB JSON body cap, which leaves roughly 12 MiB for base64 file content.
 
@@ -209,7 +243,7 @@ The raw upload limit is `limits.max_issue_media_file_bytes` (100 MiB per stored 
 
 `GET /v1/projects/{slug}/issues/media/{issue_id}/{media_id}` reads a stored original. `GET /v1/projects/{slug}/issues/media/{issue_id}/{media_id}/frames/{frame_name}` reads one client-derived JPEG frame. Both require a bearer token with project read permission. The server refuses traversal and symlinks, validates every recorded SHA-256 during issue-event replay and before using it in a header or path, and serves only regular files. A valid `Range` request returns `206` with `Accept-Ranges`, `Content-Range`, and the recorded content type; each range is capped at 1 MiB, and a request without `Range` returns the whole object. Responses stream from disk in 1 MiB chunks; the server never holds a whole object in memory. An unsatisfiable range returns `416`. The hosted dashboard has a same-origin session-protected `GET /p/{slug}/issues/media/...` route using the same serving rules; a dashboard cookie does not authenticate `/v1` operations.
 
-The server limit is 250 MiB per issue, including frame sidecars, and 10 GiB per project by default; `max_issue_media_project_bytes` is configurable in `server.json`. Per-file and per-issue limit failures use `PAYLOAD_TOO_LARGE`. Project quota exhaustion uses `MEDIA_QUOTA_EXCEEDED` (HTTP 413). These caps are separate from `limits.max_body_bytes` for JSON requests.
+The server limit is 250 MiB per issue, including frame sidecars, and 10 GiB per project by default; `max_issue_media_project_bytes` is configurable in `server.json`. Per-file and per-issue limit failures use `PAYLOAD_TOO_LARGE`. Project quota exhaustion uses `MEDIA_QUOTA_EXCEEDED` (HTTP 413). A filing token's staged-byte cap counts unreferenced staged hashes whose owner set contains that token; its refusal is also `MEDIA_QUOTA_EXCEEDED` (HTTP 413), with `details.scope: "token"`. These caps are separate from `limits.max_body_bytes` for JSON requests.
 
 ## GET /v1/projects/{slug}/ops/{op_id}
 
@@ -331,7 +365,8 @@ The CLI prints the same codes; the HTTP status is the server's.
 | `ALREADY_CLAIMED`, `RESOURCE_HELD`, `NOT_HELD`, `EXPIRED`, `FLAG_ALREADY_SET`, `FLAG_NOT_SET` | 409 | State conflicts |
 | `STALE_VERSION` | 412 | A file read with `?sha256=` whose content has changed |
 | `PAYLOAD_TOO_LARGE` | 413 | JSON body over `limits.max_body_bytes`, custom event data over `limits.max_event_data_bytes`, or media over its per-file or per-issue limit |
-| `MEDIA_QUOTA_EXCEEDED` | 413 | An upload would take the project over `limits.max_issue_media_project_bytes` |
+| `MEDIA_QUOTA_EXCEEDED` | 413 | An upload would take the project over `limits.max_issue_media_project_bytes`, or a filing token over its `--max-staged-bytes` cap (`details.scope: "token"`) |
+| `TOKEN_RESTRICTED` | 403 | A filing-only token attempted a route, method, operation, or source outside its exact filing scope |
 | `RANGE_NOT_SATISFIABLE` | 416 | A media `Range` the stored file cannot satisfy; `details.size_bytes` names the size |
 | `INVALID_TRANSITION`, `PLAN_REQUIRED`, `COMPLETION_BLOCKED`, `REVIEW_CYCLE_LIMIT` | 422 | Workflow rules |
 | `TASK_ERASED` | 422 | A write to an erased task |

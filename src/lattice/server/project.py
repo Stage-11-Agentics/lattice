@@ -69,7 +69,7 @@ from lattice.storage.fs import (
     unlink_path,
 )
 from lattice.storage.locks import LockTimeout
-from lattice.storage.issues import has_synced_issue_files
+from lattice.storage.issues import has_synced_issue_files, source_ref_lock
 from lattice.storage.operations import AuthoritativeLogError, discover_task_authorities
 from lattice.storage.ownership import (
     board_scope,
@@ -166,6 +166,25 @@ def _stat_key(path: Path) -> tuple[int, int, int] | None:
     except OSError:
         return None
     return (st.st_mtime_ns, st.st_size, st.st_ino)
+
+
+def _filing_receipt_result(result_data: dict) -> dict:
+    """Strip an issue result to the stable safe receipt exposed to filing tokens."""
+    result = dict(result_data)
+    value = result_data.get("value")
+    if not isinstance(value, dict):
+        raise OpError("INTEGRITY_ERROR", "issue.file did not produce a receipt value")
+    result["value"] = {
+        "id": value.get("id"),
+        "short_id": value.get("short_id"),
+        "filed_at": value.get("filed_at"),
+        "source": value.get("source"),
+        "source_ref": value.get("source_ref"),
+        "external": True,
+        "deduplicated": bool(value.get("deduplicated", False)),
+    }
+    result["events"] = []
+    return result
 
 
 class MutationTracker:
@@ -787,6 +806,22 @@ class Project:
             known = self.index.get((request.token_id, op_id))
             if known is not None:
                 return self._replay(known, request, op_id)
+        pair = None
+        if request.op == "issue.file":
+            # Keep the pair lock outside the transaction so hosted dedupe and
+            # the durable receipt commit are one serialized operation. The op
+            # itself skips reacquiring it, preserving pair -> issue -> seq order.
+            from lattice.ops.issue_file import normalize_source_ref
+
+            pair = normalize_source_ref(
+                getattr(request.params, "source", None),
+                getattr(request.params, "source_ref", None),
+            )
+            if pair is not None:
+                request = replace(
+                    request,
+                    caller=replace(request.caller, source_ref_lock_held=True),
+                )
         tracker = MutationTracker(self.board, request.op)
         # One configuration governs the whole write: read once, under the lock.
         config = self.read_config()
@@ -806,14 +841,21 @@ class Project:
                 issue_media=self.issue_media,
             )
 
-        return self._transact(
-            op=request.op,
-            op_id=op_id,
-            token_id=request.token_id,
-            fp=request.fp,
-            tracker=tracker,
-            work=work,
-        )
+        def transact() -> WriteOutcome:
+            return self._transact(
+                op=request.op,
+                op_id=op_id,
+                token_id=request.token_id,
+                fp=request.fp,
+                tracker=tracker,
+                work=work,
+                filing_only=request.caller.filing_only,
+            )
+
+        if pair is None:
+            return transact()
+        with source_ref_lock(self.board, *pair):
+            return transact()
 
     def _replay(self, known: IndexEntry, request: WriteRequest, op_id: str) -> WriteOutcome:
         """A retried ``(token_id, op_id)``: the stored result, or ``OP_ID_REUSED``."""
@@ -824,7 +866,10 @@ class Project:
                 {"reason": "OP_ID_REUSED", "seq": known.seq},
             )
         receipt = read_receipt(self.board, known)
-        data = {**receipt["result"], "replayed": True}
+        stored_result = receipt["result"]
+        if request.caller.filing_only:
+            stored_result = _filing_receipt_result(stored_result)
+        data = {**stored_result, "replayed": True}
         return WriteOutcome(result_data=data, seq=known.seq)
 
     def _transact(
@@ -836,6 +881,7 @@ class Project:
         fp: str | None,
         tracker: MutationTracker,
         work: Callable[[Transaction], OpResult],
+        filing_only: bool = False,
     ) -> WriteOutcome:
         """Run *work* as one transaction (SPEC §8.6), recovering in process on failure."""
         if self.journal is None:
@@ -861,6 +907,8 @@ class Project:
                     "lengths": tracker.lengths(),
                 }
                 result_data = result_json(result)
+                if filing_only:
+                    result_data = _filing_receipt_result(result_data)
                 txn.commit(entry, result_data, list(result.events))
                 txn.finish()
                 self._journaled(txn.seq)

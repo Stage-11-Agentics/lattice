@@ -196,6 +196,11 @@ class SessionStore:
         """A new session for *token*; returns the cookie value (the only copy)."""
         from lattice.server import admin
 
+        if token.filing_only:
+            raise OpError(
+                "TOKEN_RESTRICTED", "filing-only tokens cannot create dashboard sessions"
+            )
+
         secret = base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode()
         now = _now()
         session = Session(

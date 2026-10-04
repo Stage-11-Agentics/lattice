@@ -201,6 +201,8 @@ class Upload:
     fd: int
     digest: Any
     head: bytearray
+    token_id: str | None = None
+    token_quota_reserved: bool = False
     written: int = 0
     finished: bool = False
     #: Set once the upload has succeeded or been aborted; a later abort is a
@@ -251,26 +253,25 @@ class Upload:
                     raise OpError(
                         "CONFLICT", "staged sha256 was already used with different media."
                     )
-                if expected is None:
-                    _write_private(
-                        self.owner._metadata_path(self.sha256),
-                        json.dumps(
-                            {
-                                "sha256": self.sha256,
-                                "size_bytes": self.written,
-                                "content_type": content_type,
-                                "created_at": time.time(),
-                            },
-                            sort_keys=True,
-                            separators=(",", ":"),
-                        )
-                        + "\n",
-                    )
-                    os.chmod(self.owner._metadata_path(self.sha256), 0o600)
+                owners = self.owner._stage_owners(expected or {})
+                if self.token_id is not None and self.token_id not in owners:
+                    owners.append(self.token_id)
                 # These bytes were just verified against the hash; the staged copy
                 # may be damaged, so the verified upload replaces it atomically.
                 os.replace(self.temporary, target)
                 os.chmod(target, 0o600)
+                metadata = expected or {
+                    "sha256": self.sha256,
+                    "size_bytes": self.written,
+                    "content_type": content_type,
+                    "created_at": time.time(),
+                }
+                metadata["owners"] = owners
+                _write_private(
+                    self.owner._metadata_path(self.sha256),
+                    json.dumps(metadata, sort_keys=True, separators=(",", ":")) + "\n",
+                )
+                os.chmod(self.owner._metadata_path(self.sha256), 0o600)
             else:
                 os.replace(self.temporary, target)
                 published_new_blob = True
@@ -283,6 +284,7 @@ class Upload:
                             "size_bytes": self.written,
                             "content_type": content_type,
                             "created_at": time.time(),
+                            "owners": [self.token_id] if self.token_id is not None else [],
                         },
                         sort_keys=True,
                         separators=(",", ":"),
@@ -306,6 +308,7 @@ class Upload:
             raise
         finally:
             self.owner._release_upload(self.sha256, self.reserved)
+            self.owner._release_token_quota(self.token_id, self.sha256, self.token_quota_reserved)
 
     def abort(self) -> None:
         if self.done:
@@ -318,9 +321,10 @@ class Upload:
                 pass
             self.fd = -1
         self.temporary.unlink(missing_ok=True)
-        if self.reserved:
+        if self.reserved or self.token_quota_reserved:
             self.owner._reserve_path(self.sha256).unlink(missing_ok=True)
         self.owner._release_upload(self.sha256, self.reserved)
+        self.owner._release_token_quota(self.token_id, self.sha256, self.token_quota_reserved)
         self.finished = True
 
 
@@ -352,6 +356,9 @@ class HostedIssueMedia:
         self.lock = threading.Lock()
         self._inflight: set[str] = set()
         self._reserved: dict[str, int] = {}
+        #: Re-uploads of an existing shared hash reserve quota for its new owner
+        #: in memory until verified bytes are installed and metadata is updated.
+        self._pending_token_bytes: dict[str, dict[str, int]] = {}
         #: Bytes of every published object, one per stored path (not per hash).
         self.published_bytes = 0
 
@@ -407,9 +414,21 @@ class HostedIssueMedia:
             or not isinstance(value.get("size_bytes"), int)
             or value["size_bytes"] < 0
             or not isinstance(value.get("content_type"), str)
+            or (
+                "owners" in value
+                and (
+                    not isinstance(value["owners"], list)
+                    or any(not isinstance(owner, str) or not owner for owner in value["owners"])
+                )
+            )
         ):
             raise OpError("INTEGRITY_ERROR", f"staged media metadata is invalid: {path.name}")
         return value
+
+    @staticmethod
+    def _stage_owners(metadata: dict) -> list[str]:
+        owners = metadata.get("owners")
+        return list(owners) if isinstance(owners, list) else []
 
     def _published_unique_bytes(self) -> int:
         return self.published_bytes
@@ -435,7 +454,14 @@ class HostedIssueMedia:
                 continue
         return sum(sizes.values())
 
-    def begin_upload(self, sha256: str, size_bytes: int) -> Upload:
+    def begin_upload(
+        self,
+        sha256: str,
+        size_bytes: int,
+        *,
+        token_id: str | None = None,
+        max_staged_bytes: int | None = None,
+    ) -> Upload:
         sha256 = validate_sha256(sha256)
         if isinstance(size_bytes, bool) or not isinstance(size_bytes, int) or size_bytes < 0:
             raise OpError(
@@ -454,6 +480,24 @@ class HostedIssueMedia:
                 raise OpError("BOARD_BUSY", "this media object is already being uploaded.")
             metadata = self._read_stage_metadata(sha256)
             blob = self._blob_path(sha256)
+            token_quota_reserved = False
+            if token_id is not None and max_staged_bytes is not None:
+                already_owned = metadata is not None and token_id in self._stage_owners(metadata)
+                pending = self._pending_token_staged_bytes(token_id)
+                used = self._token_staged_bytes(token_id) + pending
+                if not already_owned and used + size_bytes > max_staged_bytes:
+                    raise OpError(
+                        "MEDIA_QUOTA_EXCEEDED",
+                        f"token staged-media quota of {max_staged_bytes} bytes would be exceeded.",
+                        {
+                            "scope": "token",
+                            "limit_bytes": max_staged_bytes,
+                            "used_bytes": used,
+                        },
+                    )
+                token_quota_reserved = (
+                    not already_owned and metadata is not None and _safe_regular(blob) is not None
+                )
             if metadata is not None and _safe_regular(blob) is not None:
                 if metadata["size_bytes"] != size_bytes:
                     raise OpError(
@@ -475,7 +519,12 @@ class HostedIssueMedia:
                 _write_private(
                     self._reserve_path(sha256),
                     json.dumps(
-                        {"sha256": sha256, "size_bytes": size_bytes, "created_at": time.time()},
+                        {
+                            "sha256": sha256,
+                            "size_bytes": size_bytes,
+                            "created_at": time.time(),
+                            "owners": [token_id] if token_id is not None else [],
+                        },
                         separators=(",", ":"),
                     )
                     + "\n",
@@ -492,9 +541,61 @@ class HostedIssueMedia:
                     self._reserved.pop(sha256, None)
                     self._reserve_path(sha256).unlink(missing_ok=True)
                 raise
+            if token_quota_reserved and token_id is not None:
+                self._pending_token_bytes.setdefault(token_id, {})[sha256] = size_bytes
             return Upload(
-                self, sha256, size_bytes, temp, reserved, fd, hashlib.sha256(), bytearray()
+                self,
+                sha256,
+                size_bytes,
+                temp,
+                reserved,
+                fd,
+                hashlib.sha256(),
+                bytearray(),
+                token_id,
+                token_quota_reserved,
             )
+
+    def _pending_token_staged_bytes(self, token_id: str) -> int:
+        pending = 0
+        for sha256, size in self._pending_token_bytes.get(token_id, {}).items():
+            metadata = self._read_stage_metadata(sha256)
+            if metadata is None or token_id not in self._stage_owners(metadata):
+                pending += size
+        return pending
+
+    def _token_staged_bytes(self, token_id: str) -> int:
+        referenced: set[str] = set()
+        for path in self.manifests.glob("op_*.json"):
+            try:
+                manifest = json.loads(path.read_text(encoding="utf-8"))
+                referenced.update(
+                    validate_sha256(item.get("sha256")) for item in manifest.get("objects", [])
+                )
+            except (OSError, ValueError, TypeError, AttributeError, OpError):
+                continue
+        sizes: dict[str, int] = {}
+        for path in (*self.staging.glob("*.json"), *self.staging.glob("*.reserve")):
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+                sha = validate_sha256(raw.get("sha256"))
+                owners = raw.get("owners", [])
+                size = raw.get("size_bytes")
+                if (
+                    sha not in referenced
+                    and token_id in owners
+                    and isinstance(size, int)
+                    and not isinstance(size, bool)
+                    and size >= 0
+                    and (
+                        path.suffix == ".reserve"
+                        or _safe_regular(self._blob_path(sha)) is not None
+                    )
+                ):
+                    sizes[sha] = size
+            except (OSError, ValueError, TypeError, OpError):
+                continue
+        return sum(sizes.values())
 
     def _release_upload(self, sha256: str, reserved: bool) -> None:
         with self.lock:
@@ -505,6 +606,16 @@ class HostedIssueMedia:
                     self._reserved.pop(sha256, None)
             else:
                 self._reserved.pop(sha256, None)
+
+    def _release_token_quota(self, token_id: str | None, sha256: str, reserved: bool) -> None:
+        if token_id is None or not reserved:
+            return
+        with self.lock:
+            pending = self._pending_token_bytes.get(token_id)
+            if pending is not None:
+                pending.pop(sha256, None)
+                if not pending:
+                    self._pending_token_bytes.pop(token_id, None)
 
     def _expire_staging_locked(self, now: float) -> int:
         """Remove expired unreferenced uploads while holding ``self.lock``."""
@@ -554,13 +665,22 @@ class HostedIssueMedia:
         with self.lock:
             return self._expire_staging_locked(time.time() if now is None else now)
 
-    def verify_staged(self, sha256: str, size_bytes: int) -> dict:
+    def verify_staged(
+        self,
+        sha256: str,
+        size_bytes: int,
+        *,
+        token_id: str | None = None,
+        require_owner: bool = False,
+    ) -> dict:
         sha256 = validate_sha256(sha256)
         metadata = self._read_stage_metadata(sha256)
         if metadata is None:
             raise OpError("NOT_FOUND", f"staged media object {sha256} not found for this project.")
         if metadata["size_bytes"] != size_bytes:
             raise OpError("VALIDATION_ERROR", "staged media size does not match the operation.")
+        if require_owner and (token_id is None or token_id not in self._stage_owners(metadata)):
+            raise OpError("NOT_FOUND", f"staged media object {sha256} not found for this project.")
         actual_hash, actual_size, head = _digest_file(self._blob_path(sha256))
         content_type = sniff_media(head)
         if (

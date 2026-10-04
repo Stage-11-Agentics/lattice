@@ -437,8 +437,16 @@
         '<span class="issue-iid">' + esc(issue.short_id || issue.id) + '</span><span class="issue-q-tag">' + tagHtml(issue) + "</span>" +
         '<span class="issue-q-comments" title="' + commentCount + (commentCount === 1 ? " comment" : " comments") + '">' +
         (commentCount ? BUBBLE + commentCount : "") + '</span><span class="issue-q-age" title="' + esc(displayTime(issue.filed_at)) + '">' +
-        esc(relativeTime(issue.filed_at)) + '</span></div><div class="issue-q-text" title="' + esc(issue.title || "") + '">' +
-        esc(issue.title || "Untitled issue") + "</div></div>" + queueThumb(issue) + "</div>";
+        esc(relativeTime(issue.filed_at)) + '</span></div><div class="issue-q-text">' + externalBadge(issue) +
+        '<span class="issue-q-title" title="' + esc(issue.title || "") + '">' + esc(issue.title || "Untitled issue") +
+        "</span></div></div>" + queueThumb(issue) + "</div>";
+    }
+    function externalBadge(issue) {
+      if (issue && issue.external) {
+        return '<span class="issue-external-badge" role="note" aria-label="External / untrusted input">' +
+          "EXTERNAL / UNTRUSTED INPUT</span>";
+      }
+      return '<span class="issue-external-badge reserved" aria-hidden="true"></span>';
     }
     function tagHtml(issue) {
       var tag = logic.rowTag(issue, person ? person.actor : null);
@@ -505,12 +513,15 @@
       return '<span class="issue-state issue-state-' + esc(state) + '">' + esc(state) + "</span>";
     }
     function factsHtml(issue) {
+      var badge = externalBadge(issue);
       var bits = [actorHtml(issue.filed_by, issue.filed_origin), '<span title="' + esc(displayTime(issue.filed_at)) + '">' +
         esc(relativeTime(issue.filed_at)) + "</span>"];
-      if (issue.source) bits.push(esc(issue.source));
+      if (issue.on_behalf_of) bits.push('<span>Reporter: ' + esc(issue.on_behalf_of) + "</span>");
+      if (issue.source) bits.push('<span>Source: ' + esc(issue.source) + "</span>");
+      if (issue.source_ref) bits.push('<span>Source reference: ' + esc(issue.source_ref) + "</span>");
       if (issue.confidence) bits.push(esc(issue.confidence));
       (issue.evidence || []).forEach(function (item) { bits.push(esc(item)); });
-      return bits.join(" · ");
+      return badge + (issue.external ? " · " : "") + bits.join(" · ");
     }
     function detailShell() {
       return '<h1 class="issue-d-title" id="issue-d-title"></h1><div class="issue-d-desc" id="issue-d-desc"></div>' +

@@ -366,6 +366,10 @@ class Caller:
     origin: dict = field(default_factory=dict)
     attestations: dict = field(default_factory=dict)
     expect_last_event_id: str | None = None
+    #: Set only by the hosted auth layer for a filing-only token.
+    filing_only: bool = False
+    #: The hosted write transaction acquires the pair lock around its commit.
+    source_ref_lock_held: bool = False
 
 
 @dataclass(frozen=True)
@@ -689,7 +693,11 @@ def _execute(
     if not getattr(op_cls, "no_actor", False):
         actor = resolve_actor(board_dir, caller)
         on_behalf_of = getattr(parsed, "on_behalf_of", None)
-        if on_behalf_of is not None and not validate_actor(on_behalf_of):
+        if (
+            on_behalf_of is not None
+            and op_name != "issue.file"
+            and not validate_actor(on_behalf_of)
+        ):
             raise _invalid_actor(on_behalf_of)
         if authorize is not None:
             authorize(permission_identity(actor), caller)
