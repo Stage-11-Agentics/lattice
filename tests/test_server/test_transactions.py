@@ -30,6 +30,7 @@ import shutil
 from types import SimpleNamespace
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -38,7 +39,7 @@ from click.testing import CliRunner
 from lattice.cli.main import cli
 from lattice.core.errors import OpError
 from lattice.core.ids import generate_op_id
-from lattice.server import transactions
+from lattice.server import recovery, transactions
 from lattice.server.project import Project
 from lattice.server.stream import JOURNAL, Subscriber
 from lattice.server.testing import make_root
@@ -353,9 +354,10 @@ def test_every_boundary_leaves_the_operation_wholly_present_or_absent(
     projects: list[Project],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Hold the receipt date steady except for a forced midnight below. This
-    # makes date rollover reproducible instead of depending on CI wall time.
+    # Freeze both the receipt filename and retention clock. Without the latter,
+    # the fixed day-one receipt expires starting 2026-10-10 UTC, so rollover stops.
     receipt_date = ["2026-10-02"]
+    monkeypatch.setattr(recovery, "utc_today", lambda: date(2026, 10, 3))
     monkeypatch.setattr(
         transactions,
         "receipt_file_name",
@@ -425,9 +427,8 @@ def test_every_boundary_leaves_the_operation_wholly_present_or_absent(
                 error = exc
         assert injector.fired, case
 
-        # A later pass can have a different boundary order (for example, the
-        # first receipt for a new UTC day adds a dir_fsync). Classify this fault
-        # from its own trace, not its index in the earlier counting pass.
+        # The frozen date is the primary fix; classify from this run's trace as
+        # a belt-and-braces guard against another boundary-order change.
         injected_boundaries = injector.occurrences()
         fault_position = injected_boundaries.index((point, occurrence))
         try:
