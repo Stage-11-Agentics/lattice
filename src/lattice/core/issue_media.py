@@ -186,7 +186,9 @@ def _exif_orientation(payload: bytes) -> int | None:
         entry = ifd + 2 + index * 12
         tag, value_type, value_count = u16(entry), u16(entry + 2), u32(entry + 4)
         unit = type_sizes.get(value_type)
-        if unit is None or value_count > (len(tiff) // unit):
+        if unit is None:
+            continue
+        if value_count > (len(tiff) // unit):
             return None
         byte_count = unit * value_count
         if byte_count > 4:
@@ -226,7 +228,10 @@ def _strip_jpeg(data: bytes) -> tuple[bytes, tuple[str, ...]]:
     while pos < len(data):
         marker_start = pos
         if data[pos] != 0xFF:
-            raise PhotoMetadataError("JPEG marker framing is invalid.")
+            marker_start = data.find(b"\xff", pos)
+            if marker_start < 0:
+                raise PhotoMetadataError("JPEG is missing its end marker.")
+            pos = marker_start
         while pos < len(data) and data[pos] == 0xFF:
             pos += 1
         if pos >= len(data):
@@ -286,7 +291,7 @@ def _strip_jpeg(data: bytes) -> tuple[bytes, tuple[str, ...]]:
                 orientation = _exif_orientation(payload)
         elif 0xE0 <= marker <= 0xEF:
             keep_segment = (
-                (marker == 0xE0 and payload.startswith((b"JFIF\0", b"JFXX\0")))
+                (marker == 0xE0 and payload.startswith(b"JFIF\0"))
                 or (marker == 0xE2 and payload.startswith(b"ICC_PROFILE\0"))
                 or (marker == 0xEE and payload.startswith(b"Adobe"))
             )

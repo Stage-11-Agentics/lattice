@@ -210,6 +210,7 @@ class Upload:
     token_id: str | None = None
     token_quota_reserved: bool = False
     keep_photo_metadata: bool = False
+    dashboard: bool = False
     written: int = 0
     finished: bool = False
     #: Set once the upload has succeeded or been aborted; a later abort is a
@@ -237,6 +238,7 @@ class Upload:
         canonical_sha256: str | None = None
         published_new_blob = False
         canonical_reservation_created = False
+        canonical_inflight_added = False
         try:
             os.fsync(self.fd)
             os.close(self.fd)
@@ -252,34 +254,55 @@ class Upload:
                 raise OpError(
                     "VALIDATION_ERROR", "uploaded content is not a supported photo or video."
                 )
-            raw = self.temporary.read_bytes()
             photo_status = "not_applicable"
             if content_type in {"image/jpeg", "image/png"}:
+                raw = self.temporary.read_bytes()
                 try:
                     raw = strip_photo_metadata(raw, content_type)
                     photo_status = "stripped"
                 except PhotoMetadataError as exc:
                     if not self.keep_photo_metadata:
+                        guidance = (
+                            "repair the JPEG/PNG or use the CLI escape: "
+                            "lattice issue file --evidence <path> --keep-photo-metadata "
+                            "(or lattice issue attach --keep-photo-metadata)."
+                            if self.dashboard
+                            else "repair the JPEG/PNG or retry with "
+                            "X-Lattice-Keep-Photo-Metadata: true."
+                        )
                         raise OpError(
                             "VALIDATION_ERROR",
-                            "photo metadata could not be stripped; repair the JPEG/PNG or "
-                            "retry with X-Lattice-Keep-Photo-Metadata: true.",
+                            f"photo metadata could not be stripped; {guidance}",
                             {"reason": "PHOTO_METADATA_UNSTRIPPED"},
                         ) from exc
                     photo_status = "kept"
             elif content_type == "image/heic":
                 if not self.keep_photo_metadata:
+                    guidance = (
+                        "convert to JPEG or use the CLI escape: "
+                        "lattice issue file --evidence <path> --keep-photo-metadata "
+                        "(or lattice issue attach --keep-photo-metadata)."
+                        if self.dashboard
+                        else "convert to JPEG before upload when possible, or retry with "
+                        "X-Lattice-Keep-Photo-Metadata: true."
+                    )
                     raise OpError(
                         "VALIDATION_ERROR",
-                        "HEIC uploads require X-Lattice-Keep-Photo-Metadata: true; "
-                        "convert to JPEG before upload when possible.",
+                        f"HEIC uploads cannot be stripped on the server; {guidance}",
                         {"reason": "PHOTO_METADATA_UNSTRIPPED"},
                     )
                 photo_status = "kept"
 
-            canonical_sha256 = hashlib.sha256(raw).hexdigest()
-            canonical_size = len(raw)
-            self.owner._write_upload_bytes(self.temporary, raw)
+            if content_type in {"image/jpeg", "image/png"}:
+                canonical_sha256 = hashlib.sha256(raw).hexdigest()
+                canonical_size = len(raw)
+                if canonical_sha256 != self.sha256:
+                    self.owner._write_upload_bytes(self.temporary, raw)
+            else:
+                # Keep videos and retained HEIC byte-for-byte. In particular, a
+                # legal 100 MiB video never needs a second in-memory copy.
+                canonical_sha256 = self.sha256
+                canonical_size = self.written
             target = self.owner._blob_path(canonical_sha256)
             metadata_path = self.owner._metadata_path(canonical_sha256)
 
@@ -288,14 +311,25 @@ class Upload:
                     raise OpError("BOARD_BUSY", "canonical media bytes are already being staged.")
                 if canonical_sha256 != self.sha256:
                     self.owner._inflight.add(canonical_sha256)
+                    canonical_inflight_added = True
                 expected = self.owner._read_stage_metadata(canonical_sha256)
                 target_exists = _safe_regular(target) is not None
                 canonical_exists = expected is not None and target_exists
+                expected_core = (
+                    (
+                        expected.get("size_bytes"),
+                        expected.get("content_type"),
+                    )
+                    if expected is not None
+                    else None
+                )
+                expected_status = (
+                    expected.get("photo_metadata_status") if expected is not None else None
+                )
                 if expected is not None and (
-                    expected.get("size_bytes"),
-                    expected.get("content_type"),
-                    expected.get("photo_metadata_status"),
-                ) != (canonical_size, content_type, photo_status):
+                    expected_core != (canonical_size, content_type)
+                    or (expected_status is not None and expected_status != photo_status)
+                ):
                     raise OpError(
                         "CONFLICT", "staged sha256 was already used with different media."
                     )
@@ -341,14 +375,6 @@ class Upload:
                 os.chmod(metadata_path, 0o600)
                 self.owner._reserve_path(canonical_sha256).unlink(missing_ok=True)
                 self.owner._reserved.pop(canonical_sha256, None)
-                alias = {
-                    "upload_sha256": self.sha256,
-                    "upload_size_bytes": self.written,
-                    **metadata,
-                }
-                self.owner._write_alias(self.sha256, alias)
-                if canonical_sha256 != self.sha256:
-                    self.owner._inflight.discard(canonical_sha256)
             self.done = True
             return {
                 "upload_sha256": self.sha256,
@@ -369,7 +395,7 @@ class Upload:
             self.abort()
             raise
         finally:
-            if canonical_sha256 is not None:
+            if canonical_inflight_added and canonical_sha256 is not None:
                 with self.owner.lock:
                     self.owner._inflight.discard(canonical_sha256)
             self.owner._release_upload(self.sha256, self.reserved)
@@ -414,7 +440,6 @@ class HostedIssueMedia:
         self.board = Path(board)
         self.root = self.project_dir / ".runtime" / "issue-media"
         self.staging = self.root / "staging"
-        self.aliases = self.staging / "aliases"
         self.manifests = self.root / "manifests"
         self.max_file_bytes = max_file_bytes
         self.max_issue_bytes = max_issue_bytes
@@ -446,7 +471,6 @@ class HostedIssueMedia:
             opened.append(root_fd)
             staging_fd = _open_private_child(root_fd, "staging")
             opened.append(staging_fd)
-            opened.append(_open_private_child(staging_fd, "aliases"))
             opened.append(_open_private_child(root_fd, "manifests"))
         finally:
             for fd in reversed(opened):
@@ -460,9 +484,6 @@ class HostedIssueMedia:
 
     def _reserve_path(self, sha256: str) -> Path:
         return self.staging / f"{validate_sha256(sha256)}.reserve"
-
-    def _alias_path(self, upload_sha256: str) -> Path:
-        return self.aliases / f"{validate_sha256(upload_sha256)}.json"
 
     def _write_upload_bytes(self, path: Path, content: bytes) -> None:
         flags = os.O_WRONLY | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
@@ -486,13 +507,6 @@ class HostedIssueMedia:
             + "\n",
         )
         os.chmod(path, 0o600)
-
-    def _write_alias(self, upload_sha256: str, alias: dict) -> None:
-        _write_private(
-            self._alias_path(upload_sha256),
-            json.dumps(alias, sort_keys=True, separators=(",", ":")) + "\n",
-        )
-        os.chmod(self._alias_path(upload_sha256), 0o600)
 
     def _manifest_path(self, op_id: str) -> Path:
         if not re.fullmatch(r"op_[0-9A-HJKMNP-TV-Z]{26}", op_id):
@@ -563,6 +577,7 @@ class HostedIssueMedia:
         token_id: str | None = None,
         max_staged_bytes: int | None = None,
         keep_photo_metadata: bool = False,
+        dashboard: bool = False,
     ) -> Upload:
         sha256 = validate_sha256(sha256)
         if isinstance(size_bytes, bool) or not isinstance(size_bytes, int) or size_bytes < 0:
@@ -657,6 +672,7 @@ class HostedIssueMedia:
                 token_id,
                 token_quota_reserved,
                 keep_photo_metadata,
+                dashboard,
             )
 
     def _pending_token_staged_bytes(self, token_id: str) -> int:
@@ -761,13 +777,17 @@ class HostedIssueMedia:
                     self._reserved.pop(sha, None)
             except (OSError, ValueError, TypeError, OpError):
                 continue
-        for path in self.aliases.glob("*.json"):
-            try:
-                raw = json.loads(path.read_text(encoding="utf-8"))
-                if now - float(raw.get("created_at", 0)) >= STAGE_TTL_SECONDS:
-                    path.unlink(missing_ok=True)
-            except (OSError, ValueError, TypeError):
-                continue
+        # Older releases wrote aliases they never read. Expire any that remain
+        # without creating or consulting that directory for current uploads.
+        legacy_aliases = self.staging / "aliases"
+        if legacy_aliases.is_dir():
+            for path in legacy_aliases.glob("*.json"):
+                try:
+                    raw = json.loads(path.read_text(encoding="utf-8"))
+                    if now - float(raw.get("created_at", 0)) >= STAGE_TTL_SECONDS:
+                        path.unlink(missing_ok=True)
+                except (OSError, ValueError, TypeError):
+                    continue
         return removed
 
     def expire_staging(self, now: float | None = None) -> int:
@@ -802,7 +822,20 @@ class HostedIssueMedia:
                 "INTEGRITY_ERROR", "staged media bytes failed hash, size, or type verification."
             )
         if not isinstance(metadata.get("photo_metadata_status"), str):
-            metadata["photo_metadata_status"] = "unverified"
+            if content_type in {"image/jpeg", "image/png"}:
+                try:
+                    raw = self._blob_path(sha256).read_bytes()
+                    metadata["photo_metadata_status"] = (
+                        "stripped"
+                        if strip_photo_metadata(raw, content_type) == raw
+                        else "unverified"
+                    )
+                except (OSError, PhotoMetadataError):
+                    metadata["photo_metadata_status"] = "unverified"
+            elif content_type == "image/heic":
+                metadata["photo_metadata_status"] = "unverified"
+            else:
+                metadata["photo_metadata_status"] = "not_applicable"
         return metadata
 
     def add_manifest(self, op_id: str, issue_id: str, objects: list[dict]) -> None:

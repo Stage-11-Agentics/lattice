@@ -1035,7 +1035,7 @@ A write retries on its own for up to `retry_seconds` (15 by default) on connecti
 
 ## 19. Upgrading
 
-**Order: clients first, then the server, then enable the issue log.** The `0.2.2` server refuses every operation from a client below `0.2.2`, on every project, so a server-first upgrade cuts off hosted writes from each machine and seat you have not upgraded yet. A `0.2.2` client works against a `0.2.1` server (issue commands report that the log is off or that the server does not support it), so there is no outage in this order.
+**Order: clients first, then the server, then enable the issue log.** The `0.2.2` server refuses every operation from a client below `0.2.2`, on every project, so a server-first upgrade cuts off hosted writes from each machine and seat you have not upgraded yet. A `0.2.2` client works against a `0.2.1` server (issue commands report that the log is off or that the server does not support it), so there is no outage in this order. The clients-first order also matters for LAT-383: a pre-LAT-383 client filing a metadata-bearing photo against a new server can get a hash mismatch because the server stages stripped bytes.
 
 1. **Release.** The install command (section 5) installs from the `v2` branch: make sure the `0.2.2` build is merged there first.
 2. **Every client.** On each laptop, seat, box and CI image, upgrade with the same command (`--force` for `uv tool install`). Check `lattice --version` prints `0.2.2`. Then restart anything long-lived that loaded the old code (MCP servers, `lattice dashboard`, `lattice sync --follow`) and refresh agent instructions: `lattice setup-claude --force` and `lattice setup-claude-skill --force`.

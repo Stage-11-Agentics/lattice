@@ -535,6 +535,11 @@ def _parse_envelope(
             },
         ) from None
     if token.filing_only:
+        if getattr(params, "keep_photo_metadata", False):
+            raise OpError(
+                "TOKEN_RESTRICTED",
+                "filing-only tokens cannot keep photo metadata.",
+            )
         source = getattr(params, "source", None)
         if (
             op_name != "issue.file"
@@ -1246,6 +1251,11 @@ async def _stage_upload(
                 "ISSUES_DISABLED", hosted_issues_disabled_message(existing, project.slug)
             )
         keep_header = request.headers.get("x-lattice-keep-photo-metadata")
+        if token.filing_only and keep_header is not None:
+            raise OpError(
+                "TOKEN_RESTRICTED",
+                "filing-only tokens cannot keep photo metadata.",
+            )
         if keep_header is not None and keep_header.strip().lower() != "true":
             raise OpError(
                 "VALIDATION_ERROR",

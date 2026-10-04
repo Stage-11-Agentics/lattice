@@ -170,6 +170,43 @@ def test_orientation_exif_follows_the_retained_app0_wherever_it_appears() -> Non
     assert clean.index(app1) == clean.index(app0) + len(app0)
 
 
+@pytest.mark.parametrize("unknown_type", [13, 129])
+def test_exif_orientation_skips_unknown_ifd0_types(unknown_type: int) -> None:
+    unknown_entry = (0x0100).to_bytes(2, "little") + unknown_type.to_bytes(2, "little")
+    unknown_entry += (1).to_bytes(4, "little") + b"\x01\x00\x00\x00"
+    orientation_entry = (0x0112).to_bytes(2, "little") + (3).to_bytes(2, "little")
+    orientation_entry += (1).to_bytes(4, "little") + b"\x06\x00\x00\x00"
+    tiff = b"II*\0\x08\0\0\0" + (2).to_bytes(2, "little")
+    tiff += unknown_entry + orientation_entry + b"\0\0\0\0"
+    raw = b"\xff\xd8" + _jpeg_segment(0xE1, b"Exif\0\0" + tiff) + jpeg()[2:]
+
+    clean = strip_photo_metadata(raw, "image/jpeg")
+
+    retained = _jpeg_app1_payloads(clean)
+    assert len(retained) == 1
+    assert retained[0] == b"Exif\0\0" + (
+        b"II*\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0\x06\0\0\0\0\0\0\0"
+    )
+
+
+def test_strip_jpeg_skips_stray_bytes_between_segments() -> None:
+    base = jpeg()
+    raw = base[:-2] + b"camera-padding" + base[-2:]
+
+    assert strip_photo_metadata(raw, "image/jpeg") == base
+
+
+def test_strip_jpeg_drops_jfxx_but_keeps_jfif() -> None:
+    jfif = _jpeg_segment(0xE0, b"JFIF\0\x01\x02")
+    jfxx = _jpeg_segment(0xE0, b"JFXX\0\x10\x00\x01thumbnail")
+    raw = b"\xff\xd8" + jfif + jfxx + jpeg()[2:]
+
+    clean = strip_photo_metadata(raw, "image/jpeg")
+
+    assert jfif in clean
+    assert jfxx not in clean and b"thumbnail" not in clean
+
+
 def test_strip_progressive_jpeg_metadata_between_scans_and_trailing_payload() -> None:
     # Four components plus Adobe APP14 exercises the CMYK/YCCK color marker path.
     sof = _jpeg_segment(0xC2, b"\x08\0\x10\0\x10\x04\x01\x11\0\x02\x11\0\x03\x11\0\x04\x11\0")
@@ -263,6 +300,38 @@ def test_strip_png_refuses_unknown_critical_chunks() -> None:
     raw = original[:ihdr_end] + _png_chunk(b"ABCD", b"required decoder data") + original[ihdr_end:]
     with pytest.raises(PhotoMetadataError, match="unknown critical PNG chunk"):
         strip_photo_metadata(raw, "image/png")
+
+
+def test_strip_png_refuses_a_chunk_with_an_invalid_crc() -> None:
+    raw = bytearray(png(2, 1))
+    idat = raw.index(b"IDAT")
+    crc_at = idat + 4 + int.from_bytes(raw[idat - 4 : idat], "big")
+    raw[crc_at] ^= 0x01
+
+    with pytest.raises(PhotoMetadataError, match="checksum"):
+        strip_photo_metadata(bytes(raw), "image/png")
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        pytest.param(jpeg()[:-2], id="truncated-before-sos"),
+        pytest.param(
+            jpeg()[:-2] + _jpeg_segment(0xDA, b"\x01\x01\x00\x00\x3f\x00") + b"\x12\x34",
+            id="truncated-mid-scan",
+        ),
+        pytest.param(
+            jpeg()[:-2]
+            + _jpeg_segment(0xDA, b"\x01\x01\x00\x00\x3f\x00")
+            + b"\x12\x34"
+            + _jpeg_segment(0xFE, b"between scan and end"),
+            id="without-eoi",
+        ),
+    ],
+)
+def test_strip_jpeg_refuses_missing_eoi(raw: bytes) -> None:
+    with pytest.raises(PhotoMetadataError):
+        strip_photo_metadata(raw, "image/jpeg")
 
 
 @pytest.mark.parametrize(

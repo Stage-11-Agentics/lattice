@@ -347,14 +347,19 @@ def _stage_prepared_media(project: Project, filename: str, content: bytes) -> di
     def stage(payload: dict) -> dict:
         item_name, data = decode_payload(payload)
         digest = hashlib.sha256(data).hexdigest()
-        upload = project.issue_media.begin_upload(digest, len(data))
+        upload = project.issue_media.begin_upload(digest, len(data), dashboard=True)
         try:
             upload.write(data)
-            upload.finish()
+            result = upload.finish()
         except BaseException:
             upload.abort()
             raise
-        return {"filename": item_name, "sha256": digest, "size": len(data), "staged": True}
+        return {
+            "filename": item_name,
+            "sha256": result["sha256"],
+            "size": result["size_bytes"],
+            "staged": True,
+        }
 
     staged = {key: value for key, value in prepared.items() if key not in ("payload", "frames")}
     staged["payload"] = stage(prepared["payload"])

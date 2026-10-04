@@ -216,6 +216,27 @@ def test_staging_client_places_canonical_metadata_in_operation_payload() -> None
     }
 
 
+def test_staging_client_accepts_pre_lat_383_reply_only_for_the_exact_upload_hash() -> None:
+    content = b"\x89PNG\r\n\x1a\n" + b"legacy-server" * 30
+    digest = hashlib.sha256(content).hexdigest()
+    old_shape = {
+        "sha256": digest,
+        "size_bytes": len(content),
+        "content_type": "image/png",
+        "staged": True,
+    }
+
+    with upload_server([(201, {"ok": True, "data": old_shape})]) as server:
+        result = client.stage_issue_media(_remote(server["url"]), PROJECT, _params(content))
+
+    assert result["media"][0]["payload"] == {
+        "filename": "shot.png",
+        "sha256": digest,
+        "size": len(content),
+        "staged": True,
+    }
+
+
 def test_an_upload_that_never_connects_gives_up_in_plain_words() -> None:
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))

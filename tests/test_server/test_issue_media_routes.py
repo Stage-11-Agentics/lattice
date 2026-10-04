@@ -184,11 +184,7 @@ def manifest_dir(root: Path, slug: str = SLUG) -> Path:
 
 
 def names(directory: Path) -> list[str]:
-    return (
-        sorted(p.name for p in directory.iterdir() if p.name != "aliases")
-        if directory.is_dir()
-        else []
-    )
+    return sorted(p.name for p in directory.iterdir()) if directory.is_dir() else []
 
 
 def board_of(root: Path, slug: str = SLUG) -> Path:
@@ -256,12 +252,11 @@ def test_upload_needs_a_token_for_the_project(server: ServerHandle, root: Path) 
 
 
 @pytest.mark.parametrize("content_type", ["image/jpeg", "image/png"])
-def test_photo_upload_returns_raw_and_canonical_hashes_and_writes_alias(
+def test_photo_upload_returns_raw_and_canonical_hashes_without_alias_records(
     server: ServerHandle, root: Path, token: str, content_type: str
 ) -> None:
     from tests.photo_metadata_helpers import jpeg_with_gps, png_with_gps
     from lattice.core.issue_media import strip_photo_metadata
-    import json
 
     raw = jpeg_with_gps() if content_type == "image/jpeg" else png_with_gps()
     raw_hash = sha(raw)
@@ -273,8 +268,56 @@ def test_photo_upload_returns_raw_and_canonical_hashes_and_writes_alias(
     assert result["size_bytes"] == len(clean)
     assert result["photo_metadata_status"] == "stripped"
     assert (stage_dir(root) / f"{sha(clean)}.blob").read_bytes() == clean
-    alias = stage_dir(root) / "aliases" / f"{raw_hash}.json"
-    assert json.loads(alias.read_text())["sha256"] == sha(clean)
+    assert not (stage_dir(root) / "aliases").exists()
+
+
+def test_upload_finish_does_not_read_or_rewrite_video_bytes(
+    server: ServerHandle, token: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager = server.project(SLUG).issue_media
+    data = mp4(b"finish-without-a-second-copy")
+    upload = manager.begin_upload(sha(data), len(data))
+    upload.write(data)
+    original_read_bytes = Path.read_bytes
+
+    def guarded_read_bytes(path: Path) -> bytes:
+        if path == upload.temporary:
+            raise AssertionError("video upload temp file must not be read into memory")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", guarded_read_bytes)
+    monkeypatch.setattr(
+        manager,
+        "_write_upload_bytes",
+        lambda *_args: pytest.fail("video upload temp file must not be rewritten"),
+    )
+
+    result = upload.finish()
+
+    assert result["sha256"] == sha(data)
+    assert result["size_bytes"] == len(data)
+    assert manager._blob_path(sha(data)).stat().st_size == len(data)
+
+
+def test_board_busy_keeps_an_inflight_canonical_hash_owned_by_another_upload(
+    server: ServerHandle, token: str
+) -> None:
+    from lattice.core.issue_media import strip_photo_metadata
+    from tests.photo_metadata_helpers import jpeg_with_gps
+
+    manager = server.project(SLUG).issue_media
+    raw = jpeg_with_gps()
+    canonical_hash = sha(strip_photo_metadata(raw, "image/jpeg"))
+    upload = manager.begin_upload(sha(raw), len(raw))
+    upload.write(raw)
+    manager._inflight.add(canonical_hash)
+    try:
+        with pytest.raises(OpError) as raised:
+            upload.finish()
+        assert raised.value.code == "BOARD_BUSY"
+        assert canonical_hash in manager._inflight
+    finally:
+        manager._inflight.discard(canonical_hash)
 
 
 @pytest.mark.parametrize("content_type", ["image/jpeg", "image/png"])
@@ -330,6 +373,59 @@ def test_raw_photo_stages_are_consumed_by_file_and_attach_with_canonical_dedupe(
     assert_no_identifying_metadata(stored.read_bytes(), content_type)
 
 
+def test_legacy_photo_stage_without_status_is_safe_and_reupload_refreshes_metadata(
+    server: ServerHandle, root: Path, token: str
+) -> None:
+    import json
+
+    for data, reupload in ((jpeg(), False), (jpeg(80, 40), True)):
+        staged = stage_ok(server, token, data)
+        metadata_path = stage_dir(root) / f"{staged['sha256']}.json"
+        metadata = json.loads(metadata_path.read_text())
+        metadata.pop("photo_metadata_status")
+        metadata_path.write_text(json.dumps(metadata))
+
+        if reupload:
+            refreshed = stage_ok(server, token, data)
+            assert refreshed["photo_metadata_status"] == "stripped"
+            metadata = json.loads(metadata_path.read_text())
+            assert metadata["photo_metadata_status"] == "stripped"
+
+        issue = filed(server, token, [item(data, "legacy.jpg")])
+        assert len(issue["media"]) == 1
+
+
+def test_filing_rejects_a_staged_video_frame_without_stripped_status(
+    server: ServerHandle, root: Path, token: str
+) -> None:
+    import json
+
+    video = mp4(b"frame-status-guard")
+    frame = jpeg()
+    stage_ok(server, token, video)
+    stage_ok(server, token, frame)
+    metadata_path = stage_dir(root) / f"{sha(frame)}.json"
+    metadata = json.loads(metadata_path.read_text())
+    metadata["photo_metadata_status"] = "not_applicable"
+    metadata_path.write_text(json.dumps(metadata))
+
+    status, _, body = file_issue(
+        server,
+        token,
+        [
+            item(
+                video,
+                "clip.mp4",
+                video={"width": 64, "height": 48, "duration_ms": 1000},
+                frames=[{"t_ms": 500, "payload": payload(frame, "frame.jpg")}],
+            )
+        ],
+    )
+
+    assert status == 400
+    assert body["error"]["code"] == "VALIDATION_ERROR"
+
+
 @pytest.mark.parametrize("kind", ["jpeg", "png", "heic"])
 def test_hosted_photo_keep_fallback_requires_both_steps_and_keeps_only_on_failure(
     server: ServerHandle, root: Path, token: str, kind: str
@@ -351,12 +447,12 @@ def test_hosted_photo_keep_fallback_requires_both_steps_and_keeps_only_on_failur
     raw_stage = stage_dir(root) / f"{raw_hash}.blob"
     raw_metadata = stage_dir(root) / f"{raw_hash}.json"
     raw_reservation = stage_dir(root) / f"{raw_hash}.reserve"
-    alias = stage_dir(root) / "aliases" / f"{raw_hash}.json"
 
     status, _, body = put_stage(server, token, raw)
     assert status == 400, body
     assert error_code(body) == "VALIDATION_ERROR"
-    assert not raw_stage.exists() and not raw_metadata.exists() and not alias.exists()
+    assert not raw_stage.exists() and not raw_metadata.exists()
+    assert not (stage_dir(root) / "aliases").exists()
     assert not raw_reservation.exists()
     assert server.project(SLUG).issue_media._reserved == {}
 
@@ -421,57 +517,6 @@ def test_hosted_photo_keep_fallback_requires_both_steps_and_keeps_only_on_failur
     assert valid_entry["sha256"] == sha(clean)
 
 
-def test_photo_alias_and_canonical_stage_expire_independently_and_retry_recreates_them(
-    server: ServerHandle, root: Path, token: str
-) -> None:
-    import json
-
-    from lattice.server.issue_media import STAGE_TTL_SECONDS
-    from tests.photo_metadata_helpers import jpeg_with_gps
-    from lattice.core.issue_media import strip_photo_metadata
-
-    raw = jpeg_with_gps()
-    canonical_hash = sha(strip_photo_metadata(raw, "image/jpeg"))
-    raw_hash = sha(raw)
-    manager = server.project(SLUG).issue_media
-    first = stage_ok(server, token, raw)
-    alias_path = stage_dir(root) / "aliases" / f"{raw_hash}.json"
-    metadata_path = stage_dir(root) / f"{canonical_hash}.json"
-    blob_path = stage_dir(root) / f"{canonical_hash}.blob"
-
-    now = time.time()
-    alias = json.loads(alias_path.read_text())
-    alias["created_at"] = now - STAGE_TTL_SECONDS - 1
-    alias_path.write_text(json.dumps(alias))
-    metadata = json.loads(metadata_path.read_text())
-    metadata["created_at"] = now
-    metadata_path.write_text(json.dumps(metadata))
-    assert manager.expire_staging(now=now + 1) == 0
-    assert not alias_path.exists()
-    assert metadata_path.exists() and blob_path.exists()
-
-    retried = stage_ok(server, token, raw)
-    assert retried["upload_sha256"] == first["upload_sha256"]
-    assert retried["sha256"] == first["sha256"] == canonical_hash
-    assert alias_path.exists()
-
-    # Let the canonical stage expire while the separately-timed alias remains.
-    now = time.time()
-    alias = json.loads(alias_path.read_text())
-    alias["created_at"] = now
-    alias_path.write_text(json.dumps(alias))
-    metadata = json.loads(metadata_path.read_text())
-    metadata["created_at"] = now - STAGE_TTL_SECONDS - 1
-    metadata_path.write_text(json.dumps(metadata))
-    assert manager.expire_staging(now=now + 1) == 1
-    assert alias_path.exists()
-    assert not metadata_path.exists() and not blob_path.exists()
-
-    replayed = stage_ok(server, token, raw)
-    assert replayed["sha256"] == canonical_hash
-    assert alias_path.exists() and metadata_path.exists() and blob_path.exists()
-
-
 def test_photo_quota_reserves_the_canonical_size_after_raw_upload(root: Path, token: str) -> None:
     from lattice.core.issue_media import strip_photo_metadata
     from tests.photo_metadata_helpers import jpeg_with_gps
@@ -515,29 +560,6 @@ def test_existing_canonical_photo_stage_is_credited_once_during_raw_quota_transf
     result = stage_ok(server, token, second_raw)
     assert result["sha256"] == canonical_hash
     assert manager._staged_unique_bytes() == len(canonical)
-
-
-def test_failed_alias_publication_removes_new_canonical_stage(
-    server: ServerHandle, root: Path, token: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from tests.photo_metadata_helpers import jpeg_with_gps
-    from lattice.core.issue_media import strip_photo_metadata
-
-    raw = jpeg_with_gps()
-    raw_hash = sha(raw)
-    clean_hash = sha(strip_photo_metadata(raw, "image/jpeg"))
-    manager = server.project(SLUG).issue_media
-
-    def fail_alias(_raw_hash: str, _alias: dict) -> None:
-        raise OSError("synthetic alias write failure")
-
-    monkeypatch.setattr(manager, "_write_alias", fail_alias)
-    status, _, _body = put_stage(server, token, raw)
-    assert status == 500
-    assert not (stage_dir(root) / f"{clean_hash}.blob").exists()
-    assert not (stage_dir(root) / f"{clean_hash}.json").exists()
-    assert not (stage_dir(root) / "aliases" / f"{raw_hash}.json").exists()
-    assert manager._reserved == {} and manager._inflight == set()
 
 
 def _body_complete(reply: bytes) -> bool:

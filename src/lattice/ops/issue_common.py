@@ -530,6 +530,8 @@ def decode_media(
 ) -> list[DecodedMedia]:
     """Decode and check every item, each within ``issues.max_media_mb``; the same
     content twice is kept once. *nothing*: the refusal's last sentence."""
+    if require_stage_owner and keep_photo_metadata:
+        raise OpError("TOKEN_RESTRICTED", "filing-only tokens cannot keep photo metadata.")
     per_file, _per_issue = media_limits(config)
     decoded: list[DecodedMedia] = []
     seen: set[str] = set()

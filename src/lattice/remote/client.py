@@ -146,9 +146,20 @@ def stage_issue_media(
                 keep_photo_metadata=keep_photo_metadata,
             )
             first[0] = False
+            legacy_reply = isinstance(metadata, dict) and "upload_sha256" not in metadata
+            upload_digest_matches = (
+                metadata.get("sha256") == actual
+                if legacy_reply
+                else isinstance(metadata, dict) and metadata.get("upload_sha256") == actual
+            )
+            if legacy_reply and "photo_metadata_status" not in metadata:
+                # A pre-LAT-383 server cannot attest that it stripped a photo.
+                # The exact uploaded bytes are still hash-verified; keep the
+                # status honest for the in-memory staging record.
+                metadata["photo_metadata_status"] = "unverified"
             if (
                 not isinstance(metadata, dict)
-                or metadata.get("upload_sha256") != actual
+                or not upload_digest_matches
                 or not isinstance(metadata.get("sha256"), str)
                 or not _MEDIA_SHA256_RE.fullmatch(metadata["sha256"])
                 or isinstance(metadata.get("size_bytes"), bool)
@@ -156,7 +167,9 @@ def stage_issue_media(
                 or metadata["size_bytes"] < 0
                 or not isinstance(metadata.get("content_type"), str)
                 or metadata.get("photo_metadata_status")
-                not in {"stripped", "kept", "not_applicable"}
+                not in {"stripped", "kept", "not_applicable", "unverified"}
+                or (not legacy_reply and metadata.get("photo_metadata_status") == "unverified")
+                or (legacy_reply and metadata.get("sha256") != actual)
                 or metadata.get("staged") is not True
             ):
                 raise OpError(
