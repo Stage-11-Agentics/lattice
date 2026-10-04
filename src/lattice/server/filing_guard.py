@@ -51,6 +51,11 @@ class FilingTokenGuard:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
+        # Reporter links authenticate from their server-root secret and always
+        # own their generic 404 surface. Do not inspect bearer or session state.
+        if scope.get("path", "") == "/r" or scope.get("path", "").startswith("/r/"):
+            await self.app(scope, receive, send)
+            return
         state = scope.setdefault("state", {})
         authorization = next(
             (

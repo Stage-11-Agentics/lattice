@@ -1049,6 +1049,73 @@ class HostedIssueMedia:
             self._reserve_path(sha).unlink(missing_ok=True)
             self._reserved.pop(sha, None)
 
+    def cleanup_token_stages(self, token_id: str, hashes: set[str] | None = None) -> int:
+        """Remove *token_id* from staged-object owners, preserving shared hashes.
+
+        When *hashes* is omitted, this is revoke cleanup for every staged object.
+        A referenced or in-flight object is never deleted. The caller runs this
+        under the project's work lock when the server owns the project; the
+        manager lock protects its in-memory reservations in either mode.
+        """
+        if not isinstance(token_id, str) or not token_id:
+            raise OpError("VALIDATION_ERROR", "a stage owner token ID is required.")
+        selected = None if hashes is None else {validate_sha256(value) for value in hashes}
+        self._make_layout()
+        changed = 0
+        removed: set[str] = set()
+        with self.lock:
+            for path in self.staging.glob("*.json"):
+                try:
+                    raw = json.loads(path.read_text(encoding="utf-8"))
+                    sha = validate_sha256(raw.get("sha256"))
+                except (OSError, ValueError, TypeError, OpError):
+                    continue
+                if selected is not None and sha not in selected:
+                    continue
+                owners = self._stage_owners(raw)
+                if token_id not in owners:
+                    continue
+                updated = [owner for owner in owners if owner != token_id]
+                raw["owners"] = updated
+                _write_private(path, json.dumps(raw, sort_keys=True, separators=(",", ":")) + "\n")
+                changed += 1
+                if not updated:
+                    removed.add(sha)
+            for path in self.staging.glob("*.reserve"):
+                try:
+                    raw = json.loads(path.read_text(encoding="utf-8"))
+                    sha = validate_sha256(raw.get("sha256"))
+                except (OSError, ValueError, TypeError, OpError):
+                    continue
+                if selected is not None and sha not in selected:
+                    continue
+                owners = raw.get("owners", [])
+                if not isinstance(owners, list) or token_id not in owners:
+                    continue
+                updated = [owner for owner in owners if owner != token_id]
+                if updated:
+                    raw["owners"] = updated
+                    _write_private(
+                        path, json.dumps(raw, sort_keys=True, separators=(",", ":")) + "\n"
+                    )
+                else:
+                    path.unlink(missing_ok=True)
+                    self._reserved.pop(sha, None)
+                    removed.add(sha)
+                pending = self._pending_token_bytes.get(token_id)
+                if pending is not None:
+                    pending.pop(sha, None)
+                changed += 1
+            pending = self._pending_token_bytes.get(token_id, {})
+            pending_hashes = set(pending) if selected is None else selected
+            removed.update(pending_hashes & set(pending))
+            for sha in pending_hashes:
+                pending.pop(sha, None)
+            if not pending:
+                self._pending_token_bytes.pop(token_id, None)
+            self._remove_unreferenced_stage(removed)
+        return changed
+
     def reconcile(self, journal: Any) -> None:
         """Resolve leftover manifests once the undo logs are settled (project load).
 

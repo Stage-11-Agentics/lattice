@@ -420,6 +420,22 @@ This token can use only the exact `POST /v1/projects/demo/ops/issue.file` and `P
 
 Optional `source_ref` makes retries idempotent across distinct operation IDs. It requires a nonempty source. With a reference, Lattice trims surrounding whitespace from `source` and `source_ref`, preserves case, rejects blanks and control characters, and limits `source` to 128 characters and `source_ref` to 256. A longer `source_ref` returns 400 `VALIDATION_ERROR`; it is never truncated. For email, hash unusually long RFC 5322 Message-IDs before using them as `source_ref`. Optional `on_behalf_of` is free-form reporter text, separate from the service actor. A new issue filed by this token is marked `external: true`; a dedupe receipt reports the original issue's marker.
 
+### Public reporter links
+
+For a browser form that should not expose a filing token, create one server-managed link per reporter source:
+
+```bash
+lattice server project reporter-link create demo \
+  --label "Customer report" \
+  --public-base-url https://lattice.example.net/intake
+lattice server project reporter-link list
+lattice server project reporter-link revoke link_01J...
+```
+
+`--public-base-url` is required and must be the externally reachable HTTPS base URL. Include any reverse-proxy path prefix; the generated page, stylesheet, and script use relative URLs. Configure the proxy to map that prefixed `/r/...` path to the server's `/r/...` route. HTTP is accepted only for loopback development. The server stores the base origin separately and accepts it as the write `Origin`, including when a proxy rewrites `Host`; this does not add it to `public_origins`, which remains the dashboard's browser-origin allowlist.
+
+Each link owns a separate filing-only token bound to `reporter-link:<link-id>`, with limits of 30 operations per minute, 256 MiB of request bytes per minute, and 512 MiB of staged media. The browser receives no token. Create prints the secret URL once; list omits it. A successful form submission returns only the filing receipt, and revoke disables the link and removes that token's unreferenced staged media while preserving hashes owned by another token.
+
 The issue media file cap is the live `limits.max_issue_media_file_bytes` (100 MiB by default). An unset filing-token byte rate is `max(64 MiB, the current per-file cap)`, so one legal upload fits. An explicit `--bytes-per-minute` override for any token must be at least the current per-file cap at mint. If a later server config change makes one body larger than a token's effective byte capacity, it gets a non-retryable 413 `PAYLOAD_TOO_LARGE` with `details.scope: "token"`.
 
 The following example stages one image as raw bytes, files it, then repeats the same `(source, source_ref)` with a fresh operation ID. It uses `jq` to JSON-escape the request and Python's standard library to mint operation IDs:

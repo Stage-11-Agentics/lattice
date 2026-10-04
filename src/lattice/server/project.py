@@ -1256,6 +1256,15 @@ def _set_config_action(project: Project, request: dict) -> dict:
     return project.set_config(changes)
 
 
+@control.action("cleanup-reporter-link-stages")
+def _cleanup_reporter_link_stages_action(project: Project, request: dict) -> dict:
+    """Revoke one link token's stage ownership inside the running project locks."""
+    token_id = request.get("token_id")
+    if not isinstance(token_id, str) or not token_id.startswith("tok_"):
+        raise OpError("VALIDATION_ERROR", "reporter-link cleanup needs a token ID.")
+    return {"removed": project.issue_media.cleanup_token_stages(token_id)}
+
+
 def lock_timeout_error(exc: LockTimeout) -> OpError:
     """A storage lock that timed out inside the server: ``BOARD_BUSY`` (SPEC §3.1)."""
     return OpError("BOARD_BUSY", str(exc))
