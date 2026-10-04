@@ -46,7 +46,13 @@ HUMAN_AUTHORED_OPS = frozenset({"issue.file", "issue.comment", "issue.dismiss", 
 def human_author(config: dict) -> str | None:
     """The board's configured human actor (``default_actor: human:...``), else ``None``."""
     actor = config.get("default_actor")
-    return actor if isinstance(actor, str) and actor.startswith("human:") and actor[6:] else None
+    if not isinstance(actor, str):
+        return None
+    actor = actor.strip()
+    kind, separator, identity = actor.partition(":")
+    if kind != "human" or not separator or not identity.strip():
+        return None
+    return f"human:{identity.strip()}"
 
 
 #: Maximum allowed request body size (1 MiB), to refuse oversized payloads.
@@ -210,7 +216,9 @@ def _flatten_issue_comments(comments: list[dict]) -> list[dict]:
     return flattened
 
 
-def _issue_detail_adapter(ld: Path, raw_id: str) -> dict | None:
+def _issue_detail_adapter(
+    ld: Path, raw_id: str, issue_media_route: str | None = "/api/issues/{issue_id}/media"
+) -> dict | None:
     """The page's issue detail: LAT-371's ``issue_detail`` plus media URLs."""
     from lattice.storage.issues import issue_detail
 
@@ -218,10 +226,12 @@ def _issue_detail_adapter(ld: Path, raw_id: str) -> dict | None:
         detail = issue_detail(ld, raw_id)
     except OpError as exc:
         raise ApiError.from_op_error(exc) from exc
-    return None if detail is None else _normalize_issue_detail(detail)
+    return None if detail is None else _normalize_issue_detail(detail, issue_media_route)
 
 
-def _normalize_issue_detail(detail: dict) -> dict:
+def _normalize_issue_detail(
+    detail: dict, issue_media_route: str | None = "/api/issues/{issue_id}/media"
+) -> dict:
     """Give media entries dashboard URLs and hide board-local file paths."""
     from lattice.core.issue_media import parse_frame_name
 
@@ -235,9 +245,11 @@ def _normalize_issue_detail(detail: dict) -> dict:
         issue_id = issue.get("id")
         valid_issue_id = isinstance(issue_id, str) and validate_id(issue_id, "iss")
         valid_media_id = isinstance(media_id, str) and validate_id(media_id, "med")
+        media_route = issue_media_route.format(issue_id=issue_id) if issue_media_route else None
         item["url"] = (
-            f"/api/issues/{issue_id}/media/{media_id}"
-            if valid_issue_id
+            f"{media_route}/{media_id}"
+            if media_route
+            and valid_issue_id
             and valid_media_id
             and item.get("path")
             and not item.get("missing")
@@ -250,8 +262,9 @@ def _normalize_issue_detail(detail: dict) -> dict:
             raw_path = frame_item.get("path")
             frame_name = Path(raw_path).name if isinstance(raw_path, str) else ""
             frame_item["url"] = (
-                f"/api/issues/{issue_id}/media/{media_id}/frames/{frame_name}"
-                if valid_issue_id
+                f"{media_route}/{media_id}/frames/{frame_name}"
+                if media_route
+                and valid_issue_id
                 and valid_media_id
                 and parse_frame_name(frame_name) is not None
                 and not item.get("removed")
@@ -274,7 +287,11 @@ def _warn_unreadable_issue(path: Path, exc: Exception) -> None:
     sys.stderr.write(f"warning: skipping unreadable issue file {path}: {exc}\n")
 
 
-def _issue_list_adapter(ld: Path, actor: str | None = None) -> list[dict]:
+def _issue_list_adapter(
+    ld: Path,
+    actor: str | None = None,
+    issue_media_route: str | None = "/api/issues/{issue_id}/media",
+) -> list[dict]:
     """Every issue, or with *actor* those it filed or commented on (any state).
 
     Membership is LAT-371's ``issues_by``: a full key (``human:Atin-1``) matches
@@ -293,7 +310,7 @@ def _issue_list_adapter(ld: Path, actor: str | None = None) -> list[dict]:
 
     if actor is None:
         views = issue_views(ld, list_issue_snapshots(ld, on_unreadable=_warn_unreadable_issue))
-        return [_normalize_issue_detail(view) for view in views]
+        return [_normalize_issue_detail(view, issue_media_route) for view in views]
     rows = []
     for view in issues_by(ld, actor, on_unreadable=_warn_unreadable_issue):
         comments = _flatten_issue_comments(issue_comments(read_issue_events(ld, view["id"])))
@@ -303,7 +320,7 @@ def _issue_list_adapter(ld: Path, actor: str | None = None) -> list[dict]:
             times.append(view.get("filed_at") or "")
         rows.append(
             {
-                **_normalize_issue_detail(view),
+                **_normalize_issue_detail(view, issue_media_route),
                 "matched_by": view["activity"],
                 "actor_comment_count": len(mine),
                 "actor_comment_origins": [c.get("origin") for c in mine],
@@ -680,7 +697,11 @@ def get_git_branch_commits(ld: Path, branch_name: str) -> dict:
 
 
 def route_get(
-    ld: Path, path: str, query_string: str = "", if_none_match: str | None = None
+    ld: Path,
+    path: str,
+    query_string: str = "",
+    if_none_match: str | None = None,
+    issue_media_route: str | None = "/api/issues/{issue_id}/media",
 ) -> ApiResponse:
     """Answer ``GET <path>`` (an ``/api/...`` path, no trailing slash)."""
     query = parse_qs(query_string)
@@ -696,7 +717,7 @@ def route_get(
             if actor is not None and len(actor) > 256:
                 raise ApiError(400, "VALIDATION_ERROR", "by filter is longer than 256 characters")
             try:
-                rows = _issue_list_adapter(ld, actor)
+                rows = _issue_list_adapter(ld, actor, issue_media_route)
             except OpError as exc:
                 raise ApiError.from_op_error(exc) from exc
             # List rows intentionally carry no comments or history; detail has
@@ -711,7 +732,7 @@ def route_get(
             if "/" in remainder:
                 return error(404, "NOT_FOUND", f"Not found: {path}")
             try:
-                detail = _issue_detail_adapter(ld, remainder)
+                detail = _issue_detail_adapter(ld, remainder, issue_media_route)
             except OpError as exc:
                 raise ApiError.from_op_error(exc) from exc
             if detail is None:
@@ -1072,6 +1093,12 @@ def translate_post(path: str, body: Any) -> WriteRequest:
         # A browser recording can report no duration (it is display data): leave
         # an unknown dimension out rather than send null.
         media = [_without_unknown_video_fields(item) for item in media]
+        from lattice.ops.issue_common import check_media_items
+
+        try:
+            check_media_items(tuple(media))
+        except OpError as exc:
+            raise ApiError.from_op_error(exc) from exc
 
         params = {"title": title, "description": description, "media": tuple(media)}
 

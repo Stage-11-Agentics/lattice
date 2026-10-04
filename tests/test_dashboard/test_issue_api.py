@@ -89,6 +89,25 @@ def test_by_filter_marks_file_activity_across_the_issue_list(issue_board) -> Non
     assert rows[0]["actor_activity_at"] == own["filed_at"]
 
 
+def test_issue_list_media_urls_keep_the_local_route_for_all_and_by_actor(issue_board) -> None:  # noqa: ANN001
+    board, lattice_dir, config = issue_board
+    enable_issues(lattice_dir, config)
+    issue = board.execute(
+        "issue.file",
+        {
+            "text": "Local list media",
+            "media": [{"payload": encode_payload("shot.png", png())}],
+        },
+        Caller(actor="human:atin"),
+    ).value
+
+    for query in ("", urlencode({"by": "human:atin"})):
+        rows = data(api.route_get(lattice_dir, "/api/issues", query))
+        row = next(item for item in rows if item["id"] == issue["id"])
+        media = row["media"][0]
+        assert media["url"] == f"/api/issues/{issue['id']}/media/{media['id']}"
+
+
 def test_by_filter_keeps_full_human_session_keys_exact(issue_board) -> None:  # noqa: ANN001
     board, lattice_dir, config = issue_board
     enable_issues(lattice_dir, config)
@@ -322,6 +341,21 @@ def test_one_unreadable_issue_is_skipped_not_a_500(issue_board) -> None:  # noqa
     assert [row["id"] for row in by] == [good["id"]]
 
 
+def test_dashboard_translation_rejects_unknown_media_item_keys_early() -> None:
+    item = {"payload": encode_payload("clip.mp4", mp4()), "path": "/tmp/secret"}
+
+    with pytest.raises(api.ApiError) as refused:
+        api.translate_post("/api/issues", {"title": "Bad shape", "media": [item]})
+
+    assert refused.value.code == "VALIDATION_ERROR"
+    assert "media item 1" in refused.value.message
+
+
+def test_human_author_strips_the_configured_identifier_and_rejects_blank_names() -> None:
+    assert api.human_author({"default_actor": "human: atin "}) == "human:atin"
+    assert api.human_author({"default_actor": "human: "}) is None
+
+
 def test_dashboard_video_goes_through_the_cli_media_step(  # noqa: ANN001
     monkeypatch, tmp_path
 ) -> None:
@@ -356,6 +390,56 @@ def test_dashboard_video_goes_through_the_cli_media_step(  # noqa: ANN001
     from lattice.ops.task_attach import decode_payload
 
     assert decode_payload(prepared["payload"])[1].startswith(b"stripped-")
+
+
+def test_dashboard_geo_strip_invocation_uses_stdlib_fixture(tmp_path: Path, monkeypatch) -> None:
+    """CI has no ffmpeg; pin the real dashboard prep path's metadata-free invocation."""
+    import base64
+    import json
+    import sys
+
+    from lattice.dashboard import media_prep
+    from lattice.ops.task_attach import decode_payload
+
+    tool_dir = tmp_path / "tools"
+    tool_dir.mkdir()
+    calls = tmp_path / "ffmpeg-argv.jsonl"
+    source = mp4()
+    frame = jpeg()
+    ffmpeg = tool_dir / "ffmpeg"
+    ffmpeg.write_text(
+        "#!" + sys.executable + "\n"
+        "import base64, json, pathlib, sys\n"
+        f"log = pathlib.Path({str(calls)!r})\n"
+        "args = sys.argv[1:]\n"
+        "with log.open('a') as handle: handle.write(json.dumps(args) + '\\n')\n"
+        "if args[-1] == '-':\n"
+        f"    sys.stdout.buffer.write(base64.b64decode({base64.b64encode(frame).decode()!r}))\n"
+        "else:\n"
+        f"    pathlib.Path(args[-1]).write_bytes(base64.b64decode({base64.b64encode(source).decode()!r}))\n",
+        encoding="utf-8",
+    )
+    ffmpeg.chmod(0o755)
+    ffprobe = tool_dir / "ffprobe"
+    ffprobe.write_text(
+        "#!" + sys.executable + "\n"
+        "import json\n"
+        "print(json.dumps({'streams': [{'codec_type': 'video', 'codec_name': 'h264', "
+        "'width': 64, 'height': 48, 'duration': '1'}], 'format': {'duration': '1'}}))\n",
+        encoding="utf-8",
+    )
+    ffprobe.chmod(0o755)
+    monkeypatch.setenv("LATTICE_FFMPEG", str(ffmpeg))
+
+    [prepared] = media_prep.prepare_issue_media([{"payload": encode_payload("geo.mp4", source)}])
+
+    commands = [json.loads(line) for line in calls.read_text(encoding="utf-8").splitlines()]
+    assert any(
+        any(argv[index : index + 2] == ["-map_metadata", "-1"] for index in range(len(argv) - 1))
+        for argv in commands
+    )
+    assert prepared["frames"]
+    assert decode_payload(prepared["payload"])[1] == source
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg")

@@ -44,7 +44,8 @@ export LATTICE_TOKEN="$(cat "$HOME/lattice-trial/token")"
 | `GET /login`, `POST /login` | none (`POST` authenticates with the token it submits) | Dashboard login |
 | `POST /logout` | session | End the dashboard session |
 | `GET /p/{slug}/`, `/p/{slug}/static/*`, `/p/{slug}/api/*` | session or token | The project's dashboard |
-| `GET /p/{slug}/issues/media/...` | session | Same-origin dashboard media read; uses the same range-serving helper. Reserved: no hosted dashboard page calls it yet (the Issues view is local-only for now) |
+| `PUT /p/{slug}/issues/media/staging/{sha256}` | session | Same-origin raw upload for a hosted issue file; returns prepared metadata backed by private staging |
+| `GET /p/{slug}/issues/media/{issue_id}/{media_id}` and `GET /p/{slug}/issues/media/{issue_id}/{media_id}/frames/{frame_name}` | session | Same-origin dashboard media reads; use the same range-serving helper as `/v1` |
 | `GET /web/dashboard.css`, `GET /web/logout.js` | none | The login and index pages' stylesheet and logout script |
 
 A dashboard session cookie authenticates only `/`, `/logout`, `/p/<slug>/...`, and the stream. It never authenticates operations, sync, or files.
@@ -327,6 +328,9 @@ These serve the hosted dashboard (guide section 11, Dashboards). A script can us
 
 - `GET /p/<slug>/` serves the page (without a session: 303 to `/login?next=/p/<slug>/`); `GET /p/<slug>` redirects (308) to it. `/p/<slug>/static/*` serves its assets; nothing is loaded from another site.
 - `GET /p/<slug>/api/<path>` answers the local dashboard's read API on the server's board: `config`, `tasks`, `stats`, `activity`, `archived`, `graph`, `structure`, `tasks/<id>`, and the rest. `api/graph` carries an `ETag` (its revision); send it back in `If-None-Match` to get 304 when the graph has not changed. The other read routes answer 200 with no `ETag` every time. `api/git` reports `{"available": false, "reason": "hosted"}`.
+- `GET /p/<slug>/api/issues` and `GET /p/<slug>/api/issues/<issue_id>` read the hosted issue log from the authoritative board, with the same project lock and head-keyed read memo. A bound-checkout dashboard reads issue metadata from its synced mirror under the cache read lock and omits media URLs; neither dashboard serves media from a checkout-local path.
+- `PUT /p/<slug>/issues/media/staging/<sha256>?filename=<name>` is the hosted dashboard's same-origin upload path. It requires the session cookie, a matching `Origin`, `Content-Type: application/octet-stream`, and `Content-Length`; an `Authorization` header is refused rather than falling back to the cookie. The body is one raw file. The server verifies the input hash, calls the shared dashboard media preparation, stages the prepared original and video frames in this project's private `HostedIssueMedia` store, and returns a media item containing staged metadata. `POST /p/<slug>/api/issues` then sends only that staged metadata in its JSON body.
+- Hosted issue writes use the token's browser actor (§8.3), even when the body names another actor. The local single-user dashboard continues to honor an explicit actor and uses its configured human actor or `dashboard:web` default when none is sent.
 - `GET /p/<slug>/api/tasks` takes the origin filters `machine`, `user`, and `worktree`, as `lattice list --machine/--user/--worktree` (a task matches when one of its events carries every filter given; tasks written before v2 match nothing). On a hosted board, machine and user are the token's. An empty value is no filter. `worktree` must be an absolute path and is normalized lexically (repeated and trailing slashes, `.` and `..`); the server never resolves it against a filesystem, so a symlinked path matches nothing. Refusals, 400 `VALIDATION_ERROR`: a relative `worktree` ("worktree filter must be an absolute path"), and a value longer than 256 characters (`machine`, `user`) or 1024 (`worktree`).
 
 ```bash
@@ -334,7 +338,7 @@ curl -s -H "Authorization: Bearer $LATTICE_TOKEN" "$LATTICE_URL/p/demo/api/tasks
 ```
 
 - `POST /p/<slug>/api/<path>` runs the matching operation as the token's browser actor: the token's user when the token permits it, else its single default actor, else 400 `MISSING_ACTOR`. Any actor in the body is ignored. It needs `Content-Type: application/json` (415 otherwise) and, with a session cookie, an `Origin` equal to the server's own or listed in `public_origins` (403 otherwise, checked before anything else). Send a `Lattice-Op-Id: op_<ULID>` header per logical write and reuse it on retry, so a retry applies once; without it the server mints one and cannot deduplicate. `POST .../api/tasks/<id>/open-notes` and `open-plans` answer 400 `LOCAL_ONLY`: write plans and notes with `plan.write` and `notes.write`.
-- Responses outside `/v1` carry `X-Content-Type-Options: nosniff` and a `Content-Security-Policy` that allows only this server's own scripts, styles, images, and connections.
+- Responses outside `/v1` carry `X-Content-Type-Options: nosniff` and a `Content-Security-Policy` that allows only this server's own scripts, styles, and connections; `img-src` also allows `blob:` and `data:` for image previews, while `media-src` allows `blob:` for local video previews.
 
 **Live refresh.** The page follows `GET /v1/projects/<slug>/stream` with its session cookie and refetches on each entry; with the stream down, it polls every 5 seconds.
 

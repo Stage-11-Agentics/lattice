@@ -340,7 +340,7 @@ lattice server project config web --set issues.enabled=true
 
 Setting `issues.enabled` preserves the project's other `issues.*` limits and settings. Hosted issue commands read synced metadata and send writes through named server operations; an ordinary operation cannot change the project configuration.
 
-The dashboard's Issues view (the Inbox) works on local boards only for now. On a bound checkout's dashboard and on the server's hosted dashboard it answers "Issues are not available on this board yet." Use the `lattice issue` commands on hosted boards.
+The dashboard's Issues view (the Inbox) reads the authoritative issue list and detail on the server's hosted dashboard, and can file issues, add comments, and show staged media. A bound checkout's dashboard reads issue metadata from its synced mirror; it does not serve checkout-local media or accept issue writes. Hosted browser writes use the token's browser actor, even if a request body names another actor. The local single-user dashboard still honors an explicit actor and otherwise uses its configured human actor or `dashboard:web`.
 
 To bring an existing local board onto the server, import it instead of creating a project: section 14.
 

@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import threading
 from collections import OrderedDict
@@ -235,7 +236,13 @@ def _api_path(request: Request) -> str:
 
 
 def _compute(project: Project, path: str, query: str) -> CachedRead:
-    response = api.route_get(project.board, path, query, None)
+    response = api.route_get(
+        project.board,
+        path,
+        query,
+        None,
+        issue_media_route="/issues/media/{issue_id}",
+    )
     # The local dashboard's JSON, compact: the same document, serialized by the C
     # encoder (an indented dump runs the pure-Python one, the largest cost per head).
     body = (
@@ -254,10 +261,6 @@ async def api_get(request: Request, state: ServerState) -> Response:
         path = _api_path(request)
         if path == "/api/git" or path.startswith("/api/git/"):
             return _json_response(api.ok(HOSTED_GIT))  # never inspects the server's repo
-        if path == "/api/issues" or path.startswith("/api/issues/"):
-            return _json_response(
-                api.error(*api.ISSUES_UNAVAILABLE)
-            )  # hosted Issues view not built yet
         query = request.url.query
         memo = state.dashboard_memos.for_project(project.slug)
 
@@ -323,6 +326,136 @@ async def issue_media(request: Request, state: ServerState) -> Response:
         return media_response(value)
 
     return await _limited(state, token, run)
+
+
+def _stage_prepared_media(project: Project, filename: str, content: bytes) -> dict:
+    """Prepare one browser file and stage its stored original and video frames."""
+    from lattice.core.issue_media import clean_original_name
+    from lattice.dashboard.media_prep import prepare_issue_media
+    from lattice.ops.issue_common import check_media_items
+    from lattice.ops.task_attach import decode_payload, encode_payload
+
+    filename = clean_original_name(filename) or "attachment"
+    prepared_items = prepare_issue_media([{"payload": encode_payload(filename, content)}])
+    if len(prepared_items) != 1:
+        raise OpError("WRITE_ERROR", "media preparation returned an invalid item count.")
+    prepared = prepared_items[0]
+    check_media_items((prepared,))
+
+    def stage(payload: dict) -> dict:
+        item_name, data = decode_payload(payload)
+        digest = hashlib.sha256(data).hexdigest()
+        upload = project.issue_media.begin_upload(digest, len(data))
+        try:
+            upload.write(data)
+            upload.finish()
+        except BaseException:
+            upload.abort()
+            raise
+        return {"filename": item_name, "sha256": digest, "size": len(data), "staged": True}
+
+    staged = {key: value for key, value in prepared.items() if key not in ("payload", "frames")}
+    staged["payload"] = stage(prepared["payload"])
+    staged["frames"] = [
+        {"t_ms": frame["t_ms"], "payload": stage(frame["payload"])}
+        for frame in prepared.get("frames", [])
+    ]
+    if not staged["frames"]:
+        staged.pop("frames")
+    return staged
+
+
+async def issue_media_stage(request: Request, state: ServerState) -> Response:
+    """Same-origin session upload; preparation and raw staging are project scoped."""
+    from lattice.server.app import _UploadBody, _close_after_answer, _issue_log_state
+    from lattice.server.issue_media import validate_sha256
+
+    if request.headers.get("authorization") is not None:
+        raise OpError(
+            "FORBIDDEN", "dashboard issue media staging uses the browser session cookie."
+        )
+    web.require_origin(request, state)  # before looking up the session
+    _session, token = web.session_auth(request, state)
+    project = _project(request, state, token)
+    request.scope["state"]["log"].update(op="issue.media_stage")
+    body = _UploadBody(request, state.log, project.slug, token.id)
+    upload_size: int | None = None
+    try:
+        if (
+            request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+            != "application/octet-stream"
+        ):
+            raise OpError(
+                "VALIDATION_ERROR",
+                "issue media upload needs Content-Type: application/octet-stream.",
+            )
+        declared = request.headers.get("content-length")
+        if (
+            declared is None
+            or len(declared) > 20
+            or not declared.isascii()
+            or not declared.isdigit()
+        ):
+            raise OpError(
+                "VALIDATION_ERROR", "issue media upload needs a non-negative Content-Length."
+            )
+        upload_size = int(declared)
+        if upload_size > state.config.limits.max_issue_media_file_bytes:
+            raise OpError(
+                "PAYLOAD_TOO_LARGE",
+                f"media object is over the {state.config.limits.max_issue_media_file_bytes} byte per-file limit.",
+                {"limit_bytes": state.config.limits.max_issue_media_file_bytes},
+            )
+        digest = validate_sha256(request.path_params["sha256"])
+        state.limits.enter(token.id)
+        try:
+            state.limits.take_op(token.id)
+            state.limits.take_bytes(token.id, upload_size)
+            state.disk.check()
+            async with state.registry.admitted(project):
+                project.require_loaded()
+            enabled, existing = await state.registry.run_locked(
+                project, lambda: _issue_log_state(project), admit=False
+            )
+            if not enabled:
+                from lattice.core.issues import hosted_issues_disabled_message
+
+                raise OpError(
+                    "ISSUES_DISABLED", hosted_issues_disabled_message(existing, project.slug)
+                )
+
+            received = bytearray()
+            while (chunk := await body.next()) is not None:
+                if body.received > upload_size:
+                    raise OpError("VALIDATION_ERROR", "media upload exceeded Content-Length.")
+                received.extend(chunk)
+            if len(received) != upload_size:
+                raise OpError("VALIDATION_ERROR", "media upload did not match Content-Length.")
+            if hashlib.sha256(received).hexdigest() != digest:
+                raise OpError("VALIDATION_ERROR", "media bytes do not match the supplied sha256.")
+            filename = request.query_params.get("filename", "attachment") or "attachment"
+            staged = await in_worker(
+                lambda: _stage_prepared_media(project, filename, bytes(received))
+            )
+            return _json_response(api.ok(staged, 201))
+        finally:
+            state.limits.leave(token.id)
+    except OpError as refusal:
+        drain_cap = state.config.limits.max_issue_media_file_bytes * 2
+        if upload_size is not None and upload_size <= drain_cap:
+            try:
+                state.limits.enter(token.id)
+            except OpError:
+                _close_after_answer(request, body)
+                raise refusal from None
+            try:
+                await body.drain()
+            finally:
+                state.limits.leave(token.id)
+        _close_after_answer(request, body)
+        raise
+    except Exception as exc:  # noqa: BLE001 - answer an envelope, not a reset
+        raise api.ApiError(500, "WRITE_ERROR", f"Could not prepare the media: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------

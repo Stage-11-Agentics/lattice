@@ -2338,7 +2338,7 @@ async function _prepareIssueDashboard() {
     var activityTab = document.querySelector('.nav-tab[data-view="activity"]');
     activityTab.parentNode.insertBefore(oldTab, activityTab);
   }
-  if (!HOSTED_SLUG && !oldButton) {
+  if (!oldButton) {
     oldButton = document.createElement("button");
     oldButton.type = "button";
     oldButton.id = "issue-new-button";
@@ -2363,6 +2363,7 @@ async function _prepareIssueDashboard() {
       _issueDashboard = window.IssueDashboard.mount({
         app: document.getElementById("app"), api: api, apiPost: apiPost, esc: esc,
         hosted: !!HOSTED_SLUG, basePath: BASE_PATH, showToast: showToast,
+        uploadIssueMedia: uploadIssueMedia,
         mediaLimits: function() { return window.IssueViewLogic.mediaLimits(config); }
       });
     }
@@ -2424,6 +2425,29 @@ var pageWriter = createWriter({
 
 function apiPost(path, data) {
   return pageWriter.post(path, data);
+}
+
+async function uploadIssueMedia(file) {
+  var bytes = await file.arrayBuffer();
+  var digest = await window.crypto.subtle.digest("SHA-256", bytes);
+  var sha256 = Array.prototype.map.call(new Uint8Array(digest), function(byte) {
+    return byte.toString(16).padStart(2, "0");
+  }).join("");
+  var filename = encodeURIComponent(file.name || "attachment");
+  var response = await fetch(apiUrl(BASE_PATH,
+    "issues/media/staging/" + sha256 + "?filename=" + filename), {
+      method: "PUT",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/octet-stream" },
+      body: file
+    });
+  var envelope = await response.json();
+  if (!envelope.ok) {
+    var error = new Error(envelope.error ? envelope.error.message : "Media upload failed.");
+    error.code = envelope.error ? envelope.error.code : null;
+    throw error;
+  }
+  return envelope.data;
 }
 
 // --- Delegated page actions ---

@@ -1587,6 +1587,11 @@ def create_app(root: Path, *, config: ServerConfig, log: ServerLog | None = None
         Route("/p/{slug}/", endpoint(dashboard.page), methods=["GET"]),
         Route("/p/{slug}/favicon.ico", endpoint(dashboard.static), methods=["GET"]),
         Route(
+            "/p/{slug}/issues/media/staging/{sha256}",
+            endpoint(dashboard.dashboard_endpoint(dashboard.issue_media_stage)),
+            methods=["PUT"],
+        ),
+        Route(
             "/p/{slug}/issues/media/{issue_id}/{media_id}/frames/{frame}",
             endpoint(dashboard.issue_media),
             methods=["GET"],

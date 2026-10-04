@@ -44,6 +44,26 @@ def test_the_embedded_follower_brings_other_writers_changes_in(
     assert not record.get("stream_live_until")
 
 
+def test_bound_dashboard_reads_issue_metadata_without_local_media_urls(
+    hosted_env: HostedEnv, tmp_path: Path
+) -> None:
+    from lattice.server import admin
+
+    admin.set_project_config(hosted_env.server_root, "demo", {"issues.enabled": True})
+    repo, _task = bound_repo(hosted_env, tmp_path)
+    filed = hosted_env.server_op("issue.file", {"title": "Read from the bound mirror"})
+    issue = filed["result"]["value"]
+
+    with dashboard(repo, follower_factory=_ExitingFollower) as port:
+        status, listed = request(port, "GET", "/api/issues")
+        assert status == 200, listed
+        assert [row["id"] for row in listed["data"]] == [issue["id"]]
+        status, detail = request(port, "GET", f"/api/issues/{issue['id']}")
+        assert status == 200, detail
+        assert detail["data"]["title"] == "Read from the bound mirror"
+        assert detail["data"]["media"] == []
+
+
 # ---------------------------------------------------------------------------
 # Reads catch up whenever the follower is not live (SPEC §9.5, §9.6)
 # ---------------------------------------------------------------------------

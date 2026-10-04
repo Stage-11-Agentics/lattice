@@ -30,8 +30,8 @@ body.issue-view-active #app{flex:1 1 auto;min-height:0;width:100%;max-width:none
   .nav{column-gap:.5rem}
   .nav .nav-right{column-gap:.375rem}
   .nav-right #filters-clear-btn{margin-left:-.375rem} /* still flush against Filters */
-  .nav .nav-tab{padding-left:.5rem;padding-right:.5rem}
-  .nav-tab .issue-nav-count{min-width:1.35rem;margin-left:.3rem;padding:0 .25rem}
+  .nav .nav-tab{padding-left:.375rem;padding-right:.375rem}
+  .nav-tab .issue-nav-count{min-width:1.35rem;margin-left:.25rem;padding:0 .2rem}
   .nav-right #settings-btn,.nav-right #help-btn{font-size:0;gap:0;padding-left:.5rem;padding-right:.5rem;align-self:stretch}
 }
 

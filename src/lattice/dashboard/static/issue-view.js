@@ -198,7 +198,7 @@
 
     // ---- loading and refreshing ----
     async function loadIssues() {
-      if (hosted || destroyed || unavailable) return;
+      if (destroyed || unavailable) return;
       var wasLoaded = loaded;
       var previousIssues = issues;
       var previousPersonRows = personRows;
@@ -259,7 +259,7 @@
       }
     }
     async function loadPersonIssues(actor, parentGeneration) {
-      if (hosted || destroyed) return;
+      if (destroyed) return;
       var rows = await api("/api/issues?by=" + encodeURIComponent(actor));
       if (destroyed || (parentGeneration != null && parentGeneration !== requestGeneration)) return;
       personRows = Array.isArray(rows) ? logic.sortPersonIssues(rows, actor) : [];
@@ -274,7 +274,7 @@
     }
     // The nav count on every other view; the Inbox keeps it current itself.
     function refreshCount() {
-      if (hosted || destroyed || unavailable || active || countLoading) return Promise.resolve();
+      if (destroyed || unavailable || active || countLoading) return Promise.resolve();
       countLoading = true;
       return api("/api/issues").then(function (rows) {
         if (!destroyed && Array.isArray(rows)) setNavCount(rows);
@@ -292,7 +292,7 @@
       }
     }
     function refresh() {
-      if (hosted || unavailable) { active = true; showUnavailable(); return Promise.resolve(); }
+      if (unavailable) { active = true; showUnavailable(); return Promise.resolve(); }
       active = true;
       if (!document.getElementById("issue-q-tabs")) { render(); return Promise.resolve(); }
       setActive(true);
@@ -302,7 +302,7 @@
       renderOptions = renderOptions || {};
       if (destroyed) return;
       active = true;
-      if (hosted || unavailable) { showUnavailable(); return; }
+      if (unavailable) { showUnavailable(); return; }
       setActive(true);
       var tabs = document.getElementById("issue-q-tabs");
       var fresh = !tabs;
@@ -483,7 +483,7 @@
       return details[issue.id] || issue;
     }
     async function ensureDetail(issue) {
-      if (!issue || hosted || detailsLoading[issue.id] || details[issue.id] && !detailsStale[issue.id]) return;
+      if (!issue || detailsLoading[issue.id] || details[issue.id] && !detailsStale[issue.id]) return;
       var id = issue.id;
       var epoch = detailEpochs[id] || 0;
       var retry = false;
@@ -746,7 +746,13 @@
       }).catch(function (error) { options.showToast(error.message || String(error), "error"); });
     }
     // One history line; a filing's own media arrive folded in (logic.historyEntries).
-    function eventHistoryLine(event) {
+    function taskHistoryLabel(issue, data) {
+      var id = data.task_id;
+      var tasks = Array.isArray(issue.tasks) ? issue.tasks : [];
+      var task = tasks.find(function (entry) { return entry && entry.id === id; });
+      return (task && task.short_id) || data.task_short_id || id || "task";
+    }
+    function eventHistoryLine(event, issue) {
       var data = event.data || {};
       var what;
       switch (event.type) {
@@ -756,8 +762,8 @@
           what = "filed" + (count ? " with " + esc(count) : "");
           break;
         }
-        case "issue_linked": what = (data.promoted ? "made story " : "linked to ") + '<span class="issue-tid">' + esc(data.task_id || "task") + "</span>"; break;
-        case "issue_unlinked": what = 'unlinked from <span class="issue-tid">' + esc(data.task_id || "task") + "</span>"; break;
+        case "issue_linked": what = (data.promoted ? "made story " : "linked to ") + '<span class="issue-tid">' + esc(taskHistoryLabel(issue, data)) + "</span>"; break;
+        case "issue_unlinked": what = 'unlinked from <span class="issue-tid">' + esc(taskHistoryLabel(issue, data)) + "</span>"; break;
         case "issue_dismissed": what = "dismissed: " + esc(data.reason || ""); break;
         case "issue_marked_duplicate": what = 'marked a duplicate of <span class="issue-iid">' + esc(issueRef(data.duplicate_of || "issue")) + "</span>"; break;
         case "issue_reopened": what = "reopened"; break;
@@ -777,7 +783,9 @@
       if (!box) return;
       setHtmlIfChanged(box, '<button type="button" class="issue-history-toggle" aria-expanded="' + historyOpen + '"><span class="caret">' +
         (historyOpen ? "▾" : "▸") + "</span>History (" + history.length + ")</button>" +
-        (historyOpen ? '<div class="issue-history">' + history.map(eventHistoryLine).join("") + "</div>" : ""));
+        (historyOpen ? '<div class="issue-history">' + history.map(function (event) {
+          return eventHistoryLine(event, issue);
+        }).join("") + "</div>" : ""));
     }
 
     // ---- media inline ----
@@ -953,12 +961,11 @@
       if (event.key === " " && event.target.closest && event.target.closest("#issue-triage")) return;
       var key = event.key;
       if (key === "i") {
-        if (hosted) return;
         event.preventDefault();
         openFileDialog();
         return;
       }
-      if (!active || unavailable || hosted || !document.body.classList.contains("issue-view-active")) return;
+      if (!active || unavailable || !document.body.classList.contains("issue-view-active")) return;
       var handled = true;
       if (key === "j" || key === "ArrowDown") move(1);
       else if (key === "k" || key === "ArrowUp") move(-1);
@@ -1127,7 +1134,7 @@
 
     function openFileDialog(prefill) {
       prefill = prefill || {};
-      if (hosted || destroyed) return;
+      if (destroyed) return;
       if (panel) {
         if (prefill.files) panel.addFiles(prefill.files);
         return;
@@ -1375,6 +1382,12 @@
       return frames;
     }
     async function mediaFromFile(file) {
+      if (hosted) {
+        if (typeof options.uploadIssueMedia !== "function") {
+          throw new Error("Hosted issue media upload is unavailable.");
+        }
+        return options.uploadIssueMedia(file);
+      }
       var payload = await payloadFromBlob(file, file.name || "attachment");
       if (logic.kindOf(file) !== "video") return { payload: payload };
       var objectUrl = URL.createObjectURL(file);
@@ -1397,7 +1410,7 @@
 
     // ---- paste and drop, page-wide ----
     function onPaste(event) {
-      if (destroyed || hosted) return;
+      if (destroyed) return;
       var files = clipFiles(event.clipboardData);
       if (!files.length) return; // plain text: the browser pastes it as usual
       var textToo = hasType(event.clipboardData, "text/plain"); // a file copied in Finder also carries its name as text
@@ -1429,23 +1442,23 @@
       dropHint = null;
     }
     function onDragEnter(event) {
-      if (destroyed || hosted || !hasType(event.dataTransfer, "Files")) return;
+      if (destroyed || !hasType(event.dataTransfer, "Files")) return;
       dragDepth++;
       showDrop();
     }
     function onDragOver(event) {
-      if (destroyed || hosted || !hasType(event.dataTransfer, "Files")) return;
+      if (destroyed || !hasType(event.dataTransfer, "Files")) return;
       event.preventDefault();
       try { event.dataTransfer.dropEffect = "copy"; } catch (_error) { /* ignore */ }
       showDrop();
     }
     function onDragLeave(event) {
-      if (destroyed || hosted || !hasType(event.dataTransfer, "Files")) return;
+      if (destroyed || !hasType(event.dataTransfer, "Files")) return;
       dragDepth = Math.max(0, dragDepth - 1);
       if (!dragDepth) hideDrop();
     }
     function onDrop(event) {
-      if (destroyed || hosted) return;
+      if (destroyed) return;
       var transfer = event.dataTransfer;
       if (!hasType(transfer, "Files") && !(transfer && transfer.files && transfer.files.length)) return;
       event.preventDefault();

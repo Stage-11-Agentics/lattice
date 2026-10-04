@@ -42,7 +42,8 @@ if TYPE_CHECKING:
 
 CSP_TEMPLATE = (
     "default-src 'self'; script-src 'self'{hashes}; style-src 'self' 'unsafe-inline'; "
-    "img-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; "
+    "img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self'; "
+    "frame-ancestors 'none'; base-uri 'none'; "
     "form-action 'self'"
 )
 

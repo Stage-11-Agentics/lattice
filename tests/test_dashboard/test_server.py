@@ -1869,6 +1869,10 @@ class TestIssueWritesOverHttp:
             assert self._post(server, "/api/issues", {"title": "  ", "media": media})[0] == 400
             too_many = media * 65
             assert self._post(server, "/api/issues", {"title": "x", "media": too_many})[0] == 400
+            unknown = [{"payload": encode_payload("a.png", b"png"), "path": "/tmp/secret"}]
+            refused = self._post(server, "/api/issues", {"title": "x", "media": unknown})
+            assert refused[0] == 400
+            assert refused[1]["error"]["code"] == "VALIDATION_ERROR"
             assert calls == []
         finally:
             self._stop(server, worker)
@@ -1900,7 +1904,8 @@ class TestIssueWritesOverHttp:
             by_type = {event["type"]: event for event in events}
             for kind in ("issue_dismissed", "issue_reopened"):
                 assert by_type[kind]["actor"] == "human:atin", kind
-            # An actor the page sends is still honoured, as it is for task writes.
+            # A local single-user dashboard honours its explicit actor; hosted
+            # sessions instead attribute writes to their authenticated browser actor.
             _status, explicit = self._post(
                 server, "/api/issues", {"title": "By an agent", "actor": "agent:qa"}
             )

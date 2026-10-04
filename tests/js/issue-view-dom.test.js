@@ -121,7 +121,8 @@ function boot(server, extra) {
       posts.push({ url, body });
       return extra && extra.apiPost ? extra.apiPost(url, body) : Promise.resolve({ id: "iss_99", short_id: "T-I99" });
     },
-    esc, hosted: false, basePath: "/", showToast: (message) => toasts.push(message),
+    esc, hosted: !!(extra && extra.hosted), basePath: "/", showToast: (message) => toasts.push(message),
+    uploadIssueMedia: extra && extra.uploadIssueMedia,
   });
   return {
     dashboard, posts, toasts,
@@ -321,6 +322,70 @@ test("history lines name the event's reported user and machine", async () => {
   } finally {
     view.done();
   }
+});
+
+test("issue history uses linked task short IDs and safely falls back when no task row matches", async () => {
+  const taskId = "task_01ARZ3NDEKTSV4RRFFQ69G5FAV";
+  const unknown = "task_<svg onload=alert(1)>";
+  const server = makeServer([issue(1, {
+    tasks: [{ id: taskId, short_id: "T-9", status: "backlog", title: "Fix it" }],
+    events: [
+      { id: "ev_1", type: "issue_linked", actor: "human:atin", ts: ago(10), data: { task_id: taskId } },
+      { id: "ev_2", type: "issue_unlinked", actor: "human:atin", ts: ago(5), data: { task_id: unknown } },
+    ],
+  })]);
+  const view = boot(server);
+  try {
+    view.dashboard.render();
+    await flush();
+    $(".issue-history-toggle").click();
+    const history = $("#issue-history");
+    assert.match(history.textContent, /linked to T-9/);
+    assert.match(history.textContent, /unlinked from task_<svg onload=alert\(1\)>/);
+    assert.equal(history.querySelector("svg"), null, "the fallback is escaped as text");
+  } finally {
+    view.done();
+  }
+});
+
+test("hosted issue view loads details and submits media through the session staging hook", async () => {
+  const server = makeServer([issue(1)]);
+  const uploads = [];
+  const view = boot(server, {
+    hosted: true,
+    uploadIssueMedia: async (file) => {
+      uploads.push(file.name);
+      return { payload: { filename: file.name, sha256: "a".repeat(64), size: file.size, staged: true } };
+    },
+  });
+  try {
+    view.dashboard.render();
+    await flush();
+    assert.equal(shownIssue(), "T-I1");
+    assert.ok(server.calls.includes("/api/issues/iss_1"), "hosted detail is fetched");
+
+    const file = new File([new Uint8Array([137, 80, 78, 71, 1])], "Screenshot.png", { type: "image/png" });
+    const paste = new Event("paste", { bubbles: true, cancelable: true,
+      clipboardData: { items: [{ kind: "file", getAsFile: () => file }], types: ["Files"] } });
+    document.body.dispatchEvent(paste);
+    assert.ok($("#issue-file-dialog"), "hosted sessions can open the issue filing panel");
+    await flush();
+    $("#issue-fi-text").value = "Hosted screenshot";
+    key($("#issue-fi-text"), "Enter", { ctrlKey: true });
+    await until(() => view.posts.length > 0, "the hosted issue filing");
+    assert.deepEqual(uploads, ["Screenshot.png"]);
+    assert.equal(view.posts[0].body.media[0].payload.staged, true);
+    assert.equal("content_b64" in view.posts[0].body.media[0].payload, false);
+  } finally {
+    view.done();
+  }
+});
+
+test("the compact nav keeps width slack for a three-digit Issues count", () => {
+  const css = fs.readFileSync(path.join(STATIC, "issue-view.css"), "utf8");
+  const compact = css.match(/@media\s*\(max-width:\s*1599px\)\s*\{([\s\S]*?)\n\}/);
+  assert.ok(compact, "compact navbar rule exists");
+  assert.match(compact[1], /\.nav \.nav-tab\s*\{[^}]*padding-left:\.375rem;\s*padding-right:\.375rem/);
 });
 
 test("a filing with media is one history line; media added later by someone else keeps its own", async () => {
@@ -543,6 +608,25 @@ test("an issue that leaves its queue while being read stays selected and shown, 
     for (let i = 0; i < 2; i++) { await view.dashboard.refresh(); await flush(); }
     assert.equal(shownIssue(), "T-I2", "later polls do not move it either");
     none($(".issue-q-row.cursor"));
+  } finally {
+    view.done();
+  }
+});
+
+test("the selected issue remains selected after visiting Board and returning to Issues", async () => {
+  const server = makeServer([issue(1), issue(2), issue(3)]);
+  const view = boot(server);
+  try {
+    view.dashboard.render();
+    await flush();
+    key(document.body, "j");
+    assert.equal(shownIssue(), "T-I2");
+
+    view.dashboard.deactivate(); // the dashboard's Board view owns the page
+    view.dashboard.render(); // returning to Issues restores the prior selection
+    await flush();
+    assert.equal(shownIssue(), "T-I2");
+    assert.equal(litRow(), "T-I2");
   } finally {
     view.done();
   }

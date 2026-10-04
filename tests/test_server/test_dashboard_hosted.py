@@ -13,13 +13,15 @@ import pytest
 
 from lattice.dashboard import api
 from lattice.dashboard.server import STATIC_DIR
+from lattice.server import admin
 from lattice.server.testing import ServerHandle, running_server, wait_for
 from tests.test_server.conftest import board_hash, create_task, mint
 from tests.test_server.web_client import WebClient
 
 CSP_FIXED = (
     "default-src 'self'; script-src 'self'{hashes}; style-src 'self' 'unsafe-inline'; "
-    "img-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; "
+    "img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self'; "
+    "frame-ancestors 'none'; base-uri 'none'; "
     "form-action 'self'"
 )
 
@@ -105,14 +107,147 @@ class TestPage:
         assert response.status in (301, 307, 308)
         assert response.headers["location"] == "/p/alpha/"
 
-    def test_issue_reads_say_not_available_on_any_host(self, web: WebClient) -> None:
-        """Issues are not on hosted boards yet (LAT-368): reads answer what writes do, on
-        any Host; the session credential is the gate, as for every other route."""
-        for host in ("evil.example", "atlas.tailnet:8443"):
-            for path in ("/p/alpha/api/issues", "/p/alpha/api/issues/ALP-I1"):
-                response = web.get(path, Host=host)
-                assert response.status == 400, (host, path)
-                assert response.json["error"]["code"] == "LOCAL_ONLY"
+    def test_issue_reads_are_project_scoped_and_follow_the_authoritative_head(
+        self, server: ServerHandle, root: Path
+    ) -> None:
+        admin.set_project_config(root, "alpha", {"issues.enabled": True})
+        admin.set_project_config(root, "beta", {"issues.enabled": True})
+        token = mint(root)
+        alpha_status, _, alpha_body = server.op(
+            "alpha", "issue.file", {"title": "Alpha issue"}, token=token
+        )
+        beta_status, _, beta_body = server.op(
+            "beta", "issue.file", {"title": "Beta issue"}, token=token
+        )
+        assert alpha_status == beta_status == 200
+        alpha = alpha_body["data"]["result"]["value"]
+        beta = beta_body["data"]["result"]["value"]
+
+        scoped = _logged_in(server, mint(root, projects=["alpha"]))
+        listed = scoped.get("/p/alpha/api/issues")
+        assert listed.status == 200
+        assert [row["id"] for row in listed.json["data"]] == [alpha["id"]]
+        detail = scoped.get(f"/p/alpha/api/issues/{alpha['id']}")
+        assert detail.status == 200 and detail.json["data"]["id"] == alpha["id"]
+        assert scoped.get(f"/p/alpha/api/issues/{beta['id']}").status == 404
+
+        assert scoped.get("/p/beta/api/issues").status == 403
+        assert scoped.get(f"/p/beta/api/issues/{beta['id']}").status == 403
+        guessed_media = f"/p/beta/issues/media/{beta['id']}/med_01ARZ3NDEKTSV4RRFFQ69G5FAV"
+        assert scoped.get(guessed_media).status == 403
+        assert (
+            scoped.get(f"/p/alpha/issues/media/{beta['id']}/med_01ARZ3NDEKTSV4RRFFQ69G5FAV").status
+            == 404
+        )
+        assert scoped.post_json("/p/beta/api/issues", {"title": "forbidden"}).status == 403
+        cross_upload = scoped.request(
+            "PUT",
+            "/p/beta/issues/media/staging/" + "a" * 64 + "?filename=leak.png",
+            body=b"private",
+            headers={
+                "Content-Type": "application/octet-stream",
+                "Origin": scoped.origin,
+            },
+        )
+        assert cross_upload.status == 403
+        anonymous = WebClient(server)
+        assert anonymous.get("/p/alpha/api/issues").status == 401
+
+        # A separate server-side writer changes the board head. The next hosted
+        # request sees it instead of reusing the previous memo entry.
+        server.op("alpha", "issue.file", {"title": "External issue"}, token=token)
+        refreshed = scoped.get("/p/alpha/api/issues")
+        assert refreshed.status == 200
+        assert {row["title"] for row in refreshed.json["data"]} == {
+            "Alpha issue",
+            "External issue",
+        }
+
+    def test_session_upload_prepares_and_stages_media_for_hosted_issue_writes(
+        self, server: ServerHandle, root: Path
+    ) -> None:
+        import hashlib
+
+        from tests.issue_media_helpers import png
+
+        admin.set_project_config(root, "alpha", {"issues.enabled": True})
+        web = _logged_in(server, mint(root, projects=["alpha"]))
+        content = png()
+        digest = hashlib.sha256(content).hexdigest()
+        upload = web.request(
+            "PUT",
+            f"/p/alpha/issues/media/staging/{digest}?filename=screen.png",
+            body=content,
+            headers={
+                "Content-Type": "application/octet-stream",
+                "Origin": web.origin,
+            },
+        )
+        assert upload.status == 201, upload.text
+        staged = upload.json["data"]
+        assert staged["payload"] == {
+            "filename": "screen.png",
+            "sha256": digest,
+            "size": len(content),
+            "staged": True,
+        }
+        assert "content_b64" not in staged["payload"]
+        unattached = web.get(
+            "/p/alpha/issues/media/iss_01ARZ3NDEKTSV4RRFFQ69G5FAV/med_01ARZ3NDEKTSV4RRFFQ69G5FAV"
+        )
+        assert unattached.status == 404
+
+        filed = web.post_json(
+            "/p/alpha/api/issues",
+            {"title": "Screenshot", "media": [staged], "actor": "agent:spoof"},
+        )
+        assert filed.status == 201, filed.text
+        issue = filed.json["data"]
+        assert issue["filed_by"] == "human:alice"
+        assert issue["media"][0]["sha256"] == digest
+
+        listed = web.get("/p/alpha/api/issues")
+        assert listed.status == 200
+        list_media = next(row for row in listed.json["data"] if row["id"] == issue["id"])["media"][
+            0
+        ]
+        assert list_media["url"] == f"/issues/media/{issue['id']}/{list_media['id']}"
+        by_actor = web.get("/p/alpha/api/issues?by=human%3Aalice")
+        assert by_actor.status == 200
+        actor_media = next(row for row in by_actor.json["data"] if row["id"] == issue["id"])[
+            "media"
+        ][0]
+        assert actor_media["url"] == f"/issues/media/{issue['id']}/{actor_media['id']}"
+
+        detail = web.get(f"/p/alpha/api/issues/{issue['id']}")
+        assert detail.status == 200
+        media = detail.json["data"]["media"][0]
+        assert media["url"] == f"/issues/media/{issue['id']}/{media['id']}"
+        response = web.get(f"/p/alpha{media['url']}")
+        assert response.status == 200
+        assert response.headers["content-type"].startswith("image/png")
+
+        commented = web.post_json(
+            f"/p/alpha/api/issues/{issue['id']}/comment",
+            {"body": "From the session", "actor": "agent:spoof"},
+        )
+        assert commented.status == 200, commented.text
+        updated = web.get(f"/p/alpha/api/issues/{issue['id']}").json["data"]
+        assert updated["comments"][0]["author"] == "human:alice"
+
+        # Session writes never accept a bearer credential, even with a cookie.
+        rejected = web.request(
+            "PUT",
+            f"/p/alpha/issues/media/staging/{digest}?filename=screen.png",
+            body=content,
+            headers={
+                "Authorization": "Bearer ignored",
+                "Content-Type": "application/octet-stream",
+                "Origin": web.origin,
+            },
+        )
+        assert rejected.status == 403
+        assert rejected.json["error"]["code"] == "FORBIDDEN"
         anonymous = WebClient(web.server)
         assert anonymous.get("/p/alpha/api/issues").status == 401
 
@@ -301,6 +436,25 @@ class TestWrites:
 
 
 class TestHeaders:
+    def test_hosted_preview_csp_allows_local_image_and_media_sources_only_where_needed(
+        self, web: WebClient
+    ) -> None:
+        response = web.get("/p/alpha/")
+        assert response.status == 200
+        directives = {}
+        for directive in response.headers["content-security-policy"].split(";"):
+            parts = directive.strip().split()
+            if parts:
+                directives[parts[0]] = set(parts[1:])
+
+        assert directives["img-src"] == {"'self'", "blob:", "data:"}
+        assert directives["media-src"] == {"'self'", "blob:"}
+        assert all(
+            "blob:" not in sources and "data:" not in sources
+            for name, sources in directives.items()
+            if name not in {"img-src", "media-src"}
+        )
+
     def test_every_page_and_api_response_carries_csp_and_nosniff(
         self, server, root, web: WebClient
     ) -> None:
