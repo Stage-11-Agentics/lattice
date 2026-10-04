@@ -96,30 +96,45 @@ jobs:
         python-version: ["3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
+      - name: Check out pre-fix baseline
+        uses: actions/checkout@v4
+        with:
+          ref: 76cdeaef56c57063c7635684f571b0b5c06120ad
+          path: lat386-baseline
       - name: Install uv
         uses: astral-sh/setup-uv@v4
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
       - name: Install dependencies
         run: uv sync --extra dev --extra server --python ${{ matrix.python-version }}
-      - name: Install temporary repeat plugin
+      - name: Install baseline dependencies
+        working-directory: lat386-baseline
+        run: uv sync --extra dev --extra server --python ${{ matrix.python-version }}
+      - name: Install temporary repeat plugin in baseline
+        working-directory: lat386-baseline
         run: uv pip install --python .venv/bin/python pytest-repeat
-      - name: Run affected fault walks 500 times under CPU load
+      - name: Install temporary repeat plugin in fixed checkout
+        run: uv pip install --python .venv/bin/python pytest-repeat
+      - name: Prove pre-fix failure 500 times under CPU load
+        working-directory: lat386-baseline
         run: |
           yes > /dev/null &
           stress_pid=$!
           trap 'kill "$stress_pid" 2>/dev/null || true' EXIT
           set +e
-          uv run --no-sync pytest -n auto --count=500 -q --tb=no \
-            --junitxml=/tmp/lat386-stress.xml \
-            "tests/test_server/test_transactions.py::test_every_boundary_leaves_the_operation_wholly_present_or_absent[task.status]" \
-            "tests/test_server/test_transactions.py::test_every_boundary_leaves_the_operation_wholly_present_or_absent[task.unarchive]"
+          uv run --no-sync pytest --count=500 -k "task.status or task.unarchive" -q --tb=no \
+            --junitxml=/tmp/lat386-before.xml \
+            tests/test_server/test_transactions.py::test_every_boundary_leaves_the_operation_wholly_present_or_absent \
+            > /tmp/lat386-before.log 2>&1
           test_status=$?
+          set -e
+          tail -n 6 /tmp/lat386-before.log
           python - <<'PY'
+          import sys
           import xml.etree.ElementTree as ET
 
           counts = {"task.status": [0, 0], "task.unarchive": [0, 0]}
-          for case in ET.parse("/tmp/lat386-stress.xml").iter("testcase"):
+          for case in ET.parse("/tmp/lat386-before.xml").iter("testcase"):
               name = case.get("name", "")
               for scenario, result in counts.items():
                   if scenario in name:
@@ -128,5 +143,44 @@ jobs:
                           result[0] += 1
           for scenario, (failed, total) in counts.items():
               print(f"{scenario}: {failed}/{total} failed")
+              if (failed, total) != (500, 500):
+                  sys.exit(f"expected 500/500 pre-fix failures for {scenario}")
           PY
-          exit "$test_status"
+          if [ "$test_status" -eq 0 ]; then
+            echo "pre-fix fault walk unexpectedly passed" >&2
+            exit 1
+          fi
+      - name: Prove fixed fault walks 500 times under CPU load
+        run: |
+          yes > /dev/null &
+          stress_pid=$!
+          trap 'kill "$stress_pid" 2>/dev/null || true' EXIT
+          set +e
+          uv run --no-sync pytest --count=500 -k "task.status or task.unarchive" -q --tb=no \
+            --junitxml=/tmp/lat386-after.xml \
+            tests/test_server/test_transactions.py::test_every_boundary_leaves_the_operation_wholly_present_or_absent \
+            > /tmp/lat386-after.log 2>&1
+          test_status=$?
+          set -e
+          tail -n 6 /tmp/lat386-after.log
+          if [ "$test_status" -ne 0 ]; then
+            echo "fixed fault walk failed with exit $test_status" >&2
+            exit "$test_status"
+          fi
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          counts = {"task.status": [0, 0], "task.unarchive": [0, 0]}
+          for case in ET.parse("/tmp/lat386-after.xml").iter("testcase"):
+              name = case.get("name", "")
+              for scenario, result in counts.items():
+                  if scenario in name:
+                      result[1] += 1
+                      if case.find("failure") is not None or case.find("error") is not None:
+                          result[0] += 1
+          for scenario, (failed, total) in counts.items():
+              print(f"{scenario}: {failed}/{total} failed")
+              if (failed, total) != (0, 500):
+                  sys.exit(f"expected 0/500 post-fix failures for {scenario}")
+          PY
