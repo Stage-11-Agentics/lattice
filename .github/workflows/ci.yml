@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, v2]
+    branches: [main, v2, fix/LAT-386-crash-atomicity]
     tags: ["v*"]
   pull_request:
     branches: [main, v2]
@@ -16,6 +16,7 @@ concurrency:
 
 jobs:
   lint:
+    if: github.ref != 'refs/heads/fix/LAT-386-crash-atomicity'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -32,6 +33,7 @@ jobs:
         run: uv run ruff format --check src/ tests/
 
   test:
+    if: github.ref != 'refs/heads/fix/LAT-386-crash-atomicity'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
@@ -52,6 +54,7 @@ jobs:
         run: uv run pytest -x -q
 
   type-check:
+    if: github.ref != 'refs/heads/fix/LAT-386-crash-atomicity'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     continue-on-error: true  # advisory until codebase is fully typed
@@ -81,3 +84,49 @@ jobs:
         run: uv build
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+
+  # Temporary LAT-386 baseline/after stress gate; remove before PR review.
+  lat386-stress:
+    if: github.ref == 'refs/heads/fix/LAT-386-crash-atomicity'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: uv sync --extra dev --extra server --python ${{ matrix.python-version }}
+      - name: Install temporary repeat plugin
+        run: uv pip install --python .venv/bin/python pytest-repeat
+      - name: Run affected fault walks 500 times under CPU load
+        run: |
+          yes > /dev/null &
+          stress_pid=$!
+          trap 'kill "$stress_pid" 2>/dev/null || true' EXIT
+          set +e
+          uv run --no-sync pytest -n auto --count=500 -q --tb=no \
+            --junitxml=/tmp/lat386-stress.xml \
+            "tests/test_server/test_transactions.py::test_every_boundary_leaves_the_operation_wholly_present_or_absent[task.status]" \
+            "tests/test_server/test_transactions.py::test_every_boundary_leaves_the_operation_wholly_present_or_absent[task.unarchive]"
+          test_status=$?
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+
+          counts = {"task.status": [0, 0], "task.unarchive": [0, 0]}
+          for case in ET.parse("/tmp/lat386-stress.xml").iter("testcase"):
+              name = case.get("name", "")
+              for scenario, result in counts.items():
+                  if scenario in name:
+                      result[1] += 1
+                      if case.find("failure") is not None or case.find("error") is not None:
+                          result[0] += 1
+          for scenario, (failed, total) in counts.items():
+              print(f"{scenario}: {failed}/{total} failed")
+          PY
+          exit "$test_status"

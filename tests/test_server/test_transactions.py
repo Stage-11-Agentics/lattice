@@ -353,6 +353,15 @@ def test_every_boundary_leaves_the_operation_wholly_present_or_absent(
     projects: list[Project],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Hold the receipt date steady except for a forced midnight below. This
+    # makes date rollover reproducible instead of depending on CI wall time.
+    receipt_date = ["2026-10-02"]
+    monkeypatch.setattr(
+        transactions,
+        "receipt_file_name",
+        lambda now=None: f"{receipt_date[0]}.jsonl",
+    )
+
     # The counting pass: every boundary this operation crosses, in order.
     root, project, build = _prepared(fresh, projects, scenario)
     wire_publication(project)
@@ -360,6 +369,11 @@ def test_every_boundary_leaves_the_operation_wholly_present_or_absent(
         counter = install(m, Injector())
         run(project, build())
     boundaries = counter.occurrences()
+    if scenario.name in ("task.status", "task.unarchive"):
+        # These setups already have a receipt file for day one. The next day's
+        # receipt file adds a directory fsync before journal commit and shifts
+        # the meaning of a later dir_fsync occurrence.
+        receipt_date[0] = "2026-10-03"
     points = {p for p, _ in boundaries}
     for required in (
         "undo.write",
