@@ -305,6 +305,23 @@ def test_no_real_hostnames(path: Path | None) -> None:
     assert not real, f"{name} names non-placeholder hosts: {real}"
 
 
+def test_both_lattice_skills_explain_remote_issue_filing() -> None:
+    required = (
+        "curl -sS -X POST",
+        "/v1/projects/<slug>/ops/issue.file",
+        "source_ref",
+        "`deduplicated`",
+        "docs/hosted/guide.md",
+        "Filing-only issue token",
+    )
+    for path in (
+        REPO / "skills/lattice/SKILL.md",
+        REPO / "src/lattice/skills/lattice/SKILL.md",
+    ):
+        text = path.read_text()
+        assert all(fragment in text for fragment in required), path
+
+
 def test_hostname_check_catches_a_real_host() -> None:
     sample = (
         "curl https://lattice.acme-corp.io/healthz and server_name board.acme.dev;"

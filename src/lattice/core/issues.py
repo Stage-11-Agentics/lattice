@@ -493,6 +493,8 @@ def format_issue_row(
         row += " -> " + ", ".join(task_label(t) for t in view["tasks"])
     if activity:
         row += f"  ({activity})"
+    if view.get("external"):
+        row += "  [EXTERNAL]"
     return row
 
 

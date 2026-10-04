@@ -27,9 +27,9 @@ Key properties:
 
 ---
 
-## MCP Tools (26 total)
+## MCP Tools (30 total)
 
-### Write Operations (20 tools)
+### Write Operations (22 tools)
 
 | Tool | Description |
 |------|-------------|
@@ -53,8 +53,10 @@ Key properties:
 | `lattice_comment_delete` | Delete a comment from the current materialized view. |
 | `lattice_react` | Add a reaction to a comment. |
 | `lattice_unreact` | Remove a reaction from a comment. |
+| `issue_file` | File an issue through the shared operation with source references and text-pointer evidence. |
+| `issue_comment` | Add a comment or reply to an issue through the shared operation. |
 
-### Read Operations (6 tools)
+### Read Operations (8 tools)
 
 | Tool | Description |
 |------|-------------|
@@ -64,6 +66,8 @@ Key properties:
 | `lattice_show` | Show detailed task information including full event history. Automatically finds archived tasks. |
 | `lattice_config` | Read the project configuration (workflow statuses, transitions, task types, defaults). |
 | `lattice_doctor` | Run data integrity checks on the `.lattice/` directory. Reports missing directories, orphaned files, and snapshot/event mismatches. Optional auto-fix mode. |
+| `issue_list` | List issues with CLI-matching states, ordering, actor filters, external-data warnings, and unreadable-file warnings. |
+| `issue_show` | Show issue detail, comments, redacted history, and media metadata with external-data warnings. |
 
 ---
 
@@ -85,7 +89,7 @@ Key properties:
 
 - **Transport**: stdio (standard input/output)
 - **Protocol**: MCP (Model Context Protocol) via FastMCP
-- **Tools**: 26 (20 write, 6 read)
+- **Tools**: 30 (22 write, 8 read)
 - **Resources**: 7 URI patterns
 - **ID resolution**: All tools accept both ULIDs (`task_01HQ...`) and human-friendly short IDs (`LAT-42`)
 - **Actor attribution**: Required on all write operations (`prefix:identifier` format)
@@ -187,7 +191,7 @@ Any MCP client that supports stdio transport can connect:
 
 https://github.com/Stage-11-Agentics/lattice
 
-Gives AI agents persistent shared state for coordinating work across sessions. 26 MCP tools for task lifecycle management, optional acceptance criteria, evidence, comments, and relationships. 7 resource URIs for reading task state. Event-sourced with immutable audit trail and actor attribution. Zero infrastructure -- no database, no server, just files.
+Gives AI agents persistent shared state for coordinating work across sessions. 30 MCP tools for task and issue workflows, optional acceptance criteria, evidence, comments, and relationships. 7 resource URIs for reading task state. Event-sourced with immutable audit trail and actor attribution. Zero infrastructure -- no database, no server, just files.
 
 Install: `pip install lattice-tracker[mcp]`
 Run: `lattice-mcp`
@@ -205,7 +209,7 @@ Categories: Project Management, Developer Tools, AI Agent Coordination
 |-------|-------|
 | Name | `@Stage-11-Agentics/lattice` |
 | Display name | Lattice |
-| Description | File-based, agent-native task tracker with event-sourced core. 26 MCP tools for task lifecycle management, acceptance criteria, relationships, artifacts, and workflow automation. Zero infrastructure -- just files. |
+| Description | File-based, agent-native task tracker with event-sourced core. 30 MCP tools for task and issue workflows, acceptance criteria, relationships, artifacts, and workflow automation. Zero infrastructure -- just files. |
 | Repository | https://github.com/Stage-11-Agentics/lattice |
 | Transport | stdio |
 | Install command | `pip install lattice-tracker[mcp]` |
@@ -221,7 +225,7 @@ Categories: Project Management, Developer Tools, AI Agent Coordination
 |-------|-------|
 | Name | Lattice |
 | Repository | https://github.com/Stage-11-Agentics/lattice |
-| Description | Agent-native task tracker with event-sourced core. Exposes 26 MCP tools and 7 resources for task lifecycle management, optional acceptance criteria, evidence, and relationships. File-based with zero infrastructure. |
+| Description | Agent-native task tracker with event-sourced core. Exposes 30 MCP tools and 7 resources for task and issue workflows, optional acceptance criteria, evidence, and relationships. File-based with zero infrastructure. |
 | Category | Project Management / Developer Tools |
 | Language | Python |
 | Scope | Local |
@@ -237,7 +241,7 @@ Categories: Project Management, Developer Tools, AI Agent Coordination
 |-------|-------|
 | Name | Lattice |
 | Repository | https://github.com/Stage-11-Agentics/lattice |
-| Description | File-based, agent-native task tracker. 26 MCP tools for task lifecycle management, optional acceptance criteria, evidence, and relationships. Event-sourced with immutable audit trail and actor attribution. No database or server required. |
+| Description | File-based, agent-native task tracker. 30 MCP tools for task and issue workflows, optional acceptance criteria, evidence, and relationships. Event-sourced with immutable audit trail and actor attribution. No database or server required. |
 | Category | Project Management |
 
 ### awesome-mcp-servers (GitHub)
@@ -247,7 +251,7 @@ Categories: Project Management, Developer Tools, AI Agent Coordination
 **Draft entry (for the "Project Management" or "Developer Tools" category):**
 
 ```markdown
-- [Lattice](https://github.com/Stage-11-Agentics/lattice) 🐍 🏠 🍎 🪟 🐧 - File-based, agent-native task tracker with event-sourced core. 26 tools for task lifecycle management, optional acceptance criteria, evidence, actor attribution, relationship graphs, and configurable workflows.
+- [Lattice](https://github.com/Stage-11-Agentics/lattice) 🐍 🏠 🍎 🪟 🐧 - File-based, agent-native task tracker with event-sourced core. 30 tools for task and issue workflows, optional acceptance criteria, evidence, actor attribution, relationship graphs, and configurable workflows.
 ```
 
 Legend: 🐍 = Python, 🏠 = Local, 🍎 = macOS, 🪟 = Windows, 🐧 = Linux

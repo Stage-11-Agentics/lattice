@@ -272,6 +272,9 @@ class TestWritesAreOperations:
             "validate_transition",
             "validate_completion_policy",
             "create_event",
+            "create_issue_event",
+            "issue_write_context",
+            "write_issue_events",
         }
         for module in ("tools.py", "resources.py"):
             source = (Path(tools.__file__).parent / module).read_text()
