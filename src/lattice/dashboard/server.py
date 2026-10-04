@@ -304,15 +304,6 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
                 )
                 return None
 
-            body = self._read_request_body(path)
-            if body is _POST_BODY_FAILED:
-                return None  # error already sent
-            try:
-                api.validate_json_post_body(path, body)
-            except ApiError as exc:
-                self._send(ApiResponse(exc.status, exc.envelope()))
-                return None
-
             if _is_issue_api_path(path):
                 if self._target.hosted:
                     self._send_error(*_BOUND_CHECKOUT_ISSUES_READ_ONLY)
@@ -323,6 +314,15 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
                 except ApiError as exc:
                     self._send(ApiResponse(exc.status, exc.envelope()))
                     return None
+
+            body = self._read_request_body(path)
+            if body is _POST_BODY_FAILED:
+                return None  # error already sent
+            try:
+                api.validate_json_post_body(path, body)
+            except ApiError as exc:
+                self._send(ApiResponse(exc.status, exc.envelope()))
+                return None
 
             if path == "/api/issues":
                 try:
@@ -342,10 +342,7 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
 
         def _do_post(self, path: str, body: Any) -> None:
             route = api.match_json_post_route(path)
-            if route in {
-                "/api/tasks/{task_id}/open-notes",
-                "/api/tasks/{task_id}/open-plans",
-            }:
+            if route in api._TASK_OPEN_ROUTE_TEMPLATES:
                 task_id, sub = path[len("/api/tasks/") :].rsplit("/", 1)
                 self._open_prose(task_id, "notes" if sub == "open-notes" else "plan")
                 return

@@ -516,10 +516,7 @@ async def api_post(request: Request, state: ServerState) -> Response:
             raise api.ApiError(400, "BAD_REQUEST", "Invalid JSON in request body") from None
         api.validate_json_post_body(path, body)
         route = api.match_json_post_route(path)
-        if route in {
-            "/api/tasks/{task_id}/open-notes",
-            "/api/tasks/{task_id}/open-plans",
-        }:
+        if route in api._TASK_OPEN_ROUTE_TEMPLATES:
             kind = "notes" if path.endswith("open-notes") else "plan"
             raise api.ApiError(
                 400,

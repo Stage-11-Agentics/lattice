@@ -120,6 +120,18 @@ class TestRules:
         assert body["error"]["details"]["snapshot"]["status"] == "planned"
         assert board_bytes(ld) == before
 
+    def test_issue_preflight_refuses_before_reading_invalid_body(self, dash):
+        port, ld, _ids = dash
+        config_path = ld / "config.json"
+        config = json.loads(config_path.read_text())
+        config.setdefault("issues", {})["enabled"] = False
+        config_path.write_text(json.dumps(config, sort_keys=True, indent=2) + "\n")
+
+        status, body = post(port, "/api/issues", b"not-json")
+
+        assert status == 409
+        assert body["error"]["code"] == "ISSUES_DISABLED"
+
     def test_permitted_move_after_the_plan_is_written(self, dash):
         port, ld, ids = dash
         task = ids["backlog"]
@@ -574,6 +586,16 @@ class TestBoundCheckoutSeam:
         assert status == 400
         assert body["error"]["code"] == "LOCAL_ONLY"
         assert "lattice plan write" in body["error"]["message"]
+        assert board.calls == []
+
+    @pytest.mark.parametrize("bound_dash", [("human:alice",)], indirect=True)
+    def test_issue_bound_checkout_preflight_refuses_before_reading_invalid_body(self, bound_dash):
+        port, _ld, _ids, board = bound_dash
+
+        status, body = post(port, "/api/issues", b"not-json")
+
+        assert status == 400
+        assert body["error"]["code"] == "LOCAL_ONLY"
         assert board.calls == []
 
     @pytest.mark.parametrize("bound_dash", [("agent:*",)], indirect=True)

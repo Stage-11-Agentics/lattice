@@ -921,6 +921,10 @@ def apply_activity_filters(
 # The registry is the source of truth for JSON POST paths. HTTP handlers match
 # and validate against it before any route-specific work; tests expand this
 # same inventory so a newly dispatched route joins the non-object matrix.
+_TASK_OPEN_ROUTE_TEMPLATES = frozenset(
+    {"/api/tasks/{task_id}/open-notes", "/api/tasks/{task_id}/open-plans"}
+)
+
 JSON_POST_ROUTE_TEMPLATES = (
     "/api/config/dashboard",
     "/api/tasks",
@@ -933,8 +937,7 @@ JSON_POST_ROUTE_TEMPLATES = (
     "/api/tasks/{task_id}/comment-delete",
     "/api/tasks/{task_id}/react",
     "/api/tasks/{task_id}/unreact",
-    "/api/tasks/{task_id}/open-notes",
-    "/api/tasks/{task_id}/open-plans",
+    *sorted(_TASK_OPEN_ROUTE_TEMPLATES),
     "/api/issues",
     "/api/issues/{issue_id}/comment",
     "/api/issues/{issue_id}/dismiss",
@@ -944,15 +947,7 @@ JSON_POST_ROUTE_TEMPLATES = (
 _TASK_ACTION_ROUTE_TEMPLATES = frozenset(
     template
     for template in JSON_POST_ROUTE_TEMPLATES
-    if template.startswith("/api/tasks/{task_id}/")
-    and template
-    not in {
-        "/api/tasks/{task_id}/open-notes",
-        "/api/tasks/{task_id}/open-plans",
-    }
-)
-_TASK_OPEN_ROUTE_TEMPLATES = frozenset(
-    {"/api/tasks/{task_id}/open-notes", "/api/tasks/{task_id}/open-plans"}
+    if template.startswith("/api/tasks/{task_id}/") and template not in _TASK_OPEN_ROUTE_TEMPLATES
 )
 
 

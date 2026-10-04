@@ -239,6 +239,32 @@ class TestNextClaim:
         assert snapshot["status"] == "planned"
         assert snapshot["assigned_to"] is None
 
+    def test_live_plan_review_plain_output_names_existing_assignee(
+        self, create_task, invoke, fill_plan, cli_env
+    ) -> None:
+        task = self._planned_task_with_live_review(create_task, invoke, fill_plan, cli_env)
+        assigned = invoke("assign", task["id"], "agent:claude", "--actor", "agent:claude")
+        assert assigned.exit_code == 0
+
+        result = invoke("next", "--actor", "agent:claude", "--claim")
+
+        assert result.exit_code == 0
+        assert "remains planned" in result.output
+        assert "assigned_to=agent:claude" in result.output
+        assert "unassigned" not in result.output
+
+    def test_live_plan_review_quiet_mode_does_not_print_task_id(
+        self, create_task, invoke, fill_plan, cli_env
+    ) -> None:
+        task = self._planned_task_with_live_review(create_task, invoke, fill_plan, cli_env)
+
+        result = invoke("next", "--actor", "agent:claude", "--claim", "--quiet")
+
+        assert result.exit_code == 0
+        assert result.stdout == ""
+        assert "PLAN_REVIEW_IN_FLIGHT" in result.stderr
+        assert task["id"] not in result.stdout
+
     def test_claim_requires_actor(self, invoke) -> None:
         result = invoke("next", "--claim")
         assert result.exit_code != 0

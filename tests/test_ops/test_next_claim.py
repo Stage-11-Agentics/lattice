@@ -57,6 +57,29 @@ def _record_remote_plan_review(
     )
 
 
+def _record_local_plan_review(
+    board: LocalBoard, task_id: str, *, spawned_at: str | None = None
+) -> None:
+    from lattice.boards import _process_origin
+
+    board.execute(
+        "task.record_auto_review",
+        {
+            "task": task_id,
+            "review_type": "plan-review",
+            "mode": "single",
+            "log_path": ".lattice/.daemon/auto-plan-review-local.log",
+            "spawned_at": spawned_at or datetime.now(timezone.utc).isoformat(),
+            "pid": os.getpid(),
+            "trigger_status_event_id": "ev_planned",
+        },
+        Caller(
+            actor="agent:lattice-auto-review",
+            origin={"reported": {"host": _process_origin().get("host")}},
+        ),
+    )
+
+
 class TestNextClaim:
     def test_claims_the_top_task(self, board: LocalBoard) -> None:
         _ready(board, "low", priority="low")
@@ -106,6 +129,7 @@ class TestNextClaim:
             _run(board, "task.status", {"task": task_id, "new_status": "planned"})
             _run(board, "task.assign", {"task": task_id, "actor_id": "none"})
 
+        _record_local_plan_review(board, selected)
         state_dir = board.lattice_dir / "review_state"
         state_dir.mkdir(exist_ok=True)
         (state_dir / f"{selected}.json").write_text(
@@ -156,6 +180,7 @@ class TestNextClaim:
         self, board: LocalBoard, status: str, owner: str
     ) -> None:
         task_id = _planned_unassigned(board)
+        _record_local_plan_review(board, task_id)
         state_dir = board.lattice_dir / "review_state"
         state_dir.mkdir(exist_ok=True)
         (state_dir / f"{task_id}.json").write_text(
@@ -178,6 +203,39 @@ class TestNextClaim:
             "assignment_changed",
             "status_changed",
         ]
+
+    @pytest.mark.parametrize(("age_seconds", "blocked"), [(5, True), (31, False)])
+    def test_auto_fired_review_with_dead_parent_obeys_handoff_grace(
+        self, board: LocalBoard, age_seconds: int, blocked: bool
+    ) -> None:
+        task_id = _planned_unassigned(board)
+        started_at = (datetime.now(timezone.utc) - timedelta(seconds=age_seconds)).isoformat()
+        _record_local_plan_review(board, task_id, spawned_at=started_at)
+        state_dir = board.lattice_dir / "review_state"
+        state_dir.mkdir(exist_ok=True)
+        (state_dir / f"{task_id}.json").write_text(
+            json.dumps(
+                {
+                    "task_id": task_id,
+                    "review_type": "plan-review",
+                    "status": "running",
+                    "started_at": started_at,
+                    "started_by_pid": 2_000_000_000,
+                    "auto_fired": True,
+                }
+            )
+        )
+
+        result = _run(board, "board.next_claim", {"status": "planned"}, actor="agent:claimer")
+
+        if blocked:
+            assert result.value["claimed"] is False
+            assert result.value["reason"] == "PLAN_REVIEW_IN_FLIGHT"
+            assert result.events == []
+        else:
+            assert result.value["id"] == task_id
+            assert result.value["status"] == "in_progress"
+            assert result.value["assigned_to"] == "agent:claimer"
 
     def test_remote_live_plan_review_has_the_same_no_claim_result(self, board: LocalBoard) -> None:
         task_id = _planned_unassigned(board)

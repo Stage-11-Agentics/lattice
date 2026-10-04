@@ -62,6 +62,8 @@ lattice next --actor agent:worker-1 --claim
 
 On the complete plan-review route, `next --claim` enters or stays in `in_planning`, including when a substantive plan exists. Write the plan if needed, run the returned `lattice status <task> planned` command, which includes the identity option supplied for the claim, and follow its review output, then explicitly move to `in_progress`; do not re-claim to advance it.
 
+If `next --claim` selects a `planned` task with a live plan-review gate, it returns `claimed: false` with reason `PLAN_REVIEW_IN_FLIGHT`, leaves that task planned and preserves its current assignee, and does not fall through to another task. Plain output names the no-claim reason; `--json` returns the selected task snapshot with `claimed: false` and the reason; `--quiet` prints nothing to stdout and reports the reason on stderr. Retrying returns the same selected task until its plan review lands.
+
 ### 5. Handling Blocks
 
 When a worker is stuck:

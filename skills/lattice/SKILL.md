@@ -147,6 +147,15 @@ existing plan, run it directly. Follow its output about review, then explicitly 
 held in `in_planning` or `planned`. Other workflow configurations keep their
 existing claim behavior.
 
+If `next --claim` selects a `planned` task with a live plan-review gate, it
+returns `claimed: false` with reason `PLAN_REVIEW_IN_FLIGHT`, leaves that task
+planned and preserves its current assignee, and does not fall through to
+another task.
+Plain output names the no-claim reason; `--json` returns the selected task
+snapshot with `claimed: false` and the reason; `--quiet` prints nothing to
+stdout and reports the reason on stderr. Retrying returns the same selected
+task until its plan review lands.
+
 ### Project health
 
 ```bash

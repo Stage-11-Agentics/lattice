@@ -503,17 +503,22 @@ def next_cmd(
         task = selected["task"]
         display_id = task.get("short_id") or task["id"]
         title = task.get("title", "?")
+        assigned_to = task.get("assigned_to")
+        assignment = f"assigned_to={assigned_to}" if assigned_to is not None else "unassigned"
         human_message = (
-            f'PLAN_REVIEW_IN_FLIGHT: {display_id} "{title}" remains planned and '
-            "unassigned; it was not claimed."
+            f'PLAN_REVIEW_IN_FLIGHT: {display_id} "{title}" remains planned; '
+            f"{assignment}, it was not claimed."
         )
-        output_result(
-            data=selected,
-            human_message=human_message,
-            quiet_value=display_id,
-            is_json=is_json,
-            is_quiet=quiet,
-        )
+        if quiet and not is_json:
+            click.echo(human_message, err=True)
+        else:
+            output_result(
+                data=selected,
+                human_message=human_message,
+                quiet_value="",
+                is_json=is_json,
+                is_quiet=quiet,
+            )
         return
 
     task_id = selected["id"]
