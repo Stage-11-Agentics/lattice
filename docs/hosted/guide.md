@@ -426,8 +426,8 @@ The following example stages one image as raw bytes, files it, then repeats the 
 
 ```bash
 export LATTICE_URL="${LATTICE_URL:-http://127.0.0.1:8740}"
-export LATTICE_TOKEN='<token from the intake service secret store>'
-IMAGE=shot.jpg
+: "${LATTICE_TOKEN:?Export LATTICE_TOKEN from the intake service secret store first}"
+IMAGE="${IMAGE:-shot.jpg}"
 SHA256="$(shasum -a 256 "$IMAGE" | awk '{print $1}')"
 SIZE="$(wc -c < "$IMAGE" | tr -d '[:space:]')"
 
