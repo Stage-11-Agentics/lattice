@@ -425,7 +425,7 @@ The issue media file cap is the live `limits.max_issue_media_file_bytes` (100 Mi
 The following example stages one image as raw bytes, files it, then repeats the same `(source, source_ref)` with a fresh operation ID. It uses `jq` to JSON-escape the request and Python's standard library to mint operation IDs:
 
 ```bash
-export LATTICE_URL=http://127.0.0.1:8740
+export LATTICE_URL="${LATTICE_URL:-http://127.0.0.1:8740}"
 export LATTICE_TOKEN='<token from the intake service secret store>'
 IMAGE=shot.jpg
 SHA256="$(shasum -a 256 "$IMAGE" | awk '{print $1}')"
