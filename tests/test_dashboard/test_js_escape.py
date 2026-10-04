@@ -97,8 +97,17 @@ def test_assets_and_api_calls_use_the_base_path() -> None:
         "  url: function(path) { return apiUrl(BASE_PATH, path); },"
     )
     assert reads in html and writes in html
-    assert re.search(r"fetch\(", html.replace(reads, "").replace(writes, "")) is None, (
-        "every fetch goes through api()/apiPost(), which resolve against the base path"
+    upload = re.search(
+        r"var response = await fetch\(apiUrl\(BASE_PATH,\s*"
+        r'"issues/media/staging/" \+ sha256[\s\S]*?\n\s*\}\);',
+        html,
+    )
+    assert upload is not None, (
+        "the raw issue-media upload must resolve against the dashboard base path"
+    )
+    remaining = html.replace(reads, "").replace(writes, "").replace(upload.group(0), "")
+    assert re.search(r"fetch\(", remaining) is None, (
+        "every fetch must use api()/apiPost() or explicitly resolve against the base path"
     )
 
 
