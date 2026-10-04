@@ -158,16 +158,21 @@ def _plan_review_in_flight(
     from lattice.core.review import is_review_abandoned, read_review_state
 
     local = read_review_state(lattice_dir, task_id)
-    local_plan_review = isinstance(local, dict) and local.get("review_type") == "plan-review"
-    terminal = local_plan_review and local.get("status") in {"failed", "done", "abandoned"}
-    holder = local.get("started_by_pid") if local_plan_review else None
+    local_record = local if isinstance(local, dict) else {}
+    local_plan_review = local_record.get("review_type") == "plan-review"
+    terminal = local_plan_review and local_record.get("status") in {
+        "failed",
+        "done",
+        "abandoned",
+    }
+    holder = local_record.get("started_by_pid") if local_plan_review else None
     local_live = bool(
         local_plan_review
         and not terminal
         and isinstance(holder, int)
         and not isinstance(holder, bool)
         and holder > 0
-        and not is_review_abandoned(local)
+        and not is_review_abandoned(local_record)
     )
 
     this_host = reported_origin(lattice_dir.parent).get("host")
