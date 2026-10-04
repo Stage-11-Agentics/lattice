@@ -390,7 +390,7 @@ def test_path_fallback_serves_media_and_rejects_detected_symlinks(
     assert b"sibling secret" not in body
 
 
-def test_bound_checkout_is_local_only(served) -> None:  # noqa: ANN001
+def test_bound_checkout_reads_issues_without_media_or_writes(served) -> None:  # noqa: ANN001
     _server, issue, ld, _config = served
     target = DashboardBoard(resolve_board(ld.parent), hosted=True)
     server = create_server(ld, "127.0.0.1", 0, board=target)
@@ -400,11 +400,22 @@ def test_bound_checkout_is_local_only(served) -> None:  # noqa: ANN001
     try:
         status, _headers, body = get(server, url(issue, 0))
         assert status == 400 and json.loads(body)["error"]["code"] == "LOCAL_ONLY"
-        # The list and detail routes answer the same state, not ISSUES_DISABLED.
+        # The checkout mirror exposes issue metadata, but no local media URLs.
         for path in ("/api/issues", f"/api/issues/{issue['id']}", "/api/issues?by=agent:qa"):
             status, _headers, body = get(server, path)
-            assert status == 400, path
-            assert json.loads(body)["error"]["code"] == "LOCAL_ONLY", path
+            assert status == 200, path
+            data = json.loads(body)["data"]
+            if path == f"/api/issues/{issue['id']}":
+                assert data["id"] == issue["id"]
+                rows = [data]
+            else:
+                rows = data
+                assert any(row["id"] == issue["id"] for row in rows), path
+            assert all(media["url"] is None for row in rows for media in row["media"]), path
+        media_path = url(issue, 0)
+        status, _headers, body = get(server, media_path)
+        assert status == 400, media_path
+        assert json.loads(body)["error"]["code"] == "LOCAL_ONLY", media_path
         for path in (
             "/api/issues",
             f"/api/issues/{issue['id']}/comment",
