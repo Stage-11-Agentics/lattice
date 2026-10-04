@@ -17,7 +17,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, NoReturn
 from urllib.parse import unquote, urlsplit, urlunsplit
 
 from filelock import FileLock, Timeout as FileLockTimeout
@@ -708,7 +708,7 @@ async def media_stage(request: Request, state: Any) -> Response:
     project = None
     origin_valid = False
 
-    async def refuse(exc: OpError, body=None) -> None:  # noqa: ANN001
+    async def refuse(exc: OpError, body=None) -> NoReturn:  # noqa: ANN001
         app_module._close_after_answer(request, body)
         if origin_valid and not _retryable_link_error(exc.code):
             cleanup_project = project or _project_for_link(state, record)

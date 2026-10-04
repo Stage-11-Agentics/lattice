@@ -153,6 +153,9 @@ AWAITING_CONVERSION: dict[str, str] = {}
 # calls to transitive storage writers remain behind operations.
 RUNTIME_STORAGE_WRITERS: dict[str, frozenset[str]] = {
     "lattice.core.review": frozenset({"lattice.storage.review_state.write_review_state_file"}),
+    "lattice.server.reporter_links": frozenset(
+        {"lattice.storage.fs.atomic_write", "lattice.storage.fs.ensure_dir"}
+    ),  # server-root link/stage registries and lock directory, outside project boards
 }
 
 #: Methods that change the filesystem when the receiver is a path whose type the
