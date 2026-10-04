@@ -30,6 +30,7 @@ import shutil
 from types import SimpleNamespace
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -38,7 +39,7 @@ from click.testing import CliRunner
 from lattice.cli.main import cli
 from lattice.core.errors import OpError
 from lattice.core.ids import generate_op_id
-from lattice.server import transactions
+from lattice.server import recovery, transactions
 from lattice.server.project import Project
 from lattice.server.stream import JOURNAL, Subscriber
 from lattice.server.testing import make_root
@@ -353,6 +354,20 @@ def test_every_boundary_leaves_the_operation_wholly_present_or_absent(
     projects: list[Project],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Freeze both the receipt filename and retention clock. Without the latter,
+    # the fixed day-one receipt expires starting 2026-10-10 UTC, so rollover stops.
+    receipt_date = ["2026-10-02"]
+    monkeypatch.setattr(recovery, "utc_today", lambda: date(2026, 10, 3))
+    monkeypatch.setattr(
+        transactions,
+        "receipt_file_name",
+        lambda now=None: f"{receipt_date[0]}.jsonl",
+    )
+
+    def release_case_project(project: Project) -> None:
+        project.release()
+        projects.remove(project)
+
     # The counting pass: every boundary this operation crosses, in order.
     root, project, build = _prepared(fresh, projects, scenario)
     wire_publication(project)
@@ -360,6 +375,19 @@ def test_every_boundary_leaves_the_operation_wholly_present_or_absent(
         counter = install(m, Injector())
         run(project, build())
     boundaries = counter.occurrences()
+    release_case_project(project)
+    if scenario.name in ("task.status", "task.unarchive"):
+        # These setups already have a receipt file for day one. The next day's
+        # receipt file adds a directory fsync before journal commit. Recount
+        # after that deterministic rollover so every boundary is still faulted.
+        receipt_date[0] = "2026-10-03"
+        root, project, build = _prepared(fresh, projects, scenario)
+        wire_publication(project)
+        with monkeypatch.context() as m:
+            counter = install(m, Injector())
+            run(project, build())
+        boundaries = counter.occurrences()
+        release_case_project(project)
     points = {p for p, _ in boundaries}
     for required in (
         "undo.write",
@@ -383,9 +411,7 @@ def test_every_boundary_leaves_the_operation_wholly_present_or_absent(
         assert required in points, (scenario.name, required)
     if scenario.name in ("task.archive", "task.unarchive"):
         assert "placement.source_event_removed" in points
-    commit_at = boundaries.index(("journal.fsync", 1))
-
-    for position, (point, occurrence) in enumerate(boundaries):
+    for point, occurrence in boundaries:
         case = f"{scenario.name} failing at {point} #{occurrence}"
         root, project, build = _prepared(fresh, projects, scenario)
         closed = wire_publication(project)
@@ -401,7 +427,16 @@ def test_every_boundary_leaves_the_operation_wholly_present_or_absent(
                 error = exc
         assert injector.fired, case
 
-        if position == commit_at or point.startswith("finish.memory"):
+        # The frozen date is the primary fix; classify from this run's trace as
+        # a belt-and-braces guard against another boundary-order change.
+        injected_boundaries = injector.occurrences()
+        fault_position = injected_boundaries.index((point, occurrence))
+        try:
+            commit_position = injected_boundaries.index(("journal.fsync", 1))
+        except ValueError:
+            commit_position = None
+
+        if (point, occurrence) == ("journal.fsync", 1) or point.startswith("finish.memory"):
             # Durability unknown, or committed but memory could not be finalized
             # (H-10a: never left half-updated): quarantine, nothing more is written.
             assert isinstance(error, OpError) and error.code == "BOARD_UNAVAILABLE", case
@@ -412,13 +447,14 @@ def test_every_boundary_leaves_the_operation_wholly_present_or_absent(
             assert again.value.code == "BOARD_UNAVAILABLE"
             assert state(root) == after, case
             stream.close()
+            release_case_project(project)
             continue
 
         assert error is not None, case
         assert project.state == "loaded", case
         assert undo_logs(root) == [], case
         after = state(root)
-        if position < commit_at:
+        if commit_position is None or fault_position < commit_position:
             assert after == before, case  # wholly absent
             assert not isinstance(error, OpError) or error.code != "BOARD_UNAVAILABLE", case
         else:
@@ -439,6 +475,7 @@ def test_every_boundary_leaves_the_operation_wholly_present_or_absent(
         # In the in-process branch a connected follower misses no seq (AC-4, H-22).
         assert_follower_missed_no_seq(stream, project.journal.head_seq, case)
         stream.close()
+        release_case_project(project)
 
 
 @pytest.mark.parametrize("name", ["task.archive", "task.unarchive"])
