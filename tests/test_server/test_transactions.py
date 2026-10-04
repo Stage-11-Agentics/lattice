@@ -362,6 +362,10 @@ def test_every_boundary_leaves_the_operation_wholly_present_or_absent(
         lambda now=None: f"{receipt_date[0]}.jsonl",
     )
 
+    def release_case_project(project: Project) -> None:
+        project.release()
+        projects.remove(project)
+
     # The counting pass: every boundary this operation crosses, in order.
     root, project, build = _prepared(fresh, projects, scenario)
     wire_publication(project)
@@ -369,6 +373,7 @@ def test_every_boundary_leaves_the_operation_wholly_present_or_absent(
         counter = install(m, Injector())
         run(project, build())
     boundaries = counter.occurrences()
+    release_case_project(project)
     if scenario.name in ("task.status", "task.unarchive"):
         # These setups already have a receipt file for day one. The next day's
         # receipt file adds a directory fsync before journal commit. Recount
@@ -380,6 +385,7 @@ def test_every_boundary_leaves_the_operation_wholly_present_or_absent(
             counter = install(m, Injector())
             run(project, build())
         boundaries = counter.occurrences()
+        release_case_project(project)
     points = {p for p, _ in boundaries}
     for required in (
         "undo.write",
@@ -440,6 +446,7 @@ def test_every_boundary_leaves_the_operation_wholly_present_or_absent(
             assert again.value.code == "BOARD_UNAVAILABLE"
             assert state(root) == after, case
             stream.close()
+            release_case_project(project)
             continue
 
         assert error is not None, case
@@ -467,6 +474,7 @@ def test_every_boundary_leaves_the_operation_wholly_present_or_absent(
         # In the in-process branch a connected follower misses no seq (AC-4, H-22).
         assert_follower_missed_no_seq(stream, project.journal.head_seq, case)
         stream.close()
+        release_case_project(project)
 
 
 @pytest.mark.parametrize("name", ["task.archive", "task.unarchive"])
