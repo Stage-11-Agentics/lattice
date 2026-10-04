@@ -1316,8 +1316,77 @@ class TestReviewBaseSelection:
         assert res.success is False
         assert res.error_code == "UNRESOLVABLE_REVIEW_INTEGRATION_BRANCHES"
         assert "v3" in (res.warning or "")
-        assert "v3" in (res.error or "")
+        assert "v3" not in (res.error or "")
         assert "refusing to fall back" in (res.error or "")
+        assert (res.error or "").endswith(".")
+        assert (res.warning or "").count("v3") == 1
+
+    @pytest.mark.parametrize(
+        ("remote", "tracking_ref", "expected", "forbidden"),
+        [
+            (
+                False,
+                False,
+                "Pass --base <ref> or set review_base_branch to a local branch",
+                "fetch the intended branch",
+            ),
+            (
+                True,
+                False,
+                "Fetch the intended branch from a configured remote",
+                "Check review_integration_branches and shared history",
+            ),
+            (
+                False,
+                True,
+                "Check review_integration_branches and shared history",
+                "Fetch the intended branch",
+            ),
+        ],
+    )
+    def test_unresolvable_integration_remedy_matches_remote_state(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        remote: bool,
+        tracking_ref: bool,
+        expected: str,
+        forbidden: str,
+    ) -> None:
+        repo = tmp_path / f"unresolvable-{remote}-{tracking_ref}"
+        repo.mkdir()
+        _git(repo, "init", "-b", "trunk")
+        _git(repo, "config", "user.email", "t@t.com")
+        _git(repo, "config", "user.name", "Tester")
+        (repo / "root.txt").write_text("root\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-m", "root")
+        if remote:
+            _git(repo, "remote", "add", "upstream", "https://example.invalid/repo.git")
+        _git(repo, "checkout", "-b", "feat/unresolvable")
+        (repo / "change.txt").write_text("change\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-m", "feature")
+        feature_sha = _git(repo, "rev-parse", "HEAD").strip()
+        if tracking_ref:
+            _git(repo, "update-ref", "refs/remotes/fork/release/next", feature_sha)
+        lattice_dir = repo / ".lattice"
+        lattice_dir.mkdir()
+        monkeypatch.setattr(review_mod, "_open_pr_base_branch", lambda *_args: None)
+
+        res = review_mod.resolve_diff(
+            lattice_dir,
+            "task_01",
+            {"branch_links": [{"branch": "feat/unresolvable"}]},
+            review_integration_branches=["not-fetched"],
+        )
+
+        assert res.success is False
+        assert res.error_code == "UNRESOLVABLE_REVIEW_INTEGRATION_BRANCHES"
+        assert res.configured_remotes_present is remote
+        assert res.remote_tracking_refs_present is tracking_ref
+        assert expected in (res.error or "")
+        assert forbidden.lower() not in (res.error or "").lower()
 
     def test_missing_configured_entry_warns_while_valid_integration_wins(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1390,6 +1459,16 @@ class TestReviewBaseSelection:
         branches, error = review_mod._normalize_integration_branches([branch])
         assert branches == []
         assert "review_integration_branches" in (error or "")
+
+    def test_invalid_integration_entry_is_named_with_consistent_guidance(self) -> None:
+        branches, error = review_mod._normalize_integration_branches(["v2", "bad\x85name"])
+        assert branches == []
+        assert "'bad\\x85name'" in (error or "")
+        assert "unique, valid Git branch names" in (error or "")
+
+    def test_non_list_integration_config_uses_same_guidance(self) -> None:
+        _branches, error = review_mod._normalize_integration_branches("v2")
+        assert "unique, valid Git branch names" in (error or "")
 
     def test_detached_head_uses_only_configured_and_default_candidates(
         self, tmp_path: Path
@@ -1559,6 +1638,39 @@ class TestReviewBaseSelection:
         assert res.base_ref == "origin/v2"
         assert res.base_selection_rule == "board_config"
 
+    def test_board_config_base_accepts_a_commit_sha(self, tmp_path: Path, monkeypatch) -> None:
+        _repo, lattice_dir, feature, root_sha, *_ = _non_default_remote_base_repo(tmp_path)
+        monkeypatch.setattr(review_mod, "_open_pr_base_branch", lambda *_args: None)
+
+        res = review_mod.resolve_diff(
+            lattice_dir,
+            "task_01",
+            {"branch_links": [{"branch": feature}]},
+            review_base_branch=root_sha,
+        )
+
+        assert res.success is True, res.error
+        assert res.base_ref == root_sha
+        assert res.base_selection_rule == "board_config"
+
+    def test_legacy_integration_head_fails_loudly_at_review_time(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _repo, lattice_dir, feature, *_ = _non_default_remote_base_repo(tmp_path)
+        monkeypatch.setattr(review_mod, "_open_pr_base_branch", lambda *_args: None)
+
+        res = review_mod.resolve_diff(
+            lattice_dir,
+            "task_01",
+            {"branch_links": [{"branch": feature}]},
+            review_integration_branches=["HEAD"],
+        )
+
+        assert res.success is False
+        assert res.error_code == "INVALID_REVIEW_INTEGRATION_BRANCHES"
+        assert "offending entry 'HEAD'" in (res.error or "")
+        assert "unique, valid Git branch names" in (res.error or "")
+
     def test_malformed_local_base_config_fails_without_crashing(
         self, tmp_path: Path, monkeypatch
     ) -> None:
@@ -1573,6 +1685,121 @@ class TestReviewBaseSelection:
         assert res.success is False
         assert res.error_code == "INVALID_REVIEW_BASE_BRANCH"
         assert "review_base_branch" in (res.error or "")
+        assert "['v2']" in (res.error or "")
+
+    @pytest.mark.parametrize("base", ["v2\tmain", "v2\x01main", "v2\x7fmain", "v2\x85main"])
+    def test_review_base_config_rejects_raw_control_characters(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, base: str
+    ) -> None:
+        _repo, lattice_dir, feature, *_ = _non_default_remote_base_repo(tmp_path)
+        monkeypatch.setattr(review_mod, "_open_pr_base_branch", lambda *_args: None)
+
+        res = review_mod.resolve_diff(
+            lattice_dir,
+            "task_01",
+            {"branch_links": [{"branch": feature}]},
+            review_base_branch=base,
+        )
+
+        assert res.success is False
+        assert res.error_code == "INVALID_REVIEW_BASE_BRANCH"
+        assert repr(base) in (res.error or "")
+
+    def test_no_remote_trunk_error_recommends_local_base(self, tmp_path: Path) -> None:
+        repo = tmp_path / "trunk-only"
+        repo.mkdir()
+        _git(repo, "init", "-b", "trunk")
+        _git(repo, "config", "user.email", "t@t.com")
+        _git(repo, "config", "user.name", "Tester")
+        (repo / "root.txt").write_text("root\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-m", "root")
+        _git(repo, "checkout", "-b", "feat/trunk-test")
+        (repo / "change.txt").write_text("change\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-m", "feature")
+        lattice_dir = repo / ".lattice"
+        lattice_dir.mkdir()
+
+        res = review_mod.resolve_diff(
+            lattice_dir,
+            "task_01",
+            {"branch_links": [{"branch": "feat/trunk-test"}]},
+        )
+
+        assert res.success is False
+        assert res.error_code == "BASE_INFERENCE_NO_CANDIDATES"
+        assert res.configured_remotes_present is False
+        assert res.remote_tracking_refs_present is False
+        assert "Pass --base <ref>" in (res.error or "")
+        assert "review_base_branch" in (res.error or "")
+        assert "fetch" not in (res.error or "").lower()
+        assert "review_integration_branches" not in (res.error or "")
+
+    def test_configured_unfetched_remote_error_recommends_fetch(self, tmp_path: Path) -> None:
+        repo = tmp_path / "unfetched-remote"
+        repo.mkdir()
+        _git(repo, "init", "-b", "trunk")
+        _git(repo, "config", "user.email", "t@t.com")
+        _git(repo, "config", "user.name", "Tester")
+        (repo / "root.txt").write_text("root\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-m", "root")
+        _git(repo, "remote", "add", "upstream", "https://example.invalid/repo.git")
+        _git(repo, "checkout", "-b", "feat/unfetched")
+        (repo / "change.txt").write_text("change\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-m", "feature")
+        lattice_dir = repo / ".lattice"
+        lattice_dir.mkdir()
+
+        res = review_mod.resolve_diff(
+            lattice_dir,
+            "task_01",
+            {"branch_links": [{"branch": "feat/unfetched"}]},
+        )
+
+        assert res.success is False
+        assert res.error_code == "BASE_INFERENCE_NO_CANDIDATES"
+        assert res.configured_remotes_present is True
+        assert res.remote_tracking_refs_present is False
+        assert "fetch" in (res.error or "").lower()
+        assert "review_integration_branches" not in (res.error or "")
+
+    def test_tracking_refs_without_candidate_recommend_integration_config(
+        self, tmp_path: Path
+    ) -> None:
+        repo = tmp_path / "tracking-refs"
+        repo.mkdir()
+        _git(repo, "init", "-b", "trunk")
+        _git(repo, "config", "user.email", "t@t.com")
+        _git(repo, "config", "user.name", "Tester")
+        (repo / "root.txt").write_text("root\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-m", "root")
+        _git(repo, "checkout", "-b", "feat/tracking")
+        (repo / "change.txt").write_text("change\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-m", "feature")
+        feature_sha = _git(repo, "rev-parse", "HEAD").strip()
+        _git(repo, "update-ref", "refs/remotes/origin/trunk", feature_sha)
+        _git(repo, "update-ref", "refs/remotes/fork/release/next", feature_sha)
+        # Neither arbitrary ref is a candidate unless named in board config.
+        lattice_dir = repo / ".lattice"
+        lattice_dir.mkdir()
+
+        res = review_mod.resolve_diff(
+            lattice_dir,
+            "task_01",
+            {"branch_links": [{"branch": "feat/tracking"}]},
+        )
+
+        assert res.success is False
+        assert res.error_code == "BASE_INFERENCE_NO_CANDIDATES"
+        assert res.configured_remotes_present is False
+        assert res.remote_tracking_refs_present is True
+        assert "review_integration_branches" in (res.error or "")
+        assert "shared history" in (res.error or "")
 
     def test_malformed_local_integration_config_fails_without_crashing(
         self, tmp_path: Path, monkeypatch

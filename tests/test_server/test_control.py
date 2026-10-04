@@ -68,6 +68,25 @@ def test_project_config_through_a_running_server(root: Path) -> None:
     assert not control.server_running(root)
 
 
+def test_review_base_control_characters_are_refused_by_running_server(root: Path) -> None:
+    board = root / "projects" / "alpha" / ".lattice"
+    config_path = board / "config.json"
+    before_config = config_path.read_bytes()
+    before_journal = len(_journal(root))
+
+    with running_server(root):
+        response = control.send_request(
+            board,
+            "set-config",
+            {"set": {"review_base_branch": "v2\x85main"}},
+        )
+
+    assert response["ok"] is False
+    assert response["error"]["code"] == "VALIDATION_ERROR"
+    assert config_path.read_bytes() == before_config
+    assert len(_journal(root)) == before_journal
+
+
 def test_issues_enabled_merges_nested_config_through_live_transaction(root: Path) -> None:
     config_path = root / "projects" / "alpha" / ".lattice" / "config.json"
     config = json.loads(config_path.read_text())

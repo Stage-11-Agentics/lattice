@@ -929,11 +929,17 @@ def unreact(
     type=click.Path(exists=True),
     help="Read review findings from a file (safe for long prose — no shell interpolation).",
 )
+@click.option(
+    "--via",
+    default=None,
+    help="Record the primary task ID or pull request reference (#N or HTTP(S) URL).",
+)
 @common_options
 def complete_cmd(
     task_id: str,
     review_text: str | None,
     review_file: str | None,
+    via: str | None,
     model: str | None,
     session: str | None,
     output_json: bool,
@@ -945,14 +951,15 @@ def complete_cmd(
     """Complete a task with review-to-done ceremony in one command.
 
     Give the review findings with --review, or --review-file for long prose
-    (a file body is read byte-for-byte, never shell-interpolated).
+    (a file body is read byte-for-byte, never shell-interpolated). Optionally
+    use --via to record the primary task ID, pull request number, or pull request URL.
 
     Emits 4 discrete events (3 if already in review):
     comment_added (role=review), status_changed -> review,
     artifact_attached (role=review), status_changed -> done.
     """
     from lattice.cli.attestations import caller_worktree, completion_attestations
-    from lattice.ops.task_complete import prior_status
+    from lattice.ops.task_complete import normalize_via, prior_status
 
     is_json = output_json
     # The body is resolved first, before the board, exactly as always.
@@ -964,6 +971,8 @@ def complete_cmd(
         arg_label="--review",
         file_label="--review-file",
     )
+    if via is not None:
+        check_or_exit(is_json, normalize_via, via)
     board = board_or_exit(is_json)
     config = board.load_config()
 
@@ -995,14 +1004,17 @@ def complete_cmd(
             ),
         }
 
+    params = {
+        "task": task_id,
+        "review": review_body if review_file is None else None,
+        "review_file": review_body if review_file is not None else None,
+        **_provenance(model, session, triggered_by, on_behalf_of, provenance_reason),
+    }
+    if via is not None:
+        params["via"] = via
     result = run_attested_operation(
         "task.complete",
-        {
-            "task": task_id,
-            "review": review_body if review_file is None else None,
-            "review_file": review_body if review_file is not None else None,
-            **_provenance(model, session, triggered_by, on_behalf_of, provenance_reason),
-        },
+        params,
         is_json,
         board=board,
         config=config,
@@ -1010,12 +1022,26 @@ def complete_cmd(
     )
     snapshot = result.value
     display_id = snapshot.get("short_id") or snapshot["id"]
-    output_result(
-        data=snapshot,
-        human_message=(
+    if via is None:
+        human_message = (
             f"Completed {display_id}: {len(result.events)} events "
             f"({prior_status(result)} -> review -> done)"
-        ),
+        )
+    else:
+        via_data = result.events[-1]["data"]["via"]
+        via_label = (
+            via_data.get("short_id") or via_data["id"]
+            if via_data["kind"] == "task"
+            else via_data["reference"]
+        )
+        prior = prior_status(result)
+        path = "review -> done" if prior == "review" else f"{prior} -> review -> done"
+        human_message = (
+            f"Completed {display_id} via {via_label}: {len(result.events)} events ({path})"
+        )
+    output_result(
+        data=snapshot,
+        human_message=human_message,
         quiet_value="ok",
         is_json=is_json,
         is_quiet=quiet,

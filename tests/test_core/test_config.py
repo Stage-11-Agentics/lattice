@@ -19,6 +19,7 @@ from lattice.core.config import (
     get_wip_limit,
     load_config,
     serialize_config,
+    valid_git_branch_name,
     validate_completion_policy,
     validate_status,
     validate_task_type,
@@ -97,6 +98,19 @@ class TestDefaultConfig:
         assert "universal_targets" in config["workflow"]
         assert config["workflow"]["universal_targets"] == ["cancelled"]
         assert "needs_human" not in config["workflow"]["universal_targets"]
+
+
+class TestGitBranchNameValidation:
+    @pytest.mark.parametrize("name", ["HEAD", "feature\x85name", "feature\x9fname"])
+    def test_rejects_head_and_c1_controls(self, name: str) -> None:
+        assert valid_git_branch_name(name) is False
+
+    def test_validator_documents_stricter_c1_rule(self) -> None:
+        assert "C1" in (valid_git_branch_name.__doc__ or "")
+
+    def test_keeps_valid_integration_names(self) -> None:
+        assert valid_git_branch_name("v2") is True
+        assert valid_git_branch_name("release/next") is True
 
     def test_wip_limits(self) -> None:
         config = default_config()

@@ -595,6 +595,24 @@ COMPLETION_GIT_POLICY = Scenario(
     ),
 )
 
+COMPLETION_VIA = Scenario(
+    name="complete_via",
+    description="complete a bundled task with canonical bundle provenance",
+    steps=(
+        c("create", "Primary bundle task", *H),
+        c("create", "Bundled implementation", *H),
+        c(
+            "complete",
+            "PAR-2",
+            "--review",
+            "Reviewed in the primary change.",
+            "--via",
+            "PAR-1",
+            *A,
+        ),
+    ),
+)
+
 CLAIMS = Scenario(
     name="claims",
     description="claim/unclaim (c11 surface binding, c11 absent) and next --claim",
@@ -993,6 +1011,7 @@ SCENARIOS: tuple[Scenario, ...] = (
     CRITERIA,
     ARTIFACTS,
     COMPLETION_GIT_POLICY,
+    COMPLETION_VIA,
     CLAIMS,
     RESOURCES,
     SESSIONS,

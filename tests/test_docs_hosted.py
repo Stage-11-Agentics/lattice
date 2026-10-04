@@ -282,7 +282,9 @@ _BARE_HOST = re.compile(
 
 HOST_SCANNED = [
     GUIDE,
+    HOSTED / "SPEC.md",
     API,
+    REPO / "docs" / "user-reference.md",
     *(DEPLOY / t for t in TEMPLATES),
     REPO / "README.md",
     REPO / "skills/lattice/SKILL.md",
@@ -320,6 +322,36 @@ def test_both_lattice_skills_explain_remote_issue_filing() -> None:
     ):
         text = path.read_text()
         assert all(fragment in text for fragment in required), path
+
+
+def test_complete_via_docs_declare_bundle_and_reachability_contract() -> None:
+    reference = (REPO / "docs" / "user-reference.md").read_text()
+    spec = (HOSTED / "SPEC.md").read_text()
+    guide = GUIDE.read_text()
+
+    assert "lattice complete LAT-382" in reference
+    assert "--via LAT-381" in reference
+    assert "canonical task or pull-request object" in reference
+    assert "is an ancestor of that still-existing linked branch" in reference
+    assert "before deleting the branch" in reference
+
+    for path in (
+        REPO / "skills/lattice/SKILL.md",
+        REPO / "src/lattice/skills/lattice/SKILL.md",
+    ):
+        text = path.read_text()
+        assert "--via" in text, path
+        assert "primary task ID" in text, path
+        assert "require_reachable_review_commit" in text, path
+        assert "ancestor" in text and "still-existing branch" in text, path
+        assert "A bundled task's branch is never borrowed" in text, path
+
+    assert "`task.complete`" in spec
+    assert "canonical task or pull-request object" in spec
+    assert "UNSUPPORTED_PARAM" in spec
+    assert "does not require a `min_client_version` bump" in spec
+    assert "C0, C1, and DEL control characters are refused" in spec
+    assert "C0, C1, and DEL control characters are refused" in guide
 
 
 def test_hostname_check_catches_a_real_host() -> None:

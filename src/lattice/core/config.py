@@ -12,23 +12,28 @@ MAX_BRANCH_REF_BYTES = 1024
 MAX_REF_COMPONENT_BYTES = 255
 
 
+def contains_control_characters(value: str) -> bool:
+    """Return whether the raw string contains a C0, C1, or DEL control character."""
+    return any(ord(char) <= 0x1F or 0x7F <= ord(char) <= 0x9F for char in value)
+
+
 def valid_git_branch_name(name: str) -> bool:
     """Return whether *name* is a safe, bounded Git branch ref name.
 
     This mirrors ``git check-ref-format --branch``'s syntax without invoking
-    Git from config validation. The byte bounds keep names usable as ref paths
-    across supported filesystems; the branch-name form also rejects leading
-    dashes and the previous-checkout shorthand ``@{-n}``.
+    Git from config validation. We deliberately reject C1 controls as well,
+    which is stricter than Git's branch-name validator. The byte bounds keep
+    names usable as ref paths across supported filesystems; the branch-name
+    form also rejects ``HEAD``, leading dashes, and ``@{-n}``.
     """
-    if not isinstance(name, str) or not name or name == "@" or name.startswith("-"):
+    if not isinstance(name, str) or not name or name in {"@", "HEAD"} or name.startswith("-"):
         return False
     if name.startswith("/") or name.endswith("/") or "//" in name:
         return False
     if ".." in name or "@{" in name or name.endswith("."):
         return False
-    if any(
-        ord(char) <= 0x20 or ord(char) == 0x7F or char in {"~", "^", ":", "?", "*", "[", "\\"}
-        for char in name
+    if contains_control_characters(name) or any(
+        char in {" ", "~", "^", ":", "?", "*", "[", "\\"} for char in name
     ):
         return False
     components = name.split("/")
@@ -659,6 +664,18 @@ def get_valid_transitions(config: dict, from_status: str) -> list[str]:
             seen.add(s)
             result.append(s)
     return result
+
+
+def is_terminal_status(config: dict, status: str) -> bool:
+    """Return whether *status* has no explicit outgoing workflow transitions.
+
+    Universal targets apply to transition checks; they do not make a status
+    non-terminal when its own transition list is empty or absent.
+    """
+    transitions = config.get("workflow", {}).get("transitions", {})
+    if not isinstance(transitions, dict):
+        return True
+    return not transitions.get(status)
 
 
 def validate_task_type(config: dict, task_type: object) -> bool:

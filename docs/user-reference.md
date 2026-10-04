@@ -432,6 +432,7 @@ The CLI is Lattice's write interface — the primary way agents interact with th
 | `lattice migrate needs-human` | Convert tasks in the legacy `needs_human` status to the flag (`--dry-run` to preview) |
 | `lattice assign <id> <actor>` | Assign a task |
 | `lattice comment <id> "<text>"` | Add a comment (`--role` optionally tags it for completion policies) |
+| `lattice complete <id> --review <text>` | Complete with review comment and artifact; optional `--via` records the bundled task or pull request |
 | `lattice criterion add <id> "<outcome>"` | Add an optional task-local acceptance criterion |
 | `lattice criterion edit <id> <criterion> "<outcome>"` | Revise a criterion while preserving history |
 | `lattice criterion retire <id> <criterion>` | Retire a criterion without deleting it |
@@ -471,6 +472,20 @@ The CLI is Lattice's write interface — the primary way agents interact with th
 | `lattice setup-codex` | Install Lattice skill for Codex CLI |
 | `lattice setup-openclaw` | Install Lattice skill for OpenClaw |
 | `lattice setup-prompt` | Print agent instructions to stdout |
+
+### Bundled completion
+
+`lattice complete` accepts an optional `--via` reference to record which primary task or pull request carries the work:
+
+```bash
+lattice complete LAT-382 --review-file review.md --via LAT-381 --actor agent:reviewer
+lattice complete LAT-382 --review-file review.md --via '#42' --actor agent:reviewer
+lattice complete LAT-382 --review-file review.md --via https://git.example.com/org/repo/pull/42 --actor agent:reviewer
+```
+
+`--via` accepts a primary task ID (the ticket carrying this bundled work), an ASCII `#N` pull request number, or a printable ASCII HTTP(S) URL without userinfo, a query, or a fragment. It records a canonical task or pull-request object on the final `status_changed` event. It does not create a task relationship or infer a branch. Review evidence and every completion policy still apply; `--via` only allows the initial move to `review` when the current nonterminal status has no such workflow edge. It refuses a task already in `done` or another terminal/unknown status.
+
+For a board with `require_reachable_review_commit`, completion still requires the completed task's own linked branch. The checkout running `complete` must have a `HEAD` that is an ancestor of that still-existing linked branch. Linking the branch with `lattice branch-link <task> <primary-branch>` is necessary but not sufficient; complete before deleting the branch. A bundled task's branch is never borrowed.
 
 ### Flags
 

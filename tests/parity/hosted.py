@@ -545,7 +545,15 @@ NOT_HOSTED: dict[str, str] = {}
 #: The hosted replays, in three groups of about equal time, one test file each
 #: (``test_hosted_parity.py``, ``_2``, ``_3``), so no file exceeds the per-file budget.
 HOSTED_GROUPS: tuple[tuple[str, ...], ...] = (
-    ("lifecycle", "hooks_sentinel", "tombstones", "plan_read", "project_codes", "rejections"),
+    (
+        "lifecycle",
+        "hooks_sentinel",
+        "tombstones",
+        "plan_read",
+        "project_codes",
+        "rejections",
+        "complete_via",
+    ),
     (
         "artifacts",
         "review_cycles",

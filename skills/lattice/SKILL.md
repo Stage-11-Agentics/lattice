@@ -123,6 +123,16 @@ lattice explain "src/auth/*.ts"              # glob
 
 Link files that embody **decisions**, not every file touched. Use `--reason` to annotate why.
 
+### Complete bundled work
+
+```bash
+lattice complete PROJ-1 --review-file review.md --via PROJ-2 --actor agent:openclaw
+lattice complete PROJ-1 --review-file review.md --via '#42' --actor agent:openclaw
+lattice complete PROJ-1 --review-file review.md --via https://git.example.com/org/repo/pull/42 --actor agent:openclaw
+```
+
+`--via` records the primary task ID (the ticket carrying this bundled work), an ASCII `#N` pull request number, or a printable ASCII HTTP(S) pull request URL as a canonical object on the final completion event. It does not create a task relationship or infer a branch. It only permits the initial move to `review` from a nonterminal status whose workflow has no direct edge; review evidence and completion policies still apply. If `require_reachable_review_commit` is enabled, the completed task still needs its own linked branch, and the caller's `HEAD` must be an ancestor of that still-existing branch. Branch linking is necessary but not sufficient; complete before deleting the branch. A bundled task's branch is never borrowed.
+
 ### Archive completed work
 
 ```bash
