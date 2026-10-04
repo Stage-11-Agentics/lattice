@@ -8,6 +8,7 @@ polling.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -245,48 +246,60 @@ def _stream_with_fswatch(
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
 
     try:
+        if proc.stdout is None:
+            raise RuntimeError("fswatch did not provide a notification stream")
+
         buffer = b""
         while True:
-            elapsed = time.monotonic() - start_time
-            if timeout > 0 and elapsed >= timeout:
+            remaining = timeout - (time.monotonic() - start_time) if timeout > 0 else 5.0
+            if timeout > 0 and remaining <= 0:
                 return
-
-            read_timeout = min(5.0, (timeout - elapsed) if timeout > 0 else 5.0)
+            read_timeout = min(5.0, remaining)
             try:
                 import select
 
                 ready, _, _ = select.select([proc.stdout], [], [], read_timeout)
                 if not ready:
+                    if proc.poll() is not None:
+                        return
                     continue
 
-                chunk = proc.stdout.read(4096)
-                if not chunk:
+                chunk = proc.stdout.read1(65536)
+            except (OSError, ValueError) as exc:
+                if proc.poll() is not None:
                     return
+                raise RuntimeError(f"fswatch notification stream failed: {exc}") from exc
 
-                buffer += chunk
+            if not chunk:
+                return
 
-                while b"\0" in buffer:
-                    path_bytes, buffer = buffer.split(b"\0", 1)
-                    changed_path = Path(path_bytes.decode().strip())
+            buffer += chunk
+            relevant_change = False
+            while b"\0" in buffer:
+                path_bytes, buffer = buffer.split(b"\0", 1)
+                changed_path = Path(os.fsdecode(path_bytes))
 
-                    if changed_path.suffix != ".jsonl" or changed_path.parent not in {
-                        events_dir,
-                        archive_events_dir,
-                    }:
-                        continue
-                    for event in _filtered_unique(
-                        _scan_event_logs(lattice_dir, offsets, last_paths),
-                        task_filter,
-                        type_filter,
-                        seen_event_ids,
-                    ):
-                        yield event
+                if changed_path.suffix == ".jsonl" and changed_path.parent in {
+                    events_dir,
+                    archive_events_dir,
+                }:
+                    relevant_change = True
 
-            except (OSError, ValueError):
-                continue
+            if relevant_change:
+                for event in _filtered_unique(
+                    _scan_event_logs(lattice_dir, offsets, last_paths),
+                    task_filter,
+                    type_filter,
+                    seen_event_ids,
+                ):
+                    yield event
 
     finally:
-        proc.terminate()
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+        except ProcessLookupError:
+            pass
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
