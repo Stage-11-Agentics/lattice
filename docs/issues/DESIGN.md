@@ -10,7 +10,7 @@ Atin approved round 4, take A ("Inbox"), on 2026-10-02 at commit fcb9e46. It is 
 
 `issues.enabled` must be exactly `true` before the shared dashboard adds its Issues tab (with the count of issues that have no story), the `+ Issue` button, the stylesheet or the issue scripts. With the feature off, a direct `#/issues` URL returns to the board and the browser requests no issue endpoint or asset. Turning the feature off while the Inbox is open returns to the board on the next refresh.
 
-A hosted dashboard, and any board whose issue reads answer `LOCAL_ONLY`, shows "Issues are not available on this board yet." in place of the Inbox, never a load error.
+The hosted dashboard serves the Inbox. A bound checkout reads the synced issue metadata mirror in read-only mode: `New issue`, comment, Close/Reopen, and the `i file` hint are hidden. It keeps the mirror list visible and says, "This bound checkout is read-only. File and comment on the hosted dashboard or with `lattice issue`." Media remains behind the hosted session route and is not served from checkout-local storage.
 
 ## Inbox behaviour
 

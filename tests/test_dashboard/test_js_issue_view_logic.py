@@ -12,6 +12,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 NODE_TEST_FILES = (
     REPO_ROOT / "tests" / "js" / "issue-view-logic.test.js",
     REPO_ROOT / "tests" / "js" / "issue-view-dom.test.js",
+    REPO_ROOT / "tests" / "js" / "issue-upload.test.js",
 )
 INDEX_HTML = REPO_ROOT / "src" / "lattice" / "dashboard" / "static" / "index.html"
 ISSUE_VIEW_JS = REPO_ROOT / "src" / "lattice" / "dashboard" / "static" / "issue-view.js"
@@ -42,6 +43,10 @@ def test_issue_assets_are_loaded_only_for_an_enabled_issue_view() -> None:
     assert '<script src="static/issue-view.js">' not in html
     assert '<script src="static/issue-view-logic.js">' not in html
     assert 'if (view === "issues" && !_issuesEnabled()) {' in html
+    assert "config.dashboard_mode.bound_checkout" in html
+    assert "readOnly: issueReadOnly" in html
+    assert "if (issueReadOnly && oldButton)" in html
+    assert "if (!issueReadOnly && !oldButton)" in html
 
 
 def test_view_has_only_filing_and_top_level_comment_write_calls() -> None:

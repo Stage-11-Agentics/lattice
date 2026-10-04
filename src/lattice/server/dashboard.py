@@ -336,7 +336,9 @@ def _stage_prepared_media(project: Project, filename: str, content: bytes) -> di
     from lattice.ops.task_attach import decode_payload, encode_payload
 
     filename = clean_original_name(filename) or "attachment"
-    prepared_items = prepare_issue_media([{"payload": encode_payload(filename, content)}])
+    prepared_items = prepare_issue_media(
+        [{"payload": encode_payload(filename, content)}], refuse_video_without_ffmpeg=True
+    )
     if len(prepared_items) != 1:
         raise OpError("WRITE_ERROR", "media preparation returned an invalid item count.")
     prepared = prepared_items[0]

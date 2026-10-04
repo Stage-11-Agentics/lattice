@@ -17,6 +17,7 @@ from lattice.server import admin
 from lattice.server.testing import ServerHandle, running_server, wait_for
 from tests.test_server.conftest import board_hash, create_task, mint
 from tests.test_server.web_client import WebClient
+from tests.issue_media_helpers import jpeg, mp4, png, use_stdlib_fake_ffmpeg
 
 CSP_FIXED = (
     "default-src 'self'; script-src 'self'{hashes}; style-src 'self' 'unsafe-inline'; "
@@ -89,11 +90,15 @@ class TestPage:
         assert script.headers["content-type"].startswith("application/javascript")
         issue_script = web.get("/p/alpha/static/issue-view.js")
         issue_style = web.get("/p/alpha/static/issue-view.css")
+        upload_script = web.get("/p/alpha/static/issue-upload.js")
         assert issue_script.status == 200 and issue_script.headers["content-type"].startswith(
             "application/javascript"
         )
         assert issue_style.status == 200 and issue_style.headers["content-type"].startswith(
             "text/css"
+        )
+        assert upload_script.status == 200 and upload_script.headers["content-type"].startswith(
+            "application/javascript"
         )
         assert web.get("/p/alpha/favicon.ico").status == 200
         assert web.get("/p/alpha/static/../server.py").status in (403, 404)
@@ -250,6 +255,104 @@ class TestPage:
         assert rejected.json["error"]["code"] == "FORBIDDEN"
         anonymous = WebClient(web.server)
         assert anonymous.get("/p/alpha/api/issues").status == 401
+
+    def test_video_staging_runs_shared_prep_and_stages_metadata_free_frames(
+        self, server: ServerHandle, root: Path, tmp_path: Path, monkeypatch
+    ) -> None:  # noqa: ANN001
+        admin.set_project_config(root, "alpha", {"issues.enabled": True})
+        web = _logged_in(server, mint(root, projects=["alpha"]))
+        source, frame = mp4(), jpeg()
+        calls = use_stdlib_fake_ffmpeg(
+            monkeypatch, tmp_path / "fake-ffmpeg", source=source, frame=frame
+        )
+        digest = hashlib.sha256(source).hexdigest()
+        response = web.request(
+            "PUT",
+            f"/p/alpha/issues/media/staging/{digest}?filename=geo.mp4",
+            body=source,
+            headers={"Content-Type": "application/octet-stream", "Origin": web.origin},
+        )
+
+        assert response.status == 201, response.text
+        staged = response.json["data"]
+        assert staged["payload"]["staged"] is True
+        assert staged["frames"]
+        assert all(item["payload"]["staged"] is True for item in staged["frames"])
+        commands = [json.loads(line) for line in calls.read_text(encoding="utf-8").splitlines()]
+        assert any(
+            any(
+                argv[index : index + 2] == ["-map_metadata", "-1"]
+                for index in range(len(argv) - 1)
+            )
+            for argv in commands
+        )
+
+    def test_hosted_video_refuses_without_ffmpeg_while_photos_still_stage(
+        self, server: ServerHandle, root: Path, monkeypatch
+    ) -> None:  # noqa: ANN001
+        admin.set_project_config(root, "alpha", {"issues.enabled": True})
+        web = _logged_in(server, mint(root, projects=["alpha"]))
+        monkeypatch.setenv("LATTICE_FFMPEG", "off")
+
+        photo = png()
+        photo_digest = hashlib.sha256(photo).hexdigest()
+        photo_response = web.request(
+            "PUT",
+            f"/p/alpha/issues/media/staging/{photo_digest}?filename=screen.png",
+            body=photo,
+            headers={"Content-Type": "application/octet-stream", "Origin": web.origin},
+        )
+        assert photo_response.status == 201, photo_response.text
+        assert photo_response.json["data"]["payload"]["staged"] is True
+
+        video = mp4()
+        video_digest = hashlib.sha256(video).hexdigest()
+        video_response = web.request(
+            "PUT",
+            f"/p/alpha/issues/media/staging/{video_digest}?filename=geo.mp4",
+            body=video,
+            headers={"Content-Type": "application/octet-stream", "Origin": web.origin},
+        )
+        assert video_response.status == 400, video_response.text
+        assert video_response.json["error"]["code"] == "MEDIA_STAGE_UNAVAILABLE"
+        assert video_response.json["error"]["message"] == (
+            "This server cannot remove location data from videos yet; ask the board admin to install ffmpeg"
+        )
+
+    def test_issue_media_staging_rejects_foreign_origin_before_staging(
+        self, server: ServerHandle, root: Path
+    ) -> None:
+        admin.set_project_config(root, "alpha", {"issues.enabled": True})
+        web = _logged_in(server, mint(root, projects=["alpha"]))
+        content = png()
+        digest = hashlib.sha256(content).hexdigest()
+        response = web.request(
+            "PUT",
+            f"/p/alpha/issues/media/staging/{digest}?filename=screen.png",
+            body=content,
+            headers={"Content-Type": "application/octet-stream", "Origin": "https://evil.example"},
+        )
+
+        assert response.status == 403
+        assert response.json["error"]["code"] == "FORBIDDEN"
+
+    def test_issue_media_staging_rejects_body_that_does_not_match_sha256(
+        self, server: ServerHandle, root: Path
+    ) -> None:
+        admin.set_project_config(root, "alpha", {"issues.enabled": True})
+        web = _logged_in(server, mint(root, projects=["alpha"]))
+        content = png()
+        digest = hashlib.sha256(jpeg()).hexdigest()
+        response = web.request(
+            "PUT",
+            f"/p/alpha/issues/media/staging/{digest}?filename=screen.png",
+            body=content,
+            headers={"Content-Type": "application/octet-stream", "Origin": web.origin},
+        )
+
+        assert response.status == 400
+        assert response.json["error"]["code"] == "VALIDATION_ERROR"
+        assert response.json["error"]["message"] == "media bytes do not match the supplied sha256."
 
     def test_other_project_is_403_and_missing_is_404(self, server: ServerHandle, root) -> None:
         web = _logged_in(server, mint(root, projects=["alpha"]))

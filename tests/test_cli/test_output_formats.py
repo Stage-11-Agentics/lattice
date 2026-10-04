@@ -135,6 +135,14 @@ def test_invalid_actor_json_error(invoke):
     assert "badformat" in data["error"]["message"]
 
 
+def test_whitespace_only_actor_suffix_is_rejected_as_invalid_actor(invoke) -> None:  # noqa: ANN001
+    for prefix in ("agent", "human", "team", "dashboard"):
+        result = invoke("create", "Invalid actor", "--actor", f"{prefix}: \t\n", "--json")
+        assert result.exit_code != 0, prefix
+        data = json.loads(result.output)
+        assert data["error"]["code"] == "INVALID_ACTOR", prefix
+
+
 def test_invalid_transition_json_error(invoke, create_task):
     task = create_task("Transition test")
     task_id = task["id"]

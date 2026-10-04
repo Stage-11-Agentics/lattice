@@ -242,6 +242,13 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
                                 None if self._target.hosted else "/api/issues/{issue_id}/media"
                             ),
                         )
+                        if (
+                            path == "/api/config"
+                            and self._target.hosted
+                            and response.envelope is not None
+                            and response.envelope.get("ok") is True
+                        ):
+                            response.envelope["data"]["dashboard_mode"] = {"bound_checkout": True}
                 except OpError as exc:  # a bound checkout's cache cannot be read
                     refused = ApiError.from_op_error(exc)
                     response = ApiResponse(refused.status, refused.envelope())

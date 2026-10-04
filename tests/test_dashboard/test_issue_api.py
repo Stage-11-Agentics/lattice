@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import json
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -15,7 +16,7 @@ from lattice.dashboard import api
 from lattice.ops import Caller, OpError, get_operation
 from lattice.ops.task_attach import encode_payload
 from lattice.storage.fs import atomic_write, ensure_lattice_dirs
-from tests.issue_media_helpers import jpeg, mp4, png
+from tests.issue_media_helpers import jpeg, mp4, png, use_stdlib_fake_ffmpeg
 
 
 @pytest.fixture()
@@ -75,6 +76,22 @@ def test_enabled_issue_list_and_detail_use_the_dashboard_contract(issue_board) -
     assert detail["events"][0]["type"] == "issue_filed"
     assert detail["comments"] == []
     assert all("path" not in media for media in detail["media"])
+
+
+def test_issue_history_maps_linked_and_unlinked_tasks_to_short_ids(issue_board) -> None:  # noqa: ANN001
+    board, lattice_dir, config = issue_board
+    config["project_code"] = "LAT"
+    enable_issues(lattice_dir, config)
+    task = board.execute("task.create", {"title": "Story"}, Caller(actor="agent:qa")).value
+    issue = file_issue(board, "Linked story")
+    caller = Caller(actor="agent:qa")
+    board.execute("issue.link", {"issue": issue["id"], "task": task["id"]}, caller)
+    board.execute("issue.unlink", {"issue": issue["id"], "task": task["id"]}, caller)
+
+    detail = data(api.route_get(lattice_dir, f"/api/issues/{issue['id']}"))
+
+    assert detail["tasks"] == []
+    assert detail["task_short_ids"] == {task["id"]: task["short_id"]}
 
 
 def test_by_filter_marks_file_activity_across_the_issue_list(issue_board) -> None:  # noqa: ANN001
@@ -214,6 +231,18 @@ def test_comment_translation_stays_on_the_registered_operation_boundary() -> Non
         api.translate_post(
             "/api/issues/LAT-I1/comment", {"body": "Reply", "parent_id": "comment-id"}
         )
+
+
+@pytest.mark.parametrize("actor", ["agent: ", "human:\t", "team:\n", "dashboard:  "])
+def test_local_dashboard_body_actor_rejects_whitespace_only_identifier(
+    issue_board, actor: str
+) -> None:  # noqa: ANN001
+    board, lattice_dir, config = issue_board
+    enable_issues(lattice_dir, config)
+    request = api.translate_post("/api/issues", {"title": "Invalid actor", "actor": actor})
+
+    with pytest.raises(OpError, match="Invalid actor"):
+        board.execute(request.op_name, request.params, Caller(actor=request.actor))
 
 
 def test_dismiss_and_reopen_translate_to_the_registered_operations() -> None:
@@ -394,42 +423,12 @@ def test_dashboard_video_goes_through_the_cli_media_step(  # noqa: ANN001
 
 def test_dashboard_geo_strip_invocation_uses_stdlib_fixture(tmp_path: Path, monkeypatch) -> None:
     """CI has no ffmpeg; pin the real dashboard prep path's metadata-free invocation."""
-    import base64
-    import json
-    import sys
-
     from lattice.dashboard import media_prep
     from lattice.ops.task_attach import decode_payload
 
-    tool_dir = tmp_path / "tools"
-    tool_dir.mkdir()
-    calls = tmp_path / "ffmpeg-argv.jsonl"
     source = mp4()
     frame = jpeg()
-    ffmpeg = tool_dir / "ffmpeg"
-    ffmpeg.write_text(
-        "#!" + sys.executable + "\n"
-        "import base64, json, pathlib, sys\n"
-        f"log = pathlib.Path({str(calls)!r})\n"
-        "args = sys.argv[1:]\n"
-        "with log.open('a') as handle: handle.write(json.dumps(args) + '\\n')\n"
-        "if args[-1] == '-':\n"
-        f"    sys.stdout.buffer.write(base64.b64decode({base64.b64encode(frame).decode()!r}))\n"
-        "else:\n"
-        f"    pathlib.Path(args[-1]).write_bytes(base64.b64decode({base64.b64encode(source).decode()!r}))\n",
-        encoding="utf-8",
-    )
-    ffmpeg.chmod(0o755)
-    ffprobe = tool_dir / "ffprobe"
-    ffprobe.write_text(
-        "#!" + sys.executable + "\n"
-        "import json\n"
-        "print(json.dumps({'streams': [{'codec_type': 'video', 'codec_name': 'h264', "
-        "'width': 64, 'height': 48, 'duration': '1'}], 'format': {'duration': '1'}}))\n",
-        encoding="utf-8",
-    )
-    ffprobe.chmod(0o755)
-    monkeypatch.setenv("LATTICE_FFMPEG", str(ffmpeg))
+    calls = use_stdlib_fake_ffmpeg(monkeypatch, tmp_path / "tools", source=source, frame=frame)
 
     [prepared] = media_prep.prepare_issue_media([{"payload": encode_payload("geo.mp4", source)}])
 
@@ -440,6 +439,19 @@ def test_dashboard_geo_strip_invocation_uses_stdlib_fixture(tmp_path: Path, monk
     )
     assert prepared["frames"]
     assert decode_payload(prepared["payload"])[1] == source
+
+
+def test_local_dashboard_keeps_video_when_ffmpeg_is_unavailable(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from lattice.dashboard import media_prep
+
+    monkeypatch.setenv("LATTICE_FFMPEG", "off")
+    item = {"payload": encode_payload("geo.mp4", mp4())}
+
+    assert media_prep.prepare_issue_media([item]) == [item]
+    with pytest.raises(OpError, match="cannot remove location data from videos"):
+        media_prep.prepare_issue_media([item], refuse_video_without_ffmpeg=True)
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg")

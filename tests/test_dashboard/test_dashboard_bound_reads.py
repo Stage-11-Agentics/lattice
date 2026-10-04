@@ -55,6 +55,9 @@ def test_bound_dashboard_reads_issue_metadata_without_local_media_urls(
     issue = filed["result"]["value"]
 
     with dashboard(repo, follower_factory=_ExitingFollower) as port:
+        status, config = request(port, "GET", "/api/config")
+        assert status == 200, config
+        assert config["data"]["dashboard_mode"] == {"bound_checkout": True}
         status, listed = request(port, "GET", "/api/issues")
         assert status == 200, listed
         assert [row["id"] for row in listed["data"]] == [issue["id"]]

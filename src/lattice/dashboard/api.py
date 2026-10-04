@@ -58,9 +58,6 @@ def human_author(config: dict) -> str | None:
 #: Maximum allowed request body size (1 MiB), to refuse oversized payloads.
 MAX_REQUEST_BODY_BYTES = 1_048_576
 
-#: A hosted board has no issue log yet (LAT-368): reads and writes answer this.
-ISSUES_UNAVAILABLE = (400, "LOCAL_ONLY", "Issues are not available on this board yet.")
-
 #: The most media items one dashboard filing may carry; it sizes the filing's body allowance.
 MAX_ISSUE_FILE_MEDIA_ITEMS = 64
 
@@ -216,6 +213,30 @@ def _flatten_issue_comments(comments: list[dict]) -> list[dict]:
     return flattened
 
 
+def _history_task_short_ids(lattice_dir: Path, events: list[dict]) -> dict[str, str]:
+    """Resolve short IDs for every task named by a link or unlink event."""
+    task_ids = {
+        data.get("task_id")
+        for event in events
+        if event.get("type") in {"issue_linked", "issue_unlinked"}
+        for data in [event.get("data") if isinstance(event.get("data"), dict) else {}]
+        if isinstance(data.get("task_id"), str)
+    }
+    short_ids: dict[str, str] = {}
+    for task_id in task_ids:
+        if not validate_id(task_id, "task"):
+            continue
+        try:
+            authority = read_task_authority(lattice_dir, task_id, allow_missing=True)
+        except (AuthoritativeLogError, OpError, OSError, ValueError):
+            # History is still useful when a linked task has been archived, erased,
+            # removed, or its own log is damaged; the UI falls back to the task ID.
+            continue
+        if authority is not None and isinstance(authority.snapshot.get("short_id"), str):
+            short_ids[task_id] = authority.snapshot["short_id"]
+    return short_ids
+
+
 def _issue_detail_adapter(
     ld: Path, raw_id: str, issue_media_route: str | None = "/api/issues/{issue_id}/media"
 ) -> dict | None:
@@ -226,7 +247,10 @@ def _issue_detail_adapter(
         detail = issue_detail(ld, raw_id)
     except OpError as exc:
         raise ApiError.from_op_error(exc) from exc
-    return None if detail is None else _normalize_issue_detail(detail, issue_media_route)
+    if detail is None:
+        return None
+    detail["task_short_ids"] = _history_task_short_ids(ld, detail.get("events", []))
+    return _normalize_issue_detail(detail, issue_media_route)
 
 
 def _normalize_issue_detail(

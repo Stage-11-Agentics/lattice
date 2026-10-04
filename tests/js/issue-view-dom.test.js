@@ -121,7 +121,7 @@ function boot(server, extra) {
       posts.push({ url, body });
       return extra && extra.apiPost ? extra.apiPost(url, body) : Promise.resolve({ id: "iss_99", short_id: "T-I99" });
     },
-    esc, hosted: !!(extra && extra.hosted), basePath: "/", showToast: (message) => toasts.push(message),
+    esc, hosted: !!(extra && extra.hosted), readOnly: !!(extra && extra.readOnly), basePath: "/", showToast: (message) => toasts.push(message),
     uploadIssueMedia: extra && extra.uploadIssueMedia,
   });
   return {
@@ -326,12 +326,15 @@ test("history lines name the event's reported user and machine", async () => {
 
 test("issue history uses linked task short IDs and safely falls back when no task row matches", async () => {
   const taskId = "task_01ARZ3NDEKTSV4RRFFQ69G5FAV";
+  const unlinkedTaskId = "task_01ARZ3NDEKTSV4RRFFQ69G5FAW";
   const unknown = "task_<svg onload=alert(1)>";
   const server = makeServer([issue(1, {
     tasks: [{ id: taskId, short_id: "T-9", status: "backlog", title: "Fix it" }],
+    task_short_ids: { [unlinkedTaskId]: "T-10" },
     events: [
       { id: "ev_1", type: "issue_linked", actor: "human:atin", ts: ago(10), data: { task_id: taskId } },
-      { id: "ev_2", type: "issue_unlinked", actor: "human:atin", ts: ago(5), data: { task_id: unknown } },
+      { id: "ev_2", type: "issue_unlinked", actor: "human:atin", ts: ago(7), data: { task_id: unlinkedTaskId } },
+      { id: "ev_3", type: "issue_unlinked", actor: "human:atin", ts: ago(5), data: { task_id: unknown } },
     ],
   })]);
   const view = boot(server);
@@ -341,6 +344,7 @@ test("issue history uses linked task short IDs and safely falls back when no tas
     $(".issue-history-toggle").click();
     const history = $("#issue-history");
     assert.match(history.textContent, /linked to T-9/);
+    assert.match(history.textContent, /unlinked from T-10/);
     assert.match(history.textContent, /unlinked from task_<svg onload=alert\(1\)>/);
     assert.equal(history.querySelector("svg"), null, "the fallback is escaped as text");
   } finally {
@@ -363,6 +367,12 @@ test("hosted issue view loads details and submits media through the session stag
     await flush();
     assert.equal(shownIssue(), "T-I1");
     assert.ok(server.calls.includes("/api/issues/iss_1"), "hosted detail is fetched");
+    assert.match($(".issue-q-foot").textContent, /i file/, "hosted issue filing advertises its keyboard shortcut");
+
+    key(document.body, "i");
+    assert.ok($("#issue-file-dialog"), "hosted `i` opens the filing panel");
+    key(document.body, "Escape");
+    none($("#issue-file-dialog"));
 
     const file = new File([new Uint8Array([137, 80, 78, 71, 1])], "Screenshot.png", { type: "image/png" });
     const paste = new Event("paste", { bubbles: true, cancelable: true,
@@ -376,6 +386,31 @@ test("hosted issue view loads details and submits media through the session stag
     assert.deepEqual(uploads, ["Screenshot.png"]);
     assert.equal(view.posts[0].body.media[0].payload.staged, true);
     assert.equal("content_b64" in view.posts[0].body.media[0].payload, false);
+  } finally {
+    view.done();
+  }
+});
+
+test("a bound checkout keeps mirrored issues visible and hides every issue write", async () => {
+  const server = makeServer([issue(1)]);
+  const view = boot(server, { readOnly: true });
+  try {
+    view.dashboard.render();
+    await flush();
+    assert.equal($$(".issue-q-row").length, 1, "the mirrored issue remains visible");
+    assert.match($(".issue-readonly-note").textContent, /bound checkout is read-only/);
+    assert.match($(".issue-readonly-note").textContent, /hosted dashboard or with lattice issue/);
+    for (const selector of ["#issue-triage", "#issue-close-pop", "#issue-comment-box", "#issue-comment-post"]) {
+      assert.equal($(selector), null, selector + " is absent");
+    }
+    assert.doesNotMatch($(".issue-q-foot").textContent, /i file/);
+
+    key(document.body, "i");
+    document.body.dispatchEvent(new Event("dragenter", { bubbles: true, cancelable: true, dataTransfer: { types: ["Files"] } }));
+    assert.equal($("#issue-file-dialog"), null);
+    assert.equal($(".issue-drop-hint"), null);
+    assert.equal(view.posts.length, 0);
+    assert.equal(view.toasts.length, 0, "the visible mirror has no unavailable-write toast");
   } finally {
     view.done();
   }
@@ -622,11 +657,16 @@ test("the selected issue remains selected after visiting Board and returning to 
     key(document.body, "j");
     assert.equal(shownIssue(), "T-I2");
 
+    link(server, "T-I2");
+    await view.dashboard.refresh(); await flush();
+    assert.equal(shownIssue(), "T-I2");
+    none(litRow(), "the selected issue left the Open queue before leaving for Board");
+
     view.dashboard.deactivate(); // the dashboard's Board view owns the page
     view.dashboard.render(); // returning to Issues restores the prior selection
     await flush();
     assert.equal(shownIssue(), "T-I2");
-    assert.equal(litRow(), "T-I2");
+    none(litRow(), "the selected issue remains shown without lighting a row outside its queue");
   } finally {
     view.done();
   }
