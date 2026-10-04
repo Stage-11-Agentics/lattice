@@ -235,6 +235,8 @@ def _stream_with_fswatch(
         "fswatch",
         "-0",
         "-r",
+        "--latency",
+        "0.1",
         "--event",
         "Updated",
         "--event",

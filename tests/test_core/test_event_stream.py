@@ -192,6 +192,8 @@ def test_fswatch_command_watches_recursively(tmp_path: Path, monkeypatch) -> Non
     assert list(stream_events(lattice_dir, timeout=1)) == []
     assert len(commands) == 1
     assert "-r" in commands[0]
+    latency_index = commands[0].index("--latency")
+    assert commands[0][latency_index : latency_index + 2] == ["--latency", "0.1"]
 
 
 def test_fswatch_parses_split_bursts_and_filesystem_paths_before_one_scan(
